@@ -26,9 +26,10 @@
 
 use std::collections::HashMap;
 
+use core::f64::consts::TAU;
 use og_core::{OgResult, Tolerances, og_bail};
 use og_geom::{Curve2d, Curve3d, ExtrusionSurface, Line2d, PlanarCurve, Surface, Transformable};
-use og_math::{Point2, Transform, Vector};
+use og_math::{Axis, Circle, Direction, Frame, Point, Point2, Transform, Vector};
 use og_topo::{EdgeRepr, Location, Model, NodeData, Orientation, Shape, ShapeType, TShapeId};
 
 use crate::build::{make_face_on, make_shell, make_solid, make_wire};
@@ -120,7 +121,7 @@ fn prism_over_face(
     // Left unturned, both end caps present the wrong side: the mesh still
     // closes and the shell is still closed, so nothing topological notices, and
     // the volume comes back short by twice the caps' contribution.
-    let normal = face_normal(model, face, tol)?;
+    let (_, normal) = face_normal(model, face, tol)?;
     let travel = vector.magnitude();
     let along = normal.dot(vector) / travel;
     if along.abs() <= tol.angular() {
@@ -328,6 +329,487 @@ fn prism_over_edge(
     Ok((face, history))
 }
 
+/// The turn a revolution makes, carried down to every entity it builds.
+struct Turn {
+    /// What it turns about.
+    axis: Axis,
+    /// How far, in radians.
+    angle: f64,
+    /// Whether the turn closes on itself, so the two ends are one seam rather
+    /// than two faces.
+    full: bool,
+    /// Where the far end sits. The identity for a full turn, because there is
+    /// no far end — it is the near end again.
+    displacement: Location,
+}
+
+/// Revolve a shape about `axis`, through `angle` radians.
+///
+/// A face becomes a solid, a wire becomes a shell, an edge becomes a face —
+/// the same rule as [`make_prism`], turning instead of travelling. A full turn
+/// closes on itself: its two ends are the *same* profile, meeting along a seam,
+/// which is the topology [`make_cylinder`](crate::make_cylinder) produces for
+/// the identical solid. A partial turn has two distinct ends and caps them.
+///
+/// The seam is not an implementation detail to be avoided. Building a full turn
+/// as two half-turns would sidestep it and give a different face count for the
+/// same solid, and a boolean later has to split along seams like any other
+/// edge.
+///
+/// # Errors
+///
+/// [`OgError::Construction`](og_core::OgError::Construction) if the angle is
+/// not in `(0, 2pi]`, if the shape is of a kind that cannot be swept, if an
+/// edge of the profile has no 3D curve, if the profile meets the axis anywhere
+/// but at its ends — it would sweep through itself — or if the profile lies in
+/// a surface the turn runs along, which encloses no volume.
+pub fn make_revolution(
+    model: &mut Model,
+    profile: &Shape,
+    axis: Axis,
+    angle: f64,
+    tol: Tolerances,
+) -> OgResult<Built> {
+    if !angle.is_finite() || angle <= tol.angular() || angle > TAU + tol.angular() {
+        og_bail!(
+            Construction,
+            "a revolution turns through (0, 2pi]; {angle} does not"
+        );
+    }
+    let angle = angle.min(TAU);
+    let full = TAU - angle <= tol.angular();
+    model.begin_operation();
+
+    let turn = Turn {
+        axis,
+        angle,
+        full,
+        // One datum for the whole turn, so every entity at the far end shares a
+        // single placement — and none at all for a full turn, whose far end is
+        // its near end.
+        displacement: if full {
+            Location::identity()
+        } else {
+            Location::of(model.add_datum(Transform::rotation(axis, angle)))
+        },
+    };
+
+    let rails = &mut Rails::new();
+    match model.kind_of(profile)? {
+        ShapeType::Face => revolution_over_face(model, rails, profile, &turn, tol),
+        ShapeType::Wire => {
+            let (faces, history) = revolution_over_wire(model, rails, profile, &turn, tol)?;
+            let shell = make_shell(model, &faces)?.shape;
+            Ok(Built::new(shell, history))
+        }
+        ShapeType::Edge => {
+            let (face, history) = revolution_over_edge(model, rails, profile, &turn, tol)?;
+            let Some(face) = face else {
+                og_bail!(
+                    Construction,
+                    "an edge lying along the axis turns onto itself and sweeps \
+                     out no face"
+                );
+            };
+            Ok(Built::new(face, history))
+        }
+        other => og_bail!(
+            Construction,
+            "a {other:?} cannot be revolved into anything; revolve an edge, a \
+             wire or a face"
+        ),
+    }
+}
+
+/// A face revolved into a solid.
+fn revolution_over_face(
+    model: &mut Model,
+    rails: &mut Rails,
+    face: &Shape,
+    turn: &Turn,
+    tol: Tolerances,
+) -> OgResult<Built> {
+    // The same question the prism asks, with the sweep direction read off the
+    // turn: at the profile, revolving moves it along the tangent to its circle
+    // about the axis, so that tangent is what its normal is compared against.
+    let (point, normal) = face_normal(model, face, tol)?;
+    let tangent = turn
+        .axis
+        .direction
+        .cross_with(point - turn.axis.project(point));
+    let reach = tangent.magnitude();
+    if reach <= tol.confusion() {
+        og_bail!(
+            Construction,
+            "the profile sits on the axis, so revolving it sweeps out nothing"
+        );
+    }
+    let along = normal.dot(tangent) / reach;
+    if along.abs() <= tol.angular() {
+        og_bail!(
+            Construction,
+            "the turn runs along the profile's own surface, so it encloses no \
+             volume; a face revolved within its own plane is not a solid"
+        );
+    }
+    let profile = if along < 0.0 {
+        face.reversed()
+    } else {
+        face.clone()
+    };
+
+    let mut history = History::new();
+    let mut faces = Vec::new();
+    for wire in model.children_of(&profile)? {
+        let (sides, wire_history) = revolution_over_wire(model, rails, &wire, turn, tol)?;
+        history = history.then(&wire_history);
+        faces.extend(sides);
+    }
+
+    if turn.full {
+        // A full turn has no ends. The profile is an interior cross-section of
+        // the result, not a face of it — so it is *deleted*, while still
+        // generating everything its edges and vertices swept out. Reporting it
+        // as surviving would leave a reference resolving to a face that is not
+        // on the solid.
+        history.delete(face);
+    } else {
+        let bottom = profile.reversed();
+        let top = profile.moved(&turn.displacement);
+        model.set_derived(&bottom, std::slice::from_ref(face), roles::SWEEP_BOTTOM)?;
+        model.set_derived(&top, std::slice::from_ref(face), roles::SWEEP_TOP)?;
+        history.generate(face, top.clone());
+        faces.push(bottom);
+        faces.push(top);
+    }
+
+    let shell = make_shell(model, &faces)?.shape;
+    let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
+    history.generate(face, solid.clone());
+    Ok(Built::new(solid, history))
+}
+
+/// Every face a wire revolves out.
+fn revolution_over_wire(
+    model: &mut Model,
+    rails: &mut Rails,
+    wire: &Shape,
+    turn: &Turn,
+    tol: Tolerances,
+) -> OgResult<(Vec<Shape>, History)> {
+    let mut faces = Vec::new();
+    let mut history = History::new();
+    for edge in model.ordered_children_of(wire)? {
+        let (face, edge_history) = revolution_over_edge(model, rails, &edge, turn, tol)?;
+        history = history.then(&edge_history);
+        // An edge lying along the axis turns onto itself. It contributes no
+        // face, which is what makes a rectangle with one side on the axis
+        // revolve into a cylinder — three faces — rather than into a cylinder
+        // with a fourth face of no area down its middle.
+        faces.extend(face);
+    }
+    if faces.is_empty() {
+        og_bail!(
+            Construction,
+            "the whole wire lies along the axis, so it revolves out nothing"
+        );
+    }
+    Ok((faces, history))
+}
+
+/// One edge revolved into one face.
+///
+/// The rectangle is transposed from the prism's: a revolution's `u` is the
+/// angle turned and its `v` is the generating curve's own parameter, so the
+/// profile edge runs up the *sides* of the parameter rectangle and the circles
+/// its endpoints sweep run across the top and bottom.
+fn revolution_over_edge(
+    model: &mut Model,
+    rails: &mut Rails,
+    edge: &Shape,
+    turn: &Turn,
+    tol: Tolerances,
+) -> OgResult<(Option<Shape>, History)> {
+    let Some(node) = model.node(edge) else {
+        og_bail!(Dangling, "edge is not in this model");
+    };
+    let NodeData::Edge(data) = node.data() else {
+        og_bail!(Construction, "edge node holds no edge data");
+    };
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        og_bail!(
+            Construction,
+            "an edge with no curve in space has no shape to revolve; a \
+             degenerate edge sweeps out nothing and has to be handled by its \
+             face, not here"
+        );
+    };
+    let Some(geometry) = model.geometry().curve(*curve).cloned() else {
+        og_bail!(Dangling, "curve is not in this model");
+    };
+
+    // As for the prism: the surface is the curve where the edge actually is,
+    // and the range is carried across the placement's effect on the parameter.
+    let placement = edge.transform(model.datums())?;
+    let stored = geometry.domain();
+    let geometry = geometry.transformed(&placement, tol)?;
+    let placed = geometry.domain();
+    let (lo, hi) = (
+        rescale(range.0, stored, placed),
+        rescale(range.1, stored, placed),
+    );
+    if axis_relation(&geometry, (lo, hi), turn.axis, tol)? == AxisRelation::On {
+        return Ok((None, History::new()));
+    }
+
+    let surface = model
+        .geometry_mut()
+        .add_surface(og_geom::RevolutionSurface::new(geometry, turn.axis, turn.angle)?.into());
+
+    let reversed = edge.orientation() == Orientation::Reversed;
+    let (v_start, v_end) = if reversed { (hi, lo) } else { (lo, hi) };
+    let (near, far) = (0.0, turn.angle);
+
+    // The circles the two ends sweep. A full turn brings each back to where it
+    // started, so it is one closed edge; a partial turn leaves an arc between
+    // the endpoint and its rotated copy.
+    let start_rail = revolved_rail(model, rails, edge, turn, false, tol)?;
+    let end_rail = revolved_rail(model, rails, edge, turn, true, tol)?;
+
+    if start_rail.is_same(&end_rail) {
+        // A closed profile edge — revolving a circle makes a torus — returns to
+        // one vertex, so its two rails are one edge bounding the face across
+        // both the bottom and the top of the parameter rectangle. That is a
+        // seam in `v`, and it needs both pcurves for the same reason a seam in
+        // `u` does.
+        seam_pcurves(
+            model,
+            &start_rail,
+            surface,
+            ((near, v_start), (far, v_start)),
+            ((near, v_end), (far, v_end)),
+            tol,
+        )?;
+    } else {
+        pcurve(
+            model,
+            &start_rail,
+            surface,
+            (near, v_start),
+            (far, v_start),
+            tol,
+        )?;
+        pcurve(model, &end_rail, surface, (near, v_end), (far, v_end), tol)?;
+    }
+
+    // The profile edge itself runs up the sides. Both pcurves follow the
+    // curve's own parameterization — `lo` to `hi` — because a pcurve describes
+    // the edge and not the wire's walk of it.
+    let displaced = edge.moved(&turn.displacement);
+    if turn.full {
+        // The two sides are one edge appearing twice, at `u = 0` and at
+        // `u = 2pi`. Which pcurve applies is decided by the occurrence's
+        // orientation, and the ring below puts the walk that goes *up* the far
+        // side on whichever occurrence carries the edge's own direction.
+        let (forward, reversed_side) = if reversed { (near, far) } else { (far, near) };
+        seam_pcurves(
+            model,
+            edge,
+            surface,
+            ((forward, lo), (forward, hi)),
+            ((reversed_side, lo), (reversed_side, hi)),
+            tol,
+        )?;
+    } else {
+        pcurve(model, edge, surface, (near, lo), (near, hi), tol)?;
+        pcurve(model, &displaced, surface, (far, lo), (far, hi), tol)?;
+    }
+
+    // Round the rectangle: across the bottom in the direction of the turn, up
+    // the far side of the profile, back across the top, down the near side.
+    let ring = [
+        start_rail.clone(),
+        displaced.clone(),
+        end_rail.reversed(),
+        edge.reversed(),
+    ];
+    let boundary = make_wire(model, &ring, tol)?.shape;
+    let built = make_face_on(model, surface, std::slice::from_ref(&boundary), tol)?.shape;
+
+    // A revolution's normal is the *turn's* tangent crossed with the curve's,
+    // because the angle is `u` and the curve is `v`. The prism's is the other
+    // way round, so the two disagree by a sign for the same walk — and an
+    // occurrence the wire walks forwards is the one that has to be reversed
+    // here. It is not the surface that decides which side is material; it is
+    // which way the profile's wire goes round.
+    let face = if reversed { built } else { built.reversed() };
+    model.set_derived(&face, std::slice::from_ref(edge), roles::SWEEP_SIDE)?;
+
+    let mut history = History::new();
+    // Both, not either — as for the prism. The edge makes the lateral face
+    // *and* survives: on a partial turn as the far side, and on a full turn as
+    // the seam, which is the same edge occurring twice on one face rather than
+    // an edge that ceased to exist.
+    history.generate(edge, face.clone());
+    if !turn.full {
+        history.generate(edge, displaced);
+    }
+    Ok((Some(face), history))
+}
+
+/// The circle or arc one endpoint of the profile sweeps out.
+///
+/// Shared between the two faces that meet along it, exactly as the prism's
+/// rails are — building one per face would leave every rail used once and the
+/// solid open along every corner.
+///
+/// An endpoint *on* the axis sweeps out nothing, and gets a degenerate edge: it
+/// still bounds the face across its side of the parameter rectangle, and
+/// leaving it out would leave the boundary open there with nothing to trim to.
+fn revolved_rail(
+    model: &mut Model,
+    rails: &mut Rails,
+    edge: &Shape,
+    turn: &Turn,
+    at_end: bool,
+    tol: Tolerances,
+) -> OgResult<Shape> {
+    let Some((start, end)) = crate::build::edge_vertices(model, edge)? else {
+        og_bail!(
+            Construction,
+            "an unbounded edge has no endpoints to sweep into rails"
+        );
+    };
+    let base = if at_end { end } else { start };
+    if let Some(existing) = rails.get(&base.node()) {
+        return Ok(existing.clone());
+    }
+
+    let Some(node) = model.node(&base) else {
+        og_bail!(Dangling, "vertex is not in this model");
+    };
+    let Some(data) = node.data().as_vertex() else {
+        og_bail!(Construction, "vertex node holds no point");
+    };
+    let from = base.transform(model.datums())?.apply(data.point);
+
+    // A full turn brings the endpoint back to itself, so the rail is one closed
+    // edge named twice by the same vertex — which is what keeps "walk to the
+    // end" meaningful all the way round.
+    let raised = if turn.full {
+        base.clone()
+    } else {
+        base.moved(&turn.displacement)
+    };
+
+    let radius = from - turn.axis.project(from);
+    let built = if radius.magnitude() <= tol.confusion() {
+        let mut data = og_topo::EdgeData::new();
+        data.degenerate = true;
+        model.add_edge(data, &[base.clone(), raised])?
+    } else {
+        // The circle's `x` points from the axis out to the endpoint, so its
+        // angle parameter *is* the revolution's `u`: at zero it lands on the
+        // endpoint exactly, rather than merely nearby.
+        let frame = Frame::new(
+            turn.axis.project(from),
+            turn.axis.direction,
+            Direction::new(radius, tol)?,
+            tol,
+        )?;
+        let circle = Circle::new(frame, radius.magnitude(), tol)?;
+        crate::build::make_edge_between(
+            model,
+            og_geom::CircleCurve::new(circle).into(),
+            (0.0, turn.angle),
+            &base,
+            &raised,
+            tol,
+        )?
+        .shape
+    };
+
+    model.set_derived(&built, std::slice::from_ref(&base), roles::SWEEP_RAIL)?;
+    rails.insert(base.node(), built.clone());
+    Ok(built)
+}
+
+/// How many places along an edge are checked against the axis.
+const AXIS_SAMPLES: usize = 32;
+
+/// Where an edge stands in relation to the axis it is to be turned about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AxisRelation {
+    /// Clear of it, except possibly at its ends — which sweep out poles.
+    Clear,
+    /// Lying along it, so it sweeps out nothing at all.
+    On,
+}
+
+/// Where an edge stands in relation to the axis, refusing the case that cannot
+/// be built.
+///
+/// An edge *crossing* the axis sweeps out a surface that passes through itself,
+/// and the solid built on it is wrong in a way nothing downstream can detect:
+/// its volume is finite and plausible and counts part of space twice. That is
+/// refused. An edge lying *along* the axis sweeps out nothing — the inner side
+/// of a rectangle that revolves into a cylinder — and gets no face. An edge
+/// merely touching the axis at an end sweeps out a pole, which is ordinary.
+///
+/// Sampled, not solved. Deciding exactly where a curve meets a line is the
+/// intersector's work and the intersector does not exist yet.
+///
+/// What is sampled is the *radial vector* — from the axis out to the curve —
+/// rather than the distance to the axis. Testing the distance would only catch
+/// a crossing that a sample lands exactly on, and a crossing almost never does:
+/// a straight profile from `x = -1` to `x = 2` passes through the axis a third
+/// of the way along, which no evenly spaced sample reaches. A crossing reverses
+/// the radial direction, and that shows up in every sample either side of it.
+fn axis_relation(
+    curve: &og_geom::Curve,
+    range: (f64, f64),
+    axis: Axis,
+    tol: Tolerances,
+) -> OgResult<AxisRelation> {
+    let mut radial = Vec::with_capacity(AXIS_SAMPLES + 1);
+    for i in 0..=AXIS_SAMPLES {
+        #[allow(clippy::cast_precision_loss)]
+        let t = i as f64 / AXIS_SAMPLES as f64;
+        let at = range.0 + (range.1 - range.0) * t;
+        let point = curve.point_at(at, tol)?;
+        radial.push(point - axis.project(point));
+    }
+
+    let on_axis = |v: &Vector| v.magnitude() <= tol.confusion();
+    if radial.iter().all(on_axis) {
+        return Ok(AxisRelation::On);
+    }
+    // An interior sample sitting on the axis is a graze or a crossing that a
+    // sample happened to land on; either way the profile is not clear of it.
+    if radial[1..radial.len() - 1].iter().any(on_axis) {
+        og_bail!(
+            Construction,
+            "the profile touches the axis away from its ends; revolving it \
+             would sweep a surface through itself. Split the profile where it \
+             meets the axis"
+        );
+    }
+    if radial
+        .windows(2)
+        .any(|w| !on_axis(&w[0]) && !on_axis(&w[1]) && w[0].dot(w[1]) < 0.0)
+    {
+        og_bail!(
+            Construction,
+            "the profile passes from one side of the axis to the other; \
+             revolving it would sweep a surface through itself. Split the \
+             profile where it meets the axis"
+        );
+    }
+    // Only the ends touch it, if anything does: those sweep out poles, which
+    // is ordinary.
+    Ok(AxisRelation::Clear)
+}
+
 /// Carry a parameter from one domain to the corresponding place in another.
 ///
 /// A rigid motion leaves a curve's parameterization alone; a uniform scale
@@ -352,7 +834,7 @@ fn rescale(u: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
 /// sample is enough to decide which side the material lands on in every case
 /// this can build. A face with no boundary at all covers its whole surface, so
 /// the middle of the domain is the point to ask about.
-fn face_normal(model: &Model, face: &Shape, tol: Tolerances) -> OgResult<Vector> {
+fn face_normal(model: &Model, face: &Shape, tol: Tolerances) -> OgResult<(Point, Vector)> {
     let Some(node) = model.node(face) else {
         og_bail!(Dangling, "face is not in this model");
     };
@@ -397,15 +879,18 @@ fn face_normal(model: &Model, face: &Shape, tol: Tolerances) -> OgResult<Vector>
         (sum.0 / n, sum.1 / n)
     };
     let normal = surface.normal_at(u, v, tol)?;
+    let point = surface.point_at(u, v, tol)?;
 
-    let placed = face
-        .transform(model.datums())?
-        .apply_vector(normal.vector());
-    Ok(if face.orientation() == Orientation::Reversed {
-        -placed
-    } else {
-        placed
-    })
+    let placement = face.transform(model.datums())?;
+    let placed = placement.apply_vector(normal.vector());
+    Ok((
+        placement.apply(point),
+        if face.orientation() == Orientation::Reversed {
+            -placed
+        } else {
+            placed
+        },
+    ))
 }
 
 /// The edge one endpoint of the profile sweeps out.
@@ -646,6 +1131,490 @@ mod tests {
     /// Every face below a shape.
     fn explode(model: &Model, shape: &Shape) -> Vec<Shape> {
         og_topo::explore(model, shape, og_topo::Filter::OfType(ShapeType::Face)).unwrap()
+    }
+
+    /// A square profile in the xz plane, `offset` out from the z axis, `side`
+    /// on a side, built as a face so it can be revolved.
+    ///
+    /// The corners run counter-clockwise about `-y`, so that is the plane's
+    /// normal: a face whose wire winds against its own normal is inside out,
+    /// and would sweep into a solid that measures negative — which is a
+    /// property of the profile, not of the sweep.
+    fn ring_profile(model: &mut Model, offset: f64, side: f64) -> Shape {
+        let frame = Frame::new(
+            Point::new(offset, 0.0, 0.0),
+            -og_math::Direction::Y,
+            og_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let corners = [
+            Point::new(offset, 0.0, 0.0),
+            Point::new(offset + side, 0.0, 0.0),
+            Point::new(offset + side, 0.0, side),
+            Point::new(offset, 0.0, side),
+        ];
+        let vertices: Vec<Shape> = corners
+            .iter()
+            .map(|p| model.add_vertex(og_topo::VertexData::new(*p)))
+            .collect();
+        let edges: Vec<Shape> = (0..4)
+            .map(|i| {
+                let (a, b) = (corners[i], corners[(i + 1) % 4]);
+                crate::build::make_edge_between(
+                    model,
+                    og_geom::LineCurve::segment(a, b, T).unwrap().into(),
+                    (0.0, a.distance(b)),
+                    &vertices[i],
+                    &vertices[(i + 1) % 4],
+                    T,
+                )
+                .unwrap()
+                .shape
+            })
+            .collect();
+        let wire = crate::make_wire(model, &edges, T).unwrap().shape;
+        let surface = model
+            .geometry_mut()
+            .add_surface(og_geom::PlaneSurface::new(og_math::Plane::new(frame)).into());
+        for (i, edge) in edges.iter().enumerate() {
+            let (a, b) = (corners[i], corners[(i + 1) % 4]);
+            let flat = |p: Point| {
+                let l = frame.to_local(p);
+                Point2::new(l.x, l.y)
+            };
+            crate::attach_pcurve(
+                model,
+                edge,
+                Line2d::segment(flat(a), flat(b), T).unwrap().into(),
+                surface,
+                og_topo::Location::identity(),
+                (0.0, a.distance(b)),
+            )
+            .unwrap();
+        }
+        crate::make_face_on(model, surface, std::slice::from_ref(&wire), T)
+            .unwrap()
+            .shape
+    }
+
+    #[test]
+    fn a_square_revolved_a_full_turn_is_a_ring_that_agrees_with_itself() {
+        // The case the reverted draft got wrong: correct topology, a closed
+        // shell, per-face triangulations matching Pappus — and twelve unshared
+        // triangle edges at the seam, because the two sides of a face closed in
+        // `u` did not weld together.
+        let (offset, side) = (3.0_f64, 2.0_f64);
+        let mut model = Model::new();
+        let profile = ring_profile(&mut model, offset, side);
+        let built = make_revolution(&mut model, &profile, Axis::Z, TAU, T).unwrap();
+
+        let counts = |kind| explore_unique(&model, &built.shape, kind).unwrap().len();
+        assert_eq!(counts(ShapeType::Face), 4, "one per profile edge, no caps");
+        assert_eq!(
+            counts(ShapeType::Edge),
+            8,
+            "a rail per profile vertex, and each profile edge surviving as its \
+             face's seam"
+        );
+        assert_eq!(counts(ShapeType::Vertex), 4, "a full turn adds none");
+
+        let shell = explore_unique(&model, &built.shape, ShapeType::Shell).unwrap()[0].clone();
+        assert!(is_shell_closed(&model, &shell).unwrap());
+        assert!(
+            crate::check(&model, &built.shape, T).unwrap().is_valid(),
+            "{}",
+            crate::check(&model, &built.shape, T).unwrap()
+        );
+
+        for face in explode(&model, &built.shape) {
+            og_mesh::triangulate_face(&model, &face, deflection(0.01), T)
+                .unwrap_or_else(|e| panic!("a face would not triangulate: {e}"));
+        }
+
+        // Pappus: the volume is the profile's area times the distance its
+        // centroid travels.
+        let exact = side * side * TAU * (offset + side / 2.0);
+        let found = crate::check_tessellation(&model, &built.shape, deflection(0.005), T).unwrap();
+        assert!(found.is_valid(), "the mesh came apart: {found}");
+
+        let mesh = triangulate(&model, &built.shape, deflection(0.005), T).unwrap();
+        assert!(mesh.is_closed(), "the mesh has a slit in it");
+        assert!(mesh.volume() > 0.0, "the solid is inside out");
+        // Not bounded below by the exact value the way a convex solid's mesh
+        // is: chords across the *inner* wall cut into the hole rather than into
+        // the material, so they add volume where the outer wall's take it away.
+        assert_relative_eq!(mesh.volume(), exact, max_relative = 1e-3);
+    }
+
+    #[test]
+    fn a_square_revolved_part_way_has_two_ends_and_the_volume_of_that_wedge() {
+        let (offset, side) = (3.0_f64, 2.0_f64);
+        let angle = std::f64::consts::FRAC_PI_2;
+        let mut model = Model::new();
+        let profile = ring_profile(&mut model, offset, side);
+        let built = make_revolution(&mut model, &profile, Axis::Z, angle, T).unwrap();
+
+        let counts = |kind| explore_unique(&model, &built.shape, kind).unwrap().len();
+        assert_eq!(counts(ShapeType::Face), 6, "four sides and two ends");
+
+        let shell = explore_unique(&model, &built.shape, ShapeType::Shell).unwrap()[0].clone();
+        assert!(is_shell_closed(&model, &shell).unwrap());
+
+        let exact = side * side * angle * (offset + side / 2.0);
+        let mesh = triangulate(&model, &built.shape, deflection(0.005), T).unwrap();
+        assert!(mesh.is_closed(), "the mesh has a slit in it");
+        assert!(mesh.volume() > 0.0, "the solid is inside out");
+        assert_relative_eq!(mesh.volume(), exact, max_relative = 1e-3);
+        assert!(
+            crate::check_tessellation(&model, &built.shape, deflection(0.005), T)
+                .unwrap()
+                .is_valid()
+        );
+    }
+
+    /// A quadrilateral profile in the xz plane, wound counter-clockwise about
+    /// `-y` so its wire agrees with its own normal.
+    fn profile_from(model: &mut Model, corners: &[Point]) -> Shape {
+        let frame =
+            Frame::new(corners[0], -og_math::Direction::Y, og_math::Direction::X, T).unwrap();
+        let n = corners.len();
+        let vertices: Vec<Shape> = corners
+            .iter()
+            .map(|p| model.add_vertex(og_topo::VertexData::new(*p)))
+            .collect();
+        let surface = model
+            .geometry_mut()
+            .add_surface(og_geom::PlaneSurface::new(og_math::Plane::new(frame)).into());
+        let flat = |p: Point| {
+            let l = frame.to_local(p);
+            Point2::new(l.x, l.y)
+        };
+
+        let mut edges = Vec::with_capacity(n);
+        for i in 0..n {
+            let (a, b) = (corners[i], corners[(i + 1) % n]);
+            let edge = crate::build::make_edge_between(
+                model,
+                og_geom::LineCurve::segment(a, b, T).unwrap().into(),
+                (0.0, a.distance(b)),
+                &vertices[i],
+                &vertices[(i + 1) % n],
+                T,
+            )
+            .unwrap()
+            .shape;
+            crate::attach_pcurve(
+                model,
+                &edge,
+                Line2d::segment(flat(a), flat(b), T).unwrap().into(),
+                surface,
+                og_topo::Location::identity(),
+                (0.0, a.distance(b)),
+            )
+            .unwrap();
+            edges.push(edge);
+        }
+        let wire = crate::make_wire(model, &edges, T).unwrap().shape;
+        crate::make_face_on(model, surface, std::slice::from_ref(&wire), T)
+            .unwrap()
+            .shape
+    }
+
+    #[test]
+    fn a_rectangle_with_a_side_on_the_axis_revolves_into_a_cylinder_face_for_face() {
+        // The claim the seam decision rests on: the same solid gets the same
+        // *face count* whichever way it was built, because each lateral face is
+        // one face closed on itself at a seam rather than two halves. A side
+        // lying along the axis turns onto itself and contributes no face, so
+        // the result has a lateral face and two caps — not four faces, one of
+        // them of no area.
+        //
+        // The edge and vertex counts do *not* match, and should not be expected
+        // to. A cap here is a surface of revolution — polar coordinates on a
+        // plane — so it is seamed like any other, and carries a seam edge and a
+        // degenerate edge at its centre; `make_cylinder` builds its caps on
+        // planes, whose boundary is the rim circle and nothing else. Noticing
+        // that a revolved plane is a plane is canonical recognition, which
+        // belongs to healing (`docs/SCOPE.md` §9).
+        let (radius, height) = (2.0_f64, 5.0_f64);
+        let mut model = Model::new();
+        let profile = profile_from(
+            &mut model,
+            &[
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(radius, 0.0, 0.0),
+                Point::new(radius, 0.0, height),
+                Point::new(0.0, 0.0, height),
+            ],
+        );
+        let revolved = make_revolution(&mut model, &profile, Axis::Z, TAU, T).unwrap();
+        let primitive = crate::make_cylinder(&mut model, Frame::WORLD, radius, height, T).unwrap();
+
+        let counts = |shape: &Shape, kind| explore_unique(&model, shape, kind).unwrap().len();
+        assert_eq!(
+            counts(&revolved.shape, ShapeType::Face),
+            counts(&primitive.shape, ShapeType::Face),
+            "a side and two caps, the same as make_cylinder"
+        );
+        assert_eq!(counts(&revolved.shape, ShapeType::Face), 3);
+
+        let shell = explore_unique(&model, &revolved.shape, ShapeType::Shell).unwrap()[0].clone();
+        assert!(is_shell_closed(&model, &shell).unwrap());
+        assert!(
+            crate::check(&model, &revolved.shape, T).unwrap().is_valid(),
+            "{}",
+            crate::check(&model, &revolved.shape, T).unwrap()
+        );
+        assert!(
+            crate::check_tessellation(&model, &revolved.shape, deflection(0.005), T)
+                .unwrap()
+                .is_valid()
+        );
+
+        let exact = std::f64::consts::PI * radius * radius * height;
+        let mesh = triangulate(&model, &revolved.shape, deflection(0.005), T).unwrap();
+        assert!(mesh.is_closed());
+        assert!(mesh.volume() > 0.0, "the solid is inside out");
+        assert!(
+            mesh.volume() < exact,
+            "an inscribed volume cannot exceed it"
+        );
+        // Against the primitive at the same deflection, not against a bound
+        // pulled out of the air: both inscribe the same cylinder with the same
+        // chord, so they should agree to far better than either agrees with the
+        // exact value.
+        let reference = triangulate(&model, &primitive.shape, deflection(0.005), T).unwrap();
+        assert_relative_eq!(mesh.volume(), reference.volume(), max_relative = 1e-6);
+        assert!(
+            mesh.volume() > exact * 0.995,
+            "{} against {exact}",
+            mesh.volume()
+        );
+    }
+
+    #[test]
+    fn a_triangle_touching_the_axis_revolves_into_a_cone() {
+        // The endpoint on the axis sweeps out nothing, so its rail is a
+        // degenerate edge — an apex. Leaving it out would leave the flank's
+        // boundary open along one side of its parameter rectangle with nothing
+        // for the triangulator to trim to.
+        let (radius, height) = (3.0_f64, 4.0_f64);
+        let mut model = Model::new();
+        let profile = profile_from(
+            &mut model,
+            &[
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(radius, 0.0, 0.0),
+                Point::new(0.0, 0.0, height),
+            ],
+        );
+        let built = make_revolution(&mut model, &profile, Axis::Z, TAU, T).unwrap();
+
+        assert_eq!(
+            explore_unique(&model, &built.shape, ShapeType::Face)
+                .unwrap()
+                .len(),
+            2,
+            "a flank and one cap; the side on the axis sweeps out nothing"
+        );
+        let shell = explore_unique(&model, &built.shape, ShapeType::Shell).unwrap()[0].clone();
+        assert!(is_shell_closed(&model, &shell).unwrap());
+        assert!(
+            crate::check_tessellation(&model, &built.shape, deflection(0.005), T)
+                .unwrap()
+                .is_valid()
+        );
+
+        let exact = std::f64::consts::PI * radius * radius * height / 3.0;
+        let mesh = triangulate(&model, &built.shape, deflection(0.005), T).unwrap();
+        assert!(mesh.volume() > 0.0, "the solid is inside out");
+        assert!(mesh.volume() < exact);
+        assert!(
+            mesh.volume() > exact * 0.99,
+            "{} against {exact}",
+            mesh.volume()
+        );
+    }
+
+    #[test]
+    fn a_disc_revolved_a_full_turn_is_a_torus_seamed_both_ways() {
+        // The case that decides whether seam handling is general: the profile
+        // edge is *closed*, so the circle its one vertex sweeps bounds the face
+        // across both the top and the bottom of the parameter rectangle. That
+        // is a seam in `v` on a face already seamed in `u`, and the result has
+        // to come out with the same counts `make_torus` gives for the same
+        // solid.
+        let (major, minor) = (5.0_f64, 2.0_f64);
+        let mut model = Model::new();
+
+        let frame = Frame::new(
+            Point::new(major, 0.0, 0.0),
+            -og_math::Direction::Y,
+            og_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let circle = og_math::Circle::new(frame, minor, T).unwrap();
+        let start = model.add_vertex(og_topo::VertexData::new(Point::new(
+            major + minor,
+            0.0,
+            0.0,
+        )));
+        let edge = crate::build::make_edge_between(
+            &mut model,
+            og_geom::CircleCurve::new(circle).into(),
+            (0.0, TAU),
+            &start,
+            &start,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let surface = model
+            .geometry_mut()
+            .add_surface(og_geom::PlaneSurface::new(og_math::Plane::new(frame)).into());
+        crate::attach_pcurve(
+            &mut model,
+            &edge,
+            og_geom::Circle2d::new(
+                og_math::Circle2::new(
+                    og_math::Frame2::new(Point2::ORIGIN, og_math::Direction2::X),
+                    minor,
+                    T,
+                )
+                .unwrap(),
+            )
+            .into(),
+            surface,
+            og_topo::Location::identity(),
+            (0.0, TAU),
+        )
+        .unwrap();
+        let wire = crate::make_wire(&mut model, std::slice::from_ref(&edge), T)
+            .unwrap()
+            .shape;
+        let profile = crate::make_face_on(&mut model, surface, std::slice::from_ref(&wire), T)
+            .unwrap()
+            .shape;
+
+        let built = make_revolution(&mut model, &profile, Axis::Z, TAU, T).unwrap();
+        let primitive = crate::make_torus(&mut model, Frame::WORLD, major, minor, T).unwrap();
+
+        let counts = |shape: &Shape, kind| explore_unique(&model, shape, kind).unwrap().len();
+        for kind in [ShapeType::Face, ShapeType::Edge, ShapeType::Vertex] {
+            assert_eq!(
+                counts(&built.shape, kind),
+                counts(&primitive.shape, kind),
+                "{kind:?} count differs from make_torus's"
+            );
+        }
+        assert_eq!(
+            counts(&built.shape, ShapeType::Edge),
+            2,
+            "one seam each way"
+        );
+
+        let shell = explore_unique(&model, &built.shape, ShapeType::Shell).unwrap()[0].clone();
+        assert!(is_shell_closed(&model, &shell).unwrap());
+        assert!(
+            crate::check_tessellation(&model, &built.shape, deflection(0.02), T)
+                .unwrap()
+                .is_valid()
+        );
+
+        let exact = 2.0 * std::f64::consts::PI * std::f64::consts::PI * major * minor * minor;
+        let mesh = triangulate(&model, &built.shape, deflection(0.02), T).unwrap();
+        assert!(mesh.is_closed(), "the mesh has a slit in it");
+        assert!(mesh.volume() > 0.0, "the solid is inside out");
+        assert!(
+            mesh.volume() > exact * 0.99 && mesh.volume() < exact,
+            "{} against {exact}",
+            mesh.volume()
+        );
+    }
+
+    #[test]
+    fn a_full_turn_consumes_the_profile_face_but_not_its_edges() {
+        // The profile of a full turn is an interior cross-section of the
+        // result: no face of the solid is it, so it is deleted. Its edges are a
+        // different matter — each survives as the seam of the face it made, and
+        // reporting them deleted would break a reference to an edge that is
+        // still right there.
+        let mut model = Model::new();
+        let profile = ring_profile(&mut model, 3.0, 2.0);
+        let edge = model
+            .children_of(&model.children_of(&profile).unwrap()[0])
+            .unwrap()[0]
+            .clone();
+
+        let built = make_revolution(&mut model, &profile, Axis::Z, TAU, T).unwrap();
+        assert!(
+            built.history.is_deleted(&profile),
+            "the profile is interior"
+        );
+        assert!(!built.history.is_deleted(&edge), "its edges are not");
+        assert_eq!(
+            built.history.generated(&edge).len(),
+            1,
+            "the lateral face it made"
+        );
+
+        // A partial turn keeps the profile as its near cap, so nothing is
+        // deleted at all.
+        let mut model = Model::new();
+        let profile = ring_profile(&mut model, 3.0, 2.0);
+        let partial = make_revolution(&mut model, &profile, Axis::Z, 1.0, T).unwrap();
+        assert!(!partial.history.is_deleted(&profile));
+    }
+
+    #[test]
+    fn a_profile_crossing_the_axis_is_refused_rather_than_swept_through_itself() {
+        // The solid would have a finite, plausible volume that counts part of
+        // space twice, and nothing downstream could tell.
+        let mut model = Model::new();
+        let profile = profile_from(
+            &mut model,
+            &[
+                Point::new(-1.0, 0.0, 0.0),
+                Point::new(2.0, 0.0, 0.0),
+                Point::new(2.0, 0.0, 1.0),
+                Point::new(-1.0, 0.0, 1.0),
+            ],
+        );
+        let err = make_revolution(&mut model, &profile, Axis::Z, TAU, T).unwrap_err();
+        assert!(
+            err.to_string().contains("through itself"),
+            "unexpected message: {err}"
+        );
+
+        // And the crossing is a third of the way along the bottom edge, which
+        // no evenly spaced sample lands on. Testing the distance to the axis
+        // would have missed it; testing which side of the axis the profile is
+        // on does not.
+        let mut model = Model::new();
+        let grazing = profile_from(
+            &mut model,
+            &[
+                Point::new(-1.0, 0.0, 0.0),
+                Point::new(2.0, 0.0, 0.0),
+                Point::new(2.0, 0.0, 3.0),
+                Point::new(-1.0, 0.0, 3.0),
+            ],
+        );
+        assert!(make_revolution(&mut model, &grazing, Axis::Z, TAU, T).is_err());
+    }
+
+    #[test]
+    fn a_turn_that_goes_nowhere_or_too_far_is_refused() {
+        let mut model = Model::new();
+        let profile = ring_profile(&mut model, 3.0, 2.0);
+        for angle in [0.0, -1.0, TAU * 1.5, f64::NAN, f64::INFINITY] {
+            assert!(
+                make_revolution(&mut model, &profile, Axis::Z, angle, T).is_err(),
+                "accepted {angle}"
+            );
+        }
     }
 
     #[test]

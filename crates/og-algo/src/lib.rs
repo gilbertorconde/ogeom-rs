@@ -35,4 +35,4 @@ pub use measure::{
 };
 pub use place::{copied, transformed};
 pub use primitive::{make_box, make_cone, make_cylinder, make_sphere, make_torus, make_wedge};
-pub use sweep::make_prism;
+pub use sweep::{make_prism, make_revolution};
