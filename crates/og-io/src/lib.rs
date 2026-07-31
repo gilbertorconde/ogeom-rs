@@ -10,3 +10,7 @@
 //! importer today. Parsing is the easy 20% (`ruststep`/`espr` cover it); the other
 //! 80% is semantic mapping onto our topology, unit and assembly-transform handling,
 //! and surviving spec-violating output from commercial CAD systems.
+
+pub mod stl;
+
+pub use stl::{Encoding, read, write};
