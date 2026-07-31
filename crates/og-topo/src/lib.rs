@@ -25,8 +25,15 @@
 //!   polygon and triangulation representations — with a `same_parameter` flag and a
 //!   repair routine.
 
+pub mod entity;
 pub mod location;
+pub mod model;
 pub mod shape;
 
+pub use entity::{
+    CurveId, EdgeData, EdgeRepr, FaceData, GeometryStore, NodeData, PCurveId, SurfaceId,
+    VertexData, check_containment, enforce_containment,
+};
 pub use location::{Datum, DatumId, DatumStore, Location};
+pub use model::{Filter, Model, ancestors_of, explore, explore_unique};
 pub use shape::{Orientation, PartnerKey, SameKey, Shape, ShapeType, TShape, TShapeId};

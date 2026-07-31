@@ -23,6 +23,7 @@ use core::hash::{Hash, Hasher};
 use og_core::{Key, OgResult, Tolerances};
 use og_math::Transform;
 
+use crate::entity::NodeData;
 use crate::location::{DatumStore, Location};
 
 /// What a topology node is.
@@ -151,6 +152,7 @@ impl Orientation {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TShape {
     kind: ShapeType,
+    data: NodeData,
     children: Vec<Shape>,
 }
 
@@ -158,17 +160,32 @@ pub struct TShape {
 pub type TShapeId = Key<TShape>;
 
 impl TShape {
-    /// A node of the given type with the given children.
+    /// A node of the given type, with its data and children.
     #[must_use]
-    pub const fn new(kind: ShapeType, children: Vec<Shape>) -> Self {
-        Self { kind, children }
-    }
-
-    /// A node with no children.
-    #[must_use]
-    pub const fn leaf(kind: ShapeType) -> Self {
+    pub const fn new(kind: ShapeType, data: NodeData, children: Vec<Shape>) -> Self {
         Self {
             kind,
+            data,
+            children,
+        }
+    }
+
+    /// A container node — wire, shell, solid, compsolid or compound.
+    #[must_use]
+    pub const fn container(kind: ShapeType, children: Vec<Shape>) -> Self {
+        Self {
+            kind,
+            data: NodeData::Container,
+            children,
+        }
+    }
+
+    /// A node with data and no children.
+    #[must_use]
+    pub const fn leaf(kind: ShapeType, data: NodeData) -> Self {
+        Self {
+            kind,
+            data,
             children: Vec::new(),
         }
     }
@@ -177,6 +194,18 @@ impl TShape {
     #[must_use]
     pub const fn kind(&self) -> ShapeType {
         self.kind
+    }
+
+    /// The geometry and tolerance this node carries.
+    #[must_use]
+    pub const fn data(&self) -> &NodeData {
+        &self.data
+    }
+
+    /// Mutable access to the node's data.
+    #[must_use]
+    pub const fn data_mut(&mut self) -> &mut NodeData {
+        &mut self.data
     }
 
     /// The direct children, in order.
@@ -413,14 +442,21 @@ impl Hash for PartnerKey {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::entity::VertexData;
     use og_core::Arena;
     use og_math::{Point, Vector};
     use std::collections::HashSet;
 
     fn setup() -> (Arena<TShape>, DatumStore, TShapeId, TShapeId, Location) {
         let mut arena = Arena::new();
-        let a = arena.insert(TShape::leaf(ShapeType::Vertex));
-        let b = arena.insert(TShape::leaf(ShapeType::Vertex));
+        let a = arena.insert(TShape::leaf(
+            ShapeType::Vertex,
+            NodeData::Vertex(VertexData::new(Point::ORIGIN)),
+        ));
+        let b = arena.insert(TShape::leaf(
+            ShapeType::Vertex,
+            NodeData::Vertex(VertexData::new(Point::ORIGIN)),
+        ));
         let mut store = DatumStore::new();
         let datum = store.insert(Transform::translation(Vector::new(1.0, 0.0, 0.0)));
         (arena, store, a, b, Location::of(datum))
@@ -567,7 +603,10 @@ mod tests {
         let a = store.insert(Transform::translation(Vector::X));
         let b = store.insert(Transform::translation(Vector::X));
         let mut arena = Arena::new();
-        let node = arena.insert(TShape::leaf(ShapeType::Vertex));
+        let node = arena.insert(TShape::leaf(
+            ShapeType::Vertex,
+            NodeData::Vertex(VertexData::new(Point::ORIGIN)),
+        ));
 
         let via_a = Shape::of(node).located(Location::of(a));
         let via_b = Shape::of(node).located(Location::of(b));
@@ -603,7 +642,7 @@ mod tests {
     #[test]
     fn a_node_carries_its_children_in_order() {
         let (mut arena, _, a, b, _) = setup();
-        let wire = arena.insert(TShape::new(
+        let wire = arena.insert(TShape::container(
             ShapeType::Wire,
             vec![Shape::of(a), Shape::of(b).reversed()],
         ));
