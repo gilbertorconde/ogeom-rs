@@ -8,3 +8,7 @@
 //! Every operation in this crate emits history (`generated` / `modified` /
 //! `is_deleted`) from the start. That is not optional and cannot be retrofitted:
 //! downstream stable naming is built directly on it.
+
+pub mod history;
+
+pub use history::{Built, History};

@@ -44,7 +44,10 @@ impl EntityId {
 /// Stable across rebuilds: the third extrusion in a document's recompute is
 /// `OpId(3)` every time, which is what lets provenance survive a parameter
 /// change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// The default, `OpId(0)`, is the implicit operation a document starts in —
+/// whatever was there before anything was deliberately begun.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct OpId(pub u32);
 
 /// What an entity *is*, relative to the operation that made it.

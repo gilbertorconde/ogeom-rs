@@ -14,7 +14,12 @@
 //! `&mut TShape` would scatter them across every caller, and the failures they
 //! guard against are silent ones.
 
-use og_core::{Arena, OgResult, Tolerance, Tolerances, og_bail};
+use std::collections::HashMap;
+
+use og_core::{
+    Arena, EntityId, OgResult, OpId, Provenance, ProvenanceTable, Role, Tolerance, Tolerances,
+    og_bail,
+};
 use og_math::{Point, Transform};
 
 use crate::entity::{EdgeData, FaceData, NodeData, VertexData};
@@ -23,23 +28,106 @@ use crate::shape::{Shape, ShapeType, TShape, TShapeId};
 
 pub use crate::entity::GeometryStore;
 
-/// A document: topology, placements and geometry in one place.
+/// A document: topology, placements, geometry, and where every entity came
+/// from.
 #[derive(Debug, Clone, Default)]
 pub struct Model {
     nodes: Arena<TShape>,
     datums: DatumStore,
     geometry: GeometryStore,
+    provenance: ProvenanceTable,
+    identity: HashMap<TShapeId, EntityId>,
+    current_op: OpId,
 }
 
 impl Model {
     /// An empty model.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             nodes: Arena::new(),
             datums: DatumStore::new(),
             geometry: GeometryStore::new(),
+            provenance: ProvenanceTable::new(),
+            identity: HashMap::new(),
+            current_op: OpId(0),
         }
+    }
+
+    /// Begin a new operation, and return its identifier.
+    ///
+    /// Every node created from here on is attributed to it until the next call.
+    /// The counter is deterministic — the third operation in a rebuild is
+    /// `OpId(3)` every time — which is what lets provenance survive a parameter
+    /// change (`docs/DATA_MODEL.md` §8).
+    pub const fn begin_operation(&mut self) -> OpId {
+        self.current_op = OpId(self.current_op.0 + 1);
+        self.current_op
+    }
+
+    /// The operation nodes are currently attributed to.
+    #[must_use]
+    pub const fn current_operation(&self) -> OpId {
+        self.current_op
+    }
+
+    /// The stable identity of a shape's node.
+    ///
+    /// Distinct from its arena handle: the handle says where the data is and
+    /// dies when the shape is rebuilt, while this says what the entity *is* and
+    /// survives.
+    #[must_use]
+    pub fn identity_of(&self, shape: &Shape) -> Option<EntityId> {
+        self.identity.get(&shape.node()).copied()
+    }
+
+    /// Where a shape's node came from.
+    #[must_use]
+    pub fn provenance_of(&self, shape: &Shape) -> Option<&Provenance> {
+        self.provenance.get(self.identity_of(shape)?)
+    }
+
+    /// The provenance table.
+    #[must_use]
+    pub const fn provenance(&self) -> &ProvenanceTable {
+        &self.provenance
+    }
+
+    /// Trace a shape back to the entities it ultimately came from.
+    ///
+    /// How a reference into a rebuilt model is resolved: find what the user
+    /// originally picked, then find what that became.
+    #[must_use]
+    pub fn roots_of(&self, shape: &Shape) -> Vec<EntityId> {
+        self.identity_of(shape)
+            .map(|id| self.provenance.roots(id))
+            .unwrap_or_default()
+    }
+
+    /// Record that a node was derived from other entities.
+    ///
+    /// Overwrites the `Primitive` attribution a builder assigns by default.
+    /// An operation that splits or reshapes existing topology calls this, and
+    /// what it records is what a later rebuild will match against.
+    ///
+    /// # Errors
+    ///
+    /// [`OgError::Dangling`](og_core::OgError::Dangling) if the shape does not
+    /// resolve in this model.
+    pub fn set_derived(&mut self, shape: &Shape, from: &[Shape], role: Role) -> OgResult<EntityId> {
+        if self.node(shape).is_none() {
+            og_bail!(Dangling, "shape refers to a node not in this model");
+        }
+        let sources: Vec<EntityId> = from.iter().filter_map(|s| self.identity_of(s)).collect();
+        let id = self.provenance.derived(self.current_op, sources, role);
+        self.identity.insert(shape.node(), id);
+        Ok(id)
+    }
+
+    /// Record a node's identity as it is created.
+    fn record_primitive(&mut self, node: TShapeId, role: Role) {
+        let id = self.provenance.primitive(self.current_op, role);
+        self.identity.insert(node, id);
     }
 
     /// The placement datums.
@@ -153,11 +241,13 @@ impl Model {
         for bound in bounds {
             self.widen(bound, data.tolerance)?;
         }
-        Ok(Shape::of(self.nodes.insert(TShape::new(
+        let node = self.nodes.insert(TShape::new(
             ShapeType::Edge,
             NodeData::Edge(Box::new(data)),
             bounds.to_vec(),
-        ))))
+        ));
+        self.record_primitive(node, Role::SOLE);
+        Ok(Shape::of(node))
     }
 
     /// Add a wire from a sequence of edges.
@@ -201,11 +291,13 @@ impl Model {
                 self.widen(edge, face_tolerance)?;
             }
         }
-        Ok(Shape::of(self.nodes.insert(TShape::new(
+        let node = self.nodes.insert(TShape::new(
             ShapeType::Face,
             NodeData::Face(Box::new(data)),
             wires.to_vec(),
-        ))))
+        ));
+        self.record_primitive(node, Role::SOLE);
+        Ok(Shape::of(node))
     }
 
     /// Add a shell from a set of faces.
