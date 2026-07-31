@@ -34,7 +34,6 @@ const TAU: f64 = core::f64::consts::TAU;
 
 /// A surface.
 #[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
 pub enum SurfaceGeometry {
     /// A plane.
     Plane(PlaneSurface),

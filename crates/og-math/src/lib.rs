@@ -10,6 +10,7 @@
 //!   scale / …), used to short-circuit transform application. Skipping it costs
 //!   real performance across the whole kernel.
 
+pub mod bounds;
 pub mod bspline;
 pub mod conic;
 pub mod direction;
@@ -24,6 +25,7 @@ pub mod solve;
 pub mod transform;
 pub mod vector;
 
+pub use bounds::Aabb;
 pub use bspline::{Blend, ControlGrid, Weighted};
 pub use conic::{Circle, Circle2, Ellipse, Ellipse2, Hyperbola, Hyperbola2, Parabola, Parabola2};
 pub use direction::{Direction, Direction2};

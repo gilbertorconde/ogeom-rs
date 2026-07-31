@@ -11,6 +11,7 @@
 
 pub mod build;
 pub mod history;
+pub mod measure;
 pub mod primitive;
 
 pub use build::{
@@ -18,4 +19,8 @@ pub use build::{
     make_face, make_natural_face, make_shell, make_solid, make_vertex, make_wire,
 };
 pub use history::{Built, History};
+pub use measure::{
+    Projection, SurfaceProjection, curve_bounds, project_on_curve, project_on_planar_curve,
+    project_on_surface, shape_bounds, surface_bounds, vertex_bounds,
+};
 pub use primitive::make_box;

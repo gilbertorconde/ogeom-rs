@@ -12,6 +12,17 @@
 //! matching, so adding a curve type produces a compile error at every site that
 //! needs to know rather than a silent fallthrough.
 //!
+//! Deliberately *not* `#[non_exhaustive]`. Marking it so would force every
+//! match outside this crate to carry a wildcard arm, which is exactly the
+//! silent fallthrough the enum exists to prevent: a new curve type would then
+//! compile everywhere and be mishandled everywhere. The cost is that adding a
+//! variant is a breaking change, which for a kernel this size is the right
+//! trade — a curve type nobody handles is worse than a version bump.
+//!
+//! [`CurveKind`] *is* non-exhaustive, because matching on it is for opting into
+//! an analytic shortcut and a caller that does not recognise a kind should fall
+//! back to the general path rather than fail to compile.
+//!
 //! The [`Curve3d`] trait is still the interface algorithms are written against;
 //! [`Curve`] implements it and forwards.
 
@@ -32,7 +43,6 @@ pub const LINE_EXTENT: f64 = 1.0e9;
 
 /// A curve in space.
 #[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
 pub enum Curve {
     /// A straight line.
     Line(LineCurve),

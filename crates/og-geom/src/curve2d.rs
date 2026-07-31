@@ -24,7 +24,6 @@ const TAU: f64 = core::f64::consts::TAU;
 
 /// A curve in the plane.
 #[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
 pub enum PlanarCurve {
     /// A straight line.
     Line(Line2d),
