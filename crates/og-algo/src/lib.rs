@@ -10,6 +10,7 @@
 //! downstream stable naming is built directly on it.
 
 pub mod build;
+pub mod check;
 pub mod classify;
 pub mod history;
 pub mod mass;
@@ -21,6 +22,7 @@ pub use build::{
     attach_pcurve, edge_vertices, is_shell_closed, is_wire_closed, make_edge, make_edge_between,
     make_face, make_face_on, make_natural_face, make_shell, make_solid, make_vertex, make_wire,
 };
+pub use check::{Diagnosis, Problem, Severity, check};
 pub use classify::{Containment, classify_in_solid, classify_on_face};
 pub use history::{Built, History};
 pub use mass::{MassProperties, linear_properties, surface_properties, volume_properties};
