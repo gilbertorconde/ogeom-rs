@@ -823,34 +823,37 @@ mod tessellation_tests {
     }
 
     #[test]
-    fn a_prism_over_an_upward_face_tessellates_into_an_agreeing_mesh() {
-        // Only the upward-facing profile is covered here, and deliberately so:
-        // sweeping the *downward* face of the same box produces lateral faces
-        // that fail to triangulate at all. That is a real defect in
-        // `make_prism`, found by this check on its first run, and it is
-        // recorded in `docs/SCOPE.md` rather than papered over by picking the
-        // orientation that works and saying nothing.
+    fn a_prism_tessellates_into_an_agreeing_mesh_whichever_face_it_swept() {
+        // This check found the defect that made the distinction matter:
+        // sweeping the *downward* face of a box produced four lateral faces
+        // that every one of them failed to triangulate, while the shell still
+        // closed and every other check passed. Both directions are covered
+        // here now, so a regression cannot hide behind the one that worked.
         use og_math::Vector;
-        let mut model = Model::new();
-        let solid = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
-            .unwrap()
-            .shape;
-        let face = explore_unique(&model, &solid, ShapeType::Face)
-            .unwrap()
-            .into_iter()
-            .find(|f| {
-                model.provenance_of(f).and_then(og_core::Provenance::role)
-                    == Some(crate::primitive::roles::FACE_MAX_Z)
-            })
-            .expect("the box has a top face");
-        let prism = crate::make_prism(&mut model, &face, Vector::new(0.0, 0.0, 2.0), T)
-            .unwrap()
-            .shape;
-        assert!(
-            check_tessellation(&model, &prism, fine(), T)
+        for role in [
+            crate::primitive::roles::FACE_MAX_Z,
+            crate::primitive::roles::FACE_MIN_Z,
+        ] {
+            let mut model = Model::new();
+            let solid = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
                 .unwrap()
-                .is_valid()
-        );
+                .shape;
+            let face = explore_unique(&model, &solid, ShapeType::Face)
+                .unwrap()
+                .into_iter()
+                .find(|f| model.provenance_of(f).and_then(og_core::Provenance::role) == Some(role))
+                .expect("the box has a face with that role");
+            let prism = crate::make_prism(&mut model, &face, Vector::new(0.0, 0.0, 2.0), T)
+                .unwrap()
+                .shape;
+            assert!(
+                check_tessellation(&model, &prism, fine(), T)
+                    .unwrap()
+                    .is_valid(),
+                "{role:?}"
+            );
+            assert!(check(&model, &prism, T).unwrap().is_valid(), "{role:?}");
+        }
     }
 
     #[test]

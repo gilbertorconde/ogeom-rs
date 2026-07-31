@@ -27,9 +27,9 @@
 use std::collections::HashMap;
 
 use og_core::{OgResult, Tolerances, og_bail};
-use og_geom::{ExtrusionSurface, Line2d, PlanarCurve};
+use og_geom::{Curve2d, ExtrusionSurface, Line2d, PlanarCurve, Surface};
 use og_math::{Point2, Transform, Vector};
-use og_topo::{EdgeRepr, Location, Model, NodeData, Shape, ShapeType, TShapeId};
+use og_topo::{EdgeRepr, Location, Model, NodeData, Orientation, Shape, ShapeType, TShapeId};
 
 use crate::build::{make_face_on, make_shell, make_solid, make_wire};
 use crate::history::{Built, History};
@@ -111,10 +111,35 @@ fn prism_over_face(
     vector: Vector,
     tol: Tolerances,
 ) -> OgResult<Built> {
+    // Which side of the profile the material lands on is decided by the sweep,
+    // not by which way the profile was handed over. A profile facing against
+    // the sweep does not describe a different solid — it describes the same one
+    // from the other side — so it is turned round here and everything below
+    // proceeds as if it had faced along all along.
+    //
+    // Left unturned, both end caps present the wrong side: the mesh still
+    // closes and the shell is still closed, so nothing topological notices, and
+    // the volume comes back short by twice the caps' contribution.
+    let normal = face_normal(model, face, tol)?;
+    let travel = vector.magnitude();
+    let along = normal.dot(vector) / travel;
+    if along.abs() <= tol.angular() {
+        og_bail!(
+            Construction,
+            "the sweep runs along the profile's own surface, so it encloses no \
+             volume; a face swept within its own plane is not a solid"
+        );
+    }
+    let profile = if along < 0.0 {
+        face.reversed()
+    } else {
+        face.clone()
+    };
+
     let mut history = History::new();
     let mut faces = Vec::new();
 
-    for wire in model.children_of(face)? {
+    for wire in model.children_of(&profile)? {
         let (sides, wire_history) =
             prism_over_wire(model, rails, &wire, displacement, vector, tol)?;
         history = history.then(&wire_history);
@@ -125,8 +150,8 @@ fn prism_over_face(
     // Getting this wrong makes a solid that is inside out along one face, and
     // the volume comes out short by exactly that face's contribution rather
     // than obviously wrong.
-    let bottom = face.reversed();
-    let top = face.moved(displacement);
+    let bottom = profile.reversed();
+    let top = profile.moved(displacement);
     model.set_derived(&bottom, std::slice::from_ref(face), roles::SWEEP_BOTTOM)?;
     model.set_derived(&top, std::slice::from_ref(face), roles::SWEEP_TOP)?;
     history.generate(face, top.clone());
@@ -200,6 +225,19 @@ fn prism_over_edge(
         .geometry_mut()
         .add_surface(ExtrusionSurface::new(geometry, direction, travel)?.into());
 
+    // The extrusion's `u` is the *curve's* own parameter, and the curve does
+    // not care which way the wire walks it. So a reversed occurrence is
+    // traversed from `hi` to `lo`, and the rail its walk starts at stands at
+    // `u = hi`, not at `u = lo`.
+    //
+    // Pinning the rails to `lo` and `hi` regardless — which is what this did —
+    // puts each rail's pcurve on the wrong side of the parameter rectangle, and
+    // the boundary comes out as a bow tie enclosing nothing. The face then
+    // fails to triangulate outright, while the topology looks perfect: the wire
+    // closes, the shell closes, and every edge is used twice.
+    let reversed = edge.orientation() == Orientation::Reversed;
+    let (u_start, u_end) = if reversed { (hi, lo) } else { (lo, hi) };
+
     // The four sides of the extrusion's parameter rectangle: the edge along the
     // bottom, the same edge displaced along the top, and the two vertical rails
     // its endpoints sweep out.
@@ -215,18 +253,34 @@ fn prism_over_edge(
         // vertex, so its two rails are one edge appearing at both `u = lo` and
         // `u = hi`. That is a seam, and it needs both pcurves: giving it one
         // would leave the face's boundary running up the same side twice and
-        // enclosing nothing.
+        // enclosing nothing. Which pcurve is which is decided by the ring
+        // below: the rail is walked forward at `u_end` and backward at
+        // `u_start`.
         seam_pcurves(
             model,
             &start_rail,
             surface,
-            ((hi, 0.0), (hi, travel)),
-            ((lo, 0.0), (lo, travel)),
+            ((u_end, 0.0), (u_end, travel)),
+            ((u_start, 0.0), (u_start, travel)),
             tol,
         )?;
     } else {
-        pcurve(model, &start_rail, surface, (lo, 0.0), (lo, travel), tol)?;
-        pcurve(model, &end_rail, surface, (hi, 0.0), (hi, travel), tol)?;
+        pcurve(
+            model,
+            &start_rail,
+            surface,
+            (u_start, 0.0),
+            (u_start, travel),
+            tol,
+        )?;
+        pcurve(
+            model,
+            &end_rail,
+            surface,
+            (u_end, 0.0),
+            (u_end, travel),
+            tol,
+        )?;
     }
 
     // Round the rectangle: along the bottom, up the far rail, back along the
@@ -238,7 +292,15 @@ fn prism_over_edge(
         start_rail.reversed(),
     ];
     let boundary = make_wire(model, &ring, tol)?.shape;
-    let face = make_face_on(model, surface, std::slice::from_ref(&boundary), tol)?.shape;
+    let built = make_face_on(model, surface, std::slice::from_ref(&boundary), tol)?.shape;
+
+    // The extrusion's normal is the curve's tangent crossed with the sweep, so
+    // it follows the *curve* and not the wire's walk of it. An edge the wire
+    // walks backwards therefore makes a face whose default side points into the
+    // solid, and the occurrence has to be reversed to present the other one.
+    // Every profile with a mixed wire — four of a box's six faces — has some of
+    // each, so this cannot be decided once for the profile.
+    let face = if reversed { built.reversed() } else { built };
     model.set_derived(&face, std::slice::from_ref(edge), roles::SWEEP_SIDE)?;
 
     let mut history = History::new();
@@ -248,6 +310,71 @@ fn prism_over_edge(
     history.generate(edge, face.clone());
     history.generate(edge, top);
     Ok((face, history))
+}
+
+/// The direction a face presents, in space.
+///
+/// Sampled at the mean of its boundary in parameter space, which for a planar
+/// profile is exact everywhere and for a curved one is representative: a
+/// profile whose normal turns past perpendicular to the sweep somewhere across
+/// its own extent sweeps into a solid that passes through itself, and one
+/// sample is enough to decide which side the material lands on in every case
+/// this can build. A face with no boundary at all covers its whole surface, so
+/// the middle of the domain is the point to ask about.
+fn face_normal(model: &Model, face: &Shape, tol: Tolerances) -> OgResult<Vector> {
+    let Some(node) = model.node(face) else {
+        og_bail!(Dangling, "face is not in this model");
+    };
+    let Some(data) = node.data().as_face() else {
+        og_bail!(Construction, "face node holds no face data");
+    };
+    let Some(surface) = model.geometry().surface(data.surface) else {
+        og_bail!(Dangling, "face refers to a surface not in this model");
+    };
+
+    let mut sum = (0.0, 0.0);
+    let mut count = 0_u32;
+    // The outer wire is the first, and it alone bounds the region; a hole would
+    // only pull the sample towards a point the face does not cover.
+    for edge in match model.children_of(face)?.first() {
+        Some(outer) => model.children_of(outer)?,
+        None => Vec::new(),
+    } {
+        let Some(edge_data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            continue;
+        };
+        let (id, range) = match edge_data.pcurve_for(data.surface, edge.location()) {
+            Some(EdgeRepr::PCurve { curve, range, .. }) => (*curve, *range),
+            Some(EdgeRepr::Seam { forward, range, .. }) => (*forward, *range),
+            _ => continue,
+        };
+        let Some(pcurve) = model.geometry().pcurve(id) else {
+            og_bail!(Dangling, "pcurve is not in this model");
+        };
+        for at in [range.0, f64::midpoint(range.0, range.1), range.1] {
+            let p = pcurve.point_at(at, tol)?;
+            sum = (sum.0 + p.x, sum.1 + p.y);
+            count += 1;
+        }
+    }
+
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let (u, v) = if count == 0 {
+        (f64::midpoint(ua, ub), f64::midpoint(va, vb))
+    } else {
+        let n = f64::from(count);
+        (sum.0 / n, sum.1 / n)
+    };
+    let normal = surface.normal_at(u, v, tol)?;
+
+    let placed = face
+        .transform(model.datums())?
+        .apply_vector(normal.vector());
+    Ok(if face.orientation() == Orientation::Reversed {
+        -placed
+    } else {
+        placed
+    })
 }
 
 /// The edge one endpoint of the profile sweeps out.
@@ -390,17 +517,104 @@ mod tests {
         }
     }
 
-    /// A square face in the xy plane, one unit on a side from the origin.
-    fn square(model: &mut Model, side: f64) -> Shape {
+    /// One face of a box of `side`, named by its role.
+    fn box_face(model: &mut Model, side: f64, role: og_core::Role) -> Shape {
         let built = crate::make_box(model, Frame::WORLD, (side, side, side), T).unwrap();
         explore_unique(model, &built.shape, ShapeType::Face)
             .unwrap()
             .into_iter()
-            .find(|f| {
-                model.provenance_of(f).and_then(og_core::Provenance::role)
-                    == Some(crate::primitive::roles::FACE_MAX_Z)
-            })
-            .expect("the box has a top face")
+            .find(|f| model.provenance_of(f).and_then(og_core::Provenance::role) == Some(role))
+            .expect("the box has a face with that role")
+    }
+
+    /// A square face in the xy plane, one unit on a side from the origin.
+    fn square(model: &mut Model, side: f64) -> Shape {
+        box_face(model, side, crate::primitive::roles::FACE_MAX_Z)
+    }
+
+    #[test]
+    fn a_profile_facing_away_from_the_sweep_gives_the_same_solid_as_one_facing_along_it() {
+        // The defect this pins: the `-Z` face of a box has all four of its
+        // edges reversed within its wire, and the `+Z` face has none. Sweeping
+        // either along `+Z` describes the same solid, so the two had better
+        // agree about it — in face count, in mesh closure and in volume.
+        for (role, centre) in [
+            // The `+Z` face sits at z = 2 and sweeps to z = 5; the `-Z` face
+            // sits at z = 0 and sweeps to z = 3.
+            (
+                crate::primitive::roles::FACE_MAX_Z,
+                Point::new(1.0, 1.0, 3.5),
+            ),
+            (
+                crate::primitive::roles::FACE_MIN_Z,
+                Point::new(1.0, 1.0, 1.5),
+            ),
+        ] {
+            let mut model = Model::new();
+            let face = box_face(&mut model, 2.0, role);
+            let built = make_prism(&mut model, &face, Vector::new(0.0, 0.0, 3.0), T).unwrap();
+
+            let counts = |kind| explore_unique(&model, &built.shape, kind).unwrap().len();
+            assert_eq!(counts(ShapeType::Face), 6, "{role:?}");
+            assert_eq!(counts(ShapeType::Edge), 12, "{role:?}");
+
+            // Every face triangulates: a lateral face whose boundary ring runs
+            // up the same side twice encloses nothing and fails outright.
+            for face in explode(&model, &built.shape) {
+                og_mesh::triangulate_face(&model, &face, deflection(0.01), T)
+                    .unwrap_or_else(|e| panic!("{role:?}: a face would not triangulate: {e}"));
+            }
+
+            let mesh = triangulate(&model, &built.shape, deflection(0.01), T).unwrap();
+            assert!(mesh.is_closed(), "{role:?}: the mesh has a slit in it");
+            // Positive, and 2 * 2 * 3. A cap left facing inward keeps the mesh
+            // closed and takes its own contribution out of the volume twice,
+            // which is wrong by an amount nothing else reports.
+            assert_relative_eq!(mesh.volume(), 12.0, epsilon = 1e-9);
+
+            let props = volume_properties(&model, &built.shape, deflection(0.01), T).unwrap();
+            assert_relative_eq!(props.mass, 12.0, epsilon = 1e-9);
+            assert!(
+                props.centre.distance(centre) < 1e-9,
+                "{role:?}: got {:?}",
+                props.centre
+            );
+
+            assert!(
+                crate::check_tessellation(&model, &built.shape, deflection(0.01), T)
+                    .unwrap()
+                    .is_valid(),
+                "{role:?}: the mesh disagrees with the topology"
+            );
+        }
+    }
+
+    #[test]
+    fn every_face_of_a_box_sweeps_into_a_solid_of_the_right_volume() {
+        // Four of the six have their wire's edges mixed — some forward, some
+        // reversed — which is the case a per-face flip would not have caught.
+        use crate::primitive::roles;
+        let roles = [
+            (roles::FACE_MIN_X, Vector::new(-3.0, 0.0, 0.0)),
+            (roles::FACE_MAX_X, Vector::new(3.0, 0.0, 0.0)),
+            (roles::FACE_MIN_Y, Vector::new(0.0, -3.0, 0.0)),
+            (roles::FACE_MAX_Y, Vector::new(0.0, 3.0, 0.0)),
+            (roles::FACE_MIN_Z, Vector::new(0.0, 0.0, -3.0)),
+            (roles::FACE_MAX_Z, Vector::new(0.0, 0.0, 3.0)),
+        ];
+        for (role, vector) in roles {
+            let mut model = Model::new();
+            let face = box_face(&mut model, 2.0, role);
+            let built = make_prism(&mut model, &face, vector, T).unwrap();
+            let mesh = triangulate(&model, &built.shape, deflection(0.01), T).unwrap();
+            assert!(mesh.is_closed(), "{role:?}: the mesh has a slit in it");
+            assert_relative_eq!(mesh.volume(), 12.0, epsilon = 1e-9);
+        }
+    }
+
+    /// Every face below a shape.
+    fn explode(model: &Model, shape: &Shape) -> Vec<Shape> {
+        og_topo::explore(model, shape, og_topo::Filter::OfType(ShapeType::Face)).unwrap()
     }
 
     #[test]
@@ -531,6 +745,24 @@ mod tests {
         ] {
             assert!(make_prism(&mut model, &face, vector, T).is_err());
         }
+    }
+
+    #[test]
+    fn a_face_swept_within_its_own_plane_is_refused() {
+        // It encloses no volume, and the two ends would land on top of each
+        // other. Building it anyway gives a solid whose faces all have area and
+        // which measures zero, which is the shape of answer that gets trusted.
+        let mut model = Model::new();
+        let face = square(&mut model, 1.0);
+        let err = make_prism(&mut model, &face, Vector::new(1.0, 1.0, 0.0), T).unwrap_err();
+        assert!(
+            err.to_string().contains("encloses no volume"),
+            "unexpected message: {err}"
+        );
+        // A wire has no side for the sweep to lie in, so the same vector is
+        // fine there — it makes a perfectly good open shell.
+        let wire = model.children_of(&face).unwrap()[0].clone();
+        assert!(make_prism(&mut model, &wire, Vector::new(1.0, 1.0, 0.0), T).is_ok());
     }
 
     #[test]
