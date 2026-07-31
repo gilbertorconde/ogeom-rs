@@ -9,3 +9,15 @@
 //! - `Trsf` carries a **form classification** (identity / translation / rotation /
 //!   scale / …), used to short-circuit transform application. Skipping it costs
 //!   real performance across the whole kernel.
+
+pub mod direction;
+pub mod matrix;
+pub mod point;
+pub mod quaternion;
+pub mod vector;
+
+pub use direction::{Direction, Direction2};
+pub use matrix::{Matrix2, Matrix3};
+pub use point::{Point, Point2};
+pub use quaternion::Quaternion;
+pub use vector::{Vector, Vector2};
