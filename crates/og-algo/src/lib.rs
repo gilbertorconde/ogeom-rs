@@ -15,6 +15,7 @@ pub mod classify;
 pub mod history;
 pub mod mass;
 pub mod measure;
+pub mod place;
 pub mod primitive;
 pub mod sweep;
 
@@ -30,5 +31,6 @@ pub use measure::{
     Projection, SurfaceProjection, curve_bounds, project_on_curve, project_on_planar_curve,
     project_on_surface, shape_bounds, surface_bounds, vertex_bounds,
 };
+pub use place::{copied, transformed};
 pub use primitive::{make_box, make_cone, make_cylinder, make_sphere, make_torus, make_wedge};
 pub use sweep::make_prism;
