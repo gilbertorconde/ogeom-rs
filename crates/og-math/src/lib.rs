@@ -10,9 +10,11 @@
 //!   scale / …), used to short-circuit transform application. Skipping it costs
 //!   real performance across the whole kernel.
 
+pub mod bspline;
 pub mod conic;
 pub mod direction;
 pub mod frame;
+pub mod knots;
 pub mod matrix;
 pub mod point;
 pub mod quadric;
@@ -20,9 +22,11 @@ pub mod quaternion;
 pub mod transform;
 pub mod vector;
 
+pub use bspline::{Blend, Weighted};
 pub use conic::{Circle, Circle2, Ellipse, Ellipse2, Hyperbola, Hyperbola2, Parabola, Parabola2};
 pub use direction::{Direction, Direction2};
 pub use frame::{Axis, Axis2, Frame, Frame2, Handedness};
+pub use knots::{BasisValues, KnotVector};
 pub use matrix::{Matrix2, Matrix3};
 pub use point::{Point, Point2};
 pub use quadric::{Cone, Cylinder, Plane, Sphere, Torus, TorusKind};

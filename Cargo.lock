@@ -427,6 +427,7 @@ dependencies = [
  "nalgebra",
  "og-core",
  "proptest",
+ "smallvec",
 ]
 
 [[package]]
