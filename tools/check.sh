@@ -7,6 +7,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Note for anyone invoking this: `./tools/check.sh | tail -3` reports tail's exit
+# status, not this script's, so a failing run looks like a passing one. Run it
+# bare, or keep the pipeline under `set -o pipefail`.
+
 echo "== fmt =="
 cargo fmt --all -- --check
 
