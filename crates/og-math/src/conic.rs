@@ -571,12 +571,18 @@ impl Circle2 {
 
     /// This circle moved by `t`.
     ///
+    /// The frame goes through the transform intact rather than being rebuilt
+    /// from the centre. The frame fixes where the angular parameter starts, so
+    /// discarding its orientation would keep the shape and silently renumber
+    /// every point on it — invisible to a distance check, and wrong for
+    /// anything holding a parameter.
+    ///
     /// # Errors
     ///
     /// As [`Circle2::new`].
     pub fn transformed(&self, t: &Transform2, tol: Tolerances) -> OgResult<Self> {
-        Self::centred(
-            t.apply(self.centre()),
+        Self::new(
+            t.apply_frame(&self.frame, tol)?,
             self.radius * t.scale_factor().abs(),
             tol,
         )
@@ -651,6 +657,21 @@ impl Ellipse2 {
     #[must_use]
     pub fn area(&self) -> f64 {
         core::f64::consts::PI * self.major_radius * self.minor_radius
+    }
+
+    /// This ellipse moved by `t`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Ellipse2::new`].
+    pub fn transformed(&self, t: &Transform2, tol: Tolerances) -> OgResult<Self> {
+        let s = t.scale_factor().abs();
+        Self::new(
+            t.apply_frame(&self.frame, tol)?,
+            self.major_radius * s,
+            self.minor_radius * s,
+            tol,
+        )
     }
 }
 
@@ -978,6 +999,28 @@ mod tests {
             "on the boundary is not inside"
         );
         assert!(c.contains(Point2::new(3.0, 1.0), T));
+    }
+
+    #[test]
+    fn a_planar_circles_frame_survives_a_transform() {
+        // The frame fixes where the angular parameter starts. Rebuilding it
+        // from the centre would keep the shape and renumber every point on it,
+        // which is invisible to a distance check and wrong for anything that
+        // refers to a parameter.
+        let f = Frame2::new(Point2::new(1.0, 2.0), crate::Direction2::from_angle(0.9));
+        let c = Circle2::new(f, 2.0, T).unwrap();
+        let rot = Transform2::rotation(Point2::ORIGIN, 0.5);
+        let moved = c.transformed(&rot, T).unwrap();
+
+        assert!(moved.centre().is_equal(rot.apply(c.centre()), T));
+        let expected = rot.apply_direction(f.x(), T).unwrap();
+        assert!(moved.frame().x().is_equal(expected, T));
+
+        // The point at angle zero moves with the transform, rather than jumping
+        // to wherever a rebuilt frame would have put it.
+        let at_zero = c.centre() + f.x() * 2.0;
+        let moved_at_zero = moved.centre() + moved.frame().x() * 2.0;
+        assert!(moved_at_zero.is_equal(rot.apply(at_zero), T));
     }
 
     #[test]

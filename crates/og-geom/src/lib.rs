@@ -11,6 +11,7 @@
 //! ever see the traits.
 
 pub mod curve;
+pub mod curve2d;
 pub mod surface;
 pub mod traits;
 
@@ -18,6 +19,7 @@ pub use curve::{
     BSplineCurve, CircleCurve, Curve, EllipseCurve, HyperbolaCurve, LineCurve, ParabolaCurve,
     TrimmedCurve,
 };
+pub use curve2d::{BSpline2d, Circle2d, Ellipse2d, Line2d, PlanarCurve, Trimmed2d, tangent_angle};
 pub use surface::{
     BSplineSurface, ConeSurface, CylinderSurface, ExtrusionSurface, PlaneSurface,
     RevolutionSurface, SphereSurface, SurfaceGeometry, TorusSurface, TrimmedSurface,

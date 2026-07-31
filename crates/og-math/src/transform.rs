@@ -31,8 +31,8 @@ use core::ops::Mul;
 use og_core::{OgResult, Tolerances, og_bail};
 
 use crate::{
-    Axis, Direction, Direction2, Frame, Matrix2, Matrix3, Point, Point2, Quaternion, Vector,
-    Vector2,
+    Axis, Direction, Direction2, Frame, Frame2, Matrix2, Matrix3, Point, Point2, Quaternion,
+    Vector, Vector2,
 };
 
 /// How much structure a [`Transform`] has, for dispatch.
@@ -527,6 +527,35 @@ impl Transform2 {
                 Point2::from_vector(self.linear * (p.to_vector() * self.scale) + self.translation)
             }
         }
+    }
+
+    /// Apply to a direction, renormalizing.
+    ///
+    /// # Errors
+    ///
+    /// [`OgError::Construction`](og_core::OgError::Construction) if the result
+    /// cannot be normalized, which a valid similarity never produces.
+    pub fn apply_direction(&self, d: Direction2, tol: Tolerances) -> OgResult<Direction2> {
+        match self.kind {
+            TransformKind::Identity | TransformKind::Translation | TransformKind::Scale => Ok(d),
+            TransformKind::PointMirror => Ok(d.reversed()),
+            _ => Direction2::new(self.apply_vector(d.vector()), tol),
+        }
+    }
+
+    /// Apply to a frame, transforming the origin and both axes.
+    ///
+    /// # Errors
+    ///
+    /// [`OgError::Construction`](og_core::OgError::Construction) if the
+    /// transformed axes cannot be renormalized or are no longer perpendicular.
+    pub fn apply_frame(&self, f: &Frame2, tol: Tolerances) -> OgResult<Frame2> {
+        Frame2::from_axes(
+            self.apply(f.origin()),
+            self.apply_direction(f.x(), tol)?,
+            self.apply_direction(f.y(), tol)?,
+            tol,
+        )
     }
 
     /// Apply to a free vector.
