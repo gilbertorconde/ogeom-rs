@@ -486,6 +486,24 @@ impl Transform2 {
         self.kind
     }
 
+    /// The orthonormal part.
+    #[must_use]
+    pub const fn linear(&self) -> Matrix2 {
+        self.linear
+    }
+
+    /// The uniform scale factor. Negative for a point mirror.
+    #[must_use]
+    pub const fn scale_factor(&self) -> f64 {
+        self.scale
+    }
+
+    /// The translation.
+    #[must_use]
+    pub const fn translation_vector(&self) -> Vector2 {
+        self.translation
+    }
+
     /// Whether this transform preserves handedness.
     #[must_use]
     pub fn preserves_handedness(&self) -> bool {

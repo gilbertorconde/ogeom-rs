@@ -11,7 +11,7 @@
 
 use core::ops::{Mul, Neg};
 
-use og_core::{OgResult, Tolerances};
+use og_core::{OgResult, Tolerances, og_bail};
 
 use crate::{Vector, Vector2};
 
@@ -114,13 +114,46 @@ impl Direction {
 
     /// Cross product, renormalized into a direction.
     ///
+    /// Collinearity is judged against the *angular* tolerance, not the linear
+    /// one: for unit inputs the cross product's magnitude is the sine of the
+    /// angle between them, a dimensionless quantity that a length tolerance
+    /// does not describe.
+    ///
     /// # Errors
     ///
     /// [`OgError::Construction`](og_core::OgError::Construction) if the two
-    /// directions are collinear, leaving the cross product too short to
-    /// normalize.
+    /// directions are collinear.
     pub fn cross(self, other: Self, tol: Tolerances) -> OgResult<Self> {
-        Self::new(self.cross_vector(other), tol)
+        let v = self.cross_vector(other);
+        let m = v.magnitude();
+        if m <= tol.angular() {
+            og_bail!(Construction, "cross product of collinear directions");
+        }
+        Ok(Self(v / m))
+    }
+
+    /// The unit normal to two free vectors.
+    ///
+    /// The right way to build a normal from two edges of a triangle. Naively
+    /// normalizing `a.cross(b)` compares its magnitude — which is twice the
+    /// triangle's area, and so scales as the *square* of the size — against a
+    /// length tolerance. A triangle a micron across then looks degenerate even
+    /// though its normal is perfectly well determined. The test here is
+    /// relative: `|a x b| > tol.angular() * |a| * |b|`, which asks the question
+    /// that actually matters, whether the two vectors are collinear, and gives
+    /// the same answer at every scale.
+    ///
+    /// # Errors
+    ///
+    /// [`OgError::Construction`](og_core::OgError::Construction) if `a` and `b`
+    /// are collinear, or either is null.
+    pub fn from_cross(a: Vector, b: Vector, tol: Tolerances) -> OgResult<Self> {
+        let v = a.cross(b);
+        let m = v.magnitude();
+        if m <= tol.angular() * a.magnitude() * b.magnitude() {
+            og_bail!(Construction, "cannot take a normal to collinear vectors");
+        }
+        Ok(Self(v / m))
     }
 
     /// Angle to `other`, in `[0, π]`.
@@ -406,6 +439,29 @@ mod tests {
         // Collinear directions have a null cross product.
         assert!(Direction::X.cross(Direction::X, T).is_err());
         assert!(Direction::X.cross(-Direction::X, T).is_err());
+        assert!(Direction::from_cross(Vector::X, Vector::X * 3.0, T).is_err());
+        assert!(Direction::from_cross(Vector::ZERO, Vector::Y, T).is_err());
+    }
+
+    #[test]
+    fn a_normal_to_a_tiny_triangle_is_still_well_defined() {
+        // The trap: |a x b| is twice the triangle's area, so it scales as the
+        // square of the size. Comparing it against a length tolerance rejects
+        // small-but-perfectly-valid triangles.
+        for scale in [1e-6_f64, 1e-3, 1.0, 1e3] {
+            let a = Vector::new(scale, 0.0, 0.0);
+            let b = Vector::new(0.0, scale, 0.0);
+            let n = Direction::from_cross(a, b, T).unwrap();
+            assert!(n.is_equal(Direction::Z, T), "failed at scale {scale}");
+        }
+        // Whereas the naive route does reject them, which is why it is not used.
+        assert!(
+            Direction::new(
+                Vector::new(1e-6, 0.0, 0.0).cross(Vector::new(0.0, 1e-6, 0.0)),
+                T
+            )
+            .is_err()
+        );
     }
 
     #[test]

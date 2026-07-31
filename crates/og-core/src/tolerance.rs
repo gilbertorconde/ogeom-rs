@@ -30,6 +30,13 @@ pub struct Tolerances {
 /// Two points closer than this are the same point, at unit scale.
 pub const CONFUSION: f64 = 1e-7;
 /// Two directions closer than this in angle are parallel. Dimensionless.
+///
+/// Deliberately tight — near the limit of what `f64` can distinguish. It is the
+/// right threshold for comparing directions that were *stored*, such as two
+/// surface axes read back from a model. It is the wrong one for comparing
+/// directions *computed* through subtraction of nearby coordinates, where the
+/// input's own rounding is already larger; such a comparison needs a bound
+/// derived from the magnitudes involved.
 pub const ANGULAR: f64 = 1e-12;
 /// Convergence target for intersection algorithms, at unit scale.
 pub const INTERSECTION: f64 = CONFUSION * 1e-2;
