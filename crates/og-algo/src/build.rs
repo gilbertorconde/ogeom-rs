@@ -373,6 +373,17 @@ pub fn is_shell_closed(model: &Model, shell: &Shape) -> OgResult<bool> {
     for face in og_topo::explore(model, shell, og_topo::Filter::OfType(ShapeType::Face))? {
         for wire in model.children_of(&face)? {
             for edge in model.children_of(&wire)? {
+                // A degenerate edge — a sphere's pole, a cone's apex — has no
+                // length, so there is no gap along it for a second face to
+                // close. Counting it would call every sphere and every true
+                // cone open, and the thing that is actually open, isn't.
+                if model
+                    .node(&edge)
+                    .and_then(|n| n.data().as_edge())
+                    .is_some_and(|d| d.degenerate)
+                {
+                    continue;
+                }
                 *uses.entry(edge.node()).or_default() += 1;
             }
         }

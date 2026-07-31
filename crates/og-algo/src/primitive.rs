@@ -10,7 +10,9 @@ use core::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use og_core::{OgResult, Role, Tolerances, og_bail};
 use og_geom::{CircleCurve, Curve, LineCurve, PlanarCurve, PlaneSurface, SphereSurface, Surface};
-use og_math::{Circle, Cylinder, Direction, Direction2, Frame, Plane, Point, Point2, Sphere};
+use og_math::{
+    Circle, Cone, Cylinder, Direction, Direction2, Frame, Plane, Point, Point2, Sphere, Torus,
+};
 use og_topo::{Model, Shape};
 
 use crate::build::{make_edge_between, make_face_on, make_shell, make_solid, make_wire};
@@ -121,6 +123,17 @@ pub fn make_box(
         })
         .collect();
 
+    box_like(model, &corner_points, tol)
+}
+
+/// Build a solid from eight corners laid out like [`CORNERS`], with the six
+/// faces of [`FACES`].
+///
+/// A box and a wedge differ only in where the corners are: both have the same
+/// eight, the same twelve edges and the same six planar faces. Sharing the
+/// construction is not just less code — it is what keeps the two from drifting
+/// apart in their winding, their roles or their pcurves.
+fn box_like(model: &mut Model, corner_points: &[Point], tol: Tolerances) -> OgResult<Built> {
     let vertices: Vec<Shape> = corner_points
         .iter()
         .map(|p| model.add_vertex(og_topo::VertexData::new(*p)))
@@ -148,7 +161,7 @@ pub fn make_box(
 
     let mut faces = Vec::with_capacity(FACES.len());
     for (corners, role) in FACES {
-        let plane = face_plane(&corner_points, corners, tol)?;
+        let plane = face_plane(corner_points, corners, tol)?;
         // One id for this face's surface, shared by the face and by every
         // pcurve on it. Registering it per pcurve would give each its own id,
         // and the face would find no pcurve on itself.
@@ -590,6 +603,310 @@ fn circle_pcurve_on_plane(
     crate::build::attach_pcurve(model, edge, pcurve, surface, (0.0, TAU))
 }
 
+/// Build a cone or a truncated cone in `frame`.
+///
+/// `base_radius` is at the frame's origin and `top_radius` at `height` along
+/// its `z`. A zero top radius makes a true cone, whose apex is a degenerate
+/// edge and which has no top cap.
+///
+/// # Errors
+///
+/// [`OgError::Construction`](og_core::OgError::Construction) if the height is
+/// not positive, a radius is negative, both radii are zero, or the two radii
+/// are equal — that last is a cylinder, which is a different surface with its
+/// own type, and admitting it here would ask for a cone whose apex is at
+/// infinity.
+pub fn make_cone(
+    model: &mut Model,
+    frame: Frame,
+    base_radius: f64,
+    top_radius: f64,
+    height: f64,
+    tol: Tolerances,
+) -> OgResult<Built> {
+    check_size("cone height", height, tol)?;
+    for (what, r) in [("base radius", base_radius), ("top radius", top_radius)] {
+        if !r.is_finite() || r < 0.0 {
+            og_bail!(
+                Construction,
+                "cone {what} {r} must be finite and non-negative"
+            );
+        }
+    }
+    if (base_radius - top_radius).abs() <= tol.confusion() {
+        og_bail!(
+            Construction,
+            "a cone with equal radii is a cylinder; use make_cylinder"
+        );
+    }
+    if base_radius <= tol.confusion() && top_radius <= tol.confusion() {
+        og_bail!(Construction, "a cone needs one end with a radius");
+    }
+    model.begin_operation();
+
+    // The surface is built along whichever direction it *widens*, because a
+    // cone's half angle is signed and only the widening sense is a cone at all.
+    // A narrowing solid therefore gets a surface frame pointing the other way,
+    // and the rest of this function works in that frame's parameters.
+    let widening = top_radius > base_radius;
+    let (surface_frame, near_radius, far_radius) = if widening {
+        (frame, base_radius, top_radius)
+    } else {
+        (flipped(frame, height, tol)?, top_radius, base_radius)
+    };
+    let half_angle = ((far_radius - near_radius) / height).atan();
+    let cone = Cone::new(surface_frame, near_radius, half_angle, tol)?;
+
+    let near_circle = circle_at(surface_frame, near_radius, 0.0, tol);
+    let far_frame = raised(surface_frame, height, tol)?;
+    // The wide end always has a radius: the two radii differ and the wider is
+    // by definition not the collapsed one.
+    let Some(far) = circle_at(far_frame, far_radius, 0.0, tol) else {
+        og_bail!(Construction, "the wide end of a cone must have a radius");
+    };
+
+    let near_vertex = model.add_vertex(VertexData::new(match near_circle {
+        Some(c) => rim_point(c),
+        None => surface_frame.origin(),
+    }));
+    let far_vertex = model.add_vertex(VertexData::new(rim_point(far)));
+
+    // A zero radius is an apex: a rim of no length, which still bounds the face
+    // in parameter space and still has to be there.
+    let near_edge = match near_circle {
+        Some(c) => full_circle_edge(model, c, &near_vertex, tol)?,
+        None => degenerate_edge(model, &near_vertex, tol)?,
+    };
+    let far_edge = full_circle_edge(model, far, &far_vertex, tol)?;
+
+    let seam_start = near_circle.map_or_else(|| surface_frame.origin(), rim_point);
+    let seam_end = rim_point(far);
+    let seam = make_edge_between(
+        model,
+        LineCurve::segment(seam_start, seam_end, tol)?.into(),
+        (0.0, slant(near_radius, far_radius, height)),
+        &near_vertex,
+        &far_vertex,
+        tol,
+    )?
+    .shape;
+
+    let lateral_id = model
+        .geometry_mut()
+        .add_surface(og_geom::ConeSurface::new(cone, (0.0, height))?.into());
+    let lateral = rectangle_face(
+        model,
+        lateral_id,
+        (TAU, height),
+        [&near_edge, &far_edge, &seam],
+        tol,
+    )?;
+    model.set_derived(&lateral, &[], roles::FACE_LATERAL)?;
+
+    let mut faces = vec![lateral];
+    // The near end only needs a cap if it has any area.
+    if let Some(c) = near_circle {
+        let cap = cap_face(model, surface_frame, false, &near_edge, c, tol)?;
+        model.set_derived(
+            &cap,
+            &[],
+            if widening {
+                roles::FACE_MIN_Z
+            } else {
+                roles::FACE_MAX_Z
+            },
+        )?;
+        faces.push(cap);
+    }
+    let far_cap = cap_face(model, far_frame, true, &far_edge, far, tol)?;
+    model.set_derived(
+        &far_cap,
+        &[],
+        if widening {
+            roles::FACE_MAX_Z
+        } else {
+            roles::FACE_MIN_Z
+        },
+    )?;
+    faces.push(far_cap);
+
+    let shell = make_shell(model, &faces)?.shape;
+    let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
+    Ok(Built::from_nothing(solid))
+}
+
+/// Build a torus in `frame`: `major` from the axis to the tube's centre,
+/// `minor` the tube's own radius.
+///
+/// # Errors
+///
+/// [`OgError::Construction`](og_core::OgError::Construction) if either radius
+/// is not finite and positive.
+pub fn make_torus(
+    model: &mut Model,
+    frame: Frame,
+    major: f64,
+    minor: f64,
+    tol: Tolerances,
+) -> OgResult<Built> {
+    check_size("torus major radius", major, tol)?;
+    check_size("torus minor radius", minor, tol)?;
+    model.begin_operation();
+
+    // Closed in *both* directions, so the face has a seam on all four sides of
+    // its parameter rectangle and one vertex where the two seams cross. A
+    // cylinder's single seam is the easy case; this is the one that decides
+    // whether seam handling is general or a special case for one primitive.
+    let start = frame.to_world(Point::new(major + minor, 0.0, 0.0));
+    let corner = model.add_vertex(VertexData::new(start));
+
+    // The outer equator, along which the tube parameter is zero.
+    let equator = Circle::new(frame, major + minor, tol)?;
+    let along_u = full_circle_edge(model, equator, &corner, tol)?;
+
+    // The tube's own circle at longitude zero: its plane holds the frame's `x`
+    // and `z`, centred one major radius out.
+    let tube_frame = Frame::new(
+        frame.to_world(Point::new(major, 0.0, 0.0)),
+        -frame.y(),
+        frame.x(),
+        tol,
+    )?;
+    let along_v = full_circle_edge(model, Circle::new(tube_frame, minor, tol)?, &corner, tol)?;
+
+    let surface = model
+        .geometry_mut()
+        .add_surface(og_geom::TorusSurface::new(Torus::new(frame, major, minor, tol)?).into());
+    let face = doubly_seamed_face(model, surface, &along_u, &along_v, tol)?;
+    model.set_derived(&face, &[], roles::FACE_LATERAL)?;
+
+    let shell = make_shell(model, std::slice::from_ref(&face))?.shape;
+    let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
+    Ok(Built::from_nothing(solid))
+}
+
+/// Build a wedge: a box whose top face is inset.
+///
+/// `size` is the box at the frame's origin; `top` is the `(x, y)` extent of the
+/// upper face, over the same corner. Equal extents give a box.
+///
+/// Both top extents must be positive. A wedge whose top collapses to a ridge
+/// has five faces and one whose top collapses to a point has four — different
+/// topologies, not this one with a zero somewhere, and building them here would
+/// produce a face with no area.
+///
+/// # Errors
+///
+/// [`OgError::Construction`](og_core::OgError::Construction) if a dimension is
+/// not finite and positive.
+pub fn make_wedge(
+    model: &mut Model,
+    frame: Frame,
+    size: (f64, f64, f64),
+    top: (f64, f64),
+    tol: Tolerances,
+) -> OgResult<Built> {
+    let (dx, dy, dz) = size;
+    for (name, value) in [("x", dx), ("y", dy), ("z", dz)] {
+        check_size(&format!("wedge {name} size"), value, tol)?;
+    }
+    for (name, value) in [("x", top.0), ("y", top.1)] {
+        if !value.is_finite() || value <= tol.confusion() {
+            og_bail!(
+                Construction,
+                "wedge top {name} extent {value} must be finite and positive; a \
+                 wedge whose top collapses to a ridge or a point is a different \
+                 topology — it has five faces or four, not six — and building it \
+                 here would give it a face with no area. Sweep a triangular \
+                 profile instead."
+            );
+        }
+    }
+    model.begin_operation();
+
+    // Same eight corners and the same six faces as a box; only where the top
+    // four sit differs. Every side stays planar because the top face stays a
+    // rectangle parallel to the bottom, which is what makes the wedge a
+    // reparameterization of the box rather than a separate construction.
+    let corners: Vec<Point> = CORNERS
+        .iter()
+        .map(|&(i, j, k)| {
+            #[allow(clippy::cast_precision_loss)]
+            let (fi, fj) = (i as f64, j as f64);
+            let (ex, ey) = if k == 0 { (dx, dy) } else { (top.0, top.1) };
+            #[allow(clippy::cast_precision_loss)]
+            frame.to_world(Point::new(fi * ex, fj * ey, k as f64 * dz))
+        })
+        .collect();
+    box_like(model, &corners, tol)
+}
+
+/// A frame turned end for end: its origin at `height` along the old `z`, and
+/// its `z` pointing back the way it came.
+fn flipped(frame: Frame, height: f64, tol: Tolerances) -> OgResult<Frame> {
+    Frame::new(
+        frame.to_world(Point::new(0.0, 0.0, height)),
+        -frame.z(),
+        frame.x(),
+        tol,
+    )
+}
+
+/// A circle in a frame's plane, or `None` if the radius has collapsed.
+fn circle_at(frame: Frame, radius: f64, _at: f64, tol: Tolerances) -> Option<Circle> {
+    if radius <= tol.confusion() {
+        return None;
+    }
+    Circle::new(frame, radius, tol).ok()
+}
+
+/// The slant length of a cone's side, which is what its seam edge measures.
+fn slant(near: f64, far: f64, height: f64) -> f64 {
+    (far - near).hypot(height)
+}
+
+/// A face on a surface closed in *both* parameter directions.
+///
+/// A torus. Both sides of the rectangle are seams and both ends are seams, so
+/// all four boundary edges are two edges used twice, and one vertex serves all
+/// four corners.
+fn doubly_seamed_face(
+    model: &mut Model,
+    surface: og_topo::SurfaceId,
+    along_u: &Shape,
+    along_v: &Shape,
+    tol: Tolerances,
+) -> OgResult<Shape> {
+    let (o, e) = (0.0, TAU);
+    // The edge running in u is a seam in *v*: it is the same curve at v = 0 and
+    // at v = 2pi.
+    seam_pcurves(
+        model,
+        along_u,
+        surface,
+        (Point2::new(o, o), Point2::new(e, o)),
+        (Point2::new(o, e), Point2::new(e, e)),
+        tol,
+    )?;
+    seam_pcurves(
+        model,
+        along_v,
+        surface,
+        (Point2::new(e, o), Point2::new(e, e)),
+        (Point2::new(o, o), Point2::new(o, e)),
+        tol,
+    )?;
+
+    let ring = [
+        along_u.clone(),
+        along_v.clone(),
+        along_u.reversed(),
+        along_v.reversed(),
+    ];
+    let wire = make_wire(model, &ring, tol)?.shape;
+    Ok(make_face_on(model, surface, std::slice::from_ref(&wire), tol)?.shape)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -995,5 +1312,152 @@ mod revolution_tests {
         for r in [0.0, -1.0, f64::INFINITY] {
             assert!(make_sphere(&mut model, Frame::WORLD, r, T).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod more_primitive_tests {
+    use super::*;
+    use crate::build::is_shell_closed;
+    use crate::mass::volume_properties;
+    use approx::assert_relative_eq;
+    use og_mesh::{Deflection, triangulate};
+    use og_topo::{ShapeType, explore_unique};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn deflection(chord: f64) -> Deflection {
+        Deflection {
+            chord,
+            ..Deflection::default()
+        }
+    }
+
+    fn closed(model: &Model, solid: &Shape) -> bool {
+        let shell = explore_unique(model, solid, ShapeType::Shell).unwrap()[0].clone();
+        is_shell_closed(model, &shell).unwrap()
+    }
+
+    #[test]
+    fn a_truncated_cone_has_the_volume_a_frustum_has() {
+        let (r0, r1, h) = (3.0_f64, 1.0_f64, 4.0_f64);
+        let exact = PI * h / 3.0 * r1.mul_add(r1, r0.mul_add(r0, r0 * r1));
+        let mut model = Model::new();
+        let built = make_cone(&mut model, Frame::WORLD, r0, r1, h, T).unwrap();
+
+        assert!(closed(&model, &built.shape));
+        let props = volume_properties(&model, &built.shape, deflection(0.005), T).unwrap();
+        assert!(props.mass < exact, "an inscribed volume cannot exceed it");
+        assert!(props.mass > exact * 0.995, "{} against {exact}", props.mass);
+    }
+
+    #[test]
+    fn a_true_cone_ends_in_an_apex_and_has_no_top_cap() {
+        // The apex is an edge of no length. Without it the lateral face's
+        // boundary is open along the top of its parameter rectangle; with a cap
+        // there instead, the solid would have a face of no area.
+        let (radius, height) = (2.0_f64, 5.0);
+        let exact = PI * radius * radius * height / 3.0;
+        let mut model = Model::new();
+        let built = make_cone(&mut model, Frame::WORLD, radius, 0.0, height, T).unwrap();
+
+        assert_eq!(
+            explore_unique(&model, &built.shape, ShapeType::Face)
+                .unwrap()
+                .len(),
+            2,
+            "a flank and one cap"
+        );
+        assert!(closed(&model, &built.shape));
+        let props = volume_properties(&model, &built.shape, deflection(0.005), T).unwrap();
+        assert!(props.mass < exact);
+        assert!(props.mass > exact * 0.99, "{} against {exact}", props.mass);
+    }
+
+    #[test]
+    fn a_cone_widening_upward_is_built_the_same_way_round() {
+        // The surface's half angle only makes sense in the widening direction,
+        // so a narrowing solid gets a flipped surface frame. Both had better
+        // give the same solid seen from the other end.
+        let mut model = Model::new();
+        let up = make_cone(&mut model, Frame::WORLD, 1.0, 3.0, 4.0, T).unwrap();
+        let down = make_cone(&mut model, Frame::WORLD, 3.0, 1.0, 4.0, T).unwrap();
+
+        let a = volume_properties(&model, &up.shape, deflection(0.005), T).unwrap();
+        let b = volume_properties(&model, &down.shape, deflection(0.005), T).unwrap();
+        assert_relative_eq!(a.mass, b.mass, max_relative = 1e-9);
+        // Mirrored about the middle of the height.
+        assert_relative_eq!(a.centre.z, 4.0 - b.centre.z, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn a_torus_has_two_seams_one_vertex_and_the_volume_a_torus_has() {
+        // Closed in both parameter directions: the case that decides whether
+        // seam handling is general or a special case for the cylinder.
+        let (major, minor) = (5.0_f64, 2.0);
+        let exact = 2.0 * PI * PI * major * minor * minor;
+        let mut model = Model::new();
+        let built = make_torus(&mut model, Frame::WORLD, major, minor, T).unwrap();
+
+        let counts = |kind| explore_unique(&model, &built.shape, kind).unwrap().len();
+        assert_eq!(counts(ShapeType::Face), 1);
+        assert_eq!(counts(ShapeType::Edge), 2, "one seam each way");
+        assert_eq!(counts(ShapeType::Vertex), 1, "where the two seams cross");
+        assert!(closed(&model, &built.shape));
+
+        let mesh = triangulate(&model, &built.shape, deflection(0.02), T).unwrap();
+        assert!(mesh.is_closed(), "the mesh has a hole");
+
+        let props = volume_properties(&model, &built.shape, deflection(0.02), T).unwrap();
+        assert!(props.mass < exact);
+        assert!(props.mass > exact * 0.99, "{} against {exact}", props.mass);
+        assert!(props.centre.distance(Point::ORIGIN) < 1e-3);
+    }
+
+    #[test]
+    fn a_wedge_with_equal_extents_is_a_box() {
+        let mut model = Model::new();
+        let wedge = make_wedge(&mut model, Frame::WORLD, (2.0, 3.0, 4.0), (2.0, 3.0), T).unwrap();
+        let props = volume_properties(&model, &wedge.shape, deflection(0.01), T).unwrap();
+        assert_relative_eq!(props.mass, 24.0, epsilon = 1e-9);
+        assert!(closed(&model, &wedge.shape));
+    }
+
+    #[test]
+    fn a_tapered_wedge_has_the_volume_a_frustum_of_a_pyramid_has() {
+        // A prismatoid: h/6 * (A_bottom + 4*A_middle + A_top).
+        let mut model = Model::new();
+        let wedge = make_wedge(&mut model, Frame::WORLD, (4.0, 4.0, 6.0), (2.0, 2.0), T).unwrap();
+        let props = volume_properties(&model, &wedge.shape, deflection(0.01), T).unwrap();
+        assert_relative_eq!(
+            props.mass,
+            6.0 / 6.0 * 4.0_f64.mul_add(9.0, 16.0 + 4.0),
+            epsilon = 1e-9
+        );
+        assert!(closed(&model, &wedge.shape));
+    }
+
+    #[test]
+    fn a_wedge_that_collapses_is_refused_rather_than_built_with_a_face_of_no_area() {
+        let mut model = Model::new();
+        assert!(make_wedge(&mut model, Frame::WORLD, (2.0, 3.0, 4.0), (0.0, 3.0), T).is_err());
+        assert!(make_wedge(&mut model, Frame::WORLD, (2.0, 3.0, 4.0), (0.0, 0.0), T).is_err());
+    }
+
+    #[test]
+    fn dimensions_that_describe_no_solid_are_refused() {
+        let mut model = Model::new();
+        // Equal radii are a cylinder, and no radius at all is nothing.
+        assert!(make_cone(&mut model, Frame::WORLD, 2.0, 2.0, 1.0, T).is_err());
+        assert!(make_cone(&mut model, Frame::WORLD, 0.0, 0.0, 1.0, T).is_err());
+        assert!(make_cone(&mut model, Frame::WORLD, 1.0, 2.0, 0.0, T).is_err());
+        assert!(make_cone(&mut model, Frame::WORLD, -1.0, 2.0, 1.0, T).is_err());
+
+        assert!(make_torus(&mut model, Frame::WORLD, 0.0, 1.0, T).is_err());
+        assert!(make_torus(&mut model, Frame::WORLD, 1.0, f64::NAN, T).is_err());
+
+        assert!(make_wedge(&mut model, Frame::WORLD, (0.0, 1.0, 1.0), (1.0, 1.0), T).is_err());
+        assert!(make_wedge(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), (-1.0, 1.0), T).is_err());
     }
 }
