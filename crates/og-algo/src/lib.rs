@@ -15,6 +15,7 @@ pub mod history;
 pub mod mass;
 pub mod measure;
 pub mod primitive;
+pub mod sweep;
 
 pub use build::{
     attach_pcurve, edge_vertices, is_shell_closed, is_wire_closed, make_edge, make_edge_between,
@@ -28,3 +29,4 @@ pub use measure::{
     project_on_surface, shape_bounds, surface_bounds, vertex_bounds,
 };
 pub use primitive::{make_box, make_cone, make_cylinder, make_sphere, make_torus, make_wedge};
+pub use sweep::make_prism;

@@ -208,7 +208,7 @@ fn boundary_ring(
         let NodeData::Edge(data) = node.data() else {
             og_bail!(Construction, "edge node holds no edge data");
         };
-        let (pcurve_id, pcurve_range) = match data.pcurve_on(surface) {
+        let (pcurve_id, pcurve_range) = match data.pcurve_for(surface, edge.location()) {
             Some(EdgeRepr::PCurve { curve, range, .. }) => (*curve, *range),
             // A seam edge runs along a closed surface's join and bounds its
             // face twice — up one side of the parameter rectangle and down the

@@ -123,14 +123,20 @@ pub fn make_edge_between(
         let Some(data) = node.data().as_vertex() else {
             og_bail!(Construction, "vertex node holds no point");
         };
+        // Through the vertex's own placement, not against its stored point. A
+        // vertex is a triple like any other shape, and the same node appears at
+        // different places — the two ends of a prism are one vertex twice.
+        // Comparing against the stored point would put both ends at the origin
+        // of the placement and reject every edge that joins them.
+        let placed = vertex.transform(model.datums())?.apply(data.point);
         let on_curve = curve.point_at(parameter, tol)?;
         let reach = data.tolerance.get().max(tol.confusion());
-        if !on_curve.is_within(data.point, reach) {
+        if !on_curve.is_within(placed, reach) {
             og_bail!(
                 Construction,
                 "curve at {parameter} is {} from the vertex it should meet, \
                  outside its tolerance of {reach}",
-                on_curve.distance(data.point)
+                on_curve.distance(placed)
             );
         }
     }
@@ -403,6 +409,7 @@ pub fn attach_pcurve(
     edge: &Shape,
     pcurve: og_geom::PlanarCurve,
     surface: og_topo::SurfaceId,
+    location: Location,
     range: (f64, f64),
 ) -> OgResult<()> {
     if model.kind_of(edge)? != ShapeType::Edge {
@@ -418,7 +425,7 @@ pub fn attach_pcurve(
     data.add(EdgeRepr::PCurve {
         curve: id,
         surface,
-        location: Location::identity(),
+        location,
         range,
     });
     Ok(())
@@ -705,7 +712,15 @@ mod tests {
             og_geom::Line2d::segment(og_math::Point2::ORIGIN, og_math::Point2::new(1.0, 0.0), T)
                 .unwrap()
                 .into();
-        attach_pcurve(&mut model, &edge, pcurve, surface, (0.0, 1.0)).unwrap();
+        attach_pcurve(
+            &mut model,
+            &edge,
+            pcurve,
+            surface,
+            Location::identity(),
+            (0.0, 1.0),
+        )
+        .unwrap();
 
         let data = model.node(&edge).unwrap().data().as_edge().unwrap();
         assert_eq!(data.representations.len(), 2, "the curve and now a pcurve");

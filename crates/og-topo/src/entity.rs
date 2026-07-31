@@ -197,6 +197,17 @@ impl EdgeRepr {
         }
     }
 
+    /// Where this representation sits.
+    #[must_use]
+    pub const fn location(&self) -> Option<&Location> {
+        match self {
+            Self::Curve3d { location, .. }
+            | Self::PCurve { location, .. }
+            | Self::Seam { location, .. }
+            | Self::Polyline { location, .. } => Some(location),
+        }
+    }
+
     /// The parameter range this representation covers, if it has one.
     #[must_use]
     pub const fn range(&self) -> Option<(f64, f64)> {
@@ -354,6 +365,29 @@ impl EdgeData {
         self.representations
             .iter()
             .find(|r| r.surface() == Some(surface))
+    }
+
+    /// The representation in `surface`'s parameter space for an occurrence at
+    /// `location`.
+    ///
+    /// One edge node can bound one face at more than one placement — the top
+    /// and bottom of a prism are the same edge, moved — and those two
+    /// occurrences run along different lines of the same parameter space. Asked
+    /// by surface alone, the lookup returns whichever was attached first and
+    /// both ends of the prism collapse onto one.
+    ///
+    /// Falls back to a representation attached without a placement, which is
+    /// what every unplaced edge has and what keeps the simple case simple.
+    #[must_use]
+    pub fn pcurve_for(&self, surface: SurfaceId, location: &Location) -> Option<&EdgeRepr> {
+        self.representations
+            .iter()
+            .find(|r| r.surface() == Some(surface) && r.location() == Some(location))
+            .or_else(|| {
+                self.representations.iter().find(|r| {
+                    r.surface() == Some(surface) && r.location().is_some_and(Location::is_identity)
+                })
+            })
     }
 
     /// Every surface this edge has a pcurve on.

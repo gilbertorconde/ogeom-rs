@@ -236,7 +236,14 @@ fn attach_plane_pcurve(
     };
     let (a, b) = (local(from), local(to));
     let pcurve: PlanarCurve = og_geom::Line2d::segment(a, b, tol)?.into();
-    crate::build::attach_pcurve(model, edge, pcurve, surface, (0.0, a.distance(b)))
+    crate::build::attach_pcurve(
+        model,
+        edge,
+        pcurve,
+        surface,
+        og_topo::Location::identity(),
+        (0.0, a.distance(b)),
+    )
 }
 
 /// Find the canonical edge joining two corners, and whether it runs that way.
@@ -530,7 +537,14 @@ fn line_pcurve(
     tol: Tolerances,
 ) -> OgResult<()> {
     let pcurve: PlanarCurve = og_geom::Line2d::segment(from, to, tol)?.into();
-    crate::build::attach_pcurve(model, edge, pcurve, surface, (0.0, from.distance(to)))
+    crate::build::attach_pcurve(
+        model,
+        edge,
+        pcurve,
+        surface,
+        og_topo::Location::identity(),
+        (0.0, from.distance(to)),
+    )
 }
 
 /// Attach a seam edge's two pcurves, one for each side of the parameter
@@ -600,7 +614,14 @@ fn circle_pcurve_on_plane(
     )?;
     let pcurve: PlanarCurve =
         og_geom::Circle2d::new(og_math::Circle2::new(frame2, circle.radius(), tol)?).into();
-    crate::build::attach_pcurve(model, edge, pcurve, surface, (0.0, TAU))
+    crate::build::attach_pcurve(
+        model,
+        edge,
+        pcurve,
+        surface,
+        og_topo::Location::identity(),
+        (0.0, TAU),
+    )
 }
 
 /// Build a cone or a truncated cone in `frame`.
