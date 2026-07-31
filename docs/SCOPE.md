@@ -132,9 +132,9 @@ Every operation emits history from the commit that introduces it
 |---|---|---|
 | Bounding volumes: axis-aligned, oriented, per-sub-shape | `Bnd`, `BRepBndLib` | done |
 | Point projection onto curves and surfaces | `GeomAPI_ProjectPointOn*` | done |
-| Mass properties: length, area, volume, centroid, inertia, principal axes | `GProp`, `BRepGProp` | after §12 |
-| Point-in-face classification | `BRepTopAdaptor_FClass2d` | after §12 |
-| Point-in-solid classification | `BRepClass3d` | after §7 |
+| Mass properties: length, area, volume, centroid, inertia, principal axes | `GProp`, `BRepGProp` | done |
+| Point-in-face classification | `BRepTopAdaptor_FClass2d` | done |
+| Point-in-solid classification | `BRepClass3d` | done; exact after §7 |
 | Minimum distance and proximity between shapes | `BRepExtrema` | after §7 |
 | Extrema between curves and surfaces | `Extrema` | after §7 |
 | Validity checking against the model invariants | `BRepCheck` | |
