@@ -12,6 +12,7 @@
 pub mod build;
 pub mod check;
 pub mod classify;
+pub mod fit;
 pub mod history;
 pub mod mass;
 pub mod measure;
@@ -25,6 +26,7 @@ pub use build::{
 };
 pub use check::{Diagnosis, Problem, Severity, check};
 pub use classify::{Containment, classify_in_solid, classify_on_face};
+pub use fit::{Spacing, approximate, interpolate};
 pub use history::{Built, History};
 pub use mass::{MassProperties, linear_properties, surface_properties, volume_properties};
 pub use measure::{
