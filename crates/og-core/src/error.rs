@@ -136,10 +136,15 @@ impl From<fmt::Arguments<'_>> for Cause {
 #[macro_export]
 macro_rules! og_err {
     ($variant:ident, $msg:literal) => {
-        $crate::OgError::$variant($crate::Cause::Static($msg))
+        // Through `format_args!` rather than straight to `Cause::Static`, so a
+        // literal with inline captures — `"index {i}"` — interpolates instead
+        // of being taken verbatim. `Arguments::as_str` returns `Some` for a
+        // literal with nothing to interpolate, so the allocation-free path is
+        // preserved exactly where it applies.
+        $crate::OgError::$variant($crate::Cause::from(format_args!($msg)))
     };
     ($variant:ident, $fmt:literal, $($arg:tt)*) => {
-        $crate::OgError::$variant($crate::Cause::Owned(format!($fmt, $($arg)*)))
+        $crate::OgError::$variant($crate::Cause::from(format_args!($fmt, $($arg)*)))
     };
 }
 
@@ -160,6 +165,17 @@ mod tests {
     fn static_cause_does_not_allocate() {
         let e = og_err!(Domain, "parameter outside curve range");
         assert!(matches!(e, OgError::Domain(Cause::Static(_))));
+    }
+
+    #[test]
+    fn inline_captures_interpolate_in_the_single_argument_form() {
+        // The trap this guards: a literal containing `{name}` used to be taken
+        // verbatim, so the message shipped with braces in it and the value was
+        // silently dropped.
+        let index = 7;
+        let e = og_err!(Range, "index {index} is out of bounds");
+        assert_eq!(e.to_string(), "out of range: index 7 is out of bounds");
+        assert!(matches!(e, OgError::Range(Cause::Owned(_))));
     }
 
     #[test]

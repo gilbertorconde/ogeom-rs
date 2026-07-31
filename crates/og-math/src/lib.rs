@@ -11,13 +11,17 @@
 //!   real performance across the whole kernel.
 
 pub mod direction;
+pub mod frame;
 pub mod matrix;
 pub mod point;
 pub mod quaternion;
+pub mod transform;
 pub mod vector;
 
 pub use direction::{Direction, Direction2};
+pub use frame::{Axis, Axis2, Frame, Frame2, Handedness};
 pub use matrix::{Matrix2, Matrix3};
 pub use point::{Point, Point2};
 pub use quaternion::Quaternion;
+pub use transform::{GeneralTransform, Transform, Transform2, TransformKind};
 pub use vector::{Vector, Vector2};

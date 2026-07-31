@@ -101,6 +101,17 @@ impl Direction {
         self.0.cross(other.0)
     }
 
+    /// Cross product with a free vector.
+    ///
+    /// Its magnitude is the component of `v` perpendicular to this direction,
+    /// which makes it the accurate way to get a perpendicular distance:
+    /// subtracting the parallel component instead cancels catastrophically for
+    /// a point far along the direction.
+    #[must_use]
+    pub fn cross_with(self, v: Vector) -> Vector {
+        self.0.cross(v)
+    }
+
     /// Cross product, renormalized into a direction.
     ///
     /// # Errors
