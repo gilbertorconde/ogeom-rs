@@ -128,18 +128,20 @@ Every operation emits history from the commit that introduces it
 
 ## 6. Analysis and measurement · `og-algo` · P2
 
-| | *Elsewhere* |
-|---|---|
-| Mass properties: length, area, volume, centroid, inertia, principal axes | `GProp`, `BRepGProp` |
-| Bounding volumes: axis-aligned, oriented, per-sub-shape | `Bnd`, `BRepBndLib` |
-| Minimum distance and proximity between shapes | `BRepExtrema` |
-| Extrema between curves and surfaces | `Extrema` |
-| Point-in-face and point-in-solid classification with tolerance | `BRepClass3d` |
-| Validity checking against the model invariants | `BRepCheck` |
-| Curvature analysis; inputs for zebra, draft and thickness analysis | `BRepLProp` |
-| Self-intersection detection | `BOPAlgo_CheckerSI` |
-| Arc length, arc-length parameterization, deflection-based sampling | `GCPnts` |
-| Interpolation and fitting: points → curve, points → surface | `GeomAPI_PointsToBSpline` |
+| | *Elsewhere* | |
+|---|---|---|
+| Bounding volumes: axis-aligned, oriented, per-sub-shape | `Bnd`, `BRepBndLib` | done |
+| Point projection onto curves and surfaces | `GeomAPI_ProjectPointOn*` | done |
+| Mass properties: length, area, volume, centroid, inertia, principal axes | `GProp`, `BRepGProp` | after §12 |
+| Point-in-face classification | `BRepTopAdaptor_FClass2d` | after §12 |
+| Point-in-solid classification | `BRepClass3d` | after §7 |
+| Minimum distance and proximity between shapes | `BRepExtrema` | after §7 |
+| Extrema between curves and surfaces | `Extrema` | after §7 |
+| Validity checking against the model invariants | `BRepCheck` | |
+| Curvature analysis; inputs for zebra, draft and thickness analysis | `BRepLProp` | |
+| Self-intersection detection | `BOPAlgo_CheckerSI` | after §8 |
+| Arc length, arc-length parameterization, deflection-based sampling | `GCPnts` | |
+| Interpolation and fitting: points → curve, points → surface | `GeomAPI_PointsToBSpline` | |
 
 ## 7. Intersection · `og-intersect` · P3
 
@@ -303,6 +305,37 @@ feature extraction.
 
 Orthogonal to everything above and sequenced after the modeling stack is
 trustworthy.
+
+---
+
+## Sequencing discovered during implementation
+
+Ordering constraints that were not obvious from the capability list, recorded as
+they were found. None of these is a reduction in scope — everything below is
+still in — but each moved because building it earlier would have meant shipping
+something that answers wrongly for inputs it appears to accept.
+
+**Mass properties depend on tessellation (§12), not just on geometry.** Area and
+volume are integrals over the *trimmed* region of a face, and the trimming is
+what makes them hard: there is no closed form for the area of an arbitrary
+region of a NURBS patch. The two honest routes are tessellation or 2D quadrature
+with point-in-face classification, and tessellation is what production kernels
+use. Writing an exact-for-planar-faces version first was the tempting
+alternative and is a trap: it would give correct answers for a box and silently
+wrong ones for a cylinder, with nothing in the signature to say which.
+
+**Point-in-solid depends on intersection (§7).** Ray casting needs ray/surface
+hits. Those are closed-form for the quadrics but not for a NURBS patch, so the
+general case waits for the marching intersector. Point-in-*face* needs neither —
+it is a winding count over the face's pcurves in parameter space — and lands
+with tessellation.
+
+**Distance and extrema between shapes depend on intersection (§7)** for the same
+reason: the minimum distance between two curved faces is a constrained
+minimization whose machinery is the intersector's.
+
+**Self-intersection detection depends on booleans (§8).** It is the boolean
+engine's interference stage run against a single argument.
 
 ---
 
