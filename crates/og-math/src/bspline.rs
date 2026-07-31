@@ -924,3 +924,538 @@ mod tests {
         );
     }
 }
+
+/// A rectangular grid of control points for a tensor-product surface.
+///
+/// Stored row-major: `points[i * v_count + j]` is the point at `u` index `i` and
+/// `v` index `j`. Carrying the shape with the data means the surface functions
+/// cannot be handed a grid with the wrong stride, which is the mistake that
+/// otherwise produces a plausible but transposed surface.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ControlGrid<P> {
+    points: Vec<P>,
+    u_count: usize,
+    v_count: usize,
+}
+
+impl<P: Blend> ControlGrid<P> {
+    /// A grid from row-major points.
+    ///
+    /// # Errors
+    ///
+    /// [`OgError::Dimension`](og_core::OgError::Dimension) if the point count
+    /// is not `u_count * v_count`, or either count is zero.
+    pub fn new(points: Vec<P>, u_count: usize, v_count: usize) -> OgResult<Self> {
+        if u_count == 0 || v_count == 0 {
+            og_bail!(Dimension, "control grid must be at least 1x1");
+        }
+        if points.len() != u_count * v_count {
+            og_bail!(
+                Dimension,
+                "a {u_count}x{v_count} grid needs {} points, got {}",
+                u_count * v_count,
+                points.len()
+            );
+        }
+        Ok(Self {
+            points,
+            u_count,
+            v_count,
+        })
+    }
+
+    /// Number of control points along `u`.
+    #[must_use]
+    pub const fn u_count(&self) -> usize {
+        self.u_count
+    }
+
+    /// Number of control points along `v`.
+    #[must_use]
+    pub const fn v_count(&self) -> usize {
+        self.v_count
+    }
+
+    /// The point at `(i, j)`, or `None` if either index is out of range.
+    #[must_use]
+    pub fn get(&self, i: usize, j: usize) -> Option<P> {
+        if i >= self.u_count || j >= self.v_count {
+            return None;
+        }
+        self.points.get(i * self.v_count + j).copied()
+    }
+
+    /// All points, row-major.
+    #[must_use]
+    pub fn points(&self) -> &[P] {
+        &self.points
+    }
+
+    /// This grid with `u` and `v` exchanged.
+    #[must_use]
+    pub fn transposed(&self) -> Self {
+        let mut points = Vec::with_capacity(self.points.len());
+        for j in 0..self.v_count {
+            for i in 0..self.u_count {
+                points.push(self.points[i * self.v_count + j]);
+            }
+        }
+        Self {
+            points,
+            u_count: self.v_count,
+            v_count: self.u_count,
+        }
+    }
+
+    /// Apply `f` to every point.
+    #[must_use]
+    pub fn map<Q: Blend>(&self, f: impl Fn(P) -> Q) -> ControlGrid<Q> {
+        ControlGrid {
+            points: self.points.iter().map(|p| f(*p)).collect(),
+            u_count: self.u_count,
+            v_count: self.v_count,
+        }
+    }
+}
+
+/// Check that a grid's shape matches its two knot vectors.
+fn check_grid_shape<P>(ku: &KnotVector, kv: &KnotVector, grid: &ControlGrid<P>) -> OgResult<()> {
+    if grid.u_count != ku.control_point_count() || grid.v_count != kv.control_point_count() {
+        og_bail!(
+            Dimension,
+            "knot vectors describe a {}x{} grid, got {}x{}",
+            ku.control_point_count(),
+            kv.control_point_count(),
+            grid.u_count,
+            grid.v_count
+        );
+    }
+    Ok(())
+}
+
+/// Evaluate a tensor-product B-spline surface at `(u, v)`.
+///
+/// Sums the `(p+1) x (q+1)` non-zero basis products over the control window.
+/// Only that window contributes — the basis has local support — so cost depends
+/// on the degrees, not on the size of the surface.
+///
+/// # Errors
+///
+/// [`OgError::Dimension`](og_core::OgError::Dimension) on a shape mismatch, and
+/// [`OgError::Domain`](og_core::OgError::Domain) if a parameter is outside its
+/// knot vector's domain.
+pub fn evaluate_surface<P: Blend>(
+    ku: &KnotVector,
+    kv: &KnotVector,
+    grid: &ControlGrid<P>,
+    u: f64,
+    v: f64,
+    tol: Tolerances,
+) -> OgResult<P> {
+    check_grid_shape(ku, kv, grid)?;
+    let (p, q) = (ku.degree(), kv.degree());
+    let (su, sv) = (ku.span(u, tol)?, kv.span(v, tol)?);
+    let (nu, nv) = (ku.basis(su, u), kv.basis(sv, v));
+
+    let mut total = P::zero();
+    for (i, &weight_u) in nu.iter().enumerate() {
+        // Accumulate along v first, then weight the row: one multiply per row
+        // instead of one per point.
+        let mut row = P::zero();
+        for (j, &weight_v) in nv.iter().enumerate() {
+            let Some(point) = grid.get(su - p + i, sv - q + j) else {
+                og_bail!(Dimension, "control grid index out of range");
+            };
+            row = row.add(point.scale(weight_v));
+        }
+        total = total.add(row.scale(weight_u));
+    }
+    Ok(total)
+}
+
+/// Evaluate a surface and its partial derivatives up to total order `order`.
+///
+/// `result[k][l]` is the derivative taken `k` times in `u` and `l` times in `v`,
+/// so `result[0][0]` is the point itself.
+///
+/// # Errors
+///
+/// As [`evaluate_surface`].
+pub fn surface_derivatives<P: Blend>(
+    ku: &KnotVector,
+    kv: &KnotVector,
+    grid: &ControlGrid<P>,
+    u: f64,
+    v: f64,
+    order: usize,
+    tol: Tolerances,
+) -> OgResult<Vec<Vec<P>>> {
+    check_grid_shape(ku, kv, grid)?;
+    let (p, q) = (ku.degree(), kv.degree());
+    let (su, sv) = (ku.span(u, tol)?, kv.span(v, tol)?);
+    let du = ku.basis_derivatives(su, u, order);
+    let dv = kv.basis_derivatives(sv, v, order);
+
+    let mut out = vec![vec![P::zero(); order + 1]; order + 1];
+    for (k, row) in out.iter_mut().enumerate() {
+        for (l, cell) in row.iter_mut().enumerate() {
+            // Derivatives past the degree in either direction vanish, and the
+            // basis returns them as exact zeros, so this sums to zero without
+            // needing a special case.
+            let mut total = P::zero();
+            for (i, &weight_u) in du[k].iter().enumerate() {
+                let mut inner = P::zero();
+                for (j, &weight_v) in dv[l].iter().enumerate() {
+                    let Some(point) = grid.get(su - p + i, sv - q + j) else {
+                        og_bail!(Dimension, "control grid index out of range");
+                    };
+                    inner = inner.add(point.scale(weight_v));
+                }
+                total = total.add(inner.scale(weight_u));
+            }
+            *cell = total;
+        }
+    }
+    Ok(out)
+}
+
+/// Evaluate a rational tensor-product surface: homogeneous evaluation, then
+/// divide through.
+///
+/// # Errors
+///
+/// As [`evaluate_surface`], plus
+/// [`OgError::Numeric`](og_core::OgError::Numeric) if the accumulated weight
+/// vanishes, which positive input weights make impossible.
+pub fn evaluate_rational_surface<P: Blend>(
+    ku: &KnotVector,
+    kv: &KnotVector,
+    grid: &ControlGrid<Weighted<P>>,
+    u: f64,
+    v: f64,
+    tol: Tolerances,
+) -> OgResult<P> {
+    let h = evaluate_surface(ku, kv, grid, u, v, tol)?;
+    if h.weight.abs() <= tol.confusion() {
+        og_bail!(
+            Numeric,
+            "rational surface evaluation produced a vanishing weight"
+        );
+    }
+    Ok(h.point())
+}
+
+/// Evaluate a rational surface and its partial derivatives up to total order
+/// `order`.
+///
+/// The two-parameter quotient rule. Each mixed partial subtracts the weight's
+/// influence in `u`, in `v`, and in both together; dropping the last of those
+/// three sums is the classic error, and it only shows up on genuinely rational
+/// surfaces with mixed derivatives — which is to say, on exactly the spheres and
+/// tori where the answer matters.
+///
+/// # Errors
+///
+/// As [`evaluate_rational_surface`].
+pub fn rational_surface_derivatives<P: Blend>(
+    ku: &KnotVector,
+    kv: &KnotVector,
+    grid: &ControlGrid<Weighted<P>>,
+    u: f64,
+    v: f64,
+    order: usize,
+    tol: Tolerances,
+) -> OgResult<Vec<Vec<P>>> {
+    let h = surface_derivatives(ku, kv, grid, u, v, order, tol)?;
+    let w0 = h[0][0].weight;
+    if w0.abs() <= tol.confusion() {
+        og_bail!(
+            Numeric,
+            "rational surface evaluation produced a vanishing weight"
+        );
+    }
+
+    let mut s = vec![vec![P::zero(); order + 1]; order + 1];
+    for k in 0..=order {
+        for l in 0..=order {
+            let mut value = h[k][l].scaled;
+            #[allow(clippy::cast_precision_loss)]
+            for i in 1..=k {
+                let c = binomial_coefficient(k, i) as f64;
+                value = value.sub(s[k - i][l].scale(c * h[i][0].weight));
+            }
+            #[allow(clippy::cast_precision_loss)]
+            for j in 1..=l {
+                let c = binomial_coefficient(l, j) as f64;
+                value = value.sub(s[k][l - j].scale(c * h[0][j].weight));
+            }
+            #[allow(clippy::cast_precision_loss)]
+            for i in 1..=k {
+                let ci = binomial_coefficient(k, i) as f64;
+                for j in 1..=l {
+                    let cj = binomial_coefficient(l, j) as f64;
+                    value = value.sub(s[k - i][l - j].scale(ci * cj * h[i][j].weight));
+                }
+            }
+            s[k][l] = value.scale(1.0 / w0);
+        }
+    }
+    Ok(s)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod surface_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// A bicubic patch with some genuine curvature.
+    fn patch() -> (KnotVector, KnotVector, ControlGrid<Point>) {
+        let (nu, nv) = (5, 4);
+        let mut points = Vec::with_capacity(nu * nv);
+        for i in 0..nu {
+            for j in 0..nv {
+                #[allow(clippy::cast_precision_loss)]
+                let (x, y) = (i as f64, j as f64);
+                points.push(Point::new(x, y, (x * 0.7).sin() * (y * 0.5).cos()));
+            }
+        }
+        (
+            KnotVector::clamped_uniform(3, nu).unwrap(),
+            KnotVector::clamped_uniform(2, nv).unwrap(),
+            ControlGrid::new(points, nu, nv).unwrap(),
+        )
+    }
+
+    #[test]
+    fn grid_shape_is_checked_on_construction() {
+        assert!(ControlGrid::new(vec![Point::ORIGIN; 6], 2, 3).is_ok());
+        assert!(ControlGrid::new(vec![Point::ORIGIN; 6], 3, 3).is_err());
+        assert!(ControlGrid::new(Vec::<Point>::new(), 0, 3).is_err());
+    }
+
+    #[test]
+    fn grid_indexing_is_row_major_and_bounds_checked() {
+        let g = ControlGrid::new(
+            vec![
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(0.0, 1.0, 0.0),
+                Point::new(0.0, 2.0, 0.0),
+                Point::new(1.0, 0.0, 0.0),
+                Point::new(1.0, 1.0, 0.0),
+                Point::new(1.0, 2.0, 0.0),
+            ],
+            2,
+            3,
+        )
+        .unwrap();
+        assert_eq!(g.get(1, 2), Some(Point::new(1.0, 2.0, 0.0)));
+        assert_eq!(g.get(0, 1), Some(Point::new(0.0, 1.0, 0.0)));
+        assert_eq!(g.get(2, 0), None);
+        assert_eq!(g.get(0, 3), None);
+    }
+
+    #[test]
+    fn transposing_twice_is_the_identity() {
+        let (_, _, g) = patch();
+        let t = g.transposed();
+        assert_eq!(t.u_count(), g.v_count());
+        assert_eq!(t.v_count(), g.u_count());
+        for i in 0..g.u_count() {
+            for j in 0..g.v_count() {
+                assert_eq!(t.get(j, i), g.get(i, j));
+            }
+        }
+        assert_eq!(t.transposed(), g);
+    }
+
+    #[test]
+    fn a_clamped_patch_interpolates_its_corner_control_points() {
+        let (ku, kv, g) = patch();
+        let ((u0, u1), (v0, v1)) = (ku.domain(), kv.domain());
+        let corners = [
+            (u0, v0, g.get(0, 0).unwrap()),
+            (u0, v1, g.get(0, g.v_count() - 1).unwrap()),
+            (u1, v0, g.get(g.u_count() - 1, 0).unwrap()),
+            (u1, v1, g.get(g.u_count() - 1, g.v_count() - 1).unwrap()),
+        ];
+        for (u, v, expected) in corners {
+            assert!(
+                evaluate_surface(&ku, &kv, &g, u, v, T)
+                    .unwrap()
+                    .is_equal(expected, T),
+                "corner ({u}, {v})"
+            );
+        }
+    }
+
+    #[test]
+    fn surface_shape_mismatches_are_refused() {
+        let (ku, kv, g) = patch();
+        let wrong = ControlGrid::new(g.points().to_vec(), 4, 5).unwrap();
+        assert!(evaluate_surface(&ku, &kv, &wrong, 0.5, 0.5, T).is_err());
+        assert!(evaluate_surface(&ku, &kv, &g, 1.5, 0.5, T).is_err());
+        assert!(evaluate_surface(&ku, &kv, &g, 0.5, -0.5, T).is_err());
+    }
+
+    #[test]
+    fn surface_partials_agree_with_finite_differences() {
+        let (ku, kv, g) = patch();
+        let h = 1e-6;
+        for iu in 1..6 {
+            for iv in 1..6 {
+                let (u, v) = (f64::from(iu) / 6.0, f64::from(iv) / 6.0);
+                let d = surface_derivatives(&ku, &kv, &g, u, v, 2, T).unwrap();
+                assert!(d[0][0].is_equal(evaluate_surface(&ku, &kv, &g, u, v, T).unwrap(), T));
+
+                let du = (evaluate_surface(&ku, &kv, &g, u + h, v, T).unwrap()
+                    - evaluate_surface(&ku, &kv, &g, u - h, v, T).unwrap())
+                    * (1.0 / (2.0 * h));
+                let dv = (evaluate_surface(&ku, &kv, &g, u, v + h, T).unwrap()
+                    - evaluate_surface(&ku, &kv, &g, u, v - h, T).unwrap())
+                    * (1.0 / (2.0 * h));
+                assert!((d[1][0].to_vector() - du).magnitude() < 1e-5 * du.magnitude().max(1.0));
+                assert!((d[0][1].to_vector() - dv).magnitude() < 1e-5 * dv.magnitude().max(1.0));
+
+                // The mixed partial, which the naive quotient rule drops.
+                let mixed = (evaluate_surface(&ku, &kv, &g, u + h, v + h, T).unwrap()
+                    - evaluate_surface(&ku, &kv, &g, u + h, v - h, T).unwrap()
+                    - (evaluate_surface(&ku, &kv, &g, u - h, v + h, T).unwrap()
+                        - evaluate_surface(&ku, &kv, &g, u - h, v - h, T).unwrap()))
+                    * (1.0 / (4.0 * h * h));
+                assert!(
+                    (d[1][1].to_vector() - mixed).magnitude() < 1e-3 * mixed.magnitude().max(1.0),
+                    "mixed partial wrong at ({u}, {v})"
+                );
+            }
+        }
+    }
+
+    /// A hemisphere, exactly, as a rational biquadratic. Only a rational
+    /// surface can be one.
+    fn rational_hemisphere() -> (KnotVector, KnotVector, ControlGrid<Weighted<Point>>) {
+        let w = core::f64::consts::FRAC_1_SQRT_2;
+        // A quarter arc in u, swept through a quarter turn in v.
+        let rows: [[(Point, f64); 3]; 3] = [
+            [
+                (Point::new(1.0, 0.0, 0.0), 1.0),
+                (Point::new(1.0, 1.0, 0.0), w),
+                (Point::new(0.0, 1.0, 0.0), 1.0),
+            ],
+            [
+                (Point::new(1.0, 0.0, 1.0), w),
+                (Point::new(1.0, 1.0, 1.0), w * w),
+                (Point::new(0.0, 1.0, 1.0), w),
+            ],
+            [
+                (Point::new(0.0, 0.0, 1.0), 1.0),
+                (Point::new(0.0, 0.0, 1.0), w),
+                (Point::new(0.0, 0.0, 1.0), 1.0),
+            ],
+        ];
+        let points: Vec<_> = rows
+            .iter()
+            .flatten()
+            .map(|(p, w)| Weighted::new(*p, *w, T).unwrap())
+            .collect();
+        (
+            KnotVector::clamped_uniform(2, 3).unwrap(),
+            KnotVector::clamped_uniform(2, 3).unwrap(),
+            ControlGrid::new(points, 3, 3).unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_rational_biquadratic_traces_an_exact_sphere() {
+        let (ku, kv, g) = rational_hemisphere();
+        for iu in 0..=10 {
+            for iv in 0..=10 {
+                let (u, v) = (f64::from(iu) / 10.0, f64::from(iv) / 10.0);
+                let p = evaluate_rational_surface(&ku, &kv, &g, u, v, T).unwrap();
+                assert_relative_eq!(
+                    p.to_vector().magnitude(),
+                    1.0,
+                    epsilon = 1e-13,
+                    max_relative = 1e-13
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rational_surface_partials_agree_with_finite_differences() {
+        let (ku, kv, g) = rational_hemisphere();
+        let h = 1e-6;
+        let at = |u: f64, v: f64| evaluate_rational_surface(&ku, &kv, &g, u, v, T).unwrap();
+        for iu in 1..6 {
+            for iv in 1..6 {
+                let (u, v) = (f64::from(iu) / 6.0, f64::from(iv) / 6.0);
+                let d = rational_surface_derivatives(&ku, &kv, &g, u, v, 2, T).unwrap();
+                assert!(d[0][0].is_equal(at(u, v), T));
+
+                let du = (at(u + h, v) - at(u - h, v)) * (1.0 / (2.0 * h));
+                let dv = (at(u, v + h) - at(u, v - h)) * (1.0 / (2.0 * h));
+                assert!(
+                    (d[1][0].to_vector() - du).magnitude() < 1e-5 * du.magnitude().max(1.0),
+                    "du wrong at ({u}, {v})"
+                );
+                assert!(
+                    (d[0][1].to_vector() - dv).magnitude() < 1e-5 * dv.magnitude().max(1.0),
+                    "dv wrong at ({u}, {v})"
+                );
+
+                // The mixed partial is where the cross term in the two-parameter
+                // quotient rule matters; without it this is visibly wrong.
+                let mixed =
+                    (at(u + h, v + h) - at(u + h, v - h) - (at(u - h, v + h) - at(u - h, v - h)))
+                        * (1.0 / (4.0 * h * h));
+                assert!(
+                    (d[1][1].to_vector() - mixed).magnitude() < 1e-2 * mixed.magnitude().max(1.0),
+                    "mixed partial wrong at ({u}, {v}): {:?} vs {mixed:?}",
+                    d[1][1]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_spheres_normal_is_radial() {
+        // Independent of the derivative formulas: on a unit sphere centred at
+        // the origin, du x dv must be parallel to the position vector.
+        let (ku, kv, g) = rational_hemisphere();
+        for iu in 1..8 {
+            for iv in 1..8 {
+                let (u, v) = (f64::from(iu) / 8.0, f64::from(iv) / 8.0);
+                let d = rational_surface_derivatives(&ku, &kv, &g, u, v, 1, T).unwrap();
+                let radius = d[0][0].to_vector();
+                let normal = d[1][0].to_vector().cross(d[0][1].to_vector());
+                assert!(
+                    normal.magnitude() > 1e-6,
+                    "degenerate tangents at ({u}, {v})"
+                );
+                let sine =
+                    radius.cross(normal).magnitude() / (radius.magnitude() * normal.magnitude());
+                assert!(sine < 1e-9, "normal not radial at ({u}, {v}): sine {sine}");
+            }
+        }
+    }
+
+    #[test]
+    fn uniform_weights_reduce_to_the_polynomial_surface() {
+        let (ku, kv, g) = patch();
+        let weighted = g.map(|p| Weighted {
+            scaled: p.scale(2.0),
+            weight: 2.0,
+        });
+        for iu in 0..=6 {
+            for iv in 0..=6 {
+                let (u, v) = (f64::from(iu) / 6.0, f64::from(iv) / 6.0);
+                let plain = evaluate_surface(&ku, &kv, &g, u, v, T).unwrap();
+                let rational = evaluate_rational_surface(&ku, &kv, &weighted, u, v, T).unwrap();
+                assert!(plain.is_equal(rational, T));
+            }
+        }
+    }
+}

@@ -24,7 +24,7 @@ pub mod solve;
 pub mod transform;
 pub mod vector;
 
-pub use bspline::{Blend, Weighted};
+pub use bspline::{Blend, ControlGrid, Weighted};
 pub use conic::{Circle, Circle2, Ellipse, Ellipse2, Hyperbola, Hyperbola2, Parabola, Parabola2};
 pub use direction::{Direction, Direction2};
 pub use elementary::{CurvePoint, SurfacePoint};

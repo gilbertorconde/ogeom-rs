@@ -11,11 +11,16 @@
 //! ever see the traits.
 
 pub mod curve;
+pub mod surface;
 pub mod traits;
 
 pub use curve::{
     BSplineCurve, CircleCurve, Curve, EllipseCurve, HyperbolaCurve, LineCurve, ParabolaCurve,
     TrimmedCurve,
+};
+pub use surface::{
+    BSplineSurface, ConeSurface, CylinderSurface, ExtrusionSurface, PlaneSurface,
+    RevolutionSurface, SphereSurface, SurfaceGeometry, TorusSurface, TrimmedSurface,
 };
 pub use traits::{
     Continuity, Curve2d, Curve3d, CurveKind, Reversible, Surface, SurfaceKind, Transformable,
