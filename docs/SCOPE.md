@@ -350,6 +350,31 @@ engine's interference stage run against a single argument.
 
 ---
 
+## Deferred implementation details
+
+Places where something *is* built and works, but a narrower or exact version is
+still owed. Each is recorded with the section that will pay it off, so it is a
+scheduled debt rather than a surprise found by whoever hits it.
+
+The rule these follow: **an approximation that says so is allowed; one that does
+not is not.** Every entry below either reports its own accuracy or refuses the
+input it cannot handle. Nothing here answers confidently and wrongly.
+
+| Owed | Where it lands | What exists now |
+|---|---|---|
+| Analytic mass properties for analytic surfaces | §6 | Tessellation-based, with the chord deflection reported on every result (`MassProperties::deflection`). Correct within a stated band, and exact already for planar faces and straight edges, since their tessellation is exact. A closed form for a trimmed cylinder or sphere would be faster and exact; it is an optimization, not a correction. |
+| Exact point-in-solid | §7 | Ray casting against the tessellation. Returns `On` for any point within the deflection of the boundary rather than assigning it a side. |
+| `same_parameter` repair | §5 | The flag is carried and set false whenever a representation is added, which is honest but pessimistic: every primitive's edges claim disagreement they do not have. The repair routine has to verify agreement, and where it fails, widen the edge's tolerance until the claim is true. Until it exists, nothing may *rely* on the flag being true. |
+| `PolygonOnTriangulation` edge representation (`DATA_MODEL.md` §6) | §12 | A face carries a `Triangulation` and an edge carries a `Polyline` with its parameters, which is what makes the stored tessellation watertight. The missing piece is the edge's path through a *specific* face's triangulation as node indices — what a renderer wants to draw a shared edge without hunting for coincident vertices. |
+| Predicates routed through the `Predicates` trait | §9 | The trait and both implementations exist in `og-core` and nothing calls them yet. Tessellation, classification and mass properties all use plain `f64` comparisons against tolerances. Retrofitting is mechanical *because* the trait was designed in first — that was the point — but it has not been done, and until it is, "predicates are swappable" is a claim about the design and not about the code. |
+| Collapsed wedges | §5 | `make_wedge` refuses a top extent of zero. A wedge tapering to a ridge has five faces and one tapering to a point has four; both are different topologies, not this one with a zero in it, and building them through the box path would give them a face with no area. They belong to the prism sweep over a triangular profile. |
+| Compound and compsolid builders | §5 | `Model::add_compound` exists at the raw level. There is no `make_compound` alongside the other builders, so compounds get no history and no roles. |
+| Non-manifold topology (§4) | §4 | The model permits an edge bounding more than two faces — nothing rejects it — but nothing has been built that way and no test pins the behaviour. `is_shell_closed` counts edge *uses* and asks for an even number, which is the right rule for non-manifold input, but that is a design choice not yet exercised. |
+| Deflection in parameter units | §12 | `discretize_planar` measures its chord tolerance in parameter units, not in space, because it has no surface to convert through. Callers wanting a spatial tolerance convert themselves. The face boundary already avoids this by discretizing the edge's 3D curve and sampling the pcurve at those parameters — the fallback path only runs for an edge with no 3D curve at all. |
+| Spindle-torus signed distance | §2 | `Torus::distance_to` handles every torus, including the folded branch of a spindle. `signed_distance_to` is documented as ring and horn tori only: a spindle torus encloses two regions and "inside" does not name one of them. |
+
+---
+
 ## Explicitly out of scope
 
 | | Why |
