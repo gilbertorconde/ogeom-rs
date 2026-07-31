@@ -9,3 +9,14 @@
 //! an *adaptor*, so nothing downstream cares whether the input is an analytic
 //! cylinder or a NURBS patch. Concrete types implement the traits; algorithms only
 //! ever see the traits.
+
+pub mod curve;
+pub mod traits;
+
+pub use curve::{
+    BSplineCurve, CircleCurve, Curve, EllipseCurve, HyperbolaCurve, LineCurve, ParabolaCurve,
+    TrimmedCurve,
+};
+pub use traits::{
+    Continuity, Curve2d, Curve3d, CurveKind, Reversible, Surface, SurfaceKind, Transformable,
+};
