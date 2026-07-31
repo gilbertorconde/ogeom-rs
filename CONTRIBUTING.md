@@ -73,10 +73,14 @@ wrong solid does not throw; it corrupts a document six operations later. So:
 
 ## Practical
 
-- `cargo fmt --all` and `cargo clippy --workspace --all-targets` are clean before
-  review. Workspace lints forbid `unsafe` and warn on `unwrap`/`expect` and lossy
-  numeric casts in library code — a kernel is arithmetic end to end, and those are
-  how wrong answers get shipped. A deliberate exception carries an
+- **Run `./tools/check.sh`** before review — format, lints, tests and docs, with
+  the test suite repeated so a property test that only fails on some seeds does
+  not slip through. Do not verify by grepping cargo's output for "ok": a run
+  with a failing suite still prints "ok" for every suite that passed, and a real
+  failure hides behind a green-looking summary.
+- Workspace lints forbid `unsafe` and warn on `unwrap`/`expect` and lossy numeric
+  casts in library code — a kernel is arithmetic end to end, and those are how
+  wrong answers get shipped. A deliberate exception carries an
   `#[allow(..., reason = "...")]` and a documented `# Panics` section.
 - New dependencies need a permissive license (`deny.toml` enforces this), and must
   not introduce a C toolchain requirement or break WASM. Raise it explicitly if

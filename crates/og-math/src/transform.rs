@@ -21,9 +21,10 @@
 //! difference between a branch and nine multiplies, repeated a hundred million
 //! times, is real.
 //!
-//! The kind is *derived from* the data rather than asserted alongside it
-//! ([`Transform::classify`]), so it cannot drift out of agreement with the
-//! matrix it describes.
+//! The kind is *derived from* the data rather than asserted alongside it, so it
+//! cannot drift out of agreement with the matrix it describes. Every
+//! constructor routes through one private classifier; there is no way to build a
+//! transform that claims more structure than it has.
 
 use core::ops::Mul;
 

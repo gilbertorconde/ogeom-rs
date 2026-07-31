@@ -22,17 +22,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Format
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features
-
-      - name: Test
-        run: cargo test --workspace --all-features
-
-      - name: Docs
-        run: cargo doc --workspace --no-deps
+      # Format, lints, tests and docs. Repeats the test run, because property
+      # tests draw fresh cases each time and one green run proves less than it
+      # looks.
+      - name: Check
+        run: ./tools/check.sh
 
   deny:
     name: licenses / advisories

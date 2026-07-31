@@ -116,9 +116,25 @@ proptest! {
         let on = c + d * r;
         prop_assert!(close(c.distance(on), r, 1e-12));
         prop_assert!(s.distance_to(on) <= 1e-9 * r.max(1.0));
-        prop_assert!(s.normal_at(on, T).unwrap().is_equal(d, T));
         prop_assert!(s.encloses(c + d * (r * 0.5), T));
         prop_assert!(!s.encloses(c + d * (r * 1.5), T));
+
+        // The normal is recovered by subtracting the centre from a surface
+        // point. For a small sphere far from the origin that subtraction
+        // cancels: a centre at z = 400 and a radius of 0.01 leaves an absolute
+        // error around 4e-14 in a vector of length 0.01, so the recovered
+        // direction is off by some 4e-12 radians. `is_equal` compares against
+        // `angular` at 1e-12, which is a threshold for *stored* directions, and
+        // asserting it here would be asserting something false about floating
+        // point rather than something true about spheres.
+        let normal = s.normal_at(on, T).unwrap();
+        let coordinate_scale = c.to_vector().magnitude().max(r);
+        let allowed = 1e-13 * (coordinate_scale / r).max(1.0);
+        prop_assert!(
+            normal.angle(d) <= allowed,
+            "normal off by {} rad, allowed {allowed}",
+            normal.angle(d)
+        );
     }
 
     #[test]
