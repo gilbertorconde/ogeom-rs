@@ -324,11 +324,22 @@ use. Writing an exact-for-planar-faces version first was the tempting
 alternative and is a trap: it would give correct answers for a box and silently
 wrong ones for a cylinder, with nothing in the signature to say which.
 
-**Point-in-solid depends on intersection (§7).** Ray casting needs ray/surface
-hits. Those are closed-form for the quadrics but not for a NURBS patch, so the
-general case waits for the marching intersector. Point-in-*face* needs neither —
-it is a winding count over the face's pcurves in parameter space — and lands
-with tessellation.
+**Point classification lands with tessellation (§12); the *exact* version waits
+for intersection (§7).** This was recorded the other way round and the ordering
+turned out to be wrong. Ray casting against the tessellation needs no
+ray/surface hits at all, and it is what makes classification available to
+everything downstream years before the intersector exists.
+
+What it costs is exactness, and the answer says so: a point nearer the boundary
+than the deflection is reported `On` rather than assigned a side. That band is a
+real limitation, not a rounding detail — but it is a *stated* one, which was the
+original objection. The trap the earlier note was guarding against is answering
+`In` or `Out` for a point the method cannot actually place, and returning `On`
+is exactly not doing that.
+
+The exact classifier still wants ray/surface intersection, and replaces this one
+when the intersector lands. Point-in-*face* was already unblocked either way: it
+is a winding count over the face's pcurves in parameter space.
 
 **Distance and extrema between shapes depend on intersection (§7)** for the same
 reason: the minimum distance between two curved faces is a constrained
