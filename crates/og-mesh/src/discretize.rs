@@ -30,11 +30,16 @@ pub struct Deflection {
     pub chord: f64,
     /// The greatest allowed turn in the tangent across one segment, in radians.
     pub angular: f64,
-    /// A floor on the number of segments, whatever the tolerances allow.
+    /// A floor on the number of segments for a curve that bends.
     ///
     /// A closed curve needs at least three to enclose anything, and a nearly
     /// straight arc of one would otherwise collapse to a chord that misses the
-    /// bulge entirely.
+    /// bulge entirely — the midpoint test is a sample, and one sample can be
+    /// placed exactly where the curve happens to cross its own chord.
+    ///
+    /// It does *not* apply to a straight curve, which is exactly represented by
+    /// its endpoints. Splitting a line adds points that no tolerance asked for,
+    /// and every one of them becomes a vertex in every face the edge bounds.
     pub min_segments: usize,
     /// A ceiling, so a pathological curve cannot exhaust memory.
     ///
@@ -179,6 +184,30 @@ impl Polyline {
     }
 }
 
+/// Whether a curve is a straight line, seeing through any trimming.
+///
+/// A line is its own polyline, so subdividing it is pure cost: the extra points
+/// land on the curve, satisfy every tolerance, and then propagate into the
+/// triangulation of every face the edge bounds.
+#[must_use]
+pub fn is_straight(curve: &Curve) -> bool {
+    match curve {
+        Curve::Line(_) => true,
+        Curve::Trimmed(t) => is_straight(t.basis()),
+        _ => false,
+    }
+}
+
+/// Whether a planar curve is a straight line in parameter space.
+#[must_use]
+pub fn is_straight_planar(curve: &og_geom::PlanarCurve) -> bool {
+    match curve {
+        og_geom::PlanarCurve::Line(_) => true,
+        og_geom::PlanarCurve::Trimmed(t) => is_straight_planar(t.basis()),
+        _ => false,
+    }
+}
+
 /// Approximate `curve` over `range` within `deflection`.
 ///
 /// Adaptive bisection: split a segment whenever its midpoint is further from the
@@ -205,11 +234,17 @@ pub fn discretize(
     }
 
     // Start from the floor, so a closed curve is never approximated by a single
-    // chord from a point back to itself.
-    let mut parameters: Vec<f64> = (0..=deflection.min_segments)
+    // chord from a point back to itself. A straight curve is exempt: its
+    // endpoints already represent it exactly.
+    let start = if is_straight(curve) {
+        1
+    } else {
+        deflection.min_segments
+    };
+    let mut parameters: Vec<f64> = (0..=start)
         .map(|i| {
             #[allow(clippy::cast_precision_loss)]
-            let t = i as f64 / deflection.min_segments as f64;
+            let t = i as f64 / start as f64;
             lo + (hi - lo) * t
         })
         .collect();
@@ -317,10 +352,15 @@ pub fn discretize_planar(
         og_bail!(Construction, "range [{lo}, {hi}] is empty");
     }
 
-    let mut parameters: Vec<f64> = (0..=deflection.min_segments)
+    let start = if is_straight_planar(curve) {
+        1
+    } else {
+        deflection.min_segments
+    };
+    let mut parameters: Vec<f64> = (0..=start)
         .map(|i| {
             #[allow(clippy::cast_precision_loss)]
-            let t = i as f64 / deflection.min_segments as f64;
+            let t = i as f64 / start as f64;
             lo + (hi - lo) * t
         })
         .collect();
@@ -388,6 +428,22 @@ mod tests {
     }
 
     #[test]
+    fn straightness_sees_through_a_trim() {
+        // The exemption has to survive trimming, or an edge built from a
+        // trimmed line — which is what a solid's edges usually are — pays the
+        // floor anyway and the saving evaporates.
+        use og_geom::TrimmedCurve;
+        let line: Curve = LineCurve::segment(Point::ORIGIN, Point::new(10.0, 0.0, 0.0), T)
+            .unwrap()
+            .into();
+        assert!(is_straight(&line));
+        assert!(is_straight(
+            &TrimmedCurve::new(line, 2.0, 8.0, T).unwrap().into()
+        ));
+        assert!(!is_straight(&circle(1.0)));
+    }
+
+    #[test]
     fn a_line_needs_no_more_than_the_minimum_segments() {
         // A straight curve has no chord error and no turn, so refinement must
         // stop immediately rather than subdividing to the ceiling.
@@ -395,7 +451,7 @@ mod tests {
             .unwrap()
             .into();
         let line = discretize(&curve, curve.domain(), Deflection::default(), T).unwrap();
-        assert_eq!(line.segment_count(), Deflection::default().min_segments);
+        assert_eq!(line.segment_count(), 1, "a line is its own polyline");
         assert!(line.deflection_met);
         assert_relative_eq!(line.length(), 100.0, epsilon = 1e-9);
     }

@@ -13,8 +13,10 @@ og-core.workspace = true
 og-math.workspace = true
 og-geom.workspace = true
 og-topo.workspace = true
+spade.workspace = true
 
 [dev-dependencies]
+og-algo.workspace = true
 approx.workspace = true
 proptest.workspace = true
 

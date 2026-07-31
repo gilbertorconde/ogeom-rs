@@ -7,11 +7,11 @@
 //! Without it the reference would be to a handle that no longer exists.
 
 use og_core::{OgResult, Role, Tolerances, og_bail};
-use og_geom::{Curve, LineCurve, PlanarCurve, PlaneSurface, SurfaceGeometry};
+use og_geom::{Curve, LineCurve, PlanarCurve, PlaneSurface};
 use og_math::{Direction, Frame, Plane, Point, Point2};
 use og_topo::{Model, Shape};
 
-use crate::build::{make_edge_between, make_face, make_shell, make_solid, make_wire};
+use crate::build::{make_edge_between, make_face_on, make_shell, make_solid, make_wire};
 use crate::history::Built;
 
 /// Roles naming which part of a primitive an entity is.
@@ -143,6 +143,12 @@ pub fn make_box(
     let mut faces = Vec::with_capacity(FACES.len());
     for (corners, role) in FACES {
         let plane = face_plane(&corner_points, corners, tol)?;
+        // One id for this face's surface, shared by the face and by every
+        // pcurve on it. Registering it per pcurve would give each its own id,
+        // and the face would find no pcurve on itself.
+        let surface = model
+            .geometry_mut()
+            .add_surface(PlaneSurface::new(plane).into());
         let mut ring = Vec::with_capacity(4);
         for step in 0..4 {
             let (from, to) = (corners[step], corners[(step + 1) % 4]);
@@ -162,6 +168,7 @@ pub fn make_box(
                 model,
                 &edges[index],
                 &plane,
+                surface,
                 corner_points[canonical_from],
                 corner_points[canonical_to],
                 tol,
@@ -169,8 +176,7 @@ pub fn make_box(
         }
 
         let wire = make_wire(model, &ring, tol)?.shape;
-        let surface: SurfaceGeometry = PlaneSurface::new(plane).into();
-        let face = make_face(model, surface, std::slice::from_ref(&wire), tol)?.shape;
+        let face = make_face_on(model, surface, std::slice::from_ref(&wire), tol)?.shape;
         model.set_derived(&face, &[], role)?;
         faces.push(face);
     }
@@ -200,6 +206,7 @@ fn attach_plane_pcurve(
     model: &mut Model,
     edge: &Shape,
     plane: &Plane,
+    surface: og_topo::SurfaceId,
     from: Point,
     to: Point,
     tol: Tolerances,
@@ -210,9 +217,6 @@ fn attach_plane_pcurve(
     };
     let (a, b) = (local(from), local(to));
     let pcurve: PlanarCurve = og_geom::Line2d::segment(a, b, tol)?.into();
-    let surface = model
-        .geometry_mut()
-        .add_surface(PlaneSurface::new(*plane).into());
     crate::build::attach_pcurve(model, edge, pcurve, surface, (0.0, a.distance(b)))
 }
 

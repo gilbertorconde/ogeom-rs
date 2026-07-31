@@ -24,7 +24,7 @@ use og_math::{Point, Transform};
 
 use crate::entity::{EdgeData, FaceData, NodeData, VertexData};
 use crate::location::{DatumId, DatumStore, Location};
-use crate::shape::{Shape, ShapeType, TShape, TShapeId};
+use crate::shape::{Orientation, Shape, ShapeType, TShape, TShapeId};
 
 pub use crate::entity::GeometryStore;
 
@@ -409,6 +409,30 @@ impl Model {
             .collect())
     }
 
+    /// A shape's children in *traversal* order.
+    ///
+    /// The same shapes as [`Model::children_of`], but with the list reversed
+    /// when the parent is reversed. Order carries meaning for a wire — its
+    /// edges run head to tail — and reversing a wire has to reverse the walk as
+    /// well as each edge, or consecutive edges stop sharing a vertex and the
+    /// boundary comes apart. For a shell or a solid the order means nothing and
+    /// the reversal is invisible.
+    ///
+    /// [`Model::children_of`] stays the raw accessor: it returns what is
+    /// stored, which is what a rebuild or a comparison wants.
+    ///
+    /// # Errors
+    ///
+    /// [`OgError::Dangling`](og_core::OgError::Dangling) if the shape does not
+    /// resolve in this model.
+    pub fn ordered_children_of(&self, shape: &Shape) -> OgResult<Vec<Shape>> {
+        let mut children = self.children_of(shape)?;
+        if shape.orientation() == Orientation::Reversed {
+            children.reverse();
+        }
+        Ok(children)
+    }
+
     /// Widen a shape's tolerance, and every sub-shape's with it.
     ///
     /// The cascade is the point. The containment rule is transitive: a face's
@@ -639,6 +663,37 @@ mod tests {
         model
             .add_face(FaceData::new(surface, Location::identity()), &[wire])
             .unwrap()
+    }
+
+    #[test]
+    fn reversing_a_wire_reverses_the_walk_as_well_as_each_edge() {
+        // Reversing each edge without reversing the order breaks the chain:
+        // edge 1 would end where it used to start while edge 2 still starts
+        // where it used to, so consecutive edges stop meeting and a face built
+        // on the wire comes apart along its boundary.
+        let mut model = Model::new();
+        let face = square(&mut model);
+        let wire = model.children_of(&face).unwrap()[0].clone();
+
+        let forward = model.ordered_children_of(&wire).unwrap();
+        let backward = model.ordered_children_of(&wire.reversed()).unwrap();
+
+        assert_eq!(forward.len(), 4);
+        assert_eq!(backward.len(), 4);
+        for (i, edge) in backward.iter().enumerate() {
+            let partner = &forward[3 - i];
+            assert!(edge.is_same(partner), "the order did not reverse");
+            assert_eq!(
+                edge.orientation(),
+                Orientation::Reversed.compose(partner.orientation()),
+                "each edge should also flip"
+            );
+        }
+
+        // The raw accessor keeps the stored order, which is what a rebuild
+        // wants and what a traversal must not use.
+        let raw = model.children_of(&wire.reversed()).unwrap();
+        assert!(raw[0].is_same(&forward[0]));
     }
 
     #[test]

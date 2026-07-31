@@ -9,5 +9,9 @@
 //! need.
 
 pub mod discretize;
+pub mod triangulate;
 
-pub use discretize::{Deflection, Polyline, discretize, discretize_planar};
+pub use discretize::{
+    Deflection, Polyline, discretize, discretize_planar, is_straight, is_straight_planar,
+};
+pub use triangulate::{Mesh, polyline_of_edge, triangulate, triangulate_face};

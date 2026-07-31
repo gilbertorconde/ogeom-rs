@@ -435,11 +435,13 @@ name = "og-mesh"
 version = "0.0.0"
 dependencies = [
  "approx",
+ "og-algo",
  "og-core",
  "og-geom",
  "og-math",
  "og-topo",
  "proptest",
+ "spade",
 ]
 
 [[package]]
@@ -679,6 +681,18 @@ name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+
+[[package]]
+name = "spade"
+version = "2.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9699399fd9349b00b184f5635b074f9ec93afffef30c853f8c875b32c0f8c7fa"
+dependencies = [
+ "hashbrown 0.16.1",
+ "num-traits",
+ "robust",
+ "smallvec",
+]
 
 [[package]]
 name = "syn"

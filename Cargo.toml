@@ -77,6 +77,13 @@ nalgebra = "0.35"
 # bound leaves the sign undecided.
 robust = "1.2"
 
+# --- triangulation ---
+# Constrained Delaunay with refinement, pure Rust, built on the same Shewchuk
+# predicates og-core uses. Ear clipping was the alternative and offers no
+# quality guarantee and no way to insert interior points, which a curved face
+# needs.
+spade = "2.15"
+
 # --- collections ---
 hashbrown = "0.16"
 indexmap = "2"

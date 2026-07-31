@@ -268,7 +268,39 @@ pub fn make_face(
     }
 
     let id = model.geometry_mut().add_surface(surface);
-    let data = FaceData::new(id, Location::identity());
+    make_face_on(model, id, wires, tol)
+}
+
+/// Build a face on a surface the model already holds.
+///
+/// The distinction from [`make_face`] matters more than it looks: a pcurve
+/// names the surface it is drawn on by id, so an edge's pcurve and the face
+/// bounded by that edge have to name the *same* id. Registering the surface
+/// twice gives two ids for one surface, and every lookup of "the pcurve on this
+/// face" comes back empty even though the pcurve is right there.
+///
+/// # Errors
+///
+/// As [`make_face`].
+pub fn make_face_on(
+    model: &mut Model,
+    surface: og_topo::SurfaceId,
+    wires: &[Shape],
+    tol: Tolerances,
+) -> OgResult<Built> {
+    for (i, wire) in wires.iter().enumerate() {
+        if model.kind_of(wire)? != ShapeType::Wire {
+            og_bail!(Construction, "a face is bounded by wires");
+        }
+        if !is_wire_closed(model, wire, tol)? {
+            og_bail!(
+                Construction,
+                "wire {i} is open; an open boundary encloses no area"
+            );
+        }
+    }
+
+    let data = FaceData::new(surface, Location::identity());
     let face = model.add_face(data, wires)?;
 
     let mut history = History::new();

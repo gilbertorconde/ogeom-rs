@@ -1,0 +1,1117 @@
+//! Triangulating a face.
+//!
+//! The second half of tessellation. A face is a trimmed region of a surface, so
+//! the triangulation is built in the surface's `(u, v)` parameter space — where
+//! the region is an ordinary polygon with holes — and then lifted back into
+//! space by evaluating the surface at each vertex.
+//!
+//! # Why parameter space
+//!
+//! Triangulating in 3D would mean deciding which side of a curved boundary a
+//! point falls on, in space, which is the point-in-solid problem. In parameter
+//! space the boundary is a closed 2D polygon and the question is a winding
+//! count. The surface does the rest.
+//!
+//! The cost is that parameter space is distorted: equal steps in `(u, v)` cover
+//! very different distances near a sphere's pole than near its equator. So the
+//! interior points are chosen by measuring deflection *in space* and the
+//! triangulation is done in parameter space — measuring where the answer
+//! matters, connecting where it is easy.
+//!
+//! # Watertightness
+//!
+//! A face's boundary points come from discretizing the *edge's* 3D curve and
+//! evaluating the pcurve at those same parameters. Two faces sharing an edge
+//! therefore place their boundary vertices at identical spatial positions, and
+//! the join has no gap. Discretizing each face's pcurve independently would
+//! give each face its own idea of where the edge runs, and the seams would show.
+
+use og_core::{OgResult, Tolerances, og_bail};
+use og_geom::{Curve2d, Surface, SurfaceGeometry};
+use og_math::{Aabb, Direction, Point, Point2, Vector};
+use og_topo::{EdgeRepr, Model, NodeData, Orientation, Shape, ShapeType};
+use spade::{ConstrainedDelaunayTriangulation, Point2 as SpadePoint, Triangulation as _};
+
+use crate::discretize::{Deflection, discretize};
+
+/// A triangulated surface.
+///
+/// Vertices carry their parameters as well as their positions, so a caller can
+/// ask the exact surface about a triangulated point rather than only the
+/// approximation.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Mesh {
+    /// Vertex positions.
+    pub positions: Vec<Point>,
+    /// Outward unit normals, one per vertex.
+    pub normals: Vec<Vector>,
+    /// The surface parameters each vertex came from.
+    pub parameters: Vec<(f64, f64)>,
+    /// Triangles, as indices into the vertex arrays, wound counter-clockwise
+    /// about the outward normal.
+    pub triangles: Vec<[u32; 3]>,
+    /// Whether every face met its requested deflection.
+    pub deflection_met: bool,
+}
+
+impl Mesh {
+    /// An empty mesh.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            deflection_met: true,
+            ..Self::default()
+        }
+    }
+
+    /// Number of vertices.
+    #[must_use]
+    pub fn vertex_count(&self) -> usize {
+        self.positions.len()
+    }
+
+    /// Number of triangles.
+    #[must_use]
+    pub fn triangle_count(&self) -> usize {
+        self.triangles.len()
+    }
+
+    /// Whether the mesh holds no triangles.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.triangles.is_empty()
+    }
+
+    /// The bounding box of the vertices.
+    #[must_use]
+    pub fn bounds(&self) -> Aabb {
+        Aabb::of_points(&self.positions)
+    }
+
+    /// The total area of the triangles.
+    ///
+    /// An *under*estimate of the surface's own area for a convex patch, since a
+    /// triangle chord-cuts the surface it spans. It converges from below as the
+    /// deflection tightens.
+    #[must_use]
+    pub fn area(&self) -> f64 {
+        self.triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|i| self.positions[i as usize]);
+                (b - a).cross(c - a).magnitude() * 0.5
+            })
+            .sum()
+    }
+
+    /// The signed volume enclosed, by the divergence theorem.
+    ///
+    /// Meaningful only for a mesh that is closed and consistently wound
+    /// outward: each triangle contributes the signed volume of the tetrahedron
+    /// it forms with the origin, and the contributions cancel except over the
+    /// enclosed region. An open mesh gives a number with no meaning, and a mesh
+    /// wound inward gives the negative — which is why
+    /// [`Mesh::is_closed`] exists to be asked first.
+    #[must_use]
+    pub fn volume(&self) -> f64 {
+        self.triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|i| self.positions[i as usize].to_vector());
+                a.dot(b.cross(c)) / 6.0
+            })
+            .sum()
+    }
+
+    /// Whether every triangle edge is shared by exactly two triangles.
+    ///
+    /// The mesh equivalent of a closed shell, and the precondition for
+    /// [`Mesh::volume`] meaning anything.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        use std::collections::HashMap;
+        let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+        for t in &self.triangles {
+            for i in 0..3 {
+                let (a, b) = (t[i], t[(i + 1) % 3]);
+                *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        !uses.is_empty() && uses.values().all(|&n| n == 2)
+    }
+
+    /// Append another mesh, shifting its indices.
+    pub fn append(&mut self, other: &Self) {
+        #[allow(clippy::cast_possible_truncation)]
+        let offset = self.positions.len() as u32;
+        self.positions.extend_from_slice(&other.positions);
+        self.normals.extend_from_slice(&other.normals);
+        self.parameters.extend_from_slice(&other.parameters);
+        self.triangles
+            .extend(other.triangles.iter().map(|t| t.map(|i| i + offset)));
+        self.deflection_met &= other.deflection_met;
+    }
+
+    /// Merge vertices that coincide within `tol`, rewiring the triangles.
+    ///
+    /// Faces are triangulated independently, so a shared edge produces two
+    /// copies of every boundary vertex — at identical positions, since both
+    /// came from the same edge discretization, but as separate entries. Merging
+    /// them is what turns a pile of face meshes into one closed surface, and
+    /// what lets [`Mesh::is_closed`] answer truthfully.
+    #[must_use]
+    pub fn welded(&self, tol: Tolerances) -> Self {
+        use std::collections::HashMap;
+
+        // Quantize to a grid a good deal finer than the tolerance, then check
+        // the neighbourhood: hashing alone would separate two points that
+        // straddle a cell boundary however close they are.
+        let cell = tol.confusion().max(f64::MIN_POSITIVE);
+        let key = |p: Point| {
+            #[allow(clippy::cast_possible_truncation)]
+            (
+                (p.x / cell).round() as i64,
+                (p.y / cell).round() as i64,
+                (p.z / cell).round() as i64,
+            )
+        };
+
+        let mut buckets: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
+        let mut remap = vec![0_u32; self.positions.len()];
+        let mut out = Self::new();
+        out.deflection_met = self.deflection_met;
+
+        for (index, position) in self.positions.iter().enumerate() {
+            let (kx, ky, kz) = key(*position);
+            let mut found = None;
+            'search: for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        for &candidate in buckets
+                            .get(&(kx + dx, ky + dy, kz + dz))
+                            .map_or(&[][..], Vec::as_slice)
+                        {
+                            if out.positions[candidate as usize].is_equal(*position, tol) {
+                                found = Some(candidate);
+                                break 'search;
+                            }
+                        }
+                    }
+                }
+            }
+
+            let target = found.unwrap_or_else(|| {
+                #[allow(clippy::cast_possible_truncation)]
+                let fresh = out.positions.len() as u32;
+                out.positions.push(*position);
+                out.normals.push(self.normals[index]);
+                out.parameters.push(self.parameters[index]);
+                buckets.entry((kx, ky, kz)).or_default().push(fresh);
+                fresh
+            });
+            remap[index] = target;
+        }
+
+        for t in &self.triangles {
+            let mapped = t.map(|i| remap[i as usize]);
+            // A triangle whose corners merged is degenerate and contributes
+            // nothing but trouble to anything that divides by its area.
+            if mapped[0] != mapped[1] && mapped[1] != mapped[2] && mapped[2] != mapped[0] {
+                out.triangles.push(mapped);
+            }
+        }
+        out
+    }
+}
+
+/// Triangulate one face.
+///
+/// # Errors
+///
+/// [`OgError::Construction`](og_core::OgError::Construction) if `face` is not a
+/// face or its geometry is missing;
+/// [`OgError::Dangling`](og_core::OgError::Dangling) if a handle fails to
+/// resolve; [`OgError::NotDone`](og_core::OgError::NotDone) if the boundary
+/// cannot be triangulated.
+pub fn triangulate_face(
+    model: &Model,
+    face: &Shape,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgResult<Mesh> {
+    deflection.validate()?;
+    if model.kind_of(face)? != ShapeType::Face {
+        og_bail!(Construction, "expected a face");
+    }
+    let Some(node) = model.node(face) else {
+        og_bail!(Dangling, "face is not in this model");
+    };
+    let NodeData::Face(data) = node.data() else {
+        og_bail!(Construction, "face node holds no face data");
+    };
+    let Some(surface) = model.geometry().surface(data.surface) else {
+        og_bail!(Dangling, "face refers to a surface not in this model");
+    };
+    let placement = face.transform(model.datums())?;
+
+    let mut rings = Vec::new();
+    let mut met = true;
+    for wire in model.ordered_children_of(face)? {
+        let (ring, ring_met) = boundary_ring(model, &wire, data.surface, deflection, tol)?;
+        met &= ring_met;
+        if ring.len() >= 3 {
+            rings.push(ring);
+        }
+    }
+
+    let uv = if rings.is_empty() {
+        // A face with no wires covers its surface's whole domain, so the domain
+        // rectangle is the boundary.
+        vec![domain_ring(surface, deflection, tol)]
+    } else {
+        rings
+    };
+
+    let planar = triangulate_region(&uv, surface, deflection, tol)?;
+
+    // Lift into space. The normal follows the face's orientation, not the
+    // surface's: a reversed face presents the other side, and a renderer or a
+    // volume computation that ignored that would have the solid inside out.
+    let flip = face.orientation() == Orientation::Reversed;
+    let mut mesh = Mesh::new();
+    mesh.deflection_met = met;
+    for (u, v) in planar.parameters {
+        let point = placement.apply(surface.point_at(u, v, tol)?);
+        let normal = surface
+            .normal_at(u, v, tol)
+            .map_or(Vector::ZERO, |n| placement.apply_vector(n.vector()));
+        mesh.positions.push(point);
+        mesh.normals.push(if flip { -normal } else { normal });
+        mesh.parameters.push((u, v));
+    }
+    mesh.triangles = planar
+        .triangles
+        .into_iter()
+        .map(|t| if flip { [t[0], t[2], t[1]] } else { t })
+        .collect();
+    Ok(mesh)
+}
+
+/// Triangulate every face below a shape, welded into one mesh.
+///
+/// # Errors
+///
+/// As [`triangulate_face`].
+pub fn triangulate(
+    model: &Model,
+    shape: &Shape,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgResult<Mesh> {
+    let mut mesh = Mesh::new();
+    for face in og_topo::explore(model, shape, og_topo::Filter::OfType(ShapeType::Face))? {
+        mesh.append(&triangulate_face(model, &face, deflection, tol)?);
+    }
+    Ok(mesh.welded(tol))
+}
+
+/// The boundary of one wire, in the face's parameter space.
+///
+/// Each edge is discretized in *space* and its pcurve evaluated at the resulting
+/// parameters, so two faces sharing the edge agree on where its points are.
+fn boundary_ring(
+    model: &Model,
+    wire: &Shape,
+    surface: og_topo::SurfaceId,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgResult<(Vec<Point2>, bool)> {
+    let mut ring: Vec<Point2> = Vec::new();
+    let mut met = true;
+
+    for edge in model.ordered_children_of(wire)? {
+        let Some(node) = model.node(&edge) else {
+            og_bail!(Dangling, "edge is not in this model");
+        };
+        let NodeData::Edge(data) = node.data() else {
+            og_bail!(Construction, "edge node holds no edge data");
+        };
+        let Some(EdgeRepr::PCurve {
+            curve: pcurve_id,
+            range: pcurve_range,
+            ..
+        }) = data.pcurve_on(surface)
+        else {
+            og_bail!(
+                Construction,
+                "edge has no pcurve on this face, so the face cannot be \
+                 triangulated in its own parameter space"
+            );
+        };
+        let Some(pcurve) = model.geometry().pcurve(*pcurve_id) else {
+            og_bail!(Dangling, "pcurve is not in this model");
+        };
+
+        // Sample where the *3D* curve says to, so an adjacent face lands on the
+        // same points.
+        let samples = match sample_parameters(model, data, deflection, tol)? {
+            Some((parameters, edge_met)) => {
+                met &= edge_met;
+                map_to_pcurve(&parameters, data, *pcurve_range)
+            }
+            // No 3D curve to defer to — fall back to the pcurve's own shape.
+            None => {
+                let (_, parameters) =
+                    crate::discretize::discretize_planar(pcurve, *pcurve_range, deflection, tol)?;
+                parameters
+            }
+        };
+
+        let mut points: Vec<Point2> = samples
+            .iter()
+            .map(|u| pcurve.point_at(*u, tol))
+            .collect::<OgResult<_>>()?;
+        if edge.orientation() == Orientation::Reversed {
+            points.reverse();
+        }
+        // The previous edge already contributed the shared vertex.
+        if !ring.is_empty() && !points.is_empty() {
+            points.remove(0);
+        }
+        ring.extend(points);
+    }
+
+    // A closed ring repeats its first point at the end; the triangulator wants
+    // it named once.
+    if ring.len() > 2
+        && let (Some(first), Some(last)) = (ring.first().copied(), ring.last().copied())
+        && first.is_equal(last, tol)
+    {
+        ring.pop();
+    }
+    Ok((ring, met))
+}
+
+/// Parameters at which to sample an edge, taken from its 3D curve.
+fn sample_parameters(
+    model: &Model,
+    data: &og_topo::EdgeData,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgResult<Option<(Vec<f64>, bool)>> {
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        return Ok(None);
+    };
+    let Some(geometry) = model.geometry().curve(*curve) else {
+        og_bail!(Dangling, "curve is not in this model");
+    };
+    let line = discretize(geometry, *range, deflection, tol)?;
+    Ok(Some((line.parameters, line.deflection_met)))
+}
+
+/// Map parameters on the 3D curve onto the pcurve's own range.
+///
+/// The two are parameterized over their own intervals; `same_parameter` means
+/// they agree *proportionally*, which is what this converts.
+fn map_to_pcurve(
+    parameters: &[f64],
+    data: &og_topo::EdgeData,
+    pcurve_range: (f64, f64),
+) -> Vec<f64> {
+    let Some(EdgeRepr::Curve3d { range, .. }) = data.curve3d() else {
+        return parameters.to_vec();
+    };
+    let (ca, cb) = *range;
+    let (pa, pb) = pcurve_range;
+    if (cb - ca).abs() <= f64::MIN_POSITIVE {
+        return parameters.to_vec();
+    }
+    parameters
+        .iter()
+        .map(|u| pa + (pb - pa) * (u - ca) / (cb - ca))
+        .collect()
+}
+
+/// The edge of a surface's domain, as a boundary ring.
+///
+/// Refined, not just the four corners. A triangulation only ever connects the
+/// points it is given, so a boundary named by its corners alone forces long
+/// triangles reaching right across the domain to find one — on a sphere, a
+/// sliver from the equator to the pole. The interior refinement cannot fix that;
+/// the missing points are on the boundary.
+fn domain_ring(surface: &SurfaceGeometry, deflection: Deflection, tol: Tolerances) -> Vec<Point2> {
+    let ((ua, ub), (va, vb)) = surface.domain();
+    if ![ua, ub, va, vb].iter().all(|x| x.is_finite()) {
+        return Vec::new();
+    }
+
+    let along_u = |v: f64| {
+        refine_direction(ua, ub, deflection.chord, |a, b| {
+            sag_between(surface, (a, v), (b, v), tol)
+        })
+    };
+    let along_v = |u: f64| {
+        refine_direction(va, vb, deflection.chord, |a, b| {
+            sag_between(surface, (u, a), (u, b), tol)
+        })
+    };
+
+    // Counter-clockwise around the rectangle. Each side drops its final point,
+    // which the next side contributes: a repeated vertex would be a
+    // zero-length boundary edge, and a constraint of zero length is not one.
+    let (bottom, top) = (along_u(va), along_u(vb));
+    let (left, right) = (along_v(ua), along_v(ub));
+    let mut ring = Vec::new();
+    ring.extend(
+        bottom[..bottom.len() - 1]
+            .iter()
+            .map(|u| Point2::new(*u, va)),
+    );
+    ring.extend(right[..right.len() - 1].iter().map(|v| Point2::new(ub, *v)));
+    ring.extend(top[1..].iter().rev().map(|u| Point2::new(*u, vb)));
+    ring.extend(left[1..].iter().rev().map(|v| Point2::new(ua, *v)));
+    ring
+}
+
+/// A triangulation still in parameter space, before it is lifted onto the
+/// surface.
+struct PlanarMesh {
+    /// The `(u, v)` of each vertex.
+    parameters: Vec<(f64, f64)>,
+    /// Triangles as indices into `parameters`.
+    triangles: Vec<[u32; 3]>,
+}
+
+/// Triangulate a region in parameter space, given its boundary rings.
+///
+/// The first ring is the outer boundary; the rest are holes.
+fn triangulate_region(
+    rings: &[Vec<Point2>],
+    surface: &SurfaceGeometry,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgResult<PlanarMesh> {
+    let mut cdt: ConstrainedDelaunayTriangulation<SpadePoint<f64>> =
+        ConstrainedDelaunayTriangulation::new();
+
+    // The boundary edges are constraints, so the triangulation respects the
+    // trimming rather than spanning across a hole.
+    for ring in rings {
+        let mut ring_handles = Vec::with_capacity(ring.len());
+        for p in ring {
+            let handle = cdt
+                .insert(SpadePoint::new(p.x, p.y))
+                .map_err(|e| og_core::og_err!(NotDone, "boundary insertion failed: {e}"))?;
+            ring_handles.push(handle);
+        }
+        for i in 0..ring_handles.len() {
+            let (a, b) = (ring_handles[i], ring_handles[(i + 1) % ring_handles.len()]);
+            if a != b && cdt.can_add_constraint(a, b) {
+                cdt.add_constraint(a, b);
+            }
+        }
+    }
+
+    // Interior points where the surface bends away from the flat triangle. A
+    // planar face needs none, which is why this is driven by measured
+    // deflection rather than by a fixed grid.
+    add_interior_points(&mut cdt, rings, surface, deflection, tol)?;
+
+    let mut parameters = Vec::new();
+    let mut index_of = std::collections::HashMap::new();
+    for (i, vertex) in cdt.vertices().enumerate() {
+        let p = vertex.position();
+        index_of.insert(vertex.fix(), i);
+        parameters.push((p.x, p.y));
+    }
+
+    let mut triangles = Vec::new();
+    for triangle in cdt.inner_faces() {
+        let vertices = triangle.vertices();
+        let centre = triangle.center();
+        // A constrained Delaunay covers the convex hull of its input, so
+        // triangles outside the trimmed region — across a concavity, or inside
+        // a hole — have to be discarded. Winding tells them apart.
+        if !inside_region(rings, Point2::new(centre.x, centre.y)) {
+            continue;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let indices = [
+            index_of[&vertices[0].fix()] as u32,
+            index_of[&vertices[1].fix()] as u32,
+            index_of[&vertices[2].fix()] as u32,
+        ];
+        triangles.push(indices);
+    }
+
+    if triangles.is_empty() {
+        og_bail!(
+            NotDone,
+            "the face's boundary enclosed no triangulable region"
+        );
+    }
+    Ok(PlanarMesh {
+        parameters,
+        triangles,
+    })
+}
+
+/// Add interior points wherever the surface deviates from flat by more than the
+/// deflection allows.
+///
+/// The two parameter directions are refined *independently*, and that is not an
+/// optimization — it is the difference between converging and not. A uniform
+/// grid on a sphere puts as many meridians through the pole as through the
+/// equator, so the triangles there become arbitrarily thin slivers in space.
+/// The summed area of such a mesh does not approach the sphere's; it grows
+/// without bound as the grid tightens. (Schwarz's lantern is the standard
+/// example: an inscribed polyhedron whose area diverges under refinement.)
+///
+/// Refining each direction by its own measured sag fixes it at the source. Near
+/// a pole the circle of latitude has almost no radius, so a chord right across
+/// it sags by almost nothing and the direction stops subdividing after one or
+/// two steps — while the meridian direction, whose curvature does not change,
+/// keeps refining. The mesh degenerates into a fan, which is the right shape.
+fn add_interior_points(
+    cdt: &mut ConstrainedDelaunayTriangulation<SpadePoint<f64>>,
+    rings: &[Vec<Point2>],
+    surface: &SurfaceGeometry,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgResult<()> {
+    // A plane is flat everywhere; sampling it would add points that buy nothing.
+    if matches!(surface.kind(), og_geom::SurfaceKind::Plane) {
+        return Ok(());
+    }
+
+    let bound = rings.iter().flatten().fold(og_math::Aabb::EMPTY, |acc, p| {
+        acc.with_point(Point::new(p.x, p.y, 0.0))
+    });
+    let (Some(low), Some(high)) = (bound.low(), bound.high()) else {
+        return Ok(());
+    };
+
+    // The v resolution has to hold everywhere the region reaches, so its sag is
+    // the worst over a spread of u probes rather than the sag along one line.
+    // A surface of revolution is the same at every u and a lofted one is not.
+    #[allow(clippy::cast_precision_loss)]
+    let probes: Vec<f64> = (0..=U_PROBES)
+        .map(|i| low.x + (high.x - low.x) * i as f64 / U_PROBES as f64)
+        .collect();
+    let rows = refine_direction(low.y, high.y, deflection.chord, |a, b| {
+        probes
+            .iter()
+            .map(|u| sag_between(surface, (*u, a), (*u, b), tol))
+            .fold(0.0_f64, f64::max)
+    });
+
+    for &v in &rows[1..rows.len().saturating_sub(1)] {
+        // Each row gets its own u resolution, measured at that row.
+        let columns = refine_direction(low.x, high.x, deflection.chord, |a, b| {
+            sag_between(surface, (a, v), (b, v), tol)
+        });
+        for &u in &columns[1..columns.len().saturating_sub(1)] {
+            // Interior points only: the boundary is already constrained, and a
+            // point landing just off a constraint would split it.
+            if !inside_region(rings, Point2::new(u, v)) {
+                continue;
+            }
+            cdt.insert(SpadePoint::new(u, v))
+                .map_err(|e| og_core::og_err!(NotDone, "interior insertion failed: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// How many places across the domain the v resolution is measured at.
+const U_PROBES: usize = 8;
+
+/// The most subdivisions one parameter direction may take.
+///
+/// A surface that has not converged by 512 has a singularity, not a resolution
+/// problem, and the ceiling is what makes that a coarse mesh rather than an
+/// exhausted allocator.
+const MAX_DIRECTION_STEPS: usize = 512;
+
+/// Subdivide `[lo, hi]` until no sub-interval sags further than `chord`.
+///
+/// The same adaptive bisection [`discretize`] uses on a curve, applied to a
+/// line through parameter space. Returns the parameters in increasing order,
+/// endpoints included.
+fn refine_direction<F: Fn(f64, f64) -> f64>(lo: f64, hi: f64, chord: f64, sag: F) -> Vec<f64> {
+    let mut values = vec![lo, f64::midpoint(lo, hi), hi];
+    while values.len() < MAX_DIRECTION_STEPS {
+        let Some(i) = (0..values.len() - 1).find(|&i| sag(values[i], values[i + 1]) > chord) else {
+            break;
+        };
+        let mid = f64::midpoint(values[i], values[i + 1]);
+        // A split that does not divide the interval means the parameters have
+        // reached the resolution of f64, and refining further would loop.
+        if mid <= values[i] || mid >= values[i + 1] {
+            break;
+        }
+        values.insert(i + 1, mid);
+    }
+    values
+}
+
+/// How far the surface departs from the chord joining two parameter points.
+///
+/// Measured in space, which is the only place the number means anything: the
+/// same step in `u` covers a metre at a sphere's equator and a millimetre near
+/// its pole.
+fn sag_between(
+    surface: &SurfaceGeometry,
+    from: (f64, f64),
+    to: (f64, f64),
+    tol: Tolerances,
+) -> f64 {
+    let mid = (f64::midpoint(from.0, to.0), f64::midpoint(from.1, to.1));
+    let (Ok(a), Ok(b), Ok(m)) = (
+        surface.point_at(from.0, from.1, tol),
+        surface.point_at(to.0, to.1, tol),
+        surface.point_at(mid.0, mid.1, tol),
+    ) else {
+        // Off the surface's domain; nothing to refine towards.
+        return 0.0;
+    };
+    og_math::Axis::through(a, b, tol).map_or_else(|_| a.distance(m), |axis| axis.distance_to(m))
+}
+
+/// Whether a point is inside the region the rings bound.
+///
+/// Even-odd winding: inside the outer ring and outside every hole. The rings
+/// come from wires whose direction already encodes outer from inner, but
+/// counting crossings does not depend on that being right, which makes it
+/// robust to a wire that was built the wrong way round.
+fn inside_region(rings: &[Vec<Point2>], p: Point2) -> bool {
+    let mut inside = false;
+    for ring in rings {
+        if crosses_odd_times(ring, p) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+/// Ray-crossing count for one ring.
+fn crosses_odd_times(ring: &[Point2], p: Point2) -> bool {
+    let mut inside = false;
+    let n = ring.len();
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        // A horizontal ray in +u. The half-open comparison counts a vertex
+        // lying exactly on the ray once rather than twice or not at all.
+        if (a.y > p.y) != (b.y > p.y) {
+            let t = (p.y - a.y) / (b.y - a.y);
+            if p.x < t.mul_add(b.x - a.x, a.x) {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+/// The unit normal of a triangle, or `None` if it is degenerate.
+#[must_use]
+pub fn triangle_normal(a: Point, b: Point, c: Point, tol: Tolerances) -> Option<Direction> {
+    Direction::from_cross(b - a, c - a, tol).ok()
+}
+
+/// Discretize an edge into a polyline in space, for display or coarse queries.
+///
+/// # Errors
+///
+/// As [`discretize`].
+pub fn polyline_of_edge(
+    model: &Model,
+    edge: &Shape,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgResult<Vec<Point>> {
+    if model.kind_of(edge)? != ShapeType::Edge {
+        og_bail!(Construction, "expected an edge");
+    }
+    let Some(node) = model.node(edge) else {
+        og_bail!(Dangling, "edge is not in this model");
+    };
+    let NodeData::Edge(data) = node.data() else {
+        og_bail!(Construction, "edge node holds no edge data");
+    };
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        return Ok(Vec::new());
+    };
+    let Some(geometry) = model.geometry().curve(*curve) else {
+        og_bail!(Dangling, "curve is not in this model");
+    };
+    let placement = edge.transform(model.datums())?;
+    let line = discretize(geometry, *range, deflection, tol)?;
+    let mut points: Vec<Point> = line.points.iter().map(|p| placement.apply(*p)).collect();
+    if edge.orientation() == Orientation::Reversed {
+        points.reverse();
+    }
+    Ok(points)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+    use og_algo::make_box;
+    use og_math::Frame;
+    use og_topo::explore_unique;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn fine() -> Deflection {
+        Deflection {
+            chord: 1e-3,
+            angular: 0.05,
+            ..Deflection::default()
+        }
+    }
+
+    #[test]
+    fn a_box_face_triangulates_into_two_triangles() {
+        // A planar square needs no interior points at all, which is what makes
+        // deflection-driven refinement worth having: a fixed grid would add
+        // dozens that buy nothing.
+        let mut model = Model::new();
+        let built = make_box(&mut model, Frame::WORLD, (2.0, 3.0, 4.0), T).unwrap();
+        let faces = explore_unique(&model, &built.shape, ShapeType::Face).unwrap();
+
+        for face in &faces {
+            let mesh = triangulate_face(&model, face, fine(), T).unwrap();
+            assert_eq!(mesh.triangle_count(), 2, "a rectangle is two triangles");
+            assert_eq!(mesh.vertex_count(), 4);
+            assert!(mesh.deflection_met);
+        }
+    }
+
+    #[test]
+    fn a_boxs_mesh_is_closed_and_reports_the_right_volume() {
+        // The end-to-end check: triangulate, weld, and ask the mesh what it
+        // encloses. A volume that comes out negative would mean the faces are
+        // wound inward; one that is wrong in magnitude would mean the
+        // triangulation is not covering the boundary.
+        let mut model = Model::new();
+        let size = (2.0, 3.0, 4.0);
+        let built = make_box(&mut model, Frame::WORLD, size, T).unwrap();
+        let mesh = triangulate(&model, &built.shape, fine(), T).unwrap();
+
+        assert_eq!(mesh.triangle_count(), 12, "six faces, two triangles each");
+        assert_eq!(mesh.vertex_count(), 8, "welding merged the shared corners");
+        assert!(
+            mesh.is_closed(),
+            "every triangle edge should be shared by two"
+        );
+        assert_relative_eq!(mesh.volume(), size.0 * size.1 * size.2, epsilon = 1e-9);
+        assert_relative_eq!(
+            mesh.area(),
+            2.0 * (size.0 * size.1 + size.1 * size.2 + size.2 * size.0),
+            epsilon = 1e-9
+        );
+    }
+
+    #[test]
+    fn welding_is_what_closes_the_mesh() {
+        // Without it each face brings its own copy of every boundary vertex, so
+        // no triangle edge is shared and the surface is a pile of loose squares.
+        let mut model = Model::new();
+        let built = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T).unwrap();
+
+        let mut loose = Mesh::new();
+        for face in og_topo::explore(
+            &model,
+            &built.shape,
+            og_topo::Filter::OfType(ShapeType::Face),
+        )
+        .unwrap()
+        {
+            loose.append(&triangulate_face(&model, &face, fine(), T).unwrap());
+        }
+        assert_eq!(loose.vertex_count(), 24, "four corners per face, unmerged");
+        assert!(!loose.is_closed());
+
+        let welded = loose.welded(T);
+        assert_eq!(welded.vertex_count(), 8);
+        assert!(welded.is_closed());
+    }
+
+    #[test]
+    fn a_reversed_face_presents_the_other_side() {
+        // A renderer or a volume computation that ignored orientation would
+        // have the solid inside out, and nothing about the positions says so.
+        let mut model = Model::new();
+        let built = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T).unwrap();
+        let face = explore_unique(&model, &built.shape, ShapeType::Face).unwrap()[0].clone();
+
+        let forward = triangulate_face(&model, &face, fine(), T).unwrap();
+        let backward = triangulate_face(&model, &face.reversed(), fine(), T).unwrap();
+
+        assert_eq!(forward.triangle_count(), backward.triangle_count());
+        for (a, b) in forward.normals.iter().zip(&backward.normals) {
+            assert!(a.is_equal(-*b, T), "normals did not flip: {a:?} vs {b:?}");
+        }
+        // And the winding flipped with them, so the two agree.
+        let winding = |m: &Mesh, i: usize| {
+            let [a, b, c] = m.triangles[i].map(|k| m.positions[k as usize]);
+            (b - a).cross(c - a)
+        };
+        assert!(winding(&forward, 0).dot(winding(&backward, 0)) < 0.0);
+    }
+
+    #[test]
+    fn every_triangle_vertex_lies_on_the_surface_it_came_from() {
+        let mut model = Model::new();
+        let built = make_box(&mut model, Frame::WORLD, (2.0, 1.0, 3.0), T).unwrap();
+
+        for face in explore_unique(&model, &built.shape, ShapeType::Face).unwrap() {
+            let mesh = triangulate_face(&model, &face, fine(), T).unwrap();
+            let data = model.node(&face).unwrap().data().as_face().unwrap().clone();
+            let surface = model.geometry().surface(data.surface).unwrap();
+            for (position, (u, v)) in mesh.positions.iter().zip(&mesh.parameters) {
+                let exact = surface.point_at(*u, *v, T).unwrap();
+                assert!(
+                    position.is_equal(exact, T),
+                    "{position:?} is not on its surface"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_finer_deflection_never_gives_fewer_triangles() {
+        let mut model = Model::new();
+        let built = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T).unwrap();
+        let coarse = triangulate(&model, &built.shape, Deflection::default(), T).unwrap();
+        let detailed = triangulate(&model, &built.shape, fine(), T).unwrap();
+        assert!(detailed.triangle_count() >= coarse.triangle_count());
+        // Both enclose the same volume, since the faces are flat.
+        assert_relative_eq!(coarse.volume(), 1.0, epsilon = 1e-9);
+        assert_relative_eq!(detailed.volume(), 1.0, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn a_sphere_gets_interior_points_and_converges_on_its_true_area() {
+        // The whole point of measuring deflection in space rather than in
+        // parameter space. A sphere's parameter rectangle is uniform; the
+        // surface it maps to is not, and a fixed grid would be dense at the
+        // poles and coarse at the equator.
+        use og_algo::make_natural_face;
+        use og_geom::SphereSurface;
+        use og_math::Sphere;
+
+        let radius = 10.0;
+        let exact = 4.0 * std::f64::consts::PI * radius * radius;
+        let mut previous = 0.0;
+
+        for chord in [1.0_f64, 0.25, 0.05] {
+            let mut model = Model::new();
+            let surface = SphereSurface::new(Sphere::new(Frame::WORLD, radius, T).unwrap());
+            let face = make_natural_face(&mut model, surface.into()).unwrap().shape;
+            let deflection = Deflection {
+                chord,
+                ..Deflection::default()
+            };
+            let mesh = triangulate_face(&model, &face, deflection, T).unwrap();
+
+            assert!(
+                mesh.triangle_count() > 2,
+                "a curved face needs interior points, got {} triangles",
+                mesh.triangle_count()
+            );
+            // Every triangle chord-cuts the sphere, so the area comes in under
+            // the truth and climbs as the tolerance tightens.
+            let area = mesh.area();
+            assert!(area < exact, "a chord-cut area cannot exceed the surface's");
+            assert!(
+                area > previous,
+                "tightening the chord from the previous step lost area: \
+                 {area} after {previous}"
+            );
+            previous = area;
+        }
+        assert!(
+            previous > exact * 0.99,
+            "at a chord of 0.05 on a radius of 10 the area should be within a \
+             percent, got {previous} against {exact}"
+        );
+    }
+
+    #[test]
+    fn every_sphere_vertex_sits_at_the_right_radius() {
+        // Lifting through the surface is what makes the mesh curved at all; a
+        // vertex left in parameter space, or lifted with the wrong parameters,
+        // would land nowhere near the sphere.
+        use og_algo::make_natural_face;
+        use og_geom::SphereSurface;
+        use og_math::Sphere;
+
+        let mut model = Model::new();
+        let surface = SphereSurface::new(Sphere::new(Frame::WORLD, 3.0, T).unwrap());
+        let face = make_natural_face(&mut model, surface.into()).unwrap().shape;
+        let mesh = triangulate_face(&model, &face, Deflection::default(), T).unwrap();
+
+        for p in &mesh.positions {
+            assert_relative_eq!(p.to_vector().magnitude(), 3.0, epsilon = 1e-9);
+        }
+    }
+
+    #[test]
+    fn a_curved_domains_boundary_is_refined_not_just_its_corners() {
+        // The corners alone would leave the triangulation nothing to connect to
+        // along a side, so it reaches right across the domain for one — and a
+        // sliver from a sphere's equator to its pole makes the summed area
+        // diverge under refinement rather than converge.
+        use og_geom::{PlaneSurface, SphereSurface};
+        use og_math::{Plane, Sphere};
+
+        let sphere: SurfaceGeometry =
+            SphereSurface::new(Sphere::new(Frame::WORLD, 10.0, T).unwrap()).into();
+        let coarse = domain_ring(&sphere, Deflection::default(), T);
+        let fine_ring = domain_ring(&sphere, fine(), T);
+        assert!(coarse.len() > 4, "a sphere's domain edge is curved");
+        assert!(
+            fine_ring.len() > coarse.len(),
+            "a tighter chord should place more boundary points"
+        );
+
+        // No side may repeat a corner: a zero-length constraint is not one.
+        for w in fine_ring.windows(2) {
+            assert!(!w[0].is_equal(w[1], T), "the ring repeats a point");
+        }
+
+        // A plane is flat, so its domain needs only what closes the rectangle.
+        let plane: SurfaceGeometry = PlaneSurface::new(Plane::new(Frame::WORLD)).into();
+        assert!(domain_ring(&plane, fine(), T).len() >= 4);
+    }
+
+    #[test]
+    fn an_empty_mesh_answers_sensibly() {
+        let mesh = Mesh::new();
+        assert!(mesh.is_empty());
+        assert_eq!(mesh.triangle_count(), 0);
+        assert_relative_eq!(mesh.area(), 0.0);
+        assert_relative_eq!(mesh.volume(), 0.0);
+        assert!(!mesh.is_closed(), "nothing is not closed");
+        assert!(mesh.bounds().is_empty());
+    }
+
+    #[test]
+    fn welding_drops_triangles_that_collapse() {
+        // Three corners that merge into one describe no area, and anything that
+        // divides by a triangle's area would divide by zero.
+        let mut mesh = Mesh::new();
+        for _ in 0..3 {
+            mesh.positions.push(Point::ORIGIN);
+            mesh.normals.push(Vector::Z);
+            mesh.parameters.push((0.0, 0.0));
+        }
+        mesh.triangles.push([0, 1, 2]);
+        let welded = mesh.welded(T);
+        assert_eq!(welded.vertex_count(), 1);
+        assert_eq!(welded.triangle_count(), 0);
+    }
+
+    #[test]
+    fn appending_shifts_indices_rather_than_overlapping_them() {
+        let mut a = Mesh::new();
+        a.positions.push(Point::ORIGIN);
+        a.normals.push(Vector::Z);
+        a.parameters.push((0.0, 0.0));
+
+        let mut b = Mesh::new();
+        b.positions.push(Point::new(1.0, 0.0, 0.0));
+        b.normals.push(Vector::Z);
+        b.parameters.push((1.0, 0.0));
+        b.triangles.push([0, 0, 0]);
+
+        a.append(&b);
+        assert_eq!(a.vertex_count(), 2);
+        assert_eq!(
+            a.triangles[0],
+            [1, 1, 1],
+            "b's index moved past a's vertices"
+        );
+    }
+
+    #[test]
+    fn deflection_failure_propagates_through_the_whole_mesh() {
+        // One face that could not meet its tolerance makes the whole mesh's
+        // claim untrue, and the flag has to say so rather than being averaged
+        // away.
+        let mut a = Mesh::new();
+        let mut b = Mesh::new();
+        b.deflection_met = false;
+        a.append(&b);
+        assert!(!a.deflection_met);
+    }
+
+    #[test]
+    fn winding_detects_points_inside_and_outside_a_ring() {
+        let square = vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(1.0, 0.0),
+            Point2::new(1.0, 1.0),
+            Point2::new(0.0, 1.0),
+        ];
+        assert!(inside_region(
+            std::slice::from_ref(&square),
+            Point2::new(0.5, 0.5)
+        ));
+        assert!(!inside_region(
+            std::slice::from_ref(&square),
+            Point2::new(1.5, 0.5)
+        ));
+        assert!(!inside_region(
+            std::slice::from_ref(&square),
+            Point2::new(0.5, -0.5)
+        ));
+
+        // With a hole, the middle is outside again.
+        let hole = vec![
+            Point2::new(0.4, 0.4),
+            Point2::new(0.6, 0.4),
+            Point2::new(0.6, 0.6),
+            Point2::new(0.4, 0.6),
+        ];
+        let with_hole = vec![square, hole];
+        assert!(!inside_region(&with_hole, Point2::new(0.5, 0.5)));
+        assert!(inside_region(&with_hole, Point2::new(0.2, 0.2)));
+    }
+
+    #[test]
+    fn a_polyline_of_an_edge_runs_in_the_edges_direction() {
+        let mut model = Model::new();
+        let built = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T).unwrap();
+        let edge = explore_unique(&model, &built.shape, ShapeType::Edge).unwrap()[0].clone();
+
+        let forward = polyline_of_edge(&model, &edge, fine(), T).unwrap();
+        let backward = polyline_of_edge(&model, &edge.reversed(), fine(), T).unwrap();
+        assert!(forward.len() >= 2);
+        assert!(forward[0].is_equal(backward[backward.len() - 1], T));
+        assert!(forward[forward.len() - 1].is_equal(backward[0], T));
+    }
+
+    #[test]
+    fn triangulating_something_that_is_not_a_face_is_refused() {
+        let mut model = Model::new();
+        let built = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T).unwrap();
+        assert!(triangulate_face(&model, &built.shape, fine(), T).is_err());
+
+        let vertex = explore_unique(&model, &built.shape, ShapeType::Vertex).unwrap()[0].clone();
+        assert!(triangulate_face(&model, &vertex, fine(), T).is_err());
+        assert!(polyline_of_edge(&model, &vertex, fine(), T).is_err());
+    }
+
+    #[test]
+    fn a_triangles_normal_is_none_when_it_is_degenerate() {
+        let a = Point::ORIGIN;
+        let b = Point::new(1.0, 0.0, 0.0);
+        assert!(triangle_normal(a, b, Point::new(0.0, 1.0, 0.0), T).is_some());
+        assert!(triangle_normal(a, b, Point::new(2.0, 0.0, 0.0), T).is_none());
+        assert!(triangle_normal(a, a, a, T).is_none());
+    }
+}
