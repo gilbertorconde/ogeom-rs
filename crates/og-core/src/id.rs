@@ -37,6 +37,22 @@ impl EntityId {
     pub const fn get(self) -> u64 {
         self.0.get()
     }
+
+    /// An identity from a raw value, or `None` if it is zero.
+    ///
+    /// For reading a document back from a file, which has to reproduce the
+    /// identities it was written with — a reference recorded against
+    /// `EntityId(7)` has to still find entity seven. Nothing else should mint
+    /// one of these: within a document,
+    /// [`ProvenanceTable::record`](ProvenanceTable::record) is what issues an
+    /// identity, and it issues one that has something behind it.
+    #[must_use]
+    pub const fn from_raw(raw: u64) -> Option<Self> {
+        match NonZeroU64::new(raw) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
 }
 
 /// Identifies one invocation of a modeling operation.
@@ -253,6 +269,18 @@ impl ProvenanceTable {
         }
         out.sort_unstable();
         out
+    }
+
+    /// Every entity, in the order its identity was issued.
+    ///
+    /// For writing a document out: the table *is* the record of what every
+    /// entity is, and a file that dropped it would come back as a model whose
+    /// every reference had to be rebuilt from scratch.
+    pub fn iter(&self) -> impl Iterator<Item = (EntityId, &Provenance)> {
+        self.entries.iter().enumerate().filter_map(|(i, p)| {
+            // Ids start at 1, and the table cannot have grown past u64.
+            EntityId::from_raw(u64::try_from(i).ok()?.checked_add(1)?).map(|id| (id, p))
+        })
     }
 }
 

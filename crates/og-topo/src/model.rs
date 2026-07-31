@@ -54,6 +54,184 @@ impl Model {
         }
     }
 
+    /// Assemble a model from parts read back from a file.
+    ///
+    /// The one way into a [`Model`] that does not go through its builders, and
+    /// it exists for one reason: a builder *mints* an identity for every node
+    /// it makes (`docs/DATA_MODEL.md` §8). A document rebuilt through the
+    /// builders is therefore a different document from the one that was
+    /// written — every [`EntityId`] renumbered, every provenance record
+    /// replaced by a fresh `Primitive` one — and every reference into it,
+    /// which is the thing provenance exists to keep alive, is dead. Reading a
+    /// file has to reproduce the document it describes, identities and all.
+    ///
+    /// This is not a hole in "the builder is the sole mutation path". Nothing
+    /// here mutates an existing model; it assembles a new one, and it checks
+    /// the structural invariants the builders check before handing it back —
+    /// so a corrupt file is an error, not a model that answers wrongly.
+    ///
+    /// # Errors
+    ///
+    /// [`OgError::Dangling`](og_core::OgError::Dangling) if a node names a
+    /// child, a datum, a piece of geometry or an identity that is not there;
+    /// [`OgError::Construction`](og_core::OgError::Construction) if a node's
+    /// data does not match its kind, or a child is of the wrong kind for its
+    /// parent.
+    pub fn from_parts(parts: ModelParts) -> OgResult<Self> {
+        let ModelParts {
+            nodes,
+            datums,
+            geometry,
+            provenance,
+            identity,
+            current_op,
+        } = parts;
+
+        let mut store = DatumStore::new();
+        for datum in datums {
+            store.insert(datum);
+        }
+        let mut table = ProvenanceTable::new();
+        for entry in &provenance {
+            // Every id an entry names must already have been issued, which is
+            // what makes the derivation graph acyclic by construction.
+            for source in entry.inputs() {
+                if source.get() > table.len() as u64 {
+                    og_bail!(
+                        Dangling,
+                        "an entity is derived from identity {}, which no entry \
+                         before it issued",
+                        source.get()
+                    );
+                }
+            }
+            table.record(entry.clone());
+        }
+
+        let mut arena: Arena<TShape> = Arena::new();
+        for node in nodes {
+            arena.insert(node);
+        }
+
+        let mut model = Self {
+            nodes: arena,
+            datums: store,
+            geometry,
+            provenance: table,
+            identity: HashMap::new(),
+            current_op,
+        };
+        model.check_restored(&identity)?;
+        for (node, entity) in identity {
+            model.identity.insert(node, entity);
+        }
+        Ok(model)
+    }
+
+    /// Verify that a restored model's handles all resolve and its children are
+    /// of the kinds their parents admit.
+    fn check_restored(&self, identity: &[(TShapeId, EntityId)]) -> OgResult<()> {
+        for (id, node) in self.nodes.iter() {
+            let kind = node.kind();
+            match (kind, node.data()) {
+                (ShapeType::Vertex, NodeData::Vertex(_))
+                | (ShapeType::Edge, NodeData::Edge(_))
+                | (ShapeType::Face, NodeData::Face(_)) => {}
+                (
+                    ShapeType::Wire
+                    | ShapeType::Shell
+                    | ShapeType::Solid
+                    | ShapeType::CompSolid
+                    | ShapeType::Compound,
+                    NodeData::Container,
+                ) => {}
+                (kind, data) => {
+                    og_bail!(Construction, "node {id:?} is a {kind:?} and holds {data:?}")
+                }
+            }
+            self.check_node_geometry(id, node)?;
+
+            // A compound may hold anything; everything else admits exactly one
+            // kind of child, which is what makes traversal's assumptions safe.
+            let expected = kind.child_type();
+            for child in node.children() {
+                let Some(below) = self.nodes.get(child.node()) else {
+                    og_bail!(Dangling, "node {id:?} names a child that is not there");
+                };
+                if let Some(expected) = expected
+                    && kind != ShapeType::Compound
+                    && below.kind() != expected
+                {
+                    og_bail!(
+                        Construction,
+                        "a {kind:?} takes {expected:?} children; node {id:?} \
+                         names a {:?}",
+                        below.kind()
+                    );
+                }
+                self.check_location(child.location())?;
+            }
+        }
+        for (node, entity) in identity {
+            if self.nodes.get(*node).is_none() {
+                og_bail!(Dangling, "an identity is bound to a node that is not there");
+            }
+            if entity.get() > self.provenance.len() as u64 {
+                og_bail!(
+                    Dangling,
+                    "node {node:?} claims identity {}, which was never issued",
+                    entity.get()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Verify that a node's geometry handles resolve.
+    fn check_node_geometry(&self, id: TShapeId, node: &TShape) -> OgResult<()> {
+        match node.data() {
+            NodeData::Edge(data) => {
+                for repr in &data.representations {
+                    if let Some(location) = repr.location() {
+                        self.check_location(location)?;
+                    }
+                    if !self.geometry.holds(repr) {
+                        og_bail!(
+                            Dangling,
+                            "edge {id:?} names geometry that is not in this model"
+                        );
+                    }
+                }
+            }
+            NodeData::Face(data) => {
+                self.check_location(&data.location)?;
+                if self.geometry.surface(data.surface).is_none() {
+                    og_bail!(Dangling, "face {id:?} names a surface that is not there");
+                }
+                if let Some(mesh) = data.triangulation
+                    && self.geometry.triangulation(mesh).is_none()
+                {
+                    og_bail!(
+                        Dangling,
+                        "face {id:?} names a triangulation that is not there"
+                    );
+                }
+            }
+            NodeData::Vertex(_) | NodeData::Container => {}
+        }
+        Ok(())
+    }
+
+    /// Verify that every datum a placement names is interned.
+    fn check_location(&self, location: &Location) -> OgResult<()> {
+        for &(datum, _) in location.chain() {
+            if self.datums.get(datum).is_none() {
+                og_bail!(Dangling, "a placement names a datum that is not there");
+            }
+        }
+        Ok(())
+    }
+
     /// Begin a new operation, and return its identifier.
     ///
     /// Every node created from here on is attributed to it until the next call.
@@ -211,6 +389,21 @@ impl Model {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
+    }
+
+    /// Every topology node, with its handle, in arena order.
+    ///
+    /// For writing a document out. Traversal from a root shape reaches only
+    /// what that root bounds; a document is everything in it.
+    pub fn nodes(&self) -> impl Iterator<Item = (TShapeId, &TShape)> {
+        self.nodes.iter()
+    }
+
+    /// Every node that has been given an identity, with it.
+    pub fn identities(&self) -> impl Iterator<Item = (TShapeId, EntityId)> {
+        self.nodes
+            .iter()
+            .filter_map(|(id, _)| self.identity.get(&id).map(|entity| (id, *entity)))
     }
 
     /// Add a vertex.
@@ -540,6 +733,28 @@ impl Model {
         let datum = self.add_datum(transform);
         shape.moved(&Location::of(datum))
     }
+}
+
+/// A model's contents, laid out the way a file holds them.
+///
+/// Handed to [`Model::from_parts`]. Every list is in arena order, and a node's
+/// children name other nodes by their position in `nodes` — so the order is
+/// load-bearing rather than incidental, and a reader has to preserve it.
+#[derive(Debug, Default)]
+pub struct ModelParts {
+    /// The topology nodes.
+    pub nodes: Vec<TShape>,
+    /// The placement datums.
+    pub datums: Vec<crate::location::Datum>,
+    /// The geometry, already assembled.
+    pub geometry: GeometryStore,
+    /// Every entity's provenance, in the order identities were issued: the
+    /// first entry is `EntityId(1)`.
+    pub provenance: Vec<Provenance>,
+    /// Which identity each node carries.
+    pub identity: Vec<(TShapeId, EntityId)>,
+    /// The operation the document was left in.
+    pub current_op: OpId,
 }
 
 /// Which sub-shapes a traversal should yield.

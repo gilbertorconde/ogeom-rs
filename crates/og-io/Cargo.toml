@@ -15,6 +15,11 @@ og-geom.workspace = true
 og-topo.workspace = true
 
 [dev-dependencies]
+# The round trip is only worth testing against shapes something really built,
+# so the tests reach for the builders. Nothing in `og-algo` depends on `og-io`,
+# so this adds no cycle and nothing to the library's own dependencies.
+og-algo.workspace = true
+og-mesh.workspace = true
 approx.workspace = true
 proptest.workspace = true
 

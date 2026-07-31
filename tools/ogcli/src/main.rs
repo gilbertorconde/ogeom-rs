@@ -19,7 +19,7 @@ use og::{
         make_torus, make_wedge, surface_properties, volume_properties,
     },
     core::{OgResult, Tolerances, og_err},
-    io::{Encoding, write as write_stl},
+    io::{Encoding, native, write as write_stl},
     math::Frame,
     mesh::{Deflection, triangulate},
     topo::{Model, Shape, ShapeType, explore_unique},
@@ -42,6 +42,8 @@ Every shape command accepts, after its dimensions:
   --deflection <chord>   how finely to tessellate (default 0.1)
   --stl <path>           write the tessellation as binary STL
   --ascii                with --stl, write the ASCII encoding instead
+  --og <path>            write the whole shape as native .og text
+  --no-mesh              with --og, leave the cached tessellation out
 ";
 
 /// The primitives `build` knows how to make.
@@ -81,6 +83,8 @@ struct Options {
     deflection: Deflection,
     stl: Option<String>,
     encoding: Encoding,
+    native: Option<String>,
+    write_options: native::WriteOptions,
 }
 
 /// Build one primitive and report on it.
@@ -178,6 +182,15 @@ fn report(model: &Model, shape: &Shape, name: &str, options: &Options) -> OgResu
         }
     }
 
+    if let Some(path) = &options.native {
+        // The whole shape, not its tessellation: topology, geometry,
+        // tolerances and provenance, written so it reads back as the same
+        // document. `diff` is the comparison tool.
+        let text = native::write(model, std::slice::from_ref(shape), options.write_options)?;
+        std::fs::write(path, &text).map_err(|e| og_err!(NotDone, "could not write {path}: {e}"))?;
+        println!("  wrote {path} ({} lines)", text.lines().count());
+    }
+
     if let Some(path) = &options.stl {
         let mesh = triangulate(model, shape, options.deflection, TOL)?;
         let bytes = write_stl(&mesh, options.encoding)?;
@@ -199,6 +212,8 @@ fn split(args: &[String]) -> Result<(Vec<f64>, Options), String> {
         deflection: Deflection::default(),
         stl: None,
         encoding: Encoding::Binary,
+        native: None,
+        write_options: native::WriteOptions::default(),
     };
 
     let mut rest = args.iter();
@@ -221,6 +236,8 @@ fn split(args: &[String]) -> Result<(Vec<f64>, Options), String> {
             }
             "--stl" => options.stl = Some(rest.next().ok_or("--stl needs a path")?.clone()),
             "--ascii" => options.encoding = Encoding::Ascii,
+            "--og" => options.native = Some(rest.next().ok_or("--og needs a path")?.clone()),
+            "--no-mesh" => options.write_options.triangulations = false,
             other if other.starts_with("--") => {
                 return Err(format!("unknown option '{other}'"));
             }

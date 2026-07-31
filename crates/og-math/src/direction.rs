@@ -50,6 +50,34 @@ impl Direction {
         Self::new(Vector::new(x, y, z), tol)
     }
 
+    /// A direction from a vector that is *already* a unit vector.
+    ///
+    /// Checks rather than normalizes, and the distinction is the whole reason
+    /// it exists: dividing a unit vector by its own magnitude does not give it
+    /// back, it gives something a bit or two away. That is invisible until
+    /// something has to reproduce a direction exactly — reading a document back
+    /// from a file, above all, where the drift turns a round trip that should
+    /// be the identity into one that changes the model a little every time.
+    ///
+    /// # Errors
+    ///
+    /// [`OgError::Construction`](og_core::OgError::Construction) if `v` is
+    /// non-finite, or its length differs from one by more than
+    /// `tol.confusion()`.
+    pub fn unit(v: Vector, tol: Tolerances) -> OgResult<Self> {
+        if !v.is_finite() {
+            og_bail!(Construction, "a direction must be finite; got {v:?}");
+        }
+        let length = v.magnitude();
+        if (length - 1.0).abs() > tol.confusion() {
+            og_bail!(
+                Construction,
+                "expected a unit vector, got one of length {length}"
+            );
+        }
+        Ok(Self(v))
+    }
+
     /// The underlying unit vector.
     #[must_use]
     pub const fn vector(self) -> Vector {
@@ -250,6 +278,31 @@ impl Direction2 {
     /// As [`Direction2::new`].
     pub fn from_coords(x: f64, y: f64, tol: Tolerances) -> OgResult<Self> {
         Self::new(Vector2::new(x, y), tol)
+    }
+
+    /// A direction from a vector that is *already* a unit vector.
+    ///
+    /// As [`Direction::unit`]: it checks rather than normalizes, so a direction
+    /// read back from a document is the one that was written and not something
+    /// a bit or two away from it.
+    ///
+    /// # Errors
+    ///
+    /// [`OgError::Construction`](og_core::OgError::Construction) if `v` is
+    /// non-finite, or its length differs from one by more than
+    /// `tol.confusion()`.
+    pub fn unit(v: Vector2, tol: Tolerances) -> OgResult<Self> {
+        if !v.is_finite() {
+            og_bail!(Construction, "a direction must be finite; got {v:?}");
+        }
+        let length = v.magnitude();
+        if (length - 1.0).abs() > tol.confusion() {
+            og_bail!(
+                Construction,
+                "expected a unit vector, got one of length {length}"
+            );
+        }
+        Ok(Self(v))
     }
 
     /// The direction at `angle` radians counter-clockwise from +X.

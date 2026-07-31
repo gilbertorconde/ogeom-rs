@@ -93,6 +93,11 @@ impl DatumStore {
     pub fn is_empty(&self) -> bool {
         self.arena.is_empty()
     }
+
+    /// Every datum, with its handle, in arena order.
+    pub fn iter(&self) -> impl Iterator<Item = (DatumId, Datum)> {
+        self.arena.iter().map(|(id, t)| (id, *t))
+    }
 }
 
 /// A placement: a chain of `(datum, power)` pairs.

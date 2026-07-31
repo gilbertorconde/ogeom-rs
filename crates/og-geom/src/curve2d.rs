@@ -131,6 +131,16 @@ impl Circle2d {
     pub const fn circle(&self) -> Circle2 {
         self.circle
     }
+
+    /// Whether the curve runs backwards along its underlying circle.
+    ///
+    /// Part of the curve's state and not derivable from its circle, so
+    /// anything that has to reproduce this curve exactly — the native format
+    /// above all — needs to be able to read it.
+    #[must_use]
+    pub const fn is_reversed(&self) -> bool {
+        self.reversed
+    }
 }
 
 impl Ellipse2d {
@@ -147,6 +157,16 @@ impl Ellipse2d {
     #[must_use]
     pub const fn ellipse(&self) -> Ellipse2 {
         self.ellipse
+    }
+
+    /// Whether the curve runs backwards along its underlying ellipse.
+    ///
+    /// Part of the curve's state and not derivable from its ellipse, so
+    /// anything that has to reproduce this curve exactly — the native format
+    /// above all — needs to be able to read it.
+    #[must_use]
+    pub const fn is_reversed(&self) -> bool {
+        self.reversed
     }
 }
 
@@ -234,6 +254,16 @@ impl Trimmed2d {
     #[must_use]
     pub const fn basis(&self) -> &PlanarCurve {
         &self.basis
+    }
+
+    /// Whether the curve runs backwards along its underlying curve.
+    ///
+    /// Part of the curve's state and not derivable from its basis curve, so
+    /// anything that has to reproduce this curve exactly — the native format
+    /// above all — needs to be able to read it.
+    #[must_use]
+    pub const fn is_reversed(&self) -> bool {
+        self.reversed
     }
 
     /// This curve's parameter mapped onto the basis curve's.

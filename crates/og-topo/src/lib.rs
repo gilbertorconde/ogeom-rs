@@ -36,6 +36,6 @@ pub use entity::{
     TriangulationId, VertexData, check_containment, enforce_containment,
 };
 pub use location::{Datum, DatumId, DatumStore, Location};
-pub use model::{Filter, Model, ancestors_of, explore, explore_unique};
+pub use model::{Filter, Model, ModelParts, ancestors_of, explore, explore_unique};
 pub use shape::{Orientation, PartnerKey, SameKey, Shape, ShapeType, TShape, TShapeId};
 pub use tessellation::Triangulation;

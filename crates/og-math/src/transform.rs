@@ -124,6 +124,46 @@ impl Transform {
         }
     }
 
+    /// A transform from the parts it is stored as.
+    ///
+    /// `linear` is the orthonormal part alone and `scale` the uniform factor
+    /// beside it, which is how a [`Transform`] holds them. The kind is
+    /// re-derived rather than taken on trust, since it is a function of the
+    /// other three.
+    ///
+    /// For reading a document back. Going the long way round — multiplying the
+    /// scale into the matrix and asking
+    /// [`GeneralTransform::to_similarity`](crate::GeneralTransform::to_similarity)
+    /// to factor it out again — recovers a transform that is *close*, not the
+    /// one that was written, and a round trip that drifts a little each time is
+    /// not a round trip.
+    ///
+    /// # Errors
+    ///
+    /// [`OgError::Construction`](og_core::OgError::Construction) if `linear` is
+    /// not orthonormal within `eps`, or `scale` is not finite and non-zero — a
+    /// placement that squashes space is not a placement.
+    pub fn from_parts(
+        linear: Matrix3,
+        scale: f64,
+        translation: Vector,
+        eps: f64,
+    ) -> OgResult<Self> {
+        if !scale.is_finite() || scale == 0.0 {
+            og_bail!(
+                Construction,
+                "a placement's scale must be finite and non-zero; got {scale}"
+            );
+        }
+        if !linear.is_orthonormal(eps) {
+            og_bail!(
+                Construction,
+                "a placement's linear part must be orthonormal; this one shears                  or scales unevenly"
+            );
+        }
+        Ok(Self::build(linear, scale, translation))
+    }
+
     /// Classify a similarity from its parts.
     fn classify(linear: &Matrix3, scale: f64, translation: Vector) -> TransformKind {
         let is_identity_linear = linear.is_equal(&Matrix3::IDENTITY, CLASSIFY_EPS);

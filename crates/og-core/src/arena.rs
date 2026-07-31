@@ -44,6 +44,26 @@ impl<T> Key<T> {
     pub const fn generation(self) -> u32 {
         self.generation
     }
+
+    /// A key naming a given slot, for reading a document back from a file.
+    ///
+    /// Deliberately narrow. Forging a handle is precisely what generations
+    /// exist to prevent, and [`Arena::insert`] is what issues one within a
+    /// process. But a file records the handles a document was written with, and
+    /// a reader that could not rebuild them would have to renumber everything —
+    /// which is to say, hand back a different document.
+    ///
+    /// A key made this way is not trusted: it resolves through [`Arena::get`]
+    /// like any other, so a stale or out-of-range one comes back `None` rather
+    /// than aliasing whatever sits at that index.
+    #[must_use]
+    pub const fn from_parts(index: u32, generation: u32) -> Self {
+        Self {
+            index,
+            generation,
+            marker: PhantomData,
+        }
+    }
 }
 
 // Derived impls would demand `T: Clone` and friends; the key holds no `T`.

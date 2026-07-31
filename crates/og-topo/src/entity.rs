@@ -112,6 +112,52 @@ impl GeometryStore {
         (self.curves.len(), self.pcurves.len(), self.surfaces.len())
     }
 
+    /// Whether every piece of geometry a representation names is held here.
+    ///
+    /// The check a restored model needs: a handle that does not resolve is not
+    /// a finding, it is a document that does not describe itself.
+    #[must_use]
+    pub fn holds(&self, repr: &EdgeRepr) -> bool {
+        match repr {
+            EdgeRepr::Curve3d { curve, .. } => self.curve(*curve).is_some(),
+            EdgeRepr::PCurve { curve, surface, .. } => {
+                self.pcurve(*curve).is_some() && self.surface(*surface).is_some()
+            }
+            EdgeRepr::Seam {
+                forward,
+                reversed,
+                surface,
+                ..
+            } => {
+                self.pcurve(*forward).is_some()
+                    && self.pcurve(*reversed).is_some()
+                    && self.surface(*surface).is_some()
+            }
+            // Carries its points itself, so there is nothing to resolve.
+            EdgeRepr::Polyline { .. } => true,
+        }
+    }
+
+    /// Every space curve, with its handle, in arena order.
+    pub fn curves(&self) -> impl Iterator<Item = (CurveId, &Curve)> {
+        self.curves.iter()
+    }
+
+    /// Every parameter-space curve, with its handle, in arena order.
+    pub fn pcurves(&self) -> impl Iterator<Item = (PCurveId, &PlanarCurve)> {
+        self.pcurves.iter()
+    }
+
+    /// Every surface, with its handle, in arena order.
+    pub fn surfaces(&self) -> impl Iterator<Item = (SurfaceId, &SurfaceGeometry)> {
+        self.surfaces.iter()
+    }
+
+    /// Every cached triangulation, with its handle, in arena order.
+    pub fn triangulations(&self) -> impl Iterator<Item = (TriangulationId, &Triangulation)> {
+        self.triangulations.iter()
+    }
+
     /// How many cached triangulations are held.
     #[must_use]
     pub fn triangulation_count(&self) -> usize {
