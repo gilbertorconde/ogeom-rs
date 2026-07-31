@@ -208,19 +208,33 @@ fn boundary_ring(
         let NodeData::Edge(data) = node.data() else {
             og_bail!(Construction, "edge node holds no edge data");
         };
-        let Some(EdgeRepr::PCurve {
-            curve: pcurve_id,
-            range: pcurve_range,
-            ..
-        }) = data.pcurve_on(surface)
-        else {
-            og_bail!(
+        let (pcurve_id, pcurve_range) = match data.pcurve_on(surface) {
+            Some(EdgeRepr::PCurve { curve, range, .. }) => (*curve, *range),
+            // A seam edge runs along a closed surface's join and bounds its
+            // face twice — up one side of the parameter rectangle and down the
+            // other. Which pcurve applies is decided by *which occurrence this
+            // is*, and orientation is the only thing that distinguishes them:
+            // both occurrences name the same node.
+            Some(EdgeRepr::Seam {
+                forward,
+                reversed,
+                range,
+                ..
+            }) => (
+                if edge.orientation() == Orientation::Reversed {
+                    *reversed
+                } else {
+                    *forward
+                },
+                *range,
+            ),
+            _ => og_bail!(
                 Construction,
                 "edge has no pcurve on this face, so the face cannot be \
                  triangulated in its own parameter space"
-            );
+            ),
         };
-        let Some(pcurve) = model.geometry().pcurve(*pcurve_id) else {
+        let Some(pcurve) = model.geometry().pcurve(pcurve_id) else {
             og_bail!(Dangling, "pcurve is not in this model");
         };
 
@@ -229,12 +243,12 @@ fn boundary_ring(
         let samples = match sample_parameters(model, data, deflection, tol)? {
             Some((parameters, edge_met)) => {
                 met &= edge_met;
-                map_to_pcurve(&parameters, data, *pcurve_range)
+                map_to_pcurve(&parameters, data, pcurve_range)
             }
             // No 3D curve to defer to — fall back to the pcurve's own shape.
             None => {
                 let (_, parameters) =
-                    crate::discretize::discretize_planar(pcurve, *pcurve_range, deflection, tol)?;
+                    crate::discretize::discretize_planar(pcurve, pcurve_range, deflection, tol)?;
                 parameters
             }
         };

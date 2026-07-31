@@ -6,13 +6,16 @@
 //! "the top of that box" survives the box being rebuilt at a different size.
 //! Without it the reference would be to a handle that no longer exists.
 
+use core::f64::consts::{FRAC_PI_2, PI, TAU};
+
 use og_core::{OgResult, Role, Tolerances, og_bail};
-use og_geom::{Curve, LineCurve, PlanarCurve, PlaneSurface};
-use og_math::{Direction, Frame, Plane, Point, Point2};
+use og_geom::{CircleCurve, Curve, LineCurve, PlanarCurve, PlaneSurface, SphereSurface, Surface};
+use og_math::{Circle, Cylinder, Direction, Direction2, Frame, Plane, Point, Point2, Sphere};
 use og_topo::{Model, Shape};
 
 use crate::build::{make_edge_between, make_face_on, make_shell, make_solid, make_wire};
 use crate::history::Built;
+use og_topo::{EdgeData, VertexData};
 
 /// Roles naming which part of a primitive an entity is.
 pub mod roles {
@@ -30,6 +33,9 @@ pub mod roles {
     pub const FACE_MIN_Z: Role = Role::op_defined(14);
     /// The face at the high end of the frame's `z` axis.
     pub const FACE_MAX_Z: Role = Role::op_defined(15);
+    /// The face swept around the frame's `z` axis — a cylinder's side, a
+    /// sphere's whole surface, a cone's flank.
+    pub const FACE_LATERAL: Role = Role::op_defined(16);
 }
 
 /// The eight corners of a box, indexed so that bit 0 is `x`, bit 1 is `y` and
@@ -234,6 +240,354 @@ fn find_edge(from: usize, to: usize) -> OgResult<(usize, bool)> {
         Construction,
         "corners {from} and {to} are not joined by a box edge"
     )
+}
+
+/// Build a cylinder in `frame`: `radius` about its `z`, `height` along it.
+///
+/// # Errors
+///
+/// [`OgError::Construction`](og_core::OgError::Construction) if either
+/// dimension is not finite and positive.
+pub fn make_cylinder(
+    model: &mut Model,
+    frame: Frame,
+    radius: f64,
+    height: f64,
+    tol: Tolerances,
+) -> OgResult<Built> {
+    check_size("cylinder radius", radius, tol)?;
+    check_size("cylinder height", height, tol)?;
+    model.begin_operation();
+
+    let top_frame = raised(frame, height, tol)?;
+    let bottom_circle = Circle::new(frame, radius, tol)?;
+    let top_circle = Circle::new(top_frame, radius, tol)?;
+
+    // One vertex on each rim, where the seam meets it. A full circle has to be
+    // bounded somewhere or it cannot join a wire, and putting the bound on the
+    // seam is what lets the lateral face close.
+    let low = model.add_vertex(VertexData::new(rim_point(bottom_circle)));
+    let high = model.add_vertex(VertexData::new(rim_point(top_circle)));
+
+    let bottom_edge = full_circle_edge(model, bottom_circle, &low, tol)?;
+    let top_edge = full_circle_edge(model, top_circle, &high, tol)?;
+    let seam = make_edge_between(
+        model,
+        LineCurve::segment(rim_point(bottom_circle), rim_point(top_circle), tol)?.into(),
+        (0.0, height),
+        &low,
+        &high,
+        tol,
+    )?
+    .shape;
+
+    let lateral_id = model.geometry_mut().add_surface(
+        og_geom::CylinderSurface::new(Cylinder::new(frame, radius, tol)?, (0.0, height))?.into(),
+    );
+    let lateral = rectangle_face(
+        model,
+        lateral_id,
+        (TAU, height),
+        [&bottom_edge, &top_edge, &seam],
+        tol,
+    )?;
+    model.set_derived(&lateral, &[], roles::FACE_LATERAL)?;
+
+    let bottom = cap_face(model, frame, false, &bottom_edge, bottom_circle, tol)?;
+    model.set_derived(&bottom, &[], roles::FACE_MIN_Z)?;
+    let top = cap_face(model, top_frame, true, &top_edge, top_circle, tol)?;
+    model.set_derived(&top, &[], roles::FACE_MAX_Z)?;
+
+    let shell = make_shell(model, &[lateral, bottom, top])?.shape;
+    let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
+    Ok(Built::from_nothing(solid))
+}
+
+/// Build a sphere of `radius` centred at `frame`'s origin.
+///
+/// # Errors
+///
+/// [`OgError::Construction`](og_core::OgError::Construction) if `radius` is not
+/// finite and positive.
+pub fn make_sphere(
+    model: &mut Model,
+    frame: Frame,
+    radius: f64,
+    tol: Tolerances,
+) -> OgResult<Built> {
+    check_size("sphere radius", radius, tol)?;
+    model.begin_operation();
+
+    let centre = frame.origin();
+    let south = model.add_vertex(VertexData::new(centre - frame.z().vector() * radius));
+    let north = model.add_vertex(VertexData::new(centre + frame.z().vector() * radius));
+
+    // The seam is the meridian at longitude zero, pole to pole through the
+    // frame's `x`. Its plane is spanned by `x` and `z`, so the circle's normal
+    // is `-y` — which makes its angle parameter the latitude exactly, and the
+    // mapping onto the surface's `v` the identity rather than a rescaling.
+    let meridian = Circle::new(Frame::new(centre, -frame.y(), frame.x(), tol)?, radius, tol)?;
+    let seam = make_edge_between(
+        model,
+        CircleCurve::new(meridian).into(),
+        (-FRAC_PI_2, FRAC_PI_2),
+        &south,
+        &north,
+        tol,
+    )?
+    .shape;
+
+    // The poles bound the face in parameter space and have no length in space.
+    // Dropping them would leave the boundary open along the top and bottom of
+    // the parameter rectangle, with nothing for the triangulator to trim to.
+    let bottom_edge = degenerate_edge(model, &south, tol)?;
+    let top_edge = degenerate_edge(model, &north, tol)?;
+
+    let surface = model
+        .geometry_mut()
+        .add_surface(SphereSurface::new(Sphere::new(frame, radius, tol)?).into());
+    let face = rectangle_face(
+        model,
+        surface,
+        (TAU, PI),
+        [&bottom_edge, &top_edge, &seam],
+        tol,
+    )?;
+    // The sphere's `v` runs from -pi/2, not from zero, so the rectangle's
+    // corner is not at the parameter origin.
+    model.set_derived(&face, &[], roles::FACE_LATERAL)?;
+
+    let shell = make_shell(model, std::slice::from_ref(&face))?.shape;
+    let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
+    Ok(Built::from_nothing(solid))
+}
+
+/// Where a circle's own parameterization starts: its frame's `x`, one radius
+/// out. The seam has to meet the rim exactly there, not merely nearby.
+fn rim_point(circle: Circle) -> Point {
+    circle.centre() + circle.frame().x().vector() * circle.radius()
+}
+
+/// A frame moved along its own `z`.
+fn raised(frame: Frame, distance: f64, tol: Tolerances) -> OgResult<Frame> {
+    Frame::new(
+        frame.to_world(Point::new(0.0, 0.0, distance)),
+        frame.z(),
+        frame.x(),
+        tol,
+    )
+}
+
+/// Reject a dimension that cannot describe a solid.
+fn check_size(what: &str, value: f64, tol: Tolerances) -> OgResult<()> {
+    if !value.is_finite() || value <= tol.confusion() {
+        og_bail!(Construction, "{what} {value} must be finite and positive");
+    }
+    Ok(())
+}
+
+/// A closed circular edge, bounded twice by the same vertex.
+fn full_circle_edge(
+    model: &mut Model,
+    circle: Circle,
+    at: &Shape,
+    tol: Tolerances,
+) -> OgResult<Shape> {
+    Ok(make_edge_between(
+        model,
+        CircleCurve::new(circle).into(),
+        (0.0, TAU),
+        at,
+        at,
+        tol,
+    )?
+    .shape)
+}
+
+/// An edge with no length, bounded twice by the same vertex.
+///
+/// A pole or an apex: it bounds a face in parameter space and collapses to a
+/// point in space. It carries no 3D curve, because there is no curve to carry —
+/// its pcurve is the whole story, and the `degenerate` flag says so rather than
+/// leaving a caller to notice the missing representation.
+fn degenerate_edge(model: &mut Model, at: &Shape, tol: Tolerances) -> OgResult<Shape> {
+    let _ = tol;
+    let mut data = EdgeData::new();
+    data.degenerate = true;
+    model.add_edge(data, &[at.clone(), at.clone()])
+}
+
+/// A face covering a rectangle of a surface's parameter space, bounded by two
+/// edges across and one seam up both sides.
+///
+/// The shape every surface of revolution has: `u` closes on itself, so the face
+/// is a rectangle whose left and right sides are the *same* edge seen twice.
+/// That edge carries two pcurves and appears in the wire twice, once each way.
+///
+/// `extent` is the size of the rectangle; its lower corner comes from the
+/// surface's own domain, so a sphere's `v` starting at `-pi/2` needs no special
+/// case here.
+fn rectangle_face(
+    model: &mut Model,
+    surface: og_topo::SurfaceId,
+    extent: (f64, f64),
+    edges: [&Shape; 3],
+    tol: Tolerances,
+) -> OgResult<Shape> {
+    let [bottom, top, seam] = edges;
+    let Some(geometry) = model.geometry().surface(surface) else {
+        og_bail!(Dangling, "surface is not in this model");
+    };
+    let ((ua, _), (va, _)) = geometry.domain();
+    let (du, dv) = extent;
+    let (ub, vb) = (ua + du, va + dv);
+
+    line_pcurve(
+        model,
+        bottom,
+        surface,
+        Point2::new(ua, va),
+        Point2::new(ub, va),
+        tol,
+    )?;
+    line_pcurve(
+        model,
+        top,
+        surface,
+        Point2::new(ua, vb),
+        Point2::new(ub, vb),
+        tol,
+    )?;
+    seam_pcurves(
+        model,
+        seam,
+        surface,
+        (Point2::new(ub, va), Point2::new(ub, vb)),
+        (Point2::new(ua, va), Point2::new(ua, vb)),
+        tol,
+    )?;
+
+    // Counter-clockwise around the rectangle: across the bottom, up the far
+    // side of the seam, back across the top, down the near side.
+    let ring = [
+        bottom.clone(),
+        seam.clone(),
+        top.reversed(),
+        seam.reversed(),
+    ];
+    let wire = make_wire(model, &ring, tol)?.shape;
+    Ok(make_face_on(model, surface, std::slice::from_ref(&wire), tol)?.shape)
+}
+
+/// A planar cap closing one end of a solid of revolution.
+///
+/// `outward` says whether the cap's normal follows the frame's `z` or opposes
+/// it — which is the difference between a solid and one that is inside out
+/// along one face, and nothing in the geometry says which was meant.
+fn cap_face(
+    model: &mut Model,
+    frame: Frame,
+    outward: bool,
+    rim: &Shape,
+    circle: Circle,
+    tol: Tolerances,
+) -> OgResult<Shape> {
+    let normal = if outward { frame.z() } else { -frame.z() };
+    let plane = Plane::new(Frame::new(frame.origin(), normal, frame.x(), tol)?);
+    let surface = model
+        .geometry_mut()
+        .add_surface(PlaneSurface::new(plane).into());
+
+    circle_pcurve_on_plane(model, rim, surface, circle, plane, tol)?;
+
+    // The rim runs one way round; the cap that faces the other way walks it
+    // backwards, so its boundary is traversed consistently with its normal.
+    let edge = if outward { rim.clone() } else { rim.reversed() };
+    let wire = make_wire(model, std::slice::from_ref(&edge), tol)?.shape;
+    Ok(make_face_on(model, surface, std::slice::from_ref(&wire), tol)?.shape)
+}
+
+/// Attach a straight pcurve running between two parameter points.
+fn line_pcurve(
+    model: &mut Model,
+    edge: &Shape,
+    surface: og_topo::SurfaceId,
+    from: Point2,
+    to: Point2,
+    tol: Tolerances,
+) -> OgResult<()> {
+    let pcurve: PlanarCurve = og_geom::Line2d::segment(from, to, tol)?.into();
+    crate::build::attach_pcurve(model, edge, pcurve, surface, (0.0, from.distance(to)))
+}
+
+/// Attach a seam edge's two pcurves, one for each side of the parameter
+/// rectangle it bounds.
+fn seam_pcurves(
+    model: &mut Model,
+    edge: &Shape,
+    surface: og_topo::SurfaceId,
+    forward: (Point2, Point2),
+    reversed: (Point2, Point2),
+    tol: Tolerances,
+) -> OgResult<()> {
+    let length = forward.0.distance(forward.1);
+    let first = model
+        .geometry_mut()
+        .add_pcurve(og_geom::Line2d::segment(forward.0, forward.1, tol)?.into());
+    let second = model
+        .geometry_mut()
+        .add_pcurve(og_geom::Line2d::segment(reversed.0, reversed.1, tol)?.into());
+
+    let Some(node) = model.node_mut(edge) else {
+        og_bail!(Dangling, "edge is not in this model");
+    };
+    let og_topo::NodeData::Edge(data) = node.data_mut() else {
+        og_bail!(Construction, "edge node holds no edge data");
+    };
+    data.add(og_topo::EdgeRepr::Seam {
+        forward: first,
+        reversed: second,
+        surface,
+        location: og_topo::Location::identity(),
+        range: (0.0, length),
+    });
+    Ok(())
+}
+
+/// Attach the pcurve of a circle lying in a plane.
+///
+/// Built from the circle's own axes expressed in the plane's frame, rather than
+/// from the angle alone. A cap whose normal opposes the circle's sees the same
+/// circle running the other way, and taking the axes through the conversion is
+/// what makes that fall out instead of needing a sign to be remembered.
+fn circle_pcurve_on_plane(
+    model: &mut Model,
+    edge: &Shape,
+    surface: og_topo::SurfaceId,
+    circle: Circle,
+    plane: Plane,
+    tol: Tolerances,
+) -> OgResult<()> {
+    let frame = plane.frame();
+    let flat = |p: Point| {
+        let local = frame.to_local(p);
+        Point2::new(local.x, local.y)
+    };
+    let flat_direction = |d: Direction| -> OgResult<Direction2> {
+        let tip = flat(frame.origin() + d.vector());
+        let base = flat(frame.origin());
+        Direction2::new(tip - base, tol)
+    };
+
+    let frame2 = og_math::Frame2::from_axes(
+        flat(circle.centre()),
+        flat_direction(circle.frame().x())?,
+        flat_direction(circle.frame().y())?,
+        tol,
+    )?;
+    let pcurve: PlanarCurve =
+        og_geom::Circle2d::new(og_math::Circle2::new(frame2, circle.radius(), tol)?).into();
+    crate::build::attach_pcurve(model, edge, pcurve, surface, (0.0, TAU))
 }
 
 #[cfg(test)]
@@ -487,5 +841,159 @@ mod tests {
             }
         }
         assert!(uses.iter().all(|&n| n == 2), "edge use counts: {uses:?}");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod revolution_tests {
+    use super::*;
+    use crate::build::is_shell_closed;
+    use crate::mass::{surface_properties, volume_properties};
+    use approx::assert_relative_eq;
+    use og_mesh::{Deflection, triangulate};
+    use og_topo::{ShapeType, explore_unique};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn deflection(chord: f64) -> Deflection {
+        Deflection {
+            chord,
+            ..Deflection::default()
+        }
+    }
+
+    #[test]
+    fn a_cylinder_has_the_topology_a_cylinder_has() {
+        let mut model = Model::new();
+        let built = make_cylinder(&mut model, Frame::WORLD, 2.0, 5.0, T).unwrap();
+
+        let counts = |kind| explore_unique(&model, &built.shape, kind).unwrap().len();
+        assert_eq!(counts(ShapeType::Face), 3, "a side and two caps");
+        assert_eq!(counts(ShapeType::Edge), 3, "two rims and one seam");
+        assert_eq!(counts(ShapeType::Vertex), 2, "one on each rim");
+
+        let shell = explore_unique(&model, &built.shape, ShapeType::Shell).unwrap()[0].clone();
+        assert!(
+            is_shell_closed(&model, &shell).unwrap(),
+            "every edge should be used an even number of times"
+        );
+    }
+
+    #[test]
+    fn a_cylinder_tessellates_into_a_closed_mesh_of_the_right_size() {
+        // The seam is what this proves. Without both of its pcurves the lateral
+        // face's boundary does not close in parameter space, and the mesh comes
+        // out with a slot down one side.
+        let (radius, height) = (2.0_f64, 5.0);
+        let exact = PI * radius * radius * height;
+        let mut model = Model::new();
+        let built = make_cylinder(&mut model, Frame::WORLD, radius, height, T).unwrap();
+
+        let mut previous = 0.0;
+        for chord in [0.1_f64, 0.02, 0.005] {
+            let mesh = triangulate(&model, &built.shape, deflection(chord), T).unwrap();
+            assert!(mesh.is_closed(), "the mesh has a hole at chord {chord}");
+            let props = volume_properties(&model, &built.shape, deflection(chord), T).unwrap();
+            assert!(props.mass < exact, "an inscribed volume cannot exceed it");
+            assert!(props.mass > previous, "refining lost volume");
+            previous = props.mass;
+        }
+        assert!(previous > exact * 0.995, "{previous} against {exact}");
+    }
+
+    #[test]
+    fn a_cylinders_caps_face_outward() {
+        // A cap wound the wrong way makes the solid inside out along one face,
+        // and the volume comes out short by exactly that cap's contribution
+        // rather than obviously wrong.
+        let mut model = Model::new();
+        let built = make_cylinder(&mut model, Frame::WORLD, 1.0, 3.0, T).unwrap();
+        let props = volume_properties(&model, &built.shape, deflection(0.005), T).unwrap();
+
+        assert!(
+            props.centre.distance(Point::new(0.0, 0.0, 1.5)) < 1e-3,
+            "the centre of a cylinder is halfway up its axis, got {:?}",
+            props.centre
+        );
+    }
+
+    #[test]
+    fn a_sphere_has_the_topology_a_sphere_has() {
+        let mut model = Model::new();
+        let built = make_sphere(&mut model, Frame::WORLD, 3.0, T).unwrap();
+
+        let counts = |kind| explore_unique(&model, &built.shape, kind).unwrap().len();
+        assert_eq!(counts(ShapeType::Face), 1, "one surface covers a sphere");
+        assert_eq!(counts(ShapeType::Edge), 3, "a seam and two poles");
+        assert_eq!(counts(ShapeType::Vertex), 2, "the two poles");
+
+        // The poles have no length and say so, rather than leaving a caller to
+        // discover it by dividing by their length.
+        let degenerate = explore_unique(&model, &built.shape, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                model
+                    .node(e)
+                    .and_then(|n| n.data().as_edge())
+                    .is_some_and(|d| d.degenerate)
+            })
+            .count();
+        assert_eq!(degenerate, 2);
+    }
+
+    #[test]
+    fn a_sphere_converges_on_the_volume_and_area_a_sphere_has() {
+        let radius = 4.0_f64;
+        let volume = 4.0 / 3.0 * PI * radius.powi(3);
+        let area = 4.0 * PI * radius * radius;
+        let mut model = Model::new();
+        let built = make_sphere(&mut model, Frame::WORLD, radius, T).unwrap();
+
+        let props = volume_properties(&model, &built.shape, deflection(0.01), T).unwrap();
+        assert!(props.mass < volume);
+        assert!(
+            props.mass > volume * 0.995,
+            "{} against {volume}",
+            props.mass
+        );
+        assert!(
+            props.centre.distance(Point::ORIGIN) < 1e-3,
+            "got {:?}",
+            props.centre
+        );
+
+        let surface = surface_properties(&model, &built.shape, deflection(0.01), T).unwrap();
+        assert!(surface.mass < area);
+        assert!(surface.mass > area * 0.995);
+    }
+
+    #[test]
+    fn a_placed_primitive_lands_where_it_was_placed() {
+        let frame = Frame::new(Point::new(10.0, -5.0, 2.0), Direction::X, Direction::Y, T).unwrap();
+        let mut model = Model::new();
+        let built = make_cylinder(&mut model, frame, 1.0, 4.0, T).unwrap();
+        let props = volume_properties(&model, &built.shape, deflection(0.005), T).unwrap();
+
+        // Half way along the frame's own z, which here is world +x.
+        assert!(
+            props.centre.distance(Point::new(12.0, -5.0, 2.0)) < 1e-3,
+            "got {:?}",
+            props.centre
+        );
+        // Inscribed, so a little under the exact pi r^2 h.
+        assert_relative_eq!(props.mass, PI * 4.0, max_relative = 0.01);
+    }
+
+    #[test]
+    fn dimensions_that_describe_no_solid_are_refused() {
+        let mut model = Model::new();
+        for (r, h) in [(0.0, 1.0), (1.0, 0.0), (-1.0, 1.0), (f64::NAN, 1.0)] {
+            assert!(make_cylinder(&mut model, Frame::WORLD, r, h, T).is_err());
+        }
+        for r in [0.0, -1.0, f64::INFINITY] {
+            assert!(make_sphere(&mut model, Frame::WORLD, r, T).is_err());
+        }
     }
 }

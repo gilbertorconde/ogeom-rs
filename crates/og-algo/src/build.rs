@@ -14,12 +14,12 @@
 //! a face with a gap in its boundary, and the first thing to notice is usually
 //! a boolean, several operations later.
 
+use std::collections::HashMap;
+
 use og_core::{OgResult, Tolerances, og_bail};
 use og_geom::{Curve, Curve3d, SurfaceGeometry};
 use og_math::Point;
-use og_topo::{
-    EdgeData, EdgeRepr, FaceData, Location, Model, Shape, ShapeType, VertexData, explore_unique,
-};
+use og_topo::{EdgeData, EdgeRepr, FaceData, Location, Model, Shape, ShapeType, VertexData};
 
 use crate::history::{Built, History};
 
@@ -363,15 +363,21 @@ pub fn make_solid(model: &mut Model, shells: &[Shape]) -> OgResult<Built> {
 ///
 /// # Errors
 ///
-/// As [`explore_unique`].
+/// As [`og_topo::explore`].
 pub fn is_shell_closed(model: &Model, shell: &Shape) -> OgResult<bool> {
-    for edge in explore_unique(model, shell, ShapeType::Edge)? {
-        let uses = og_topo::ancestors_of(model, shell, &edge, ShapeType::Face)?;
-        if uses.len() != 2 {
-            return Ok(false);
+    // Counted by *use*, not by how many distinct faces an edge belongs to. A
+    // seam edge bounds one face twice — up one side of its parameter rectangle
+    // and down the other — so counting faces would call every cylinder, sphere
+    // and torus open, which is precisely backwards.
+    let mut uses: HashMap<og_topo::TShapeId, usize> = HashMap::new();
+    for face in og_topo::explore(model, shell, og_topo::Filter::OfType(ShapeType::Face))? {
+        for wire in model.children_of(&face)? {
+            for edge in model.children_of(&wire)? {
+                *uses.entry(edge.node()).or_default() += 1;
+            }
         }
     }
-    Ok(true)
+    Ok(!uses.is_empty() && uses.values().all(|n| n % 2 == 0))
 }
 
 /// Attach a pcurve to an edge, describing it in a surface's parameter space.
@@ -413,6 +419,7 @@ mod tests {
     use super::*;
     use og_geom::{CircleCurve, LineCurve, PlaneSurface};
     use og_math::{Circle, Frame, Plane};
+    use og_topo::explore_unique;
 
     const T: Tolerances = Tolerances::millimetres();
 

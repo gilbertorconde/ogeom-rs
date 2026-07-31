@@ -27,4 +27,4 @@ pub use measure::{
     Projection, SurfaceProjection, curve_bounds, project_on_curve, project_on_planar_curve,
     project_on_surface, shape_bounds, surface_bounds, vertex_bounds,
 };
-pub use primitive::make_box;
+pub use primitive::{make_box, make_cylinder, make_sphere};
