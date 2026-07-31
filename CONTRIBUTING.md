@@ -66,6 +66,12 @@ wrong solid does not throw; it corrupts a document six operations later. So:
 - **Validate against ground truth you can compute independently.** Analytic
   results for analytic inputs; closed-form volumes and areas; known benchmark
   datasets. Not "it looks right in the viewer".
+- **There is no external oracle**, and comparing against another kernel is not
+  available to us — it would mean vendoring one. `docs/SCOPE.md`'s
+  [Verification](docs/SCOPE.md#verification) section sets out the five
+  directions that stand in for one, and which kinds of defect each is there to
+  catch. Reach for the one that fits what you are adding; the cheapest useful
+  one is usually asking whether the same result built two ways agrees.
 - **Never loosen a tolerance to make a test pass** without saying why in the same
   commit. Numerical tolerances in tests are explicit and justified in a comment.
 - **Failures are values.** An algorithm that did not converge returns that fact.
@@ -84,6 +90,11 @@ wrong solid does not throw; it corrupts a document six operations later. So:
   `#[allow(..., reason = "...")]` and a documented `# Panics` section.
 - New dependencies need a permissive license (`deny.toml` enforces this), and must
   not introduce a C toolchain requirement or break WASM. Raise it explicitly if
-  you think an exception is warranted.
+  you think an exception is warranted. Check
+  [Dependencies considered](docs/SCOPE.md#appendix-dependencies-considered)
+  first — several plausible-looking crates have already been turned down for
+  reasons that have not changed, and one is scheduled to be re-examined at a
+  specific point rather than whenever it next comes up. Add your decision there
+  either way: the record is what stops the question being re-litigated.
 - Public items are documented. `missing_docs` is a warning and CI runs with
   `-D warnings`.

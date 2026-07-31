@@ -2,7 +2,11 @@
 
 A boundary-representation CAD kernel, written from scratch in Rust.
 
-**Status: early. `og-core` exists; nothing else does yet.**
+**Status: the foundation, the geometry, the B-rep model, construction and
+tessellation are built and tested. Intersection, booleans and everything that
+depends on them are not started.** See
+[Milestones](docs/SCOPE.md#milestones) for what each of those means and how it
+is decided.
 
 ## What this is
 
@@ -43,27 +47,35 @@ Two places where the conventional design is wrong and this one diverges:
 
 ## Layout
 
+`•` has working code; `·` is a crate that exists so its dependents can name it,
+and holds nothing yet.
+
 ```
-crates/og-core        arenas, identity, errors, tolerances, predicates    ← done
-crates/og-math        primitives, transforms, B-spline basis, solvers
-crates/og-geom        curves and surfaces behind adaptor traits
-crates/og-topo        the B-rep data model
-crates/og-algo        construction, primitives, measurement, classification
-crates/og-mesh        tessellation, and mesh → B-rep
-crates/og-intersect   curve/curve, curve/surface, surface/surface
-crates/og-bool        general fuse and the boolean filters
-crates/og-heal        healing, simplification, canonical recognition
-crates/og-fillet      blends and chamfers
-crates/og-offset      offset, shell, sweep, loft, form features
-crates/og-hlr         hidden line removal for drawings
-crates/og-sketch      2D geometric constraint solver
-crates/og-doc         assemblies, appearance, PMI, undo/redo, persistence
-crates/og-select      BVH picking and selection
-crates/og-io          native format, STEP, IGES, glTF, STL, DXF, and the rest
-crates/og             the public umbrella API
-tools/ogcli           command-line front end
-tools/apisurf         API-usage profiler (analysis only; see docs/SCOPE.md)
+• crates/og-core        arenas, identity, errors, tolerances, predicates
+• crates/og-math        primitives, transforms, B-spline basis, solvers
+• crates/og-geom        curves and surfaces behind adaptor traits
+• crates/og-topo        the B-rep data model
+• crates/og-algo        construction, primitives, measurement, classification
+• crates/og-mesh        tessellation, and mesh → B-rep
+• crates/og-io          native format, STEP, IGES, glTF, STL, DXF, and the rest
+• crates/og             the public umbrella API
+· crates/og-intersect   curve/curve, curve/surface, surface/surface
+· crates/og-bool        general fuse and the boolean filters
+· crates/og-heal        healing, simplification, canonical recognition
+· crates/og-fillet      blends and chamfers
+· crates/og-offset      offset, shell, sweep, loft, form features
+· crates/og-hlr         hidden line removal for drawings
+· crates/og-sketch      2D geometric constraint solver
+· crates/og-doc         assemblies, appearance, PMI, undo/redo, persistence
+· crates/og-select      BVH picking and selection
+• tools/ogcli           command-line front end
+• tools/apisurf         API-usage profiler (analysis only; see docs/SCOPE.md)
 ```
+
+None of the eight with code is *finished* — each implements the part of
+[`docs/SCOPE.md`](docs/SCOPE.md) its milestone called for and no more. What is
+owed and where it lands is in that document's deferred table, so a gap is a
+scheduled debt rather than a surprise found by whoever hits it.
 
 ## Building
 

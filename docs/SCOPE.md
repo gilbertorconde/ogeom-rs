@@ -41,6 +41,92 @@ Phases order by dependency, not by importance. Everything listed is in scope.
 
 ---
 
+## Milestones
+
+Scale has defeated funded, full-time teams at this (see the prior-art note in
+`README.md`). The answer is not optimism about the schedule — it is that **every
+milestone below is independently useful**, so stopping at any one of them leaves
+something worth having rather than a half-built kernel.
+
+A milestone is **closed** when every criterion under it holds and
+`./tools/check.sh` is green. The criteria are deliberately things that can be
+*checked* rather than judged: a count, a comparison against a closed form, a
+round trip that is or is not the identity. "It looks right" is not a criterion,
+because in this domain it is worth nothing.
+
+A milestone is not the whole of its phase. A phase is a body of capability; a
+milestone is the point at which enough of it works to be worth shipping. What is
+left over is listed under the milestone, and tracked in
+[Deferred implementation details](#deferred-implementation-details).
+
+### M1 — a B-rep data library · P1 · §1–4 · **closed**
+
+- Every invariant in `DATA_MODEL.md` implemented, with property tests over the
+  *laws* rather than over examples: orientation composition, location chain
+  composition and inversion, the identity trichotomy, tolerance containment.
+- Curves and surfaces reachable through the adaptor traits, so no algorithm
+  names a concrete geometry type.
+- A document round-trips through the native format: written, read, and written
+  again gives the same bytes, with arena handles and entity identities
+  preserved rather than renumbered.
+
+### M2 — a modeling and tessellation library · P2 · §5, §6, §12 · **closed**
+
+- Every primitive — box, cylinder, cone, sphere, torus, wedge — and both sweeps
+  build a solid whose shell is closed and whose *mesh agrees with its topology*.
+  That last is a separate check from validity and catches what validity cannot.
+- Mass properties converge on the closed form, from the inscribed side, within
+  the deflection each result reports.
+- The same solid built two ways agrees: a revolved rectangle against
+  `make_cylinder`, a revolved disc against `make_torus`, face for face.
+- Point classification against a face and against a solid, with the band it
+  cannot decide reported as `On` rather than guessed.
+- Build, measure, check, tessellate and export from the command line.
+
+Still owed inside P2, none of it blocking the above: sewing, wire ordering and
+repair, `make_polygon`, half-space, NURBS conversion, find-plane, general affine
+transforms, oriented bounding boxes, arc-length parameterization, relative and
+adaptive deflection, mesh simplification, mesh → B-rep.
+
+### M3 — a CAD kernel · P3 · §7–9
+
+- **The gate comes first.** Surface/surface intersection is measured against
+  analytic ground truth and published benchmark datasets *before* any boolean
+  work is committed to (§7). If it does not clear the bar, the project ships at
+  M2 as a geometry library rather than spending years on a boolean built over
+  an intersector that cannot carry one.
+- General fuse over the corpus, with fuse, common, cut, section and split as
+  selection predicates over one result rather than five algorithms.
+- Healing survives a corpus of real imported files — which is what makes the
+  boolean usable on anything that came from outside.
+- History and provenance carried through every boolean and compared operation
+  by operation, not just on the final shape.
+
+### M4 — a manufacturing-capable kernel · P4 · §10, §11
+
+- Constant- and variable-radius fillets, chamfers, shelling, offsets, pipe
+  sweeps and lofts, on a mechanical part end to end.
+- Parity with the field is the bar here, not perfection: these are the two most
+  fragile areas of every kernel that has them.
+
+### M5 — a documents-and-drawings kernel · P5 · §13, §15, §17
+
+- A multi-body STEP assembly imported with colours, names and PMI, modified,
+  exported, reimported, and compared against what went in.
+- A 2D drawing generated from a 3D model: hidden lines removed, visible and
+  hidden edges classified, sections taken.
+
+### M6 — a complete kernel · P6 · §14, §16, §18
+
+- A 2D constraint solver that reports degrees of freedom and *names the
+  conflicting constraints* when a sketch is over-constrained, rather than
+  merely failing.
+- Ray and rectangle picking with sub-shape granularity, and a stable mapping
+  from a triangle back to the topology that produced it.
+- Features recognized from raw topology.
+
+---
+
 ## 1. Foundation · `og-core` · P1 · *mostly done*
 
 Arenas and entity identity, errors as values, the tolerance model, geometric
@@ -350,6 +436,60 @@ engine's interference stage run against a single argument.
 
 ---
 
+## Verification
+
+**There is no external oracle, and there will not be one.** Comparing results
+against another kernel would mean vendoring one, which `CONTRIBUTING.md`
+forbids — and it would make that kernel's bugs the definition of correct.
+
+Geometry code fails quietly, so correctness is established from five independent
+directions. The point of having five is that a defect which hides from one is
+unlikely to hide from all; each of the first three has already caught a real one.
+
+1. **Analytic ground truth.** Closed-form volume, area, centroid and length for
+   every shape that has them, compared from the side the approximation must fall
+   on — an inscribed mesh cannot exceed the surface it inscribes, and a test
+   that only checks "close" would not notice a mesh that is wrong in the
+   direction it cannot be.
+
+2. **Metamorphic agreement.** The same solid built two ways must answer the same
+   way. A rectangle with one side on the axis, revolved a full turn, is a
+   cylinder — so it must have the face count and the volume `make_cylinder`
+   gives, at the same deflection. This is the strongest substitute for an oracle
+   available without one, because the two constructions share no code path.
+   *It found the revolution's face orientation inverted.*
+
+3. **Self-consistency.** A shape carries two descriptions of itself — its
+   topology and its tessellation — and they can disagree. `check_tessellation`
+   asks whether they do. The failure it names is invisible to every other check:
+   face counts look right, the shell closes, each face triangulates without
+   error, and the solid still has a slit down it. *It found the prism defect on
+   its first run, and a second one the same day.*
+
+4. **Round-trip identity.** Write, read, write: the same bytes. Not "close" —
+   the same. A format that drifted a little on every save would make a real
+   disagreement indistinguishable from noise. *Establishing this exposed two
+   places where exactness was being thrown away in `og-math`.*
+
+5. **Property tests over the laws.** Composition, inversion, antisymmetry,
+   containment — stated as laws and tested over generated inputs, repeated
+   across seeds by `tools/check.sh` so a case that only some seeds reach does
+   not slip through.
+
+**The corpus.** Generated permutations of primitives and operations today.
+Published benchmark datasets for the intersection gate (§7), where they exist —
+that is the one place a shared, external standard is available. Real exchange
+files with §17, which are input to the kernel rather than another kernel's
+output about a shape, and so carry no dependency.
+
+**The harness.** `./tools/check.sh` is it, for now: format, lints, docs, and the
+suite repeated across seeds, exit-code driven. A separate corpus runner arrives
+with §17, when there are outside files to run and a per-operation pass rate is a
+number that means something. Building one earlier would be a dashboard reporting
+on inputs we generated ourselves.
+
+---
+
 ## Deferred implementation details
 
 Places where something *is* built and works, but a narrower or exact version is
@@ -429,3 +569,46 @@ references and represent perhaps a fifth of the implementation effort — and th
 say nothing whatsoever about capabilities the sampled application implements
 itself, such as constraint solving, or reaches for rarely, such as drawing
 generation.
+
+---
+
+## Appendix: dependencies considered
+
+A kernel that pulls in the wrong dependency inherits its representation, and a
+representation is the one thing that cannot be swapped out later. So the ones
+turned down are recorded here with the reason, not only the ones taken —
+otherwise the question gets re-litigated every time someone notices a crate that
+looks like it would help.
+
+Every entry states a decision and why. Nothing here asserts a license:
+`deny.toml` enforces the licence rule at build time, and it is checked at
+adoption rather than remembered from a note.
+
+**Taken.** Rationale lives beside each in the workspace `Cargo.toml`.
+
+| | For |
+|---|---|
+| `nalgebra` | The arithmetic substrate. Generic over `RealField`, so extended-precision or interval scalars can be swapped in later without rewriting algorithms |
+| `robust` | Shewchuk adaptive-exact predicates: `orient2d`, `orient3d`, `incircle`, `insphere`. Fast floating-point filter escalating to exact only when the error bound leaves the sign undecided |
+| `spade` | Constrained Delaunay with refinement, over the same predicates |
+| `hashbrown`, `indexmap`, `smallvec`, `thiserror` | Collections and error derivation |
+
+**Not taken.**
+
+| | Why not |
+|---|---|
+| `glam` | `f32` and graphics-oriented. A kernel is `f64` end to end |
+| `cgmath` | Unmaintained |
+| `csgrs` | Mesh CSG. It destroys the analytic surfaces that are the entire point of a B-rep — the result of a boolean between two cylinders has to still *be* cylindrical, not a triangulation that resembles one |
+| `earcutr` | Ear clipping: no quality guarantee, and no way to insert an interior point. A curved face needs both, which is why `spade` was taken instead |
+| `rapier3d` | Physics. Nothing here needs it |
+| `parry3d` | Proposed for BVH broad-phase only. A BVH over our own triangulations is a small thing to own, and taking a physics crate's spatial types to get one would put a second geometry representation in the tree. Revisit at §16 if picking turns out to want more than a BVH |
+| `inari` | Interval arithmetic, for filtered predicates. Genuinely wanted eventually (§2), and deferred until the filtered predicates it would serve are actually built — the `Predicates` trait is the seam it plugs into, and that seam already exists |
+| `curvo` | NURBS evaluation, curve/curve intersection, 2D region booleans and trimming. The 2D booleans are close to what §8's face-splitting stage needs, so this is the one on the list worth genuinely re-examining — **at the §7 gate**, not before. Taking it earlier would mean two NURBS representations in the tree while `og-geom` is still being shaped |
+| `truck-geometry` / `truck-topology` | Evaluated as a *reference design* rather than a dependency. Taking a whole topology crate means taking its data model, and `DATA_MODEL.md` diverges from the conventional one deliberately in two places (§8, §9). Those divergences are the point |
+
+**A correction.** An earlier note in this project's planning claimed that
+`robust` was 2D-only and that a separate crate would be needed for `orient3d`
+and `insphere`. That is not true of the version in use: it provides all four
+predicates, and `og-core`'s exact implementation calls them directly. Recorded
+so the claim is not re-derived from the old note.
