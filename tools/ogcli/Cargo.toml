@@ -1,0 +1,19 @@
+[package]
+name = "ogcli"
+description = "Command-line front end for the openGeometry kernel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "ogcli"
+path = "src/main.rs"
+
+[dependencies]
+og = { path = "../../crates/og", version = "0.0.0" }
+
+[lints]
+workspace = true

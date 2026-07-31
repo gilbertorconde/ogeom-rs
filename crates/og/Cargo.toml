@@ -1,0 +1,34 @@
+[package]
+name = "og"
+description = "openGeometry — a B-rep CAD kernel in Rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+og-core.workspace = true
+og-math.workspace = true
+og-geom.workspace = true
+og-topo.workspace = true
+og-algo.workspace = true
+og-mesh.workspace = true
+og-intersect.workspace = true
+og-bool.workspace = true
+og-heal.workspace = true
+og-fillet.workspace = true
+og-offset.workspace = true
+og-io.workspace = true
+og-hlr.workspace = true
+og-sketch.workspace = true
+og-doc.workspace = true
+og-select.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

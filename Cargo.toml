@@ -1,0 +1,100 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/og-core",
+    "crates/og-math",
+    "crates/og-geom",
+    "crates/og-topo",
+    "crates/og-algo",
+    "crates/og-mesh",
+    "crates/og-intersect",
+    "crates/og-bool",
+    "crates/og-heal",
+    "crates/og-fillet",
+    "crates/og-offset",
+    "crates/og-io",
+    "crates/og-hlr",
+    "crates/og-sketch",
+    "crates/og-doc",
+    "crates/og-select",
+    "crates/og",
+    "tools/ogcli",
+]
+
+# tools/ogview (wgpu) joins the workspace in Phase 2. It carries heavy graphics
+# dependencies that the kernel itself must never acquire, so it stays out of the
+# default build until there is something to look at.
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/gilbertorconde/openGeometry"
+authors = ["openGeometry contributors"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+# A geometry kernel is arithmetic end to end; silent lossy casts and unwraps in
+# library code are how wrong answers get shipped.
+cast_possible_truncation = "warn"
+cast_precision_loss = "warn"
+undocumented_unsafe_blocks = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+
+[workspace.dependencies]
+# --- internal ---
+og-core = { path = "crates/og-core", version = "0.0.0" }
+og-math = { path = "crates/og-math", version = "0.0.0" }
+og-geom = { path = "crates/og-geom", version = "0.0.0" }
+og-topo = { path = "crates/og-topo", version = "0.0.0" }
+og-algo = { path = "crates/og-algo", version = "0.0.0" }
+og-mesh = { path = "crates/og-mesh", version = "0.0.0" }
+og-intersect = { path = "crates/og-intersect", version = "0.0.0" }
+og-bool = { path = "crates/og-bool", version = "0.0.0" }
+og-heal = { path = "crates/og-heal", version = "0.0.0" }
+og-fillet = { path = "crates/og-fillet", version = "0.0.0" }
+og-offset = { path = "crates/og-offset", version = "0.0.0" }
+og-io = { path = "crates/og-io", version = "0.0.0" }
+og-hlr = { path = "crates/og-hlr", version = "0.0.0" }
+og-sketch = { path = "crates/og-sketch", version = "0.0.0" }
+og-doc = { path = "crates/og-doc", version = "0.0.0" }
+og-select = { path = "crates/og-select", version = "0.0.0" }
+
+# --- arithmetic substrate ---
+# Generic over RealField so extended-precision / interval scalars can be swapped
+# in later without rewriting algorithms. See docs/DATA_MODEL.md.
+nalgebra = "0.35"
+
+# --- robustness ---
+# Shewchuk adaptive-exact predicates, pure Rust: orient2d/3d, incircle,
+# insphere. Fast floating-point filter escalating to exact only when the error
+# bound leaves the sign undecided.
+robust = "1.2"
+
+# --- collections ---
+hashbrown = "0.16"
+indexmap = "2"
+smallvec = { version = "1", features = ["union", "const_generics"] }
+
+# --- diagnostics ---
+thiserror = "2"
+
+# --- dev ---
+approx = "0.5"
+proptest = "1"
+criterion = "0.7"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+# Debug builds of a geometry kernel are unusably slow with unoptimized deps.
+[profile.dev.package."*"]
+opt-level = 2

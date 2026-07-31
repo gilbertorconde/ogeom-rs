@@ -1,0 +1,24 @@
+[package]
+name = "og-topo"
+description = "The B-rep data model: shared topology, location chains, orientation, tolerances"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+og-core.workspace = true
+og-math.workspace = true
+og-geom.workspace = true
+hashbrown.workspace = true
+indexmap.workspace = true
+smallvec.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

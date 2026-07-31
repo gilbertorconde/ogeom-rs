@@ -1,0 +1,22 @@
+[package]
+name = "og-mesh"
+description = "Tessellation: edge discretization and constrained Delaunay triangulation per face"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+og-core.workspace = true
+og-math.workspace = true
+og-geom.workspace = true
+og-topo.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true
