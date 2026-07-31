@@ -31,6 +31,7 @@ use std::fmt;
 
 use og_core::{OgResult, Tolerances, og_bail};
 use og_geom::{Curve2d, Curve3d, Surface};
+use og_mesh::Deflection;
 use og_topo::{EdgeRepr, Filter, Model, Shape, ShapeType, TShapeId, explore, explore_unique};
 
 /// How badly a problem breaks the shape.
@@ -155,6 +156,106 @@ pub fn check(model: &Model, shape: &Shape, tol: Tolerances) -> OgResult<Diagnosi
     }
     check_containment(model, shape, &mut found)?;
     Ok(found)
+}
+
+/// Check that a shape's *tessellation* agrees with its topology.
+///
+/// Separate from [`check`] because it needs a deflection, and because it asks a
+/// different question: not "is this shape well formed" but "do its two
+/// descriptions of itself agree". A shell whose edges are all used twice is
+/// closed as far as the topology knows. If the mesh built from it still has a
+/// boundary, then some face's pcurves do not cover the region its edges claim
+/// to bound — and the topology cannot see that, because the defect is entirely
+/// in parameter space.
+///
+/// That failure is worth its own function because it is *invisible* to every
+/// other check. Face counts look right, the shell closes, each face
+/// triangulates without error, and the solid still has a slit down it. The
+/// first thing to notice is usually a volume that is quietly wrong.
+///
+/// Reports the position of the unshared edges, not just their number: where the
+/// mesh comes apart is the whole diagnosis, and a count sends you looking.
+///
+/// # Errors
+///
+/// As [`og_mesh::triangulate()`].
+pub fn check_tessellation(
+    model: &Model,
+    shape: &Shape,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgResult<Diagnosis> {
+    let mut found = Diagnosis::default();
+
+    for shell in explore_unique(model, shape, ShapeType::Shell)? {
+        // An open shell is *meant* to have a boundary, so a mesh with one is
+        // agreement, not disagreement. Only a shell the topology calls closed
+        // makes a claim the mesh can contradict.
+        if !crate::build::is_shell_closed(model, &shell)? {
+            continue;
+        }
+        let mesh = og_mesh::triangulate(model, &shell, deflection, tol)?;
+        if mesh.is_empty() {
+            found.note(
+                Severity::Broken,
+                &shell,
+                ShapeType::Shell,
+                "the topology says this shell is closed and it tessellates to \
+                 nothing at all"
+                    .into(),
+            );
+            continue;
+        }
+        if let Some(report) = open_edges(&mesh) {
+            found.note(Severity::Broken, &shell, ShapeType::Shell, report);
+        }
+    }
+    Ok(found)
+}
+
+/// Describe a mesh's unshared edges, or `None` if every edge is shared twice.
+fn open_edges(mesh: &og_topo::Triangulation) -> Option<String> {
+    let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+    for triangle in &mesh.triangles {
+        for i in 0..3 {
+            let (a, b) = (triangle[i], triangle[(i + 1) % 3]);
+            *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+
+    let mut loose: Vec<&(u32, u32)> = uses
+        .iter()
+        .filter(|(_, n)| **n != 2)
+        .map(|(e, _)| e)
+        .collect();
+    if loose.is_empty() {
+        return None;
+    }
+    // Deterministic: a diagnosis that names a different edge each run is one
+    // nobody can act on.
+    loose.sort_unstable();
+
+    let sample: Vec<String> = loose
+        .iter()
+        .take(3)
+        .map(|(a, b)| {
+            let (p, q) = (mesh.positions[*a as usize], mesh.positions[*b as usize]);
+            format!(
+                "({:.6}, {:.6}, {:.6})-({:.6}, {:.6}, {:.6})",
+                p.x, p.y, p.z, q.x, q.y, q.z
+            )
+        })
+        .collect();
+
+    Some(format!(
+        "the topology says this shell is closed, but its mesh has {} triangle \
+         edge(s) not shared by two triangles, so the tessellated solid has a \
+         slit in it. The first are at {}. This is a parameter-space defect — \
+         some face's pcurves do not cover the region its edges bound — and no \
+         topological check can see it",
+        loose.len(),
+        sample.join(", ")
+    ))
 }
 
 /// An edge's curve must reach the vertices it claims to join, and its
@@ -671,5 +772,147 @@ mod tests {
 
         let empty = Model::new();
         assert!(check(&empty, &beyond, T).is_err());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tessellation_tests {
+    use super::*;
+    use crate::{make_box, make_cone, make_cylinder, make_sphere, make_torus};
+    use og_math::{Frame, Point};
+    use og_topo::{NodeData, VertexData};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn fine() -> Deflection {
+        Deflection {
+            chord: 0.02,
+            ..Deflection::default()
+        }
+    }
+
+    #[test]
+    fn every_primitive_tessellates_into_a_mesh_that_agrees_with_its_topology() {
+        // The regression net for every seam and every pole. A primitive whose
+        // shell closes but whose mesh does not is the failure this exists to
+        // name, and it is invisible to every other check.
+        let mut model = Model::new();
+        let shapes = [
+            make_box(&mut model, Frame::WORLD, (2.0, 3.0, 4.0), T)
+                .unwrap()
+                .shape,
+            make_cylinder(&mut model, Frame::WORLD, 2.0, 5.0, T)
+                .unwrap()
+                .shape,
+            make_sphere(&mut model, Frame::WORLD, 3.0, T).unwrap().shape,
+            make_cone(&mut model, Frame::WORLD, 3.0, 1.0, 4.0, T)
+                .unwrap()
+                .shape,
+            make_cone(&mut model, Frame::WORLD, 3.0, 0.0, 4.0, T)
+                .unwrap()
+                .shape,
+            make_torus(&mut model, Frame::WORLD, 5.0, 2.0, T)
+                .unwrap()
+                .shape,
+        ];
+        for shape in &shapes {
+            let found = check_tessellation(&model, shape, fine(), T).unwrap();
+            assert!(found.is_valid(), "a primitive's mesh came apart: {found}");
+        }
+    }
+
+    #[test]
+    fn a_prism_over_an_upward_face_tessellates_into_an_agreeing_mesh() {
+        // Only the upward-facing profile is covered here, and deliberately so:
+        // sweeping the *downward* face of the same box produces lateral faces
+        // that fail to triangulate at all. That is a real defect in
+        // `make_prism`, found by this check on its first run, and it is
+        // recorded in `docs/SCOPE.md` rather than papered over by picking the
+        // orientation that works and saying nothing.
+        use og_math::Vector;
+        let mut model = Model::new();
+        let solid = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
+            .unwrap()
+            .shape;
+        let face = explore_unique(&model, &solid, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                model.provenance_of(f).and_then(og_core::Provenance::role)
+                    == Some(crate::primitive::roles::FACE_MAX_Z)
+            })
+            .expect("the box has a top face");
+        let prism = crate::make_prism(&mut model, &face, Vector::new(0.0, 0.0, 2.0), T)
+            .unwrap()
+            .shape;
+        assert!(
+            check_tessellation(&model, &prism, fine(), T)
+                .unwrap()
+                .is_valid()
+        );
+    }
+
+    #[test]
+    fn moving_a_vertex_does_not_move_the_mesh() {
+        // Worth pinning, because it is unintuitive and it invalidated an
+        // earlier attempt at a test here. Tessellation reads curves and
+        // pcurves, never vertex positions — so a vertex moved off its edges is
+        // caught by `check` (the curve no longer reaches it) and is invisible
+        // to `check_tessellation`. The two checks genuinely see different
+        // things, which is why both exist.
+        let mut model = Model::new();
+        let solid = make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T)
+            .unwrap()
+            .shape;
+        let before = og_mesh::triangulate(&model, &solid, fine(), T).unwrap();
+
+        let vertex = explore_unique(&model, &solid, ShapeType::Vertex).unwrap()[0].clone();
+        if let Some(NodeData::Vertex(data)) = model.node_mut(&vertex).map(og_topo::TShape::data_mut)
+        {
+            data.point = Point::new(0.5, 0.5, 0.5);
+        }
+
+        let after = og_mesh::triangulate(&model, &solid, fine(), T).unwrap();
+        assert_eq!(before.positions, after.positions);
+        assert!(
+            check_tessellation(&model, &solid, fine(), T)
+                .unwrap()
+                .is_valid()
+        );
+        assert!(
+            !check(&model, &solid, T).unwrap().is_usable(),
+            "check sees it"
+        );
+    }
+
+    #[test]
+    fn an_open_shell_is_not_reported_because_it_never_claimed_to_close() {
+        // A mesh with a boundary is agreement here, not disagreement. Flagging
+        // it would make the check useless for every sheet body.
+        let mut model = Model::new();
+        let solid = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
+            .unwrap()
+            .shape;
+        let face = explore_unique(&model, &solid, ShapeType::Face).unwrap()[0].clone();
+        let shell = crate::build::make_shell(&mut model, std::slice::from_ref(&face))
+            .unwrap()
+            .shape;
+        assert!(
+            check_tessellation(&model, &shell, fine(), T)
+                .unwrap()
+                .is_valid()
+        );
+    }
+
+    #[test]
+    fn a_shape_with_no_shell_has_nothing_to_disagree_about() {
+        let mut model = Model::new();
+        let vertex = model.add_vertex(VertexData::new(Point::ORIGIN));
+        assert!(
+            check_tessellation(&model, &vertex, fine(), T)
+                .unwrap()
+                .is_valid()
+        );
     }
 }
