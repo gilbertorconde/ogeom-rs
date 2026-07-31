@@ -24,3 +24,9 @@
 //!   pcurve per adjacent face, two pcurves for a seam edge on a closed surface, plus
 //!   polygon and triangulation representations — with a `same_parameter` flag and a
 //!   repair routine.
+
+pub mod location;
+pub mod shape;
+
+pub use location::{Datum, DatumId, DatumStore, Location};
+pub use shape::{Orientation, PartnerKey, SameKey, Shape, ShapeType, TShape, TShapeId};
