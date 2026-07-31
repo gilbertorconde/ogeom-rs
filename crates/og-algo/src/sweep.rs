@@ -27,7 +27,7 @@
 use std::collections::HashMap;
 
 use og_core::{OgResult, Tolerances, og_bail};
-use og_geom::{Curve2d, ExtrusionSurface, Line2d, PlanarCurve, Surface};
+use og_geom::{Curve2d, Curve3d, ExtrusionSurface, Line2d, PlanarCurve, Surface, Transformable};
 use og_math::{Point2, Transform, Vector};
 use og_topo::{EdgeRepr, Location, Model, NodeData, Orientation, Shape, ShapeType, TShapeId};
 
@@ -217,10 +217,26 @@ fn prism_over_edge(
         og_bail!(Dangling, "curve is not in this model");
     };
 
+    // The surface is built from the edge's curve *where the edge actually is*.
+    // Built from the stored curve instead, every side wall of a profile that
+    // has been placed lands back at the placement's origin, while its two ends
+    // — which are the profile itself, at its own location — land correctly, so
+    // the mesh comes apart along every lateral face at once.
+    //
+    // A placement may carry a uniform scale, and a scale rescales a curve's
+    // parameter with it. The edge's range is in the stored curve's parameter
+    // and the surface's `u` is in the placed one's, so the range is carried
+    // across by where it sits in the domain rather than by its value.
     let placement = edge.transform(model.datums())?;
-    let (lo, hi) = *range;
+    let stored = geometry.domain();
+    let geometry = geometry.transformed(&placement, tol)?;
+    let placed = geometry.domain();
+    let (lo, hi) = (
+        rescale(range.0, stored, placed),
+        rescale(range.1, stored, placed),
+    );
     let travel = vector.magnitude();
-    let direction = og_math::Direction::new(placement.inverse()?.apply_vector(vector), tol)?;
+    let direction = og_math::Direction::new(vector, tol)?;
     let surface = model
         .geometry_mut()
         .add_surface(ExtrusionSurface::new(geometry, direction, travel)?.into());
@@ -310,6 +326,21 @@ fn prism_over_edge(
     history.generate(edge, face.clone());
     history.generate(edge, top);
     Ok((face, history))
+}
+
+/// Carry a parameter from one domain to the corresponding place in another.
+///
+/// A rigid motion leaves a curve's parameterization alone; a uniform scale
+/// stretches it, because a line's parameter is a length. Rather than knowing
+/// which curve types do which, the parameter is placed by where it sits between
+/// the domain's ends — which is the same affine map in both cases, and the
+/// identity when the two domains agree.
+fn rescale(u: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
+    let span = from.1 - from.0;
+    if span.abs() <= f64::MIN_POSITIVE {
+        return to.0;
+    }
+    to.0 + (to.1 - to.0) * (u - from.0) / span
 }
 
 /// The direction a face presents, in space.
@@ -745,6 +776,58 @@ mod tests {
         ] {
             assert!(make_prism(&mut model, &face, vector, T).is_err());
         }
+    }
+
+    #[test]
+    fn a_profile_that_has_been_placed_sweeps_where_it_actually_sits() {
+        // A placed profile's edges arrive at a location, and the lateral
+        // surface is built from the edge's *stored* curve. Building it without
+        // the placement puts every side wall back at the origin.
+        let mut model = Model::new();
+        let face = square(&mut model, 2.0);
+        let moved = crate::transformed(
+            &mut model,
+            &face,
+            Transform::translation(Vector::new(10.0, 0.0, 0.0)),
+        )
+        .unwrap()
+        .shape;
+
+        let built = make_prism(&mut model, &moved, Vector::new(0.0, 0.0, 3.0), T).unwrap();
+        let mesh = triangulate(&model, &built.shape, deflection(0.01), T).unwrap();
+        assert!(mesh.is_closed(), "the mesh has a slit in it");
+        assert_relative_eq!(mesh.volume(), 12.0, epsilon = 1e-9);
+
+        let props = volume_properties(&model, &built.shape, deflection(0.01), T).unwrap();
+        assert!(
+            props.centre.distance(Point::new(11.0, 1.0, 3.5)) < 1e-9,
+            "got {:?}",
+            props.centre
+        );
+    }
+
+    #[test]
+    fn a_profile_placed_with_a_scale_sweeps_at_the_size_it_is_now() {
+        // A placement may carry a uniform scale, and a scale stretches a line's
+        // parameter with it, because that parameter is a length. The edge's
+        // range is in the stored curve's parameter and the lateral surface's
+        // `u` is in the placed one's, so a range copied across unchanged would
+        // trim the surface at the wrong place — here, at half of it.
+        let mut model = Model::new();
+        let face = square(&mut model, 2.0);
+        let scaled = crate::transformed(
+            &mut model,
+            &face,
+            Transform::scaling(Point::ORIGIN, 2.0, T).unwrap(),
+        )
+        .unwrap()
+        .shape;
+
+        let built = make_prism(&mut model, &scaled, Vector::new(0.0, 0.0, 3.0), T).unwrap();
+        let mesh = triangulate(&model, &built.shape, deflection(0.01), T).unwrap();
+        assert!(mesh.is_closed(), "the mesh has a slit in it");
+        // A four-by-four square, three tall.
+        assert_relative_eq!(mesh.volume(), 48.0, epsilon = 1e-9);
     }
 
     #[test]
