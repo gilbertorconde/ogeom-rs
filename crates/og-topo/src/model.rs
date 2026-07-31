@@ -165,6 +165,17 @@ impl Model {
         self.nodes.get(id)
     }
 
+    /// Mutable access to the node behind a shape's handle.
+    ///
+    /// For attaching geometry to an entity that already exists — a pcurve
+    /// joining an edge to a face it has just come to bound. Structural change
+    /// still goes through the builders; this reaches the node's *data*, which
+    /// no invariant here constrains on its own.
+    #[must_use]
+    pub fn node_mut(&mut self, shape: &Shape) -> Option<&mut TShape> {
+        self.nodes.get_mut(shape.node())
+    }
+
     /// What kind of shape this is.
     ///
     /// # Errors
