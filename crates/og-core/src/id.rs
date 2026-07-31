@@ -127,6 +127,20 @@ impl Provenance {
         }
     }
 
+    /// Which part of its operation's result this entity is, if the operation
+    /// named one.
+    ///
+    /// The question provenance exists to answer — "the top face of that box",
+    /// asked of a model that has been rebuilt since. An imported entity has no
+    /// role, because the file said where it came from and not what it is for.
+    #[must_use]
+    pub const fn role(&self) -> Option<Role> {
+        match self {
+            Self::Primitive { role, .. } | Self::Derived { role, .. } => Some(*role),
+            Self::Imported { .. } => None,
+        }
+    }
+
     /// The entities this one was derived from.
     #[must_use]
     pub fn inputs(&self) -> &[EntityId] {

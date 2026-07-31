@@ -16,4 +16,6 @@ pub use attach::{Tessellated, polyline_of, tessellate, triangulation_of};
 pub use discretize::{
     Deflection, Polyline, discretize, discretize_planar, is_straight, is_straight_planar,
 };
-pub use triangulate::{polyline_of_edge, triangulate, triangulate_face};
+pub use triangulate::{
+    face_boundary, inside_boundary, polyline_of_edge, triangulate, triangulate_face,
+};

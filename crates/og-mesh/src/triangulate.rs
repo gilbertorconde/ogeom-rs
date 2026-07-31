@@ -64,24 +64,7 @@ pub fn triangulate_face(
     };
     let placement = face.transform(model.datums())?;
 
-    let mut rings = Vec::new();
-    let mut met = true;
-    for wire in model.ordered_children_of(face)? {
-        let (ring, ring_met) = boundary_ring(model, &wire, data.surface, deflection, tol)?;
-        met &= ring_met;
-        if ring.len() >= 3 {
-            rings.push(ring);
-        }
-    }
-
-    let uv = if rings.is_empty() {
-        // A face with no wires covers its surface's whole domain, so the domain
-        // rectangle is the boundary.
-        vec![domain_ring(surface, deflection, tol)]
-    } else {
-        rings
-    };
-
+    let (uv, met) = trimming_rings(model, face, data.surface, surface, deflection, tol)?;
     let planar = triangulate_region(&uv, surface, deflection, tol)?;
 
     // Lift into space. The normal follows the face's orientation, not the
@@ -123,6 +106,85 @@ pub fn triangulate(
         mesh.append(&triangulate_face(model, &face, deflection, tol)?);
     }
     Ok(mesh.welded(tol))
+}
+
+/// A face's trimming boundary, in its surface's parameter space.
+///
+/// The outer wire first, then any holes, each as a closed ring of `(u, v)`
+/// points with no repeated closing point. A face with no wires covers its
+/// surface's whole domain, and gets that rectangle as its boundary.
+///
+/// Public because parameter-space trimming is not only the triangulator's
+/// concern: classifying a point against a face, splitting a face in a boolean,
+/// and hidden-line removal all ask the same question of the same rings, and
+/// each deriving them separately would be three chances to disagree.
+///
+/// # Errors
+///
+/// As [`triangulate_face`].
+pub fn face_boundary(
+    model: &Model,
+    face: &Shape,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgResult<Vec<Vec<Point2>>> {
+    deflection.validate()?;
+    if model.kind_of(face)? != ShapeType::Face {
+        og_bail!(Construction, "expected a face");
+    }
+    let Some(node) = model.node(face) else {
+        og_bail!(Dangling, "face is not in this model");
+    };
+    let NodeData::Face(data) = node.data() else {
+        og_bail!(Construction, "face node holds no face data");
+    };
+    let Some(surface) = model.geometry().surface(data.surface) else {
+        og_bail!(Dangling, "face refers to a surface not in this model");
+    };
+
+    Ok(trimming_rings(model, face, data.surface, surface, deflection, tol)?.0)
+}
+
+/// The rings bounding a face in parameter space, and whether every boundary
+/// edge met its deflection.
+fn trimming_rings(
+    model: &Model,
+    face: &Shape,
+    id: og_topo::SurfaceId,
+    surface: &SurfaceGeometry,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgResult<(Vec<Vec<Point2>>, bool)> {
+    let mut rings = Vec::new();
+    let mut met = true;
+    for wire in model.ordered_children_of(face)? {
+        let (ring, ring_met) = boundary_ring(model, &wire, id, deflection, tol)?;
+        met &= ring_met;
+        if ring.len() >= 3 {
+            rings.push(ring);
+        }
+    }
+    if rings.is_empty() {
+        // A face with no wires covers its surface's whole domain, so the domain
+        // rectangle is the boundary.
+        rings.push(domain_ring(surface, deflection, tol));
+    }
+    Ok((rings, met))
+}
+
+/// Whether a point in parameter space lies inside the region `rings` bound.
+///
+/// Even-odd winding: inside the outer ring and outside every hole. The rings
+/// come from wires whose direction already encodes outer from inner, but
+/// counting crossings does not depend on that being right, which makes it
+/// robust to a wire that was built the wrong way round.
+///
+/// Says nothing about a point *on* a ring — the crossing count of a boundary
+/// point is whichever side rounding puts it. A caller that cares has to measure
+/// its distance to the boundary and decide, which is what classification does.
+#[must_use]
+pub fn inside_boundary(rings: &[Vec<Point2>], p: Point2) -> bool {
+    inside_region(rings, p)
 }
 
 /// The boundary of one wire, in the face's parameter space.
