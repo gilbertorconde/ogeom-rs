@@ -28,201 +28,11 @@
 
 use og_core::{OgResult, Tolerances, og_bail};
 use og_geom::{Curve2d, Surface, SurfaceGeometry};
-use og_math::{Aabb, Direction, Point, Point2, Vector};
-use og_topo::{EdgeRepr, Model, NodeData, Orientation, Shape, ShapeType};
+use og_math::{Direction, Point, Point2, Vector};
+use og_topo::{EdgeRepr, Model, NodeData, Orientation, Shape, ShapeType, Triangulation};
 use spade::{ConstrainedDelaunayTriangulation, Point2 as SpadePoint, Triangulation as _};
 
 use crate::discretize::{Deflection, discretize};
-
-/// A triangulated surface.
-///
-/// Vertices carry their parameters as well as their positions, so a caller can
-/// ask the exact surface about a triangulated point rather than only the
-/// approximation.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Mesh {
-    /// Vertex positions.
-    pub positions: Vec<Point>,
-    /// Outward unit normals, one per vertex.
-    pub normals: Vec<Vector>,
-    /// The surface parameters each vertex came from.
-    pub parameters: Vec<(f64, f64)>,
-    /// Triangles, as indices into the vertex arrays, wound counter-clockwise
-    /// about the outward normal.
-    pub triangles: Vec<[u32; 3]>,
-    /// Whether every face met its requested deflection.
-    pub deflection_met: bool,
-}
-
-impl Mesh {
-    /// An empty mesh.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            deflection_met: true,
-            ..Self::default()
-        }
-    }
-
-    /// Number of vertices.
-    #[must_use]
-    pub fn vertex_count(&self) -> usize {
-        self.positions.len()
-    }
-
-    /// Number of triangles.
-    #[must_use]
-    pub fn triangle_count(&self) -> usize {
-        self.triangles.len()
-    }
-
-    /// Whether the mesh holds no triangles.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.triangles.is_empty()
-    }
-
-    /// The bounding box of the vertices.
-    #[must_use]
-    pub fn bounds(&self) -> Aabb {
-        Aabb::of_points(&self.positions)
-    }
-
-    /// The total area of the triangles.
-    ///
-    /// An *under*estimate of the surface's own area for a convex patch, since a
-    /// triangle chord-cuts the surface it spans. It converges from below as the
-    /// deflection tightens.
-    #[must_use]
-    pub fn area(&self) -> f64 {
-        self.triangles
-            .iter()
-            .map(|t| {
-                let [a, b, c] = t.map(|i| self.positions[i as usize]);
-                (b - a).cross(c - a).magnitude() * 0.5
-            })
-            .sum()
-    }
-
-    /// The signed volume enclosed, by the divergence theorem.
-    ///
-    /// Meaningful only for a mesh that is closed and consistently wound
-    /// outward: each triangle contributes the signed volume of the tetrahedron
-    /// it forms with the origin, and the contributions cancel except over the
-    /// enclosed region. An open mesh gives a number with no meaning, and a mesh
-    /// wound inward gives the negative — which is why
-    /// [`Mesh::is_closed`] exists to be asked first.
-    #[must_use]
-    pub fn volume(&self) -> f64 {
-        self.triangles
-            .iter()
-            .map(|t| {
-                let [a, b, c] = t.map(|i| self.positions[i as usize].to_vector());
-                a.dot(b.cross(c)) / 6.0
-            })
-            .sum()
-    }
-
-    /// Whether every triangle edge is shared by exactly two triangles.
-    ///
-    /// The mesh equivalent of a closed shell, and the precondition for
-    /// [`Mesh::volume`] meaning anything.
-    #[must_use]
-    pub fn is_closed(&self) -> bool {
-        use std::collections::HashMap;
-        let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
-        for t in &self.triangles {
-            for i in 0..3 {
-                let (a, b) = (t[i], t[(i + 1) % 3]);
-                *uses.entry((a.min(b), a.max(b))).or_default() += 1;
-            }
-        }
-        !uses.is_empty() && uses.values().all(|&n| n == 2)
-    }
-
-    /// Append another mesh, shifting its indices.
-    pub fn append(&mut self, other: &Self) {
-        #[allow(clippy::cast_possible_truncation)]
-        let offset = self.positions.len() as u32;
-        self.positions.extend_from_slice(&other.positions);
-        self.normals.extend_from_slice(&other.normals);
-        self.parameters.extend_from_slice(&other.parameters);
-        self.triangles
-            .extend(other.triangles.iter().map(|t| t.map(|i| i + offset)));
-        self.deflection_met &= other.deflection_met;
-    }
-
-    /// Merge vertices that coincide within `tol`, rewiring the triangles.
-    ///
-    /// Faces are triangulated independently, so a shared edge produces two
-    /// copies of every boundary vertex — at identical positions, since both
-    /// came from the same edge discretization, but as separate entries. Merging
-    /// them is what turns a pile of face meshes into one closed surface, and
-    /// what lets [`Mesh::is_closed`] answer truthfully.
-    #[must_use]
-    pub fn welded(&self, tol: Tolerances) -> Self {
-        use std::collections::HashMap;
-
-        // Quantize to a grid a good deal finer than the tolerance, then check
-        // the neighbourhood: hashing alone would separate two points that
-        // straddle a cell boundary however close they are.
-        let cell = tol.confusion().max(f64::MIN_POSITIVE);
-        let key = |p: Point| {
-            #[allow(clippy::cast_possible_truncation)]
-            (
-                (p.x / cell).round() as i64,
-                (p.y / cell).round() as i64,
-                (p.z / cell).round() as i64,
-            )
-        };
-
-        let mut buckets: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
-        let mut remap = vec![0_u32; self.positions.len()];
-        let mut out = Self::new();
-        out.deflection_met = self.deflection_met;
-
-        for (index, position) in self.positions.iter().enumerate() {
-            let (kx, ky, kz) = key(*position);
-            let mut found = None;
-            'search: for dx in -1..=1 {
-                for dy in -1..=1 {
-                    for dz in -1..=1 {
-                        for &candidate in buckets
-                            .get(&(kx + dx, ky + dy, kz + dz))
-                            .map_or(&[][..], Vec::as_slice)
-                        {
-                            if out.positions[candidate as usize].is_equal(*position, tol) {
-                                found = Some(candidate);
-                                break 'search;
-                            }
-                        }
-                    }
-                }
-            }
-
-            let target = found.unwrap_or_else(|| {
-                #[allow(clippy::cast_possible_truncation)]
-                let fresh = out.positions.len() as u32;
-                out.positions.push(*position);
-                out.normals.push(self.normals[index]);
-                out.parameters.push(self.parameters[index]);
-                buckets.entry((kx, ky, kz)).or_default().push(fresh);
-                fresh
-            });
-            remap[index] = target;
-        }
-
-        for t in &self.triangles {
-            let mapped = t.map(|i| remap[i as usize]);
-            // A triangle whose corners merged is degenerate and contributes
-            // nothing but trouble to anything that divides by its area.
-            if mapped[0] != mapped[1] && mapped[1] != mapped[2] && mapped[2] != mapped[0] {
-                out.triangles.push(mapped);
-            }
-        }
-        out
-    }
-}
 
 /// Triangulate one face.
 ///
@@ -238,7 +48,7 @@ pub fn triangulate_face(
     face: &Shape,
     deflection: Deflection,
     tol: Tolerances,
-) -> OgResult<Mesh> {
+) -> OgResult<Triangulation> {
     deflection.validate()?;
     if model.kind_of(face)? != ShapeType::Face {
         og_bail!(Construction, "expected a face");
@@ -278,7 +88,7 @@ pub fn triangulate_face(
     // surface's: a reversed face presents the other side, and a renderer or a
     // volume computation that ignored that would have the solid inside out.
     let flip = face.orientation() == Orientation::Reversed;
-    let mut mesh = Mesh::new();
+    let mut mesh = Triangulation::new();
     mesh.deflection_met = met;
     for (u, v) in planar.parameters {
         let point = placement.apply(surface.point_at(u, v, tol)?);
@@ -307,8 +117,8 @@ pub fn triangulate(
     shape: &Shape,
     deflection: Deflection,
     tol: Tolerances,
-) -> OgResult<Mesh> {
-    let mut mesh = Mesh::new();
+) -> OgResult<Triangulation> {
+    let mut mesh = Triangulation::new();
     for face in og_topo::explore(model, shape, og_topo::Filter::OfType(ShapeType::Face))? {
         mesh.append(&triangulate_face(model, &face, deflection, tol)?);
     }
@@ -821,7 +631,7 @@ mod tests {
         let mut model = Model::new();
         let built = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T).unwrap();
 
-        let mut loose = Mesh::new();
+        let mut loose = Triangulation::new();
         for face in og_topo::explore(
             &model,
             &built.shape,
@@ -855,7 +665,7 @@ mod tests {
             assert!(a.is_equal(-*b, T), "normals did not flip: {a:?} vs {b:?}");
         }
         // And the winding flipped with them, so the two agree.
-        let winding = |m: &Mesh, i: usize| {
+        let winding = |m: &Triangulation, i: usize| {
             let [a, b, c] = m.triangles[i].map(|k| m.positions[k as usize]);
             (b - a).cross(c - a)
         };
@@ -986,67 +796,6 @@ mod tests {
         // A plane is flat, so its domain needs only what closes the rectangle.
         let plane: SurfaceGeometry = PlaneSurface::new(Plane::new(Frame::WORLD)).into();
         assert!(domain_ring(&plane, fine(), T).len() >= 4);
-    }
-
-    #[test]
-    fn an_empty_mesh_answers_sensibly() {
-        let mesh = Mesh::new();
-        assert!(mesh.is_empty());
-        assert_eq!(mesh.triangle_count(), 0);
-        assert_relative_eq!(mesh.area(), 0.0);
-        assert_relative_eq!(mesh.volume(), 0.0);
-        assert!(!mesh.is_closed(), "nothing is not closed");
-        assert!(mesh.bounds().is_empty());
-    }
-
-    #[test]
-    fn welding_drops_triangles_that_collapse() {
-        // Three corners that merge into one describe no area, and anything that
-        // divides by a triangle's area would divide by zero.
-        let mut mesh = Mesh::new();
-        for _ in 0..3 {
-            mesh.positions.push(Point::ORIGIN);
-            mesh.normals.push(Vector::Z);
-            mesh.parameters.push((0.0, 0.0));
-        }
-        mesh.triangles.push([0, 1, 2]);
-        let welded = mesh.welded(T);
-        assert_eq!(welded.vertex_count(), 1);
-        assert_eq!(welded.triangle_count(), 0);
-    }
-
-    #[test]
-    fn appending_shifts_indices_rather_than_overlapping_them() {
-        let mut a = Mesh::new();
-        a.positions.push(Point::ORIGIN);
-        a.normals.push(Vector::Z);
-        a.parameters.push((0.0, 0.0));
-
-        let mut b = Mesh::new();
-        b.positions.push(Point::new(1.0, 0.0, 0.0));
-        b.normals.push(Vector::Z);
-        b.parameters.push((1.0, 0.0));
-        b.triangles.push([0, 0, 0]);
-
-        a.append(&b);
-        assert_eq!(a.vertex_count(), 2);
-        assert_eq!(
-            a.triangles[0],
-            [1, 1, 1],
-            "b's index moved past a's vertices"
-        );
-    }
-
-    #[test]
-    fn deflection_failure_propagates_through_the_whole_mesh() {
-        // One face that could not meet its tolerance makes the whole mesh's
-        // claim untrue, and the flag has to say so rather than being averaged
-        // away.
-        let mut a = Mesh::new();
-        let mut b = Mesh::new();
-        b.deflection_met = false;
-        a.append(&b);
-        assert!(!a.deflection_met);
     }
 
     #[test]

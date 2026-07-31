@@ -29,6 +29,7 @@ use og_math::Point;
 use smallvec::SmallVec;
 
 use crate::location::Location;
+use crate::tessellation::Triangulation;
 
 /// A handle to a space curve.
 pub type CurveId = Key<Curve>;
@@ -37,12 +38,16 @@ pub type PCurveId = Key<PlanarCurve>;
 /// A handle to a surface.
 pub type SurfaceId = Key<SurfaceGeometry>;
 
+/// A handle to a cached triangulation.
+pub type TriangulationId = Key<Triangulation>;
+
 /// The geometry a model's topology refers into.
 #[derive(Debug, Clone, Default)]
 pub struct GeometryStore {
     curves: Arena<Curve>,
     pcurves: Arena<PlanarCurve>,
     surfaces: Arena<SurfaceGeometry>,
+    triangulations: Arena<Triangulation>,
 }
 
 impl GeometryStore {
@@ -53,6 +58,7 @@ impl GeometryStore {
             curves: Arena::new(),
             pcurves: Arena::new(),
             surfaces: Arena::new(),
+            triangulations: Arena::new(),
         }
     }
 
@@ -69,6 +75,11 @@ impl GeometryStore {
     /// Add a surface.
     pub fn add_surface(&mut self, surface: SurfaceGeometry) -> SurfaceId {
         self.surfaces.insert(surface)
+    }
+
+    /// Add a cached triangulation.
+    pub fn add_triangulation(&mut self, mesh: Triangulation) -> TriangulationId {
+        self.triangulations.insert(mesh)
     }
 
     /// The space curve behind `id`.
@@ -89,10 +100,22 @@ impl GeometryStore {
         self.surfaces.get(id)
     }
 
+    /// The cached triangulation behind `id`.
+    #[must_use]
+    pub fn triangulation(&self, id: TriangulationId) -> Option<&Triangulation> {
+        self.triangulations.get(id)
+    }
+
     /// How many curves, pcurves and surfaces are held.
     #[must_use]
     pub fn counts(&self) -> (usize, usize, usize) {
         (self.curves.len(), self.pcurves.len(), self.surfaces.len())
+    }
+
+    /// How many cached triangulations are held.
+    #[must_use]
+    pub fn triangulation_count(&self) -> usize {
+        self.triangulations.len()
     }
 }
 
@@ -149,6 +172,14 @@ pub enum EdgeRepr {
     Polyline {
         /// The points, in order along the edge.
         points: Vec<Point>,
+        /// The curve parameter each point came from.
+        ///
+        /// Kept, not discarded. A face's cached triangulation has to place its
+        /// boundary vertices where this polyline puts them, and it reaches them
+        /// through its own pcurve — so it needs the parameters, not just the
+        /// points. Without them the two caches drift and the stored mesh has
+        /// gaps that the exact geometry does not.
+        parameters: Vec<f64>,
         /// Where they sit.
         location: Location,
         /// The maximum distance from the exact curve.
@@ -362,6 +393,12 @@ pub struct FaceData {
     /// classification at all, and that test is one of the costliest in a
     /// boolean.
     pub natural_restriction: bool,
+    /// The cached triangulation of this face, if one has been built.
+    ///
+    /// A representation like a pcurve, not a replacement for the surface: it
+    /// answers display and coarse queries, and is rebuilt when a finer
+    /// deflection is asked for.
+    pub triangulation: Option<TriangulationId>,
 }
 
 impl FaceData {
@@ -373,6 +410,7 @@ impl FaceData {
             location,
             tolerance: Tolerance::MIN,
             natural_restriction: false,
+            triangulation: None,
         }
     }
 
@@ -717,6 +755,7 @@ mod tests {
         // nothing else recorded says which this is.
         let repr = EdgeRepr::Polyline {
             points: vec![Point::ORIGIN, Point::new(1.0, 0.0, 0.0)],
+            parameters: vec![0.0, 1.0],
             location: Location::identity(),
             deflection: 1e-3,
         };

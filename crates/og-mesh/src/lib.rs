@@ -8,10 +8,12 @@
 //! no quality guarantees and cannot insert Steiner points, which curved surfaces
 //! need.
 
+pub mod attach;
 pub mod discretize;
 pub mod triangulate;
 
+pub use attach::{Tessellated, polyline_of, tessellate, triangulation_of};
 pub use discretize::{
     Deflection, Polyline, discretize, discretize_planar, is_straight, is_straight_planar,
 };
-pub use triangulate::{Mesh, polyline_of_edge, triangulate, triangulate_face};
+pub use triangulate::{polyline_of_edge, triangulate, triangulate_face};
