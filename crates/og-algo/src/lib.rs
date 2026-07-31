@@ -11,14 +11,16 @@
 
 pub mod build;
 pub mod history;
+pub mod mass;
 pub mod measure;
 pub mod primitive;
 
 pub use build::{
     attach_pcurve, edge_vertices, is_shell_closed, is_wire_closed, make_edge, make_edge_between,
-    make_face, make_natural_face, make_shell, make_solid, make_vertex, make_wire,
+    make_face, make_face_on, make_natural_face, make_shell, make_solid, make_vertex, make_wire,
 };
 pub use history::{Built, History};
+pub use mass::{MassProperties, linear_properties, surface_properties, volume_properties};
 pub use measure::{
     Projection, SurfaceProjection, curve_bounds, project_on_curve, project_on_planar_curve,
     project_on_surface, shape_bounds, surface_bounds, vertex_bounds,

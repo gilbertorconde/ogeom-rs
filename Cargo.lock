@@ -298,6 +298,7 @@ dependencies = [
  "og-core",
  "og-geom",
  "og-math",
+ "og-mesh",
  "og-topo",
  "proptest",
  "smallvec",
