@@ -405,6 +405,53 @@ pub fn oriented_bounds(
     })
 }
 
+/// A deflection expressed as a fraction of a shape's own size.
+///
+/// "A thousandth of the part" survives the part being modelled in metres rather
+/// than millimetres, and being scaled after it was drawn; an absolute chord
+/// does not. [`Deflection::relative`](og_mesh::Deflection::relative) does the
+/// arithmetic once a size is known — this is what finds the size, which is the
+/// part a caller should not have to get right.
+///
+/// The measure is the bounding box's *diagonal*, not its longest side: a thin
+/// plate and a cube of the same longest side are not equally demanding, and the
+/// diagonal is the one that notices.
+///
+/// # Errors
+///
+/// [`OgError::Construction`](og_core::OgError::Construction) if `fraction` is
+/// not finite and positive, or the shape has nothing a deflection would
+/// describe.
+pub fn relative_deflection(
+    model: &Model,
+    shape: &Shape,
+    fraction: f64,
+    tol: Tolerances,
+) -> OgResult<og_mesh::Deflection> {
+    // A deflection says how closely a polyline should follow a curve, or a
+    // triangle a surface. A shape with neither has nothing for it to be about —
+    // and it is not enough to look at the size, because a lone vertex *does*
+    // have a bound: its own tolerance. A fraction of that is a chord of about
+    // 1e-10, which is not a small answer, it is a meaningless one.
+    if explore_unique(model, shape, ShapeType::Edge)?.is_empty()
+        && explore_unique(model, shape, ShapeType::Face)?.is_empty()
+    {
+        og_bail!(
+            Construction,
+            "the shape has no edges or faces, so there is nothing a deflection \
+             would describe"
+        );
+    }
+    let diagonal = shape_bounds(model, shape, tol)?.diagonal();
+    if !diagonal.is_finite() || diagonal <= tol.confusion() {
+        og_bail!(
+            Construction,
+            "the shape has no extent for a deflection to be a fraction of"
+        );
+    }
+    og_mesh::Deflection::relative(diagonal, fraction)
+}
+
 /// A frame whose axes are the directions a point set is most spread along.
 ///
 /// The eigenvectors of the covariance, largest spread first. Falls back to the
@@ -1198,5 +1245,59 @@ mod oriented_bound_tests {
         // One point has a bound but no spread; it must not claim a frame it
         // cannot justify, and it must not fail either.
         assert!(oriented_bounds(&model, &vertex, fine(), T).is_ok());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod deflection_tests {
+    use super::*;
+    use crate::make_box;
+    use approx::assert_relative_eq;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    #[test]
+    fn a_relative_deflection_follows_the_shape_it_is_for() {
+        // The property that makes it worth having: the same fraction gives the
+        // same *number of segments* whatever units the part was drawn in, and
+        // an absolute chord does not.
+        let mut model = Model::new();
+        let small = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
+            .unwrap()
+            .shape;
+        let large = make_box(&mut model, Frame::WORLD, (1000.0, 1000.0, 1000.0), T)
+            .unwrap()
+            .shape;
+
+        let a = relative_deflection(&model, &small, 1e-3, T).unwrap();
+        let b = relative_deflection(&model, &large, 1e-3, T).unwrap();
+        // Not exactly a thousand: `shape_bounds` is a *guaranteed* bound, so it
+        // includes each entity's tolerance, and that padding is a larger share
+        // of a one-unit box than of a thousand-unit one. Which is the right
+        // behaviour — the padding is really there.
+        assert_relative_eq!(b.chord / a.chord, 1000.0, max_relative = 1e-3);
+        assert_relative_eq!(a.chord, 3.0_f64.sqrt() * 1e-3, max_relative = 1e-3);
+    }
+
+    #[test]
+    fn a_shape_with_no_extent_has_no_fraction_of_itself() {
+        // A lone vertex *does* have a bound — its own tolerance — so the guard
+        // cannot be about size. It is about whether there is a curve or a
+        // surface for a deflection to describe.
+        let mut model = Model::new();
+        let vertex = model.add_point(Point::ORIGIN);
+        let err = relative_deflection(&model, &vertex, 1e-3, T).unwrap_err();
+        assert!(
+            err.to_string().contains("no edges or faces"),
+            "unexpected message: {err}"
+        );
+
+        let solid = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
+            .unwrap()
+            .shape;
+        assert!(relative_deflection(&model, &solid, 0.0, T).is_err());
+        assert!(relative_deflection(&model, &solid, -1.0, T).is_err());
+        assert!(relative_deflection(&model, &solid, f64::NAN, T).is_err());
     }
 }

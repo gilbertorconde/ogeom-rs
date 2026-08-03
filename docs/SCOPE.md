@@ -111,9 +111,8 @@ left over is listed under the milestone, and tracked in
 - Build, measure, check, tessellate and export from the command line.
 
 Still owed inside P2, none of it blocking the above: sewing, wire ordering and
-repair, `make_polygon`, half-space, NURBS conversion, find-plane, general affine
-transforms, oriented bounding boxes, arc-length parameterization, relative and
-adaptive deflection, mesh simplification, mesh → B-rep.
+repair, half-space, NURBS conversion, general affine transforms, mesh
+simplification, mesh → B-rep.
 
 ### M3 — a CAD kernel · P3 · §7–9
 

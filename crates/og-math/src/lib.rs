@@ -16,6 +16,7 @@ pub mod conic;
 pub mod direction;
 pub mod elementary;
 pub mod frame;
+pub mod integrate;
 pub mod knots;
 pub mod matrix;
 pub mod point;
@@ -31,6 +32,7 @@ pub use conic::{Circle, Circle2, Ellipse, Ellipse2, Hyperbola, Hyperbola2, Parab
 pub use direction::{Direction, Direction2};
 pub use elementary::{CurvePoint, SurfacePoint};
 pub use frame::{Axis, Axis2, Frame, Frame2, Handedness};
+pub use integrate::{gauss_legendre, integrate};
 pub use knots::{BasisValues, KnotVector};
 pub use matrix::{Matrix2, Matrix3};
 pub use point::{Point, Point2};
