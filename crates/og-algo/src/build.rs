@@ -176,6 +176,169 @@ pub fn edge_vertices(model: &Model, edge: &Shape) -> OgResult<Option<(Shape, Sha
     ))
 }
 
+/// Build a wire of straight segments through a sequence of points.
+///
+/// `closed` adds a final segment back to the first point — and does it by
+/// naming the *first vertex again* rather than making a coincident second one,
+/// which is what keeps the wire closed under [`is_wire_closed`] rather than
+/// merely looking closed.
+///
+/// # Errors
+///
+/// [`OgError::Construction`](og_core::OgError::Construction) if there are fewer
+/// than two points, fewer than three for a closed polygon, if consecutive
+/// points coincide within tolerance — a zero-length edge is not an edge — or if
+/// a closed polygon's ends do not meet.
+pub fn make_polygon(
+    model: &mut Model,
+    points: &[Point],
+    closed: bool,
+    tol: Tolerances,
+) -> OgResult<Built> {
+    let least = if closed { 3 } else { 2 };
+    if points.len() < least {
+        og_bail!(
+            Construction,
+            "a {} polygon needs at least {least} points, got {}",
+            if closed { "closed" } else { "open" },
+            points.len()
+        );
+    }
+    for i in 1..points.len() {
+        if points[i].is_equal(points[i - 1], tol) {
+            og_bail!(
+                Construction,
+                "points {} and {i} coincide, so the edge between them has no \
+                 length",
+                i - 1
+            );
+        }
+    }
+    // Whether or not `closed` was asked for. A caller that repeated the first
+    // point at the end wants a loop, and building it as written would give the
+    // wire two vertices in the same place — which every later boundary walk
+    // treats as a gap that happens to be zero wide. `closed` produces the loop
+    // by naming the first vertex again, which is the thing that actually
+    // closes.
+    if points[0].is_equal(points[points.len() - 1], tol) {
+        og_bail!(
+            Construction,
+            "the first and last points coincide; pass `closed` and drop the \
+             repeat, or the wire gets two vertices in one place rather than a \
+             closed loop"
+        );
+    }
+
+    let mut vertices: Vec<Shape> = Vec::with_capacity(points.len());
+    for point in points {
+        vertices.push(model.add_vertex(VertexData::new(*point)));
+    }
+
+    let mut edges = Vec::with_capacity(points.len());
+    let segments = if closed {
+        points.len()
+    } else {
+        points.len() - 1
+    };
+    for i in 0..segments {
+        let (from, to) = (points[i], points[(i + 1) % points.len()]);
+        let curve: Curve = og_geom::LineCurve::segment(from, to, tol)?.into();
+        edges.push(
+            make_edge_between(
+                model,
+                curve,
+                (0.0, from.distance(to)),
+                &vertices[i],
+                // The closing segment names the first vertex again rather than
+                // a second one at the same place.
+                &vertices[(i + 1) % points.len()],
+                tol,
+            )?
+            .shape,
+        );
+    }
+    make_wire(model, &edges, tol)
+}
+
+/// The plane a shape lies in, if it lies in one.
+///
+/// Fitted to the shape's geometry and then *checked*: the fit always produces a
+/// plane, and the answer is only useful if every sample is within tolerance of
+/// it. `None` means the shape is not planar, which is a fact about the shape
+/// rather than a failure.
+///
+/// Curved edges are sampled along their length, not only at their ends. A
+/// circular arc's endpoints lie in a great many planes that the arc does not.
+///
+/// # Errors
+///
+/// [`OgError::Dangling`](og_core::OgError::Dangling) if a handle fails to
+/// resolve.
+pub fn find_plane(
+    model: &Model,
+    shape: &Shape,
+    tol: Tolerances,
+) -> OgResult<Option<og_math::Plane>> {
+    let points = sample_shape(model, shape, tol)?;
+    if points.len() < 3 {
+        return Ok(None);
+    }
+    let Some((centroid, normal)) = crate::measure::least_squares_plane(&points, tol) else {
+        return Ok(None);
+    };
+    // Fitting always yields a plane. Whether the shape is *in* it is the
+    // question, and it is answered by measuring, not by having fitted.
+    let reach = tol.confusion().max(
+        points
+            .iter()
+            .map(|p| normal.dot_vector(*p - centroid).abs())
+            .fold(0.0_f64, f64::max),
+    );
+    if reach > tol.confusion() {
+        return Ok(None);
+    }
+    Ok(Some(og_math::Plane::new(og_math::Frame::about(
+        centroid, normal,
+    ))))
+}
+
+/// Points along a shape's geometry: every vertex, and every curved edge sampled
+/// along its length.
+fn sample_shape(model: &Model, shape: &Shape, tol: Tolerances) -> OgResult<Vec<Point>> {
+    /// Enough to catch a curve leaving a candidate plane, without the cost of a
+    /// real discretization — this is a yes-or-no question, not a mesh.
+    const ALONG_EDGE: usize = 8;
+
+    let mut points = Vec::new();
+    for vertex in og_topo::explore_unique(model, shape, ShapeType::Vertex)? {
+        if let Some(data) = model.node(&vertex).and_then(|n| n.data().as_vertex()) {
+            points.push(vertex.transform(model.datums())?.apply(data.point));
+        }
+    }
+    for edge in og_topo::explore_unique(model, shape, ShapeType::Edge)? {
+        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            continue;
+        };
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            continue;
+        };
+        let Some(geometry) = model.geometry().curve(*curve) else {
+            continue;
+        };
+        if geometry.kind() == og_geom::CurveKind::Line {
+            continue;
+        }
+        let placement = edge.transform(model.datums())?;
+        for i in 1..ALONG_EDGE {
+            #[allow(clippy::cast_precision_loss)]
+            let t = i as f64 / ALONG_EDGE as f64;
+            let at = range.0 + (range.1 - range.0) * t;
+            points.push(placement.apply(geometry.point_at(at, tol)?));
+        }
+    }
+    Ok(points)
+}
+
 /// Build a wire from edges that meet end to end.
 ///
 /// # Errors
@@ -432,7 +595,7 @@ pub fn attach_pcurve(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use og_geom::{CircleCurve, LineCurve, PlaneSurface};
@@ -773,5 +936,176 @@ mod tests {
                 "expected a derived vertex with role {role:?}, got {provenance:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod polygon_tests {
+    use super::*;
+    use og_geom::{CircleCurve, PlaneSurface};
+    use og_math::{Circle, Frame, Plane};
+    use og_topo::explore_unique;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn square() -> Vec<Point> {
+        vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(2.0, 0.0, 0.0),
+            Point::new(2.0, 2.0, 0.0),
+            Point::new(0.0, 2.0, 0.0),
+        ]
+    }
+
+    #[test]
+    fn a_closed_polygon_names_its_first_vertex_again_rather_than_a_second_one() {
+        // Two coincident vertices would leave the wire looking open at the
+        // join, and the gap only surfaces when something walks the boundary.
+        let mut model = Model::new();
+        let built = make_polygon(&mut model, &square(), true, T).unwrap();
+
+        assert_eq!(
+            explore_unique(&model, &built.shape, ShapeType::Edge)
+                .unwrap()
+                .len(),
+            4
+        );
+        assert_eq!(
+            explore_unique(&model, &built.shape, ShapeType::Vertex)
+                .unwrap()
+                .len(),
+            4,
+            "four corners, not five"
+        );
+        assert!(is_wire_closed(&model, &built.shape, T).unwrap());
+    }
+
+    #[test]
+    fn an_open_polygon_is_one_edge_short_and_says_it_is_open() {
+        let mut model = Model::new();
+        let built = make_polygon(&mut model, &square(), false, T).unwrap();
+        assert_eq!(
+            explore_unique(&model, &built.shape, ShapeType::Edge)
+                .unwrap()
+                .len(),
+            3
+        );
+        assert!(!is_wire_closed(&model, &built.shape, T).unwrap());
+    }
+
+    #[test]
+    fn a_polygon_that_describes_nothing_is_refused() {
+        let mut model = Model::new();
+        assert!(make_polygon(&mut model, &[], false, T).is_err());
+        assert!(make_polygon(&mut model, &square()[..1], false, T).is_err());
+        assert!(
+            make_polygon(&mut model, &square()[..2], true, T).is_err(),
+            "two points do not enclose anything"
+        );
+
+        // A repeated point is a zero-length edge, which is not an edge.
+        let mut doubled = square();
+        doubled.insert(2, doubled[1]);
+        assert!(make_polygon(&mut model, &doubled, true, T).is_err());
+
+        // Repeating the first point at the end is refused either way. Closed,
+        // it would add a zero-length segment; open, it would leave the wire
+        // with two vertices in one place, which every later boundary walk
+        // reads as a gap that happens to be zero wide.
+        let mut wrapped = square();
+        wrapped.push(wrapped[0]);
+        for closed in [true, false] {
+            let err = make_polygon(&mut model, &wrapped, closed, T).unwrap_err();
+            assert!(
+                err.to_string().contains("first and last points coincide"),
+                "unexpected message: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_planar_shape_reports_the_plane_it_lies_in() {
+        let mut model = Model::new();
+        let wire = make_polygon(&mut model, &square(), true, T).unwrap().shape;
+        let plane = find_plane(&model, &wire, T)
+            .unwrap()
+            .expect("a flat square");
+        assert!(
+            plane.normal().is_parallel(og_math::Direction::Z, T),
+            "got {:?}",
+            plane.normal()
+        );
+        for p in square() {
+            assert!(plane.distance_to(p) < 1e-9);
+        }
+    }
+
+    #[test]
+    fn a_shape_that_is_not_planar_says_so_rather_than_fitting_one_anyway() {
+        // Every set of three or more points has a best-fit plane, including a
+        // set nowhere near one. Returning it would be a confident wrong answer.
+        let mut model = Model::new();
+        let mut skew = square();
+        skew[2] = Point::new(2.0, 2.0, 1.0);
+        let wire = make_polygon(&mut model, &skew, true, T).unwrap().shape;
+        assert!(find_plane(&model, &wire, T).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_curved_edge_is_sampled_along_its_length_not_only_at_its_ends() {
+        // An arc's endpoints lie in a great many planes the arc itself does
+        // not. Checking only the vertices would call this shape planar.
+        let mut model = Model::new();
+        let circle = Circle::new(
+            Frame::new(
+                Point::ORIGIN,
+                og_math::Direction::Z,
+                og_math::Direction::X,
+                T,
+            )
+            .unwrap(),
+            2.0,
+            T,
+        )
+        .unwrap();
+        let arc = make_edge(
+            &mut model,
+            CircleCurve::new(circle).into(),
+            (0.0, std::f64::consts::PI),
+            T,
+        )
+        .unwrap()
+        .shape;
+        // In its own plane, it is planar.
+        assert!(find_plane(&model, &arc, T).unwrap().is_some());
+
+        // The two endpoints alone would admit the plane through them and the
+        // z axis; the arc does not lie in it, and sampling catches that.
+        let plane = find_plane(&model, &arc, T).unwrap().unwrap();
+        assert!(plane.normal().is_parallel(og_math::Direction::Z, T));
+    }
+
+    #[test]
+    fn a_face_is_planar_when_its_surface_is() {
+        let mut model = Model::new();
+        let wire = make_polygon(&mut model, &square(), true, T).unwrap().shape;
+        let face = make_face(
+            &mut model,
+            PlaneSurface::new(Plane::new(Frame::WORLD)).into(),
+            std::slice::from_ref(&wire),
+            T,
+        )
+        .unwrap()
+        .shape;
+        assert!(find_plane(&model, &face, T).unwrap().is_some());
+
+        let solid = crate::make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
+            .unwrap()
+            .shape;
+        assert!(
+            find_plane(&model, &solid, T).unwrap().is_none(),
+            "a box is not planar"
+        );
     }
 }

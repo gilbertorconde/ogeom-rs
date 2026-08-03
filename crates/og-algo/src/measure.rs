@@ -20,7 +20,7 @@
 
 use og_core::{OgResult, Tolerances, og_bail};
 use og_geom::{Curve, Curve3d, PlanarCurve, Surface, SurfaceGeometry, curve::LINE_EXTENT};
-use og_math::{Aabb, Point, Point2, Vector, solve};
+use og_math::{Aabb, Direction, Frame, Point, Point2, Vector, solve};
 use og_topo::{Model, NodeData, Shape, ShapeType, explore_unique};
 
 /// A guaranteed bound for a space curve.
@@ -287,6 +287,201 @@ pub fn vertex_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgResult<
         }
     }
     Ok(out.expanded(tol.confusion()))
+}
+
+/// A box that has been turned to fit what it bounds.
+///
+/// An axis-aligned box around a long thin rod lying diagonally is mostly empty;
+/// this one is not. The cost is that testing a point against it is a transform
+/// and then a comparison, rather than six comparisons — so [`Aabb`] stays the
+/// default and this is for when the emptiness matters, which is broad-phase
+/// rejection and anything that quotes a shape's real extent.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Obb {
+    /// The centre, and the axes the half-extents are measured along.
+    pub frame: Frame,
+    /// Half the size along the frame's `x`, `y` and `z`.
+    pub half_extent: Vector,
+}
+
+impl Obb {
+    /// The eight corners, in the same order [`Aabb::corners`] uses.
+    #[must_use]
+    pub fn corners(&self) -> Vec<Point> {
+        let (x, y, z) = (
+            self.frame.x().vector() * self.half_extent.x,
+            self.frame.y().vector() * self.half_extent.y,
+            self.frame.z().vector() * self.half_extent.z,
+        );
+        let mut out = Vec::with_capacity(8);
+        for k in [-1.0_f64, 1.0] {
+            for j in [-1.0_f64, 1.0] {
+                for i in [-1.0_f64, 1.0] {
+                    out.push(self.frame.origin() + x * i + y * j + z * k);
+                }
+            }
+        }
+        out
+    }
+
+    /// The volume it encloses.
+    #[must_use]
+    pub fn volume(&self) -> f64 {
+        8.0 * self.half_extent.x * self.half_extent.y * self.half_extent.z
+    }
+
+    /// Whether a point is inside, measured in the box's own frame.
+    #[must_use]
+    pub fn contains(&self, p: Point) -> bool {
+        let local = self.frame.to_local(p);
+        local.x.abs() <= self.half_extent.x
+            && local.y.abs() <= self.half_extent.y
+            && local.z.abs() <= self.half_extent.z
+    }
+
+    /// The axis-aligned box that contains this one.
+    #[must_use]
+    pub fn to_aabb(&self) -> Aabb {
+        Aabb::of_points(&self.corners())
+    }
+}
+
+/// An oriented bound for a shape, from the spread of its geometry.
+///
+/// The axes come from the covariance of sampled points — the directions the
+/// shape is most and least spread along — and the extents are then measured
+/// along those axes, so the box is tight even though the fit is not exact.
+///
+/// **Not a guarantee, unlike [`shape_bounds`].** It is built from samples, so a
+/// curved face can bulge a little past it. Widen it before using it to reject
+/// anything.
+///
+/// # Errors
+///
+/// [`OgError::Dangling`](og_core::OgError::Dangling) if a handle fails to
+/// resolve; [`OgError::Construction`](og_core::OgError::Construction) if the
+/// shape has no geometry to bound.
+pub fn oriented_bounds(
+    model: &Model,
+    shape: &Shape,
+    deflection: og_mesh::Deflection,
+    tol: Tolerances,
+) -> OgResult<Obb> {
+    let mut points = Vec::new();
+    // The tessellation, where there is one to build: it follows the shape's
+    // real extent, where the vertices alone would miss the bulge of a cylinder.
+    if let Ok(mesh) = og_mesh::triangulate(model, shape, deflection, tol) {
+        points.extend(mesh.positions.iter().copied());
+    }
+    for vertex in explore_unique(model, shape, ShapeType::Vertex)? {
+        if let Some(data) = model.node(&vertex).and_then(|n| n.data().as_vertex()) {
+            points.push(vertex.transform(model.datums())?.apply(data.point));
+        }
+    }
+    if points.is_empty() {
+        og_bail!(Construction, "the shape has no geometry to bound");
+    }
+
+    let frame = spread_frame(&points, tol);
+    let mut low = Vector::new(f64::MAX, f64::MAX, f64::MAX);
+    let mut high = Vector::new(f64::MIN, f64::MIN, f64::MIN);
+    for p in &points {
+        let local = frame.to_local(*p);
+        low = Vector::new(low.x.min(local.x), low.y.min(local.y), low.z.min(local.z));
+        high = Vector::new(
+            high.x.max(local.x),
+            high.y.max(local.y),
+            high.z.max(local.z),
+        );
+    }
+    // The covariance frame is centred on the mean, which is not the middle of
+    // the extent — a shape with more detail at one end pulls it. Recentring is
+    // what makes the half-extents symmetric and the box actually tight.
+    let middle = (low + high) * 0.5;
+    let centre = frame.to_world(Point::ORIGIN + middle);
+    Ok(Obb {
+        frame: frame.with_origin(centre),
+        half_extent: (high - low) * 0.5,
+    })
+}
+
+/// A frame whose axes are the directions a point set is most spread along.
+///
+/// The eigenvectors of the covariance, largest spread first. Falls back to the
+/// world frame when the points are too few or too degenerate to say — a fit
+/// that cannot decide should return something usable rather than fail, since
+/// the caller then measures extents along whatever axes it gets and still
+/// bounds the shape.
+fn spread_frame(points: &[Point], tol: Tolerances) -> Frame {
+    let Some((centroid, axes)) = covariance_axes(points) else {
+        return Frame::WORLD.with_origin(points.first().copied().unwrap_or(Point::ORIGIN));
+    };
+    // `Frame::new` takes the primary direction as `z` and a *reference* for
+    // `x`, so the most-spread axis goes in the second slot: the frame's `x` is
+    // the direction the shape is longest along, which is what a caller reading
+    // `half_extent.x` will expect, and its `z` is the flattest.
+    let [most, _, least] = axes;
+    Frame::new(centroid, least, most, tol)
+        .or_else(|_| Frame::new(centroid, least, Direction::X, tol))
+        .or_else(|_| Frame::new(centroid, least, Direction::Y, tol))
+        .unwrap_or_else(|_| Frame::WORLD.with_origin(centroid))
+}
+
+/// The plane that best fits a point set: its centroid, and the normal to it.
+///
+/// The eigenvector of the covariance with the *smallest* eigenvalue — the
+/// direction the points vary along least. `None` when there is nothing to fit.
+///
+/// Fitting says nothing about whether the points are actually planar. Every set
+/// of three or more points has a best-fit plane, including a set that is
+/// nowhere near one, so a caller has to measure the residual and decide.
+pub(crate) fn least_squares_plane(points: &[Point], tol: Tolerances) -> Option<(Point, Direction)> {
+    let (centroid, axes) = covariance_axes(points)?;
+    let _ = tol;
+    Some((centroid, axes[2]))
+}
+
+/// The centroid of a point set and its covariance eigenvectors, most spread
+/// first.
+fn covariance_axes(points: &[Point]) -> Option<(Point, [Direction; 3])> {
+    if points.len() < 3 {
+        return None;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let n = points.len() as f64;
+    let mut sum = Vector::ZERO;
+    for p in points {
+        sum += p.to_vector();
+    }
+    let centroid = Point::ORIGIN + sum * (1.0 / n);
+
+    let mut c = nalgebra::Matrix3::<f64>::zeros();
+    for p in points {
+        let d = *p - centroid;
+        let v = nalgebra::Vector3::new(d.x, d.y, d.z);
+        c += v * v.transpose();
+    }
+    c /= n;
+
+    // Symmetric by construction, so the eigenvalues are real and the
+    // eigenvectors orthogonal.
+    let eigen = nalgebra::SymmetricEigen::new(c);
+    let mut order: Vec<usize> = (0..3).collect();
+    order.sort_by(|a, b| {
+        eigen.eigenvalues[*b]
+            .partial_cmp(&eigen.eigenvalues[*a])
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+
+    let mut axes = Vec::with_capacity(3);
+    for i in order {
+        let column = eigen.eigenvectors.column(i);
+        axes.push(
+            Direction::from_coords(column[0], column[1], column[2], Tolerances::millimetres())
+                .ok()?,
+        );
+    }
+    Some((centroid, [axes[0], axes[1], axes[2]]))
 }
 
 /// Where a point projects onto a curve, and how far away it is.
@@ -897,5 +1092,111 @@ mod tests {
         assert_relative_eq!(u, 3.0, epsilon = 1e-6);
         assert!(point.is_equal(Point2::new(3.0, 0.0), T));
         assert_relative_eq!(distance, 4.0, epsilon = 1e-9);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod oriented_bound_tests {
+    use super::*;
+    use crate::{make_box, make_cylinder};
+    use approx::assert_relative_eq;
+    use og_math::Transform;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn fine() -> og_mesh::Deflection {
+        og_mesh::Deflection {
+            chord: 0.01,
+            ..og_mesh::Deflection::default()
+        }
+    }
+
+    #[test]
+    fn an_oriented_box_around_a_box_is_that_box() {
+        let mut model = Model::new();
+        let size = (2.0, 5.0, 1.0);
+        let built = make_box(&mut model, Frame::WORLD, size, T).unwrap();
+        let obb = oriented_bounds(&model, &built.shape, fine(), T).unwrap();
+
+        assert_relative_eq!(obb.volume(), size.0 * size.1 * size.2, epsilon = 1e-9);
+        assert!(
+            obb.frame.origin().distance(Point::new(1.0, 2.5, 0.5)) < 1e-9,
+            "got {:?}",
+            obb.frame.origin()
+        );
+        // The half-extents are the box's, in some order: the axes come from the
+        // spread, which does not know or care which one we called x.
+        let mut found = [obb.half_extent.x, obb.half_extent.y, obb.half_extent.z];
+        found.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mut want = [size.0 / 2.0, size.1 / 2.0, size.2 / 2.0];
+        want.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for (a, b) in found.iter().zip(&want) {
+            assert_relative_eq!(a, b, epsilon = 1e-9);
+        }
+    }
+
+    #[test]
+    fn turning_a_box_turns_its_oriented_bound_with_it_and_not_its_volume() {
+        // The whole point. An axis-aligned box around a rotated box grows; an
+        // oriented one does not, and that difference is what makes it worth the
+        // transform at every containment test.
+        let mut model = Model::new();
+        let built = make_box(&mut model, Frame::WORLD, (1.0, 6.0, 1.0), T).unwrap();
+        let turned = crate::transformed(
+            &mut model,
+            &built.shape,
+            Transform::rotation(
+                og_math::Axis::new(Point::ORIGIN, Direction::Z),
+                std::f64::consts::FRAC_PI_4,
+            ),
+        )
+        .unwrap()
+        .shape;
+
+        let obb = oriented_bounds(&model, &turned, fine(), T).unwrap();
+        let aabb = shape_bounds(&model, &turned, T).unwrap();
+        assert_relative_eq!(obb.volume(), 6.0, max_relative = 1e-6);
+        assert!(
+            aabb.volume() > obb.volume() * 1.5,
+            "an axis-aligned box around a diagonal bar should be much emptier: \
+             {} against {}",
+            aabb.volume(),
+            obb.volume()
+        );
+        for corner in obb.corners() {
+            assert!(obb.contains(corner) || obb.to_aabb().contains(corner));
+        }
+    }
+
+    #[test]
+    fn a_cylinders_oriented_bound_follows_its_axis() {
+        let mut model = Model::new();
+        let (radius, height) = (0.5_f64, 8.0);
+        let built = make_cylinder(&mut model, Frame::WORLD, radius, height, T).unwrap();
+        let obb = oriented_bounds(&model, &built.shape, fine(), T).unwrap();
+
+        // The long axis is the cylinder's own, and it is the first the spread
+        // reports.
+        assert!(
+            obb.frame
+                .x()
+                .vector()
+                .cross(Direction::Z.vector())
+                .magnitude()
+                < 1e-6,
+            "the most-spread axis should be the cylinder's, got {:?}",
+            obb.frame.x()
+        );
+        assert_relative_eq!(obb.half_extent.x, height / 2.0, max_relative = 1e-6);
+    }
+
+    #[test]
+    fn a_shape_with_nothing_to_bound_says_so() {
+        let mut model = Model::new();
+        let vertex = model.add_point(Point::ORIGIN);
+        // One point has a bound but no spread; it must not claim a frame it
+        // cannot justify, and it must not fail either.
+        assert!(oriented_bounds(&model, &vertex, fine(), T).is_ok());
     }
 }
