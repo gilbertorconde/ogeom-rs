@@ -26,7 +26,7 @@
 //! the join has no gap. Discretizing each face's pcurve independently would
 //! give each face its own idea of where the edge runs, and the seams would show.
 
-use og_core::{OgResult, Tolerances, og_bail};
+use og_core::{Exact, OgResult, Predicates, Tolerances, og_bail};
 use og_geom::{Curve2d, Surface, SurfaceGeometry};
 use og_math::{Direction, Point, Point2, Vector};
 use og_topo::{EdgeRepr, Model, NodeData, Orientation, Shape, ShapeType, Triangulation};
@@ -182,9 +182,34 @@ fn trimming_rings(
 /// Says nothing about a point *on* a ring — the crossing count of a boundary
 /// point is whichever side rounding puts it. A caller that cares has to measure
 /// its distance to the boundary and decide, which is what classification does.
+///
+/// Decided with exact predicates. See [`inside_boundary_with`].
 #[must_use]
 pub fn inside_boundary(rings: &[Vec<Point2>], p: Point2) -> bool {
-    inside_region(rings, p)
+    inside_boundary_with::<Exact>(rings, p)
+}
+
+/// As [`inside_boundary`], with the predicate implementation named.
+///
+/// This is the seam `docs/DATA_MODEL.md` §9 describes, and it is here rather
+/// than anywhere else because this is where the *combinatorial* decision is.
+/// Whether a point is inside a ring is not a measurement that can be a little
+/// wrong: it decides whether a triangle is kept or dropped, so an error near a
+/// boundary is a hole in the mesh rather than a slightly misplaced one.
+///
+/// The naive form divides to find where an edge crosses the sampling ray, and
+/// that division cancels catastrophically for a point nearly on the edge.
+/// `orient2d` answers the same question with no division at all, and
+/// [`Exact`] answers it correctly however close the point is.
+#[must_use]
+pub fn inside_boundary_with<P: Predicates>(rings: &[Vec<Point2>], p: Point2) -> bool {
+    let mut inside = false;
+    for ring in rings {
+        if crosses_odd_times::<P>(ring, p) {
+            inside = !inside;
+        }
+    }
+    inside
 }
 
 /// The boundary of one wire, in the face's parameter space.
@@ -565,34 +590,43 @@ fn sag_between(
 }
 
 /// Whether a point is inside the region the rings bound.
-///
-/// Even-odd winding: inside the outer ring and outside every hole. The rings
-/// come from wires whose direction already encodes outer from inner, but
-/// counting crossings does not depend on that being right, which makes it
-/// robust to a wire that was built the wrong way round.
 fn inside_region(rings: &[Vec<Point2>], p: Point2) -> bool {
-    let mut inside = false;
-    for ring in rings {
-        if crosses_odd_times(ring, p) {
-            inside = !inside;
-        }
-    }
-    inside
+    inside_boundary_with::<Exact>(rings, p)
 }
 
-/// Ray-crossing count for one ring.
-fn crosses_odd_times(ring: &[Point2], p: Point2) -> bool {
+/// Ray-crossing count for one ring, decided by orientation rather than by
+/// arithmetic.
+///
+/// A horizontal ray in `+u`. The half-open `y` comparison counts a vertex lying
+/// exactly on the ray once rather than twice or not at all; which side of the
+/// edge the point falls on is then an `orient2d` sign.
+///
+/// Deliberately *not* "solve for where the edge crosses the ray, then compare".
+/// That form divides by the edge's `y` extent, which is near zero for a nearly
+/// horizontal edge, and subtracts two nearly equal numbers to compare — so for a
+/// point close to the boundary it can answer either way. Here there is no
+/// division and the comparison is a determinant's sign, which an exact predicate
+/// gets right at any separation.
+fn crosses_odd_times<P: Predicates>(ring: &[Point2], p: Point2) -> bool {
     let mut inside = false;
     let n = ring.len();
+    let at = |q: Point2| [q.x, q.y];
     for i in 0..n {
         let (a, b) = (ring[i], ring[(i + 1) % n]);
-        // A horizontal ray in +u. The half-open comparison counts a vertex
-        // lying exactly on the ray once rather than twice or not at all.
-        if (a.y > p.y) != (b.y > p.y) {
-            let t = (p.y - a.y) / (b.y - a.y);
-            if p.x < t.mul_add(b.x - a.x, a.x) {
-                inside = !inside;
-            }
+        if (a.y > p.y) == (b.y > p.y) {
+            continue;
+        }
+        // The edge crosses the ray's line. Whether it crosses the ray *itself*
+        // — to the right of `p` — is which side of the directed edge `p` is on,
+        // read the right way round for the edge's direction in `y`.
+        let side = P::orient2d(at(a), at(b), [p.x, p.y]);
+        let rightwards = if b.y > a.y {
+            side == og_core::Sign::Positive
+        } else {
+            side == og_core::Sign::Negative
+        };
+        if rightwards {
+            inside = !inside;
         }
     }
     inside
@@ -938,5 +972,162 @@ mod tests {
         assert!(triangle_normal(a, b, Point::new(0.0, 1.0, 0.0), T).is_some());
         assert!(triangle_normal(a, b, Point::new(2.0, 0.0, 0.0), T).is_none());
         assert!(triangle_normal(a, a, a, T).is_none());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod predicate_tests {
+    use super::*;
+    use og_core::Fast;
+
+    /// A triangle with one very long, very nearly diagonal edge.
+    ///
+    /// The configuration where a naive crossing test goes wrong. Subtracting
+    /// the edge's ends from a query point close to the line cancels almost
+    /// every significant digit, and what is left is rounding rather than
+    /// geometry.
+    fn sliver() -> Vec<Vec<Point2>> {
+        vec![vec![
+            Point2::new(0.5, 0.5),
+            Point2::new(1000.0, 1000.0),
+            Point2::new(1000.0, 0.5),
+        ]]
+    }
+
+    #[test]
+    fn the_two_implementations_are_a_real_choice_and_not_a_decoration() {
+        // The point of the seam. In a band of near-degenerate queries the two
+        // answer differently — and if they never did, routing through the trait
+        // would be ceremony rather than a design.
+        //
+        // The query points straddle the long edge at a spacing far below what
+        // the subtraction can resolve, which is exactly the case a mesh hits
+        // when a face's boundary passes close to a triangulation vertex.
+        let rings = sliver();
+        let step = 2.0_f64.powi(-48);
+        let mut disagreements = 0;
+        for i in 0..256i32 {
+            for j in 0..256i32 {
+                let p = Point2::new(
+                    250.0 + f64::from(i - 128) * step,
+                    250.0 + f64::from(j - 128) * step,
+                );
+                if inside_boundary_with::<Exact>(&rings, p)
+                    != inside_boundary_with::<Fast>(&rings, p)
+                {
+                    disagreements += 1;
+                }
+            }
+        }
+        assert!(
+            disagreements > 0,
+            "the exact and fast predicates never disagreed, so the seam is not \
+             carrying anything"
+        );
+    }
+
+    #[test]
+    fn the_exact_predicate_is_the_one_that_is_right_near_the_edge() {
+        // Disagreeing is not enough — the exact one has to be the *correct*
+        // one, and that needs points whose side is known without asking either
+        // implementation.
+        //
+        // Stepped in units of the last place rather than by a small distance.
+        // A distance below the spacing of `f64` at 250 rounds away entirely,
+        // leaving two points that are both exactly *on* the diagonal — where
+        // either answer is defensible and the test would be asserting nothing.
+        let rings = sliver();
+        let base = 250.0_f64;
+        let mut off = base;
+        for k in 1..64 {
+            off = off.next_up();
+            assert_ne!(off, base, "step {k} did not move the point at all");
+            // Inside this triangle is below the diagonal `y = x`: larger x.
+            assert!(
+                inside_boundary_with::<Exact>(&rings, Point2::new(off, base)),
+                "a point {k} ulps below the diagonal was reported outside"
+            );
+            assert!(
+                !inside_boundary_with::<Exact>(&rings, Point2::new(base, off)),
+                "a point {k} ulps above the diagonal was reported inside"
+            );
+        }
+    }
+
+    #[test]
+    fn the_exact_answer_is_the_one_the_geometry_supports() {
+        // Points placed by construction, so the right answer is known without
+        // asking either implementation.
+        let square = vec![vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(1.0, 0.0),
+            Point2::new(1.0, 1.0),
+            Point2::new(0.0, 1.0),
+        ]];
+        assert!(inside_boundary_with::<Exact>(
+            &square,
+            Point2::new(0.5, 0.5)
+        ));
+        assert!(!inside_boundary_with::<Exact>(
+            &square,
+            Point2::new(1.5, 0.5)
+        ));
+        assert!(!inside_boundary_with::<Exact>(
+            &square,
+            Point2::new(-0.5, 0.5)
+        ));
+        assert!(!inside_boundary_with::<Exact>(
+            &square,
+            Point2::new(0.5, 1.5)
+        ));
+
+        // A vertex exactly on the sampling ray is counted once, not twice or
+        // not at all — which is what the half-open comparison is for.
+        let diamond = vec![vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(1.0, 1.0),
+            Point2::new(2.0, 0.0),
+            Point2::new(1.0, -1.0),
+        ]];
+        assert!(inside_boundary_with::<Exact>(
+            &diamond,
+            Point2::new(1.0, 0.0)
+        ));
+        assert!(!inside_boundary_with::<Exact>(
+            &diamond,
+            Point2::new(3.0, 0.0)
+        ));
+        assert!(!inside_boundary_with::<Exact>(
+            &diamond,
+            Point2::new(-1.0, 0.0)
+        ));
+    }
+
+    #[test]
+    fn a_hole_is_outside_however_either_ring_is_wound() {
+        // Even-odd does not depend on the wires being wound consistently, which
+        // is what makes it survive imported geometry.
+        let outer = vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(4.0, 0.0),
+            Point2::new(4.0, 4.0),
+            Point2::new(0.0, 4.0),
+        ];
+        let hole: Vec<Point2> = vec![
+            Point2::new(1.0, 1.0),
+            Point2::new(3.0, 1.0),
+            Point2::new(3.0, 3.0),
+            Point2::new(1.0, 3.0),
+        ];
+        let backwards: Vec<Point2> = hole.iter().rev().copied().collect();
+        for inner in [hole, backwards] {
+            let rings = vec![outer.clone(), inner];
+            assert!(!inside_boundary_with::<Exact>(
+                &rings,
+                Point2::new(2.0, 2.0)
+            ));
+            assert!(inside_boundary_with::<Exact>(&rings, Point2::new(0.5, 0.5)));
+        }
     }
 }

@@ -19,5 +19,6 @@ pub use discretize::{
 };
 pub use simplify::{Simplified, Target, simplify};
 pub use triangulate::{
-    face_boundary, inside_boundary, polyline_of_edge, triangulate, triangulate_face,
+    face_boundary, inside_boundary, inside_boundary_with, polyline_of_edge, triangulate,
+    triangulate_face,
 };
