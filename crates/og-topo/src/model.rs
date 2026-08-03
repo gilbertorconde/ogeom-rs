@@ -38,12 +38,27 @@ pub struct Model {
     provenance: ProvenanceTable,
     identity: HashMap<TShapeId, EntityId>,
     current_op: OpId,
+    tolerances: Tolerances,
 }
 
 impl Model {
-    /// An empty model.
+    /// An empty model, in millimetres.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_tolerances(Tolerances::millimetres())
+    }
+
+    /// An empty model at a given unit scale.
+    ///
+    /// A document has a scale, and it is the document's rather than each
+    /// call's: a model authored in metres does not become a model in
+    /// millimetres because one caller passed the default. Algorithms still take
+    /// a [`Tolerances`] argument — that is deliberate, since a caller may want
+    /// to work coarser or finer than the document's own setting for one
+    /// operation — but the document now says what it was built at, so a
+    /// mismatch is visible rather than assumed away.
+    #[must_use]
+    pub fn with_tolerances(tolerances: Tolerances) -> Self {
         Self {
             nodes: Arena::new(),
             datums: DatumStore::new(),
@@ -51,7 +66,14 @@ impl Model {
             provenance: ProvenanceTable::new(),
             identity: HashMap::new(),
             current_op: OpId(0),
+            tolerances,
         }
+    }
+
+    /// The tolerances this document was built at.
+    #[must_use]
+    pub const fn tolerances(&self) -> Tolerances {
+        self.tolerances
     }
 
     /// Assemble a model from parts read back from a file.
@@ -85,6 +107,7 @@ impl Model {
             provenance,
             identity,
             current_op,
+            tolerances,
         } = parts;
 
         let mut store = DatumStore::new();
@@ -120,6 +143,7 @@ impl Model {
             provenance: table,
             identity: HashMap::new(),
             current_op,
+            tolerances,
         };
         // Every handle in `parts` was rebuilt by a reader that had no arenas to
         // bind them to, so they name no arena at all and resolve nowhere. Bind
@@ -847,6 +871,8 @@ pub struct ModelParts {
     pub identity: Vec<(TShapeId, EntityId)>,
     /// The operation the document was left in.
     pub current_op: OpId,
+    /// The unit scale the document was authored at.
+    pub tolerances: Tolerances,
 }
 
 /// Which sub-shapes a traversal should yield.

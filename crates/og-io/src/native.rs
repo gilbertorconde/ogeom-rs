@@ -106,6 +106,15 @@ pub fn write(model: &Model, roots: &[Shape], options: WriteOptions) -> OgResult<
     let mut out = String::new();
     out.push_str(&format!("{MAGIC} {VERSION}\n"));
 
+    // The unit scale, first, because everything after it is measured in those
+    // units. A document that did not record it would read back correctly and be
+    // *validated* against whatever the reader assumed — so geometry legitimate
+    // at one scale could be refused at another, and nothing would say why.
+    let mut t = Vec::new();
+    w(&mut t, "units");
+    n(&mut t, model.tolerances().scale());
+    emit(&mut out, &t);
+
     for (id, datum) in model.datums().iter() {
         let mut t = Vec::new();
         w(&mut t, "datum");
@@ -192,7 +201,6 @@ pub fn write(model: &Model, roots: &[Shape], options: WriteOptions) -> OgResult<
 /// [`OgError::Dangling`](og_core::OgError::Dangling) if it names a handle that
 /// is not in the file.
 pub fn read(text: &str) -> OgResult<(Model, Vec<Shape>)> {
-    let tol = Tolerances::millimetres();
     let mut cursor = Cursor::new(text);
 
     if cursor.word()? != MAGIC {
@@ -206,7 +214,13 @@ pub fn read(text: &str) -> OgResult<(Model, Vec<Shape>)> {
         );
     }
 
-    let mut parts = ModelParts::default();
+    // The scale is read before anything it measures, so every geometric check
+    // below runs against the document's own units rather than an assumption.
+    let tol = read_units(&mut cursor)?;
+    let mut parts = ModelParts {
+        tolerances: tol,
+        ..ModelParts::default()
+    };
     let mut geometry = GeometryStore::new();
     let mut roots = Vec::new();
 
@@ -280,6 +294,18 @@ pub fn read(text: &str) -> OgResult<(Model, Vec<Shape>)> {
         .map(|root| model.bind(root))
         .collect::<OgResult<Vec<_>>>()?;
     Ok((model, roots))
+}
+
+/// Read the `units` record, which every document since version 1 carries.
+fn read_units(cursor: &mut Cursor<'_>) -> OgResult<Tolerances> {
+    if cursor.word()? != "units" {
+        og_bail!(
+            Construction,
+            "a document must say what units it is in before anything measured \
+             in them"
+        );
+    }
+    Tolerances::with_scale(cursor.number()?)
 }
 
 /// Refuse a record written out of arena order.
@@ -1899,5 +1925,87 @@ mod tests {
             assert_eq!(a.y.to_bits(), b.y.to_bits());
             assert_eq!(a.z.to_bits(), b.z.to_bits());
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod unit_tests {
+    use super::*;
+    use og_algo::make_box;
+    use og_math::Frame;
+
+    #[test]
+    fn a_documents_unit_scale_survives_the_round_trip() {
+        // Without this the file reads back correctly and is *validated* against
+        // whatever the reader assumed, so geometry legitimate at one scale
+        // could be refused at another with nothing to say why.
+        for tolerances in [
+            Tolerances::millimetres(),
+            Tolerances::metres(),
+            Tolerances::inches(),
+        ] {
+            let mut model = Model::with_tolerances(tolerances);
+            let solid = make_box(&mut model, Frame::WORLD, (1.0, 2.0, 3.0), tolerances)
+                .unwrap()
+                .shape;
+            let text = write(
+                &model,
+                std::slice::from_ref(&solid),
+                WriteOptions::default(),
+            )
+            .unwrap();
+
+            let (restored, restored_roots) = read(&text).unwrap();
+            assert_eq!(
+                restored.tolerances().scale(),
+                tolerances.scale(),
+                "the scale changed"
+            );
+            assert_eq!(
+                restored.tolerances().confusion(),
+                tolerances.confusion(),
+                "and so did what counts as the same point"
+            );
+            // And writing it again gives the same bytes, scale included. The
+            // roots have to be *this* model's — a second `read` makes a third
+            // document, whose handles this one rightly will not accept.
+            let again = write(&restored, &restored_roots, WriteOptions::default()).unwrap();
+            assert_eq!(text, again);
+        }
+    }
+
+    #[test]
+    fn a_document_that_does_not_say_its_units_is_refused() {
+        let mut model = Model::new();
+        let solid = make_box(
+            &mut model,
+            Frame::WORLD,
+            (1.0, 1.0, 1.0),
+            Tolerances::millimetres(),
+        )
+        .unwrap()
+        .shape;
+        let text = write(
+            &model,
+            std::slice::from_ref(&solid),
+            WriteOptions::default(),
+        )
+        .unwrap();
+
+        let without: String = text
+            .lines()
+            .filter(|line| !line.starts_with("units "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let err = read(&without).unwrap_err();
+        assert!(
+            err.to_string().contains("units"),
+            "unexpected message: {err}"
+        );
+
+        // And a scale that is not a scale.
+        let broken = text.replace("units ", "units -");
+        assert!(read(&broken).is_err());
     }
 }
