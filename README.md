@@ -69,6 +69,7 @@ and holds nothing yet.
 · crates/og-doc         assemblies, appearance, PMI, undo/redo, persistence
 · crates/og-select      BVH picking and selection
 • tools/ogcli           command-line front end
+• tools/ogview          software renderer, so a wrong result is visible
 • tools/apisurf         API-usage profiler (analysis only; see docs/SCOPE.md)
 ```
 

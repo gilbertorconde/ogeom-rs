@@ -555,7 +555,7 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 
 | | Why |
 |---|---|
-| Rendering | `tools/ogview` uses wgpu directly. A kernel supplies geometry and picking, not a render loop. |
+| Rendering | A kernel supplies geometry and picking, not a render loop. `tools/ogview` is a *software* renderer to an image, and it is a verification tool rather than a feature: it exists so a wrong result is visible, it has no dependency beyond the kernel, and `check.sh` can therefore run it. A real-time windowed viewer would wrap it and add interaction, not correctness. |
 | FEA meshing — tetrahedral, boundary-layer | A separate discipline with its own literature. The kernel supplies the geometry and surface meshes it consumes. |
 | Simulation, CAM toolpath generation | Applications, not kernel. |
 | A parametric *recompute engine* | Application-level. The kernel supplies stable identity and history (`DATA_MODEL.md` §7, §8), which is what such an engine needs from it. |

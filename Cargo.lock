@@ -505,6 +505,19 @@ name = "ogcli"
 version = "0.0.0"
 dependencies = [
  "og",
+ "ogview",
+]
+
+[[package]]
+name = "ogview"
+version = "0.0.0"
+dependencies = [
+ "approx",
+ "og-algo",
+ "og-core",
+ "og-math",
+ "og-mesh",
+ "og-topo",
 ]
 
 [[package]]

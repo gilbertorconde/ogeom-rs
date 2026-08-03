@@ -1,0 +1,22 @@
+[package]
+name = "ogview"
+description = "Render a shape's tessellation to an image, so a wrong result is visible"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+og-core.workspace = true
+og-math.workspace = true
+og-topo.workspace = true
+
+[dev-dependencies]
+og-algo.workspace = true
+og-mesh.workspace = true
+approx.workspace = true
+
+[lints]
+workspace = true

@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 og = { path = "../../crates/og", version = "0.0.0" }
+ogview.workspace = true
 
 [lints]
 workspace = true

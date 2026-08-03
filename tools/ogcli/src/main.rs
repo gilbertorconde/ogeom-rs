@@ -44,6 +44,7 @@ Every shape command accepts, after its dimensions:
   --ascii                with --stl, write the ASCII encoding instead
   --og <path>            write the whole shape as native .og text
   --no-mesh              with --og, leave the cached tessellation out
+  --view <path>          render the tessellation to a PPM image
 ";
 
 /// The primitives `build` knows how to make.
@@ -85,6 +86,7 @@ struct Options {
     encoding: Encoding,
     native: Option<String>,
     write_options: native::WriteOptions,
+    view: Option<String>,
 }
 
 /// Build one primitive and report on it.
@@ -182,6 +184,18 @@ fn report(model: &Model, shape: &Shape, name: &str, options: &Options) -> OgResu
         }
     }
 
+    if let Some(path) = &options.view {
+        // A picture catches what a number does not: a face wound inside out, a
+        // hole where two surfaces failed to meet, a seam that did not weld.
+        let mesh = triangulate(model, shape, options.deflection, TOL)?;
+        let bounds = og::algo::shape_bounds(model, shape, TOL)?;
+        let camera = ogview::Camera::framing(&bounds, og::math::Vector::new(1.0, -1.0, 0.7), TOL)?;
+        let image = ogview::render(&mesh, &camera, &ogview::Style::default(), TOL)?;
+        std::fs::write(path, image.to_ppm())
+            .map_err(|e| og_err!(NotDone, "could not write {path}: {e}"))?;
+        println!("  rendered {}x{} to {path}", image.width, image.height);
+    }
+
     if let Some(path) = &options.native {
         // The whole shape, not its tessellation: topology, geometry,
         // tolerances and provenance, written so it reads back as the same
@@ -214,6 +228,7 @@ fn split(args: &[String]) -> Result<(Vec<f64>, Options), String> {
         encoding: Encoding::Binary,
         native: None,
         write_options: native::WriteOptions::default(),
+        view: None,
     };
 
     let mut rest = args.iter();
@@ -238,6 +253,7 @@ fn split(args: &[String]) -> Result<(Vec<f64>, Options), String> {
             "--ascii" => options.encoding = Encoding::Ascii,
             "--og" => options.native = Some(rest.next().ok_or("--og needs a path")?.clone()),
             "--no-mesh" => options.write_options.triangulations = false,
+            "--view" => options.view = Some(rest.next().ok_or("--view needs a path")?.clone()),
             other if other.starts_with("--") => {
                 return Err(format!("unknown option '{other}'"));
             }
