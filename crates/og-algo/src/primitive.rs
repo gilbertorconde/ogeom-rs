@@ -13,7 +13,7 @@ use og_geom::{CircleCurve, Curve, LineCurve, PlanarCurve, PlaneSurface, SphereSu
 use og_math::{
     Circle, Cone, Cylinder, Direction, Direction2, Frame, Plane, Point, Point2, Sphere, Torus,
 };
-use og_topo::{Model, Shape};
+use og_topo::{Model, Shape, ShapeType};
 
 use crate::build::{make_edge_between, make_face_on, make_shell, make_solid, make_wire};
 use crate::history::Built;
@@ -862,6 +862,76 @@ pub fn make_wedge(
     box_like(model, &corners, tol)
 }
 
+/// Build the unbounded solid on one side of a face.
+///
+/// `inside` names the side: it is a point in the material. The face is oriented
+/// so its normal leads *away* from that point, which is what "outward" means
+/// for a solid, and the result is a solid bounded by that one face.
+///
+/// # It is only as unbounded as its surface is
+///
+/// A half space is genuinely infinite; a surface in this kernel is not. A plane
+/// declares a finite domain — very large, but finite — and the solid built here
+/// reaches exactly as far as its face's surface does. So its *volume* and its
+/// centre of mass are properties of that declared extent rather than of a half
+/// space, and mean nothing. What does mean something is which side of the face
+/// a point is on, which is the question a half space exists to answer.
+///
+/// That is what it is for: a half space is an argument to a boolean — cut a
+/// solid with one and you have trimmed it by a surface — and until §8 exists
+/// there is nothing here that consumes it that way. Classification against it
+/// works today and is what the tests use.
+///
+/// # Errors
+///
+/// [`OgError::Construction`](og_core::OgError::Construction) if `face` is not a
+/// face, or if `inside` lies on it — a point on the boundary names no side.
+pub fn make_half_space(
+    model: &mut Model,
+    face: &Shape,
+    inside: Point,
+    tol: Tolerances,
+) -> OgResult<Built> {
+    if model.kind_of(face)? != ShapeType::Face {
+        og_bail!(Construction, "a half space is bounded by a face");
+    }
+    let (at, normal) = crate::measure::face_normal(model, face, tol)?;
+    let towards = inside - at;
+    let reach = towards.magnitude();
+    if reach <= tol.confusion() {
+        og_bail!(
+            Construction,
+            "the point naming the solid side lies on the face itself, so it \
+             names no side"
+        );
+    }
+    let along = normal.dot(towards) / reach;
+    if along.abs() <= tol.angular() {
+        og_bail!(
+            Construction,
+            "the point naming the solid side lies in the face's own surface, so \
+             it names no side"
+        );
+    }
+    model.begin_operation();
+
+    // Outward means away from the material, and the material is where `inside`
+    // is. A normal pointing towards it is pointing in.
+    let boundary = if along > 0.0 {
+        face.reversed()
+    } else {
+        face.clone()
+    };
+    let shell = make_shell(model, std::slice::from_ref(&boundary))?.shape;
+    let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
+    model.set_derived(&solid, std::slice::from_ref(face), roles::FACE_LATERAL)?;
+
+    let mut history = crate::history::History::new();
+    history.generate(face, shell);
+    history.generate(face, solid.clone());
+    Ok(Built::new(solid, history))
+}
+
 /// A frame turned end for end: its origin at `height` along the old `z`, and
 /// its `z` pointing back the way it came.
 fn flipped(frame: Frame, height: f64, tol: Tolerances) -> OgResult<Frame> {
@@ -1480,5 +1550,132 @@ mod more_primitive_tests {
 
         assert!(make_wedge(&mut model, Frame::WORLD, (0.0, 1.0, 1.0), (1.0, 1.0), T).is_err());
         assert!(make_wedge(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), (-1.0, 1.0), T).is_err());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod half_space_tests {
+    use super::*;
+    use crate::classify::Containment;
+    use crate::{classify_in_solid, make_natural_face};
+    use og_geom::PlaneSurface;
+    use og_math::Direction;
+    use og_mesh::Deflection;
+    use og_topo::explore_unique;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn coarse() -> Deflection {
+        Deflection {
+            chord: 1.0,
+            ..Deflection::default()
+        }
+    }
+
+    /// The whole of the z = 0 plane, as a face.
+    fn ground(model: &mut Model) -> Shape {
+        make_natural_face(model, PlaneSurface::new(Plane::new(Frame::WORLD)).into())
+            .unwrap()
+            .shape
+    }
+
+    #[test]
+    fn the_face_is_oriented_away_from_the_side_that_is_solid() {
+        // Outward means away from the material, and the material is where the
+        // naming point is. The two calls differ only in which side was named,
+        // so the boundary they produce must differ in orientation.
+        let mut model = Model::new();
+        let face = ground(&mut model);
+        let above = make_half_space(&mut model, &face, Point::new(0.0, 0.0, 5.0), T).unwrap();
+        let below = make_half_space(&mut model, &face, Point::new(0.0, 0.0, -5.0), T).unwrap();
+
+        let boundary = |built: &crate::Built| {
+            explore_unique(&model, &built.shape, ShapeType::Face).unwrap()[0].clone()
+        };
+        let (a, b) = (boundary(&above), boundary(&below));
+        assert!(a.is_partner(&b), "the same face, both times");
+        assert_ne!(
+            a.orientation(),
+            b.orientation(),
+            "naming the other side should turn the boundary round"
+        );
+        assert_eq!(model.kind_of(&above.shape).unwrap(), ShapeType::Solid);
+        assert_eq!(
+            explore_unique(&model, &above.shape, ShapeType::Face)
+                .unwrap()
+                .len(),
+            1,
+            "one face bounds a half space"
+        );
+    }
+
+    #[test]
+    fn nothing_can_yet_be_asked_about_the_inside_of_one() {
+        // Recorded rather than worked around. A half space's boundary is one
+        // face with free edges all round, so it is *not* a closed shell — and
+        // every query that needs an inside says so instead of guessing. That is
+        // the correct answer for a shape whose boundary does not close, and it
+        // is why a half space is only useful as a boolean argument (§8).
+        let mut model = Model::new();
+        let face = ground(&mut model);
+        let built = make_half_space(&mut model, &face, Point::new(0.0, 0.0, 5.0), T).unwrap();
+
+        let shell = explore_unique(&model, &built.shape, ShapeType::Shell).unwrap()[0].clone();
+        assert!(!crate::is_shell_closed(&model, &shell).unwrap());
+
+        let err = classify_in_solid(&model, &built.shape, Point::new(0.0, 0.0, 5.0), coarse(), T)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not closed"),
+            "unexpected message: {err}"
+        );
+        let _ = Containment::In;
+    }
+
+    #[test]
+    fn a_point_on_the_face_names_no_side() {
+        let mut model = Model::new();
+        let face = ground(&mut model);
+        let err = make_half_space(&mut model, &face, Point::ORIGIN, T).unwrap_err();
+        assert!(err.to_string().contains("names no side"), "got {err}");
+
+        // And one that is off the origin but still in the plane.
+        let err = make_half_space(&mut model, &face, Point::new(3.0, 4.0, 0.0), T).unwrap_err();
+        assert!(err.to_string().contains("names no side"), "got {err}");
+    }
+
+    #[test]
+    fn a_half_space_is_bounded_by_a_face_and_nothing_else() {
+        let mut model = Model::new();
+        let solid = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
+            .unwrap()
+            .shape;
+        assert!(make_half_space(&mut model, &solid, Point::ORIGIN, T).is_err());
+
+        let vertex = model.add_point(Point::ORIGIN);
+        assert!(make_half_space(&mut model, &vertex, Point::ORIGIN, T).is_err());
+    }
+
+    #[test]
+    fn it_reaches_only_as_far_as_its_surface_says() {
+        // The documented limitation, pinned so it cannot quietly become a
+        // claim of infinity. The face is a plane with a declared domain, so the
+        // solid is a very large region rather than a half space, and anything
+        // that integrates over it is measuring that domain.
+        let mut model = Model::new();
+        let face = ground(&mut model);
+        let built = make_half_space(&mut model, &face, Point::new(0.0, 0.0, 1.0), T).unwrap();
+
+        // The bound comes back *empty*, which is the honest answer and a
+        // better one than a very large box: `surface_bounds` refuses to bound
+        // an unbounded plane rather than quoting its declared extent, so
+        // nothing downstream mistakes that extent for the shape's size.
+        let bounds = crate::shape_bounds(&model, &built.shape, T).unwrap();
+        assert!(
+            bounds.is_empty(),
+            "an unbounded plane should decline to bound itself, got {bounds:?}"
+        );
+        let _ = Direction::Z;
     }
 }

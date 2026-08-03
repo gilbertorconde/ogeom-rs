@@ -28,8 +28,8 @@ use std::collections::HashMap;
 
 use core::f64::consts::TAU;
 use og_core::{OgResult, Tolerances, og_bail};
-use og_geom::{Curve2d, Curve3d, ExtrusionSurface, Line2d, PlanarCurve, Surface, Transformable};
-use og_math::{Axis, Circle, Direction, Frame, Point, Point2, Transform, Vector};
+use og_geom::{Curve3d, ExtrusionSurface, Line2d, PlanarCurve, Transformable};
+use og_math::{Axis, Circle, Direction, Frame, Point2, Transform, Vector};
 use og_topo::{EdgeRepr, Location, Model, NodeData, Orientation, Shape, ShapeType, TShapeId};
 
 use crate::build::{make_face_on, make_shell, make_solid, make_wire};
@@ -121,7 +121,7 @@ fn prism_over_face(
     // Left unturned, both end caps present the wrong side: the mesh still
     // closes and the shell is still closed, so nothing topological notices, and
     // the volume comes back short by twice the caps' contribution.
-    let (_, normal) = face_normal(model, face, tol)?;
+    let (_, normal) = crate::measure::face_normal(model, face, tol)?;
     let travel = vector.magnitude();
     let along = normal.dot(vector) / travel;
     if along.abs() <= tol.angular() {
@@ -432,7 +432,7 @@ fn revolution_over_face(
     // The same question the prism asks, with the sweep direction read off the
     // turn: at the profile, revolving moves it along the tangent to its circle
     // about the axis, so that tangent is what its normal is compared against.
-    let (point, normal) = face_normal(model, face, tol)?;
+    let (point, normal) = crate::measure::face_normal(model, face, tol)?;
     let tangent = turn
         .axis
         .direction
@@ -823,74 +823,6 @@ fn rescale(u: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
         return to.0;
     }
     to.0 + (to.1 - to.0) * (u - from.0) / span
-}
-
-/// The direction a face presents, in space.
-///
-/// Sampled at the mean of its boundary in parameter space, which for a planar
-/// profile is exact everywhere and for a curved one is representative: a
-/// profile whose normal turns past perpendicular to the sweep somewhere across
-/// its own extent sweeps into a solid that passes through itself, and one
-/// sample is enough to decide which side the material lands on in every case
-/// this can build. A face with no boundary at all covers its whole surface, so
-/// the middle of the domain is the point to ask about.
-fn face_normal(model: &Model, face: &Shape, tol: Tolerances) -> OgResult<(Point, Vector)> {
-    let Some(node) = model.node(face) else {
-        og_bail!(Dangling, "face is not in this model");
-    };
-    let Some(data) = node.data().as_face() else {
-        og_bail!(Construction, "face node holds no face data");
-    };
-    let Some(surface) = model.geometry().surface(data.surface) else {
-        og_bail!(Dangling, "face refers to a surface not in this model");
-    };
-
-    let mut sum = (0.0, 0.0);
-    let mut count = 0_u32;
-    // The outer wire is the first, and it alone bounds the region; a hole would
-    // only pull the sample towards a point the face does not cover.
-    for edge in match model.children_of(face)?.first() {
-        Some(outer) => model.children_of(outer)?,
-        None => Vec::new(),
-    } {
-        let Some(edge_data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
-            continue;
-        };
-        let (id, range) = match edge_data.pcurve_for(data.surface, edge.location()) {
-            Some(EdgeRepr::PCurve { curve, range, .. }) => (*curve, *range),
-            Some(EdgeRepr::Seam { forward, range, .. }) => (*forward, *range),
-            _ => continue,
-        };
-        let Some(pcurve) = model.geometry().pcurve(id) else {
-            og_bail!(Dangling, "pcurve is not in this model");
-        };
-        for at in [range.0, f64::midpoint(range.0, range.1), range.1] {
-            let p = pcurve.point_at(at, tol)?;
-            sum = (sum.0 + p.x, sum.1 + p.y);
-            count += 1;
-        }
-    }
-
-    let ((ua, ub), (va, vb)) = surface.domain();
-    let (u, v) = if count == 0 {
-        (f64::midpoint(ua, ub), f64::midpoint(va, vb))
-    } else {
-        let n = f64::from(count);
-        (sum.0 / n, sum.1 / n)
-    };
-    let normal = surface.normal_at(u, v, tol)?;
-    let point = surface.point_at(u, v, tol)?;
-
-    let placement = face.transform(model.datums())?;
-    let placed = placement.apply_vector(normal.vector());
-    Ok((
-        placement.apply(point),
-        if face.orientation() == Orientation::Reversed {
-            -placed
-        } else {
-            placed
-        },
-    ))
 }
 
 /// The edge one endpoint of the profile sweeps out.

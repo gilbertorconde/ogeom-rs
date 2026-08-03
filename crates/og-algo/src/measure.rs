@@ -19,9 +19,9 @@
 //! amount it bulges is exactly what a bound is supposed to capture.
 
 use og_core::{OgResult, Tolerances, og_bail};
-use og_geom::{Curve, Curve3d, PlanarCurve, Surface, SurfaceGeometry, curve::LINE_EXTENT};
+use og_geom::{Curve, Curve2d, Curve3d, PlanarCurve, Surface, SurfaceGeometry, curve::LINE_EXTENT};
 use og_math::{Aabb, Direction, Frame, Point, Point2, Vector, solve};
-use og_topo::{Model, NodeData, Shape, ShapeType, explore_unique};
+use og_topo::{EdgeRepr, Model, NodeData, Orientation, Shape, ShapeType, explore_unique};
 
 /// A guaranteed bound for a space curve.
 ///
@@ -403,6 +403,74 @@ pub fn oriented_bounds(
         frame: frame.with_origin(centre),
         half_extent: (high - low) * 0.5,
     })
+}
+
+/// The direction a face presents, in space.
+///
+/// Sampled at the mean of its boundary in parameter space, which for a planar
+/// profile is exact everywhere and for a curved one is representative: a
+/// profile whose normal turns past perpendicular to the sweep somewhere across
+/// its own extent sweeps into a solid that passes through itself, and one
+/// sample is enough to decide which side the material lands on in every case
+/// this can build. A face with no boundary at all covers its whole surface, so
+/// the middle of the domain is the point to ask about.
+pub fn face_normal(model: &Model, face: &Shape, tol: Tolerances) -> OgResult<(Point, Vector)> {
+    let Some(node) = model.node(face) else {
+        og_bail!(Dangling, "face is not in this model");
+    };
+    let Some(data) = node.data().as_face() else {
+        og_bail!(Construction, "face node holds no face data");
+    };
+    let Some(surface) = model.geometry().surface(data.surface) else {
+        og_bail!(Dangling, "face refers to a surface not in this model");
+    };
+
+    let mut sum = (0.0, 0.0);
+    let mut count = 0_u32;
+    // The outer wire is the first, and it alone bounds the region; a hole would
+    // only pull the sample towards a point the face does not cover.
+    for edge in match model.children_of(face)?.first() {
+        Some(outer) => model.children_of(outer)?,
+        None => Vec::new(),
+    } {
+        let Some(edge_data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            continue;
+        };
+        let (id, range) = match edge_data.pcurve_for(data.surface, edge.location()) {
+            Some(EdgeRepr::PCurve { curve, range, .. }) => (*curve, *range),
+            Some(EdgeRepr::Seam { forward, range, .. }) => (*forward, *range),
+            _ => continue,
+        };
+        let Some(pcurve) = model.geometry().pcurve(id) else {
+            og_bail!(Dangling, "pcurve is not in this model");
+        };
+        for at in [range.0, f64::midpoint(range.0, range.1), range.1] {
+            let p = pcurve.point_at(at, tol)?;
+            sum = (sum.0 + p.x, sum.1 + p.y);
+            count += 1;
+        }
+    }
+
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let (u, v) = if count == 0 {
+        (f64::midpoint(ua, ub), f64::midpoint(va, vb))
+    } else {
+        let n = f64::from(count);
+        (sum.0 / n, sum.1 / n)
+    };
+    let normal = surface.normal_at(u, v, tol)?;
+    let point = surface.point_at(u, v, tol)?;
+
+    let placement = face.transform(model.datums())?;
+    let placed = placement.apply_vector(normal.vector());
+    Ok((
+        placement.apply(point),
+        if face.orientation() == Orientation::Reversed {
+            -placed
+        } else {
+            placed
+        },
+    ))
 }
 
 /// A deflection expressed as a fraction of a shape's own size.

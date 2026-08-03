@@ -39,6 +39,8 @@ pub use measure::{
     vertex_bounds,
 };
 pub use place::{copied, transformed};
-pub use primitive::{make_box, make_cone, make_cylinder, make_sphere, make_torus, make_wedge};
+pub use primitive::{
+    make_box, make_cone, make_cylinder, make_half_space, make_sphere, make_torus, make_wedge,
+};
 pub use sew::{Sewn, make_wire_unordered, order_edges, sew};
 pub use sweep::{make_prism, make_revolution};

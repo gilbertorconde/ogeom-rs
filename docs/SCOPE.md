@@ -110,8 +110,8 @@ left over is listed under the milestone, and tracked in
   cannot decide reported as `On` rather than guessed.
 - Build, measure, check, tessellate and export from the command line.
 
-Still owed inside P2, none of it blocking the above: half-space, NURBS
-conversion, general affine transforms, mesh simplification, mesh → B-rep.
+Still owed inside P2, none of it blocking the above: NURBS conversion, general
+affine transforms, mesh simplification, mesh → B-rep.
 
 ### M3 — a CAD kernel · P3 · §7–9
 
@@ -545,6 +545,7 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 | Exact axis clearance for a revolution | §7 | `make_revolution` refuses a profile that crosses the axis, because revolving one sweeps a surface through itself and the resulting solid has a finite, plausible volume that counts part of space twice. The test is a sampled one: thirty-two places along each edge, looking for the radial direction reversing rather than for the distance to the axis reaching zero, since a crossing almost never lands on a sample. It catches every crossing coarser than its step. Deciding exactly where a curve meets a line is the intersector's work. |
 | Unit scale in the native format | §1 | The `.og` file records no unit scale, because a `Model` does not hold one — tolerances are passed to each call rather than carried by the document (`DATA_MODEL.md` §9 says the scale is explicit, and it is, at every call site). So a document authored in metres reads back correctly but is *validated* on the way in against millimetre thresholds, and geometry that is legitimate at one scale could be refused at another. Reproduction: nothing yet fails, because every constructor the reader calls validates against `confusion`, which is scale-relative in `Tolerances` but fixed at millimetres in `native::read`. The fix is a unit scale on the model, written and read with it. |
 | Asymmetric conic domains in the native format | §17 | A hyperbola or parabola is written as the symmetric `[-extent, extent]` its constructor produces, and the reader refuses anything else rather than silently re-centring it. Unreachable today — nothing builds an asymmetric one — and it is a refusal rather than a wrong answer, but the format has no way to express one if something later does. |
+| A consumer for the half-space | §8 | `make_half_space` builds the solid on one side of a face, orienting the boundary away from the material. Nothing reads it yet, and nothing can: its shell is one face with free edges all round, so it is not closed, and every query needing an inside refuses rather than guessing — which is the correct answer for a boundary that does not close. A half space is an argument to a boolean, and the boolean is §8. Its bound comes back *empty* for the same honest reason: `surface_bounds` declines to bound an unbounded plane rather than quoting the declared extent. |
 | Spindle-torus signed distance | §2 | `Torus::distance_to` handles every torus, including the folded branch of a spindle. `signed_distance_to` is documented as ring and horn tori only: a spindle torus encloses two regions and "inside" does not name one of them. |
 
 ---
