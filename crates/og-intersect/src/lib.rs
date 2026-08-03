@@ -10,3 +10,9 @@
 //! and it is where prior open-source B-rep efforts have failed. Its quality is
 //! gated by a standalone benchmark against analytic ground truth and published
 //! datasets before the boolean pipeline in `og-bool` is started.
+
+pub mod benchmark;
+pub mod surface;
+
+pub use benchmark::{Measured, Report, measure, measure_all};
+pub use surface::{Meeting, surface_surface};
