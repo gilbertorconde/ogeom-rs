@@ -24,6 +24,33 @@ capability is conventionally called, because that vocabulary is how the field
 talks about itself and pretending otherwise helps nobody. They are a glossary,
 not a dependency. See `CONTRIBUTING.md`.
 
+**Interchangeability is a goal. A shared codebase is not, and cannot be.** The
+target is that an application built on the conventional kernel can move to this
+one with mechanical work rather than a redesign: the same concepts, the same
+operation vocabulary, the same semantics, and an API of comparable shape. That
+is what the *Elsewhere* notes are for, and it is why this document is organised
+around the same capability boundaries.
+
+What it licenses: matching documented and observable behaviour; keeping
+operation names and argument meanings recognisable where doing so does not make
+the Rust worse; implementing the conventional kernel's *published file formats*,
+which is interoperation exactly as STEP is.
+
+What it does not licence, and this is a constraint rather than a preference:
+copying, translating or transliterating another kernel's source. The licences
+run one way and it is not this way. Everything here is implemented from
+published specifications, from the literature, and from tests — see
+`CONTRIBUTING.md`, which says so normatively.
+
+What it costs: nothing, in the two places `DATA_MODEL.md` deliberately diverges.
+Stable provenance (§8) is *additive* — the conventional history API is
+implemented and required alongside it, so an application that wants only history
+gets it. The predicate trait (§9) is internal and has no API surface at all.
+
+Where it does bite is **sequencing**: a capability the conventional kernel has,
+and that applications therefore call, is worth more early than one it lacks.
+That is a priority input, not a scope input — everything listed here is still in.
+
 ---
 
 ## Status key
@@ -370,6 +397,7 @@ Not a renderer. `tools/ogview` consumes this; it is not part of it.
 | Format | Direction | Notes |
 |---|---|---|
 | Native `.og` | r/w | **Done.** Text, versioned, lossless: topology, geometry, placements, per-entity tolerances, provenance and the cached tessellation, with arena handles preserved rather than renumbered. Writing what was read gives the same bytes, so `diff` is the comparison tool. Anything it cannot write it refuses |
+| Conventional kernel's native B-rep text format | r/w | Its own serialization, implemented from the published format description. Interoperation, on the same footing as STEP — it is what lets a corpus written by an existing application be read here, and it is the cheapest possible bridge for an application mid-migration |
 | **STEP** AP203 / AP214 / AP242 | r/w | Assemblies, colours, names, AP242 PMI. The most valuable target — no production-grade Rust implementation exists |
 | IGES | r/w | Legacy, still shipped by industry |
 | glTF 2.0 | r/w | Tessellated, with materials |
@@ -506,7 +534,7 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 | Exact point-in-solid | §7 | Ray casting against the tessellation. Returns `On` for any point within the deflection of the boundary rather than assigning it a side. |
 | `same_parameter` repair | §5 | The flag is carried and set false whenever a representation is added, which is honest but pessimistic: every primitive's edges claim disagreement they do not have. The repair routine has to verify agreement, and where it fails, widen the edge's tolerance until the claim is true. Until it exists, nothing may *rely* on the flag being true. |
 | `PolygonOnTriangulation` edge representation (`DATA_MODEL.md` §6) | §12 | A face carries a `Triangulation` and an edge carries a `Polyline` with its parameters, which is what makes the stored tessellation watertight. The missing piece is the edge's path through a *specific* face's triangulation as node indices — what a renderer wants to draw a shared edge without hunting for coincident vertices. |
-| Predicates routed through the `Predicates` trait | §9 | The trait and both implementations exist in `og-core` and nothing calls them yet. Tessellation, classification and mass properties all use plain `f64` comparisons against tolerances. Retrofitting is mechanical *because* the trait was designed in first — that was the point — but it has not been done, and until it is, "predicates are swappable" is a claim about the design and not about the code. |
+| Predicates routed through the `Predicates` trait | §7 | The trait and both implementations exist in `og-core` and nothing calls them yet. Tessellation, classification and mass properties all use plain `f64` comparisons against tolerances. Retrofitting is mechanical *because* the trait was designed in first — that was the point — but it has not been done, and until it is, "predicates are swappable" is a claim about the design and not about the code. **Scheduled at §7, not later.** The first place swapping the numerics strategy actually pays is the intersector and its polyhedral pre-filter, and the gate that decides whether the boolean pipeline is attempted at all is measured *there* — so the seam has to be real before the measurement, or the gate reports on one strategy and calls it the answer. Tessellation does not need it: the constrained Delaunay already runs on adaptive-exact predicates through `spade`. |
 | Collapsed wedges | §5 | `make_wedge` refuses a top extent of zero. A wedge tapering to a ridge has five faces and one tapering to a point has four; both are different topologies, not this one with a zero in it, and building them through the box path would give them a face with no area. They belong to the prism sweep over a triangular profile. |
 | Compound and compsolid builders | §5 | `Model::add_compound` exists at the raw level. There is no `make_compound` alongside the other builders, so compounds get no history and no roles. |
 | Non-manifold topology (§4) | §4 | The model permits an edge bounding more than two faces — nothing rejects it — but nothing has been built that way and no test pins the behaviour. `is_shell_closed` counts edge *uses* and asks for an even number, which is the right rule for non-manifold input, but that is a design choice not yet exercised. |
@@ -531,7 +559,7 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 | FEA meshing — tetrahedral, boundary-layer | A separate discipline with its own literature. The kernel supplies the geometry and surface meshes it consumes. |
 | Simulation, CAM toolpath generation | Applications, not kernel. |
 | A parametric *recompute engine* | Application-level. The kernel supplies stable identity and history (`DATA_MODEL.md` §7, §8), which is what such an engine needs from it. |
-| ABI or file-format compatibility with any other kernel | Independence is the point. Interoperation happens through published exchange formats. |
+| Binary ABI compatibility with another kernel | Not expressible from Rust without a C++ façade carrying the other kernel's class layout, and any host API that hands a raw shape pointer to a third-party binding runtime needs that layout to match exactly. Firmly downstream — see `docs/INTEGRATION.md`. |
 
 ---
 
