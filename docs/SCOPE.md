@@ -110,9 +110,8 @@ left over is listed under the milestone, and tracked in
   cannot decide reported as `On` rather than guessed.
 - Build, measure, check, tessellate and export from the command line.
 
-Still owed inside P2, none of it blocking the above: sewing, wire ordering and
-repair, half-space, NURBS conversion, general affine transforms, mesh
-simplification, mesh → B-rep.
+Still owed inside P2, none of it blocking the above: half-space, NURBS
+conversion, general affine transforms, mesh simplification, mesh → B-rep.
 
 ### M3 — a CAD kernel · P3 · §7–9
 
