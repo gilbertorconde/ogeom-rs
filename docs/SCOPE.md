@@ -112,7 +112,7 @@ left over is listed under the milestone, and tracked in
 
 Still owed inside P2, none of it blocking the above: whole-*shape* NURBS
 conversion and whole-shape affine transforms (the geometry-level conversions
-they rest on are done), mesh simplification, mesh → B-rep.
+they rest on are done), and mesh → B-rep.
 
 ### M3 — a CAD kernel · P3 · §7–9
 

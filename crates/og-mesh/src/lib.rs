@@ -10,12 +10,14 @@
 
 pub mod attach;
 pub mod discretize;
+pub mod simplify;
 pub mod triangulate;
 
 pub use attach::{Tessellated, polyline_of, tessellate, triangulation_of};
 pub use discretize::{
     Deflection, Polyline, discretize, discretize_planar, is_straight, is_straight_planar,
 };
+pub use simplify::{Simplified, Target, simplify};
 pub use triangulate::{
     face_boundary, inside_boundary, polyline_of_edge, triangulate, triangulate_face,
 };
