@@ -19,6 +19,7 @@ pub mod mass;
 pub mod measure;
 pub mod place;
 pub mod primitive;
+pub mod reconstruct;
 pub mod sew;
 pub mod sweep;
 
@@ -42,5 +43,6 @@ pub use place::{copied, transformed};
 pub use primitive::{
     make_box, make_cone, make_cylinder, make_half_space, make_sphere, make_torus, make_wedge,
 };
+pub use reconstruct::{CREASE, Region, planar_regions, to_brep};
 pub use sew::{Sewn, make_wire_unordered, order_edges, sew};
 pub use sweep::{make_prism, make_revolution};

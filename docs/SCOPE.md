@@ -112,7 +112,8 @@ left over is listed under the milestone, and tracked in
 
 Still owed inside P2, none of it blocking the above: whole-*shape* NURBS
 conversion and whole-shape affine transforms (the geometry-level conversions
-they rest on are done), and mesh → B-rep.
+they rest on are done), and mesh → B-rep for *curved* regions, which is
+canonical recognition and lands in §9.
 
 ### M3 — a CAD kernel · P3 · §7–9
 
@@ -547,6 +548,7 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 | Exact axis clearance for a revolution | §7 | `make_revolution` refuses a profile that crosses the axis, because revolving one sweeps a surface through itself and the resulting solid has a finite, plausible volume that counts part of space twice. The test is a sampled one: thirty-two places along each edge, looking for the radial direction reversing rather than for the distance to the axis reaching zero, since a crossing almost never lands on a sample. It catches every crossing coarser than its step. Deciding exactly where a curve meets a line is the intersector's work. |
 | Asymmetric conic domains in the native format | §17 | A hyperbola or parabola is written as the symmetric `[-extent, extent]` its constructor produces, and the reader refuses anything else rather than silently re-centring it. Unreachable today — nothing builds an asymmetric one — and it is a refusal rather than a wrong answer, but the format has no way to express one if something later does. |
 | A consumer for the half-space | §8 | `make_half_space` builds the solid on one side of a face, orienting the boundary away from the material. Nothing reads it yet, and nothing can: its shell is one face with free edges all round, so it is not closed, and every query needing an inside refuses rather than guessing — which is the correct answer for a boundary that does not close. A half space is an argument to a boolean, and the boolean is §8. Its bound comes back *empty* for the same honest reason: `surface_bounds` declines to bound an unbounded plane rather than quoting the declared extent. |
+| Curved regions in mesh → B-rep | §9 | Planar recovery is done and exact: coplanar triangles are grown into regions, their boundaries chained into loops, and faces rebuilt on shared edges so the shell closes — a box round-trips through a mesh and measures the same. A *curved* region is refused. Fitting a cylinder to a band of triangles is easy; deciding that the band **is** a cylinder rather than a smooth patch resembling one is the difficulty, and a wrong answer gives a solid that looks right, measures nearly right, and has the wrong surface under every later operation. The crease angle that separates a model edge from a tessellation seam is exposed as a parameter with a stated default, because no fixed angle is right for every mesh — a coarse tessellation of a large cylinder turns further than a fine one of a small cylinder. Deciding it from the mesh's own deflection is canonical recognition. |
 | Spindle-torus signed distance | §2 | `Torus::distance_to` handles every torus, including the folded branch of a spindle. `signed_distance_to` is documented as ring and horn tori only: a spindle torus encloses two regions and "inside" does not name one of them. |
 
 ---
