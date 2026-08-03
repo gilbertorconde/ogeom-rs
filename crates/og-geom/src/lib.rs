@@ -10,6 +10,7 @@
 //! cylinder or a NURBS patch. Concrete types implement the traits; algorithms only
 //! ever see the traits.
 
+pub mod convert;
 pub mod curve;
 pub mod curve2d;
 pub mod surface;
