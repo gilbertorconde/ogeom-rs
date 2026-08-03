@@ -8,10 +8,48 @@
 //! fails to resolve instead of silently aliasing whatever was allocated there
 //! next. That failure mode is worth eight bytes per key in a kernel where the
 //! alternative is a wrong answer rather than a crash.
+//!
+//! # Keys are scoped to the arena that issued them
+//!
+//! A generation catches a key that has outlived its slot. It cannot catch a key
+//! from a *different* arena, because index 3 generation 0 means something in
+//! every arena — so a handle from one document resolved against another comes
+//! back with whatever sits at that index, and answers confidently about the
+//! wrong entity. Nothing about the result says so.
+//!
+//! Every arena therefore takes an identifier the first time something is put
+//! in it, every key it issues carries that identifier, and every lookup
+//! compares it. A foreign key resolves to `None`, exactly as a stale one does.
+//! The cost is four bytes per key and one comparison per lookup, against a
+//! whole class of silent wrong answers.
+//!
+//! Cloning an arena keeps its identifier, because a clone is the same document
+//! and handles into it should keep working. Identifiers are per-process and are
+//! never serialized: a document read back from a file is a new arena with a new
+//! identifier, and the reader re-stamps the handles it read.
 
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
+use core::sync::atomic::{AtomicU32, Ordering};
+
+/// Hands out arena identifiers.
+///
+/// Starts at one so that zero can mean *unscoped* — the state of a key built
+/// by a deserializer that does not yet know which arena it will belong to.
+static NEXT_SCOPE: AtomicU32 = AtomicU32::new(1);
+
+/// An identifier that no arena in this process shares.
+fn next_scope() -> u32 {
+    NEXT_SCOPE.fetch_add(1, Ordering::Relaxed)
+}
+
+/// The identifier a key carries before it has been bound to an arena.
+///
+/// A key with this scope resolves in no arena at all. That is deliberate: a
+/// handle read from a file is meaningless until the reader says which document
+/// it belongs to.
+pub const UNSCOPED: u32 = 0;
 
 /// A handle into an [`Arena<T>`].
 ///
@@ -21,16 +59,37 @@ use core::marker::PhantomData;
 pub struct Key<T> {
     index: u32,
     generation: u32,
+    scope: u32,
     marker: PhantomData<fn() -> T>,
 }
 
 impl<T> Key<T> {
-    fn new(index: u32, generation: u32) -> Self {
+    const fn new(index: u32, generation: u32, scope: u32) -> Self {
         Self {
             index,
             generation,
+            scope,
             marker: PhantomData,
         }
+    }
+
+    /// Which arena issued this key.
+    ///
+    /// [`UNSCOPED`] for a key that has not been bound to one.
+    #[must_use]
+    pub const fn scope(self) -> u32 {
+        self.scope
+    }
+
+    /// This key, bound to the arena with the given identifier.
+    ///
+    /// For a deserializer, which rebuilds handles before it has an arena to
+    /// bind them to. Nothing else should need it: a key that came from an arena
+    /// already names the right one, and moving a key between arenas is the
+    /// mistake the scope exists to catch.
+    #[must_use]
+    pub const fn with_scope(self, scope: u32) -> Self {
+        Self { scope, ..self }
     }
 
     /// Position of the slot this key refers to.
@@ -58,11 +117,7 @@ impl<T> Key<T> {
     /// than aliasing whatever sits at that index.
     #[must_use]
     pub const fn from_parts(index: u32, generation: u32) -> Self {
-        Self {
-            index,
-            generation,
-            marker: PhantomData,
-        }
+        Self::new(index, generation, UNSCOPED)
     }
 }
 
@@ -75,7 +130,9 @@ impl<T> Clone for Key<T> {
 impl<T> Copy for Key<T> {}
 impl<T> PartialEq for Key<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.index == other.index && self.generation == other.generation
+        self.index == other.index
+            && self.generation == other.generation
+            && self.scope == other.scope
     }
 }
 impl<T> Eq for Key<T> {}
@@ -83,6 +140,7 @@ impl<T> Hash for Key<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.index.hash(state);
         self.generation.hash(state);
+        self.scope.hash(state);
     }
 }
 impl<T> PartialOrd for Key<T> {
@@ -92,12 +150,12 @@ impl<T> PartialOrd for Key<T> {
 }
 impl<T> Ord for Key<T> {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        (self.index, self.generation).cmp(&(other.index, other.generation))
+        (self.scope, self.index, self.generation).cmp(&(other.scope, other.index, other.generation))
     }
 }
 impl<T> fmt::Debug for Key<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Key({}v{})", self.index, self.generation)
+        write!(f, "Key({}v{}@{})", self.index, self.generation, self.scope)
     }
 }
 
@@ -119,6 +177,10 @@ pub struct Arena<T> {
     slots: Vec<Slot<T>>,
     free_head: Option<u32>,
     len: usize,
+    /// Which arena this is. [`UNSCOPED`] until the first insert, because
+    /// `new` is `const` and a counter cannot be read from one — and an arena
+    /// with nothing in it has issued no keys to disagree with.
+    scope: u32,
 }
 
 impl<T> Default for Arena<T> {
@@ -135,6 +197,7 @@ impl<T> Arena<T> {
             slots: Vec::new(),
             free_head: None,
             len: 0,
+            scope: UNSCOPED,
         }
     }
 
@@ -145,6 +208,7 @@ impl<T> Arena<T> {
             slots: Vec::with_capacity(capacity),
             free_head: None,
             len: 0,
+            scope: UNSCOPED,
         }
     }
 
@@ -160,7 +224,29 @@ impl<T> Arena<T> {
         self.len == 0
     }
 
+    /// Which arena this is, for stamping keys that were rebuilt elsewhere.
+    ///
+    /// [`UNSCOPED`] until the first insert.
+    #[must_use]
+    pub const fn scope(&self) -> u32 {
+        self.scope
+    }
+
+    /// Whether a key was issued by this arena.
+    ///
+    /// Distinct from [`Arena::contains`], which also asks whether the slot is
+    /// still live. This asks only whether the key belongs here at all, which is
+    /// the question a caller wants when reporting *why* a lookup failed.
+    #[must_use]
+    pub const fn issued(&self, key: Key<T>) -> bool {
+        key.scope == self.scope
+    }
+
     /// Insert a value, returning its key.
+    ///
+    /// The first insert is what fixes the arena's identity, since [`Arena::new`]
+    /// is `const` and cannot read a counter. That is safe because an arena with
+    /// nothing in it has issued no keys to disagree with.
     ///
     /// # Panics
     ///
@@ -168,6 +254,9 @@ impl<T> Arena<T> {
     /// billion topological entities is a bug elsewhere, not a case to handle.
     #[allow(clippy::expect_used, reason = "documented panic; see # Panics")]
     pub fn insert(&mut self, value: T) -> Key<T> {
+        if self.scope == UNSCOPED {
+            self.scope = next_scope();
+        }
         self.len += 1;
         match self.free_head {
             Some(index) => {
@@ -181,7 +270,7 @@ impl<T> Arena<T> {
                 };
                 self.free_head = next_free;
                 self.slots[idx] = Slot::Occupied { generation, value };
-                Key::new(index, generation)
+                Key::new(index, generation, self.scope)
             }
             None => {
                 let index = u32::try_from(self.slots.len()).expect("arena exceeded u32::MAX slots");
@@ -189,7 +278,7 @@ impl<T> Arena<T> {
                     generation: 0,
                     value,
                 });
-                Key::new(index, 0)
+                Key::new(index, 0, self.scope)
             }
         }
     }
@@ -197,6 +286,9 @@ impl<T> Arena<T> {
     /// Borrow the value behind `key`, or `None` if the key is stale.
     #[must_use]
     pub fn get(&self, key: Key<T>) -> Option<&T> {
+        if key.scope != self.scope {
+            return None;
+        }
         match self.slots.get(key.index as usize)? {
             Slot::Occupied { generation, value } if *generation == key.generation => Some(value),
             _ => None,
@@ -205,6 +297,9 @@ impl<T> Arena<T> {
 
     /// Mutably borrow the value behind `key`, or `None` if the key is stale.
     pub fn get_mut(&mut self, key: Key<T>) -> Option<&mut T> {
+        if key.scope != self.scope {
+            return None;
+        }
         match self.slots.get_mut(key.index as usize)? {
             Slot::Occupied { generation, value } if *generation == key.generation => Some(value),
             _ => None,
@@ -222,6 +317,9 @@ impl<T> Arena<T> {
     /// The slot's generation is bumped, invalidating every outstanding copy of
     /// `key`.
     pub fn remove(&mut self, key: Key<T>) -> Option<T> {
+        if key.scope != self.scope {
+            return None;
+        }
         let slot = self.slots.get_mut(key.index as usize)?;
         let generation = match slot {
             Slot::Occupied { generation, .. } if *generation == key.generation => *generation,
@@ -250,14 +348,15 @@ impl<T> Arena<T> {
 
     /// Iterate over live `(key, &value)` pairs, in slot order.
     pub fn iter(&self) -> impl Iterator<Item = (Key<T>, &T)> {
+        let scope = self.scope;
         self.slots
             .iter()
             .enumerate()
-            .filter_map(|(i, slot)| match slot {
+            .filter_map(move |(i, slot)| match slot {
                 Slot::Occupied { generation, value } => {
                     // `insert` refuses to grow past u32::MAX, so this cannot truncate.
                     #[allow(clippy::cast_possible_truncation)]
-                    Some((Key::new(i as u32, *generation), value))
+                    Some((Key::new(i as u32, *generation, scope), value))
                 }
                 Slot::Vacant { .. } => None,
             })
@@ -265,14 +364,15 @@ impl<T> Arena<T> {
 
     /// Iterate over live `(key, &mut value)` pairs, in slot order.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (Key<T>, &mut T)> {
+        let scope = self.scope;
         self.slots
             .iter_mut()
             .enumerate()
-            .filter_map(|(i, slot)| match slot {
+            .filter_map(move |(i, slot)| match slot {
                 Slot::Occupied { generation, value } =>
                 {
                     #[allow(clippy::cast_possible_truncation)]
-                    Some((Key::new(i as u32, *generation), value))
+                    Some((Key::new(i as u32, *generation, scope), value))
                 }
                 Slot::Vacant { .. } => None,
             })
@@ -384,5 +484,96 @@ mod tests {
         let mut a = Arena::new();
         let set: HashSet<_> = (0..64_u32).map(|i| a.insert(i)).collect();
         assert_eq!(set.len(), 64);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn a_key_from_one_arena_does_not_resolve_in_another() {
+        // The whole reason the scope exists. Index 0 generation 0 means
+        // something in every arena, so without it this lookup succeeds and
+        // answers about the wrong value — confidently, with nothing about the
+        // result to say so.
+        let mut a: Arena<&str> = Arena::new();
+        let mut b: Arena<&str> = Arena::new();
+        let here = a.insert("in a");
+        let there = b.insert("in b");
+
+        assert_eq!(a.get(here), Some(&"in a"));
+        assert_eq!(b.get(there), Some(&"in b"));
+        assert_eq!(here.index(), there.index(), "the same slot in both");
+        assert_eq!(a.get(there), None, "a foreign key must not resolve");
+        assert_eq!(b.get(here), None);
+        assert!(!a.issued(there));
+    }
+
+    #[test]
+    fn foreign_keys_are_refused_by_every_route_in() {
+        let mut a: Arena<u32> = Arena::new();
+        let mut b: Arena<u32> = Arena::new();
+        let key = a.insert(1);
+        b.insert(2);
+
+        assert!(!b.contains(key));
+        assert_eq!(b.get_mut(key), None);
+        assert_eq!(b.remove(key), None, "and it must not remove something else");
+        assert_eq!(b.len(), 1, "nothing was taken out");
+    }
+
+    #[test]
+    fn keys_from_different_arenas_are_not_equal_and_do_not_collide() {
+        // Equality and hashing have to agree with resolution, or a map keyed on
+        // handles merges entries from two documents.
+        use std::collections::HashSet;
+        let mut a: Arena<u32> = Arena::new();
+        let mut b: Arena<u32> = Arena::new();
+        let here = a.insert(1);
+        let there = b.insert(2);
+
+        assert_ne!(here, there);
+        let mut set = HashSet::new();
+        set.insert(here);
+        set.insert(there);
+        assert_eq!(set.len(), 2, "two documents' handles collided in a map");
+    }
+
+    #[test]
+    fn an_unscoped_key_resolves_nowhere_until_it_is_bound() {
+        // What a deserializer builds. It names a slot but no arena, and a
+        // handle that names no arena is meaningless until someone says which.
+        let mut a: Arena<u32> = Arena::new();
+        let real = a.insert(7);
+        let loose: Key<u32> = Key::from_parts(real.index(), real.generation());
+
+        assert_eq!(loose.scope(), UNSCOPED);
+        assert_eq!(a.get(loose), None);
+        assert_eq!(a.get(loose.with_scope(a.scope())), Some(&7));
+    }
+
+    #[test]
+    fn a_clone_answers_to_the_originals_handles() {
+        // A clone is the same document — a snapshot — so handles into it keep
+        // working. If it took a fresh identifier, every handle a caller held
+        // would silently stop resolving after a clone.
+        let mut a: Arena<u32> = Arena::new();
+        let key = a.insert(5);
+        let copy = a.clone();
+        assert_eq!(copy.get(key), Some(&5));
+    }
+
+    #[test]
+    fn an_empty_arena_has_issued_nothing_to_disagree_with() {
+        // `new` is const, so the identifier cannot be taken until the first
+        // insert. That is safe precisely because an arena with nothing in it
+        // has handed out no keys.
+        let empty: Arena<u32> = Arena::new();
+        assert_eq!(empty.scope(), UNSCOPED);
+        let mut used: Arena<u32> = Arena::new();
+        used.insert(1);
+        assert_ne!(used.scope(), UNSCOPED);
     }
 }

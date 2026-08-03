@@ -759,11 +759,10 @@ mod tests {
         // together. Every finding would then be about something that is not
         // there, which is worse than no finding.
         //
-        // Note what this does *not* catch: a handle from a different model
-        // whose arena happens to have a node at the same index resolves
-        // silently, because arena keys are not scoped to a model. Detecting
-        // that needs an identifier on the model itself — see the deferred list
-        // in `docs/SCOPE.md`.
+        // A handle from a *different* model is caught too, and by the same
+        // route: arena keys carry the identifier of the arena that issued them,
+        // so a foreign one resolves to nothing rather than to whatever sits at
+        // that index.
         let mut other = Model::new();
         for _ in 0..4 {
             other.add_vertex(VertexData::new(Point::ORIGIN));

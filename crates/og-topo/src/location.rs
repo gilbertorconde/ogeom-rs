@@ -39,19 +39,13 @@ pub type DatumId = Key<Datum>;
 /// placements a stable notion of sameness, since two chains naming the same
 /// datum are known to agree without any floating-point comparison.
 ///
-/// # Handles are relative to their store
+/// # Handles are relative to their store, and know it
 ///
-/// A [`DatumId`] means nothing without the store that issued it, and this type
-/// cannot tell a handle from another store apart from one of its own — two
-/// stores that have each interned one transform both answer to the same first
-/// handle. Generations catch a *stale* handle within one store; they cannot
-/// catch a foreign one.
-///
-/// That is the documented trade of arena-based storage
-/// (`docs/DATA_MODEL.md` §11), and it is why a document holds exactly one
-/// store. Mixing handles between documents is a caller error that will not be
-/// reported — it will resolve to whatever transform happens to sit at that
-/// index.
+/// A [`DatumId`] means nothing without the store that issued it — and it says
+/// which one that was. A handle from another store resolves to `None` rather
+/// than to whatever transform happens to sit at that index, so mixing
+/// documents is an error that shows up where it happens rather than a wrong
+/// answer several operations later.
 #[derive(Debug, Clone, Default)]
 pub struct DatumStore {
     arena: Arena<Datum>,
@@ -92,6 +86,11 @@ impl DatumStore {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.arena.is_empty()
+    }
+
+    /// The identifier this store's arena issues keys under.
+    pub(crate) const fn scope(&self) -> u32 {
+        self.arena.scope()
     }
 
     /// Every datum, with its handle, in arena order.
@@ -188,6 +187,20 @@ impl Location {
             }
         }
         Self { chain }
+    }
+
+    /// This placement with every datum handle bound to a given store.
+    ///
+    /// For reading a document back: the handles a file records are unscoped
+    /// until the store that will hold them exists.
+    pub(crate) fn with_datum_scope(&self, scope: u32) -> Self {
+        Self {
+            chain: self
+                .chain
+                .iter()
+                .map(|(datum, power)| (datum.with_scope(scope), *power))
+                .collect(),
+        }
     }
 
     /// The inverse placement.
@@ -439,22 +452,23 @@ mod tests {
     }
 
     #[test]
-    fn a_handle_from_another_store_at_the_same_index_is_not_detectable() {
-        // Not a defect to fix but a boundary to know: an arena handle is
-        // meaningful only relative to the arena that issued it. Generations
-        // catch a stale handle within one store; nothing here can catch a
-        // foreign one, and it will silently resolve to whatever sits at that
-        // index. This is why a document holds exactly one store.
+    fn a_handle_from_another_store_is_refused_rather_than_resolved() {
+        // It used to resolve — to whatever transform happened to sit at that
+        // index, silently and confidently. An arena handle now carries the
+        // identifier of the arena that issued it, so a foreign one names a
+        // datum this store does not have, and composing it says so.
         let (s, first, _) = store();
         let mut other = DatumStore::new();
         let foreign = other.insert(Transform::translation(Vector::new(0.0, 99.0, 0.0)));
 
-        let resolved = Location::of(foreign).composed(&s).unwrap();
-        let ours = Location::of(first).composed(&s).unwrap();
-        assert!(
-            resolved.is_equal(&ours, T),
-            "the foreign handle resolved to our own first datum"
+        assert_eq!(
+            foreign.index(),
+            first.index(),
+            "the same slot in both stores, which is what used to make this silent"
         );
+        assert!(s.get(foreign).is_none());
+        assert!(Location::of(foreign).composed(&s).is_err());
+        assert!(Location::of(first).composed(&s).is_ok());
     }
 
     #[test]

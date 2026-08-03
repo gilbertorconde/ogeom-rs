@@ -121,11 +121,83 @@ impl Model {
             identity: HashMap::new(),
             current_op,
         };
+        // Every handle in `parts` was rebuilt by a reader that had no arenas to
+        // bind them to, so they name no arena at all and resolve nowhere. Bind
+        // them now that the arenas exist. Only the scope changes — inserting in
+        // the order the file recorded reproduces the same index and generation,
+        // which is what makes a document's handles survive a round trip.
+        model.bind_handles();
+        let identity: Vec<(TShapeId, EntityId)> = identity
+            .into_iter()
+            .map(|(node, entity)| (node.with_scope(model.nodes.scope()), entity))
+            .collect();
+
         model.check_restored(&identity)?;
         for (node, entity) in identity {
             model.identity.insert(node, entity);
         }
         Ok(model)
+    }
+
+    /// Bind an unscoped shape to this model.
+    ///
+    /// A handle rebuilt by a reader names no arena, so it resolves nowhere
+    /// until it is told which document it belongs to. This is how a reader says
+    /// so — and it verifies the answer, so a file naming a node that is not
+    /// there is an error rather than a shape that fails mysteriously later.
+    ///
+    /// It will not re-home a shape that already belongs to *another* model.
+    /// That is exactly the mistake scoping exists to catch, and quietly
+    /// relabelling it would hand back a shape that resolves and answers about
+    /// the wrong entity.
+    ///
+    /// # Errors
+    ///
+    /// [`OgError::Construction`](og_core::OgError::Construction) if the shape
+    /// already belongs to a different model;
+    /// [`OgError::Dangling`](og_core::OgError::Dangling) if it does not resolve
+    /// here once bound.
+    pub fn bind(&self, shape: &Shape) -> OgResult<Shape> {
+        if shape.node().scope() != og_core::UNSCOPED && !self.nodes.issued(shape.node()) {
+            og_bail!(
+                Construction,
+                "this shape belongs to another model; binding it here would \
+                 make it resolve and answer about a different entity"
+            );
+        }
+        let bound = shape.rebound(self.nodes.scope(), self.datums.scope());
+        if self.nodes.get(bound.node()).is_none() {
+            og_bail!(Dangling, "shape refers to a node not in this model");
+        }
+        Ok(bound)
+    }
+
+    /// Bind every handle in a freshly restored model to the arena that holds it.
+    fn bind_handles(&mut self) {
+        let nodes = self.nodes.scope();
+        let datums = self.datums.scope();
+        let geometry = self.geometry.scopes();
+
+        for (_, node) in self.nodes.iter_mut() {
+            for child in node.children_mut() {
+                *child = child.rebound(nodes, datums);
+            }
+            match node.data_mut() {
+                NodeData::Edge(edge) => {
+                    for repr in &mut edge.representations {
+                        repr.rebind(&geometry, datums);
+                    }
+                }
+                NodeData::Face(face) => {
+                    face.surface = face.surface.with_scope(geometry.surfaces);
+                    face.triangulation = face
+                        .triangulation
+                        .map(|mesh| mesh.with_scope(geometry.triangulations));
+                    face.location = face.location.with_datum_scope(datums);
+                }
+                NodeData::Vertex(_) | NodeData::Container => {}
+            }
+        }
     }
 
     /// Verify that a restored model's handles all resolve and its children are
@@ -280,6 +352,26 @@ impl Model {
         self.identity_of(shape)
             .map(|id| self.provenance.roots(id))
             .unwrap_or_default()
+    }
+
+    /// The shape carrying a given identity, if this document has one.
+    ///
+    /// The inverse of [`Model::identity_of`], and the answer to "I kept a
+    /// reference and the document has been saved and reloaded since". A raw
+    /// [`Shape`] cannot survive that — the reloaded document is a new set of
+    /// arenas and [`Model::bind`] refuses a handle from another one, on
+    /// purpose. An [`EntityId`] can, because it names *what the entity is*
+    /// rather than where it sits (`docs/DATA_MODEL.md` §8), and that is the
+    /// whole reason it exists.
+    ///
+    /// Returns the shape in its default placement and orientation. A caller
+    /// that wants a particular occurrence explores from here.
+    #[must_use]
+    pub fn shape_of(&self, id: EntityId) -> Option<Shape> {
+        self.identity
+            .iter()
+            .find(|(_, entity)| **entity == id)
+            .map(|(node, _)| Shape::of(*node))
     }
 
     /// Record that a node was derived from other entities.

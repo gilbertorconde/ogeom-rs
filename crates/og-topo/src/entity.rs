@@ -112,6 +112,19 @@ impl GeometryStore {
         (self.curves.len(), self.pcurves.len(), self.surfaces.len())
     }
 
+    /// The identifiers this store's arenas issue keys under.
+    ///
+    /// For [`Model::from_parts`](crate::Model::from_parts), which has to bind
+    /// handles rebuilt by a reader to the arenas they will actually live in.
+    pub(crate) const fn scopes(&self) -> GeometryScopes {
+        GeometryScopes {
+            curves: self.curves.scope(),
+            pcurves: self.pcurves.scope(),
+            surfaces: self.surfaces.scope(),
+            triangulations: self.triangulations.scope(),
+        }
+    }
+
     /// Whether every piece of geometry a representation names is held here.
     ///
     /// The check a restored model needs: a handle that does not resolve is not
@@ -163,6 +176,15 @@ impl GeometryStore {
     pub fn triangulation_count(&self) -> usize {
         self.triangulations.len()
     }
+}
+
+/// Which arena issues each kind of geometry handle in one store.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GeometryScopes {
+    pub curves: u32,
+    pub pcurves: u32,
+    pub surfaces: u32,
+    pub triangulations: u32,
 }
 
 /// One way of describing where an edge runs.
@@ -234,6 +256,46 @@ pub enum EdgeRepr {
 }
 
 impl EdgeRepr {
+    /// Bind this representation's handles to the arenas that hold them.
+    ///
+    /// For reading a document back. Only the arena identifier changes; index
+    /// and generation came from the file and are already right.
+    pub(crate) fn rebind(&mut self, geometry: &GeometryScopes, datums: u32) {
+        match self {
+            Self::Curve3d {
+                curve, location, ..
+            } => {
+                *curve = curve.with_scope(geometry.curves);
+                *location = location.with_datum_scope(datums);
+            }
+            Self::PCurve {
+                curve,
+                surface,
+                location,
+                ..
+            } => {
+                *curve = curve.with_scope(geometry.pcurves);
+                *surface = surface.with_scope(geometry.surfaces);
+                *location = location.with_datum_scope(datums);
+            }
+            Self::Seam {
+                forward,
+                reversed,
+                surface,
+                location,
+                ..
+            } => {
+                *forward = forward.with_scope(geometry.pcurves);
+                *reversed = reversed.with_scope(geometry.pcurves);
+                *surface = surface.with_scope(geometry.surfaces);
+                *location = location.with_datum_scope(datums);
+            }
+            Self::Polyline { location, .. } => {
+                *location = location.with_datum_scope(datums);
+            }
+        }
+    }
+
     /// The surface this representation belongs to, if any.
     #[must_use]
     pub const fn surface(&self) -> Option<SurfaceId> {

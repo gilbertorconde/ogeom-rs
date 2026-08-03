@@ -214,6 +214,11 @@ impl TShape {
         &self.children
     }
 
+    /// The children, mutably, for binding restored handles to their arena.
+    pub(crate) const fn children_mut(&mut self) -> &mut Vec<Shape> {
+        &mut self.children
+    }
+
     /// Number of direct children.
     #[must_use]
     pub fn child_count(&self) -> usize {
@@ -273,6 +278,18 @@ impl Shape {
         Self {
             location,
             ..self.clone()
+        }
+    }
+
+    /// This shape with its handles bound to the arenas that hold them.
+    ///
+    /// For reading a document back, where the handles are rebuilt before the
+    /// arenas exist. Nothing else should need it.
+    pub(crate) fn rebound(&self, nodes: u32, datums: u32) -> Self {
+        Self {
+            node: self.node.with_scope(nodes),
+            location: self.location.with_datum_scope(datums),
+            orientation: self.orientation,
         }
     }
 

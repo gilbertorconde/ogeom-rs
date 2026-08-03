@@ -30,7 +30,7 @@ pub mod id;
 pub mod predicates;
 pub mod tolerance;
 
-pub use arena::{Arena, Key};
+pub use arena::{Arena, Key, UNSCOPED};
 pub use error::{Cause, OgError, OgResult};
 pub use id::{EntityId, OpId, Provenance, ProvenanceTable, Role, SourceId};
 pub use predicates::{Exact, Fast, P2, P3, Predicates, Sign};

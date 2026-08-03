@@ -270,7 +270,16 @@ pub fn read(text: &str) -> OgResult<(Model, Vec<Shape>)> {
     }
 
     parts.geometry = geometry;
-    Ok((Model::from_parts(parts)?, roots))
+    let model = Model::from_parts(parts)?;
+    // The roots were rebuilt alongside the rest but travel outside `ModelParts`,
+    // so they are still unbound: they name no arena and resolve nowhere. Binding
+    // them checks them too, which is why a file naming a root that is not there
+    // fails here rather than in whatever first tries to use it.
+    let roots = roots
+        .iter()
+        .map(|root| model.bind(root))
+        .collect::<OgResult<Vec<_>>>()?;
+    Ok((model, roots))
 }
 
 /// Refuse a record written out of arena order.
@@ -1549,8 +1558,27 @@ mod tests {
         assert_eq!(restored.current_operation(), model.current_operation());
 
         for (before, after) in roots.iter().zip(&restored_roots) {
-            // The handle itself came back, not merely something like it.
-            assert!(before.is_equal(after), "a root handle was renumbered");
+            // The *slot* came back, not merely something like it: same index,
+            // same generation. Not the same handle, though — a restored
+            // document is a new set of arenas and its handles say so, which is
+            // what stops one document's shape from resolving against another.
+            assert_eq!(before.node().index(), after.node().index());
+            assert_eq!(before.node().generation(), after.node().generation());
+            assert_ne!(
+                before.node().scope(),
+                after.node().scope(),
+                "a restored document should not answer to the original's handles"
+            );
+            assert!(model.node(after).is_none(), "and not the other way round");
+            // A reference kept across a save is re-found by its *identity*,
+            // not by its handle. `bind` deliberately refuses a shape from
+            // another document — relabelling one would hand back something that
+            // resolves and answers about a different entity — so the way
+            // through is the thing §8 exists for.
+            assert!(
+                restored.bind(before).is_err(),
+                "a foreign handle should not be re-homed"
+            );
 
             for kind in [
                 ShapeType::Face,
@@ -1608,6 +1636,13 @@ mod tests {
                     model.identity_of(a),
                     "an identity was renumbered"
                 );
+                // And the identity is enough to find the entity again in the
+                // reloaded document, which is what makes a saved reference
+                // survive at all.
+                if let Some(id) = model.identity_of(a) {
+                    let found = restored.shape_of(id).expect("the entity is still there");
+                    assert!(found.is_partner(b), "identity found the wrong node");
+                }
                 assert_eq!(
                     restored.provenance_of(b),
                     model.provenance_of(a),
@@ -1706,17 +1741,16 @@ mod tests {
             without.len() < text.len(),
             "omitting the mesh saved nothing"
         );
-        let (bare, _) = read(&without).unwrap();
+        let (bare, bare_roots) = read(&without).unwrap();
         assert_eq!(bare.geometry().triangulation_count(), 0);
         // And the shape is still a shape: the mesh was a cache, not the model.
-        assert!(check(&bare, &solid, T).unwrap().is_valid());
+        assert!(check(&bare, &bare_roots[0], T).unwrap().is_valid());
     }
 
     #[test]
     fn a_document_naming_a_handle_that_is_not_there_is_refused() {
         // A corrupt file is an error, not a model that answers about the wrong
-        // entity. Arena keys are not scoped to a model, so this is the one
-        // place a bad index can still be caught.
+        // entity.
         let mut model = Model::new();
         let solid = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
             .unwrap()
@@ -1807,12 +1841,22 @@ mod tests {
             .is_err()
         );
 
-        // Note what this does *not* catch: a handle from a different model
-        // whose arena happens to have a node at the same index resolves
-        // silently, because arena keys are not scoped to a model. The file
-        // would then be written about the wrong entity. Closing that needs an
-        // identifier on the model itself — see the deferred list in
-        // `docs/SCOPE.md`.
+        // A handle from a different model is caught by the same check: arena
+        // keys carry the identifier of the arena that issued them, so a foreign
+        // one resolves to nothing here rather than to whatever node sits at
+        // that index.
+        let mut elsewhere = Model::new();
+        let foreign = og_algo::make_sphere(&mut elsewhere, Frame::WORLD, 1.0, T)
+            .unwrap()
+            .shape;
+        assert!(
+            write(
+                &model,
+                std::slice::from_ref(&foreign),
+                WriteOptions::default()
+            )
+            .is_err()
+        );
     }
 
     #[test]
