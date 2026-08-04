@@ -952,217 +952,33 @@ impl Reader<'_> {
         // one edge at the period join, appearing in the wire twice.
         if wires.len() == 2
             && surface.is_periodic_u()
-            && let [(e_lo, v_lo), (e_hi, v_hi)] = closed_ring_edges(&self.model, &wires)?.as_slice()
+            && let [(e_lo, _v_lo), (e_hi, _v_hi)] =
+                closed_ring_edges(&self.model, &wires)?.as_slice()
         {
-            let lo_point = self
-                .model
-                .node(v_lo)
-                .and_then(|n| n.data().as_vertex().map(|d| d.point));
-            let hi_point = self
-                .model
-                .node(v_hi)
-                .and_then(|n| n.data().as_vertex().map(|d| d.point));
-            if let (Some(pl), Some(ph)) = (lo_point, hi_point) {
-                let ((ua, ub), _) = surface.domain();
-                let span = ub - ua;
-                let place = |p: Point| -> OgResult<(f64, f64)> {
-                    Ok(og_algo::project_on_surface(&surface, p, 32, self.tol)?.parameters)
-                };
-                let (u_lo, va) = place(pl)?;
-                let (u_hi, vb) = place(ph)?;
-                // The seam joins the two rings at their own vertices, so it
-                // runs at *their* angle — and both had better agree on it.
-                let mut misaligned = (u_lo - u_hi).abs();
-                misaligned = misaligned.min((misaligned - span).abs());
-                if misaligned > 1e-6 {
-                    self.report.warnings.push(format!(
-                        "#{id}: a periodic face's ring vertices sit at \
-                         different angles ({u_lo:.4} and {u_hi:.4}); no seam \
-                         could be synthesised and the face may not triangulate"
-                    ));
-                    let built = make_face_on(&mut self.model, surface_id, &wires, self.tol)?.shape;
-                    let shape = if face_forward {
-                        built
-                    } else {
-                        built.reversed()
-                    };
-                    self.faces.insert(id, shape.clone());
-                    return Ok(Some(shape));
-                }
-                let ua = u_lo;
-                let ub = u_lo + span;
-                // The seam runs along the surface's own u = ua iso-curve —
-                // a ruling on a cylinder or cone, a tube circle on a torus —
-                // parameterized by v, so the pcurves inherit the parameter
-                // exactly.
-                let Some(seam_curve) = og_algo::surface_iso_u_curve(&surface, ua, self.tol) else {
-                    self.report.warnings.push(format!(
-                        "#{id}: a periodic face without a seam on a surface \
-                         whose iso-curve has no closed form; the face may \
-                         not triangulate"
-                    ));
-                    let built = make_face_on(&mut self.model, surface_id, &wires, self.tol)?.shape;
-                    let shape = if face_forward {
-                        built
-                    } else {
-                        built.reversed()
-                    };
-                    self.faces.insert(id, shape.clone());
-                    return Ok(Some(shape));
-                };
-                // The edge runs along increasing v, whichever ring is on top.
-                let (range, from, to, downward) = if va <= vb {
-                    ((va, vb), v_lo, v_hi, false)
-                } else {
-                    ((vb, va), v_hi, v_lo, true)
-                };
-                let seam =
-                    make_edge_between(&mut self.model, seam_curve, range, from, to, self.tol)?
-                        .shape;
-                let side = |u: f64| -> OgResult<PlanarCurve> {
-                    Ok(og_geom::Line2d::over(
-                        og_math::Axis2::new(
-                            og_math::Point2::new(u, 0.0),
-                            og_math::Direction2::new(og_math::Vector2::new(0.0, 1.0), self.tol)?,
-                        ),
-                        va.min(vb) - 1.0,
-                        va.max(vb) + 1.0,
-                    )?
-                    .into())
-                };
-                og_algo::attach_seam(
-                    &mut self.model,
-                    &seam,
-                    side(ua)?,
-                    side(ub)?,
-                    surface_id,
-                    Location::identity(),
-                    range,
-                )?;
-                // Only circle rings get the coherent-window treatment; a
-                // spline ring band falls back to its raw bounds with a
-                // warning rather than an error.
-                let mut all_circles = true;
-                for ring_edge in [e_lo, e_hi] {
-                    let ok = self
-                        .model
-                        .node(ring_edge)
-                        .and_then(|n| n.data().as_edge())
-                        .and_then(og_topo::EdgeData::curve3d)
-                        .and_then(|r| match r {
-                            og_topo::EdgeRepr::Curve3d { curve, .. } => {
-                                self.model.geometry().curve(*curve)
-                            }
-                            _ => None,
-                        })
-                        .is_some_and(|g| matches!(g, Curve::Circle(_)));
-                    all_circles &= ok;
-                }
-                if !all_circles {
-                    self.report.warnings.push(format!(
-                        "#{id}: a periodic face's rings are not circles; no \
-                         seam was synthesised and the face may not triangulate"
-                    ));
-                    let built = make_face_on(&mut self.model, surface_id, &wires, self.tol)?.shape;
-                    let shape = if face_forward {
-                        built
-                    } else {
-                        built.reversed()
-                    };
-                    self.faces.insert(id, shape.clone());
-                    return Ok(Some(shape));
-                }
-                // The rings' pcurves attach explicitly and window-coherently
-                // — u(t) spanning [ua, ua + span] whichever way each circle
-                // winds — on a fresh surface id, so no earlier annotation
-                // with another phase can apply. The healer does the same;
-                // incoherent windows shred the chart's even-odd test and the
-                // face meshes full of holes while still reporting success.
-                let band_surface = self.model.geometry_mut().add_surface(surface.clone());
-                let span = ub - ua;
-                let axis_z = match &surface {
-                    SurfaceGeometry::Cylinder(c) => c.cylinder().frame().z().vector(),
-                    SurfaceGeometry::Cone(c) => c.cone().frame().z().vector(),
-                    SurfaceGeometry::Torus(t) => t.torus().frame().z().vector(),
-                    SurfaceGeometry::Sphere(sp) => sp.sphere().frame().z().vector(),
-                    _ => og_math::Vector::new(0.0, 0.0, 1.0),
-                };
-                for (ring_edge, row) in [(e_lo, va), (e_hi, vb)] {
-                    let (ring_curve, crange) = {
-                        let Some(node) = self.model.node(ring_edge) else {
-                            og_bail!(Dangling, "edge is not in this model");
+            {
+                // The band construction is og-algo's make_revolution_band —
+                // one authority shared with the healer. Anything it refuses
+                // (a spline ring, ring vertices at different angles, a
+                // surface with no closed-form iso-curve) becomes a warning
+                // and the raw bounds, not an error.
+                match og_algo::make_revolution_band(&mut self.model, &surface, e_lo, e_hi, self.tol)
+                {
+                    Ok(built) => {
+                        let shape = if face_forward {
+                            built
+                        } else {
+                            built.reversed()
                         };
-                        let Some(data) = node.data().as_edge() else {
-                            og_bail!(Construction, "edge node holds no edge data");
-                        };
-                        let Some(og_topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d()
-                        else {
-                            og_bail!(Construction, "a ring edge lost its curve");
-                        };
-                        let Some(geometry) = self.model.geometry().curve(*curve) else {
-                            og_bail!(Dangling, "curve is not in this model");
-                        };
-                        (geometry.clone(), *range)
-                    };
-                    let Curve::Circle(circle) = &ring_curve else {
-                        og_bail!(Construction, "a band ring is not a circle");
-                    };
-                    let w = circle.circle().frame().z().vector().dot(axis_z).signum();
-                    let u_start = if w > 0.0 { ua } else { ua + span };
-                    let origin = og_math::Point2::new(w.mul_add(-crange.0, u_start), row);
-                    let ring_pcurve: PlanarCurve = og_geom::Line2d::over(
-                        og_math::Axis2::new(
-                            origin,
-                            og_math::Direction2::new(og_math::Vector2::new(w, 0.0), self.tol)?,
-                        ),
-                        crange.0,
-                        crange.1,
-                    )?
-                    .into();
-                    og_algo::attach_pcurve(
-                        &mut self.model,
-                        ring_edge,
-                        ring_pcurve,
-                        band_surface,
-                        Location::identity(),
-                        crange,
-                    )?;
+                        self.faces.insert(id, shape.clone());
+                        return Ok(Some(shape));
+                    }
+                    Err(e) => {
+                        self.report.warnings.push(format!(
+                            "#{id}: no seam could be synthesised ({e}); the \
+                             face may not triangulate"
+                        ));
+                    }
                 }
-                let seam_sides = |u: f64| -> OgResult<PlanarCurve> {
-                    Ok(og_geom::Line2d::over(
-                        og_math::Axis2::new(
-                            og_math::Point2::new(u, 0.0),
-                            og_math::Direction2::new(og_math::Vector2::new(0.0, 1.0), self.tol)?,
-                        ),
-                        range.0 - 1.0,
-                        range.1 + 1.0,
-                    )?
-                    .into())
-                };
-                og_algo::attach_seam(
-                    &mut self.model,
-                    &seam,
-                    seam_sides(ua)?,
-                    seam_sides(ua + span)?,
-                    band_surface,
-                    Location::identity(),
-                    range,
-                )?;
-                let up = if downward {
-                    seam.reversed()
-                } else {
-                    seam.clone()
-                };
-                let ring = vec![e_lo.clone(), up.clone(), e_hi.reversed(), up.reversed()];
-                let wire = make_wire(&mut self.model, &ring, self.tol)?.shape;
-                let built = make_face_on(&mut self.model, band_surface, &[wire], self.tol)?.shape;
-                let shape = if face_forward {
-                    built
-                } else {
-                    built.reversed()
-                };
-                self.faces.insert(id, shape.clone());
-                return Ok(Some(shape));
             }
         }
 

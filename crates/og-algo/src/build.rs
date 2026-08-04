@@ -637,6 +637,229 @@ pub fn attach_seam(
     Ok(())
 }
 
+/// Build the face of a revolution band: two closed circle rings joined by a
+/// synthesised seam, pcurves attached window-coherently.
+///
+/// The one authority for a job three call sites got subtly wrong three
+/// different ways. The chart walk decides everything: the bottom ring is
+/// traversed forward, and where its chart line *ends* is where the first
+/// seam column stands; the top ring's occurrence direction is chosen so its
+/// walk starts there — rings winding the same way traverse opposite, rings
+/// winding opposite traverse alike — and the seam's two pcurves are assigned
+/// to match which occurrence the triangulator will hand them to. The face is
+/// built on a fresh copy of the surface, so no stale annotation from another
+/// phase of the same rings can apply.
+///
+/// # Errors
+///
+/// [`OgError::Construction`](og_core::OgError::Construction) if a ring is
+/// not a circle, the rings are not rings of this surface, or the surface's
+/// iso-curve has no closed form.
+pub fn make_revolution_band(
+    model: &mut Model,
+    surface: &og_geom::SurfaceGeometry,
+    ring_lo: &Shape,
+    ring_hi: &Shape,
+    tol: Tolerances,
+) -> OgResult<Shape> {
+    use og_geom::Surface as _;
+
+    let surface_id = model.geometry_mut().add_surface(surface.clone());
+    let ((ua_dom, ub_dom), _) = surface.domain();
+    let span = ub_dom - ua_dom;
+    let axis_z = surface_iso_axis(surface)
+        .ok_or_else(|| og_core::og_err!(Construction, "the surface has no revolution axis"))?;
+
+    // Each ring's curve, range, winding, vertex, and chart row.
+    struct Ring {
+        edge: Shape,
+        vertex: Shape,
+        crange: (f64, f64),
+        winding: f64,
+        row: f64,
+    }
+    let mut rings = Vec::new();
+    for used in [ring_lo, ring_hi] {
+        // The caller's edges may carry orientation from their old wire uses;
+        // the band is built on the curves' own directions, and the walk
+        // chooses each occurrence's orientation itself.
+        let edge = &if used.orientation() == og_topo::Orientation::Reversed {
+            used.reversed()
+        } else {
+            used.clone()
+        };
+        let Some((vertex, other)) = edge_vertices(model, edge)? else {
+            og_bail!(Construction, "a band ring has no vertex");
+        };
+        if !vertex.is_same(&other) {
+            og_bail!(Construction, "a band ring is not closed");
+        }
+        let (curve, crange) = {
+            let Some(node) = model.node(edge) else {
+                og_bail!(Dangling, "edge is not in this model");
+            };
+            let Some(data) = node.data().as_edge() else {
+                og_bail!(Construction, "edge node holds no edge data");
+            };
+            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+                og_bail!(Construction, "a band ring has no curve");
+            };
+            let Some(geometry) = model.geometry().curve(*curve) else {
+                og_bail!(Dangling, "curve is not in this model");
+            };
+            (geometry.clone(), *range)
+        };
+        let og_geom::Curve::Circle(c) = &curve else {
+            og_bail!(Construction, "a band ring is not a circle");
+        };
+        let winding = c.circle().frame().z().vector().dot(axis_z).signum();
+        let at = {
+            let Some(node) = model.node(&vertex) else {
+                og_bail!(Dangling, "vertex is not in this model");
+            };
+            let Some(data) = node.data().as_vertex() else {
+                og_bail!(Construction, "vertex node holds no vertex data");
+            };
+            data.point
+        };
+        let (_, row) = crate::measure::project_on_surface(surface, at, 32, tol)?.parameters;
+        rings.push(Ring {
+            edge: edge.clone(),
+            vertex,
+            crange,
+            winding,
+            row,
+        });
+    }
+    let anchor = {
+        let Some(node) = model.node(&rings[0].vertex) else {
+            og_bail!(Dangling, "vertex is not in this model");
+        };
+        let Some(data) = node.data().as_vertex() else {
+            og_bail!(Construction, "vertex node holds no vertex data");
+        };
+        data.point
+    };
+    let (ua, _) = crate::measure::project_on_surface(surface, anchor, 32, tol)?.parameters;
+
+    // Window-coherent ring pcurves: u(t) spans [ua, ua + span] whichever way
+    // each ring winds.
+    for ring in &rings {
+        let u_start = if ring.winding > 0.0 { ua } else { ua + span };
+        let origin = og_math::Point2::new(ring.winding.mul_add(-ring.crange.0, u_start), ring.row);
+        let pcurve: og_geom::PlanarCurve = og_geom::Line2d::over(
+            og_math::Axis2::new(
+                origin,
+                og_math::Direction2::new(og_math::Vector2::new(ring.winding, 0.0), tol)?,
+            ),
+            ring.crange.0,
+            ring.crange.1,
+        )?
+        .into();
+        attach_pcurve(
+            model,
+            &ring.edge,
+            pcurve,
+            surface_id,
+            Location::identity(),
+            ring.crange,
+        )?;
+    }
+
+    // The seam runs along the surface's own iso-curve at the anchor angle,
+    // parameterized by `v`, built along increasing `v`.
+    let (va, vb) = (rings[0].row, rings[1].row);
+    let Some(seam_curve) = surface_iso_u_curve(surface, ua, tol) else {
+        og_bail!(
+            Construction,
+            "the surface's iso-curve has no closed form; no seam can be built"
+        );
+    };
+    let (range, from, to, downward) = if va <= vb {
+        (
+            (va, vb),
+            rings[0].vertex.clone(),
+            rings[1].vertex.clone(),
+            false,
+        )
+    } else {
+        (
+            (vb, va),
+            rings[1].vertex.clone(),
+            rings[0].vertex.clone(),
+            true,
+        )
+    };
+    let seam = make_edge_between(model, seam_curve, range, &from, &to, tol)?.shape;
+
+    // The walk closes only if the top ring's traversal starts where the
+    // bottom's ends, and the seam sides sit at the columns the walk visits.
+    let bottom_end = if rings[0].winding > 0.0 {
+        ua + span
+    } else {
+        ua
+    };
+    let other_col = if rings[0].winding > 0.0 {
+        ua
+    } else {
+        ua + span
+    };
+    let hi_reversed = (rings[1].winding - rings[0].winding).abs() < 0.5;
+    let column = |u: f64| -> OgResult<og_geom::PlanarCurve> {
+        Ok(og_geom::Line2d::over(
+            og_math::Axis2::new(
+                og_math::Point2::new(u, 0.0),
+                og_math::Direction2::new(og_math::Vector2::new(0.0, 1.0), tol)?,
+            ),
+            range.0 - 1.0,
+            range.1 + 1.0,
+        )?
+        .into())
+    };
+    // The first seam occurrence in the wire is `up`; the triangulator hands
+    // a Forward occurrence the `forward` pcurve. `up` is Forward exactly
+    // when the seam was built upward.
+    let (forward_col, reversed_col) = if downward {
+        (other_col, bottom_end)
+    } else {
+        (bottom_end, other_col)
+    };
+    attach_seam(
+        model,
+        &seam,
+        column(forward_col)?,
+        column(reversed_col)?,
+        surface_id,
+        Location::identity(),
+        range,
+    )?;
+
+    let up = if downward {
+        seam.reversed()
+    } else {
+        seam.clone()
+    };
+    let top = if hi_reversed {
+        rings[1].edge.reversed()
+    } else {
+        rings[1].edge.clone()
+    };
+    let ring = vec![rings[0].edge.clone(), up.clone(), top, up.reversed()];
+    let wire = make_wire(model, &ring, tol)?.shape;
+    Ok(make_face_on(model, surface_id, &[wire], tol)?.shape)
+}
+
+/// The revolution axis direction of a periodic analytic surface.
+fn surface_iso_axis(surface: &og_geom::SurfaceGeometry) -> Option<og_math::Vector> {
+    match surface {
+        og_geom::SurfaceGeometry::Cylinder(c) => Some(c.cylinder().frame().z().vector()),
+        og_geom::SurfaceGeometry::Cone(c) => Some(c.cone().frame().z().vector()),
+        og_geom::SurfaceGeometry::Torus(t) => Some(t.torus().frame().z().vector()),
+        og_geom::SurfaceGeometry::Sphere(s) => Some(s.sphere().frame().z().vector()),
+        _ => None,
+    }
+}
+
 /// The surface's `u = at` iso-curve, parameterized by `v` exactly.
 ///
 /// A ruling on a cylinder, a tube circle on a torus — the curve a seam runs

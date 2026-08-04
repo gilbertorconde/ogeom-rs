@@ -27,7 +27,7 @@ pub mod sweep;
 pub use build::{
     attach_pcurve, attach_seam, edge_vertices, find_plane, is_shell_closed, is_wire_closed,
     make_edge, make_edge_between, make_face, make_face_on, make_natural_face, make_polygon,
-    make_shell, make_solid, make_vertex, make_wire, surface_iso_u_curve,
+    make_revolution_band, make_shell, make_solid, make_vertex, make_wire, surface_iso_u_curve,
 };
 pub use check::{Diagnosis, Problem, Severity, check, check_tessellation};
 pub use classify::{Containment, classify_in_solid, classify_in_solid_exact, classify_on_face};

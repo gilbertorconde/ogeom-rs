@@ -47,9 +47,10 @@ fn reanchoring_makes_the_smallest_nist_part_whole() {
         og_algo::is_shell_closed(&import.model, &shell).unwrap(),
         "the healed topology closes"
     );
-    // The volume is still not asserted: the torus fillets now mesh
-    // watertight through window-coherent pcurves, but the large rim band —
-    // whose rings the anchoring judged already-aligned and therefore left
-    // alone — still carries import-time pcurves with incoherent windows and
-    // meshes full of holes. The deferred table records the remainder.
+    // The part measures: every revolution face was re-annotated with
+    // window-coherent pcurves, boundary vertices anchor to their edges'
+    // curves, and the volume integral has a watertight boundary.
+    let props = og_algo::volume_properties(&import.model, &healed.shape, fine, T).unwrap();
+    eprintln!("REPORT healed volume {:.3} mm^3", props.mass);
+    assert!(props.mass > 0.0, "the healed part encloses volume");
 }

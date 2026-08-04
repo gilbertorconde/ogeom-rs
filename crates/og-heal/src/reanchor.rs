@@ -11,8 +11,8 @@
 //! or the shell tears exactly where the file was trying to close it.
 
 use og_algo::{
-    Built, History, attach_seam, is_shell_closed, make_edge_between, make_face_on, make_shell,
-    make_solid, make_vertex, make_wire, surface_iso_u_curve,
+    Built, History, is_shell_closed, make_edge_between, make_face_on, make_shell, make_solid,
+    make_vertex, make_wire,
 };
 use og_core::{OgResult, Tolerances, og_bail};
 use og_geom::Curve2d as _;
@@ -228,10 +228,16 @@ pub fn reanchor_periodic_rings(
     // --- rebuild every face that touches a substituted edge ------------------
     let mut face_map: HashMap<TShapeId, Shape> = HashMap::new();
     for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
+        // Every revolution face is rebuilt, moved rings or not: an
+        // already-aligned band may still carry import-time pcurves whose
+        // chart windows disagree, and the rebuild is what makes its
+        // annotation coherent. Plain faces rebuild only when an edge they
+        // use actually changed.
         let uses_any = explore_unique(model, &face, ShapeType::Edge)?
             .iter()
             .any(|e| substitution.contains_key(&e.node()));
-        if !uses_any {
+        let is_revolution = broken.iter().any(|b| b.face.is_same(&face));
+        if !uses_any && !is_revolution {
             continue;
         }
         let rebuilt = if let Some(b) = broken.iter().find(|b| b.face.is_same(&face)) {
@@ -286,17 +292,6 @@ pub fn reanchor_periodic_rings(
     Ok(Built::new(solid, history))
 }
 
-/// The revolution axis direction of a periodic analytic surface.
-fn revolution_axis(surface: &SurfaceGeometry) -> Option<og_math::Vector> {
-    match surface {
-        SurfaceGeometry::Cylinder(c) => Some(c.cylinder().frame().z().vector()),
-        SurfaceGeometry::Cone(c) => Some(c.cone().frame().z().vector()),
-        SurfaceGeometry::Torus(t) => Some(t.torus().frame().z().vector()),
-        SurfaceGeometry::Sphere(s) => Some(s.sphere().frame().z().vector()),
-        _ => None,
-    }
-}
-
 /// The circle parameter of a point on a circle curve.
 fn circle_parameter(curve: &Curve, p: Point) -> Option<f64> {
     let Curve::Circle(c) = curve else {
@@ -307,7 +302,8 @@ fn circle_parameter(curve: &Curve, p: Point) -> Option<f64> {
 }
 
 /// Rebuild a healed face: both rings now share an angle, so the seam the
-/// reader could not synthesise can exist.
+/// reader could not synthesise can exist. The band construction itself is
+/// og-algo's `make_revolution_band` — one authority for reader and healer.
 #[allow(clippy::type_complexity)]
 fn rebuild_broken_face(
     model: &mut Model,
@@ -317,135 +313,11 @@ fn rebuild_broken_face(
     substitution: &HashMap<TShapeId, Shape>,
     tol: Tolerances,
 ) -> OgResult<Shape> {
-    // The face gets its own copy of the surface: the ring edges may carry
-    // stale pcurves for the shared id — phases and windings from before the
-    // repair — and a chart that mixes them with the fresh seam tears. On a
-    // fresh id, only what this function attaches applies, and it attaches a
-    // coherent window: both rings spanning [ua, ua + span] whichever way
-    // they wind, columns at its edges.
-    let surface_id = model.geometry_mut().add_surface(surface.clone());
     let resolved: Vec<Shape> = rings
         .iter()
         .map(|(e, ..)| substitution.get(&e.node()).unwrap_or(e).clone())
         .collect();
-    let point_of = |model: &Model, edge: &Shape| -> OgResult<Point> {
-        let Some((a, _)) = og_algo::edge_vertices(model, edge)? else {
-            og_bail!(Construction, "a ring edge lost its vertex");
-        };
-        let Some(node) = model.node(&a) else {
-            og_bail!(Dangling, "vertex is not in this model");
-        };
-        let Some(data) = node.data().as_vertex() else {
-            og_bail!(Construction, "vertex node holds no vertex data");
-        };
-        Ok(data.point)
-    };
-    let pl = point_of(model, &resolved[0])?;
-    let ph = point_of(model, &resolved[1])?;
-    let (ua, va) = og_algo::project_on_surface(surface, pl, 32, tol)?.parameters;
-    let (_, vb) = og_algo::project_on_surface(surface, ph, 32, tol)?.parameters;
-    let ((dlo, dhi), _) = surface.domain();
-    let span = dhi - dlo;
-
-    let Some(seam_curve) = surface_iso_u_curve(surface, ua, tol) else {
-        og_bail!(
-            Construction,
-            "the healed surface's iso-curve has no closed form; no seam can \
-             be built on it"
-        );
-    };
-    let v_lo = og_algo::edge_vertices(model, &resolved[0])?
-        .map(|(a, _)| a)
-        .ok_or_else(|| og_core::og_err!(Construction, "a ring edge lost its vertex"))?;
-    let v_hi = og_algo::edge_vertices(model, &resolved[1])?
-        .map(|(a, _)| a)
-        .ok_or_else(|| og_core::og_err!(Construction, "a ring edge lost its vertex"))?;
-    let (range, from, to, downward) = if va <= vb {
-        ((va, vb), v_lo, v_hi, false)
-    } else {
-        ((vb, va), v_hi, v_lo, true)
-    };
-    let seam = make_edge_between(model, seam_curve, range, &from, &to, tol)?.shape;
-    let side = |u: f64| -> OgResult<PlanarCurve> {
-        Ok(og_geom::Line2d::over(
-            og_math::Axis2::new(
-                og_math::Point2::new(u, 0.0),
-                og_math::Direction2::new(og_math::Vector2::new(0.0, 1.0), tol)?,
-            ),
-            range.0 - 1.0,
-            range.1 + 1.0,
-        )?
-        .into())
-    };
-    attach_seam(
-        model,
-        &seam,
-        side(ua)?,
-        side(ua + span)?,
-        surface_id,
-        Location::identity(),
-        range,
-    )?;
-    // Ring pcurves, explicit and window-coherent: u(t) = anchor + w(t - t0),
-    // with the start pinned to whichever window edge makes the span land in
-    // [ua, ua + span] for either winding.
-    let axis_z = revolution_axis(surface).ok_or_else(|| {
-        og_core::og_err!(Construction, "the healed surface has no revolution axis")
-    })?;
-    for (ring, row) in [(&resolved[0], va), (&resolved[1], vb)] {
-        let (curve, crange) = {
-            let Some(node) = model.node(ring) else {
-                og_bail!(Dangling, "edge is not in this model");
-            };
-            let Some(data) = node.data().as_edge() else {
-                og_bail!(Construction, "edge node holds no edge data");
-            };
-            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
-                og_bail!(Construction, "a ring edge lost its curve");
-            };
-            let Some(geometry) = model.geometry().curve(*curve) else {
-                og_bail!(Dangling, "curve is not in this model");
-            };
-            (geometry.clone(), *range)
-        };
-        let Curve::Circle(c) = &curve else {
-            og_bail!(Construction, "a ring edge is not a circle");
-        };
-        let w = c.circle().frame().z().vector().dot(axis_z).signum();
-        let u_start = if w > 0.0 { ua } else { ua + span };
-        let origin = og_math::Point2::new(w.mul_add(-crange.0, u_start), row);
-        let pcurve: PlanarCurve = og_geom::Line2d::over(
-            og_math::Axis2::new(
-                origin,
-                og_math::Direction2::new(og_math::Vector2::new(w, 0.0), tol)?,
-            ),
-            crange.0,
-            crange.1,
-        )?
-        .into();
-        og_algo::attach_pcurve(
-            model,
-            ring,
-            pcurve,
-            surface_id,
-            Location::identity(),
-            crange,
-        )?;
-    }
-
-    let up = if downward {
-        seam.reversed()
-    } else {
-        seam.clone()
-    };
-    let ring = vec![
-        resolved[0].clone(),
-        up.clone(),
-        resolved[1].reversed(),
-        up.reversed(),
-    ];
-    let wire = make_wire(model, &ring, tol)?.shape;
-    Ok(make_face_on(model, surface_id, &[wire], tol)?.shape)
+    og_algo::make_revolution_band(model, surface, &resolved[0], &resolved[1], tol)
 }
 
 /// Rebuild an ordinary face around a substituted edge, pcurves recomputed.
