@@ -877,6 +877,21 @@ fn fill(
                 paves.entry(contact.node).or_default().push(lo);
                 paves.entry(contact.node).or_default().push(hi);
                 contact_along[ci].push((lo, hi));
+                // The *target* edge splits where the shared stretch ends,
+                // exactly as the contact does. Without this, the face across
+                // the overlap keeps one long boundary edge where its new
+                // neighbours carry two short ones, and sew — which matches
+                // edges whole — can pair it with neither.
+                let (blo, bhi) = if overlap.on_b.0 <= overlap.on_b.1 {
+                    overlap.on_b
+                } else {
+                    (overlap.on_b.1, overlap.on_b.0)
+                };
+                for t in [blo, bhi] {
+                    if t > e.crange.0 + tol.parametric() && t < e.crange.1 - tol.parametric() {
+                        paves.entry(e.node).or_default().push(t);
+                    }
+                }
             }
         }
     }
@@ -1011,6 +1026,11 @@ fn chart_point_of(face: &GFace, p: Point, tol: Tolerances) -> Option<Point2> {
     let mut lines: Vec<Vec<Point2>> = Vec::new();
     for e in &face.edges {
         lines.push(pcurve_polyline(&e.pcurve, e.prange, e.crange, e.crange, tol).ok()?);
+        // A seam bounds the chart twice — once per column — and a trim test
+        // that sees only one side reads half the band as outside.
+        if let Some((other, orange)) = &e.other_side {
+            lines.push(pcurve_polyline(other, *orange, e.crange, e.crange, tol).ok()?);
+        }
     }
     let borrowed: Vec<&[Point2]> = lines.iter().map(Vec::as_slice).collect();
     if !inside_many(&borrowed, at) {
@@ -1266,6 +1286,38 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgResul
                             break;
                         }
                         let Some(state) = resolved else {
+                            // On with no partner containing the probe: the
+                            // band's generosity read proximity as
+                            // coincidence. Ask again at a width where it
+                            // cannot, and only a genuine edge contact
+                            // remains refused.
+                            match og_algo::classify_in_solid_exact_banded(
+                                model,
+                                other,
+                                probe,
+                                tol.confusion() * 10.0,
+                                tol,
+                            )? {
+                                Containment::In => {
+                                    pieces.push(FacePiece {
+                                        from_a,
+                                        face: fi,
+                                        rings: piece.rings,
+                                        state: PieceState::In,
+                                    });
+                                    continue;
+                                }
+                                Containment::Out => {
+                                    pieces.push(FacePiece {
+                                        from_a,
+                                        face: fi,
+                                        rings: piece.rings,
+                                        state: PieceState::Out,
+                                    });
+                                    continue;
+                                }
+                                Containment::On => {}
+                            }
                             og_bail!(
                                 NotDone,
                                 "a piece lies on the other solid's boundary \

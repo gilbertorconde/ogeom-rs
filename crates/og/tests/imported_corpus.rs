@@ -83,9 +83,12 @@ fn an_imported_part_takes_a_boolean_cut() {
         .unwrap()
         .mass;
 
-    // A square post cut down through the plate, clear of every fillet.
+    // A square post cut down through the plate's solid ring — the part has a
+    // large central pocket, and a post through fresh air cuts nothing, as an
+    // earlier version of this test discovered only once the result's mesh
+    // first became measurable.
     let frame = og::math::Frame::new(
-        og::math::Point::new(-4.0, -4.0, -3.0),
+        og::math::Point::new(20.0, -4.0, -3.0),
         og::math::Direction::Z,
         og::math::Direction::X,
         T,

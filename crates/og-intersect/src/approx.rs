@@ -78,6 +78,29 @@ pub fn approximate_branch(
         );
     }
 
+    // Marching correction can leave consecutive samples closer than the
+    // rounding it converged within, and two samples at one chord-length
+    // parameter are a knot span with no data in it — the fitting system
+    // reports itself singular where the real defect is the duplicate. Thin
+    // them here, where the trace's own step says what "too close" means.
+    let mut points: Vec<og_math::Point> = Vec::with_capacity(branch.points.len());
+    let mut kept_a = Vec::with_capacity(branch.on_a.len());
+    let mut kept_b = Vec::with_capacity(branch.on_b.len());
+    for (i, p) in branch.points.iter().enumerate() {
+        if let Some(last) = points.last()
+            && last.distance(*p) <= tol.confusion() * 10.0
+            && i + 1 != branch.points.len()
+        {
+            continue;
+        }
+        points.push(*p);
+        kept_a.push(branch.on_a[i]);
+        kept_b.push(branch.on_b[i]);
+    }
+    if points.len() < 2 {
+        og_bail!(Construction, "a branch of coincident points is not a curve");
+    }
+
     // One fit in seven dimensions — the curve and both parameter images
     // together. Fitted separately, each fit's parameter correction drifts
     // its parameterization independently and the three results silently stop
@@ -85,16 +108,10 @@ pub fn approximate_branch(
     // evaluated millimetres from their own curve. Jointly, one
     // parameterization and one knot vector serve all three, and the reported
     // error bounds every coordinate.
-    let unwrapped_a = unwrap_periodic(a, &branch.on_a);
-    let unwrapped_b = unwrap_periodic(b, &branch.on_b);
-    let (space, on_a, on_b) = og_geom::fit::fit_points_joint(
-        &branch.points,
-        &unwrapped_a,
-        &unwrapped_b,
-        3,
-        tolerance,
-        tol,
-    )?;
+    let unwrapped_a = unwrap_periodic(a, &kept_a);
+    let unwrapped_b = unwrap_periodic(b, &kept_b);
+    let (space, on_a, on_b) =
+        og_geom::fit::fit_points_joint(&points, &unwrapped_a, &unwrapped_b, 3, tolerance, tol)?;
 
     Ok(IntersectionCurve {
         fit_error: space

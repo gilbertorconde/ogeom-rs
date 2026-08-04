@@ -12,18 +12,13 @@
 //! the blend.
 
 use crate::support::{
-    edge_curve, face_from_edges, planar_face, planar_seat, segment_between, subtract_wedge,
+    apply_wedge, edge_curve, face_from_edges, planar_face, planar_seat, segment_between,
 };
-use og_algo::{
-    Built, attach_pcurve, make_edge, make_edge_between, make_face, make_revolution_band,
-    make_vertex, make_wire,
-};
+use og_algo::{Built, make_edge, make_edge_between, make_revolution_band, make_vertex};
 use og_core::{OgResult, Tolerances, og_bail};
 use og_geom::{CircleCurve, Curve, CylinderSurface, PlaneSurface, SurfaceGeometry, TorusSurface};
 use og_math::{Circle, Cylinder, Direction, Frame, Plane, Point, Torus, Vector};
-use og_topo::{
-    EdgeRepr, Filter, Location, Model, NodeData, Orientation, Shape, ShapeType, explore,
-};
+use og_topo::{Filter, Model, NodeData, Orientation, Shape, ShapeType, explore};
 
 /// Round a convex edge of a solid with a constant-radius blend tangent to
 /// both of its faces.
@@ -102,10 +97,11 @@ pub fn fillet_edge_variable(
     } else {
         (1, 0)
     };
-    let n1 = seat.normals[first];
-    let n2 = seat.normals[second];
-    let a = seat.leg(first, tol)?;
-    let b = seat.leg(second, tol)?;
+    let sign = if seat.convex { 1.0 } else { -1.0 };
+    let n1 = seat.normals[first] * sign;
+    let n2 = seat.normals[second] * sign;
+    let a = seat.leg(first, tol)? * sign;
+    let b = seat.leg(second, tol)? * sign;
     let bisector = {
         let u = a + b;
         let m = u.magnitude();
@@ -118,13 +114,14 @@ pub fn fillet_edge_variable(
     if depth <= tol.angular() {
         og_bail!(Construction, "the faces meet too sharply to seat a fillet");
     }
-    let sweep = seat.along.dot(n1.cross(n2)).atan2(n1.dot(n2));
+    let sweep = seat.along.dot(n1.cross(n2)).atan2(n1.dot(n2)) * sign;
     if sweep <= tol.angular() {
         og_bail!(Construction, "the faces are parallel; there is no corner");
     }
 
     // The sections at the two ends: everything else is affine between them.
-    let travel = seat.end - seat.start;
+    // On a concave edge every direction above is already mirrored — the
+    // arithmetic below cannot tell which case it serves.
     let radii = [start_radius, end_radius];
     let apex = [seat.start, seat.end];
     let centre = [
@@ -133,7 +130,6 @@ pub fn fillet_edge_variable(
     ];
     let contact_a = [centre[0] + n1 * radii[0], centre[1] + n1 * radii[1]];
     let contact_b = [centre[0] + n2 * radii[0], centre[1] + n2 * radii[1]];
-    let _ = travel;
 
     // The unit arc from n1 to n2 as a rational quadratic: the middle control
     // point is where the end tangents meet, its weight the half-angle cosine.
@@ -270,13 +266,13 @@ pub fn fillet_edge_variable(
     let leg_a = planar_face(
         model,
         &[apex[0], contact_a[0], contact_a[1], apex[1]],
-        n1,
+        n1 * sign,
         tol,
     )?;
     let leg_b = planar_face(
         model,
         &[apex[0], contact_b[0], contact_b[1], apex[1]],
-        n2,
+        n2 * sign,
         tol,
     )?;
     let cap = |model: &mut Model, i: usize, outward: Vector| -> OgResult<Built> {
@@ -306,7 +302,7 @@ pub fn fillet_edge_variable(
     let cap1 = cap(model, 1, seat.along)?.shape;
 
     let faces = [leg_a, leg_b, cap0, cap1, blend];
-    subtract_wedge(model, solid, edge, &faces, tol)
+    apply_wedge(model, solid, edge, &faces, !seat.convex, tol)
 }
 
 /// The straight-edge fillet: the rolling ball's envelope is a cylinder.
@@ -333,8 +329,12 @@ fn planar_fillet(
     };
     let n1 = seat.normals[first];
     let n2 = seat.normals[second];
-    let a = seat.leg(first, tol)?;
-    let b = seat.leg(second, tol)?;
+    // On a concave edge the legs mirror into the open dihedral, the ball
+    // rolls there instead of in the material, and the contacts sit on the
+    // faces' other side of the centre.
+    let sign = if seat.convex { 1.0 } else { -1.0 };
+    let a = seat.leg(first, tol)? * sign;
+    let b = seat.leg(second, tol)? * sign;
 
     // The rolling ball's centre line: along the bisector, at the distance
     // where the ball touches both planes.
@@ -346,7 +346,7 @@ fn planar_fillet(
         }
         u / m
     };
-    let depth = -n1.dot(bisector);
+    let depth = (n1.dot(bisector)).abs();
     if depth <= tol.angular() {
         og_bail!(Construction, "the faces meet too sharply to seat a fillet");
     }
@@ -360,13 +360,13 @@ fn planar_fillet(
     let length = travel.magnitude();
     let apex0 = seat.start;
     let apex1 = seat.end;
-    let contact_a0 = centre + n1 * radius;
-    let contact_b0 = centre + n2 * radius;
+    let contact_a0 = centre + n1 * (radius * sign);
+    let contact_b0 = centre + n2 * (radius * sign);
     let contact_a1 = contact_a0 + travel;
     let contact_b1 = contact_b0 + travel;
 
     let along_dir = Direction::new(seat.along, tol)?;
-    let radial_dir = Direction::new(n1, tol)?;
+    let radial_dir = Direction::new(n1 * sign, tol)?;
 
     // An arc of the blend circle at height `h` along the edge, running from
     // the first face's contact vertex to the second's. Its frame is the
@@ -380,10 +380,21 @@ fn planar_fillet(
         Ok(make_edge_between(model, curve, (0.0, sweep), from, to, tol)?.shape)
     };
 
-    // The legs, coplanar with the solid's own faces and aligned with them —
-    // the same-domain case the boolean resolves by melting them together.
-    let leg_a = planar_face(model, &[apex0, contact_a0, contact_a1, apex1], n1, tol)?;
-    let leg_b = planar_face(model, &[apex0, contact_b0, contact_b1, apex1], n2, tol)?;
+    // The legs, coplanar with the solid's own faces: aligned with them on a
+    // convex edge, where the melt keeps one copy, opposed on a concave one,
+    // where the fuse cancels both.
+    let leg_a = planar_face(
+        model,
+        &[apex0, contact_a0, contact_a1, apex1],
+        n1 * sign,
+        tol,
+    )?;
+    let leg_b = planar_face(
+        model,
+        &[apex0, contact_b0, contact_b1, apex1],
+        n2 * sign,
+        tol,
+    )?;
 
     // The caps: two segments to the tangency points, closed by the arc.
     let cap = |model: &mut Model,
@@ -429,17 +440,20 @@ fn planar_fillet(
     };
 
     let faces = [leg_a, leg_b, cap0, cap1, blend.reversed()];
-    subtract_wedge(model, solid, edge, &faces, tol)
+    apply_wedge(model, solid, edge, &faces, !seat.convex, tol)
 }
 
-/// The circular-rim fillet: a ball rolling around the rim where a cylindrical
+/// The circular-rim fillet: a ball rolling around a rim where a cylindrical
 /// wall meets a perpendicular planar cap traces a torus.
 ///
-/// The wedge is the revolved cousin of the straight case's prism: a band of
-/// the wall down to the tangency parallel, an annulus of the cap in to the
-/// tangency circle, and the quarter-torus between them. Being a full
-/// revolution it needs no end caps — and its bands carry seams, which is what
-/// [`make_revolution_band`] exists to build correctly.
+/// Four seats, one parameterization. With `sigma` the wall's outward radial
+/// sign and `tau` telling whether the wall extends away from the cap's
+/// outward side, the tube's centre circle sits at radius `R − sigma tau r`,
+/// lifted `tau r` against the cap's normal — and `tau` alone decides whether
+/// the wedge subtracts (the external rim and the hole's rim, both convex) or
+/// fuses (the boss base and the blind hole's floor, both concave). The wedge
+/// is always the same three revolved faces: a band of the wall, an annulus
+/// of the cap, and the quarter-tube between them.
 fn revolved_fillet(
     model: &mut Model,
     solid: &Shape,
@@ -452,17 +466,10 @@ fn revolved_fillet(
     let rim_centre = rim_circle.centre();
     let rim_radius = rim_circle.radius();
     let rim_axis = rim_circle.frame().z().vector();
-    if radius >= rim_radius - tol.confusion() {
-        og_bail!(
-            Construction,
-            "a fillet of radius {radius} swallows the axis of a rim of \
-             radius {rim_radius}"
-        );
-    }
 
     // The two faces at the rim: exactly one plane and one coaxial cylinder.
     let mut cap_normal: Option<Vector> = None;
-    let mut wall_outward_radial: Option<bool> = None;
+    let mut wall: Option<(Shape, f64)> = None;
     for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
         let touches = explore(model, &face, Filter::OfType(ShapeType::Edge))?
             .iter()
@@ -515,9 +522,8 @@ fn revolved_fillet(
                          it; that seat needs the marching blend machinery"
                     );
                 }
-                // A cylinder face's natural normal points away from its axis;
-                // an external rim needs exactly that.
-                wall_outward_radial = Some(!reversed);
+                let sigma = if reversed { -1.0 } else { 1.0 };
+                wall = Some((face.clone(), sigma));
             }
             Some(_) => og_bail!(
                 Construction,
@@ -527,34 +533,63 @@ fn revolved_fillet(
             None => og_bail!(Dangling, "face refers to a surface not in this model"),
         }
     }
-    let (Some(up_raw), Some(outward)) = (cap_normal, wall_outward_radial) else {
+    let (Some(up_raw), Some((wall_face, sigma))) = (cap_normal, wall) else {
         og_bail!(
             Construction,
             "a rim fillet needs the edge shared by one planar cap and one \
              cylindrical wall"
         );
     };
-    if !outward {
+    let up = up_raw / up_raw.magnitude();
+
+    // Which side of the cap the wall extends: read from the wall band's other
+    // ring. `tau` positive means away from the cap's outward side — the rim
+    // configurations — and negative means alongside it, the concave seats.
+    let tau = {
+        let mut side = None;
+        for e in explore(model, &wall_face, Filter::OfType(ShapeType::Edge))? {
+            if e.node() == edge.node() {
+                continue;
+            }
+            // Any circular edge of the wall at another height says which
+            // side the wall extends — whether the ring survives as one
+            // closed edge or as the arcs a boolean rebuilt it into.
+            let Ok((curve, _)) = edge_curve(model, &e) else {
+                continue;
+            };
+            let Curve::Circle(c) = curve else {
+                continue;
+            };
+            let lean = (c.circle().centre() - rim_centre).dot(up);
+            if lean.abs() > tol.confusion() * 10.0 {
+                side = Some(lean);
+                break;
+            }
+        }
+        let Some(lean) = side else {
+            og_bail!(
+                Construction,
+                "the rim's wall has no far ring to read its side from; the \
+                 partial seat needs the marching blend machinery"
+            );
+        };
+        if lean < 0.0 { 1.0 } else { -1.0 }
+    };
+    let additive = tau < 0.0;
+
+    let tube_rho = sigma.mul_add(-(tau * radius), rim_radius);
+    if tube_rho <= tol.confusion() {
         og_bail!(
             Construction,
-            "the rim's wall faces inward — a hole's rim — where the \
-             subtractive wedge lies in empty space; the concave blend is \
-             recorded in the deferred table"
+            "a fillet of radius {radius} swallows the axis of a rim of \
+             radius {rim_radius}"
         );
     }
+    let tube_level = rim_centre - up * (tau * radius);
 
-    // Everything below is written with `up` the cap's outward normal: the
-    // material sits below the cap and inside the wall, and the ball rolls in
-    // the quarter between them.
-    let up = up_raw / up_raw.magnitude();
     let up_dir = Direction::new(up, tol)?;
-    let x_ref = if up.cross(Vector::X).magnitude() > 0.5 {
-        Direction::new(up.cross(Vector::X), tol)?
-    } else {
-        Direction::new(up.cross(Vector::Y), tol)?
-    };
+    let x_ref = rim_circle.frame().x();
     let frame_at = |origin: Point| Frame::new(origin, up_dir, x_ref, tol);
-    let tube_centre = rim_centre - up * radius;
 
     let ring = |model: &mut Model, origin: Point, r: f64| -> OgResult<Shape> {
         let circle = Circle::new(frame_at(origin)?, r, tol)?;
@@ -563,43 +598,44 @@ fn revolved_fillet(
         Ok(make_edge(model, curve, domain, tol)?.shape)
     };
     let apex_ring = ring(model, rim_centre, rim_radius)?;
-    let wall_ring = ring(model, tube_centre, rim_radius)?;
-    let cap_ring = ring(model, rim_centre, rim_radius - radius)?;
+    let wall_ring = ring(model, tube_level, rim_radius)?;
+    let cap_ring = ring(model, rim_centre, tube_rho)?;
 
-    // The wall band, from the tangency parallel up to the rim — coincident
-    // with the solid's own wall, which same-domain resolution melts.
+    // The band of the wall between the rim and the tangency parallel —
+    // coincident with the solid's own wall, aligned when subtracting and
+    // opposed when fusing, which is exactly what the melt needs either way.
     let wall_band = {
+        let origin = rim_centre - up * (radius + 1.0);
         let surface: SurfaceGeometry = CylinderSurface::new(
-            Cylinder::new(frame_at(tube_centre)?, rim_radius, tol)?,
-            (0.0, radius),
+            Cylinder::new(frame_at(origin)?, rim_radius, tol)?,
+            (0.0, 2.0 * radius + 2.0),
         )?
         .into();
-        make_revolution_band(model, &surface, &wall_ring, &apex_ring, tol)?
+        let band = make_revolution_band(model, &surface, &wall_ring, &apex_ring, tol)?;
+        if sigma * tau < 0.0 {
+            band.reversed()
+        } else {
+            band
+        }
     };
 
-    // The blend itself: the quarter of the tube between the tangencies. Its
-    // natural normal points away from the tube's centre circle — into the
-    // wedge — so it enters the shell reversed.
+    // The blend: the quarter-tube between the tangencies, its natural normal
+    // away from the tube's centre — into the wedge — so always reversed.
     let blend_band = {
-        let surface: SurfaceGeometry = TorusSurface::new(Torus::new(
-            frame_at(tube_centre)?,
-            rim_radius - radius,
-            radius,
-            tol,
-        )?)
-        .into();
-        make_revolution_band(model, &surface, &wall_ring, &cap_ring, tol)?
+        let surface: SurfaceGeometry =
+            TorusSurface::new(Torus::new(frame_at(tube_level)?, tube_rho, radius, tol)?).into();
+        make_revolution_band(model, &surface, &wall_ring, &cap_ring, tol)?.reversed()
     };
 
-    // The cap annulus, rim to tangency circle, coplanar with the solid's cap.
+    // The annulus of the cap between the rim and the tangency circle.
     let annulus = {
-        let plane = Plane::through(rim_centre, up_dir);
-        let reach = rim_radius * 2.0;
+        let plane = Plane::through(rim_centre, Direction::new(up * tau, tol)?);
+        let reach = (rim_radius + radius) * 2.0;
         let surface: SurfaceGeometry =
             PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
-        let outer = make_wire(model, std::slice::from_ref(&apex_ring), tol)?.shape;
-        let inner = make_wire(model, std::slice::from_ref(&cap_ring), tol)?.shape;
-        let face = make_face(model, surface.clone(), &[outer, inner], tol)?.shape;
+        let outer = og_algo::make_wire(model, std::slice::from_ref(&apex_ring), tol)?.shape;
+        let inner = og_algo::make_wire(model, std::slice::from_ref(&cap_ring), tol)?.shape;
+        let face = og_algo::make_face(model, surface.clone(), &[outer, inner], tol)?.shape;
         let surface_id = {
             let Some(node) = model.node(&face) else {
                 og_bail!(Dangling, "the face just built is not in this model");
@@ -610,39 +646,25 @@ fn revolved_fillet(
             data.surface
         };
         for pedge in explore(model, &face, Filter::OfType(ShapeType::Edge))? {
-            let (curve, prange) = {
-                let Some(node) = model.node(&pedge) else {
-                    og_bail!(Dangling, "edge is not in this model");
-                };
-                let Some(data) = node.data().as_edge() else {
-                    og_bail!(Construction, "edge node holds no edge data");
-                };
-                let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
-                    og_bail!(Construction, "an annulus edge has no 3D curve");
-                };
-                let Some(geometry) = model.geometry().curve(*curve) else {
-                    og_bail!(Dangling, "curve is not in this model");
-                };
-                (geometry.clone(), *range)
-            };
+            let (curve, prange) = edge_curve(model, &pedge)?;
             let Some(pcurve) = og_intersect::exact_pcurve_of(&curve, &surface, tol) else {
                 og_bail!(
                     Construction,
                     "an annulus edge has no closed-form pcurve on its plane"
                 );
             };
-            attach_pcurve(
+            og_algo::attach_pcurve(
                 model,
                 &pedge,
                 pcurve,
                 surface_id,
-                Location::identity(),
+                og_topo::Location::identity(),
                 prange,
             )?;
         }
         face
     };
 
-    let faces = [wall_band, annulus, blend_band.reversed()];
-    subtract_wedge(model, solid, edge, &faces, tol)
+    let faces = [wall_band, annulus, blend_band];
+    apply_wedge(model, solid, edge, &faces, additive, tol)
 }

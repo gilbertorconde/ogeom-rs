@@ -265,7 +265,23 @@ fn boundary_ring(
     let mut anchors: Vec<Option<Point>> = Vec::new();
     let mut met = true;
 
-    for edge in model.ordered_children_of(wire)? {
+    // Start the walk off a seam if the wire allows it: a seam's side is
+    // chosen by continuity with the point already walked to, and continuity
+    // needs something to continue from. The ring is cyclic, so rotating the
+    // walk changes nothing it reports.
+    let mut children = model.ordered_children_of(wire)?;
+    let is_seam = |model: &Model, e: &Shape| -> bool {
+        model
+            .node(e)
+            .and_then(|n| n.data().as_edge())
+            .and_then(|d| d.pcurve_for(surface, e.location()))
+            .is_some_and(|r| matches!(r, EdgeRepr::Seam { .. }))
+    };
+    if let Some(start) = children.iter().position(|e| !is_seam(model, e)) {
+        children.rotate_left(start);
+    }
+
+    for edge in children {
         let Some(node) = model.node(&edge) else {
             og_bail!(Dangling, "edge is not in this model");
         };
@@ -275,23 +291,46 @@ fn boundary_ring(
         let (pcurve_id, pcurve_range) = match data.pcurve_for(surface, edge.location()) {
             Some(EdgeRepr::PCurve { curve, range, .. }) => (*curve, *range),
             // A seam edge runs along a closed surface's join and bounds its
-            // face twice — up one side of the parameter rectangle and down the
-            // other. Which pcurve applies is decided by *which occurrence this
-            // is*, and orientation is the only thing that distinguishes them:
-            // both occurrences name the same node.
+            // face twice — up one side of the parameter rectangle and down
+            // the other. Which side this occurrence takes is decided by the
+            // ring itself: the side whose oriented start continues the point
+            // already walked to. Orientation flags cannot answer it — a
+            // reversed face flips every occurrence while the chart columns
+            // stay where they were built — but the chart can.
             Some(EdgeRepr::Seam {
                 forward,
                 reversed,
                 range,
                 ..
-            }) => (
-                if edge.orientation() == Orientation::Reversed {
-                    *reversed
+            }) => {
+                let (f, r) = (*forward, *reversed);
+                let picked = if let Some(last) = ring.last().copied() {
+                    let start_of = |id: og_topo::PCurveId| -> Option<Point2> {
+                        let pc = model.geometry().pcurve(id)?;
+                        let t = if edge.orientation() == Orientation::Reversed {
+                            range.1
+                        } else {
+                            range.0
+                        };
+                        pc.point_at(t, tol).ok()
+                    };
+                    match (start_of(f), start_of(r)) {
+                        (Some(a), Some(b)) => {
+                            if last.distance(a) <= last.distance(b) {
+                                f
+                            } else {
+                                r
+                            }
+                        }
+                        _ => f,
+                    }
+                } else if edge.orientation() == Orientation::Reversed {
+                    r
                 } else {
-                    *forward
-                },
-                *range,
-            ),
+                    f
+                };
+                (picked, *range)
+            }
             _ => og_bail!(
                 Construction,
                 "edge has no pcurve on this face, so the face cannot be \

@@ -249,7 +249,7 @@ fn a_variable_radius_fillet_widens_along_its_edge() {
 }
 
 #[test]
-fn a_concave_edge_refuses_the_subtractive_fillet() {
+fn a_concave_edge_gains_an_additive_fillet() {
     let mut model = og_topo::Model::new();
     let block = og_algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
     let seat = Frame::new(
@@ -285,6 +285,24 @@ fn a_concave_edge_refuses_the_subtractive_fillet() {
         })
         .expect("the L has its re-entrant edge");
 
-    let refused = og_fillet::fillet_edge(&mut model, &cut.shape, &edge, 0.25, T);
-    assert!(refused.is_err(), "a concave edge cannot lose material");
+    let radius = 0.25;
+    let result = og_fillet::fillet_edge(&mut model, &cut.shape, &edge, radius, T).unwrap();
+    let diagnosis = og_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // The L keeps its volume plus the added sliver along the re-entrant
+    // edge: the corner square minus the quarter disc, run along its length.
+    let fine = og_mesh::Deflection {
+        chord: 1e-4,
+        ..og_mesh::Deflection::default()
+    };
+    let added = radius * radius * (1.0 - core::f64::consts::PI / 4.0) * 2.0;
+    let exact = 6.0 + added;
+    let props = og_algo::volume_properties(&model, &result.shape, fine, T).unwrap();
+    assert!(
+        (props.mass - exact).abs() < 1e-3,
+        "concave fillet volume {} against {exact}",
+        props.mass
+    );
+    assert!(result.history.is_deleted(&edge));
 }

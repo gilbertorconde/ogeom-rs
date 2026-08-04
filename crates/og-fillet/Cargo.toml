@@ -16,9 +16,9 @@ og-topo.workspace = true
 og-algo.workspace = true
 og-intersect.workspace = true
 og-bool.workspace = true
+og-mesh.workspace = true
 
 [dev-dependencies]
-og-mesh.workspace = true
 approx.workspace = true
 proptest.workspace = true
 

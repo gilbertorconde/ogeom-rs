@@ -12,7 +12,7 @@
 //! an angle, with the second distance derived where that bevel meets the
 //! other face. All three end in the same wedge subtraction.
 
-use crate::support::{Seat, planar_face, planar_seat, subtract_wedge};
+use crate::support::{Seat, apply_wedge, planar_face, planar_seat};
 use og_algo::Built;
 use og_core::{OgResult, Tolerances, og_bail};
 use og_topo::{Model, Shape};
@@ -98,11 +98,13 @@ pub fn chamfer_edge_angle(
     let seat = planar_seat(model, solid, edge, tol)?;
     let i = seat_side(&seat, face)?;
     // In the cross-section: from the contact on the named face, the bevel
-    // leaves at `angle` into the material. Where it crosses the other leg's
-    // ray is the derived distance — no crossing, no chamfer.
-    let a = seat.leg(i, tol)?;
-    let b = seat.leg(1 - i, tol)?;
-    let inward = -seat.normals[i];
+    // leaves at `angle` into the wedge's own side — the material on a convex
+    // edge, the open dihedral on a concave one. Where it crosses the other
+    // leg's ray is the derived distance — no crossing, no chamfer.
+    let sign = if seat.convex { 1.0 } else { -1.0 };
+    let a = seat.leg(i, tol)? * sign;
+    let b = seat.leg(1 - i, tol)? * sign;
+    let inward = -seat.normals[i] * sign;
     let denominator = angle.sin().mul_add(b.dot(a), angle.cos() * b.dot(inward));
     if denominator <= tol.angular() {
         og_bail!(
@@ -146,8 +148,13 @@ fn bevel(
             og_bail!(Construction, "a chamfer of {distance} cuts nothing");
         }
     }
-    let a = seat.leg(0, tol)?;
-    let b = seat.leg(1, tol)?;
+    // On a concave edge every leg mirrors: the wedge sits in the open
+    // dihedral, its legs walk the faces' planes into it, and its strips face
+    // the material they will melt against with *opposed* orientation — which
+    // is exactly what a fuse cancels.
+    let sign = if seat.convex { 1.0 } else { -1.0 };
+    let a = seat.leg(0, tol)? * sign;
+    let b = seat.leg(1, tol)? * sign;
 
     let travel = seat.end - seat.start;
     let apex0 = seat.start;
@@ -183,9 +190,9 @@ fn bevel(
     let faces = [
         planar_face(model, &[apex0, a0, b0], -seat.along, tol)?,
         planar_face(model, &[apex1, a1, b1], seat.along, tol)?,
-        planar_face(model, &[apex0, a0, a1, apex1], seat.normals[0], tol)?,
-        planar_face(model, &[apex0, b0, b1, apex1], seat.normals[1], tol)?,
+        planar_face(model, &[apex0, a0, a1, apex1], seat.normals[0] * sign, tol)?,
+        planar_face(model, &[apex0, b0, b1, apex1], seat.normals[1] * sign, tol)?,
         planar_face(model, &[a0, b0, b1, a1], bevel_out, tol)?,
     ];
-    subtract_wedge(model, solid, edge, &faces, tol)
+    apply_wedge(model, solid, edge, &faces, !seat.convex, tol)
 }

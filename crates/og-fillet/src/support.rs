@@ -28,6 +28,9 @@ pub(crate) struct Seat {
     /// The two faces themselves, in the same order — so a caller naming a
     /// face can find which leg it owns.
     pub faces: [Shape; 2],
+    /// Whether the edge is convex: material inside the dihedral, so a blend
+    /// subtracts. A concave edge's blend adds, with every sign mirrored.
+    pub convex: bool,
 }
 
 impl Seat {
@@ -134,24 +137,75 @@ pub(crate) fn planar_seat(
         );
     }
 
-    let seat = Seat {
+    let mut seat = Seat {
         start,
         end,
         along,
         normals: [normals[0], normals[1]],
         faces: [faces[0].clone(), faces[1].clone()],
+        convex: true,
     };
-    // Convexity: on a convex edge, walking along one face away from the other
-    // moves *behind* the other face's plane. On a concave edge it moves in
-    // front, and the wedge these blends subtract would sit in empty space.
-    if seat.leg(0, tol)?.dot(seat.normals[1]) > -tol.angular() {
+    // Convexity is read from the face itself, not derived from the normals:
+    // the leg construction cannot answer it, because it *chooses* its side.
+    // Which way the first face actually extends from the edge — sampled
+    // against its own trim — leans behind the other face's plane on a convex
+    // edge and in front of it on a concave one.
+    let raw = {
+        let t = normals[0].cross(along);
+        let m = t.magnitude();
+        if m <= tol.angular() {
+            og_bail!(Construction, "a face is tangent to its own edge");
+        }
+        t / m
+    };
+    let mid = curve.point_at(f64::midpoint(range.0, range.1), tol)?;
+    let mut face_side: Option<Vector> = None;
+    'scales: for scale in [1e-3, 1e-2, 5e-2] {
+        let eps = start.distance(end) * scale;
+        let deflection = og_mesh::Deflection {
+            chord: eps * 0.1,
+            ..og_mesh::Deflection::default()
+        };
+        for dir in [raw, -raw] {
+            if crate::support::on_face_side(
+                model,
+                &seat.faces[0],
+                mid + dir * eps,
+                deflection,
+                tol,
+            )? {
+                face_side = Some(dir);
+                break 'scales;
+            }
+        }
+    }
+    let Some(extends) = face_side else {
         og_bail!(
             Construction,
-            "the edge is concave or its faces are tangent; the subtractive \
-             blend needs a convex edge"
+            "cannot read which way the edge's face extends; the face is \
+             thinner than the probe can resolve"
+        );
+    };
+    let lean = extends.dot(seat.normals[1]);
+    if lean.abs() <= tol.angular() {
+        og_bail!(
+            Construction,
+            "the edge's faces are tangent; there is no corner to blend"
         );
     }
+    seat.convex = lean < 0.0;
     Ok(seat)
+}
+
+/// Whether `probe` sits strictly inside the face's trim.
+pub(crate) fn on_face_side(
+    model: &Model,
+    face: &Shape,
+    probe: og_math::Point,
+    deflection: og_mesh::Deflection,
+    tol: Tolerances,
+) -> OgResult<bool> {
+    Ok(og_algo::classify_on_face(model, face, probe, deflection, tol)? == og_algo::Containment::In)
 }
 
 /// An edge along the segment from `from` to `to`, parameterized by arc
@@ -186,14 +240,15 @@ pub(crate) fn face_from_edges(
     Ok(og_algo::make_face_with_pcurves(model, surface, &[edges.to_vec()], tol)?.shape)
 }
 
-/// Sew the wedge's faces, demand a closed shell, subtract it from the solid,
-/// and report the history: the blend is a cut, and the edge it replaces is
-/// gone.
-pub(crate) fn subtract_wedge(
+/// Sew the wedge's faces, demand a closed shell, and apply it to the solid —
+/// subtracted on a convex edge, fused on a concave one. Either way the
+/// history reads the same truth: the edge the blend replaces is gone.
+pub(crate) fn apply_wedge(
     model: &mut Model,
     solid: &Shape,
     edge: &Shape,
     faces: &[Shape],
+    additive: bool,
     tol: Tolerances,
 ) -> OgResult<og_algo::Built> {
     let sewn = og_algo::sew(model, faces, tol)?;
@@ -201,7 +256,11 @@ pub(crate) fn subtract_wedge(
         og_bail!(Construction, "the blend wedge did not close");
     }
     let wedge = og_algo::make_solid(model, std::slice::from_ref(&sewn.shells[0]))?;
-    let mut result = og_bool::cut(model, solid, &wedge.shape, tol)?;
+    let mut result = if additive {
+        og_bool::fuse(model, solid, &wedge.shape, tol)?
+    } else {
+        og_bool::cut(model, solid, &wedge.shape, tol)?
+    };
     result.history.delete(edge);
     Ok(result)
 }

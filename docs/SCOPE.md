@@ -398,6 +398,20 @@ excluded by measurement, not just by support recognition; and the boolean's
 junction vertices widen their tolerance to the crossing residual they
 actually carry, which is what vertex tolerance is for.
 
+**Concave and mirrored blends** closed the sign ledger: convexity is read
+from the face's own trim (the leg construction chooses its side and so
+cannot answer it), a concave edge's wedge fuses where the convex one cut —
+its legs opposed to the faces they melt against, which is exactly what a
+fuse cancels — and the four revolved seats (external rim, hole rim, boss
+base, blind floor) are one construction over two signs: wall-outward and
+wall-side. Getting there fixed three kernel defects that reversed and
+overlapped boundaries had been hiding: a contact overlapping a target's
+boundary edge now paves the *target* too, so faces across the overlap split
+where their new neighbours do; a partner chart's trim test now sees a
+seam's both columns; and a seam occurrence picks its chart side by
+*continuity with the ring being walked* rather than by orientation flags —
+which a reversed face flips while the columns stay put.
+
 **The chamfer's other spellings, and the sketch plane**: the asymmetric
 distance-distance chamfer names a face for its first distance; the
 distance-angle form derives the second distance where the bevel, leaving the
@@ -687,7 +701,7 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 | The general offset rebuild | §11 | `offset_shape` speaks planes and full cylindrical bands, straight edges and closed axis-normal rings, vertices seated on three planes. Everything else — cones and tori (whose offsets are still cones and tori), spheres, partial revolution faces, arcs with vertices, vertices touching curved faces — is refused by name. Each case is the same three-step rebuild (move the surface, re-derive the edge on the moved pair, re-solve the vertex against three moved supports) with more trigonometry; the fillet's blend faces are the first real customers, since shelling a filleted part meets a partial cylinder immediately. |
 | Collapsed 2D offsets | §11 | `offset_wire` refuses a result that self-intersects or consumes an edge whole. The full algorithm arranges the raw offset into its planar subdivision and keeps the loops at the right winding distance — the same tagged-strand arrangement the boolean already runs in 2D, pointed at a different question. Until then the refusal names the collapse instead of returning one of its loops silently. Open wires are refused alongside: capping their ends (round or square) is part of the same rebuild. |
 | 2D corner blends with curved sides | §10 | `fillet_corner_2d` and `chamfer_corner_2d` handle corners between two straight wire edges — the closed-form tangency. A line meeting an arc, or two arcs, is the general 2D tangent-circle problem (`GccAna`'s territory): still closed-form, quadratic rather than linear, and refused by name until that construction exists. |
-| Concave blends | §10 | `chamfer_edge` and `fillet_edge` subtract a wedge, which is only material on a convex edge; both refuse concave and tangent edges by checking that a leg walks behind the other face's plane. The concave blend *adds* material — the mirrored wedge fused rather than cut — and for the fillet the blend face enters with the opposite orientation. Same scaffolding, different sign discipline, deliberately not smuggled into the convex path. |
+| ~~Concave blends~~ **done** | §10 | Every blend now dispatches on convexity read from the face's own trim, and the additive wedge fuses where the subtractive one cut. The four revolved rim seats — external rim, hole rim, boss base, blind floor — are one parameterization over two signs. |
 | Canonical surfaces from a sweep | §9 | The chamfer found the sweep-side twin of the revolution entry below: `make_prism` builds every wall as an extrusion surface, including walls that are geometrically planes, and the boolean's same-domain resolution — which recognises coincidence between *planes* — walks straight past them. The chamfer builds its wedge from explicit planar faces instead; the durable fix is the sweep recognising a line profile edge and building the plane it actually made. |
 | Canonical surfaces from a revolution | §9 | `make_revolution` builds every face it makes as a surface of revolution, including the ones that are really planes: revolving a rectangle with one side on the axis gives a cylinder whose *caps* are polar coordinates on a plane rather than planes. They are seamed accordingly, so the solid has the same face count as `make_cylinder`'s but more edges — a seam and a degenerate centre edge per cap. Nothing is wrong with the result; it is the same solid, validly described. Noticing that a revolved line is a plane is canonical recognition, which belongs to healing. Reproduction: revolve the profile from `a_rectangle_with_a_side_on_the_axis_revolves_into_a_cylinder_face_for_face` and count edges — seven against `make_cylinder`'s three. |
 | Asymmetric conic domains in the native format | §17 | A hyperbola or parabola is written as the symmetric `[-extent, extent]` its constructor produces, and the reader refuses anything else rather than silently re-centring it. Unreachable today — nothing builds an asymmetric one — and it is a refusal rather than a wrong answer, but the format has no way to express one if something later does. |

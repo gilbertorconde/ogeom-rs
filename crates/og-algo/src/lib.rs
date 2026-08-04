@@ -31,7 +31,10 @@ pub use build::{
     make_wire, surface_iso_u_curve,
 };
 pub use check::{Diagnosis, Problem, Severity, check, check_tessellation};
-pub use classify::{Containment, classify_in_solid, classify_in_solid_exact, classify_on_face};
+pub use classify::{
+    Containment, classify_in_solid, classify_in_solid_exact, classify_in_solid_exact_banded,
+    classify_on_face,
+};
 pub use fit::{Spacing, approximate, approximate_within, interpolate};
 pub use history::{Built, History};
 pub use length::{curve_length, parameter_at_length, points_by_count, points_by_spacing};

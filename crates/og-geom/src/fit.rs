@@ -305,7 +305,19 @@ fn fit<const D: usize>(
     let mut parameters = parameters;
     let mut best: Option<(KnotVector, Vec<[f64; D]>, f64)> = None;
     for _ in 0..ROUNDS {
-        let control = least_squares::<D>(&knots, &points, &parameters)?;
+        // Parameter correction in an earlier round can slide the data out of
+        // a span that refinement checked *before* the slide, and the solve
+        // reports itself singular. The rounds before it stand: keep the best
+        // of them rather than promoting a bookkeeping casualty to an error.
+        let control = match least_squares::<D>(&knots, &points, &parameters) {
+            Ok(control) => control,
+            Err(e) => {
+                if let Some((knots, control, worst)) = best {
+                    return Ok((knots, control, worst, false));
+                }
+                return Err(e);
+            }
+        };
         // Parameter correction, and it is not a refinement — it is what makes
         // the residual mean anything. The residual is measured at each point's
         // assigned parameter, and the centripetal assignment is a guess: where

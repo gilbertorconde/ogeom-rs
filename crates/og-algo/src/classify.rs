@@ -107,7 +107,7 @@ pub fn classify_on_face(
 
     let rings = face_boundary(model, face, deflection, tol)?;
     let (u, v) = projection.parameters;
-    let at = Point2::new(u, v);
+    let at = fold_toward_rings(surface, &rings, Point2::new(u, v));
 
     // The uncertain band, converted from a distance in space into one in
     // parameter units through the surface's own scale. A fixed parameter
@@ -221,6 +221,28 @@ pub fn classify_in_solid_exact(
     point: Point,
     tol: Tolerances,
 ) -> OgResult<Containment> {
+    classify_in_solid_exact_banded(model, solid, point, tol.confusion() * 1e4, tol)
+}
+
+/// [`classify_in_solid_exact`] with the boundary band under the caller's
+/// control.
+///
+/// The band is the ring polylines' chord tolerance, and with it the width of
+/// the region that answers `On`. The default is generous — a boolean wants a
+/// piece near a boundary called On and resolved against its partner — but a
+/// caller that got On *without* a partner to resolve against needs to ask
+/// again at a width where proximity stops impersonating coincidence.
+///
+/// # Errors
+///
+/// As [`classify_in_solid_exact`].
+pub fn classify_in_solid_exact_banded(
+    model: &Model,
+    solid: &Shape,
+    point: Point,
+    ring_chord: f64,
+    tol: Tolerances,
+) -> OgResult<Containment> {
     let kind = model.kind_of(solid)?;
     if !matches!(kind, ShapeType::Solid | ShapeType::Shell) {
         og_bail!(Construction, "expected a solid or a shell, got {kind:?}");
@@ -257,7 +279,6 @@ pub fn classify_in_solid_exact(
     // The rings' own polylining error, spatially: they are only used to
     // decide which side of a face's trim a crossing landed, and a crossing
     // nearer the ring than this is ambiguous rather than decided.
-    let ring_chord = tol.confusion() * 1e4;
     let ring_deflection = Deflection {
         chord: ring_chord,
         angular: 0.05,
@@ -318,7 +339,7 @@ pub fn classify_in_solid_exact(
                     // rings is the unbounded surface talking, not the face,
                     // and it neither counts nor poisons the ray.
                     let (u, v) = hit.on_surface;
-                    let at = Point2::new(u, v);
+                    let at = fold_toward_rings(surface, rings, Point2::new(u, v));
                     let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
                     if distance_to_rings(rings, at) <= band || inside_boundary(rings, at) {
                         continue 'directions;
@@ -341,7 +362,7 @@ pub fn classify_in_solid_exact(
                     // needs zero or two; abandon the ray rather than guess.
                     continue 'directions;
                 }
-                let at = Point2::new(u, v);
+                let at = fold_toward_rings(surface, rings, Point2::new(u, v));
                 let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
                 if distance_to_rings(rings, at) <= band {
                     // Too near the face's boundary to know which side of the
@@ -560,6 +581,68 @@ fn segment_distance_2d(p: Point2, a: Point2, b: Point2) -> f64 {
 /// sphere's pole, a cone's apex — no parameter distance corresponds to a
 /// spatial one, and the band opens to cover the whole neighbourhood rather than
 /// closing to nothing.
+/// Fold a chart point toward the rings' own window, one period at a time.
+///
+/// Projection and intersection answer parameters in a surface's principal
+/// range, but a face's trim may live in any window of a periodic chart — a
+/// band anchored where its rings happened to start. The trim tests compare
+/// against the rings, so the point folds to them, not the other way round.
+pub(crate) fn fold_toward_rings(
+    surface: &og_geom::SurfaceGeometry,
+    rings: &[Vec<Point2>],
+    mut at: Point2,
+) -> Point2 {
+    use og_geom::SurfaceGeometry as S;
+    let tau = core::f64::consts::TAU;
+    let (u_period, v_period) = match surface {
+        S::Cylinder(_) | S::Cone(_) => (Some(tau), None),
+        S::Sphere(_) => (Some(tau), None),
+        S::Torus(_) => (Some(tau), Some(tau)),
+        _ => (None, None),
+    };
+    let fold = |x: f64, lo: f64, hi: f64, period: f64| -> f64 {
+        let mut x = x;
+        while x < lo && x + period <= hi + period {
+            x += period;
+            if x >= lo {
+                break;
+            }
+        }
+        while x > hi && x - period >= lo - period {
+            x -= period;
+            if x <= hi {
+                break;
+            }
+        }
+        x
+    };
+    if let Some(period) = u_period {
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for ring in rings {
+            for q in ring {
+                lo = lo.min(q.x);
+                hi = hi.max(q.x);
+            }
+        }
+        if lo.is_finite() {
+            at.x = fold(at.x, lo, hi, period);
+        }
+    }
+    if let Some(period) = v_period {
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for ring in rings {
+            for q in ring {
+                lo = lo.min(q.y);
+                hi = hi.max(q.y);
+            }
+        }
+        if lo.is_finite() {
+            at.y = fold(at.y, lo, hi, period);
+        }
+    }
+    at
+}
+
 pub(crate) fn parametric_band(
     surface: &og_geom::SurfaceGeometry,
     at: (f64, f64),
