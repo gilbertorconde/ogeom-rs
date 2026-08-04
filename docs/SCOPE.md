@@ -261,14 +261,14 @@ Every operation emits history from the commit that introduces it
 The hardest area in the project, and the one with no existing Rust
 implementation.
 
-| | *Elsewhere* |
-|---|---|
-| Curve/curve, 2D and 3D | `IntCurve` |
-| Curve/surface | `IntCurveSurface`, `IntAna` |
-| **Surface/surface** — analytic special cases first, then general marching with an approximation stage | `IntPatch`, `GeomInt`, `IntWalk` |
-| Polyhedral pre-filtering | `IntPolyh` |
-| Contour and silhouette computation | `Contap` |
-| Degenerate handling: tangential contact, coincident surfaces, poles, seams | — |
+| | *Elsewhere* | |
+|---|---|---|
+| Curve/curve, 2D and 3D | `IntCurve` | done — analytic lines/circles with overlap detection, general via seeded Newton; 3D crossings carry their gap |
+| Curve/surface | `IntCurveSurface`, `IntAna` | done — line/plane and line/quadric in closed form, general via the well-posed 3×3 Newton; lying-in-plane reported as an overlap |
+| **Surface/surface** — analytic special cases first, then general marching with an approximation stage | `IntPatch`, `GeomInt`, `IntWalk` | done — `intersect_surfaces` is the one call: analytic exact with same-parameter pcurves, marched-and-fitted otherwise, tolerance as a sum of stated parts |
+| Polyhedral pre-filtering | `IntPolyh` | inside the seeding: both surfaces sampled to triangles, pairs tested, candidates Newton-corrected |
+| Contour and silhouette computation | `Contap` | with §13, whose consumer it is |
+| Degenerate handling: tangential contact, coincident surfaces, poles, seams | — | tangency and coincidence answered by the analytic layer and refused honestly by the marcher; seams unwrapped in pcurve fitting; branch-point stitching still owed |
 
 **Gated.** Surface/surface quality is measured against analytic ground truth and
 published benchmark datasets before the boolean pipeline is committed to. If it

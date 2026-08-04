@@ -663,15 +663,15 @@ fn span(surface: &SurfaceGeometry) -> f64 {
 }
 
 /// One sampled triangle of a surface, with the parameters it came from.
-struct Cell {
-    corners: [Point; 3],
-    at: (f64, f64),
-    low: Point,
-    high: Point,
+pub(crate) struct Cell {
+    pub(crate) corners: [Point; 3],
+    pub(crate) at: (f64, f64),
+    pub(crate) low: Point,
+    pub(crate) high: Point,
 }
 
 /// Sample a surface into triangles.
-fn sample(surface: &SurfaceGeometry, grid: usize, tol: Tolerances) -> Vec<Cell> {
+pub(crate) fn sample(surface: &SurfaceGeometry, grid: usize, tol: Tolerances) -> Vec<Cell> {
     let ((ua, ub), (va, vb)) = surface.domain();
     // An unbounded domain would put the samples a billion units apart and find
     // nothing. Clamped to something a real model lives inside.
@@ -748,7 +748,7 @@ fn triangles_cross(a: &Cell, b: &Cell) -> Option<Point> {
 }
 
 /// Where a segment crosses a triangle.
-fn segment_meets_triangle(from: Point, to: Point, t: [Point; 3]) -> Option<Point> {
+pub(crate) fn segment_meets_triangle(from: Point, to: Point, t: [Point; 3]) -> Option<Point> {
     let direction = to - from;
     let (e1, e2) = (t[1] - t[0], t[2] - t[0]);
     let h = direction.cross(e2);
