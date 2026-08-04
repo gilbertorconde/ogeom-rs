@@ -43,6 +43,7 @@ pub mod benchmark;
 pub mod coverage;
 pub mod curve_surface;
 pub mod curves;
+pub mod extrema;
 pub mod march;
 pub mod section;
 pub mod surface;
@@ -55,6 +56,10 @@ pub use curve_surface::{
 };
 pub use curves::{
     Crossing, CurveCurveOptions, CurveIntersection, Overlap, intersect_curves, intersect_curves_2d,
+};
+pub use extrema::{
+    Approach, Extrema, ExtremaOptions, extrema_curve_curve, extrema_curve_surface,
+    extrema_surface_surface,
 };
 pub use march::{Contact, Marching, Stopped, Traced, branches, seeds, trace};
 pub use section::{IntersectOptions, SectionCurve, SurfaceIntersection, intersect_surfaces};
