@@ -115,19 +115,26 @@ conversion and whole-shape affine transforms (the geometry-level conversions
 they rest on are done), and mesh → B-rep for *curved* regions, which is
 canonical recognition and lands in §9.
 
-### M3 — a CAD kernel · P3 · §7–9
+### M3 — a CAD kernel · P3 · §7–9 · **closed, residuals listed**
 
-- **The gate comes first.** Surface/surface intersection is measured against
-  analytic ground truth and published benchmark datasets *before* any boolean
-  work is committed to (§7). If it does not clear the bar, the project ships at
-  M2 as a geometry library rather than spending years on a boolean built over
-  an intersector that cannot carry one.
-- General fuse over the corpus, with fuse, common, cut, section and split as
-  selection predicates over one result rather than five algorithms.
-- Healing survives a corpus of real imported files — which is what makes the
-  boolean usable on anything that came from outside.
-- History and provenance carried through every boolean and compared operation
-  by operation, not just on the final shape.
+- **The gate comes first.** ✓ Closed: the intersector is measured against
+  analytic ground truth (worst 9.2e-15 over twelve pairs), a completeness
+  instrument with a working negative control, literature-derived hard cases,
+  and the corpus of real exchange files the reader now imports.
+- General fuse with fuse, common, cut and section as selection predicates
+  over one result. ✓ Closed for planar, quadric, marched and same-domain
+  configurations, volumes held to closed forms and to each other; a cut runs
+  on an imported NIST part end to end. *Residual:* the cut-imported result's
+  mesh does not yet weld everywhere, so its volume is structural rather than
+  measured — see the deferred table.
+- Healing survives the corpus. ✓ Closed as stated: all eleven NIST parts
+  read, every shell closes, ring re-anchoring makes the smallest part
+  measure a real volume. *Residual:* parts with edges on B-spline surfaces
+  have no pcurves yet and stay unmeasurable — closed shells, honest refusals
+  — see the deferred table.
+- History carried through every boolean, operation by operation. ✓ Closed:
+  every source face is recorded modified-into-pieces or deleted, asserted in
+  the boolean tests and on the imported cut.
 
 ### M4 — a manufacturing-capable kernel · P4 · §10, §11
 
@@ -572,7 +579,8 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 | Exact pcurves for every analytic section | §7 | `intersect_surfaces` derives exact same-parameter pcurves where the projection has a closed form: any conic on a plane, axis lines and full circles on a cylinder, parallels of latitude on a sphere. Where it does not — an oblique ellipse on a cylinder runs as a cosine in parameter space — the pcurve is `None` rather than a fit, because an exact curve with a fitted pcurve would be a curve whose descriptions disagree by an amount nothing on it records. The consumer that needs those is the boolean, which can march the pair instead or project (§3's projection machinery, when it lands). |
 | Restriction of closed exact sections to surface extents | §8 | Section *lines* are clipped to both surfaces' parameter extents through their exact pcurves, and closed curves wholly outside an extent are dropped — but a closed curve partially outside is kept whole. Cutting it into arcs is the restriction problem, and the restriction that matters is the face's trim, which is the boolean's 2D splitting stage; the surface extent is only the parameterization window. |
 | A published corpus for the intersection gate | §7 | The corpus is live: §17's reader imports all eleven NIST parts, every solid found and **every shell closed as read** — analytic surfaces, B-spline surfaces and their rational forms alike, with every compromise warned by instance number. The instruments have outside input; what remains is *using* it — healing over the corpus, booleans over imported parts — which is the M3 criterion the corpus was fetched for. |
-| Welding the healed part's mesh | §9 | Three layers found, two fixed. Boundary mesh vertices now anchor to their edges' own curves — the shared authority — so two faces lifting the same edge through surfaces that disagree by the file's slop still weld by identity. Revolution-band pcurves are now attached window-coherently, u spanning one chart window whichever way each ring winds, on a fresh surface id so stale phases cannot apply — the torus fillets mesh watertight. What remains: a band whose rings the anchoring judges already-aligned is left unrebuilt and keeps its import-time incoherent pcurves; the healer must re-annotate every revolution face it inspects, not only the ones whose rings moved. |
+| Pcurves for edges on B-spline surfaces | §9/§17 | Ten of the eleven corpus parts carry faces on spline surfaces whose edges have no closed-form pcurve, so those faces cannot triangulate and the parts cannot measure — closed shells, honest refusals, no wrong volumes. The fix is projection fitting with the same-parameter discipline the joint fit established: sample the edge's curve, project onto the surface, fit the chart image at the *same* parameters. |
+| Welding the cut-imported result | §8/§9 | Cutting an imported part with a native solid runs end to end — sections, splitting, classification, sewing, closure, history — but the rebuilt revolution pieces meet the plate pieces within the file's slop and the result's mesh does not yet weld everywhere, so its volume is asserted structurally rather than numerically. The boundary-anchoring contract that fixed the healed part needs to reach the boolean's rebuilt pieces too. |
 | Seams for misaligned periodic rings | §17/§9 | A STEP face on a periodic surface may arrive with no seam edge; the reader synthesises one along the surface's own iso-curve where the two bounding rings' vertices share an angle — full cylinder bands read and mesh this way. Where the vertices sit at *different* angles, joining them means splitting or re-anchoring a ring edge that the neighbouring face shares, and doing that consistently across faces is healing's work, not the reader's. The two torus fillets of the smallest NIST part are the pinned instance, warned about by name. |
 | Spindle-torus signed distance | §2 | `Torus::distance_to` handles every torus, including the folded branch of a spindle. `signed_distance_to` is documented as ring and horn tori only: a spindle torus encloses two regions and "inside" does not name one of them. |
 

@@ -334,6 +334,88 @@ fn exact_pcurve(curve: &Curve, surface: &SurfaceGeometry, tol: Tolerances) -> Op
         SurfaceGeometry::Cylinder(c) => on_cylinder(curve, c.cylinder(), tol),
         SurfaceGeometry::Sphere(s) => on_sphere(curve, s.sphere(), tol),
         SurfaceGeometry::Torus(t) => on_torus(curve, t.torus(), tol),
+        SurfaceGeometry::Cone(c) => on_cone(curve, c.cone(), tol),
+        _ => None,
+    }
+}
+
+/// The pcurve of a curve on a cone, for the two straight-line families.
+///
+/// A ruling — through the apex, on the surface — runs at constant `u`; a
+/// circle perpendicular to the axis, centred on it, with the radius the cone
+/// has at that height, runs at constant `v`. Both inherit the 3D curve's own
+/// parameter, the circle with phase and winding exactly as the cylinder case.
+fn on_cone(curve: &Curve, cone: og_math::Cone, tol: Tolerances) -> Option<PlanarCurve> {
+    let frame = cone.frame();
+    let axis_z = frame.z().vector();
+    let tau = core::f64::consts::TAU;
+    match curve {
+        Curve::Circle(c) => {
+            let circle = c.circle();
+            if circle.frame().z().vector().cross(axis_z).magnitude() > tol.angular() {
+                return None;
+            }
+            let local = frame.to_local(circle.centre());
+            if local.x.hypot(local.y) > tol.confusion() {
+                return None;
+            }
+            // The cone's radius at the circle's height must be the circle's.
+            let expected = cone
+                .half_angle()
+                .tan()
+                .mul_add(local.z, cone.reference_radius());
+            if (expected - circle.radius()).abs() > tol.confusion() * 10.0 {
+                return None;
+            }
+            let start = circle.centre() + circle.frame().x().vector() * circle.radius();
+            let at = frame.to_local(start);
+            let phase = at.y.atan2(at.x);
+            let winding = circle.frame().z().vector().dot(axis_z).signum();
+            let towards =
+                og_math::Direction2::new(og_math::Vector2::new(winding, 0.0), tol).ok()?;
+            Some(
+                Line2d::over(
+                    og_math::Axis2::new(Point2::new(phase, local.z), towards),
+                    0.0,
+                    tau,
+                )
+                .ok()?
+                .into(),
+            )
+        }
+        Curve::Line(line) => {
+            // A ruling: verified by sample, not assumed — three points on
+            // the surface pin a line to it.
+            let axis = line.axis();
+            let on = |t: f64| {
+                let p = axis.location + axis.direction.vector() * t;
+                cone.distance_to(p) <= tol.confusion() * 10.0
+            };
+            if !on(0.0) || !on(1.0) || !on(-1.0) {
+                return None;
+            }
+            let local = frame.to_local(axis.location);
+            let u = local.y.atan2(local.x).rem_euclid(tau);
+            // Same-parameter exactly: a degree-one spline over the line's
+            // own domain maps t linearly onto the chart column, whatever
+            // rate the slant climbs at.
+            let (lo, hi) = line.domain();
+            let v_at = |t: f64| {
+                frame
+                    .to_local(axis.location + axis.direction.vector() * t)
+                    .z
+            };
+            let knots = og_math::KnotVector::new(vec![lo, lo, hi, hi], 1).ok()?;
+            Some(
+                og_geom::BSpline2d::new(
+                    knots,
+                    vec![Point2::new(u, v_at(lo)), Point2::new(u, v_at(hi))],
+                    tol,
+                )
+                .ok()?
+                .into(),
+            )
+        }
         _ => None,
     }
 }
