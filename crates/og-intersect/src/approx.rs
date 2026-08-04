@@ -78,25 +78,33 @@ pub fn approximate_branch(
         );
     }
 
-    let space = fit::fit_points(&branch.points, 3, tolerance, tol)?;
-
-    // The parameter tolerance for a pcurve is the space tolerance carried
-    // through the surface's stretch: a millimetre in space is that over the
-    // metric of the surface in parameter units. Estimated from the samples —
-    // the ratio of parameter run to space run — rather than assumed one-to-one,
-    // because on a cylinder of radius fifty they differ by fifty.
-    let on_a = fit_pcurve(a, &branch.on_a, &branch.points, tolerance, tol)?;
-    let on_b = fit_pcurve(b, &branch.on_b, &branch.points, tolerance, tol)?;
+    // One fit in seven dimensions — the curve and both parameter images
+    // together. Fitted separately, each fit's parameter correction drifts
+    // its parameterization independently and the three results silently stop
+    // being same-parameter: the boolean found pcurves claiming 1e-7 that
+    // evaluated millimetres from their own curve. Jointly, one
+    // parameterization and one knot vector serve all three, and the reported
+    // error bounds every coordinate.
+    let unwrapped_a = unwrap_periodic(a, &branch.on_a);
+    let unwrapped_b = unwrap_periodic(b, &branch.on_b);
+    let (space, on_a, on_b) = og_geom::fit::fit_points_joint(
+        &branch.points,
+        &unwrapped_a,
+        &unwrapped_b,
+        3,
+        tolerance,
+        tol,
+    )?;
 
     Ok(IntersectionCurve {
         fit_error: space
             .error
-            .max(space_error(a, &on_a, tol))
-            .max(space_error(b, &on_b, tol)),
-        met: space.met && on_a.1 && on_b.1,
+            .max(space_error(a, &(on_a.clone(), space.met, space.error), tol))
+            .max(space_error(b, &(on_b.clone(), space.met, space.error), tol)),
+        met: space.met,
         curve: space.curve,
-        on_a: on_a.0,
-        on_b: on_b.0,
+        on_a,
+        on_b,
         closed: branch.closed(),
     })
 }

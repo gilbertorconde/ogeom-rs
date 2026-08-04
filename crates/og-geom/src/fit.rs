@@ -117,6 +117,63 @@ pub fn fit_points_2d(
     Ok(Fitted { curve, error, met })
 }
 
+/// Fit one curve living in three spaces at once: a 3D curve and its two
+/// parameter-space images, as a single seven-dimensional fit.
+///
+/// One parameterization, one knot vector, one correction: the three results
+/// are same-parameter *by construction*, which separate fits cannot promise —
+/// each fit's parameter correction drifts its parameterization independently,
+/// and the drift is invisible to every per-fit error measure. The boolean
+/// found that: pcurves claiming 1e-7 evaluated millimetres from their own
+/// curve. The reported error bounds the worst deviation across all seven
+/// coordinates, so it bounds each space's deviation too.
+///
+/// # Errors
+///
+/// As [`fit_points`], and the three inputs must be equally long.
+#[allow(clippy::type_complexity)]
+pub fn fit_points_joint(
+    points: &[Point],
+    on_a: &[Point2],
+    on_b: &[Point2],
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgResult<(Fitted<BSplineCurve>, BSpline2d, BSpline2d)> {
+    if points.len() != on_a.len() || points.len() != on_b.len() {
+        og_bail!(
+            Construction,
+            "a joint fit needs the same trace seen in every space"
+        );
+    }
+    let joined: Vec<[f64; 7]> = points
+        .iter()
+        .zip(on_a)
+        .zip(on_b)
+        .map(|((p, a), b)| [p.x, p.y, p.z, a.x, a.y, b.x, b.y])
+        .collect();
+    let (knots, control, error, met) = fit::<7>(&joined, degree, tolerance, tol)?;
+    let curve = BSplineCurve::new(
+        knots.clone(),
+        control
+            .iter()
+            .map(|c| Point::new(c[0], c[1], c[2]))
+            .collect(),
+        tol,
+    )?;
+    let pa = BSpline2d::new(
+        knots.clone(),
+        control.iter().map(|c| Point2::new(c[3], c[4])).collect(),
+        tol,
+    )?;
+    let pb = BSpline2d::new(
+        knots,
+        control.iter().map(|c| Point2::new(c[5], c[6])).collect(),
+        tol,
+    )?;
+    Ok((Fitted { curve, error, met }, pa, pb))
+}
+
 /// The dimension-generic core.
 ///
 /// Least squares is solved coordinate by coordinate: the collocation matrix
