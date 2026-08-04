@@ -594,6 +594,49 @@ pub fn attach_pcurve(
     Ok(())
 }
 
+/// Attach a seam representation to an edge: one pcurve per side of a closed
+/// surface's join.
+///
+/// The counterpart of [`attach_pcurve`] for the edge that bounds one face
+/// twice — up one side of the parameter rectangle and down the other. Which
+/// pcurve applies to an occurrence is decided by that occurrence's
+/// orientation, which is the only thing distinguishing the two.
+///
+/// # Errors
+///
+/// [`OgError::Construction`](og_core::OgError::Construction) if `edge` is not
+/// an edge; [`OgError::Dangling`](og_core::OgError::Dangling) if it is not in
+/// this model.
+pub fn attach_seam(
+    model: &mut Model,
+    edge: &Shape,
+    forward: og_geom::PlanarCurve,
+    reversed: og_geom::PlanarCurve,
+    surface: og_topo::SurfaceId,
+    location: Location,
+    range: (f64, f64),
+) -> OgResult<()> {
+    if model.kind_of(edge)? != ShapeType::Edge {
+        og_bail!(Construction, "seams attach to edges");
+    }
+    let forward = model.geometry_mut().add_pcurve(forward);
+    let reversed = model.geometry_mut().add_pcurve(reversed);
+    let Some(node) = model.node_mut(edge) else {
+        og_bail!(Dangling, "edge is not in this model");
+    };
+    let og_topo::NodeData::Edge(data) = node.data_mut() else {
+        og_bail!(Construction, "edge node holds no edge data");
+    };
+    data.add(EdgeRepr::Seam {
+        forward,
+        reversed,
+        surface,
+        location,
+        range,
+    });
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

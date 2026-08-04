@@ -435,11 +435,20 @@ fn on_cylinder(curve: &Curve, cylinder: og_math::Cylinder, tol: Tolerances) -> O
                 return None;
             }
             let local = frame.to_local(circle.centre());
-            // Where the circle's own angle zero sits in the cylinder's angle.
+            // Where the circle's own angle zero sits in the cylinder's angle —
+            // and which way its parameter runs around the axis. A section
+            // circle inherits its winding from the pair that made it, and one
+            // wound against the cylinder's `u` — a circle cut by a plane whose
+            // normal opposes the axis — runs its pcurve in `-u`. Writing `+u`
+            // unconditionally here was the bug the boolean's drill test found:
+            // the pcurve evaluated half a turn away from the curve, and the
+            // face's arrangement tore along a seam that was not there.
             let start = circle.centre() + circle.frame().x().vector() * circle.radius();
             let at = frame.to_local(start);
             let phase = at.y.atan2(at.x);
-            let towards = og_math::Direction2::new(og_math::Vector2::new(1.0, 0.0), tol).ok()?;
+            let winding = circle.frame().z().dot(axis.direction).signum();
+            let towards =
+                og_math::Direction2::new(og_math::Vector2::new(winding, 0.0), tol).ok()?;
             Some(
                 Line2d::over(
                     og_math::Axis2::new(Point2::new(phase, local.z), towards),
@@ -750,6 +759,58 @@ mod tests {
                 ..IntersectOptions::default()
             };
             assert!(intersect_surfaces(&a, &b, options, T).is_err());
+        }
+    }
+
+    #[test]
+    fn a_circle_wound_against_the_axis_keeps_its_pcurve_same_parameter() {
+        // The winding bug the boolean's drill test found: a plane whose
+        // normal opposes the cylinder's axis cuts a circle wound against the
+        // cylinder's `u`, and the pcurve must run in `-u` with it. Written
+        // `+u` unconditionally, the pcurve evaluated half a turn away from
+        // the curve and every face built on the section tore in parameter
+        // space. Both windings are pinned by lifting the pcurve through the
+        // surface and demanding the curve's own point back.
+        let drum: SurfaceGeometry = CylinderSurface::new(
+            Cylinder::new(
+                Frame::new(Point::new(2.0, 2.0, -1.0), Direction::Z, Direction::X, T).unwrap(),
+                0.5,
+                T,
+            )
+            .unwrap(),
+            (0.0, 3.0),
+        )
+        .unwrap()
+        .into();
+        for normal in [Direction::Z, -Direction::Z] {
+            let frame = Frame::new(Point::ORIGIN, normal, Direction::X, T).unwrap();
+            let ground: SurfaceGeometry =
+                PlaneSurface::over(Plane::new(frame), (-4.0, 4.0), (-4.0, 4.0))
+                    .unwrap()
+                    .into();
+            let met = intersect_surfaces(&ground, &drum, IntersectOptions::default(), T).unwrap();
+            let SurfaceIntersection::Along(curves) = met else {
+                panic!("a plane through a cylinder sections it");
+            };
+            for sc in &curves {
+                let pcurve = sc
+                    .on_b
+                    .as_ref()
+                    .expect("a circle on its cylinder has a pcurve");
+                let (lo, hi) = sc.curve.domain();
+                for i in 0..8 {
+                    let t = lo + (hi - lo) * f64::from(i) / 8.0;
+                    let p3 = sc.curve.point_at(t, T).unwrap();
+                    let uv = pcurve.point_at(t, T).unwrap();
+                    let lifted = drum
+                        .point_at(uv.x.rem_euclid(core::f64::consts::TAU), uv.y, T)
+                        .unwrap();
+                    assert!(
+                        p3.distance(lifted) < 1e-9,
+                        "normal {normal:?}, t {t}: pcurve lifts {lifted:?} against {p3:?}"
+                    );
+                }
+            }
         }
     }
 }

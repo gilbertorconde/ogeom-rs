@@ -14,64 +14,92 @@
 //!    faces, rebuilds solids from face sets, and repairs tolerances;
 //! 4. filters that select from the general-fuse result.
 //!
-//! # The vertical slice
+//! # One pipeline, any analytic face
 //!
-//! What is implemented is that pipeline end to end for **planar-faced solids
-//! with straight edges** — boxes, wedges, prisms, and anything else whose
-//! boundary is polygons. Within that world nothing is approximated: sections
-//! are exact plane/plane lines clipped to both faces' trims, faces are split
-//! in their own parameter planes by an exact arrangement, each piece is
-//! classified against the other solid by the exact ray classifier, and the
-//! result is sewn, checked closed, and nested into solids and voids.
+//! The pipeline runs on solids whose faces are any surface §7's intersectors
+//! answer for — planes, cylinders, spheres, cones, tori — with the planar
+//! case as nothing more than the case where every curve is a line. Sections
+//! come from [`intersect_surfaces`](og_intersect::intersect_surfaces), exact
+//! with same-parameter pcurves where the projection has a closed form and
+//! *marched and fitted to a stated tolerance* where it does not. Paves — the
+//! points where sections meet boundary edges and each other — come from the
+//! exact curve/curve intersection. Every face is then split in its own
+//! parameter space by an arrangement of *strands*: polyline scaffolding, each
+//! naming the exact sub-curve it stands for, so the combinatorics run on
+//! polylines and the rebuilt result is exact curves, pcurves attached both
+//! sides, sewn back into shared topology by the sewing whose flipped-carry
+//! bug this crate found and §9 fixed.
 //!
-//! A curved face, a curved edge, or a tangential same-domain contact is
-//! *refused* with an error saying so, never silently mishandled — the refusal
-//! is recorded in `docs/SCOPE.md`'s deferred table, and the machinery §7
-//! built (marched sections with pcurves both sides) is what lifts it when the
-//! slice widens.
-//!
-//! The pave information of stage 2 lives inside the per-face arrangements
-//! here: a section's endpoint on an edge is the same world point in both
-//! adjacent faces' arrangements, which is what makes the split edges sew back
-//! into shared topology. The indexed, cross-referenced data structure arrives
-//! when curved intersections force paves to live on curves rather than in
-//! planes.
+//! Pieces are classified against the other solid by the exact ray classifier
+//! and the filters select: fuse keeps what is outside, common what is inside,
+//! cut flips the tool's contribution. Same-domain contact — a piece lying
+//! *on* the other boundary — and tangential touching are refused with an
+//! error naming the deferred entry, never silently mishandled.
 
 mod arrange;
 
 use og_algo::{
-    Built, Containment, History, classify_in_solid_exact, is_shell_closed, make_face, make_polygon,
-    sew, shape_bounds,
+    Built, Containment, History, classify_in_solid_exact, is_shell_closed, make_edge_between,
+    make_face_on, make_vertex, make_wire, sew, shape_bounds,
 };
 use og_core::{OgResult, Tolerances, og_bail};
+use og_geom::Curve2d as _;
 use og_geom::Curve3d as _;
-use og_geom::{Curve, PlaneSurface, SurfaceGeometry};
-use og_math::{Direction, Frame, Plane, Point, Point2, Vector};
-use og_topo::{EdgeRepr, Filter, Model, NodeData, Shape, ShapeType, explore, explore_unique};
+use og_geom::Surface as _;
+use og_geom::{Curve, PlanarCurve, SurfaceGeometry, Transformable};
+use og_math::{Point, Point2};
+use og_topo::{
+    EdgeRepr, Filter, Location, Model, NodeData, Shape, ShapeType, explore, explore_unique,
+};
 
-use arrange::{Piece, inside_rings, split};
+use arrange::{Strand, Traversal, assemble as arrange_pieces, inside_many};
+
+/// Parameter-space chord for the polyline scaffolding.
+const SCAFFOLD_CHORD: f64 = 1e-3;
+
+/// Parameter-space node snap for the arrangement.
+const PARAM_SNAP: f64 = 1e-6;
 
 // --- gathering ---------------------------------------------------------------
 
-/// One face of an argument, flattened into its own plane.
-struct PlanarFace {
+/// One boundary strand source: an edge as one face uses it, with the pcurve
+/// that side of it.
+struct BoundaryEdge {
+    /// The edge's node identity, for sharing paves across faces.
+    node: og_topo::TShapeId,
+    /// The curve in world space.
+    curve: Curve,
+    /// The portion the edge covers, in the curve's parameter.
+    crange: (f64, f64),
+    /// The pcurve on this face's surface.
+    pcurve: PlanarCurve,
+    /// The portion of the pcurve, mapped proportionally from `crange`.
+    prange: (f64, f64),
+    /// The other side of a seam, where this edge is one.
+    other_side: Option<(PlanarCurve, (f64, f64))>,
+}
+
+/// One face, gathered and vetted.
+struct GFace {
     face: Shape,
-    /// The world plane, oriented so its normal points out of the solid.
-    plane: Plane,
-    /// The 2D frame the arrangement runs in: `z` is the outward normal, so
-    /// counter-clockwise rings enclose material seen from outside.
-    frame: Frame,
-    /// Boundary rings as exact corner points in `frame` coordinates.
-    rings: Vec<Vec<Point2>>,
+    /// The surface in world space, placement applied.
+    surface: SurfaceGeometry,
+    /// A generous world bound: the boundary edges' sampled extent, expanded
+    /// by most of its own diagonal so a face bulging past its boundary — a
+    /// dome past its equator — stays covered. Used only to *gate refusals*:
+    /// two faces on one surface, or touching tangentially, are only a
+    /// conflict where the faces could actually meet.
+    bound: og_math::Aabb,
+    edges: Vec<BoundaryEdge>,
 }
 
-/// An argument solid, gathered and vetted for the slice.
-struct PlanarSolid {
+/// An argument solid.
+struct GSolid {
     solid: Shape,
-    faces: Vec<PlanarFace>,
+    faces: Vec<GFace>,
 }
 
-fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgResult<PlanarSolid> {
+fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgResult<GSolid> {
     if model.kind_of(solid)? != ShapeType::Solid {
         og_bail!(Construction, "boolean arguments are solids");
     }
@@ -89,549 +117,1019 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgResult<PlanarSolid
         let NodeData::Face(data) = node.data() else {
             og_bail!(Construction, "face node holds no face data");
         };
-        let Some(surface) = model.geometry().surface(data.surface) else {
+        let Some(stored) = model.geometry().surface(data.surface) else {
             og_bail!(Dangling, "face refers to a surface not in this model");
         };
-        let SurfaceGeometry::Plane(stored) = surface else {
+        let placement = face.transform(model.datums())?;
+        if (placement.scale_factor().abs() - 1.0).abs() > 1e-9 {
             og_bail!(
                 NotDone,
-                "the boolean's vertical slice covers planar-faced solids; a \
-                 curved face is refused rather than mishandled — see the \
-                 deferred table in docs/SCOPE.md"
+                "a scaled placement changes a surface's parameterization out \
+                 from under its pcurves; bake the scale before a boolean"
             );
-        };
-        let placement = face.transform(model.datums())?;
-        let mut plane = stored.plane().transformed(&placement, tol)?;
-        if face.orientation() == og_topo::Orientation::Reversed {
-            plane = plane.reversed();
         }
-        let axis = Direction::from_cross(
-            plane.normal().vector(),
-            Vector::new(0.312_8, 0.549_1, 0.775_6),
-            tol,
-        )?;
-        let frame = Frame::new(plane.origin(), plane.normal(), axis, tol)?;
+        let surface = stored.transformed(&placement, tol)?;
+        let surface_id = data.surface;
 
-        let mut rings = Vec::new();
-        for wire in explore(model, &face, Filter::OfType(ShapeType::Wire))? {
-            let ring = ring_corners(model, &wire, &frame, tol)?;
-            if ring.len() >= 3 {
-                rings.push(ring);
+        let mut edges = Vec::new();
+        for edge in explore_unique(model, &face, ShapeType::Edge)? {
+            let Some(edge_node) = model.node(&edge) else {
+                og_bail!(Dangling, "edge is not in this model");
+            };
+            let NodeData::Edge(edge_data) = edge_node.data() else {
+                og_bail!(Construction, "edge node holds no edge data");
+            };
+            let Some(EdgeRepr::Curve3d { curve, range, .. }) = edge_data.curve3d() else {
+                // A degenerate edge — a cone's apex — has no extent to split.
+                continue;
+            };
+            let Some(geometry) = model.geometry().curve(*curve) else {
+                og_bail!(Dangling, "curve is not in this model");
+            };
+            let world = geometry.transformed(&edge.transform(model.datums())?, tol)?;
+            let (pcurve, prange, other_side) =
+                match edge_data.pcurve_for(surface_id, edge.location()) {
+                    Some(EdgeRepr::PCurve {
+                        curve: pc, range, ..
+                    }) => {
+                        let Some(planar) = model.geometry().pcurve(*pc) else {
+                            og_bail!(Dangling, "pcurve is not in this model");
+                        };
+                        (planar.clone(), *range, None)
+                    }
+                    Some(EdgeRepr::Seam {
+                        forward,
+                        reversed,
+                        range,
+                        ..
+                    }) => {
+                        let (Some(f), Some(r)) = (
+                            model.geometry().pcurve(*forward),
+                            model.geometry().pcurve(*reversed),
+                        ) else {
+                            og_bail!(Dangling, "seam pcurve is not in this model");
+                        };
+                        (f.clone(), *range, Some((r.clone(), *range)))
+                    }
+                    _ => og_bail!(
+                        Construction,
+                        "an edge with no pcurve on its face cannot be split in \
+                         that face's parameter space"
+                    ),
+                };
+            edges.push(BoundaryEdge {
+                node: edge.node(),
+                curve: world,
+                crange: *range,
+                pcurve,
+                prange,
+                other_side,
+            });
+        }
+        if edges.is_empty() {
+            og_bail!(Construction, "a face with no boundary bounds nothing");
+        }
+        let mut bound = og_math::Aabb::EMPTY;
+        for e in &edges {
+            for i in 0..=16 {
+                #[allow(clippy::cast_precision_loss)]
+                let t = e.crange.0 + (e.crange.1 - e.crange.0) * f64::from(i) / 16.0;
+                bound = bound.with_point(e.curve.point_at(t, tol)?);
             }
         }
-        if rings.is_empty() {
-            og_bail!(Construction, "a face with no boundary ring bounds nothing");
-        }
-        faces.push(PlanarFace {
+        // A plane never bulges past its boundary; anything curved may — a
+        // dome past its equator — and gets most of its own diagonal as
+        // allowance.
+        let bulge = match &surface {
+            SurfaceGeometry::Plane(_) => 0.0,
+            _ => bound.diagonal() * 0.75,
+        };
+        let bound = bound.expanded(bulge + tol.confusion() * 1e2);
+        faces.push(GFace {
             face,
-            plane,
-            frame,
-            rings,
+            surface,
+            bound,
+            edges,
         });
     }
     if faces.is_empty() {
         og_bail!(Construction, "a solid with no faces bounds nothing");
     }
-    Ok(PlanarSolid {
+    Ok(GSolid {
         solid: solid.clone(),
         faces,
     })
 }
 
-/// A wire's corner points, chained in walking order, in `frame` coordinates.
-fn ring_corners(
-    model: &Model,
-    wire: &Shape,
-    frame: &Frame,
+/// A parameter carried proportionally from one range to another.
+fn rescale(t: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
+    let span = from.1 - from.0;
+    if span.abs() <= f64::MIN_POSITIVE {
+        return to.0;
+    }
+    to.0 + (to.1 - to.0) * (t - from.0) / span
+}
+
+/// The pcurve's course over a sub-range of the *curve's* parameters.
+fn pcurve_polyline(
+    pcurve: &PlanarCurve,
+    prange: (f64, f64),
+    crange: (f64, f64),
+    sub: (f64, f64),
     tol: Tolerances,
 ) -> OgResult<Vec<Point2>> {
-    // Each straight edge contributes its two endpoints; the chain is
-    // recovered by connectivity, which for a closed wire of segments is
-    // unambiguous.
-    let mut spans: Vec<(Point, Point)> = Vec::new();
-    for edge in explore(model, wire, Filter::OfType(ShapeType::Edge))? {
-        let Some(node) = model.node(&edge) else {
-            og_bail!(Dangling, "edge is not in this model");
-        };
-        let NodeData::Edge(data) = node.data() else {
-            og_bail!(Construction, "edge node holds no edge data");
-        };
-        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
-            continue;
-        };
-        let Some(geometry) = model.geometry().curve(*curve) else {
-            og_bail!(Dangling, "curve is not in this model");
-        };
-        if !matches!(geometry, Curve::Line(_)) {
-            og_bail!(
-                NotDone,
-                "the boolean's vertical slice covers straight edges; a curved \
-                 edge is refused rather than mishandled — see the deferred \
-                 table in docs/SCOPE.md"
-            );
+    let lo = rescale(sub.0, crange, prange);
+    let hi = rescale(sub.1, crange, prange);
+    // Enough samples that the first step approximates the tangent and the
+    // scanline interior test has a faithful outline. Straight pcurves get
+    // two points; everything else a fixed fine sampling.
+    let count = match pcurve {
+        PlanarCurve::Line(_) => 1,
+        _ => {
+            let span = (hi - lo).abs().max(SCAFFOLD_CHORD);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let n = (span / SCAFFOLD_CHORD).sqrt().ceil() as usize;
+            n.clamp(8, 256)
         }
-        let placement = edge.transform(model.datums())?;
-        let a = placement.apply(geometry.point_at(range.0, tol)?);
-        let b = placement.apply(geometry.point_at(range.1, tol)?);
-        spans.push((a, b));
-    }
-    if spans.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let reach = tol.confusion() * 10.0;
-    let mut chain: Vec<Point> = vec![spans[0].0];
-    let mut tail = spans[0].1;
-    chain.push(tail);
-    let mut used = vec![false; spans.len()];
-    used[0] = true;
-    for _ in 1..spans.len() {
-        let Some((index, flipped)) = spans.iter().enumerate().find_map(|(i, (a, b))| {
-            if used[i] {
-                return None;
-            }
-            if a.distance(tail) <= reach {
-                return Some((i, false));
-            }
-            if b.distance(tail) <= reach {
-                return Some((i, true));
-            }
-            None
-        }) else {
-            og_bail!(Construction, "a face boundary wire does not chain closed");
-        };
-        used[index] = true;
-        let (a, b) = spans[index];
-        tail = if flipped { a } else { b };
-        chain.push(tail);
-    }
-    if chain
-        .last()
-        .is_none_or(|end| end.distance(chain[0]) > reach)
-    {
-        og_bail!(Construction, "a face boundary wire does not chain closed");
-    }
-    chain.pop();
-
-    let mut out = Vec::with_capacity(chain.len());
-    for p in chain {
-        let local = frame.to_local(p);
-        if local.z.abs() > reach {
-            og_bail!(
-                Construction,
-                "a boundary corner sits {} off its face's plane",
-                local.z.abs()
-            );
-        }
-        out.push(Point2::new(local.x, local.y));
+    };
+    let mut out = Vec::with_capacity(count + 1);
+    for i in 0..=count {
+        #[allow(clippy::cast_precision_loss)]
+        let t = lo + (hi - lo) * i as f64 / count as f64;
+        out.push(pcurve.point_at(t, tol)?);
     }
     Ok(out)
 }
 
-// --- the filler: sections ----------------------------------------------------
+// --- the filler --------------------------------------------------------------
 
-/// One straight section segment, in world space.
-#[derive(Debug, Clone, Copy)]
-struct Section {
-    a: Point,
-    b: Point,
+/// One section curve between a face of `a` and a face of `b`.
+struct SectionRec {
+    curve: Curve,
+    /// The pcurve on the A face's surface, sharing the curve's parameter.
+    pc_a: PlanarCurve,
+    /// The same on the B face.
+    pc_b: PlanarCurve,
+    face_a: usize,
+    face_b: usize,
+    closed: bool,
 }
 
-/// The line two planes share, if they are not parallel.
-fn planes_line(a: &Plane, b: &Plane) -> Option<(Point, Vector)> {
-    let na = a.normal().vector();
-    let nb = b.normal().vector();
-    let direction = na.cross(nb);
-    let magnitude = direction.magnitude();
-    if magnitude <= 1e-9 {
-        return None;
+/// One kept sub-range of one section.
+#[derive(Clone)]
+struct SectionPiece {
+    section: usize,
+    range: (f64, f64),
+}
+
+/// What a face's arrangement strand stands for.
+#[derive(Clone)]
+enum Tag {
+    /// A sub-range of boundary edge `edge` (index into the face's edges).
+    Boundary { edge: usize, range: (f64, f64) },
+    /// A sub-range of a global section.
+    Section { section: usize, range: (f64, f64) },
+}
+
+/// Fold a param-space polyline into a periodic surface's chart, by one
+/// constant offset per axis.
+///
+/// A section's pcurve is *unwrapped* across a seam — continuous, and allowed
+/// to leave the stated domain, because that is what crossing a seam is. The
+/// arrangement lives in one chart, and the filler has already split every
+/// section at its seam crossings, so each strand spans at most one chart
+/// width and a single period shift per axis brings it home. The shift is
+/// chosen by the strand's midpoint, so endpoints sitting exactly on the
+/// chart's edge stay on whichever side the strand's body is.
+fn fold_into_chart(line: &mut [Point2], surface: &SurfaceGeometry) {
+    let ((ua, ub), (va, vb)) = surface.domain();
+    if line.is_empty() {
+        return;
     }
-    let direction = direction / magnitude;
-    // A point on both planes, found in the span of the two normals.
-    let da = na.dot(a.origin().to_vector());
-    let db = nb.dot(b.origin().to_vector());
-    let aa = na.dot(na);
-    let ab = na.dot(nb);
-    let bb = nb.dot(nb);
-    let determinant = ab.mul_add(-ab, aa * bb);
-    let ka = db.mul_add(-ab, da * bb) / determinant;
-    let kb = da.mul_add(-ab, db * aa) / determinant;
-    let point = Point::ORIGIN + na * ka + nb * kb;
-    Some((point, direction))
+    let mid = line[line.len() / 2];
+    if surface.is_periodic_u() {
+        let span = ub - ua;
+        if span > 0.0 {
+            let shift = (ua + (mid.x - ua).rem_euclid(span)) - mid.x;
+            for p in line.iter_mut() {
+                p.x += shift;
+            }
+        }
+    }
+    if surface.is_periodic_v() {
+        let span = vb - va;
+        if span > 0.0 {
+            let shift = (va + (mid.y - va).rem_euclid(span)) - mid.y;
+            for p in line.iter_mut() {
+                p.y += shift;
+            }
+        }
+    }
 }
 
-/// The parameter intervals of the line lying inside a face's trim.
-fn line_inside_face(
-    face: &PlanarFace,
-    origin: Point,
-    direction: Vector,
+/// Remove period tears from a sampled polyline, axis by axis.
+fn unwrap_polyline(line: &mut [Point2], surface: &SurfaceGeometry) {
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let spans = (
+        if surface.is_periodic_u() {
+            ub - ua
+        } else {
+            0.0
+        },
+        if surface.is_periodic_v() {
+            vb - va
+        } else {
+            0.0
+        },
+    );
+    for i in 1..line.len() {
+        if spans.0 > 0.0 {
+            while line[i].x - line[i - 1].x > spans.0 * 0.5 {
+                line[i].x -= spans.0;
+            }
+            while line[i].x - line[i - 1].x < -spans.0 * 0.5 {
+                line[i].x += spans.0;
+            }
+        }
+        if spans.1 > 0.0 {
+            while line[i].y - line[i - 1].y > spans.1 * 0.5 {
+                line[i].y -= spans.1;
+            }
+            while line[i].y - line[i - 1].y < -spans.1 * 0.5 {
+                line[i].y += spans.1;
+            }
+        }
+    }
+}
+
+/// Fold a point into a periodic surface's chart.
+fn fold_point_into_chart(p: Point2, surface: &SurfaceGeometry) -> Point2 {
+    let mut one = [p];
+    fold_into_chart(&mut one, surface);
+    one[0]
+}
+
+/// A sub-range of a closed curve, brought into its domain.
+///
+/// The filler split every wrap interval at the domain end, so a piece fits
+/// within one period; the fold of its start may still land the end a hair
+/// past the domain, which clamps.
+fn folded_range(range: (f64, f64), domain: (f64, f64), closed: bool) -> (f64, f64) {
+    if !closed {
+        return range;
+    }
+    let f0 = fold(range.0, domain);
+    let f1 = (f0 + (range.1 - range.0)).min(domain.1);
+    (f0, f1)
+}
+
+/// Fold a parameter into a closed curve's domain.
+fn fold(t: f64, domain: (f64, f64)) -> f64 {
+    let span = domain.1 - domain.0;
+    if span <= 0.0 {
+        return domain.0;
+    }
+    domain.0 + (t - domain.0).rem_euclid(span)
+}
+
+/// The sections between two gathered solids, with the paves they put on
+/// boundary edges.
+#[allow(clippy::type_complexity)]
+fn fill(
+    ga: &GSolid,
+    gb: &GSolid,
     tol: Tolerances,
-) -> Vec<(f64, f64)> {
-    let snap = tol.confusion();
-    let l0 = face.frame.to_local(origin);
-    let l1 = face.frame.to_local(origin + direction);
-    let p0 = Point2::new(l0.x, l0.y);
-    let e = Point2::new(l1.x, l1.y) - p0;
-
-    let mut crossings: Vec<f64> = Vec::new();
-    for ring in &face.rings {
-        for i in 0..ring.len() {
-            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
-            let d = b - a;
-            let denominator = e.cross(d);
-            if denominator.abs() <= snap {
+) -> OgResult<(
+    Vec<SectionRec>,
+    Vec<SectionPiece>,
+    std::collections::HashMap<og_topo::TShapeId, Vec<f64>>,
+)> {
+    use og_intersect::{
+        CurveCurveOptions, IntersectOptions, SurfaceIntersection, intersect_curves,
+        intersect_surfaces,
+    };
+    let mut sections: Vec<SectionRec> = Vec::new();
+    for (ia, fa) in ga.faces.iter().enumerate() {
+        for (ib, fb) in gb.faces.iter().enumerate() {
+            if !fa.bound.intersects(&fb.bound) {
+                // The faces cannot meet, whatever their surfaces do.
                 continue;
             }
-            let s = (a - p0).cross(e) / denominator;
-            if !(-snap..=1.0 + snap).contains(&s) {
-                continue;
-            }
-            crossings.push((a - p0).cross(d) / denominator);
-        }
-    }
-    crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-    crossings.dedup_by(|a, b| (*a - *b).abs() <= snap);
-
-    let mut intervals = Vec::new();
-    for pair in crossings.windows(2) {
-        let mid = f64::midpoint(pair[0], pair[1]);
-        // The parity of a sorted crossing list can lie at a grazed corner;
-        // asking the rings directly cannot.
-        if inside_rings(&face.rings, p0 + e * mid) {
-            intervals.push((pair[0], pair[1]));
-        }
-    }
-    intervals
-}
-
-/// Sorted-interval intersection.
-fn overlap(a: &[(f64, f64)], b: &[(f64, f64)], least: f64) -> Vec<(f64, f64)> {
-    let mut out = Vec::new();
-    for &(a0, a1) in a {
-        for &(b0, b1) in b {
-            let lo = a0.max(b0);
-            let hi = a1.min(b1);
-            if hi - lo > least {
-                out.push((lo, hi));
-            }
-        }
-    }
-    out
-}
-
-/// Split every section segment wherever another touches or crosses it, so
-/// both faces of every pair see the same subdivision — the slice's version of
-/// globally consistent paves.
-fn make_consistent(sections: &[Section], tol: Tolerances) -> Vec<Section> {
-    let snap = tol.confusion();
-    let mut cuts: Vec<Vec<f64>> = sections.iter().map(|_| vec![0.0, 1.0]).collect();
-    for i in 0..sections.len() {
-        for j in 0..sections.len() {
-            if i == j {
-                continue;
-            }
-            let s = &sections[i];
-            let o = &sections[j];
-            let d = s.b - s.a;
-            let length = d.magnitude();
-            // Endpoints of the other lying on this segment.
-            for p in [o.a, o.b] {
-                let t = (p - s.a).dot(d) / (length * length);
-                if t > snap / length && t < 1.0 - snap / length && (s.a + d * t).distance(p) <= snap
+            let met =
+                intersect_surfaces(&fa.surface, &fb.surface, IntersectOptions::default(), tol)?;
+            match met {
+                SurfaceIntersection::Apart => {}
+                SurfaceIntersection::Same => og_bail!(
+                    NotDone,
+                    "two faces lie on the same surface; same-domain contact is \
+                     refused rather than resolved — see the deferred table in \
+                     docs/SCOPE.md"
+                ),
+                SurfaceIntersection::Touching(points)
+                    if points
+                        .iter()
+                        .any(|p| fa.bound.contains(*p) && fb.bound.contains(*p)) =>
                 {
-                    cuts[i].push(t);
+                    og_bail!(
+                        NotDone,
+                        "two surfaces touch tangentially where both faces \
+                         reach; tangential contact is refused rather than \
+                         resolved — see the deferred table in docs/SCOPE.md"
+                    )
                 }
-            }
-            // A transversal crossing in space.
-            let e = o.b - o.a;
-            let cross = d.cross(e);
-            let denominator = cross.dot(cross);
-            if denominator > snap * snap {
-                let between = o.a - s.a;
-                let t = between.cross(e).dot(cross) / denominator;
-                let u = between.cross(d).dot(cross) / denominator;
-                if (0.0..=1.0).contains(&t)
-                    && (0.0..=1.0).contains(&u)
-                    && (s.a + d * t).distance(o.a + e * u) <= snap
-                {
-                    cuts[i].push(t);
+                SurfaceIntersection::Touching(_) => {}
+                SurfaceIntersection::Along(curves) => {
+                    for sc in curves {
+                        match (sc.on_a, sc.on_b) {
+                            (Some(pa), Some(pb)) => sections.push(SectionRec {
+                                curve: sc.curve,
+                                pc_a: pa,
+                                pc_b: pb,
+                                face_a: ia,
+                                face_b: ib,
+                                closed: sc.closed,
+                            }),
+                            _ => {
+                                // An exact curve whose projection has no
+                                // closed form: march the pair instead, so
+                                // curve and pcurves are fitted *together*.
+                                for fitted in march_pair(&fa.surface, &fb.surface, tol)? {
+                                    sections.push(SectionRec {
+                                        closed: fitted.curve.is_closed(tol),
+                                        curve: fitted.curve.into(),
+                                        pc_a: fitted.on_a.into(),
+                                        pc_b: fitted.on_b.into(),
+                                        face_a: ia,
+                                        face_b: ib,
+                                    });
+                                }
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
     }
-    let mut out = Vec::new();
-    for (section, mut ts) in sections.iter().zip(cuts) {
-        ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-        let d = section.b - section.a;
-        let length = d.magnitude();
-        let mut previous = None;
-        for t in ts {
-            if previous.is_none_or(|p: f64| (t - p) * length > snap) {
-                if let Some(p) = previous {
-                    out.push(Section {
-                        a: section.a + d * p,
-                        b: section.a + d * t,
+
+    // Boundary polylines per face, for the trim tests.
+    let outline = |face: &GFace| -> OgResult<Vec<Vec<Point2>>> {
+        let mut lines = Vec::new();
+        for e in &face.edges {
+            lines.push(pcurve_polyline(
+                &e.pcurve, e.prange, e.crange, e.crange, tol,
+            )?);
+            if let Some((other, orange)) = &e.other_side {
+                lines.push(pcurve_polyline(other, *orange, e.crange, e.crange, tol)?);
+            }
+        }
+        Ok(lines)
+    };
+    let mut outlines_a = Vec::new();
+    for f in &ga.faces {
+        outlines_a.push(outline(f)?);
+    }
+    let mut outlines_b = Vec::new();
+    for f in &gb.faces {
+        outlines_b.push(outline(f)?);
+    }
+
+    // Crossings of each section with the boundary edges of both its faces,
+    // and with every other section sharing a face.
+    let mut paves: std::collections::HashMap<og_topo::TShapeId, Vec<f64>> =
+        std::collections::HashMap::new();
+    let options = CurveCurveOptions::default();
+    let mut pieces: Vec<SectionPiece> = Vec::new();
+    for (si, section) in sections.iter().enumerate() {
+        let domain = section.curve.domain();
+        let mut trim_ts: Vec<f64> = Vec::new();
+        let mut edge_hits: Vec<(og_topo::TShapeId, f64, f64)> = Vec::new();
+        for (face_index, own) in [
+            (section.face_a, &ga.faces[section.face_a]),
+            (section.face_b, &gb.faces[section.face_b]),
+        ] {
+            let _ = face_index;
+            for e in &own.edges {
+                let found = intersect_curves(&section.curve, &e.curve, options, tol)?;
+                for crossing in &found.crossings {
+                    if crossing.gap > tol.confusion() {
+                        continue;
+                    }
+                    trim_ts.push(crossing.on_a);
+                    edge_hits.push((e.node, crossing.on_b, crossing.on_a));
+                }
+                if !found.overlaps.is_empty() {
+                    og_bail!(
+                        NotDone,
+                        "a section runs along a boundary edge; same-domain \
+                         contact is refused rather than resolved — see the \
+                         deferred table in docs/SCOPE.md"
+                    );
+                }
+            }
+        }
+        let mut cross_ts: Vec<f64> = Vec::new();
+        for (sj, other) in sections.iter().enumerate() {
+            if sj == si {
+                continue;
+            }
+            if other.face_a != section.face_a && other.face_b != section.face_b {
+                continue;
+            }
+            let found = intersect_curves(&section.curve, &other.curve, options, tol)?;
+            for crossing in &found.crossings {
+                if crossing.gap <= tol.confusion() {
+                    cross_ts.push(crossing.on_a);
+                }
+            }
+        }
+
+        // Candidate intervals between trim crossings, kept where the middle
+        // sits inside both faces' trims.
+        trim_ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+        trim_ts.dedup_by(|a, b| (*a - *b).abs() <= tol.parametric());
+        let mut candidates: Vec<(f64, f64)> = Vec::new();
+        if section.closed {
+            let period = domain.1 - domain.0;
+            if trim_ts.is_empty() {
+                candidates.push(domain);
+            } else {
+                for i in 0..trim_ts.len() {
+                    let lo = trim_ts[i];
+                    let hi = if i + 1 < trim_ts.len() {
+                        trim_ts[i + 1]
+                    } else {
+                        trim_ts[0] + period
+                    };
+                    candidates.push((lo, hi));
+                }
+            }
+        } else {
+            let mut stops = vec![domain.0];
+            stops.extend(
+                trim_ts
+                    .iter()
+                    .copied()
+                    .filter(|t| *t > domain.0 && *t < domain.1),
+            );
+            stops.push(domain.1);
+            for pair in stops.windows(2) {
+                candidates.push((pair[0], pair[1]));
+            }
+        }
+
+        let inside_both = |t: f64| -> OgResult<bool> {
+            let tf = if section.closed { fold(t, domain) } else { t };
+            let ua = fold_point_into_chart(
+                section.pc_a.point_at(tf, tol)?,
+                &ga.faces[section.face_a].surface,
+            );
+            let ub = fold_point_into_chart(
+                section.pc_b.point_at(tf, tol)?,
+                &gb.faces[section.face_b].surface,
+            );
+            let la: Vec<&[Point2]> = outlines_a[section.face_a]
+                .iter()
+                .map(Vec::as_slice)
+                .collect();
+            let lb: Vec<&[Point2]> = outlines_b[section.face_b]
+                .iter()
+                .map(Vec::as_slice)
+                .collect();
+            Ok(inside_many(&la, ua) && inside_many(&lb, ub))
+        };
+
+        for (lo, hi) in candidates {
+            if hi - lo <= tol.parametric() {
+                continue;
+            }
+            if !inside_both(f64::midpoint(lo, hi))? {
+                continue;
+            }
+            // Keep the paves that end a kept interval: those are where edges
+            // genuinely split.
+            for (node, on_edge, on_section) in &edge_hits {
+                let s = *on_section;
+                let near = |x: f64| {
+                    (s - x).abs() <= tol.parametric()
+                        || (section.closed
+                            && ((s + (domain.1 - domain.0)) - x).abs() <= tol.parametric())
+                };
+                if near(lo) || near(hi) {
+                    paves.entry(*node).or_default().push(*on_edge);
+                }
+            }
+            // Split at section/section crossings inside the kept interval,
+            // so every face sees the same subdivision.
+            let mut cuts = vec![lo];
+            // A wrap interval also splits at the curve's own domain end, so
+            // every piece lives within one period and evaluates in-domain
+            // after a single fold.
+            if section.closed
+                && domain.1 > lo + tol.parametric()
+                && domain.1 < hi - tol.parametric()
+            {
+                cuts.push(domain.1);
+            }
+            for &c in &cross_ts {
+                let c2 = if section.closed && c < lo {
+                    c + (domain.1 - domain.0)
+                } else {
+                    c
+                };
+                if c2 > lo + tol.parametric() && c2 < hi - tol.parametric() {
+                    cuts.push(c2);
+                }
+            }
+            cuts.push(hi);
+            cuts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+            for pair in cuts.windows(2) {
+                let (lo2, hi2) = (pair[0], pair[1]);
+                let from = section.curve.point_at(fold(lo2, domain), tol)?;
+                let to = section.curve.point_at(fold(hi2, domain), tol)?;
+                if from.distance(to) <= tol.confusion() {
+                    // A full loop: two arcs, so every strand has two
+                    // distinct endpoints.
+                    let mid = f64::midpoint(lo2, hi2);
+                    pieces.push(SectionPiece {
+                        section: si,
+                        range: (lo2, mid),
+                    });
+                    pieces.push(SectionPiece {
+                        section: si,
+                        range: (mid, hi2),
+                    });
+                } else {
+                    pieces.push(SectionPiece {
+                        section: si,
+                        range: (lo2, hi2),
                     });
                 }
-                previous = Some(t);
             }
         }
     }
-    out
+    Ok((sections, pieces, paves))
+}
+
+/// March a pair whose exact section has no closed-form pcurve.
+fn march_pair(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    tol: Tolerances,
+) -> OgResult<Vec<og_intersect::IntersectionCurve>> {
+    use og_intersect::{Marching, approximate_branch, branches};
+    let traced = branches(a, b, Marching::default(), tol)?;
+    let mut out = Vec::new();
+    for branch in &traced {
+        out.push(approximate_branch(a, b, branch, tol.confusion(), tol)?);
+    }
+    if out.is_empty() {
+        og_bail!(
+            NotDone,
+            "an exact section has no closed-form pcurve and marching resolved \
+             no branch; the configuration is beyond the intersector's current \
+             reach"
+        );
+    }
+    Ok(out)
 }
 
 // --- the general fuse --------------------------------------------------------
 
 /// One piece of one argument face, classified against the other argument.
 struct FacePiece {
-    source: Shape,
-    /// Rings in world space: outer counter-clockwise around `outward`, holes
-    /// clockwise.
-    rings: Vec<Vec<Point>>,
-    outward: Direction,
+    /// Which argument's face list, and which face.
+    from_a: bool,
+    face: usize,
+    rings: Vec<Vec<Traversal<Tag>>>,
     state: Containment,
 }
 
-/// The full result the filters select from.
 struct GeneralFused {
-    pieces_a: Vec<FacePiece>,
-    pieces_b: Vec<FacePiece>,
-    sections: Vec<Section>,
+    a: GSolid,
+    b: GSolid,
+    sections: Vec<SectionRec>,
+    pieces: Vec<FacePiece>,
 }
 
 fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgResult<GeneralFused> {
     let ga = gather(model, a, tol)?;
     let gb = gather(model, b, tol)?;
-    let snap = tol.confusion();
+    let (sections, section_pieces, paves) = fill(&ga, &gb, tol)?;
 
-    // Face/face sections: the line of the two planes, clipped to both trims.
-    let mut raw: Vec<Section> = Vec::new();
-    for fa in &ga.faces {
-        for fb in &gb.faces {
-            let Some((origin, direction)) = planes_line(&fa.plane, &fb.plane) else {
-                continue;
-            };
-            let ia = line_inside_face(fa, origin, direction, tol);
-            if ia.is_empty() {
-                continue;
+    let mut pieces: Vec<FacePiece> = Vec::new();
+    for (from_a, own, other) in [(true, &ga, &gb.solid), (false, &gb, &ga.solid)] {
+        for (fi, face) in own.faces.iter().enumerate() {
+            let mut strands: Vec<Strand<Tag>> = Vec::new();
+            for (ei, e) in face.edges.iter().enumerate() {
+                let mut stops = vec![e.crange.0];
+                if let Some(ts) = paves.get(&e.node) {
+                    let mut ts: Vec<f64> = ts
+                        .iter()
+                        .copied()
+                        .filter(|t| {
+                            *t > e.crange.0 + tol.parametric() && *t < e.crange.1 - tol.parametric()
+                        })
+                        .collect();
+                    ts.sort_by(|x, y| x.partial_cmp(y).unwrap_or(core::cmp::Ordering::Equal));
+                    ts.dedup_by(|x, y| (*x - *y).abs() <= tol.parametric());
+                    stops.extend(ts);
+                }
+                stops.push(e.crange.1);
+                // A closed boundary edge — a cap's full circle — needs two
+                // distinct endpoints per strand.
+                let closed_edge = e
+                    .curve
+                    .point_at(e.crange.0, tol)?
+                    .distance(e.curve.point_at(e.crange.1, tol)?)
+                    <= tol.confusion();
+                if closed_edge && stops.len() == 2 {
+                    stops.insert(1, f64::midpoint(e.crange.0, e.crange.1));
+                }
+                for pair in stops.windows(2) {
+                    let sub = (pair[0], pair[1]);
+                    if sub.1 - sub.0 <= tol.parametric() {
+                        continue;
+                    }
+                    strands.push(Strand {
+                        polyline: pcurve_polyline(&e.pcurve, e.prange, e.crange, sub, tol)?,
+                        tag: Tag::Boundary {
+                            edge: ei,
+                            range: sub,
+                        },
+                        boundary: true,
+                    });
+                    if let Some((other_pc, orange)) = &e.other_side {
+                        strands.push(Strand {
+                            polyline: pcurve_polyline(other_pc, *orange, e.crange, sub, tol)?,
+                            tag: Tag::Boundary {
+                                edge: ei,
+                                range: sub,
+                            },
+                            boundary: true,
+                        });
+                    }
+                }
             }
-            let ib = line_inside_face(fb, origin, direction, tol);
-            for (lo, hi) in overlap(&ia, &ib, snap) {
-                raw.push(Section {
-                    a: origin + direction * lo,
-                    b: origin + direction * hi,
+            for sp in &section_pieces {
+                let section = &sections[sp.section];
+                let (belongs, pcurve) = if from_a {
+                    (section.face_a == fi, &section.pc_a)
+                } else {
+                    (section.face_b == fi, &section.pc_b)
+                };
+                if !belongs {
+                    continue;
+                }
+                let domain = section.curve.domain();
+                let sub = if section.closed {
+                    (
+                        fold(sp.range.0, domain),
+                        sp.range.1 - sp.range.0 + fold(sp.range.0, domain),
+                    )
+                } else {
+                    sp.range
+                };
+                // The pcurve shares the curve's parameterization; sampling
+                // uses folded parameters for periodic curves.
+                let count = 32;
+                let mut line = Vec::with_capacity(count + 1);
+                for i in 0..=count {
+                    #[allow(clippy::cast_precision_loss)]
+                    let t = sub.0 + (sub.1 - sub.0) * i as f64 / count as f64;
+                    let tf = if section.closed { fold(t, domain) } else { t };
+                    line.push(pcurve.point_at(tf, tol)?);
+                }
+                // Folding the parameter can tear the sampled polyline at the
+                // period; unwrap it pointwise, then bring the whole strand
+                // into the chart with one shift.
+                unwrap_polyline(&mut line, &face.surface);
+                fold_into_chart(&mut line, &face.surface);
+                strands.push(Strand {
+                    polyline: line,
+                    tag: Tag::Section {
+                        section: sp.section,
+                        range: sp.range,
+                    },
+                    boundary: false,
+                });
+            }
+
+            let split = arrange_pieces(&strands, PARAM_SNAP)?;
+            for piece in split {
+                let probe = face
+                    .surface
+                    .point_at(piece.interior.x, piece.interior.y, tol)?;
+                let state = classify_in_solid_exact(model, other, probe, tol)?;
+                if state == Containment::On {
+                    og_bail!(
+                        NotDone,
+                        "a piece of a face lies on the other solid's boundary; \
+                         same-domain contact is refused rather than resolved — \
+                         see the deferred table in docs/SCOPE.md"
+                    );
+                }
+                pieces.push(FacePiece {
+                    from_a,
+                    face: fi,
+                    rings: piece.rings,
+                    state,
                 });
             }
         }
     }
-    let sections = make_consistent(&raw, tol);
-
-    let pieces_a = split_side(model, &ga, &gb.solid, &sections, tol)?;
-    let pieces_b = split_side(model, &gb, &ga.solid, &sections, tol)?;
     Ok(GeneralFused {
-        pieces_a,
-        pieces_b,
+        a: ga,
+        b: gb,
         sections,
+        pieces,
     })
-}
-
-/// Split every face of one argument by the sections lying in it, and classify
-/// each piece against the other argument.
-fn split_side(
-    model: &Model,
-    own: &PlanarSolid,
-    other: &Shape,
-    sections: &[Section],
-    tol: Tolerances,
-) -> OgResult<Vec<FacePiece>> {
-    let snap = tol.confusion();
-    let mut out = Vec::new();
-    for face in &own.faces {
-        let mut in_plane: Vec<(Point2, Point2)> = Vec::new();
-        for section in sections {
-            if face.plane.distance_to(section.a) > snap || face.plane.distance_to(section.b) > snap
-            {
-                continue;
-            }
-            let la = face.frame.to_local(section.a);
-            let lb = face.frame.to_local(section.b);
-            in_plane.push((Point2::new(la.x, la.y), Point2::new(lb.x, lb.y)));
-        }
-        let pieces = split(&face.rings, &in_plane, snap)?;
-        for Piece { rings, interior } in pieces {
-            let world = |p: Point2| face.frame.to_world(Point::new(p.x, p.y, 0.0));
-            let probe = world(interior);
-            let state = classify_in_solid_exact(model, other, probe, tol)?;
-            if state == Containment::On {
-                og_bail!(
-                    NotDone,
-                    "a piece of a face lies on the other solid's boundary; \
-                     same-domain contact is refused by the vertical slice \
-                     rather than resolved — see the deferred table in \
-                     docs/SCOPE.md"
-                );
-            }
-            out.push(FacePiece {
-                source: face.face.clone(),
-                rings: rings
-                    .into_iter()
-                    .map(|ring| ring.into_iter().map(world).collect())
-                    .collect(),
-                outward: face.plane.normal(),
-                state,
-            });
-        }
-    }
-    Ok(out)
 }
 
 // --- rebuilding --------------------------------------------------------------
 
-/// Build one face from a piece, forward or with its material side flipped.
-fn build_piece(
-    model: &mut Model,
-    piece: &FacePiece,
-    reversed: bool,
-    tol: Tolerances,
-) -> OgResult<Shape> {
-    let normal = if reversed {
-        piece.outward.reversed()
-    } else {
-        piece.outward
-    };
-    let origin = piece.rings[0][0];
-    let plane = Plane::through(origin, normal);
-
-    // The surface's parameter window, from the rings themselves.
-    let frame = plane.frame();
-    let mut u = (f64::INFINITY, f64::NEG_INFINITY);
-    let mut v = (f64::INFINITY, f64::NEG_INFINITY);
-    for p in piece.rings.iter().flatten() {
-        let local = frame.to_local(*p);
-        u = (u.0.min(local.x), u.1.max(local.x));
-        v = (v.0.min(local.y), v.1.max(local.y));
-    }
-    let surface = PlaneSurface::over(plane, (u.0 - 1.0, u.1 + 1.0), (v.0 - 1.0, v.1 + 1.0))?;
-
-    let mut wires = Vec::new();
-    for ring in &piece.rings {
-        let points: Vec<Point> = if reversed {
-            ring.iter().rev().copied().collect()
-        } else {
-            ring.clone()
-        };
-        wires.push(make_polygon(model, &points, true, tol)?.shape);
-    }
-    Ok(make_face(model, surface.into(), &wires, tol)?.shape)
+/// Everything the rebuild shares across pieces.
+struct Rebuild<'m> {
+    model: &'m mut Model,
+    /// World surface ids, minted once per source face.
+    surfaces_a: Vec<Option<og_topo::SurfaceId>>,
+    surfaces_b: Vec<Option<og_topo::SurfaceId>>,
+    /// Vertices shared by position: a wire's connectivity is checked by node
+    /// identity, so two sub-edges meeting at a point must *name* the same
+    /// vertex, not merely coincide there.
+    vertices: Vec<(Point, Shape)>,
 }
 
-/// Attach same-parameter pcurves to every edge of a sewn face.
-///
-/// Deliberately *after* sewing, against each surviving edge's own canonical
-/// curve: sewing may keep either of two coincident edges and flip the other's
-/// uses, and a pcurve computed before that decision can end up parameterized
-/// backwards relative to the survivor. Computed from the survivor's endpoints
-/// in the face's own plane, the pcurve agrees with the curve it annotates by
-/// construction.
-fn attach_pcurves(model: &mut Model, face: &Shape, tol: Tolerances) -> OgResult<()> {
-    let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
-        og_bail!(Construction, "face node holds no face data");
-    };
-    let surface_id = data.surface;
-    let Some(SurfaceGeometry::Plane(stored)) = model.geometry().surface(surface_id) else {
-        og_bail!(Construction, "a sewn boolean face is not planar");
-    };
-    let frame = stored.plane().frame();
-    let mut wanted: Vec<(Shape, Point2, Point2)> = Vec::new();
-    for edge in explore(model, face, Filter::OfType(ShapeType::Edge))? {
-        let Some(node) = model.node(&edge) else {
-            og_bail!(Dangling, "edge is not in this model");
-        };
-        let NodeData::Edge(edge_data) = node.data() else {
-            og_bail!(Construction, "edge node holds no edge data");
-        };
-        if edge_data
-            .representations
+impl Rebuild<'_> {
+    fn vertex(&mut self, p: Point, tol: Tolerances) -> Shape {
+        if let Some((_, shape)) = self
+            .vertices
             .iter()
-            .any(|r| matches!(r, EdgeRepr::PCurve { surface, .. } if *surface == surface_id))
+            .find(|(q, _)| q.distance(p) <= tol.confusion() * 10.0)
         {
-            continue;
+            return shape.clone();
         }
-        let Some(EdgeRepr::Curve3d { curve, range, .. }) = edge_data.curve3d() else {
-            continue;
-        };
-        let Some(geometry) = model.geometry().curve(*curve) else {
-            og_bail!(Dangling, "curve is not in this model");
-        };
-        let from = geometry.point_at(range.0, tol)?;
-        let to = geometry.point_at(range.1, tol)?;
-        let local = |p: Point| {
-            let l = frame.to_local(p);
-            Point2::new(l.x, l.y)
-        };
-        wanted.push((edge, local(from), local(to)));
+        let shape = make_vertex(self.model, p).shape;
+        self.vertices.push((p, shape.clone()));
+        shape
     }
-    for (edge, a2, b2) in wanted {
-        let pcurve: og_geom::PlanarCurve = og_geom::Line2d::segment(a2, b2, tol)?.into();
-        og_algo::attach_pcurve(
-            model,
-            &edge,
-            pcurve,
-            surface_id,
-            og_topo::Location::identity(),
-            (0.0, a2.distance(b2)),
-        )?;
+
+    fn surface_id(
+        &mut self,
+        fused: &GeneralFused,
+        from_a: bool,
+        face: usize,
+    ) -> og_topo::SurfaceId {
+        let slot = if from_a {
+            &mut self.surfaces_a[face]
+        } else {
+            &mut self.surfaces_b[face]
+        };
+        if let Some(id) = slot {
+            return *id;
+        }
+        let surface = if from_a {
+            fused.a.faces[face].surface.clone()
+        } else {
+            fused.b.faces[face].surface.clone()
+        };
+        let id = self.model.geometry_mut().add_surface(surface);
+        *slot = Some(id);
+        id
     }
-    Ok(())
+}
+
+/// Build one piece as a face, orientation matching its source face's side.
+fn build_piece(
+    rebuild: &mut Rebuild,
+    fused: &GeneralFused,
+    piece: &FacePiece,
+    tol: Tolerances,
+) -> OgResult<Shape> {
+    let own = if piece.from_a { &fused.a } else { &fused.b };
+    let face = &own.faces[piece.face];
+    let surface_id = rebuild.surface_id(fused, piece.from_a, piece.face);
+
+    // Sub-edges cached within the piece, so a seam used from both sides is
+    // one edge appearing twice.
+    let mut cache: Vec<(usize, bool, (f64, f64), Shape)> = Vec::new();
+    let mut wires = Vec::new();
+    for ring in &piece.rings {
+        let mut edges = Vec::with_capacity(ring.len());
+        for traversal in ring {
+            let (key_edge, key_section, range) = match &traversal.tag {
+                Tag::Boundary { edge, range } => (*edge, false, *range),
+                Tag::Section { section, range } => (*section, true, *range),
+            };
+            let near = |a: (f64, f64), b: (f64, f64)| {
+                (a.0 - b.0).abs() <= tol.parametric() && (a.1 - b.1).abs() <= tol.parametric()
+            };
+            let built = if let Some((.., shape)) = cache
+                .iter()
+                .find(|(k, s, r, _)| *k == key_edge && *s == key_section && near(*r, range))
+            {
+                shape.clone()
+            } else {
+                let shape = build_sub_edge(
+                    rebuild,
+                    fused,
+                    piece.from_a,
+                    face,
+                    surface_id,
+                    &traversal.tag,
+                    tol,
+                )?;
+                cache.push((key_edge, key_section, range, shape.clone()));
+                shape
+            };
+            edges.push(if traversal.reversed {
+                built.reversed()
+            } else {
+                built
+            });
+        }
+        if let Err(e) = make_wire(rebuild.model, &edges, tol) {
+            for (i, edge) in edges.iter().enumerate() {
+                if let Ok(Some((a, b))) = og_algo::edge_vertices(rebuild.model, edge) {
+                    let pa = rebuild
+                        .model
+                        .node(&a)
+                        .and_then(|n| n.data().as_vertex().map(|v| v.point));
+                    let pb = rebuild
+                        .model
+                        .node(&b)
+                        .and_then(|n| n.data().as_vertex().map(|v| v.point));
+                    eprintln!(
+                        "DBG edge {i} rev={} {:?} -> {:?}",
+                        edge.orientation() == og_topo::Orientation::Reversed,
+                        pa,
+                        pb
+                    );
+                }
+            }
+            return Err(e);
+        }
+        wires.push(make_wire(rebuild.model, &edges, tol)?.shape);
+    }
+    let built = make_face_on(rebuild.model, surface_id, &wires, tol)?.shape;
+    Ok(
+        if face.face.orientation() == og_topo::Orientation::Reversed {
+            built.reversed()
+        } else {
+            built
+        },
+    )
+}
+
+/// Build the exact sub-edge a tag names, pcurves attached.
+fn build_sub_edge(
+    rebuild: &mut Rebuild,
+    fused: &GeneralFused,
+    from_a: bool,
+    face: &GFace,
+    surface_id: og_topo::SurfaceId,
+    tag: &Tag,
+    tol: Tolerances,
+) -> OgResult<Shape> {
+    match tag {
+        Tag::Boundary { edge, range } => {
+            let e = &face.edges[*edge];
+            let from = e.curve.point_at(range.0, tol)?;
+            let to = e.curve.point_at(range.1, tol)?;
+            let v0 = rebuild.vertex(from, tol);
+            let v1 = rebuild.vertex(to, tol);
+            let model = &mut *rebuild.model;
+            let built = make_edge_between(model, e.curve.clone(), *range, &v0, &v1, tol)?.shape;
+            let sub_p = (
+                rescale(range.0, e.crange, e.prange),
+                rescale(range.1, e.crange, e.prange),
+            );
+            match &e.other_side {
+                None => og_algo::attach_pcurve(
+                    model,
+                    &built,
+                    e.pcurve.clone(),
+                    surface_id,
+                    Location::identity(),
+                    sub_p,
+                )?,
+                Some((other, orange)) => {
+                    // A seam: both sides attach, and an occurrence picks its
+                    // side by its orientation.
+                    let sub_o = (
+                        rescale(range.0, e.crange, *orange),
+                        rescale(range.1, e.crange, *orange),
+                    );
+                    let _ = sub_o;
+                    og_algo::attach_seam(
+                        model,
+                        &built,
+                        e.pcurve.clone(),
+                        other.clone(),
+                        surface_id,
+                        Location::identity(),
+                        sub_p,
+                    )?;
+                }
+            }
+            Ok(built)
+        }
+        Tag::Section { section, range } => {
+            let s = &fused.sections[*section];
+            let domain = s.curve.domain();
+            let (f0, f1) = folded_range(*range, domain, s.closed);
+            let from = s.curve.point_at(fold(f0, domain), tol)?;
+            let to = s.curve.point_at(fold(f1, domain), tol)?;
+            let v0 = rebuild.vertex(from, tol);
+            let v1 = rebuild.vertex(to, tol);
+            let model = &mut *rebuild.model;
+            let built = make_edge_between(model, s.curve.clone(), (f0, f1), &v0, &v1, tol)?.shape;
+            // The section's pcurve is unwrapped across any seam; the face's
+            // triangulator lives in one chart, so the attached copy is folded
+            // home by the same period shift the arrangement gave this
+            // strand's polyline — decided by the sub-range's midpoint, so an
+            // endpoint sitting exactly on the chart's edge stays on the side
+            // the arc's body is.
+            let pcurve = if from_a { &s.pc_a } else { &s.pc_b };
+            let mid = pcurve.point_at(f64::midpoint(f0, f1), tol)?;
+            let folded = fold_point_into_chart(mid, &face.surface);
+            let shifted =
+                pcurve.transformed(&og_math::Transform2::translation(folded - mid), tol)?;
+            og_algo::attach_pcurve(
+                model,
+                &built,
+                shifted,
+                surface_id,
+                Location::identity(),
+                (f0, f1),
+            )?;
+            Ok(built)
+        }
+    }
 }
 
 /// Sew kept pieces, demand closure, and nest shells into solids and voids.
-fn assemble(
+fn assemble_result(
     model: &mut Model,
+    fused: &GeneralFused,
     kept: &[(usize, bool)],
-    pieces: &[&FacePiece],
     a: &Shape,
     b: &Shape,
     tol: Tolerances,
 ) -> OgResult<Built> {
     let mut history = History::new();
+    let source_face = |piece: &FacePiece| -> Shape {
+        if piece.from_a {
+            fused.a.faces[piece.face].face.clone()
+        } else {
+            fused.b.faces[piece.face].face.clone()
+        }
+    };
 
     if kept.is_empty() {
         // A legitimate answer: cutting a solid away entirely leaves nothing.
         let empty = model.add_compound(&[])?;
-        for piece in pieces {
-            history.delete(&piece.source);
+        for piece in &fused.pieces {
+            history.delete(&source_face(piece));
         }
         history.modify(a, empty.clone());
         history.modify(b, empty.clone());
         return Ok(Built::new(empty, history));
     }
 
+    let mut rebuild = Rebuild {
+        model,
+        surfaces_a: vec![None; fused.a.faces.len()],
+        surfaces_b: vec![None; fused.b.faces.len()],
+        vertices: Vec::new(),
+    };
     let mut faces = Vec::new();
     let mut kept_sources: Vec<Shape> = Vec::new();
-    for &(index, reversed) in kept {
-        let piece = pieces[index];
-        let built = build_piece(model, piece, reversed, tol)?;
-        history.modify(&piece.source, built.clone());
-        kept_sources.push(piece.source.clone());
+    for &(index, flip) in kept {
+        let piece = &fused.pieces[index];
+        let mut built = build_piece(&mut rebuild, fused, piece, tol)?;
+        if flip {
+            built = built.reversed();
+        }
+        history.modify(&source_face(piece), built.clone());
+        kept_sources.push(source_face(piece));
         faces.push(built);
     }
-    for piece in pieces {
-        if !kept_sources.iter().any(|s| s == &piece.source) {
-            history.delete(&piece.source);
+    for piece in &fused.pieces {
+        let source = source_face(piece);
+        if !kept_sources.iter().any(|s| s == &source) {
+            history.delete(&source);
         }
     }
 
+    let model = rebuild.model;
     let sewn = sew(model, &faces, tol)?;
     for shell in &sewn.shells {
-        for face in explore(model, shell, Filter::OfType(ShapeType::Face))? {
-            attach_pcurves(model, &face, tol)?;
-        }
         if !is_shell_closed(model, shell)? {
             og_bail!(
                 NotDone,
                 "the kept pieces did not close into a shell; the configuration \
-                 is beyond the vertical slice"
+                 is beyond what the boolean currently resolves"
             );
         }
     }
@@ -674,20 +1172,20 @@ fn assemble(
 ///
 /// # Errors
 ///
-/// [`OgError::NotDone`](og_core::OgError::NotDone) for configurations beyond
-/// the vertical slice — curved faces, tangential same-domain contact;
+/// [`OgError::NotDone`](og_core::OgError::NotDone) for configurations the
+/// boolean refuses — tangential or same-domain contact, scaled placements;
 /// [`OgError::Construction`](og_core::OgError::Construction) for arguments
 /// that are not closed solids.
 pub fn fuse(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgResult<Built> {
     let fused = general_fuse(model, a, b, tol)?;
-    let pieces: Vec<&FacePiece> = fused.pieces_a.iter().chain(&fused.pieces_b).collect();
-    let kept: Vec<(usize, bool)> = pieces
+    let kept: Vec<(usize, bool)> = fused
+        .pieces
         .iter()
         .enumerate()
         .filter(|(_, p)| p.state == Containment::Out)
         .map(|(i, _)| (i, false))
         .collect();
-    assemble(model, &kept, &pieces, a, b, tol)
+    assemble_result(model, &fused, &kept, a, b, tol)
 }
 
 /// The intersection of two solids.
@@ -697,14 +1195,14 @@ pub fn fuse(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgResul
 /// As [`fuse`].
 pub fn common(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgResult<Built> {
     let fused = general_fuse(model, a, b, tol)?;
-    let pieces: Vec<&FacePiece> = fused.pieces_a.iter().chain(&fused.pieces_b).collect();
-    let kept: Vec<(usize, bool)> = pieces
+    let kept: Vec<(usize, bool)> = fused
+        .pieces
         .iter()
         .enumerate()
         .filter(|(_, p)| p.state == Containment::In)
         .map(|(i, _)| (i, false))
         .collect();
-    assemble(model, &kept, &pieces, a, b, tol)
+    assemble_result(model, &fused, &kept, a, b, tol)
 }
 
 /// The first solid with the second removed.
@@ -718,21 +1216,17 @@ pub fn common(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgRes
 /// As [`fuse`].
 pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgResult<Built> {
     let fused = general_fuse(model, a, b, tol)?;
-    let boundary_a = fused.pieces_a.len();
-    let pieces: Vec<&FacePiece> = fused.pieces_a.iter().chain(&fused.pieces_b).collect();
-    let kept: Vec<(usize, bool)> = pieces
+    let kept: Vec<(usize, bool)> = fused
+        .pieces
         .iter()
         .enumerate()
-        .filter_map(|(i, p)| {
-            let from_a = i < boundary_a;
-            match (from_a, p.state) {
-                (true, Containment::Out) => Some((i, false)),
-                (false, Containment::In) => Some((i, true)),
-                _ => None,
-            }
+        .filter_map(|(i, p)| match (p.from_a, p.state) {
+            (true, Containment::Out) => Some((i, false)),
+            (false, Containment::In) => Some((i, true)),
+            _ => None,
         })
         .collect();
-    assemble(model, &kept, &pieces, a, b, tol)
+    assemble_result(model, &fused, &kept, a, b, tol)
 }
 
 /// The edges where the two solids' boundaries cross.
@@ -742,13 +1236,35 @@ pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgResult
 /// As [`fuse`].
 pub fn section(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgResult<Built> {
     let fused = general_fuse(model, a, b, tol)?;
-    let mut edges = Vec::new();
-    let mut history = History::new();
-    for s in &fused.sections {
-        let wire = make_polygon(model, &[s.a, s.b], false, tol)?.shape;
-        for edge in explore(model, &wire, Filter::OfType(ShapeType::Edge))? {
-            edges.push(edge);
+    // Every section sub-edge that survived into some piece's ring, built
+    // once per distinct sub-range.
+    let mut wanted: Vec<(usize, (f64, f64))> = Vec::new();
+    for piece in &fused.pieces {
+        for ring in &piece.rings {
+            for traversal in ring {
+                if let Tag::Section { section, range } = &traversal.tag {
+                    let near = |a: (f64, f64), b: (f64, f64)| {
+                        (a.0 - b.0).abs() <= tol.parametric()
+                            && (a.1 - b.1).abs() <= tol.parametric()
+                    };
+                    if !wanted.iter().any(|(s, r)| s == section && near(*r, *range)) {
+                        wanted.push((*section, *range));
+                    }
+                }
+            }
         }
+    }
+    let mut history = History::new();
+    let mut edges = Vec::new();
+    for (si, range) in wanted {
+        let s = &fused.sections[si];
+        let domain = s.curve.domain();
+        let (f0, f1) = folded_range(range, domain, s.closed);
+        let from = s.curve.point_at(fold(f0, domain), tol)?;
+        let to = s.curve.point_at(fold(f1, domain), tol)?;
+        let v0 = make_vertex(model, from).shape;
+        let v1 = make_vertex(model, to).shape;
+        edges.push(make_edge_between(model, s.curve.clone(), (f0, f1), &v0, &v1, tol)?.shape);
     }
     let result = model.add_compound(&edges)?;
     history.modify(a, result.clone());
@@ -761,15 +1277,26 @@ pub fn section(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgRe
 mod tests {
     use super::*;
     use og_algo::{check, make_box, make_cylinder, volume_properties};
+    use og_math::{Direction, Frame};
     use og_mesh::Deflection;
 
     const T: Tolerances = Tolerances::millimetres();
+    const PI: f64 = core::f64::consts::PI;
+
+    fn frame_at(origin: Point) -> Frame {
+        Frame::new(origin, Direction::Z, Direction::X, T).unwrap()
+    }
 
     fn boxes(model: &mut Model) -> (Shape, Shape) {
         // Overlapping in the corner cube [1,2]^3.
         let a = make_box(model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
-        let at = Frame::new(Point::new(1.0, 1.0, 1.0), Direction::Z, Direction::X, T).unwrap();
-        let b = make_box(model, at, (2.0, 2.0, 2.0), T).unwrap();
+        let b = make_box(
+            model,
+            frame_at(Point::new(1.0, 1.0, 1.0)),
+            (2.0, 2.0, 2.0),
+            T,
+        )
+        .unwrap();
         (a.shape, b.shape)
     }
 
@@ -796,7 +1323,6 @@ mod tests {
         let (a, b) = boxes(&mut model);
         let fused = fuse(&mut model, &a, &b, T).unwrap();
         assert_valid(&model, &fused.shape);
-        // 8 + 8 - 1, and the tessellation of planar faces is exact.
         assert!((volume(&model, &fused.shape) - 15.0).abs() < 1e-9);
         assert_eq!(
             fused.history.modified(&a),
@@ -824,8 +1350,6 @@ mod tests {
 
     #[test]
     fn section_of_overlapping_boxes_is_the_six_segment_seam() {
-        // The boundaries cross along a closed loop of six unit segments
-        // around the shared corner cube.
         let mut model = Model::new();
         let (a, b) = boxes(&mut model);
         let result = section(&mut model, &a, &b, T).unwrap();
@@ -837,25 +1361,29 @@ mod tests {
     fn fuse_of_disjoint_boxes_is_a_compound_of_both() {
         let mut model = Model::new();
         let a = make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
-        let far = Frame::new(Point::new(5.0, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
-        let b = make_box(&mut model, far, (2.0, 2.0, 2.0), T).unwrap();
+        let b = make_box(
+            &mut model,
+            frame_at(Point::new(5.0, 0.0, 0.0)),
+            (2.0, 2.0, 2.0),
+            T,
+        )
+        .unwrap();
         let fused = fuse(&mut model, &a.shape, &b.shape, T).unwrap();
-        assert_eq!(
-            model.kind_of(&fused.shape).unwrap(),
-            ShapeType::Compound,
-            "disjoint solids stay two solids, honestly"
-        );
+        assert_eq!(model.kind_of(&fused.shape).unwrap(), ShapeType::Compound);
         assert!((volume(&model, &fused.shape) - 16.0).abs() < 1e-9);
     }
 
     #[test]
     fn cutting_a_through_post_leaves_a_slab_with_a_hole() {
-        // The result's top and bottom faces have holes: the arrangement's
-        // nesting, the sewing, and the checker all have to cooperate.
         let mut model = Model::new();
         let slab = make_box(&mut model, Frame::WORLD, (4.0, 4.0, 1.0), T).unwrap();
-        let below = Frame::new(Point::new(1.5, 1.5, -1.0), Direction::Z, Direction::X, T).unwrap();
-        let post = make_box(&mut model, below, (1.0, 1.0, 3.0), T).unwrap();
+        let post = make_box(
+            &mut model,
+            frame_at(Point::new(1.5, 1.5, -1.0)),
+            (1.0, 1.0, 3.0),
+            T,
+        )
+        .unwrap();
         let result = cut(&mut model, &slab.shape, &post.shape, T).unwrap();
         assert_valid(&model, &result.shape);
         assert!((volume(&model, &result.shape) - 15.0).abs() < 1e-9);
@@ -865,8 +1393,13 @@ mod tests {
     fn common_with_a_contained_box_is_that_box() {
         let mut model = Model::new();
         let outer = make_box(&mut model, Frame::WORLD, (6.0, 6.0, 6.0), T).unwrap();
-        let at = Frame::new(Point::new(2.0, 2.0, 2.0), Direction::Z, Direction::X, T).unwrap();
-        let inner = make_box(&mut model, at, (2.0, 2.0, 2.0), T).unwrap();
+        let inner = make_box(
+            &mut model,
+            frame_at(Point::new(2.0, 2.0, 2.0)),
+            (2.0, 2.0, 2.0),
+            T,
+        )
+        .unwrap();
         let result = common(&mut model, &outer.shape, &inner.shape, T).unwrap();
         assert_valid(&model, &result.shape);
         assert!((volume(&model, &result.shape) - 8.0).abs() < 1e-9);
@@ -876,8 +1409,13 @@ mod tests {
     fn cutting_everything_away_leaves_an_empty_compound() {
         let mut model = Model::new();
         let outer = make_box(&mut model, Frame::WORLD, (6.0, 6.0, 6.0), T).unwrap();
-        let at = Frame::new(Point::new(2.0, 2.0, 2.0), Direction::Z, Direction::X, T).unwrap();
-        let inner = make_box(&mut model, at, (2.0, 2.0, 2.0), T).unwrap();
+        let inner = make_box(
+            &mut model,
+            frame_at(Point::new(2.0, 2.0, 2.0)),
+            (2.0, 2.0, 2.0),
+            T,
+        )
+        .unwrap();
         let result = cut(&mut model, &inner.shape, &outer.shape, T).unwrap();
         assert_eq!(model.kind_of(&result.shape).unwrap(), ShapeType::Compound);
         assert!(
@@ -888,11 +1426,74 @@ mod tests {
     }
 
     #[test]
-    fn a_curved_argument_is_refused_with_instructions() {
+    fn drilling_a_box_leaves_a_cylindrical_hole() {
+        // The curved milestone: box minus a through-post cylinder. The box's
+        // top and bottom faces come back with *circular* holes, the hole's
+        // wall is the cylinder's own surface with its material side flipped,
+        // and the cylinder's seam and both section circles all had to split
+        // and sew for the shell to close.
         let mut model = Model::new();
-        let block = make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
-        let drum = make_cylinder(&mut model, Frame::WORLD, 1.0, 2.0, T).unwrap();
-        assert!(fuse(&mut model, &block.shape, &drum.shape, T).is_err());
+        let block = make_box(&mut model, Frame::WORLD, (4.0, 4.0, 1.0), T).unwrap();
+        let drill = make_cylinder(
+            &mut model,
+            frame_at(Point::new(2.0, 2.0, -1.0)),
+            0.5,
+            3.0,
+            T,
+        )
+        .unwrap();
+        let result = cut(&mut model, &block.shape, &drill.shape, T).unwrap();
+        assert_valid(&model, &result.shape);
+        let exact = 16.0 - PI * 0.25;
+        let got = volume(&model, &result.shape);
+        assert!(
+            (got - exact).abs() / exact < 2e-3,
+            "volume {got} against {exact}"
+        );
+    }
+
+    #[test]
+    fn common_of_a_box_and_a_cylinder_is_the_post_inside_it() {
+        let mut model = Model::new();
+        let block = make_box(&mut model, Frame::WORLD, (4.0, 4.0, 1.0), T).unwrap();
+        let post = make_cylinder(
+            &mut model,
+            frame_at(Point::new(2.0, 2.0, -1.0)),
+            0.5,
+            3.0,
+            T,
+        )
+        .unwrap();
+        let result = common(&mut model, &block.shape, &post.shape, T).unwrap();
+        assert_valid(&model, &result.shape);
+        let exact = PI * 0.25;
+        let got = volume(&model, &result.shape);
+        assert!(
+            (got - exact).abs() / exact < 2e-3,
+            "volume {got} against {exact}"
+        );
+    }
+
+    #[test]
+    fn fusing_a_post_onto_a_slab_adds_what_stands_proud() {
+        let mut model = Model::new();
+        let slab = make_box(&mut model, Frame::WORLD, (4.0, 4.0, 1.0), T).unwrap();
+        let post = make_cylinder(
+            &mut model,
+            frame_at(Point::new(2.0, 2.0, -1.0)),
+            0.5,
+            3.0,
+            T,
+        )
+        .unwrap();
+        let result = fuse(&mut model, &slab.shape, &post.shape, T).unwrap();
+        assert_valid(&model, &result.shape);
+        let exact = PI.mul_add(0.25 * 3.0, 16.0) - PI * 0.25;
+        let got = volume(&model, &result.shape);
+        assert!(
+            (got - exact).abs() / exact < 2e-3,
+            "volume {got} against {exact}"
+        );
     }
 
     #[test]
