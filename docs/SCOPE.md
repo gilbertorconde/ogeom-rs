@@ -367,6 +367,17 @@ closed-form `elementary` inversions, where before it could only speak plane.
 Volume pinned against Pappus; the hole's rim — the concave case — refused
 and recorded.
 
+**The chamfer's other spellings, and the sketch plane**: the asymmetric
+distance-distance chamfer names a face for its first distance; the
+distance-angle form derives the second distance where the bevel, leaving the
+named face at the given angle, meets the other — and refuses angles that
+never do. Both end in the one wedge the symmetric form already built. In 2D,
+`fillet_corner_2d` and `chamfer_corner_2d` replace a wire's corner between
+straight edges with a tangent arc or a cut at set distances, trimming the
+edges on their own curves and rebuilding the wire with history — corner
+deleted, edges modified, connector generated. Corners with curved sides are
+the 2D tangency problem proper — see the deferred table.
+
 *Elsewhere:* `ChFi2d`, `ChFi3d`, `Blend`, `BRepBlend`, `BRepFilletAPI`,
 `FilletSurf`.
 
@@ -599,6 +610,7 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 | General affine transforms over a whole *shape* | §5 | Done at the geometry level: `Curve::general_transformed` converts to the exact B-spline form and moves the control points, which an affine map does exactly, so a sheared circle lands on the ellipse it should rather than near it. `transformed` still takes only a `Transform`, so a placement keeps the analytic type and only this does not. What is owed is the shape-level operation, and it is owed for the same reason whole-shape NURBS conversion is: the parameterization moves, so every edge's range and every pcurve has to be re-derived. |
 | Whole-shape NURBS conversion | §5 | Exact conversions exist for every curve — line, circle, ellipse, hyperbola, parabola, spline, trimmed — and for the ruled surfaces: plane, cylinder, cone, extrusion. Each is exact rather than fitted, and the tests measure it *implicitly*, by how far the patch strays from the analytic surface, because comparing parameters would report the reparameterization instead of the error. **What is owed is the whole-shape operation.** Conversion necessarily reparameterizes — a circle's parameter is its angle and a rational quadratic's is not, and no reparameterization of a rational quadratic makes it one — so converting a shape means restating every edge's range and re-deriving every pcurve against a surface whose parameterization has also moved. Re-deriving a pcurve is a *fit*, which makes it the adaptive-fitting item above, and that is deferred too. |
 | Exact patches for revolved surfaces | §3 | `to_bspline` covers the ruled surfaces exactly and refuses sphere, torus, general revolution and trimmed. Each of those needs a rational profile revolved — a construction of its own, and the same one for all three. Refused rather than fitted: a fit reporting success is indistinguishable from an exact conversion at the call site, and every exchange format written from it would carry the approximation without saying so. |
+| 2D corner blends with curved sides | §10 | `fillet_corner_2d` and `chamfer_corner_2d` handle corners between two straight wire edges — the closed-form tangency. A line meeting an arc, or two arcs, is the general 2D tangent-circle problem (`GccAna`'s territory): still closed-form, quadratic rather than linear, and refused by name until that construction exists. |
 | Concave blends | §10 | `chamfer_edge` and `fillet_edge` subtract a wedge, which is only material on a convex edge; both refuse concave and tangent edges by checking that a leg walks behind the other face's plane. The concave blend *adds* material — the mirrored wedge fused rather than cut — and for the fillet the blend face enters with the opposite orientation. Same scaffolding, different sign discipline, deliberately not smuggled into the convex path. |
 | Canonical surfaces from a sweep | §9 | The chamfer found the sweep-side twin of the revolution entry below: `make_prism` builds every wall as an extrusion surface, including walls that are geometrically planes, and the boolean's same-domain resolution — which recognises coincidence between *planes* — walks straight past them. The chamfer builds its wedge from explicit planar faces instead; the durable fix is the sweep recognising a line profile edge and building the plane it actually made. |
 | Canonical surfaces from a revolution | §9 | `make_revolution` builds every face it makes as a surface of revolution, including the ones that are really planes: revolving a rectangle with one side on the axis gives a cylinder whose *caps* are polar coordinates on a plane rather than planes. They are seamed accordingly, so the solid has the same face count as `make_cylinder`'s but more edges — a seam and a degenerate centre edge per cap. Nothing is wrong with the result; it is the same solid, validly described. Noticing that a revolved line is a plane is canonical recognition, which belongs to healing. Reproduction: revolve the profile from `a_rectangle_with_a_side_on_the_axis_revolves_into_a_cylinder_face_for_face` and count edges — seven against `make_cylinder`'s three. |

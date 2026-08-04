@@ -25,6 +25,9 @@ pub(crate) struct Seat {
     pub along: Vector,
     /// Outward unit normals of the two faces, in discovery order.
     pub normals: [Vector; 2],
+    /// The two faces themselves, in the same order — so a caller naming a
+    /// face can find which leg it owns.
+    pub faces: [Shape; 2],
 }
 
 impl Seat {
@@ -94,6 +97,7 @@ pub(crate) fn planar_seat(
     let along = (end - start) / start.distance(end);
 
     let mut normals: Vec<Vector> = Vec::new();
+    let mut faces: Vec<Shape> = Vec::new();
     for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
         let touches = explore(model, &face, Filter::OfType(ShapeType::Edge))?
             .iter()
@@ -120,6 +124,7 @@ pub(crate) fn planar_seat(
             normal = -normal;
         }
         normals.push(normal);
+        faces.push(face);
     }
     if normals.len() != 2 {
         og_bail!(
@@ -134,6 +139,7 @@ pub(crate) fn planar_seat(
         end,
         along,
         normals: [normals[0], normals[1]],
+        faces: [faces[0].clone(), faces[1].clone()],
     };
     // Convexity: on a convex edge, walking along one face away from the other
     // moves *behind* the other face's plane. On a concave edge it moves in
