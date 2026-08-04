@@ -41,21 +41,172 @@ pub fn fillet_corner_2d(
         og_bail!(Construction, "a fillet of radius {radius} rounds nothing");
     }
     let corner = corner_of(model, wire, vertex, tol)?;
-    let opening = corner.opening(tol)?;
-    // The tangency points sit where a circle of this radius touches both
-    // sides, and the centre sits on the bisector at the matching height.
-    let trim = radius / (opening / 2.0).tan();
-    let centre = {
-        let bisector = {
-            let u = corner.sides[0].away + corner.sides[1].away;
-            u / u.magnitude()
-        };
-        corner.point + bisector * (radius / (opening / 2.0).sin())
+    corner.opening(tol)?;
+    // The tangent circle's centre lies on each side's offset locus — the
+    // parallel line for a straight side, the concentric circle for an arc —
+    // and where two loci cross is a candidate. GccAna's question, answered
+    // the same way: enumerate the loci, intersect in closed form, and keep
+    // the qualified candidate nearest the corner: centre on the corner's
+    // inner side, both tangency feet on the edges themselves.
+    let plane_z = {
+        let n = corner.sides[0].away.cross(corner.sides[1].away);
+        Direction::new(n, tol)?
     };
-    let contacts = [
-        corner.point + corner.sides[0].away * trim,
-        corner.point + corner.sides[1].away * trim,
-    ];
+    let frame = Frame::new(
+        corner.point,
+        plane_z,
+        Direction::new(corner.sides[0].away, tol)?,
+        tol,
+    )?;
+    let flat = |p: Point| {
+        let l = frame.to_local(p);
+        og_math::Point2::new(l.x, l.y)
+    };
+    let lift =
+        |q: og_math::Point2| frame.origin() + frame.x().vector() * q.x + frame.y().vector() * q.y;
+    let loci = |side: &Side| -> OgResult<Vec<og_geom::PlanarCurve>> {
+        Ok(match &side.curve {
+            Curve::Line(l) => {
+                let o = flat(l.axis().location);
+                let d = flat(l.axis().location + l.axis().direction.vector()) - o;
+                let d = d / d.magnitude();
+                let n = og_math::Vector2::new(-d.y, d.x);
+                let axis = |shift: f64| {
+                    og_math::Direction2::new(d, tol)
+                        .map(|dir| og_math::Axis2::new(o + n * shift, dir))
+                };
+                vec![
+                    og_geom::Line2d::over(axis(radius)?, -1e6, 1e6)?.into(),
+                    og_geom::Line2d::over(axis(-radius)?, -1e6, 1e6)?.into(),
+                ]
+            }
+            Curve::Circle(c) => {
+                let centre = flat(c.circle().centre());
+                let big = c.circle().radius();
+                let mut out: Vec<og_geom::PlanarCurve> = vec![
+                    og_geom::Circle2d::new(og_math::Circle2::new(
+                        og_math::Frame2::new(centre, og_math::Direction2::X),
+                        big + radius,
+                        tol,
+                    )?)
+                    .into(),
+                ];
+                if big - radius > tol.confusion() {
+                    out.push(
+                        og_geom::Circle2d::new(og_math::Circle2::new(
+                            og_math::Frame2::new(centre, og_math::Direction2::X),
+                            big - radius,
+                            tol,
+                        )?)
+                        .into(),
+                    );
+                }
+                out
+            }
+            _ => og_bail!(Construction, "a corner side is neither line nor arc"),
+        })
+    };
+    // Where does a candidate centre touch a side, and how far along the edge
+    // is that from the corner in the side's own parameter?
+    let foot = |side: &Side, c2: og_math::Point2| -> Option<(og_math::Point2, f64)> {
+        match &side.curve {
+            Curve::Line(l) => {
+                let o = flat(l.axis().location);
+                let d = flat(l.axis().location + l.axis().direction.vector()) - o;
+                let d = d / d.magnitude();
+                let t = o + d * ((c2 - o).dot(d));
+                let corner2 = flat(side.curve.point_at(side.at, tol).ok()?);
+                let away2 = {
+                    let a = flat(lift(corner2) + side.away) - corner2;
+                    a / a.magnitude()
+                };
+                Some((t, (t - corner2).dot(away2)))
+            }
+            Curve::Circle(circle) => {
+                let centre = flat(circle.circle().centre());
+                let big = circle.circle().radius();
+                let v = c2 - centre;
+                let m = v.magnitude();
+                if m <= tol.confusion() {
+                    return None;
+                }
+                let t = centre + v * (big / m);
+                let corner2 = flat(side.curve.point_at(side.at, tol).ok()?);
+                let a = (corner2 - centre).y.atan2((corner2 - centre).x);
+                let b = (t - centre).y.atan2((t - centre).x);
+                let mut delta = b - a;
+                let tau = core::f64::consts::TAU;
+                while delta > core::f64::consts::PI {
+                    delta -= tau;
+                }
+                while delta < -core::f64::consts::PI {
+                    delta += tau;
+                }
+                // Positive when the foot lies along the away direction: the
+                // circle's own winding in the chart says which sign that is.
+                let winding = {
+                    let d1 = flat(lift(corner2) + side.away * 1.0) - corner2;
+                    let radial = corner2 - centre;
+                    (radial.x * d1.y - radial.y * d1.x).signum()
+                };
+                Some((t, delta * winding))
+            }
+            _ => None,
+        }
+    };
+    let corner2 = flat(corner.point);
+    let bis2 = {
+        let a = flat(corner.point + corner.sides[0].away) - corner2;
+        let b = flat(corner.point + corner.sides[1].away) - corner2;
+        let u = a + b;
+        u / u.magnitude()
+    };
+    let mut best: Option<(og_math::Point2, [og_math::Point2; 2], [f64; 2], f64)> = None;
+    for la in loci(&corner.sides[0])? {
+        for lb in loci(&corner.sides[1])? {
+            let found = og_intersect::intersect_curves_2d(
+                &la,
+                &lb,
+                og_intersect::CurveCurveOptions::default(),
+                tol,
+            )?;
+            for crossing in &found.crossings {
+                let c2 = crossing.point;
+                if (c2 - corner2).dot(bis2) <= tol.confusion() {
+                    continue;
+                }
+                let (Some((t0, d0)), Some((t1, d1))) =
+                    (foot(&corner.sides[0], c2), foot(&corner.sides[1], c2))
+                else {
+                    continue;
+                };
+                // Both feet forward of the corner, within their edges.
+                let room0 = corner.sides[0].room;
+                let room1 = corner.sides[1].room;
+                if d0 <= tol.parametric()
+                    || d1 <= tol.parametric()
+                    || d0 >= room0 - tol.parametric()
+                    || d1 >= room1 - tol.parametric()
+                {
+                    continue;
+                }
+                let score = c2.distance(corner2);
+                if best.as_ref().is_none_or(|(_, _, _, held)| score < *held) {
+                    best = Some((c2, [t0, t1], [d0, d1], score));
+                }
+            }
+        }
+    }
+    let Some((centre2, feet, deltas, _)) = best else {
+        og_bail!(
+            Construction,
+            "no circle of radius {radius} is tangent to both sides within \
+             their own extents"
+        );
+    };
+    let centre = lift(centre2);
+    let contacts = [lift(feet[0]), lift(feet[1])];
+    let trim_deltas = deltas;
     let arc = |model: &mut Model, from: &Shape, to: &Shape| -> OgResult<Shape> {
         let w1 = contacts[0] - centre;
         let w2 = contacts[1] - centre;
@@ -74,7 +225,7 @@ pub fn fillet_corner_2d(
         )?
         .shape)
     };
-    rebuild(model, wire, vertex, &corner, [trim, trim], arc, tol)
+    rebuild(model, wire, vertex, &corner, trim_deltas, arc, tol)
 }
 
 /// Cut a corner of a wire, trimming `first` back along the earlier edge and
@@ -101,9 +252,26 @@ pub fn chamfer_corner_2d(
     }
     let corner = corner_of(model, wire, vertex, tol)?;
     corner.opening(tol)?;
+    // Distances are arc lengths along each side; on an arc that is an angle.
+    let delta = |side: &Side, d: f64| -> f64 {
+        match &side.curve {
+            Curve::Circle(c) => d / c.circle().radius(),
+            _ => d,
+        }
+    };
+    let deltas = [
+        delta(&corner.sides[0], first),
+        delta(&corner.sides[1], second),
+    ];
     let contacts = [
-        corner.point + corner.sides[0].away * first,
-        corner.point + corner.sides[1].away * second,
+        corner.sides[0].curve.point_at(
+            deltas[0].mul_add(corner.sides[0].sense, corner.sides[0].at),
+            tol,
+        )?,
+        corner.sides[1].curve.point_at(
+            deltas[1].mul_add(corner.sides[1].sense, corner.sides[1].at),
+            tol,
+        )?,
     ];
     let cut = |model: &mut Model, from: &Shape, to: &Shape| -> OgResult<Shape> {
         let line = og_geom::LineCurve::segment(contacts[0], contacts[1], tol)?;
@@ -111,7 +279,7 @@ pub fn chamfer_corner_2d(
         let domain = og_geom::Curve3d::domain(&curve);
         Ok(make_edge_between(model, curve, domain, from, to, tol)?.shape)
     };
-    rebuild(model, wire, vertex, &corner, [first, second], cut, tol)
+    rebuild(model, wire, vertex, &corner, deltas, cut, tol)
 }
 
 /// One side of a corner: the wire edge running into or out of it.
@@ -120,7 +288,9 @@ struct Side {
     index: usize,
     /// The occurrence as the wire uses it, orientation included.
     used: Shape,
-    /// Unit direction from the corner along this edge.
+    /// The side's own curve.
+    curve: Curve,
+    /// Unit tangent at the corner, pointing along the edge.
     away: Vector,
     /// The corner's parameter on the edge's own curve.
     at: f64,
@@ -201,13 +371,13 @@ fn corner_of(model: &Model, wire: &Shape, vertex: &Shape, tol: Tolerances) -> Og
     let side = |model: &Model, index: usize, corner_at_end: bool| -> OgResult<Side> {
         let used = edges[index].clone();
         let (curve, range) = edge_curve(model, &used)?;
-        let Curve::Line(_) = &curve else {
+        if !matches!(curve, Curve::Line(_) | Curve::Circle(_)) {
             og_bail!(
                 Construction,
-                "a corner blend with a curved side is the 2D tangency \
-                 problem, recorded in the deferred table"
+                "a corner blend against a free-form side has no closed-form \
+                 tangency; lines and arcs do"
             );
-        };
+        }
         // The corner sits at the traversal end (or start), which for a
         // reversed occurrence is the stored range's other bound.
         let reversed = used.orientation() == Orientation::Reversed;
@@ -217,10 +387,13 @@ fn corner_of(model: &Model, wire: &Shape, vertex: &Shape, tol: Tolerances) -> Og
         } else {
             (range.0, 1.0, range.1 - range.0)
         };
-        let far_param = if at_high { range.0 } else { range.1 };
         let away = {
-            let far_point = curve.point_at(far_param, tol)?;
-            (far_point - point) / point.distance(far_point)
+            let d = curve.d1_at(at, tol)? * sense;
+            let m = d.magnitude();
+            if m <= tol.confusion() {
+                og_bail!(Construction, "a corner edge is degenerate at its corner");
+            }
+            d / m
         };
         let Some((start, end)) = edge_vertices(model, &used)? else {
             og_bail!(Construction, "a corner edge has no bounding vertices");
@@ -229,6 +402,7 @@ fn corner_of(model: &Model, wire: &Shape, vertex: &Shape, tol: Tolerances) -> Og
         Ok(Side {
             index,
             used,
+            curve,
             away,
             at,
             sense,

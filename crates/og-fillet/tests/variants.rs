@@ -241,3 +241,122 @@ fn a_corner_blend_that_consumes_a_whole_edge_is_refused() {
     let (wire, vertex) = rectangle_with_corner(&mut model);
     assert!(og_fillet::fillet_corner_2d(&mut model, &wire, &vertex, 5.0, T).is_err());
 }
+
+/// A wire with an arc top: segments up the sides, an arc bulging over.
+fn arched_wire(model: &mut og_topo::Model) -> (og_topo::Shape, og_topo::Shape) {
+    use og_geom::Curve3d as _;
+    let a = Point::new(0.0, 0.0, 0.0);
+    let b = Point::new(4.0, 0.0, 0.0);
+    let c = Point::new(4.0, 2.0, 0.0);
+    let d = Point::new(0.0, 2.0, 0.0);
+    let centre = Point::new(2.0, 0.5, 0.0);
+    let radius = centre.distance(c);
+    let va = og_algo::make_vertex(model, a).shape;
+    let vb = og_algo::make_vertex(model, b).shape;
+    let vc = og_algo::make_vertex(model, c).shape;
+    let vd = og_algo::make_vertex(model, d).shape;
+    let seg =
+        |model: &mut og_topo::Model, p: (&og_topo::Shape, Point), q: (&og_topo::Shape, Point)| {
+            let line = og_geom::LineCurve::segment(p.1, q.1, T).unwrap();
+            let curve = og_geom::Curve::Line(line);
+            let domain = curve.domain();
+            og_algo::make_edge_between(model, curve, domain, p.0, q.0, T)
+                .unwrap()
+                .shape
+        };
+    // The arc from c to d over the top: angles measured from centre.
+    let arc = {
+        let x = og_math::Direction::new(c - centre, T).unwrap();
+        let frame = og_math::Frame::new(centre, og_math::Direction::Z, x, T).unwrap();
+        let circle = og_math::Circle::new(frame, radius, T).unwrap();
+        let to_d = d - centre;
+        let sweep = to_d
+            .dot(frame.y().vector())
+            .atan2(to_d.dot(frame.x().vector()));
+        og_algo::make_edge_between(
+            &mut *model,
+            og_geom::Curve::Circle(og_geom::CircleCurve::new(circle)),
+            (0.0, sweep),
+            &vc,
+            &vd,
+            T,
+        )
+        .unwrap()
+        .shape
+    };
+    let e1 = seg(model, (&va, a), (&vb, b));
+    let e2 = seg(model, (&vb, b), (&vc, c));
+    let e4 = seg(model, (&vd, d), (&va, a));
+    let wire = og_algo::make_wire(model, &[e1, e2, arc, e4], T)
+        .unwrap()
+        .shape;
+    let vertex = explore(model, &wire, Filter::OfType(ShapeType::Vertex))
+        .unwrap()
+        .into_iter()
+        .find(|v| {
+            model
+                .node(v)
+                .and_then(|n| n.data().as_vertex().map(|p| p.point))
+                .is_some_and(|p| (p.x - 4.0).abs() < 1e-9 && (p.y - 2.0).abs() < 1e-9)
+        })
+        .expect("the arched wire has its line-arc corner");
+    (wire, vertex)
+}
+
+#[test]
+fn a_line_arc_corner_takes_a_tangent_fillet() {
+    let mut model = og_topo::Model::new();
+    let (wire, vertex) = arched_wire(&mut model);
+    let r = 0.3;
+    let result = og_fillet::fillet_corner_2d(&mut model, &wire, &vertex, r, T).unwrap();
+    assert!(og_algo::is_wire_closed(&model, &result.shape, T).unwrap());
+    let edges = explore(&model, &result.shape, Filter::OfType(ShapeType::Edge)).unwrap();
+    assert_eq!(edges.len(), 5);
+
+    // The connector: a circle of the asked radius, tangent to the straight
+    // side (centre one radius off the line x = 4) and to the arc (centre
+    // radii-summed-or-differenced from the arc's own centre).
+    let big_centre = Point::new(2.0, 0.5, 0.0);
+    let big_r = big_centre.distance(Point::new(4.0, 2.0, 0.0));
+    let connector = edges
+        .iter()
+        .find_map(|e| {
+            let node = model.node(e)?;
+            let data = node.data().as_edge()?;
+            let og_topo::EdgeRepr::Curve3d { curve, .. } = data.curve3d()? else {
+                return None;
+            };
+            match model.geometry().curve(*curve)? {
+                og_geom::Curve::Circle(c) if (c.circle().radius() - r).abs() < 1e-9 => {
+                    Some(c.circle())
+                }
+                _ => None,
+            }
+        })
+        .expect("the fillet arc is in the wire");
+    let centre = connector.centre();
+    assert!(
+        ((4.0 - centre.x).abs() - r).abs() < 1e-9,
+        "tangent to the straight side"
+    );
+    let to_big = centre.distance(big_centre);
+    assert!(
+        ((to_big - (big_r - r)).abs()).min((to_big - (big_r + r)).abs()) < 1e-9,
+        "tangent to the arc: centre distance {to_big} against {big_r} +/- {r}"
+    );
+    assert!(result.history.is_deleted(&vertex));
+}
+
+#[test]
+fn a_line_arc_corner_takes_a_chamfer_by_arc_length() {
+    let mut model = og_topo::Model::new();
+    let (wire, vertex) = arched_wire(&mut model);
+    let result = og_fillet::chamfer_corner_2d(&mut model, &wire, &vertex, 0.4, 0.6, T).unwrap();
+    assert!(og_algo::is_wire_closed(&model, &result.shape, T).unwrap());
+    assert_eq!(
+        explore(&model, &result.shape, Filter::OfType(ShapeType::Edge))
+            .unwrap()
+            .len(),
+        5
+    );
+}
