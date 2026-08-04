@@ -155,7 +155,44 @@ pub fn intersect_curves(
     if let (Curve::Line(x), Curve::Line(y)) = (a, b) {
         return Ok(line_line_3d(x, y, options, tol));
     }
+    if let (Curve::Circle(x), Curve::Circle(y)) = (a, b)
+        && let Some(found) = same_circle_3d(x, y, tol)
+    {
+        return Ok(found);
+    }
     general_3d(a, b, options, tol)
+}
+
+/// Two circles tracing the same point set in space: the circle counterpart of
+/// collinear lines, and the one 3D circle pair the sampling path cannot
+/// answer — every sample is a hit, and "the crossings" do not exist. Distinct
+/// circles return `None` and fall through to the general machinery, which
+/// handles genuinely crossing pairs.
+fn same_circle_3d(
+    a: &og_geom::CircleCurve,
+    b: &og_geom::CircleCurve,
+    tol: Tolerances,
+) -> Option<CurveIntersection<Point>> {
+    let (ca, cb) = (a.circle(), b.circle());
+    if ca.centre().distance(cb.centre()) > tol.confusion() {
+        return None;
+    }
+    if (ca.radius() - cb.radius()).abs() > tol.confusion() {
+        return None;
+    }
+    // Parallel or antiparallel axes both trace the same set; the windings
+    // differ, which the parameter ranges do not need to express.
+    let (za, zb) = (ca.frame().z().vector(), cb.frame().z().vector());
+    if za.cross(zb).magnitude() > tol.angular() {
+        return None;
+    }
+    Some(CurveIntersection {
+        crossings: Vec::new(),
+        overlaps: vec![Overlap {
+            on_a: Curve3d::domain(a),
+            on_b: Curve3d::domain(b),
+        }],
+    })
 }
 
 fn check(options: CurveCurveOptions) -> OgResult<()> {

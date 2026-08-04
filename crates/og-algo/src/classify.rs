@@ -112,8 +112,11 @@ pub fn classify_on_face(
     // The uncertain band, converted from a distance in space into one in
     // parameter units through the surface's own scale. A fixed parameter
     // tolerance would be metres wide at a sphere's equator and nothing at its
-    // pole.
-    let band = parametric_band(surface, (u, v), reach, tol);
+    // pole. The rings are polylines drawn at the caller's deflection, so the
+    // band carries that sag too: without it, a point between a tangent chord
+    // and its arc — inside the true trim, outside the sampled one — would
+    // read as Out when the honest answer at this resolution is On.
+    let band = parametric_band(surface, (u, v), reach + deflection.chord, tol);
     if distance_to_rings(&rings, at) <= band {
         return Ok(Containment::On);
     }

@@ -1,0 +1,142 @@
+//! The rolling-ball fillet, where the ball's envelope is a cylinder.
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+
+use og_core::Tolerances;
+use og_math::{Frame, Point};
+use og_topo::{Filter, ShapeType, explore};
+
+const T: Tolerances = Tolerances::millimetres();
+
+/// The top edge of the box along y at x = 2, z = 2.
+fn top_edge(model: &og_topo::Model, block: &og_topo::Shape) -> og_topo::Shape {
+    explore(model, block, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            og_algo::edge_vertices(model, e)
+                .unwrap()
+                .is_some_and(|(a, b)| {
+                    let p = |v: &og_topo::Shape| {
+                        model
+                            .node(v)
+                            .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                            .unwrap()
+                    };
+                    let (pa, pb) = (p(&a), p(&b));
+                    (pa.x - 2.0).abs() < 1e-9
+                        && (pa.z - 2.0).abs() < 1e-9
+                        && (pb.x - 2.0).abs() < 1e-9
+                        && (pb.z - 2.0).abs() < 1e-9
+                })
+        })
+        .expect("the box has that edge")
+}
+
+#[test]
+fn a_filleted_box_edge_gains_a_tangent_cylinder() {
+    let mut model = og_topo::Model::new();
+    let block = og_algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
+    let edge = top_edge(&model, &block.shape);
+
+    let radius = 0.5;
+    let result = og_fillet::fillet_edge(&mut model, &block.shape, &edge, radius, T).unwrap();
+
+    let diagnosis = og_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // The removed sliver is the corner square minus the quarter disc, run
+    // along the edge. The mesh volume converges to it with the chord.
+    let fine = og_mesh::Deflection {
+        chord: 1e-4,
+        ..og_mesh::Deflection::default()
+    };
+    let props = og_algo::volume_properties(&model, &result.shape, fine, T).unwrap();
+    let exact = 8.0 - (radius * radius - core::f64::consts::PI * radius * radius / 4.0) * 2.0;
+    assert!(
+        (props.mass - exact).abs() < 1e-3,
+        "fillet volume {} against {exact}",
+        props.mass
+    );
+
+    // Seven faces: six of the box (two now trimmed back to the tangency
+    // lines) plus the blend cylinder.
+    let faces = explore(&model, &result.shape, Filter::OfType(ShapeType::Face)).unwrap();
+    assert_eq!(faces.len(), 7);
+
+    // The history knows the rounded edge is gone.
+    assert!(result.history.is_deleted(&edge));
+
+    // The blend passes through the arc midpoint: the ball's centre line runs
+    // at (1.5, y, 1.5), and the surface lies half a radius further out along
+    // the diagonal.
+    let mid = Point::new(
+        1.5 + radius / core::f64::consts::SQRT_2,
+        1.0,
+        1.5 + radius / core::f64::consts::SQRT_2,
+    );
+    let on_blend = faces.iter().any(|f| {
+        og_algo::classify_on_face(&model, f, mid, fine, T)
+            .map(|c| c == og_algo::Containment::In)
+            .unwrap_or(false)
+    });
+    assert!(on_blend, "the blend face passes through the arc midpoint");
+
+    // Tangency is the point of a fillet: where the blend meets the top face
+    // there is no crease. The two surfaces share their normal along the
+    // tangency line at (1.5, y, 2.0) — the cylinder's radial direction there
+    // is +z, the plane's normal exactly +z.
+    let tangent = Point::new(1.5, 1.0, 2.0);
+    let touching = faces
+        .iter()
+        .filter(|f| {
+            og_algo::classify_on_face(&model, f, tangent, fine, T)
+                .map(|c| c != og_algo::Containment::Out)
+                .unwrap_or(false)
+        })
+        .count();
+    assert!(
+        touching >= 2,
+        "the tangency line lies on both the top face and the blend, found {touching}"
+    );
+}
+
+#[test]
+fn a_concave_edge_refuses_the_subtractive_fillet() {
+    let mut model = og_topo::Model::new();
+    let block = og_algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
+    let seat = Frame::new(
+        Point::new(1.0, -0.5, 1.0),
+        og_math::Direction::Z,
+        og_math::Direction::X,
+        T,
+    )
+    .unwrap();
+    let notch = og_algo::make_box(&mut model, seat, (2.0, 3.0, 2.0), T).unwrap();
+    let cut = og_bool::cut(&mut model, &block.shape, &notch.shape, T).unwrap();
+
+    // The re-entrant edge of the L: along y at x = 1, z = 1.
+    let edge = explore(&model, &cut.shape, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            og_algo::edge_vertices(&model, e)
+                .unwrap()
+                .is_some_and(|(a, b)| {
+                    let p = |v: &og_topo::Shape| {
+                        model
+                            .node(v)
+                            .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                            .unwrap()
+                    };
+                    let (pa, pb) = (p(&a), p(&b));
+                    (pa.x - 1.0).abs() < 1e-9
+                        && (pa.z - 1.0).abs() < 1e-9
+                        && (pb.x - 1.0).abs() < 1e-9
+                        && (pb.z - 1.0).abs() < 1e-9
+                })
+        })
+        .expect("the L has its re-entrant edge");
+
+    let refused = og_fillet::fillet_edge(&mut model, &cut.shape, &edge, 0.25, T);
+    assert!(refused.is_err(), "a concave edge cannot lose material");
+}

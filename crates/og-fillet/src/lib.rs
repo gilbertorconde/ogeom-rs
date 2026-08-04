@@ -8,5 +8,8 @@
 //! Robustness here is a differentiator, not a checkbox.
 
 pub mod chamfer;
+pub mod fillet;
+mod support;
 
 pub use chamfer::chamfer_edge;
+pub use fillet::fillet_edge;
