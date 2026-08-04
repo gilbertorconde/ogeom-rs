@@ -1,15 +1,42 @@
-//! Intersection. Analytic special cases first (plane/plane, plane/cylinder,
-//! plane/sphere, cylinder/cylinder, cone/*, torus/*), then a general marching
-//! intersector with an approximation stage that fits the resulting polyline to a
-//! B-spline.
+//! Intersection: where curves and surfaces meet.
 //!
 //! *Elsewhere:* `IntPatch`, `GeomInt`, `IntAna`, `IntCurve`, `IntCurveSurface`,
 //! `IntWalk`, `IntSurf`, `ApproxInt` and `Extrema`.
 //!
-//! **This crate is the project's single largest risk.** No Rust equivalent exists,
-//! and it is where prior open-source B-rep efforts have failed. Its quality is
-//! gated by a standalone benchmark against analytic ground truth and published
-//! datasets before the boolean pipeline in `og-bool` is started.
+//! The entry points, by what is being intersected:
+//!
+//! - [`intersect_surfaces`] — surface/surface, the one `og-bool` builds on.
+//!   Analytic closed forms where they exist, with exact same-parameter
+//!   pcurves; the marching-and-fitting pipeline where they do not, with the
+//!   tolerance reported as a sum of stated parts.
+//! - [`intersect_curves_2d`] / [`intersect_curves`] — curve/curve in the
+//!   plane and in space. The planar one is what boolean face splitting runs
+//!   on; the spatial one reports the gap each crossing achieved, because
+//!   space curves generically miss.
+//! - [`intersect_curve_surface`] — curve/surface, the well-posed system, and
+//!   what the exact point-in-solid classifier will cast its rays with.
+//!
+//! The stages underneath are public because each is separately measurable:
+//! [`surface_surface`] (the closed forms), [`seeds`]/[`trace`]/[`branches`]
+//! (the marcher), [`approximate_branch`] (polyline to curves).
+//!
+//! # The instruments
+//!
+//! **This crate was the project's single largest risk** — no Rust equivalent
+//! existed, and it is where prior open-source B-rep efforts failed — so it
+//! carries its own instruments rather than trusting itself. [`measure_all`]
+//! scores accuracy: every point of every reported curve against both surfaces,
+//! with ground truth being the surfaces themselves. [`coverage()`] scores
+//! completeness: the surfaces are asked, by signed distance and the
+//! intermediate value theorem, where the intersection *must* be, and every
+//! such cell had better be reached by some branch — because an intersector
+//! that finds one circle of two scores perfectly on accuracy alone. Both
+//! instruments have negative controls in the test suite: they demonstrably
+//! fail when something is genuinely missing.
+//!
+//! What the gate still lacks is an input no one here generated: a published
+//! corpus. Until that lands, the numbers say the machinery is sound on what it
+//! has seen, and the deferred table says so in as many words.
 
 pub mod approx;
 pub mod benchmark;
