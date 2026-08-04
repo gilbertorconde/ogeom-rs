@@ -136,12 +136,25 @@ canonical recognition and lands in §9.
   every source face is recorded modified-into-pieces or deleted, asserted in
   the boolean tests and on the imported cut.
 
-### M4 — a manufacturing-capable kernel · P4 · §10, §11
+### M4 — a manufacturing-capable kernel · P4 · §10, §11 · **closed, residuals listed**
 
 - Constant- and variable-radius fillets, chamfers, shelling, offsets, pipe
-  sweeps and lofts, on a mechanical part end to end.
+  sweeps and lofts, on a mechanical part end to end. ✓ Closed: one part
+  through the whole vocabulary — a block shelled into an open tray, corner
+  edges chamfered, filleted at constant radius and at a running radius, a
+  lofted boss and a swept nozzle fused onto its floor — valid, closed, and
+  its volume the exact sum of every operation's closed form. *Residuals:*
+  the blends speak straight edges and circular rims between analytic faces
+  (marching blends, vertex and face-face blends deferred); the solid offset
+  speaks planes and cylindrical bands (general rebuild deferred); sweeps
+  and lofts stop where sweep surfaces would begin — every entry in the
+  deferred table.
 - Parity with the field is the bar here, not perfection: these are the two most
-  fragile areas of every kernel that has them.
+  fragile areas of every kernel that has them. The stones paid for themselves
+  in kernel currency along the way: three torus arms and coincident circles in
+  the analytic intersector, curved partner charts in the same-domain
+  resolution, seams said honestly in the sweeps, and "touching is not
+  crossing" enforced at every level from surface pairs down to paves.
 
 ### M5 — a documents-and-drawings kernel · P5 · §13, §15, §17
 
