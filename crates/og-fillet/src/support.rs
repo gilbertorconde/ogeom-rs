@@ -46,6 +46,23 @@ impl Seat {
     }
 }
 
+/// An edge's 3D curve and range, cloned out of the model.
+pub(crate) fn edge_curve(model: &Model, edge: &Shape) -> OgResult<(Curve, (f64, f64))> {
+    let Some(node) = model.node(edge) else {
+        og_bail!(Dangling, "edge is not in this model");
+    };
+    let NodeData::Edge(data) = node.data() else {
+        og_bail!(Construction, "expected an edge");
+    };
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        og_bail!(Construction, "the edge has no curve to blend along");
+    };
+    let Some(geometry) = model.geometry().curve(*curve) else {
+        og_bail!(Dangling, "curve is not in this model");
+    };
+    Ok((geometry.clone(), *range))
+}
+
 /// Find the seat of a blend: the straight edge's ends and direction, and the
 /// outward normals of the exactly two planar faces of `solid` meeting there.
 ///
@@ -64,21 +81,7 @@ pub(crate) fn planar_seat(
     edge: &Shape,
     tol: Tolerances,
 ) -> OgResult<Seat> {
-    let (curve, range) = {
-        let Some(node) = model.node(edge) else {
-            og_bail!(Dangling, "edge is not in this model");
-        };
-        let NodeData::Edge(data) = node.data() else {
-            og_bail!(Construction, "expected an edge");
-        };
-        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
-            og_bail!(Construction, "the edge has no curve to bevel along");
-        };
-        let Some(geometry) = model.geometry().curve(*curve) else {
-            og_bail!(Dangling, "curve is not in this model");
-        };
-        (geometry.clone(), *range)
-    };
+    let (curve, range) = edge_curve(model, edge)?;
     let Curve::Line(_) = &curve else {
         og_bail!(
             Construction,

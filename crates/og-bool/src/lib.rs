@@ -911,14 +911,57 @@ fn outward_normal(face: &GFace, at: Point2, tol: Tolerances) -> OgResult<og_math
 /// The chart point of a world point lying on a planar face, if it lands
 /// inside the face's trim.
 fn chart_point_of(face: &GFace, p: Point, tol: Tolerances) -> Option<Point2> {
-    let SurfaceGeometry::Plane(plane) = &face.surface else {
-        return None;
+    // Closed-form inversion for the analytic surfaces: the same-domain
+    // resolution asks "where does this probe sit in the partner's chart", and
+    // the partner may be any surface a face melts along — a plane against a
+    // plane, but equally a wall band against the cylinder it copies. The
+    // reach check keeps the answer honest: a point off the surface has no
+    // chart position, whatever the inversion returns.
+    use og_math::elementary;
+    let reach = tol.confusion() * 10.0;
+    let raw = match &face.surface {
+        SurfaceGeometry::Plane(x) => {
+            let local = x.plane().frame().to_local(p);
+            if local.z.abs() > reach {
+                return None;
+            }
+            Point2::new(local.x, local.y)
+        }
+        SurfaceGeometry::Cylinder(x) => {
+            let cylinder = x.cylinder();
+            if cylinder.distance_to(p) > reach {
+                return None;
+            }
+            let (u, v) = elementary::cylinder_parameters(&cylinder, p, tol).ok()?;
+            Point2::new(u, v)
+        }
+        SurfaceGeometry::Cone(x) => {
+            let cone = x.cone();
+            if cone.distance_to(p) > reach {
+                return None;
+            }
+            let (u, v) = elementary::cone_parameters(&cone, p, tol).ok()?;
+            Point2::new(u, v)
+        }
+        SurfaceGeometry::Sphere(x) => {
+            let sphere = x.sphere();
+            if sphere.distance_to(p) > reach {
+                return None;
+            }
+            let (u, v) = elementary::sphere_parameters(&sphere, p, tol).ok()?;
+            Point2::new(u, v)
+        }
+        SurfaceGeometry::Torus(x) => {
+            let torus = x.torus();
+            if torus.distance_to(p) > reach {
+                return None;
+            }
+            let (u, v) = elementary::torus_parameters(&torus, p, tol).ok()?;
+            Point2::new(u, v)
+        }
+        _ => return None,
     };
-    let local = plane.plane().frame().to_local(p);
-    if local.z.abs() > tol.confusion() * 10.0 {
-        return None;
-    }
-    let at = Point2::new(local.x, local.y);
+    let at = fold_point_into_chart(raw, &face.surface);
     let mut lines: Vec<Vec<Point2>> = Vec::new();
     for e in &face.edges {
         lines.push(pcurve_polyline(&e.pcurve, e.prange, e.crange, e.crange, tol).ok()?);

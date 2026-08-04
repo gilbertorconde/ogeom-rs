@@ -353,6 +353,20 @@ which a probe between a tangent chord and its arc reads `Out` at a
 resolution that cannot distinguish them. Volume pinned against the closed
 form; both faces refuse concave edges — see the deferred table.
 
+**The toroidal rim fillet** extended the family to its first revolved seat:
+around the rim where a cylindrical wall meets a perpendicular cap, the ball's
+envelope is a torus, and the wedge is the straight case's prism revolved — a
+wall band to the tangency parallel, a cap annulus to the tangency circle, and
+the quarter-tube between them, the bands built by `make_revolution_band` with
+their seams. It paid its way in kernel currency: the analytic intersector
+gained the axis-normal plane/torus, coaxial cylinder/torus and coaxial
+torus/torus arms — tangencies reported as the circles they are, the way a
+tangent plane reports its line on a cylinder — and the boolean's same-domain
+resolution learned to invert probes into *curved* partner charts through the
+closed-form `elementary` inversions, where before it could only speak plane.
+Volume pinned against Pappus; the hole's rim — the concave case — refused
+and recorded.
+
 *Elsewhere:* `ChFi2d`, `ChFi3d`, `Blend`, `BRepBlend`, `BRepFilletAPI`,
 `FilletSurf`.
 

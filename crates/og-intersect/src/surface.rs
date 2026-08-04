@@ -81,6 +81,11 @@ pub fn surface_surface(
         (S::Cylinder(x), S::Cylinder(y)) => coaxial_cylinders(x.cylinder(), y.cylinder(), tol),
         (S::Cylinder(c), S::Sphere(s)) => coaxial_cylinder_sphere(c.cylinder(), s.sphere(), tol),
         (S::Sphere(s), S::Cylinder(c)) => coaxial_cylinder_sphere(c.cylinder(), s.sphere(), tol),
+        (S::Plane(p), S::Torus(t)) => axial_plane_torus(p.plane(), t.torus(), tol),
+        (S::Torus(t), S::Plane(p)) => axial_plane_torus(p.plane(), t.torus(), tol),
+        (S::Cylinder(c), S::Torus(t)) => coaxial_cylinder_torus(c.cylinder(), t.torus(), tol),
+        (S::Torus(t), S::Cylinder(c)) => coaxial_cylinder_torus(c.cylinder(), t.torus(), tol),
+        (S::Torus(x), S::Torus(y)) => coaxial_tori(x.torus(), y.torus(), tol),
         _ => og_bail!(
             NotDone,
             "this pair of surfaces has no closed-form intersection; it needs \
@@ -317,6 +322,178 @@ fn coaxial_cylinder_sphere(
         Meeting::Apart
     } else {
         Meeting::Along(out)
+    })
+}
+
+/// A plane perpendicular to a torus's axis: apart, one tangent circle, or two
+/// parallels.
+///
+/// The perpendicular slice is the only plane/torus configuration with a
+/// closed form worth the name — an oblique plane meets a torus in a quartic
+/// (with Villarceau's circles at exactly one magic tilt), and that is the
+/// marching intersector's business. The blend machinery lives on this case:
+/// a rolling ball's toroidal envelope is tangent to the plane it rolls on
+/// along a circle, and that tangency must be *reported as the circle it is*,
+/// the way a tangent plane reports its line on a cylinder — a tangential
+/// answer with no curve in it would send the boolean above into a refusal.
+fn axial_plane_torus(
+    plane: og_math::Plane,
+    torus: og_math::Torus,
+    tol: Tolerances,
+) -> OgResult<Meeting> {
+    let axis = torus.axis();
+    let along = plane.normal().dot(axis.direction);
+    if (along.abs() - 1.0).abs() > tol.angular() {
+        og_bail!(
+            NotDone,
+            "a plane oblique or parallel to a torus's axis meets it in a \
+             quartic, which needs the general marching intersector"
+        );
+    }
+    // The plane's height above the tube's centre plane.
+    let height = -plane.signed_distance_to(axis.location) * along.signum();
+    let minor = torus.minor_radius();
+    if height.abs() > minor + tol.confusion() {
+        return Ok(Meeting::Apart);
+    }
+    let centre = axis.location + axis.direction.vector() * height;
+    if (height.abs() - minor).abs() <= tol.confusion() {
+        // Tangent along the parallel at the tube's top or bottom.
+        return Ok(
+            match circle_on(centre, axis.direction, torus.major_radius(), tol) {
+                Some(circle) => Meeting::Along(vec![circle]),
+                None => Meeting::Apart,
+            },
+        );
+    }
+    // Two parallels, one either side of the tube — the inner one only where
+    // the tube does not swallow the axis.
+    let spread = minor.mul_add(minor, -(height * height)).max(0.0).sqrt();
+    let circles: Vec<Curve> = [torus.major_radius() + spread, torus.major_radius() - spread]
+        .into_iter()
+        .filter_map(|radius| circle_on(centre, axis.direction, radius, tol))
+        .collect();
+    Ok(if circles.is_empty() {
+        Meeting::Apart
+    } else {
+        Meeting::Along(circles)
+    })
+}
+
+/// A cylinder sharing a torus's axis: apart, one tangent circle, or two
+/// parallels at mirrored heights.
+fn coaxial_cylinder_torus(
+    cylinder: og_math::Cylinder,
+    torus: og_math::Torus,
+    tol: Tolerances,
+) -> OgResult<Meeting> {
+    if !cylinder.axis().is_coaxial(torus.axis(), tol) {
+        og_bail!(
+            NotDone,
+            "a cylinder off a torus's axis meets it in a quartic space curve, \
+             which needs the general marching intersector"
+        );
+    }
+    let axis = torus.axis();
+    let reach = (cylinder.radius() - torus.major_radius()).abs();
+    let minor = torus.minor_radius();
+    if reach > minor + tol.confusion() {
+        return Ok(Meeting::Apart);
+    }
+    if (reach - minor).abs() <= tol.confusion() {
+        // Tangent along the tube's inner or outer equator.
+        return Ok(
+            match circle_on(axis.location, axis.direction, cylinder.radius(), tol) {
+                Some(circle) => Meeting::Along(vec![circle]),
+                None => Meeting::Apart,
+            },
+        );
+    }
+    let rise = minor.mul_add(minor, -(reach * reach)).max(0.0).sqrt();
+    let circles: Vec<Curve> = [rise, -rise]
+        .into_iter()
+        .filter_map(|height| {
+            circle_on(
+                axis.location + axis.direction.vector() * height,
+                axis.direction,
+                cylinder.radius(),
+                tol,
+            )
+        })
+        .collect();
+    Ok(if circles.is_empty() {
+        Meeting::Apart
+    } else {
+        Meeting::Along(circles)
+    })
+}
+
+/// Two tori sharing an axis: the same surface, apart, or circles where the
+/// tube profiles cross.
+///
+/// In the shared meridian half-plane the two tubes are two circles, and
+/// revolving their meetings gives the answer: radical-line algebra in the
+/// `(distance-from-axis, height)` plane, each solution a parallel.
+fn coaxial_tori(a: og_math::Torus, b: og_math::Torus, tol: Tolerances) -> OgResult<Meeting> {
+    if !a.axis().is_coaxial(b.axis(), tol) {
+        og_bail!(
+            NotDone,
+            "two tori that do not share an axis meet in a curve only the \
+             general marching intersector can trace"
+        );
+    }
+    let axis = a.axis();
+    let lift = (b.axis().location - a.axis().location).dot(axis.direction.vector());
+    if (a.major_radius() - b.major_radius()).abs() <= tol.confusion()
+        && lift.abs() <= tol.confusion()
+        && (a.minor_radius() - b.minor_radius()).abs() <= tol.confusion()
+    {
+        return Ok(Meeting::Same);
+    }
+    // Profile circles in the meridian half-plane: centres at
+    // `(major, height)`, radii the minors.
+    let (ca, cb) = (
+        og_math::Point2::new(a.major_radius(), 0.0),
+        og_math::Point2::new(b.major_radius(), lift),
+    );
+    let between = cb - ca;
+    let distance = between.magnitude();
+    let (ra, rb) = (a.minor_radius(), b.minor_radius());
+    if distance <= tol.confusion() {
+        // Concentric profiles of different tube radii never meet; the same
+        // circle was the `Same` case above.
+        return Ok(Meeting::Apart);
+    }
+    if distance > ra + rb + tol.confusion() || distance < (ra - rb).abs() - tol.confusion() {
+        return Ok(Meeting::Apart);
+    }
+    let along = distance.mul_add(distance, ra.mul_add(ra, -(rb * rb))) / (2.0 * distance);
+    let squared = ra.mul_add(ra, -(along * along));
+    let direction = between * (1.0 / distance);
+    let foot = ca + direction * along;
+    let mut profile_points = Vec::new();
+    if squared <= tol.confusion() * tol.confusion() {
+        profile_points.push(foot);
+    } else {
+        let offset = og_math::Vector2::new(-direction.y, direction.x) * squared.max(0.0).sqrt();
+        profile_points.push(foot + offset);
+        profile_points.push(foot - offset);
+    }
+    let circles: Vec<Curve> = profile_points
+        .into_iter()
+        .filter_map(|p| {
+            circle_on(
+                axis.location + axis.direction.vector() * p.y,
+                axis.direction,
+                p.x,
+                tol,
+            )
+        })
+        .collect();
+    Ok(if circles.is_empty() {
+        Meeting::Apart
+    } else {
+        Meeting::Along(circles)
     })
 }
 

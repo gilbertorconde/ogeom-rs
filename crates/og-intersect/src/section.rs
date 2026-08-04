@@ -800,6 +800,125 @@ mod tests {
         }
     }
 
+    fn torus(origin: Point, axis: Vector, major: f64, minor: f64) -> SurfaceGeometry {
+        let frame = Frame::new(
+            origin,
+            Direction::new(axis, T).unwrap(),
+            Direction::from_cross(axis, Vector::new(0.3, 0.5, 0.9), T).unwrap(),
+            T,
+        )
+        .unwrap();
+        og_geom::TorusSurface::new(og_math::Torus::new(frame, major, minor, T).unwrap()).into()
+    }
+
+    #[test]
+    fn an_axis_normal_plane_meets_a_torus_in_two_parallels_with_pcurves() {
+        let ring = torus(Point::ORIGIN, Vector::Z, 2.0, 0.5);
+        let cut = plane(Point::new(0.0, 0.0, 0.3), Vector::Z);
+        let SurfaceIntersection::Along(curves) =
+            intersect_surfaces(&ring, &cut, IntersectOptions::default(), T).unwrap()
+        else {
+            panic!("an axis-normal plane through the tube meets it along curves");
+        };
+        assert_eq!(curves.len(), 2);
+        let spread = 0.5_f64.mul_add(0.5, -(0.3 * 0.3)).sqrt();
+        let mut radii: Vec<f64> = curves
+            .iter()
+            .map(|s| {
+                let Curve::Circle(c) = &s.curve else {
+                    panic!("a parallel is a circle");
+                };
+                c.circle().radius()
+            })
+            .collect();
+        radii.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((radii[0] - (2.0 - spread)).abs() < 1e-12);
+        assert!((radii[1] - (2.0 + spread)).abs() < 1e-12);
+        for section in &curves {
+            assert!(section.exact);
+            assert_same_parameter(section, &ring, section.on_a.as_ref().unwrap(), 48);
+            assert_same_parameter(section, &cut, section.on_b.as_ref().unwrap(), 48);
+        }
+    }
+
+    #[test]
+    fn the_plane_a_ball_rolls_on_touches_its_torus_along_the_circle_it_rolled() {
+        // Tangency with length is reported as the curve it is — the way a
+        // tangent plane reports its line on a cylinder — because the blend
+        // machinery builds faces whose boundaries are exactly these circles,
+        // and a Touching with no curve in it would read as a refusal upstream.
+        let ring = torus(Point::ORIGIN, Vector::Z, 2.0, 0.5);
+        let cut = plane(Point::new(0.0, 0.0, 0.5), Vector::Z);
+        let SurfaceIntersection::Along(curves) =
+            intersect_surfaces(&ring, &cut, IntersectOptions::default(), T).unwrap()
+        else {
+            panic!("the rolling plane touches along a circle, not at points");
+        };
+        assert_eq!(curves.len(), 1);
+        let Curve::Circle(c) = &curves[0].curve else {
+            panic!("the tangency is a circle");
+        };
+        assert!((c.circle().radius() - 2.0).abs() < 1e-12);
+        assert_same_parameter(&curves[0], &ring, curves[0].on_a.as_ref().unwrap(), 48);
+        assert_same_parameter(&curves[0], &cut, curves[0].on_b.as_ref().unwrap(), 48);
+    }
+
+    #[test]
+    fn a_coaxial_cylinder_meets_a_torus_in_two_parallels_and_touches_in_one() {
+        let ring = torus(Point::ORIGIN, Vector::Z, 2.0, 0.5);
+        let drum = cylinder(Vector::Z, 2.2);
+        let SurfaceIntersection::Along(curves) =
+            intersect_surfaces(&drum, &ring, IntersectOptions::default(), T).unwrap()
+        else {
+            panic!("a coaxial cylinder through the tube meets it along curves");
+        };
+        assert_eq!(curves.len(), 2);
+        for section in &curves {
+            assert!(section.exact);
+            let Curve::Circle(c) = &section.curve else {
+                panic!("a parallel is a circle");
+            };
+            assert!((c.circle().radius() - 2.2).abs() < 1e-12);
+            assert_same_parameter(section, &drum, section.on_a.as_ref().unwrap(), 48);
+            assert_same_parameter(section, &ring, section.on_b.as_ref().unwrap(), 48);
+        }
+
+        // Tangent at the tube's outer equator: one circle, with both pcurves.
+        let grazing = cylinder(Vector::Z, 2.5);
+        let SurfaceIntersection::Along(touch) =
+            intersect_surfaces(&grazing, &ring, IntersectOptions::default(), T).unwrap()
+        else {
+            panic!("the grazing cylinder touches along the equator");
+        };
+        assert_eq!(touch.len(), 1);
+        assert_same_parameter(&touch[0], &grazing, touch[0].on_a.as_ref().unwrap(), 48);
+        assert_same_parameter(&touch[0], &ring, touch[0].on_b.as_ref().unwrap(), 48);
+    }
+
+    #[test]
+    fn coaxial_tori_are_the_same_or_meet_in_parallels() {
+        let ring = torus(Point::ORIGIN, Vector::Z, 2.0, 0.5);
+        assert!(matches!(
+            intersect_surfaces(&ring, &ring.clone(), IntersectOptions::default(), T).unwrap(),
+            SurfaceIntersection::Same
+        ));
+
+        // The same tube lifted half a radius: the profile circles cross
+        // twice, and each crossing revolves into a parallel shared exactly.
+        let lifted = torus(Point::new(0.0, 0.0, 0.5), Vector::Z, 2.0, 0.5);
+        let SurfaceIntersection::Along(curves) =
+            intersect_surfaces(&ring, &lifted, IntersectOptions::default(), T).unwrap()
+        else {
+            panic!("lifted coaxial tori meet along curves");
+        };
+        assert_eq!(curves.len(), 2);
+        for section in &curves {
+            assert!(section.exact);
+            assert_same_parameter(section, &ring, section.on_a.as_ref().unwrap(), 48);
+            assert_same_parameter(section, &lifted, section.on_b.as_ref().unwrap(), 48);
+        }
+    }
+
     #[test]
     fn a_pair_with_no_closed_form_comes_back_fitted_with_pcurves() {
         // Crossed cylinders: the marched path, end to end through one call.

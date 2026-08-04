@@ -101,6 +101,98 @@ fn a_filleted_box_edge_gains_a_tangent_cylinder() {
 }
 
 #[test]
+fn a_cylinder_rim_gains_a_toroidal_blend() {
+    let mut model = og_topo::Model::new();
+    let (radius, height, blend) = (1.0, 2.0, 0.3);
+    let drum = og_algo::make_cylinder(&mut model, Frame::WORLD, radius, height, T).unwrap();
+
+    // The top rim: the circular edge at z = height.
+    let edge = explore(&model, &drum.shape, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            og_algo::edge_vertices(&model, e)
+                .unwrap()
+                .is_some_and(|(a, _)| {
+                    model
+                        .node(&a)
+                        .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                        .is_some_and(|p| (p.z - height).abs() < 1e-9 && p.x.hypot(p.y) > 0.5)
+                })
+        })
+        .expect("the cylinder has its top rim");
+
+    let result = og_fillet::fillet_edge(&mut model, &drum.shape, &edge, blend, T).unwrap();
+
+    let diagnosis = og_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // Pappus over the meridian cusp: the removed ring is the corner square
+    // minus the quarter disc, each weighted by its distance from the axis.
+    let pi = core::f64::consts::PI;
+    let removed = 2.0
+        * pi
+        * (radius * blend * blend
+            - blend * blend * blend / 2.0
+            - (radius - blend) * pi * blend * blend / 4.0
+            - blend * blend * blend / 3.0);
+    let exact = pi * radius * radius * height - removed;
+    let fine = og_mesh::Deflection {
+        chord: 1e-4,
+        ..og_mesh::Deflection::default()
+    };
+    let props = og_algo::volume_properties(&model, &result.shape, fine, T).unwrap();
+    assert!(
+        (props.mass - exact).abs() < 2e-3,
+        "rim fillet volume {} against {exact}",
+        props.mass
+    );
+
+    // Four faces: the wall and both caps trimmed back, plus the torus.
+    let faces = explore(&model, &result.shape, Filter::OfType(ShapeType::Face)).unwrap();
+    assert_eq!(faces.len(), 4);
+
+    assert!(result.history.is_deleted(&edge));
+
+    // The blend passes through the meridian midpoint of the quarter tube.
+    let mid = Point::new(
+        (radius - blend) + blend / core::f64::consts::SQRT_2,
+        0.0,
+        (height - blend) + blend / core::f64::consts::SQRT_2,
+    );
+    let on_blend = faces.iter().any(|f| {
+        og_algo::classify_on_face(&model, f, mid, fine, T)
+            .map(|c| c != og_algo::Containment::Out)
+            .unwrap_or(false)
+    });
+    assert!(
+        on_blend,
+        "the blend face passes through the tube's meridian midpoint"
+    );
+}
+
+#[test]
+fn a_rim_fillet_that_swallows_the_axis_is_refused() {
+    let mut model = og_topo::Model::new();
+    let drum = og_algo::make_cylinder(&mut model, Frame::WORLD, 1.0, 2.0, T).unwrap();
+    let edge = explore(&model, &drum.shape, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            og_algo::edge_vertices(&model, e)
+                .unwrap()
+                .is_some_and(|(a, _)| {
+                    model
+                        .node(&a)
+                        .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                        .is_some_and(|p| (p.z - 2.0).abs() < 1e-9 && p.x.hypot(p.y) > 0.5)
+                })
+        })
+        .expect("the cylinder has its top rim");
+    assert!(og_fillet::fillet_edge(&mut model, &drum.shape, &edge, 1.0, T).is_err());
+}
+
+#[test]
 fn a_concave_edge_refuses_the_subtractive_fillet() {
     let mut model = og_topo::Model::new();
     let block = og_algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
