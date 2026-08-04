@@ -308,10 +308,19 @@ pub fn classify_in_solid_exact(
             }
             for hit in &found.crossings {
                 if hit.on_curve <= tol.confusion() {
-                    // At the very start. The boundary test above said the
-                    // point is off every face, but a crossing this close is
-                    // still too near the start to trust its side.
-                    continue 'directions;
+                    // At the very start: the probe lies in this face's
+                    // *surface*. Whether that matters depends on the trim —
+                    // the boundary test above already said the point is off
+                    // every face, so a start-crossing far from this face's
+                    // rings is the unbounded surface talking, not the face,
+                    // and it neither counts nor poisons the ray.
+                    let (u, v) = hit.on_surface;
+                    let at = Point2::new(u, v);
+                    let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
+                    if distance_to_rings(rings, at) <= band || inside_boundary(rings, at) {
+                        continue 'directions;
+                    }
+                    continue;
                 }
                 let (u, v) = hit.on_surface;
                 use og_geom::Surface as _;

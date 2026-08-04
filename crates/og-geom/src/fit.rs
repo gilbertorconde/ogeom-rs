@@ -174,6 +174,97 @@ pub fn fit_points_joint(
     Ok((Fitted { curve, error, met }, pa, pb))
 }
 
+/// Fit a pcurve at *fixed* parameters — the source curve's own.
+///
+/// The fixed-parameter twin of [`fit_points_2d`], and the difference is the
+/// contract: parameter correction is what makes a free fit's residual honest,
+/// and it is exactly what a *same-parameter* fit must never do, because the
+/// parameters are not a guess to be improved — they are the 3D curve's own,
+/// and drifting them is how a pcurve ends up evaluating away from the curve
+/// it annotates. Here the parameters stay put, refinement adds knots where
+/// the error says, and the reported error is the true same-parameter
+/// deviation in the chart.
+///
+/// # Errors
+///
+/// As [`fit_points_2d`], and the parameters must be strictly increasing and
+/// as many as the points.
+pub fn fit_points_2d_at(
+    parameters: &[f64],
+    points: &[Point2],
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgResult<Fitted<BSpline2d>> {
+    if parameters.len() != points.len() {
+        og_bail!(Construction, "one parameter per point, or the fit is a lie");
+    }
+    if parameters.windows(2).any(|w| w[1] <= w[0]) {
+        og_bail!(Construction, "fixed parameters must strictly increase");
+    }
+    if !tolerance.is_finite() || tolerance <= 0.0 {
+        og_bail!(Construction, "a tolerance of {tolerance} is not a distance");
+    }
+    if degree == 0 {
+        og_bail!(Construction, "a fit needs a degree of at least one");
+    }
+    let data: Vec<[f64; 2]> = points.iter().map(|p| [p.x, p.y]).collect();
+    if data.len() < 2 {
+        og_bail!(Construction, "a fit needs at least two points");
+    }
+    let degree = degree.min(data.len() - 1);
+    let (a, b) = (parameters[0], parameters[parameters.len() - 1]);
+    let mut knots = single_span(degree, a, b)?;
+
+    const ROUNDS: usize = 32;
+    let mut best: Option<(KnotVector, Vec<[f64; 2]>, f64)> = None;
+    for _ in 0..ROUNDS {
+        let control = least_squares::<2>(&knots, &data, parameters)?;
+        let errors = residuals::<2>(&knots, &control, &data, parameters);
+        let worst = errors.iter().fold(0.0_f64, |acc, e| acc.max(e.1));
+        if best.as_ref().is_none_or(|(_, _, held)| worst < *held) {
+            best = Some((knots.clone(), control.clone(), worst));
+        }
+        if worst <= tolerance {
+            let curve = BSpline2d::new(
+                knots,
+                control
+                    .into_iter()
+                    .map(|c| Point2::new(c[0], c[1]))
+                    .collect(),
+                tol,
+            )?;
+            return Ok(Fitted {
+                curve,
+                error: worst,
+                met: true,
+            });
+        }
+        if knots.control_point_count() >= data.len() {
+            break;
+        }
+        let Some(refined) = refined_where_bad(&knots, &errors, tolerance)? else {
+            break;
+        };
+        knots = refined;
+    }
+    let (knots, control, error) =
+        best.ok_or_else(|| og_core::og_err!(Construction, "the fixed-parameter fit never solved"))?;
+    let curve = BSpline2d::new(
+        knots,
+        control
+            .into_iter()
+            .map(|c| Point2::new(c[0], c[1]))
+            .collect(),
+        tol,
+    )?;
+    Ok(Fitted {
+        curve,
+        error,
+        met: false,
+    })
+}
+
 /// The dimension-generic core.
 ///
 /// Least squares is solved coordinate by coordinate: the collocation matrix

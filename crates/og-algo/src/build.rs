@@ -497,6 +497,30 @@ pub fn make_natural_face(model: &mut Model, surface: SurfaceGeometry) -> OgResul
 ///
 /// [`OgError::Construction`](og_core::OgError::Construction) if a child is not
 /// a face, or the list is empty.
+/// Build a compound from any shapes, with history.
+///
+/// The grouping container: a compound holds anything, orders nothing, and
+/// claims nothing about closure. What this adds over the raw model call is
+/// the same thing every builder adds — a history that says what went in.
+///
+/// # Errors
+///
+/// As [`Model::add_compound`].
+pub fn make_compound(model: &mut Model, shapes: &[Shape]) -> OgResult<Built> {
+    let compound = model.add_compound(shapes)?;
+    let mut history = History::new();
+    for shape in shapes {
+        history.generate(shape, compound.clone());
+    }
+    Ok(Built::new(compound, history))
+}
+
+/// Build a shell from faces.
+///
+/// # Errors
+///
+/// [`OgError::Construction`](og_core::OgError::Construction) if a child is
+/// not a face, or the list is empty.
 pub fn make_shell(model: &mut Model, faces: &[Shape]) -> OgResult<Built> {
     let shell = model.add_shell(faces)?;
     let mut history = History::new();

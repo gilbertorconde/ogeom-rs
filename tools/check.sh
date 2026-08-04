@@ -18,20 +18,27 @@ echo "== clippy =="
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 echo "== test =="
+# One full pass over everything, captured so the count at the end comes from
+# this run rather than from running the world again.
+log="$(mktemp)"
+trap 'rm -f "$log"' EXIT
+echo "-- full run --"
+cargo test --workspace --all-features --no-fail-fast 2>&1 | tee "$log"
+
 # Property tests draw fresh cases each run, so a single green run proves less
-# than it looks. Repeat enough to shake out a boundary case that only some
-# seeds reach.
-runs="${OG_TEST_RUNS:-3}"
+# than it looks — but only the *unit* suites hold property tests, and the
+# corpus integration suites are deterministic and heavy. Repeat what benefits
+# from repetition and leave the rest at one honest pass.
+runs="${OG_TEST_RUNS:-2}"
 for i in $(seq 1 "$runs"); do
-    echo "-- run $i of $runs --"
-    cargo test --workspace --all-features --no-fail-fast
+    echo "-- unit re-run $i of $runs --"
+    cargo test --workspace --all-features --lib --no-fail-fast
 done
 
 echo "== docs =="
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
 
-passing=$(cargo test --workspace --no-fail-fast 2>&1 \
-    | grep -E '^test result:' \
+passing=$(grep -E '^test result:' "$log" \
     | awk -F'ok\\. ' '{split($2,a," "); s+=a[1]} END {print s}')
 echo
 echo "OK — $passing tests passing"

@@ -1029,13 +1029,35 @@ impl Reader<'_> {
             }
             p
         };
-        let Some(pcurve) = og_intersect::exact_pcurve_of(curve, surface, self.tol).map(widen)
-        else {
-            self.report.warnings.push(format!(
-                "face #{face_id}: no closed-form pcurve for an edge on this \
-                 surface; the face may not triangulate"
-            ));
-            return Ok(());
+        let pcurve = match og_intersect::exact_pcurve_of(curve, surface, self.tol).map(widen) {
+            Some(exact) => exact,
+            None => {
+                // No closed form — a spline surface, or a combination the
+                // projection table lacks. The pcurve is *fitted at the
+                // curve's own parameters*: sample the edge, project each
+                // sample into the chart, fit the trace with the parameters
+                // held fixed, so same-parameter is preserved by construction
+                // and the reported error is the true chart deviation.
+                match self.fit_projected_pcurve(curve, range, surface) {
+                    Ok((fitted, error, met)) => {
+                        if !met {
+                            self.report.warnings.push(format!(
+                                "face #{face_id}: a projected pcurve fit \
+                                 stopped at {error:.2e}; the face's mesh may \
+                                 sit that far off along this edge"
+                            ));
+                        }
+                        fitted
+                    }
+                    Err(e) => {
+                        self.report.warnings.push(format!(
+                            "face #{face_id}: no pcurve for an edge on this \
+                             surface ({e}); the face may not triangulate"
+                        ));
+                        return Ok(());
+                    }
+                }
+            }
         };
         if seam {
             let ((ua, ub), _) = surface.domain();
@@ -1066,6 +1088,106 @@ impl Reader<'_> {
             )?;
         }
         Ok(())
+    }
+
+    /// A pcurve fitted from projection at the curve's own parameters.
+    fn fit_projected_pcurve(
+        &mut self,
+        curve: &Curve,
+        range: (f64, f64),
+        surface: &SurfaceGeometry,
+    ) -> OgResult<(PlanarCurve, f64, bool)> {
+        const SAMPLES: usize = 96;
+        let mut worst_off = 0.0_f64;
+        let mut parameters = Vec::with_capacity(SAMPLES + 1);
+        let mut trace = Vec::with_capacity(SAMPLES + 1);
+        let mut space_run = 0.0;
+        let mut parameter_run = 0.0;
+        let mut previous: Option<(Point, og_math::Point2)> = None;
+        for i in 0..=SAMPLES {
+            #[allow(clippy::cast_precision_loss)]
+            let t = range.0 + (range.1 - range.0) * i as f64 / SAMPLES as f64;
+            let p = curve.point_at(t, self.tol)?;
+            let (uv, off) = match chart_of(surface, p) {
+                // Analytic surfaces invert in closed form — grid seeding
+                // over a plane's or cylinder's enormous stated extents lands
+                // microns off, and a fitted pcurve inherits every micron.
+                Some(uv) => {
+                    let lifted = surface.point_at(uv.x, uv.y, self.tol)?;
+                    (uv, p.distance(lifted))
+                }
+                None => {
+                    let projection = og_algo::project_on_surface(surface, p, 24, self.tol)?;
+                    (
+                        og_math::Point2::new(projection.parameters.0, projection.parameters.1),
+                        projection.distance,
+                    )
+                }
+            };
+            if off > self.tol.confusion() * 1e4 {
+                og_bail!(
+                    Construction,
+                    "the edge sits {off:.2e} from the surface it should bound"
+                );
+            }
+            worst_off = worst_off.max(off);
+            if let Some((lp, luv)) = previous {
+                space_run += p.distance(lp);
+                parameter_run += uv.distance(luv);
+            }
+            previous = Some((p, uv));
+            parameters.push(t);
+            trace.push(uv);
+        }
+        // A trace on a periodic chart may cross the seam mid-edge; unwrap it
+        // pointwise so the fit sees a continuous curve.
+        let ((ua, ub), (va, vb)) = surface.domain();
+        let spans = (
+            if surface.is_periodic_u() {
+                ub - ua
+            } else {
+                0.0
+            },
+            if surface.is_periodic_v() {
+                vb - va
+            } else {
+                0.0
+            },
+        );
+        for i in 1..trace.len() {
+            if spans.0 > 0.0 {
+                while trace[i].x - trace[i - 1].x > spans.0 * 0.5 {
+                    trace[i].x -= spans.0;
+                }
+                while trace[i].x - trace[i - 1].x < -spans.0 * 0.5 {
+                    trace[i].x += spans.0;
+                }
+            }
+            if spans.1 > 0.0 {
+                while trace[i].y - trace[i - 1].y > spans.1 * 0.5 {
+                    trace[i].y -= spans.1;
+                }
+                while trace[i].y - trace[i - 1].y < -spans.1 * 0.5 {
+                    trace[i].y += spans.1;
+                }
+            }
+        }
+        // The tolerance carried into the chart through the trace's own
+        // metric — the honest cheap version, refined by the fit's report.
+        let scale = if space_run > self.tol.confusion() {
+            parameter_run / space_run
+        } else {
+            1.0
+        };
+        let target = (self.tol.confusion() * 1e2 * scale).max(f64::MIN_POSITIVE);
+        let fitted = og_geom::fit::fit_points_2d_at(&parameters, &trace, 3, target, self.tol)?;
+        if worst_off > self.tol.confusion() * 1e3 {
+            self.report.warnings.push(format!(
+                "an edge sits up to {worst_off:.2e} from the surface it \
+                 bounds; the file's own slop, carried into the chart"
+            ));
+        }
+        Ok((fitted.curve.into(), fitted.error, fitted.met))
     }
 
     fn solid(&mut self, id: u64) -> OgResult<Shape> {
@@ -1101,6 +1223,41 @@ impl Reader<'_> {
             ));
         }
         Ok(make_solid(&mut self.model, std::slice::from_ref(&shell))?.shape)
+    }
+}
+
+/// The chart coordinates of a point on an analytic surface, by closed-form
+/// inversion — `None` for surfaces that need iterative projection.
+fn chart_of(surface: &SurfaceGeometry, p: Point) -> Option<og_math::Point2> {
+    let tau = core::f64::consts::TAU;
+    match surface {
+        SurfaceGeometry::Plane(s) => {
+            let l = s.plane().frame().to_local(p);
+            Some(og_math::Point2::new(l.x, l.y))
+        }
+        SurfaceGeometry::Cylinder(s) => {
+            let l = s.cylinder().frame().to_local(p);
+            Some(og_math::Point2::new(l.y.atan2(l.x).rem_euclid(tau), l.z))
+        }
+        SurfaceGeometry::Cone(s) => {
+            let l = s.cone().frame().to_local(p);
+            Some(og_math::Point2::new(l.y.atan2(l.x).rem_euclid(tau), l.z))
+        }
+        SurfaceGeometry::Sphere(s) => {
+            let sphere = s.sphere();
+            let l = sphere.frame().to_local(p);
+            let lat = (l.z / sphere.radius()).clamp(-1.0, 1.0).asin();
+            Some(og_math::Point2::new(l.y.atan2(l.x).rem_euclid(tau), lat))
+        }
+        SurfaceGeometry::Torus(s) => {
+            let torus = s.torus();
+            let l = torus.frame().to_local(p);
+            let u = l.y.atan2(l.x).rem_euclid(tau);
+            let radial = l.x.hypot(l.y) - torus.major_radius();
+            let v = l.z.atan2(radial).rem_euclid(tau);
+            Some(og_math::Point2::new(u, v))
+        }
+        _ => None,
     }
 }
 

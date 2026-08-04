@@ -6,3 +6,7 @@
 //!
 //! Along with offsetting, one of the two areas where every kernel is fragile.
 //! Robustness here is a differentiator, not a checkbox.
+
+pub mod chamfer;
+
+pub use chamfer::chamfer_edge;
