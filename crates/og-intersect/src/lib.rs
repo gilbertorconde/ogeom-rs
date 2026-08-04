@@ -11,11 +11,13 @@
 //! gated by a standalone benchmark against analytic ground truth and published
 //! datasets before the boolean pipeline in `og-bool` is started.
 
+pub mod approx;
 pub mod benchmark;
 pub mod coverage;
 pub mod march;
 pub mod surface;
 
+pub use approx::{IntersectionCurve, approximate_branch};
 pub use benchmark::{Measured, Report, measure, measure_all};
 pub use coverage::{Coverage, coverage};
 pub use march::{Contact, Marching, Stopped, Traced, branches, seeds, trace};
