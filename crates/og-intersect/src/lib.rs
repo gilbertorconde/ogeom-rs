@@ -14,6 +14,7 @@
 pub mod approx;
 pub mod benchmark;
 pub mod coverage;
+pub mod curves;
 pub mod march;
 pub mod section;
 pub mod surface;
@@ -21,6 +22,9 @@ pub mod surface;
 pub use approx::{IntersectionCurve, approximate_branch};
 pub use benchmark::{Measured, Report, measure, measure_all};
 pub use coverage::{Coverage, coverage};
+pub use curves::{
+    Crossing, CurveCurveOptions, CurveIntersection, Overlap, intersect_curves, intersect_curves_2d,
+};
 pub use march::{Contact, Marching, Stopped, Traced, branches, seeds, trace};
 pub use section::{IntersectOptions, SectionCurve, SurfaceIntersection, intersect_surfaces};
 pub use surface::{Meeting, surface_surface};
