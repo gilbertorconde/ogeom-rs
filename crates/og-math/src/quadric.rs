@@ -361,15 +361,37 @@ impl Cone {
         let local = self.frame.to_local(p);
         let radial = local.xy().to_vector().magnitude();
         let apex_z = -self.reference_radius / self.half_angle.tan();
-        // In the (radial, axial) half-plane the cone is a line through the apex
-        // at `half_angle` from the axis. Distance to a cone is then distance to
-        // that line, clamped so points beyond the apex measure to the apex.
+        // A cone is a *double* cone: the quadric has two nappes meeting at the
+        // apex, and the surface type built on this parameterizes both — its
+        // height range may cross the apex, exactly as the conventional
+        // kernel's conical surface does. An earlier version measured one nappe
+        // and clamped everything past the apex to the apex, which reported a
+        // point *on* the second nappe as almost a unit away — and it was the
+        // intersection benchmark that caught it, by flagging a correctly
+        // traced curve as off the surface.
+        //
+        // In the (radial, axial) half-plane each nappe is a ray from the apex;
+        // the distance is the nearer of the two, each clamped to its own ray
+        // so a point in the wedge beyond the apex measures to the apex.
         let (sin, cos) = self.half_angle.sin_cos();
-        let along = (local.z - apex_z).mul_add(cos, radial * sin);
-        if along <= 0.0 {
-            return radial.hypot(local.z - apex_z);
-        }
-        ((local.z - apex_z) * sin - radial * cos).abs()
+        let height = local.z - apex_z;
+        let apex_distance = radial.hypot(height);
+        let nappe = |along: f64, across: f64| {
+            if along <= 0.0 {
+                apex_distance
+            } else {
+                across.abs()
+            }
+        };
+        let up = nappe(
+            height.mul_add(cos, radial * sin),
+            height.mul_add(sin, -(radial * cos)),
+        );
+        let down = nappe(
+            height.mul_add(-cos, radial * sin),
+            height.mul_add(sin, radial * cos),
+        );
+        up.min(down)
     }
 
     /// Whether `p` lies on the surface within `tol.confusion()`.
@@ -811,10 +833,21 @@ mod tests {
             core::f64::consts::FRAC_1_SQRT_2,
             epsilon = 1e-12
         );
-        // Behind the apex, the nearest point is the apex itself.
+        // A cone is a double cone: behind the apex is the second nappe, and a
+        // point on the axis there measures perpendicular to it, not to the
+        // apex. The earlier claim here — apex distance, 5.0 — encoded a
+        // single-nappe convention that disagreed with the surface type built
+        // on this, and the intersection benchmark caught the disagreement by
+        // flagging a correctly traced second-nappe curve as off the surface.
         assert_relative_eq!(
             c.distance_to(Point::new(0.0, 0.0, -5.0)),
-            5.0,
+            5.0 * core::f64::consts::FRAC_1_SQRT_2,
+            epsilon = 1e-12
+        );
+        // A point *on* the second nappe is on the cone.
+        assert_relative_eq!(
+            c.distance_to(Point::new(2.0, 0.0, -2.0)),
+            0.0,
             epsilon = 1e-12
         );
     }
