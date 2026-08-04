@@ -411,6 +411,20 @@ forms; an inside-out rebuild is caught by its own measured volume. The
 vocabulary is planes and full cylindrical bands, straight edges and
 axis-normal rings — the general rebuild is in the deferred table.
 
+**Pipes and lofts** close the sweeps whose surfaces were already in the
+vocabulary. A circular profile along a straight spine is the cylinder
+primitive placed; around a full circle it is the torus primitive; along an
+arc it is a torus segment built from two half-tube patches whose tube
+circles are framed so their own parameter *is* the tube angle — every pcurve
+a straight line in the chart, and the outer equator an honest seam between
+the halves, said through `attach_seam`. Ruled lofts between parallel
+sections: coaxial circles delegate to the cone and cylinder primitives,
+matched polygons build planar walls with shared rails — and a twisted loft
+is refused as the skew it is. Volumes pin to Pappus and the frustum
+formulae. Free-form spines, oblique and mixed sections, and smoothed
+skinning through many sections are the sweep-surface machinery, deferred by
+name.
+
 | | *Elsewhere* |
 |---|---|
 | Offset shape with selectable join type | `BRepOffsetAPI_MakeOffsetShape` |
@@ -638,6 +652,7 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 | General affine transforms over a whole *shape* | §5 | Done at the geometry level: `Curve::general_transformed` converts to the exact B-spline form and moves the control points, which an affine map does exactly, so a sheared circle lands on the ellipse it should rather than near it. `transformed` still takes only a `Transform`, so a placement keeps the analytic type and only this does not. What is owed is the shape-level operation, and it is owed for the same reason whole-shape NURBS conversion is: the parameterization moves, so every edge's range and every pcurve has to be re-derived. |
 | Whole-shape NURBS conversion | §5 | Exact conversions exist for every curve — line, circle, ellipse, hyperbola, parabola, spline, trimmed — and for the ruled surfaces: plane, cylinder, cone, extrusion. Each is exact rather than fitted, and the tests measure it *implicitly*, by how far the patch strays from the analytic surface, because comparing parameters would report the reparameterization instead of the error. **What is owed is the whole-shape operation.** Conversion necessarily reparameterizes — a circle's parameter is its angle and a rational quadratic's is not, and no reparameterization of a rational quadratic makes it one — so converting a shape means restating every edge's range and re-deriving every pcurve against a surface whose parameterization has also moved. Re-deriving a pcurve is a *fit*, which makes it the adaptive-fitting item above, and that is deferred too. |
 | Exact patches for revolved surfaces | §3 | `to_bspline` covers the ruled surfaces exactly and refuses sphere, torus, general revolution and trimmed. Each of those needs a rational profile revolved — a construction of its own, and the same one for all three. Refused rather than fitted: a fit reporting success is indistinguishable from an exact conversion at the call site, and every exchange format written from it would carry the approximation without saying so. |
+| Sweep surfaces proper | §11 | `make_pipe` and `make_loft` cover the sweeps whose results are analytic: straight and circular spines, parallel ruled sections. A pipe along a B-spline spine, an oblique or twisted loft, and skinning through many sections all need surfaces that do not yet exist — the swept surface with a law of orientation, and the B-spline surface fit (§6's deferred grid fit is the same missing stone). Refused by name at each entry point. |
 | The general offset rebuild | §11 | `offset_shape` speaks planes and full cylindrical bands, straight edges and closed axis-normal rings, vertices seated on three planes. Everything else — cones and tori (whose offsets are still cones and tori), spheres, partial revolution faces, arcs with vertices, vertices touching curved faces — is refused by name. Each case is the same three-step rebuild (move the surface, re-derive the edge on the moved pair, re-solve the vertex against three moved supports) with more trigonometry; the fillet's blend faces are the first real customers, since shelling a filleted part meets a partial cylinder immediately. |
 | Collapsed 2D offsets | §11 | `offset_wire` refuses a result that self-intersects or consumes an edge whole. The full algorithm arranges the raw offset into its planar subdivision and keeps the loops at the right winding distance — the same tagged-strand arrangement the boolean already runs in 2D, pointed at a different question. Until then the refusal names the collapse instead of returning one of its loops silently. Open wires are refused alongside: capping their ends (round or square) is part of the same rebuild. |
 | 2D corner blends with curved sides | §10 | `fillet_corner_2d` and `chamfer_corner_2d` handle corners between two straight wire edges — the closed-form tangency. A line meeting an arc, or two arcs, is the general 2D tangent-circle problem (`GccAna`'s territory): still closed-form, quadratic rather than linear, and refused by name until that construction exists. |
