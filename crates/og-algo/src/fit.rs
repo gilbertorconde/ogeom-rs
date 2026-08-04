@@ -25,11 +25,13 @@
 //! Centripetal is the standard compromise and is what a CAD user expects a
 //! fitted curve to look like.
 //!
-//! # What is not here
+//! # Choosing for you
 //!
-//! Nothing chooses the number of control points for you, and nothing decides
-//! when a fit is "good enough" and stops. Those need an error target and a
-//! knot-insertion loop; see the deferred list in `docs/SCOPE.md`.
+//! [`approximate_within`] is the one that decides: it takes an error target
+//! instead of a control-point count, refines its knots where the error
+//! concentrates until the target is met, and reports the error it actually
+//! reached. The machinery lives in [`og_geom::fit`], where the intersector's
+//! approximation stage shares it.
 
 use og_core::{OgResult, Tolerances, og_bail};
 use og_geom::BSplineCurve;
@@ -52,6 +54,28 @@ pub enum Spacing {
     /// Correct only when the points really are evenly spread; otherwise it is
     /// the one that loops.
     Uniform,
+}
+
+/// Fit a B-spline to within a stated error, choosing the knots itself.
+///
+/// The half of fitting the fixed-count functions cannot do: the caller names
+/// how wrong the curve may be, and the fit decides how many control points
+/// that costs — refining where the error concentrates, so a profile that is
+/// straight with one tight corner gets its knots in the corner.
+///
+/// Returns the curve and the error actually reached. If the target could not
+/// be met with the points given, [`Fitted::met`](og_geom::fit::Fitted) says so
+/// rather than the error being rounded up to success.
+///
+/// # Errors
+///
+/// As [`og_geom::fit::fit_points`].
+pub fn approximate_within(
+    points: &[Point],
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgResult<og_geom::fit::Fitted<BSplineCurve>> {
+    og_geom::fit::fit_points(points, 3, tolerance, tol)
 }
 
 /// Fit a B-spline that passes through every point.

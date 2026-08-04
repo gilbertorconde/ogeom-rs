@@ -13,6 +13,7 @@
 pub mod convert;
 pub mod curve;
 pub mod curve2d;
+pub mod fit;
 pub mod surface;
 pub mod traits;
 
