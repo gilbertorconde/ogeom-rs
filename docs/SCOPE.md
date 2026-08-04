@@ -247,7 +247,7 @@ Every operation emits history from the commit that introduces it
 | Point projection onto curves and surfaces | `GeomAPI_ProjectPointOn*` | done |
 | Mass properties: length, area, volume, centroid, inertia, principal axes | `GProp`, `BRepGProp` | done |
 | Point-in-face classification | `BRepTopAdaptor_FClass2d` | done |
-| Point-in-solid classification | `BRepClass3d` | done; exact after §7 |
+| Point-in-solid classification | `BRepClass3d` | done, both: tessellated with the deflection band stated, and exact by ray casting against the true surfaces |
 | Minimum distance and proximity between shapes | `BRepExtrema` | after §7 |
 | Extrema between curves and surfaces | `Extrema` | after §7 |
 | Validity checking against the model invariants | `BRepCheck` | |

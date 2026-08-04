@@ -14,6 +14,7 @@ og-math.workspace = true
 og-geom.workspace = true
 og-topo.workspace = true
 og-mesh.workspace = true
+og-intersect.workspace = true
 nalgebra.workspace = true
 smallvec.workspace = true
 

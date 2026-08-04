@@ -29,7 +29,7 @@ pub use build::{
     make_solid, make_vertex, make_wire,
 };
 pub use check::{Diagnosis, Problem, Severity, check, check_tessellation};
-pub use classify::{Containment, classify_in_solid, classify_on_face};
+pub use classify::{Containment, classify_in_solid, classify_in_solid_exact, classify_on_face};
 pub use fit::{Spacing, approximate, approximate_within, interpolate};
 pub use history::{Built, History};
 pub use length::{curve_length, parameter_at_length, points_by_count, points_by_spacing};

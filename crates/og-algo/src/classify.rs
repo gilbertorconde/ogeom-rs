@@ -8,14 +8,16 @@
 //!
 //! # Accuracy
 //!
-//! Both classifiers work from the tessellation, so a point nearer the boundary
-//! than the deflection cannot be told from one on it. That is reported as
-//! [`Containment::On`] rather than guessed: the band the answer is uncertain
-//! within is the deflection, and saying so is the difference between an
-//! approximate answer and a wrong one.
+//! [`classify_in_solid`] and [`classify_on_face`] work from the tessellation,
+//! so a point nearer the boundary than the deflection cannot be told from one
+//! on it. That is reported as [`Containment::On`] rather than guessed: the
+//! band the answer is uncertain within is the deflection, and saying so is the
+//! difference between an approximate answer and a wrong one.
 //!
-//! Tightening the deflection narrows the band. It never removes it — the exact
-//! question needs ray/surface intersection, which is a later layer.
+//! Tightening the deflection narrows the band. It never removes it — the
+//! exact question needs ray/surface intersection, which is
+//! [`classify_in_solid_exact`]: rays cast against the faces' true surfaces,
+//! where the uncertain band shrinks from the deflection to the tolerance.
 
 use og_core::{OgResult, Tolerances, og_bail};
 use og_math::{Direction, Point, Point2, Vector};
@@ -185,6 +187,183 @@ pub fn classify_in_solid(
          ambiguous"
     )
 }
+
+/// Where a point sits relative to a closed shell or solid, decided against
+/// the true surfaces.
+///
+/// This is the promise the tessellated classifier's documentation makes on
+/// behalf of "a later layer", kept: rays are cast against each face's actual
+/// geometry through the curve/surface intersector, so the band where the
+/// answer is *On* rather than a side is the tolerance, not the deflection. A
+/// point a micron off a sphere's wall classifies as the side it is on;
+/// [`classify_in_solid`] at any practical deflection could only say *On*.
+///
+/// The crossing-parity argument is the same as the tessellated one, and so is
+/// the discipline about degenerate hits. A ray that grazes a surface
+/// tangentially, meets a face too near its boundary to be sure which side of
+/// the trim it crossed, lies *in* a face's surface, or passes through a
+/// pole or an apex, is not patched into a count — the ray is abandoned and
+/// the next direction tried. Six directions, deterministic, none axis-aligned.
+///
+/// # Errors
+///
+/// [`OgError::Construction`](og_core::OgError::Construction) if the shape is
+/// not a solid or a shell, or its boundary is not closed;
+/// [`OgError::NotDone`](og_core::OgError::NotDone) if every ray met a
+/// degeneracy — which a handful of deliberately skew directions makes an
+/// engineered case rather than an encountered one.
+pub fn classify_in_solid_exact(
+    model: &Model,
+    solid: &Shape,
+    point: Point,
+    tol: Tolerances,
+) -> OgResult<Containment> {
+    let kind = model.kind_of(solid)?;
+    if !matches!(kind, ShapeType::Solid | ShapeType::Shell) {
+        og_bail!(Construction, "expected a solid or a shell, got {kind:?}");
+    }
+    let shells = if kind == ShapeType::Shell {
+        vec![solid.clone()]
+    } else {
+        og_topo::explore_unique(model, solid, ShapeType::Shell)?
+    };
+    if shells.is_empty() {
+        og_bail!(Construction, "the shape has no shell, so no boundary");
+    }
+    for shell in &shells {
+        if !crate::build::is_shell_closed(model, shell)? {
+            og_bail!(
+                Construction,
+                "the boundary is not closed, so there is no inside to be in"
+            );
+        }
+    }
+
+    // Anything outside the shape's bound is outside the shape, and the bound
+    // also sets how long a ray must be to have left everything behind.
+    let bound = crate::measure::shape_bounds(model, solid, tol)?;
+    let reach = tol.confusion();
+    let (Some(centre), diagonal) = (bound.centre(), bound.diagonal()) else {
+        og_bail!(Construction, "the boundary bounds nothing");
+    };
+    if !bound.expanded(reach).contains(point) {
+        return Ok(Containment::Out);
+    }
+    let length = point.distance(centre) + diagonal + 1.0;
+
+    // The rings' own polylining error, spatially: they are only used to
+    // decide which side of a face's trim a crossing landed, and a crossing
+    // nearer the ring than this is ambiguous rather than decided.
+    let ring_chord = tol.confusion() * 1e4;
+    let ring_deflection = Deflection {
+        chord: ring_chord,
+        angular: 0.05,
+        ..Deflection::default()
+    };
+
+    let faces = og_topo::explore_unique(model, solid, ShapeType::Face)?;
+    let mut prepared = Vec::with_capacity(faces.len());
+    for face in faces {
+        // On the boundary beats either side, and each face answers exactly:
+        // projection distance against the true surface, trimming in parameter
+        // space.
+        if classify_on_face(model, &face, point, ring_deflection, tol)? != Containment::Out {
+            return Ok(Containment::On);
+        }
+        let Some(node) = model.node(&face) else {
+            og_bail!(Dangling, "face is not in this model");
+        };
+        let NodeData::Face(data) = node.data() else {
+            og_bail!(Construction, "face node holds no face data");
+        };
+        let Some(surface) = model.geometry().surface(data.surface) else {
+            og_bail!(Dangling, "face refers to a surface not in this model");
+        };
+        let inverse = face.transform(model.datums())?.inverse()?;
+        let rings = face_boundary(model, &face, ring_deflection, tol)?;
+        prepared.push((surface.clone(), inverse, rings));
+    }
+
+    'directions: for direction in RAY_DIRECTIONS {
+        let along = Vector::new(direction[0], direction[1], direction[2]);
+        let far = point + along * length;
+        let mut crossings = 0_usize;
+
+        for (surface, inverse, rings) in &prepared {
+            // Into the face's frame, as two points rather than a direction, so
+            // a placement that scales still carries the ray faithfully.
+            let from = inverse.apply(point);
+            let to = inverse.apply(far);
+            let ray: og_geom::Curve = og_geom::LineCurve::segment(from, to, tol)?.into();
+            let found = og_intersect::intersect_curve_surface(
+                &ray,
+                surface,
+                og_intersect::CurveSurfaceOptions::default(),
+                tol,
+            )?;
+            if !found.lying.is_empty() {
+                // The ray runs in this face's surface: it crosses nothing and
+                // touches everything, which no parity expresses.
+                continue 'directions;
+            }
+            for hit in &found.crossings {
+                if hit.on_curve <= tol.confusion() {
+                    // At the very start. The boundary test above said the
+                    // point is off every face, but a crossing this close is
+                    // still too near the start to trust its side.
+                    continue 'directions;
+                }
+                let (u, v) = hit.on_surface;
+                use og_geom::Surface as _;
+                let Ok((du, dv)) = surface.d1_at(u, v, tol) else {
+                    continue 'directions;
+                };
+                let normal = du.cross(dv);
+                if normal.magnitude() <= tol.confusion() {
+                    // A pole or an apex: no normal, no transversality.
+                    continue 'directions;
+                }
+                let ray_direction = (to - from) / (to - from).magnitude();
+                if normal.dot(ray_direction).abs() <= GRAZING * normal.magnitude() {
+                    // Tangential. A grazing contact counts once where parity
+                    // needs zero or two; abandon the ray rather than guess.
+                    continue 'directions;
+                }
+                let at = Point2::new(u, v);
+                let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
+                if distance_to_rings(rings, at) <= band {
+                    // Too near the face's boundary to know which side of the
+                    // trim it crossed — and a shared edge would be counted by
+                    // both faces or neither.
+                    continue 'directions;
+                }
+                if inside_boundary(rings, at) {
+                    crossings += 1;
+                }
+            }
+        }
+        return Ok(if crossings % 2 == 1 {
+            Containment::In
+        } else {
+            Containment::Out
+        });
+    }
+    og_bail!(
+        NotDone,
+        "every ray tried met a tangency, a boundary, or a degenerate point, \
+         where the crossing count is ambiguous"
+    )
+}
+
+/// The sine of the shallowest crossing angle a counted ray/surface crossing
+/// may make.
+///
+/// Below this the hit is treated as a graze: a tangential contact is one
+/// crossing where parity arithmetic needs zero or two, and the seed of the
+/// threshold is the same as the marching intersector's `SHALLOWEST` — beneath
+/// a microradian, rounding in the evaluated normal can no longer tell a
+/// crossing from a touch.
+const GRAZING: f64 = 1e-6;
 
 /// Directions to cast rays along, tried in order.
 ///
@@ -559,6 +738,133 @@ mod tests {
             Containment::Out,
             "the untranslated point is nowhere near the translated box"
         );
+    }
+
+    #[test]
+    fn the_exact_classifier_agrees_with_the_tessellated_one_on_a_box() {
+        let mut model = Model::new();
+        let built = make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
+
+        for (p, want) in [
+            (Point::new(1.0, 1.0, 1.0), Containment::In),
+            (Point::new(0.1, 0.1, 0.1), Containment::In),
+            (Point::new(3.0, 1.0, 1.0), Containment::Out),
+            (Point::new(1.0, 1.0, -0.5), Containment::Out),
+            (Point::new(-50.0, -50.0, -50.0), Containment::Out),
+            (Point::new(1.0, 1.0, 0.0), Containment::On),
+            (Point::new(2.0, 2.0, 1.0), Containment::On),
+            (Point::ORIGIN, Containment::On),
+        ] {
+            assert_eq!(
+                classify_in_solid_exact(&model, &built.shape, p, T).unwrap(),
+                want,
+                "{p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_exact_classifier_resolves_what_the_deflection_band_cannot() {
+        // The reason this function exists. A point a micron off a sphere's
+        // wall is far inside any practical deflection band — the tessellated
+        // classifier must say On, because against a mesh it genuinely cannot
+        // tell. Against the true sphere the side is knowable, and known.
+        let mut model = Model::new();
+        let built = crate::make_sphere(&mut model, Frame::WORLD, 2.0, T).unwrap();
+
+        let barely_in = Point::new(0.0, 0.0, 2.0 - 1e-5);
+        let barely_out = Point::new(0.0, 0.0, 2.0 + 1e-5);
+
+        assert_eq!(
+            classify_in_solid(&model, &built.shape, barely_in, fine(), T).unwrap(),
+            Containment::On,
+            "the mesh cannot tell a micron from the wall"
+        );
+        assert_eq!(
+            classify_in_solid_exact(&model, &built.shape, barely_in, T).unwrap(),
+            Containment::In
+        );
+        assert_eq!(
+            classify_in_solid_exact(&model, &built.shape, barely_out, T).unwrap(),
+            Containment::Out
+        );
+        // Exactly on the wall: On, decided by projection, not by a ray.
+        assert_eq!(
+            classify_in_solid_exact(&model, &built.shape, Point::new(0.0, 0.0, 2.0), T).unwrap(),
+            Containment::On
+        );
+    }
+
+    #[test]
+    fn the_exact_classifier_handles_a_cylinder_wall_and_caps() {
+        let mut model = Model::new();
+        let built = crate::make_cylinder(&mut model, Frame::WORLD, 1.5, 4.0, T).unwrap();
+
+        for (p, want) in [
+            (Point::new(0.0, 0.0, 2.0), Containment::In),
+            (Point::new(1.5 - 1e-5, 0.0, 2.0), Containment::In),
+            (Point::new(1.5 + 1e-5, 0.0, 2.0), Containment::Out),
+            (Point::new(0.3, 0.4, 4.0 - 1e-5), Containment::In),
+            (Point::new(0.3, 0.4, 4.0 + 1e-5), Containment::Out),
+            (Point::new(1.5, 0.0, 2.0), Containment::On),
+            (Point::new(0.3, 0.4, 0.0), Containment::On),
+        ] {
+            assert_eq!(
+                classify_in_solid_exact(&model, &built.shape, p, T).unwrap(),
+                want,
+                "{p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_exact_classifier_walks_the_general_path_through_a_torus() {
+        // No analytic ray/torus case exists, so every crossing here came from
+        // the seeded Newton path — and a torus also puts the hole in the
+        // middle, where a ray to the outside crosses the tube wall twice.
+        let mut model = Model::new();
+        let built = crate::make_torus(&mut model, Frame::WORLD, 3.0, 1.0, T).unwrap();
+
+        for (p, want) in [
+            (Point::new(3.0, 0.0, 0.0), Containment::In),
+            (Point::new(3.0, 0.0, 0.9), Containment::In),
+            (Point::ORIGIN, Containment::Out),
+            (Point::new(3.0, 0.0, 1.5), Containment::Out),
+            (Point::new(5.0, 5.0, 0.0), Containment::Out),
+            (Point::new(3.0, 0.0, 1.0), Containment::On),
+        ] {
+            assert_eq!(
+                classify_in_solid_exact(&model, &built.shape, p, T).unwrap(),
+                want,
+                "{p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_exact_classifier_respects_a_placed_solid() {
+        let offset = Vector::new(10.0, -20.0, 30.0);
+        let mut model = Model::new();
+        let frame = Frame::new(Point::ORIGIN + offset, Direction::Z, Direction::X, T).unwrap();
+        let built = make_box(&mut model, frame, (2.0, 2.0, 2.0), T).unwrap();
+
+        assert_eq!(
+            classify_in_solid_exact(&model, &built.shape, Point::new(1.0, 1.0, 1.0) + offset, T)
+                .unwrap(),
+            Containment::In
+        );
+        assert_eq!(
+            classify_in_solid_exact(&model, &built.shape, Point::new(1.0, 1.0, 1.0), T).unwrap(),
+            Containment::Out
+        );
+    }
+
+    #[test]
+    fn the_exact_classifier_refuses_an_open_boundary() {
+        let mut model = Model::new();
+        let built = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T).unwrap();
+        let face = explore_unique(&model, &built.shape, ShapeType::Face).unwrap()[0].clone();
+        assert!(classify_in_solid_exact(&model, &face, Point::ORIGIN, T).is_err());
     }
 
     #[test]
