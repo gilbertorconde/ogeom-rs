@@ -303,6 +303,22 @@ fn marched(
     Ok(SurfaceIntersection::Along(out))
 }
 
+/// The exact pcurve of a curve lying on a surface, where the projection has
+/// a closed form — `None` where it does not.
+///
+/// Public because the boolean's same-domain handling needs it: two faces on
+/// one geometric surface may still carry different charts, and the other
+/// face's boundary edges have to be spoken in this face's parameters before
+/// they can split it.
+#[must_use]
+pub fn exact_pcurve_of(
+    curve: &Curve,
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> Option<PlanarCurve> {
+    exact_pcurve(curve, surface, tol)
+}
+
 /// The exact pcurve of an analytic curve on an analytic surface, where the
 /// projection has a closed form.
 ///

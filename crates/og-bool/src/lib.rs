@@ -287,6 +287,22 @@ struct SectionPiece {
     range: (f64, f64),
 }
 
+/// One boundary edge of one argument's face, lying in a face of the other
+/// argument's own surface — the splitting curve same-domain contact
+/// contributes, since coincident surfaces have no section curve to offer.
+struct ContactRec {
+    /// The owner's world curve and the sub-range its edge covers.
+    curve: Curve,
+    crange: (f64, f64),
+    /// The curve spoken in the *target* face's chart.
+    pcurve: PlanarCurve,
+    /// The owner edge's node, whose paves this record shares.
+    node: og_topo::TShapeId,
+    /// The target: which argument's face list, and which face.
+    target_from_a: bool,
+    target_face: usize,
+}
+
 /// What a face's arrangement strand stands for.
 #[derive(Clone)]
 enum Tag {
@@ -294,6 +310,29 @@ enum Tag {
     Boundary { edge: usize, range: (f64, f64) },
     /// A sub-range of a global section.
     Section { section: usize, range: (f64, f64) },
+    /// A sub-range of a global contact edge — another face's boundary edge
+    /// lying in this face's own surface, splitting it.
+    Contact { contact: usize, range: (f64, f64) },
+}
+
+/// Where a piece stands relative to the other solid.
+///
+/// `In` and `Out` are the classifier's words. The two `On` states split the
+/// case the classifier cannot decide alone: a piece lying on the other
+/// boundary bounds material on one side here and one side there, and whether
+/// those sides agree — outward normals aligned — or oppose is what every
+/// operation's filter turns on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PieceState {
+    In,
+    Out,
+    /// On the other boundary, outward normals aligned: both solids' material
+    /// on the same side. One copy of the piece bounds the union and the
+    /// intersection alike.
+    OnAligned,
+    /// On the other boundary, outward normals opposed: material on both
+    /// sides. The contact is interior to the union and vanishes from it.
+    OnOpposed,
 }
 
 /// Fold a param-space polyline into a periodic surface's chart, by one
@@ -407,13 +446,19 @@ fn fill(
 ) -> OgResult<(
     Vec<SectionRec>,
     Vec<SectionPiece>,
+    Vec<ContactRec>,
+    Vec<Vec<(f64, f64)>>,
     std::collections::HashMap<og_topo::TShapeId, Vec<f64>>,
+    Vec<Vec<usize>>,
+    Vec<Vec<usize>>,
 )> {
     use og_intersect::{
         CurveCurveOptions, IntersectOptions, SurfaceIntersection, intersect_curves,
         intersect_surfaces,
     };
     let mut sections: Vec<SectionRec> = Vec::new();
+    let mut contacts: Vec<ContactRec> = Vec::new();
+    let mut same_pairs: Vec<(usize, usize)> = Vec::new();
     // Marched sections are fitted; the fit is driven below the confusion
     // tolerance so a fitted curve meets edges, vertices and the mesh welder
     // on the same terms as an exact one. The budget each still carries is
@@ -434,12 +479,40 @@ fn fill(
             let met = intersect_surfaces(&fa.surface, &fb.surface, options, tol)?;
             match met {
                 SurfaceIntersection::Apart => {}
-                SurfaceIntersection::Same => og_bail!(
-                    NotDone,
-                    "two faces lie on the same surface; same-domain contact is \
-                     refused rather than resolved — see the deferred table in \
-                     docs/SCOPE.md"
-                ),
+                SurfaceIntersection::Same => {
+                    // Coincident surfaces offer no section curve; what splits
+                    // each face is the *other* face's boundary. Exact pcurve
+                    // projection carries an edge into the other chart, and
+                    // planes always have one; a curved same-domain pair whose
+                    // edges do not project in closed form is still refused.
+                    same_pairs.push((ia, ib));
+                    for (owner_from_a, owner, target_from_a, target, target_face) in
+                        [(false, fb, true, fa, ia), (true, fa, false, fb, ib)]
+                    {
+                        let _ = owner_from_a;
+                        for e in &owner.edges {
+                            let Some(pcurve) =
+                                og_intersect::exact_pcurve_of(&e.curve, &target.surface, tol)
+                            else {
+                                og_bail!(
+                                    NotDone,
+                                    "same-domain contact whose edges have no \
+                                     closed-form projection into the shared \
+                                     surface's chart is refused — see the \
+                                     deferred table in docs/SCOPE.md"
+                                );
+                            };
+                            contacts.push(ContactRec {
+                                curve: e.curve.clone(),
+                                crange: e.crange,
+                                pcurve,
+                                node: e.node,
+                                target_from_a,
+                                target_face,
+                            });
+                        }
+                    }
+                }
                 SurfaceIntersection::Touching(points)
                     if points
                         .iter()
@@ -527,6 +600,12 @@ fn fill(
         let domain = section.curve.domain();
         let mut trim_ts: Vec<f64> = Vec::new();
         let mut edge_hits: Vec<(og_topo::TShapeId, f64, f64)> = Vec::new();
+        // Spans of the section running *along* a boundary edge. The split
+        // such a span would make already exists as boundary — stacked boxes'
+        // perpendicular side planes meet exactly at the boxes' own edges —
+        // so the span is excluded from the kept intervals rather than
+        // refused or duplicated.
+        let mut along: Vec<(f64, f64)> = Vec::new();
         for (face_index, own) in [
             (section.face_a, &ga.faces[section.face_a]),
             (section.face_b, &gb.faces[section.face_b]),
@@ -541,13 +620,15 @@ fn fill(
                     trim_ts.push(crossing.on_a);
                     edge_hits.push((e.node, crossing.on_b, crossing.on_a));
                 }
-                if !found.overlaps.is_empty() {
-                    og_bail!(
-                        NotDone,
-                        "a section runs along a boundary edge; same-domain \
-                         contact is refused rather than resolved — see the \
-                         deferred table in docs/SCOPE.md"
-                    );
+                for overlap in &found.overlaps {
+                    let (lo, hi) = if overlap.on_a.0 <= overlap.on_a.1 {
+                        overlap.on_a
+                    } else {
+                        (overlap.on_a.1, overlap.on_a.0)
+                    };
+                    trim_ts.push(lo);
+                    trim_ts.push(hi);
+                    along.push((lo, hi));
                 }
             }
         }
@@ -631,7 +712,19 @@ fn fill(
             if hi - lo <= tol.parametric() {
                 continue;
             }
-            if !inside_both(f64::midpoint(lo, hi))? {
+            let mid = f64::midpoint(lo, hi);
+            let mid_folded = if section.closed {
+                fold(mid, domain)
+            } else {
+                mid
+            };
+            if along
+                .iter()
+                .any(|(alo, ahi)| mid_folded >= *alo && mid_folded <= *ahi)
+            {
+                continue;
+            }
+            if !inside_both(mid)? {
                 continue;
             }
             // Keep the paves that end a kept interval: those are where edges
@@ -696,7 +789,67 @@ fn fill(
             }
         }
     }
-    Ok((sections, pieces, paves))
+    // A contact edge splits where it crosses the target face's boundary —
+    // and that crossing is a pave on *both* edges, so the owner's own face
+    // splits its boundary consistently and the pieces sew back shared.
+    let cc = CurveCurveOptions::default();
+    let mut contact_along: Vec<Vec<(f64, f64)>> = vec![Vec::new(); contacts.len()];
+    for (ci, contact) in contacts.iter().enumerate() {
+        let target = if contact.target_from_a {
+            &ga.faces[contact.target_face]
+        } else {
+            &gb.faces[contact.target_face]
+        };
+        for e in &target.edges {
+            let found = intersect_curves(&contact.curve, &e.curve, cc, tol)?;
+            for crossing in &found.crossings {
+                if crossing.gap > tol.confusion() {
+                    continue;
+                }
+                if crossing.on_a < contact.crange.0 + tol.parametric()
+                    || crossing.on_a > contact.crange.1 - tol.parametric()
+                {
+                    continue;
+                }
+                paves.entry(contact.node).or_default().push(crossing.on_a);
+                if crossing.on_b > e.crange.0 + tol.parametric()
+                    && crossing.on_b < e.crange.1 - tol.parametric()
+                {
+                    paves.entry(e.node).or_default().push(crossing.on_b);
+                }
+            }
+            // A span of the contact running along a target boundary edge
+            // splits nothing: it is already boundary on both sides —
+            // identically stacked boxes are all such spans — and duplicating
+            // it as a strand would cancel the boundary it copies.
+            for overlap in &found.overlaps {
+                let (lo, hi) = if overlap.on_a.0 <= overlap.on_a.1 {
+                    overlap.on_a
+                } else {
+                    (overlap.on_a.1, overlap.on_a.0)
+                };
+                paves.entry(contact.node).or_default().push(lo);
+                paves.entry(contact.node).or_default().push(hi);
+                contact_along[ci].push((lo, hi));
+            }
+        }
+    }
+
+    let mut same_a: Vec<Vec<usize>> = vec![Vec::new(); ga.faces.len()];
+    let mut same_b: Vec<Vec<usize>> = vec![Vec::new(); gb.faces.len()];
+    for (ia, ib) in same_pairs {
+        same_a[ia].push(ib);
+        same_b[ib].push(ia);
+    }
+    Ok((
+        sections,
+        pieces,
+        contacts,
+        contact_along,
+        paves,
+        same_a,
+        same_b,
+    ))
 }
 
 /// March a pair whose exact section has no closed-form pcurve.
@@ -731,20 +884,57 @@ struct FacePiece {
     from_a: bool,
     face: usize,
     rings: Vec<Vec<Traversal<Tag>>>,
-    state: Containment,
+    state: PieceState,
 }
 
 struct GeneralFused {
     a: GSolid,
     b: GSolid,
     sections: Vec<SectionRec>,
+    contacts: Vec<ContactRec>,
     pieces: Vec<FacePiece>,
+}
+
+/// The face's outward normal at a chart point: the surface's, flipped when
+/// the face presents its other side.
+fn outward_normal(face: &GFace, at: Point2, tol: Tolerances) -> OgResult<og_math::Vector> {
+    let n = face.surface.normal_at(at.x, at.y, tol)?.vector();
+    Ok(
+        if face.face.orientation() == og_topo::Orientation::Reversed {
+            -n
+        } else {
+            n
+        },
+    )
+}
+
+/// The chart point of a world point lying on a planar face, if it lands
+/// inside the face's trim.
+fn chart_point_of(face: &GFace, p: Point, tol: Tolerances) -> Option<Point2> {
+    let SurfaceGeometry::Plane(plane) = &face.surface else {
+        return None;
+    };
+    let local = plane.plane().frame().to_local(p);
+    if local.z.abs() > tol.confusion() * 10.0 {
+        return None;
+    }
+    let at = Point2::new(local.x, local.y);
+    let mut lines: Vec<Vec<Point2>> = Vec::new();
+    for e in &face.edges {
+        lines.push(pcurve_polyline(&e.pcurve, e.prange, e.crange, e.crange, tol).ok()?);
+    }
+    let borrowed: Vec<&[Point2]> = lines.iter().map(Vec::as_slice).collect();
+    if !inside_many(&borrowed, at) {
+        return None;
+    }
+    Some(at)
 }
 
 fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgResult<GeneralFused> {
     let ga = gather(model, a, tol)?;
     let gb = gather(model, b, tol)?;
-    let (sections, section_pieces, paves) = fill(&ga, &gb, tol)?;
+    let (sections, section_pieces, contacts, contact_along, paves, same_a, same_b) =
+        fill(&ga, &gb, tol)?;
 
     let mut pieces: Vec<FacePiece> = Vec::new();
     for (from_a, own, other) in [(true, &ga, &gb.solid), (false, &gb, &ga.solid)] {
@@ -843,21 +1033,121 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgResul
                     boundary: false,
                 });
             }
+            for (ci, contact) in contacts.iter().enumerate() {
+                if contact.target_from_a != from_a || contact.target_face != fi {
+                    continue;
+                }
+                // The owner's paves split its edge; the contact strands split
+                // at the same parameters, so the sub-edges rebuilt from both
+                // sides are the same edges and sew shared.
+                let mut stops = vec![contact.crange.0];
+                if let Some(ts) = paves.get(&contact.node) {
+                    let mut ts: Vec<f64> = ts
+                        .iter()
+                        .copied()
+                        .filter(|t| {
+                            *t > contact.crange.0 + tol.parametric()
+                                && *t < contact.crange.1 - tol.parametric()
+                        })
+                        .collect();
+                    ts.sort_by(|x, y| x.partial_cmp(y).unwrap_or(core::cmp::Ordering::Equal));
+                    ts.dedup_by(|x, y| (*x - *y).abs() <= tol.parametric());
+                    stops.extend(ts);
+                }
+                stops.push(contact.crange.1);
+                let closed_contact = contact
+                    .curve
+                    .point_at(contact.crange.0, tol)?
+                    .distance(contact.curve.point_at(contact.crange.1, tol)?)
+                    <= tol.confusion();
+                if closed_contact && stops.len() == 2 {
+                    stops.insert(1, f64::midpoint(contact.crange.0, contact.crange.1));
+                }
+                for pair in stops.windows(2) {
+                    let sub = (pair[0], pair[1]);
+                    if sub.1 - sub.0 <= tol.parametric() {
+                        continue;
+                    }
+                    let mid_t = f64::midpoint(sub.0, sub.1);
+                    if contact_along[ci]
+                        .iter()
+                        .any(|(lo, hi)| mid_t >= *lo && mid_t <= *hi)
+                    {
+                        // Already boundary on both sides.
+                        continue;
+                    }
+                    // Keep only what lies inside this face's trim; the rest
+                    // of the owner's boundary splits nothing here.
+                    let count = 16;
+                    let mut line = Vec::with_capacity(count + 1);
+                    for i in 0..=count {
+                        #[allow(clippy::cast_precision_loss)]
+                        let t = sub.0 + (sub.1 - sub.0) * i as f64 / count as f64;
+                        line.push(contact.pcurve.point_at(t, tol)?);
+                    }
+                    unwrap_polyline(&mut line, &face.surface);
+                    fold_into_chart(&mut line, &face.surface);
+                    let mid = line[line.len() / 2];
+                    let boundary_lines: Vec<&[Point2]> = strands
+                        .iter()
+                        .filter(|st| st.boundary)
+                        .map(|st| st.polyline.as_slice())
+                        .collect();
+                    if !inside_many(&boundary_lines, mid) {
+                        continue;
+                    }
+                    strands.push(Strand {
+                        polyline: line,
+                        tag: Tag::Contact {
+                            contact: ci,
+                            range: sub,
+                        },
+                        boundary: false,
+                    });
+                }
+            }
 
             let split = arrange_pieces(&strands, PARAM_SNAP)?;
             for piece in split {
                 let probe = face
                     .surface
                     .point_at(piece.interior.x, piece.interior.y, tol)?;
-                let state = classify_in_solid_exact(model, other, probe, tol)?;
-                if state == Containment::On {
-                    og_bail!(
-                        NotDone,
-                        "a piece of a face lies on the other solid's boundary; \
-                         same-domain contact is refused rather than resolved — \
-                         see the deferred table in docs/SCOPE.md"
-                    );
-                }
+                let state = match classify_in_solid_exact(model, other, probe, tol)? {
+                    Containment::In => PieceState::In,
+                    Containment::Out => PieceState::Out,
+                    Containment::On => {
+                        // On the other boundary: same-domain contact. The
+                        // partner face on the shared surface decides whether
+                        // the two materials lie on the same side or oppose.
+                        let partners = if from_a { &same_a[fi] } else { &same_b[fi] };
+                        let own_normal = outward_normal(face, piece.interior, tol)?;
+                        let mut resolved = None;
+                        for &pi in partners {
+                            let partner = if from_a { &gb.faces[pi] } else { &ga.faces[pi] };
+                            let Some(uv) = chart_point_of(partner, probe, tol) else {
+                                continue;
+                            };
+                            let theirs = outward_normal(partner, uv, tol)?;
+                            resolved = Some(if own_normal.dot(theirs) > 0.0 {
+                                PieceState::OnAligned
+                            } else {
+                                PieceState::OnOpposed
+                            });
+                            break;
+                        }
+                        let Some(state) = resolved else {
+                            og_bail!(
+                                NotDone,
+                                "a piece lies on the other solid's boundary \
+                                 with no coincident partner face to compare \
+                                 sides against — edge or vertex contact is \
+                                 refused rather than resolved — see the \
+                                 deferred table in docs/SCOPE.md"
+                            );
+                        };
+                        state
+                    }
+                };
                 pieces.push(FacePiece {
                     from_a,
                     face: fi,
@@ -871,6 +1161,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgResul
         a: ga,
         b: gb,
         sections,
+        contacts,
         pieces,
     })
 }
@@ -941,21 +1232,22 @@ fn build_piece(
 
     // Sub-edges cached within the piece, so a seam used from both sides is
     // one edge appearing twice.
-    let mut cache: Vec<(usize, bool, (f64, f64), Shape)> = Vec::new();
+    let mut cache: Vec<(usize, u8, (f64, f64), Shape)> = Vec::new();
     let mut wires = Vec::new();
     for ring in &piece.rings {
         let mut edges = Vec::with_capacity(ring.len());
         for traversal in ring {
-            let (key_edge, key_section, range) = match &traversal.tag {
-                Tag::Boundary { edge, range } => (*edge, false, *range),
-                Tag::Section { section, range } => (*section, true, *range),
+            let (key_edge, key_kind, range) = match &traversal.tag {
+                Tag::Boundary { edge, range } => (*edge, 0_u8, *range),
+                Tag::Section { section, range } => (*section, 1, *range),
+                Tag::Contact { contact, range } => (*contact, 2, *range),
             };
             let near = |a: (f64, f64), b: (f64, f64)| {
                 (a.0 - b.0).abs() <= tol.parametric() && (a.1 - b.1).abs() <= tol.parametric()
             };
             let built = if let Some((.., shape)) = cache
                 .iter()
-                .find(|(k, s, r, _)| *k == key_edge && *s == key_section && near(*r, range))
+                .find(|(k, s, r, _)| *k == key_edge && *s == key_kind && near(*r, range))
             {
                 shape.clone()
             } else {
@@ -968,7 +1260,7 @@ fn build_piece(
                     &traversal.tag,
                     tol,
                 )?;
-                cache.push((key_edge, key_section, range, shape.clone()));
+                cache.push((key_edge, key_kind, range, shape.clone()));
                 shape
             };
             edges.push(if traversal.reversed {
@@ -1061,6 +1353,29 @@ fn build_sub_edge(
                     )?;
                 }
             }
+            Ok(built)
+        }
+        Tag::Contact { contact, range } => {
+            let c = &fused.contacts[*contact];
+            let from = c.curve.point_at(range.0, tol)?;
+            let to = c.curve.point_at(range.1, tol)?;
+            let v0 = rebuild.vertex(from, tol);
+            let v1 = rebuild.vertex(to, tol);
+            let model = &mut *rebuild.model;
+            let built = make_edge_between(model, c.curve.clone(), *range, &v0, &v1, tol)?.shape;
+            let mid = c.pcurve.point_at(f64::midpoint(range.0, range.1), tol)?;
+            let folded = fold_point_into_chart(mid, &face.surface);
+            let shifted = c
+                .pcurve
+                .transformed(&og_math::Transform2::translation(folded - mid), tol)?;
+            og_algo::attach_pcurve(
+                model,
+                &built,
+                shifted,
+                surface_id,
+                Location::identity(),
+                *range,
+            )?;
             Ok(built)
         }
         Tag::Section { section, range } => {
@@ -1207,11 +1522,16 @@ fn assemble_result(
 /// that are not closed solids.
 pub fn fuse(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgResult<Built> {
     let fused = general_fuse(model, a, b, tol)?;
+    // Outward pieces bound the union; a same-domain pair with aligned
+    // material keeps one copy, and one with opposed material is interior to
+    // the union and vanishes.
     let kept: Vec<(usize, bool)> = fused
         .pieces
         .iter()
         .enumerate()
-        .filter(|(_, p)| p.state == Containment::Out)
+        .filter(|(_, p)| {
+            p.state == PieceState::Out || (p.state == PieceState::OnAligned && p.from_a)
+        })
         .map(|(i, _)| (i, false))
         .collect();
     assemble_result(model, &fused, &kept, a, b, tol)
@@ -1224,11 +1544,15 @@ pub fn fuse(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgResul
 /// As [`fuse`].
 pub fn common(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgResult<Built> {
     let fused = general_fuse(model, a, b, tol)?;
+    // Inward pieces bound the intersection; an aligned same-domain pair
+    // bounds it too, once. An opposed pair encloses no volume between them.
     let kept: Vec<(usize, bool)> = fused
         .pieces
         .iter()
         .enumerate()
-        .filter(|(_, p)| p.state == Containment::In)
+        .filter(|(_, p)| {
+            p.state == PieceState::In || (p.state == PieceState::OnAligned && p.from_a)
+        })
         .map(|(i, _)| (i, false))
         .collect();
     assemble_result(model, &fused, &kept, a, b, tol)
@@ -1245,13 +1569,19 @@ pub fn common(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgRes
 /// As [`fuse`].
 pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgResult<Built> {
     let fused = general_fuse(model, a, b, tol)?;
+    // The first argument's outward pieces stay; the tool's inward pieces
+    // close the cut with their material side flipped. On the shared surface:
+    // an opposed pair means the tool's material is entirely on the other
+    // side, so the first argument's face survives untouched; an aligned pair
+    // means the tool's material backs the same wall, which the cut removes.
     let kept: Vec<(usize, bool)> = fused
         .pieces
         .iter()
         .enumerate()
         .filter_map(|(i, p)| match (p.from_a, p.state) {
-            (true, Containment::Out) => Some((i, false)),
-            (false, Containment::In) => Some((i, true)),
+            (true, PieceState::Out) => Some((i, false)),
+            (true, PieceState::OnOpposed) => Some((i, false)),
+            (false, PieceState::In) => Some((i, true)),
             _ => None,
         })
         .collect();
@@ -1565,6 +1895,104 @@ mod tests {
             "cut {vx} against A - common {}",
             va - vc
         );
+    }
+
+    #[test]
+    fn stacked_boxes_fuse_into_one_solid_and_the_contact_vanishes() {
+        // Same-domain contact with opposed materials: the shared rectangle is
+        // interior to the union and no face of the result may carry it.
+        let mut model = Model::new();
+        let lower = make_box(&mut model, Frame::WORLD, (2.0, 2.0, 1.0), T).unwrap();
+        let upper = make_box(
+            &mut model,
+            frame_at(Point::new(0.0, 0.0, 1.0)),
+            (2.0, 2.0, 1.0),
+            T,
+        )
+        .unwrap();
+        let fused = fuse(&mut model, &lower.shape, &upper.shape, T).unwrap();
+        assert_valid(&model, &fused.shape);
+        assert_eq!(model.kind_of(&fused.shape).unwrap(), ShapeType::Solid);
+        assert!((volume(&model, &fused.shape) - 8.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_small_box_on_a_big_one_fuses_with_a_partial_contact() {
+        // The big top face splits into the contact rectangle — swallowed —
+        // and the surround, which stays and must sew to the small box's
+        // walls along the contact's edges.
+        let mut model = Model::new();
+        let big = make_box(&mut model, Frame::WORLD, (4.0, 4.0, 1.0), T).unwrap();
+        let small = make_box(
+            &mut model,
+            frame_at(Point::new(1.0, 1.0, 1.0)),
+            (2.0, 2.0, 1.0),
+            T,
+        )
+        .unwrap();
+        let fused = fuse(&mut model, &big.shape, &small.shape, T).unwrap();
+        assert_valid(&model, &fused.shape);
+        assert!((volume(&model, &fused.shape) - 20.0).abs() < 1e-9);
+
+        // Cutting the same pair removes nothing but the measure-zero contact:
+        // the big box survives whole, its top face's contact piece intact.
+        let mut model = Model::new();
+        let big = make_box(&mut model, Frame::WORLD, (4.0, 4.0, 1.0), T).unwrap();
+        let small = make_box(
+            &mut model,
+            frame_at(Point::new(1.0, 1.0, 1.0)),
+            (2.0, 2.0, 1.0),
+            T,
+        )
+        .unwrap();
+        let result = cut(&mut model, &big.shape, &small.shape, T).unwrap();
+        assert_valid(&model, &result.shape);
+        assert!((volume(&model, &result.shape) - 16.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn flush_walls_fuse_cut_and_meet_with_aligned_contact() {
+        // Overlapping boxes sharing flush walls: same-domain contact with
+        // *aligned* materials. A = [0,2]^3, B = [1,3]x[0,2]x[0,2]: the y and
+        // z walls of the overlap are coplanar with aligned outward normals.
+        let mut model = Model::new();
+        let a = make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
+        let b = make_box(
+            &mut model,
+            frame_at(Point::new(1.0, 0.0, 0.0)),
+            (2.0, 2.0, 2.0),
+            T,
+        )
+        .unwrap();
+        let fused = fuse(&mut model, &a.shape, &b.shape, T).unwrap();
+        assert_valid(&model, &fused.shape);
+        assert!((volume(&model, &fused.shape) - 12.0).abs() < 1e-9);
+
+        let mut model = Model::new();
+        let a = make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
+        let b = make_box(
+            &mut model,
+            frame_at(Point::new(1.0, 0.0, 0.0)),
+            (2.0, 2.0, 2.0),
+            T,
+        )
+        .unwrap();
+        let shared = common(&mut model, &a.shape, &b.shape, T).unwrap();
+        assert_valid(&model, &shared.shape);
+        assert!((volume(&model, &shared.shape) - 4.0).abs() < 1e-9);
+
+        let mut model = Model::new();
+        let a = make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
+        let b = make_box(
+            &mut model,
+            frame_at(Point::new(1.0, 0.0, 0.0)),
+            (2.0, 2.0, 2.0),
+            T,
+        )
+        .unwrap();
+        let cut_result = cut(&mut model, &a.shape, &b.shape, T).unwrap();
+        assert_valid(&model, &cut_result.shape);
+        assert!((volume(&model, &cut_result.shape) - 4.0).abs() < 1e-9);
     }
 
     #[test]
