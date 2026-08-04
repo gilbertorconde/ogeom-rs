@@ -367,6 +367,24 @@ closed-form `elementary` inversions, where before it could only speak plane.
 Volume pinned against Pappus; the hole's rim — the concave case — refused
 and recorded.
 
+**The variable-radius fillet** closed §10's milestone criteria: for a linear
+law on a straight edge between planes, the rolling ball's envelope is an
+*exact* rational B-spline surface — degree one along the edge, a rational
+quadratic across it, the control net affine in the radius — so nothing is
+fitted: every section of the surface is that section's exact blend arc, the
+tangency lines degenerate to straight rails, and the wedge subtracts through
+the boolean like its constant-radius siblings. The kernel currency this
+stone paid: the plane pcurve arm learned B-splines (affine invariance:
+project the control net, keep knots and weights — which also gives imported
+spline edges on planar faces exact pcurves); the marcher learned that
+touching is not crossing at its level too, dropping branches along which the
+two surfaces share their normal instead of fitting the tangential valley's
+noise into phantom edges; curve-level tangential paves are skipped by the
+same principle; sections that hug a boundary edge of either face are
+excluded by measurement, not just by support recognition; and the boolean's
+junction vertices widen their tolerance to the crossing residual they
+actually carry, which is what vertex tolerance is for.
+
 **The chamfer's other spellings, and the sketch plane**: the asymmetric
 distance-distance chamfer names a face for its first distance; the
 distance-angle form derives the second distance where the bevel, leaving the

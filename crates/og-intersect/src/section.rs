@@ -288,6 +288,16 @@ fn marched(
     }
     let mut out = Vec::with_capacity(traced.len());
     for branch in &traced {
+        // A branch along which the two surfaces share their normal is a
+        // tangency, not a crossing: the marcher's seeding cannot tell the
+        // noise floor of a tangential valley from a genuine sign change, and
+        // what it traces there is the valley, not a section. Touching is not
+        // crossing at the marched level exactly as at the analytic one, and
+        // a tangency contributes no boundary parity — so the branch is
+        // dropped rather than fitted into a phantom edge.
+        if branch_is_tangential(a, b, branch, tol)? {
+            continue;
+        }
         let fitted = approximate_branch(a, b, branch, options.tolerance, tol)?;
         out.push(SectionCurve {
             curve: fitted.curve.into(),
@@ -300,7 +310,44 @@ fn marched(
             closed: fitted.closed,
         });
     }
+    if out.is_empty() {
+        // Only tangential contact: no curve crosses, and classification
+        // above is unaffected by a touch.
+        return Ok(SurfaceIntersection::Apart);
+    }
     Ok(SurfaceIntersection::Along(out))
+}
+
+/// Whether a traced branch runs along a tangency of the two surfaces:
+/// their normals parallel, sampled along its length.
+fn branch_is_tangential(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    branch: &crate::march::Traced,
+    tol: Tolerances,
+) -> OgResult<bool> {
+    use og_geom::Surface as _;
+    let count = branch.points.len();
+    if count == 0 {
+        return Ok(true);
+    }
+    for k in 0..5 {
+        let i = (k * (count - 1)) / 4;
+        let (ua, va) = branch.on_a[i.min(count - 1)];
+        let (ub, vb) = branch.on_b[i.min(count - 1)];
+        let (dau, dav) = a.d1_at(ua, va, tol)?;
+        let (dbu, dbv) = b.d1_at(ub, vb, tol)?;
+        let na = dau.cross(dav);
+        let nb = dbu.cross(dbv);
+        let (ma, mb) = (na.magnitude(), nb.magnitude());
+        if ma <= tol.confusion() || mb <= tol.confusion() {
+            continue;
+        }
+        if na.cross(nb).magnitude() / (ma * mb) > 1e-2 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// The exact pcurve of a curve lying on a surface, where the projection has
@@ -544,6 +591,23 @@ fn on_plane(curve: &Curve, plane: og_math::Plane, tol: Tolerances) -> Option<Pla
                         .ok()?,
                 )
                 .into(),
+            )
+        }
+        Curve::BSpline(b) => {
+            // Affine invariance: a (rational) B-spline in the plane projects
+            // into the plane's own coordinates control point by control
+            // point, knots and weights untouched — exact, and same-parameter
+            // by construction.
+            let control = b
+                .control_points()
+                .iter()
+                .map(|w| og_math::Weighted::new(flat((*w).point()), w.weight, tol))
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            Some(
+                og_geom::BSpline2d::rational(b.knots().clone(), control)
+                    .ok()?
+                    .into(),
             )
         }
         _ => None,

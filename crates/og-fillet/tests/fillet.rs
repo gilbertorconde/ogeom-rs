@@ -193,6 +193,62 @@ fn a_rim_fillet_that_swallows_the_axis_is_refused() {
 }
 
 #[test]
+fn a_variable_radius_fillet_widens_along_its_edge() {
+    let mut model = og_topo::Model::new();
+    let block = og_algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
+    let edge = top_edge(&model, &block.shape);
+
+    let (r0, r1) = (0.3, 0.6);
+    let result =
+        og_fillet::fillet_edge_variable(&mut model, &block.shape, &edge, r0, r1, T).unwrap();
+
+    let diagnosis = og_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // The removed sliver integrates the section area along the edge: for the
+    // linear law, L (1 - pi/4) times the integral of r(u) squared.
+    let fine = og_mesh::Deflection {
+        chord: 1e-4,
+        ..og_mesh::Deflection::default()
+    };
+    let integral = (r1 * r1 * r1 - r0 * r0 * r0) / (3.0 * (r1 - r0));
+    let exact = 8.0 - 2.0 * (1.0 - core::f64::consts::PI / 4.0) * integral;
+    let props = og_algo::volume_properties(&model, &result.shape, fine, T).unwrap();
+    assert!(
+        (props.mass - exact).abs() < 2e-3,
+        "variable fillet volume {} against {exact}",
+        props.mass
+    );
+
+    assert_eq!(
+        explore(&model, &result.shape, Filter::OfType(ShapeType::Face))
+            .unwrap()
+            .len(),
+        7
+    );
+    assert!(result.history.is_deleted(&edge));
+
+    // The blend passes through the mid-section's arc midpoint, where the
+    // radius is the mean of the two ends.
+    let r = f64::midpoint(r0, r1);
+    let mid = Point::new(
+        (2.0 - r) + r / core::f64::consts::SQRT_2,
+        1.0,
+        (2.0 - r) + r / core::f64::consts::SQRT_2,
+    );
+    let faces = explore(&model, &result.shape, Filter::OfType(ShapeType::Face)).unwrap();
+    let on_blend = faces.iter().any(|f| {
+        og_algo::classify_on_face(&model, f, mid, fine, T)
+            .map(|c| c != og_algo::Containment::Out)
+            .unwrap_or(false)
+    });
+    assert!(
+        on_blend,
+        "the blend passes through the mean-radius midpoint"
+    );
+}
+
+#[test]
 fn a_concave_edge_refuses_the_subtractive_fillet() {
     let mut model = og_topo::Model::new();
     let block = og_algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();

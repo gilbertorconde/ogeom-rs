@@ -727,6 +727,44 @@ fn fill(
             if !inside_both(mid)? {
                 continue;
             }
+            // A section that runs along a boundary edge of either face
+            // splits nothing: the split already exists as boundary. The
+            // analytic overlap detection above catches the same-support
+            // cases; this catches the rest — a fitted section tracing a
+            // boundary curve, a surface meeting another exactly at its own
+            // trim — by measurement rather than by recognising supports.
+            let hugs_boundary = {
+                let mut all_near = true;
+                for i in 0..=4 {
+                    let t = lo + (hi - lo) * f64::from(i) / 4.0;
+                    let tf = if section.closed { fold(t, domain) } else { t };
+                    let at = section.curve.point_at(tf, tol)?;
+                    let mut near = false;
+                    'owners: for own in [&ga.faces[section.face_a], &gb.faces[section.face_b]] {
+                        for e in &own.edges {
+                            // Wider than the crossing filters on purpose: a
+                            // tangentially-traced curve wobbles about the
+                            // boundary it hugs by far more than a fit budget,
+                            // and a genuine section keeps a distance of
+                            // feature scale, not microns.
+                            if distance_to_edge_curve(&e.curve, e.crange, at, tol)?
+                                <= reach.max(tol.confusion() * 1e3)
+                            {
+                                near = true;
+                                break 'owners;
+                            }
+                        }
+                    }
+                    if !near {
+                        all_near = false;
+                        break;
+                    }
+                }
+                all_near
+            };
+            if hugs_boundary {
+                continue;
+            }
             // Keep the paves that end a kept interval: those are where edges
             // genuinely split.
             for (node, on_edge, on_section) in &edge_hits {
@@ -809,6 +847,14 @@ fn fill(
                 if crossing.on_a < contact.crange.0 + tol.parametric()
                     || crossing.on_a > contact.crange.1 - tol.parametric()
                 {
+                    continue;
+                }
+                // Touching is not crossing, at curve level as at surface
+                // level: where the two curves run nearly parallel — a blend
+                // arc meeting the edge it is tangent to — the "crossing" is
+                // numerical noise smeared along the contact, and paving it
+                // would plant a vertex a hair off both curves.
+                if tangential(&contact.curve, crossing.on_a, &e.curve, crossing.on_b, tol)? {
                     continue;
                 }
                 paves.entry(contact.node).or_default().push(crossing.on_a);
@@ -971,6 +1017,47 @@ fn chart_point_of(face: &GFace, p: Point, tol: Tolerances) -> Option<Point2> {
         return None;
     }
     Some(at)
+}
+
+/// Whether two curves meet tangentially at a crossing: the parallel-noise
+/// gate for pave placement. One degree is far below any deliberate crossing
+/// and far above the smear a tangency leaves in the general intersector.
+fn tangential(a: &Curve, ta: f64, b: &Curve, tb: f64, tol: Tolerances) -> OgResult<bool> {
+    let da = a.d1_at(ta, tol)?;
+    let db = b.d1_at(tb, tol)?;
+    let (ma, mb) = (da.magnitude(), db.magnitude());
+    if ma <= tol.confusion() || mb <= tol.confusion() {
+        return Ok(true);
+    }
+    Ok(da.cross(db).magnitude() / (ma * mb) < 2e-2)
+}
+
+/// The distance from a point to a bounded edge curve, through a sampling
+/// fine enough for the along-boundary question it answers.
+fn distance_to_edge_curve(
+    curve: &Curve,
+    crange: (f64, f64),
+    p: Point,
+    tol: Tolerances,
+) -> OgResult<f64> {
+    let mut best = f64::INFINITY;
+    let mut previous: Option<Point> = None;
+    for i in 0..=48 {
+        let t = crange.0 + (crange.1 - crange.0) * f64::from(i) / 48.0;
+        let at = curve.point_at(t, tol)?;
+        if let Some(last) = previous {
+            let d = at - last;
+            let len2 = d.dot(d);
+            let s = if len2 > 0.0 {
+                ((p - last).dot(d) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            best = best.min(p.distance(last + d * s));
+        }
+        previous = Some(at);
+    }
+    Ok(best)
 }
 
 fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgResult<GeneralFused> {
@@ -1225,12 +1312,23 @@ struct Rebuild<'m> {
 
 impl Rebuild<'_> {
     fn vertex(&mut self, p: Point, tol: Tolerances) -> Shape {
-        if let Some((_, shape)) = self
+        let found = self
             .vertices
             .iter()
             .find(|(q, _)| q.distance(p) <= tol.confusion() * 10.0)
-        {
-            return shape.clone();
+            .map(|(q, shape)| (q.distance(p), shape.clone()));
+        if let Some((gap, shape)) = found {
+            // Two descriptions of one junction may disagree by a general
+            // crossing's residual; the vertex's tolerance is where that
+            // disagreement is recorded, so the sub-edges built against
+            // either description still reach it honestly.
+            if gap > tol.confusion()
+                && let Some(node) = self.model.node_mut(&shape)
+                && let og_topo::NodeData::Vertex(data) = node.data_mut()
+            {
+                data.tolerance = data.tolerance.widen_to(gap + tol.confusion());
+            }
+            return shape;
         }
         let shape = make_vertex(self.model, p).shape;
         self.vertices.push((p, shape.clone()));

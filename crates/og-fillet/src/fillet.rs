@@ -63,6 +63,252 @@ pub fn fillet_edge(
     }
 }
 
+/// Round a straight convex edge with a blend whose radius runs linearly from
+/// `start_radius` at the edge's start to `end_radius` at its end.
+///
+/// For a linear law on a straight edge between planes the rolling ball's
+/// envelope is *exactly* a rational B-spline surface — degree one along the
+/// edge, a rational quadratic arc across it, the control net affine in the
+/// radius — so nothing here is fitted. The tangency lines are straight, the
+/// legs stay planar, and the wedge subtracts through the boolean like its
+/// constant-radius siblings.
+///
+/// # Errors
+///
+/// As [`fillet_edge`], for the straight planar seat only.
+pub fn fillet_edge_variable(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    start_radius: f64,
+    end_radius: f64,
+    tol: Tolerances,
+) -> OgResult<Built> {
+    for radius in [start_radius, end_radius] {
+        if !radius.is_finite() || radius <= tol.confusion() {
+            og_bail!(Construction, "a fillet of radius {radius} rounds nothing");
+        }
+    }
+    if (start_radius - end_radius).abs() <= tol.confusion() {
+        return fillet_edge(model, solid, edge, start_radius, tol);
+    }
+    let seat = planar_seat(model, solid, edge, tol)?;
+    let (first, second) = if seat
+        .along
+        .dot(seat.normals[0].cross(seat.normals[1]))
+        .is_sign_positive()
+    {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+    let n1 = seat.normals[first];
+    let n2 = seat.normals[second];
+    let a = seat.leg(first, tol)?;
+    let b = seat.leg(second, tol)?;
+    let bisector = {
+        let u = a + b;
+        let m = u.magnitude();
+        if m <= tol.angular() {
+            og_bail!(Construction, "the faces meet too sharply to seat a fillet");
+        }
+        u / m
+    };
+    let depth = -n1.dot(bisector);
+    if depth <= tol.angular() {
+        og_bail!(Construction, "the faces meet too sharply to seat a fillet");
+    }
+    let sweep = seat.along.dot(n1.cross(n2)).atan2(n1.dot(n2));
+    if sweep <= tol.angular() {
+        og_bail!(Construction, "the faces are parallel; there is no corner");
+    }
+
+    // The sections at the two ends: everything else is affine between them.
+    let travel = seat.end - seat.start;
+    let radii = [start_radius, end_radius];
+    let apex = [seat.start, seat.end];
+    let centre = [
+        apex[0] + bisector * (radii[0] / depth),
+        apex[1] + bisector * (radii[1] / depth),
+    ];
+    let contact_a = [centre[0] + n1 * radii[0], centre[1] + n1 * radii[1]];
+    let contact_b = [centre[0] + n2 * radii[0], centre[1] + n2 * radii[1]];
+    let _ = travel;
+
+    // The unit arc from n1 to n2 as a rational quadratic: the middle control
+    // point is where the end tangents meet, its weight the half-angle cosine.
+    let half_cos = (sweep / 2.0).cos();
+    let arc_mid = (n1 + n2) / (1.0 + n1.dot(n2));
+    let weights = [1.0, half_cos, 1.0];
+
+    // The blend: degree one by rational quadratic, the control net
+    // c_i + r_i * V_j, weights carried across the rows unchanged. Every
+    // section of the surface is that section's exact blend arc.
+    let u_knots = og_math::KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1)?;
+    let v_knots = og_math::KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)?;
+    let mut net: Vec<og_math::Weighted<Point>> = Vec::with_capacity(6);
+    for i in 0..2 {
+        let arms = [n1, arc_mid, n2];
+        for (j, arm) in arms.iter().enumerate() {
+            net.push(og_math::Weighted::new(
+                centre[i] + *arm * radii[i],
+                weights[j],
+                tol,
+            )?);
+        }
+    }
+    let grid = og_math::ControlGrid::new(net, 2, 3)?;
+    let surface: SurfaceGeometry =
+        og_geom::BSplineSurface::rational(u_knots, v_knots, grid)?.into();
+    let surface_id = model.geometry_mut().add_surface(surface.clone());
+
+    // Shared vertices at the four tangency corners.
+    let va = [
+        make_vertex(model, contact_a[0]).shape,
+        make_vertex(model, contact_a[1]).shape,
+    ];
+    let vb = [
+        make_vertex(model, contact_b[0]).shape,
+        make_vertex(model, contact_b[1]).shape,
+    ];
+
+    // The tangency lines, straight because the law is linear, with
+    // degree-one pcurves mapping their arc length onto the chart's rows.
+    let rail = |model: &mut Model,
+                from: (&Shape, Point),
+                to: (&Shape, Point),
+                row: f64|
+     -> OgResult<Shape> {
+        let line = og_geom::LineCurve::segment(from.1, to.1, tol)?;
+        let curve = Curve::Line(line);
+        let domain = og_geom::Curve3d::domain(&curve);
+        let built = make_edge_between(model, curve, domain, from.0, to.0, tol)?.shape;
+        let knots = og_math::KnotVector::new(vec![domain.0, domain.0, domain.1, domain.1], 1)?;
+        let pcurve = og_geom::BSpline2d::new(
+            knots,
+            vec![
+                og_math::Point2::new(0.0, row),
+                og_math::Point2::new(1.0, row),
+            ],
+            tol,
+        )?;
+        og_algo::attach_pcurve(
+            model,
+            &built,
+            pcurve.into(),
+            surface_id,
+            og_topo::Location::identity(),
+            domain,
+        )?;
+        Ok(built)
+    };
+    let rail_a = rail(model, (&va[0], contact_a[0]), (&va[1], contact_a[1]), 0.0)?;
+    let rail_b = rail(model, (&vb[0], contact_b[0]), (&vb[1], contact_b[1]), 1.0)?;
+
+    // The end arcs as the surface's own rational sections, so the cap edges
+    // and the blend's chart speak the same parameter.
+    let arc_edge = |model: &mut Model, i: usize| -> OgResult<Shape> {
+        let knots = og_math::KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)?;
+        let control = vec![
+            og_math::Weighted::new(contact_a[i], 1.0, tol)?,
+            og_math::Weighted::new(centre[i] + arc_mid * radii[i], half_cos, tol)?,
+            og_math::Weighted::new(contact_b[i], 1.0, tol)?,
+        ];
+        let curve = Curve::BSpline(og_geom::BSplineCurve::rational(knots, control)?);
+        let built = make_edge_between(model, curve, (0.0, 1.0), &va[i], &vb[i], tol)?.shape;
+        #[allow(clippy::cast_precision_loss)]
+        let column = og_geom::Line2d::over(
+            og_math::Axis2::new(og_math::Point2::new(i as f64, 0.0), og_math::Direction2::Y),
+            0.0,
+            1.0,
+        )?;
+        og_algo::attach_pcurve(
+            model,
+            &built,
+            column.into(),
+            surface_id,
+            og_topo::Location::identity(),
+            (0.0, 1.0),
+        )?;
+        Ok(built)
+    };
+    let arc0 = arc_edge(model, 0)?;
+    let arc1 = arc_edge(model, 1)?;
+
+    // The blend face on the registered surface, oriented so its outward side
+    // leaves the wedge — decided by measurement at the middle rather than by
+    // convention.
+    let blend = {
+        let wire = og_algo::make_wire(
+            model,
+            &[
+                rail_a.clone(),
+                arc1.clone(),
+                rail_b.reversed(),
+                arc0.reversed(),
+            ],
+            tol,
+        )?
+        .shape;
+        let face =
+            og_algo::make_face_on(model, surface_id, std::slice::from_ref(&wire), tol)?.shape;
+        use og_geom::Surface as _;
+        let s_mid = surface.point_at(0.5, 0.5, tol)?;
+        let (du, dv) = surface.d1_at(0.5, 0.5, tol)?;
+        let apex_mid = apex[0].midpoint(apex[1]);
+        let outward = s_mid - apex_mid.midpoint(s_mid);
+        if du.cross(dv).dot(outward) >= 0.0 {
+            face
+        } else {
+            face.reversed()
+        }
+    };
+
+    // Legs along the two faces, and caps closed by the end arcs. The caps go
+    // through the generic builder: the rational arc projects into a plane
+    // exactly, control point by control point.
+    let leg_a = planar_face(
+        model,
+        &[apex[0], contact_a[0], contact_a[1], apex[1]],
+        n1,
+        tol,
+    )?;
+    let leg_b = planar_face(
+        model,
+        &[apex[0], contact_b[0], contact_b[1], apex[1]],
+        n2,
+        tol,
+    )?;
+    let cap = |model: &mut Model, i: usize, outward: Vector| -> OgResult<Built> {
+        let plane = Plane::through(apex[i], Direction::new(outward, tol)?);
+        let reach = (apex[i].distance(contact_a[i]) + apex[i].distance(contact_b[i]) + 1.0) * 2.0;
+        let cap_surface: SurfaceGeometry =
+            PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
+        let apex_v = make_vertex(model, apex[i]).shape;
+        let edges = vec![
+            crate::support::segment_between(
+                model,
+                (&apex_v, apex[i]),
+                (&va[i], contact_a[i]),
+                tol,
+            )?,
+            if i == 0 { arc0.clone() } else { arc1.clone() },
+            crate::support::segment_between(
+                model,
+                (&vb[i], contact_b[i]),
+                (&apex_v, apex[i]),
+                tol,
+            )?,
+        ];
+        og_algo::make_face_with_pcurves(model, cap_surface, &[edges], tol)
+    };
+    let cap0 = cap(model, 0, -seat.along)?.shape;
+    let cap1 = cap(model, 1, seat.along)?.shape;
+
+    let faces = [leg_a, leg_b, cap0, cap1, blend];
+    subtract_wedge(model, solid, edge, &faces, tol)
+}
+
 /// The straight-edge fillet: the rolling ball's envelope is a cylinder.
 fn planar_fillet(
     model: &mut Model,
