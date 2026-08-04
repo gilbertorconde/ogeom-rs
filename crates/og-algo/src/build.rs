@@ -637,6 +637,51 @@ pub fn attach_seam(
     Ok(())
 }
 
+/// The surface's `u = at` iso-curve, parameterized by `v` exactly.
+///
+/// A ruling on a cylinder, a tube circle on a torus — the curve a seam runs
+/// along. `None` where no closed form exists. Shared by the STEP reader's
+/// seam synthesis and the healer's ring re-anchoring, so the two cannot
+/// disagree about what a seam is.
+pub fn surface_iso_u_curve(
+    surface: &SurfaceGeometry,
+    at: f64,
+    tol: Tolerances,
+) -> Option<og_geom::Curve> {
+    match surface {
+        og_geom::SurfaceGeometry::Cylinder(c) => {
+            let cylinder = c.cylinder();
+            let frame = cylinder.frame();
+            let radial = frame.x().vector() * at.cos() + frame.y().vector() * at.sin();
+            let location = frame.origin() + radial * cylinder.radius();
+            let axis = og_math::Axis {
+                location,
+                direction: frame.z(),
+            };
+            Some(og_geom::LineCurve::new(axis).into())
+        }
+        og_geom::SurfaceGeometry::Torus(t) => {
+            let torus = t.torus();
+            let frame = torus.frame();
+            let radial = frame.x().vector() * at.cos() + frame.y().vector() * at.sin();
+            let centre = frame.origin() + radial * torus.major_radius();
+            // The tube circle framed so its own angle *is* the surface's v:
+            // x toward the outer equator, y along the axis, which makes
+            // z = x cross y the tangential direction.
+            let circle_frame = og_math::Frame::new(
+                centre,
+                og_math::Direction::new(radial.cross(frame.z().vector()), tol).ok()?,
+                og_math::Direction::new(radial, tol).ok()?,
+                tol,
+            )
+            .ok()?;
+            let circle = og_math::Circle::new(circle_frame, torus.minor_radius(), tol).ok()?;
+            Some(og_geom::CircleCurve::new(circle).into())
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

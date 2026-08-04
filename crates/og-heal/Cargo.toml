@@ -14,8 +14,11 @@ og-math.workspace = true
 og-geom.workspace = true
 og-topo.workspace = true
 og-algo.workspace = true
+og-intersect.workspace = true
 
 [dev-dependencies]
+og-io.workspace = true
+og-mesh.workspace = true
 approx.workspace = true
 proptest.workspace = true
 

@@ -995,7 +995,7 @@ impl Reader<'_> {
                 // a ruling on a cylinder or cone, a tube circle on a torus —
                 // parameterized by v, so the pcurves inherit the parameter
                 // exactly.
-                let Some(seam_curve) = iso_curve(&surface, ua, self.tol) else {
+                let Some(seam_curve) = og_algo::surface_iso_u_curve(&surface, ua, self.tol) else {
                     self.report.warnings.push(format!(
                         "#{id}: a periodic face without a seam on a surface \
                          whose iso-curve has no closed form; the face may \
@@ -1176,42 +1176,6 @@ impl Reader<'_> {
             ));
         }
         Ok(make_solid(&mut self.model, std::slice::from_ref(&shell))?.shape)
-    }
-}
-
-/// The surface's `u = at` iso-curve, parameterized by `v` exactly.
-fn iso_curve(surface: &SurfaceGeometry, at: f64, tol: Tolerances) -> Option<Curve> {
-    match surface {
-        SurfaceGeometry::Cylinder(c) => {
-            let cylinder = c.cylinder();
-            let frame = cylinder.frame();
-            let radial = frame.x().vector() * at.cos() + frame.y().vector() * at.sin();
-            let location = frame.origin() + radial * cylinder.radius();
-            let axis = Axis {
-                location,
-                direction: frame.z(),
-            };
-            Some(LineCurve::new(axis).into())
-        }
-        SurfaceGeometry::Torus(t) => {
-            let torus = t.torus();
-            let frame = torus.frame();
-            let radial = frame.x().vector() * at.cos() + frame.y().vector() * at.sin();
-            let centre = frame.origin() + radial * torus.major_radius();
-            // The tube circle framed so its own angle *is* the surface's v:
-            // x toward the outer equator, y along the axis, which makes
-            // z = x cross y the tangential direction.
-            let circle_frame = Frame::new(
-                centre,
-                Direction::new(radial.cross(frame.z().vector()), tol).ok()?,
-                Direction::new(radial, tol).ok()?,
-                tol,
-            )
-            .ok()?;
-            let circle = Circle::new(circle_frame, torus.minor_radius(), tol).ok()?;
-            Some(CircleCurve::new(circle).into())
-        }
-        _ => None,
     }
 }
 

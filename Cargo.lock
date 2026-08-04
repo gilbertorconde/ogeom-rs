@@ -380,7 +380,10 @@ dependencies = [
  "og-algo",
  "og-core",
  "og-geom",
+ "og-intersect",
+ "og-io",
  "og-math",
+ "og-mesh",
  "og-topo",
  "proptest",
 ]

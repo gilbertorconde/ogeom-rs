@@ -7,3 +7,7 @@
 //! needs healing before it can be modeled with. A kernel that cannot survive
 //! imperfect imported geometry is unusable regardless of how good its booleans
 //! are.
+
+pub mod reanchor;
+
+pub use reanchor::reanchor_periodic_rings;
