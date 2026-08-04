@@ -1039,6 +1039,115 @@ impl Reader<'_> {
                     Location::identity(),
                     range,
                 )?;
+                // Only circle rings get the coherent-window treatment; a
+                // spline ring band falls back to its raw bounds with a
+                // warning rather than an error.
+                let mut all_circles = true;
+                for ring_edge in [e_lo, e_hi] {
+                    let ok = self
+                        .model
+                        .node(ring_edge)
+                        .and_then(|n| n.data().as_edge())
+                        .and_then(og_topo::EdgeData::curve3d)
+                        .and_then(|r| match r {
+                            og_topo::EdgeRepr::Curve3d { curve, .. } => {
+                                self.model.geometry().curve(*curve)
+                            }
+                            _ => None,
+                        })
+                        .is_some_and(|g| matches!(g, Curve::Circle(_)));
+                    all_circles &= ok;
+                }
+                if !all_circles {
+                    self.report.warnings.push(format!(
+                        "#{id}: a periodic face's rings are not circles; no \
+                         seam was synthesised and the face may not triangulate"
+                    ));
+                    let built = make_face_on(&mut self.model, surface_id, &wires, self.tol)?.shape;
+                    let shape = if face_forward {
+                        built
+                    } else {
+                        built.reversed()
+                    };
+                    self.faces.insert(id, shape.clone());
+                    return Ok(Some(shape));
+                }
+                // The rings' pcurves attach explicitly and window-coherently
+                // — u(t) spanning [ua, ua + span] whichever way each circle
+                // winds — on a fresh surface id, so no earlier annotation
+                // with another phase can apply. The healer does the same;
+                // incoherent windows shred the chart's even-odd test and the
+                // face meshes full of holes while still reporting success.
+                let band_surface = self.model.geometry_mut().add_surface(surface.clone());
+                let span = ub - ua;
+                let axis_z = match &surface {
+                    SurfaceGeometry::Cylinder(c) => c.cylinder().frame().z().vector(),
+                    SurfaceGeometry::Cone(c) => c.cone().frame().z().vector(),
+                    SurfaceGeometry::Torus(t) => t.torus().frame().z().vector(),
+                    SurfaceGeometry::Sphere(sp) => sp.sphere().frame().z().vector(),
+                    _ => og_math::Vector::new(0.0, 0.0, 1.0),
+                };
+                for (ring_edge, row) in [(e_lo, va), (e_hi, vb)] {
+                    let (ring_curve, crange) = {
+                        let Some(node) = self.model.node(ring_edge) else {
+                            og_bail!(Dangling, "edge is not in this model");
+                        };
+                        let Some(data) = node.data().as_edge() else {
+                            og_bail!(Construction, "edge node holds no edge data");
+                        };
+                        let Some(og_topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d()
+                        else {
+                            og_bail!(Construction, "a ring edge lost its curve");
+                        };
+                        let Some(geometry) = self.model.geometry().curve(*curve) else {
+                            og_bail!(Dangling, "curve is not in this model");
+                        };
+                        (geometry.clone(), *range)
+                    };
+                    let Curve::Circle(circle) = &ring_curve else {
+                        og_bail!(Construction, "a band ring is not a circle");
+                    };
+                    let w = circle.circle().frame().z().vector().dot(axis_z).signum();
+                    let u_start = if w > 0.0 { ua } else { ua + span };
+                    let origin = og_math::Point2::new(w.mul_add(-crange.0, u_start), row);
+                    let ring_pcurve: PlanarCurve = og_geom::Line2d::over(
+                        og_math::Axis2::new(
+                            origin,
+                            og_math::Direction2::new(og_math::Vector2::new(w, 0.0), self.tol)?,
+                        ),
+                        crange.0,
+                        crange.1,
+                    )?
+                    .into();
+                    og_algo::attach_pcurve(
+                        &mut self.model,
+                        ring_edge,
+                        ring_pcurve,
+                        band_surface,
+                        Location::identity(),
+                        crange,
+                    )?;
+                }
+                let seam_sides = |u: f64| -> OgResult<PlanarCurve> {
+                    Ok(og_geom::Line2d::over(
+                        og_math::Axis2::new(
+                            og_math::Point2::new(u, 0.0),
+                            og_math::Direction2::new(og_math::Vector2::new(0.0, 1.0), self.tol)?,
+                        ),
+                        range.0 - 1.0,
+                        range.1 + 1.0,
+                    )?
+                    .into())
+                };
+                og_algo::attach_seam(
+                    &mut self.model,
+                    &seam,
+                    seam_sides(ua)?,
+                    seam_sides(ua + span)?,
+                    band_surface,
+                    Location::identity(),
+                    range,
+                )?;
                 let up = if downward {
                     seam.reversed()
                 } else {
@@ -1046,7 +1155,7 @@ impl Reader<'_> {
                 };
                 let ring = vec![e_lo.clone(), up.clone(), e_hi.reversed(), up.reversed()];
                 let wire = make_wire(&mut self.model, &ring, self.tol)?.shape;
-                let built = make_face_on(&mut self.model, surface_id, &[wire], self.tol)?.shape;
+                let built = make_face_on(&mut self.model, band_surface, &[wire], self.tol)?.shape;
                 let shape = if face_forward {
                     built
                 } else {

@@ -286,6 +286,17 @@ pub fn reanchor_periodic_rings(
     Ok(Built::new(solid, history))
 }
 
+/// The revolution axis direction of a periodic analytic surface.
+fn revolution_axis(surface: &SurfaceGeometry) -> Option<og_math::Vector> {
+    match surface {
+        SurfaceGeometry::Cylinder(c) => Some(c.cylinder().frame().z().vector()),
+        SurfaceGeometry::Cone(c) => Some(c.cone().frame().z().vector()),
+        SurfaceGeometry::Torus(t) => Some(t.torus().frame().z().vector()),
+        SurfaceGeometry::Sphere(s) => Some(s.sphere().frame().z().vector()),
+        _ => None,
+    }
+}
+
 /// The circle parameter of a point on a circle curve.
 fn circle_parameter(curve: &Curve, p: Point) -> Option<f64> {
     let Curve::Circle(c) = curve else {
@@ -300,12 +311,19 @@ fn circle_parameter(curve: &Curve, p: Point) -> Option<f64> {
 #[allow(clippy::type_complexity)]
 fn rebuild_broken_face(
     model: &mut Model,
-    surface_id: og_topo::SurfaceId,
+    _old_surface_id: og_topo::SurfaceId,
     surface: &SurfaceGeometry,
     rings: &[(Shape, Shape, Curve, (f64, f64))],
     substitution: &HashMap<TShapeId, Shape>,
     tol: Tolerances,
 ) -> OgResult<Shape> {
+    // The face gets its own copy of the surface: the ring edges may carry
+    // stale pcurves for the shared id — phases and windings from before the
+    // repair — and a chart that mixes them with the fresh seam tears. On a
+    // fresh id, only what this function attaches applies, and it attaches a
+    // coherent window: both rings spanning [ua, ua + span] whichever way
+    // they wind, columns at its edges.
+    let surface_id = model.geometry_mut().add_surface(surface.clone());
     let resolved: Vec<Shape> = rings
         .iter()
         .map(|(e, ..)| substitution.get(&e.node()).unwrap_or(e).clone())
@@ -368,7 +386,52 @@ fn rebuild_broken_face(
         Location::identity(),
         range,
     )?;
-    attach_face_pcurves(model, surface, surface_id, &resolved, tol)?;
+    // Ring pcurves, explicit and window-coherent: u(t) = anchor + w(t - t0),
+    // with the start pinned to whichever window edge makes the span land in
+    // [ua, ua + span] for either winding.
+    let axis_z = revolution_axis(surface).ok_or_else(|| {
+        og_core::og_err!(Construction, "the healed surface has no revolution axis")
+    })?;
+    for (ring, row) in [(&resolved[0], va), (&resolved[1], vb)] {
+        let (curve, crange) = {
+            let Some(node) = model.node(ring) else {
+                og_bail!(Dangling, "edge is not in this model");
+            };
+            let Some(data) = node.data().as_edge() else {
+                og_bail!(Construction, "edge node holds no edge data");
+            };
+            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+                og_bail!(Construction, "a ring edge lost its curve");
+            };
+            let Some(geometry) = model.geometry().curve(*curve) else {
+                og_bail!(Dangling, "curve is not in this model");
+            };
+            (geometry.clone(), *range)
+        };
+        let Curve::Circle(c) = &curve else {
+            og_bail!(Construction, "a ring edge is not a circle");
+        };
+        let w = c.circle().frame().z().vector().dot(axis_z).signum();
+        let u_start = if w > 0.0 { ua } else { ua + span };
+        let origin = og_math::Point2::new(w.mul_add(-crange.0, u_start), row);
+        let pcurve: PlanarCurve = og_geom::Line2d::over(
+            og_math::Axis2::new(
+                origin,
+                og_math::Direction2::new(og_math::Vector2::new(w, 0.0), tol)?,
+            ),
+            crange.0,
+            crange.1,
+        )?
+        .into();
+        og_algo::attach_pcurve(
+            model,
+            ring,
+            pcurve,
+            surface_id,
+            Location::identity(),
+            crange,
+        )?;
+    }
 
     let up = if downward {
         seam.reversed()

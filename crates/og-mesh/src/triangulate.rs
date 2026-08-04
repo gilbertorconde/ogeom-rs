@@ -27,6 +27,7 @@
 //! give each face its own idea of where the edge runs, and the seams would show.
 
 use og_core::{Exact, OgResult, Predicates, Tolerances, og_bail};
+use og_geom::Curve3d as _;
 use og_geom::{Curve2d, Surface, SurfaceGeometry};
 use og_math::{Direction, Point, Point2, Vector};
 use og_topo::{EdgeRepr, Model, NodeData, Orientation, Shape, ShapeType, Triangulation};
@@ -64,8 +65,20 @@ pub fn triangulate_face(
     };
     let placement = face.transform(model.datums())?;
 
-    let (uv, met) = trimming_rings(model, face, data.surface, surface, deflection, tol)?;
+    let (uv, anchors, met) = trimming_rings(model, face, data.surface, surface, deflection, tol)?;
     let planar = triangulate_region(&uv, surface, deflection, tol)?;
+
+    // Boundary vertices take their positions from their edges' own curves —
+    // the shared authority — keyed by their exact parameter-space bits.
+    let mut anchored: std::collections::HashMap<(u64, u64), Point> =
+        std::collections::HashMap::new();
+    for (ring, ring_anchor) in uv.iter().zip(&anchors) {
+        for (p, a) in ring.iter().zip(ring_anchor) {
+            if let Some(point) = a {
+                anchored.insert((p.x.to_bits(), p.y.to_bits()), *point);
+            }
+        }
+    }
 
     // Lift into space. The normal follows the face's orientation, not the
     // surface's: a reversed face presents the other side, and a renderer or a
@@ -73,14 +86,31 @@ pub fn triangulate_face(
     let flip = face.orientation() == Orientation::Reversed;
     let mut mesh = Triangulation::new();
     mesh.deflection_met = met;
+    let mut hits = 0_usize;
     for (u, v) in planar.parameters {
-        let point = placement.apply(surface.point_at(u, v, tol)?);
+        // Anchors are already in world coordinates — their edges' own
+        // placements applied — where surface lifts still need the face's.
+        let point = match anchored.get(&(u.to_bits(), v.to_bits())) {
+            Some(anchor) => {
+                hits += 1;
+                *anchor
+            }
+            None => placement.apply(surface.point_at(u, v, tol)?),
+        };
         let normal = surface
             .normal_at(u, v, tol)
             .map_or(Vector::ZERO, |n| placement.apply_vector(n.vector()));
         mesh.positions.push(point);
         mesh.normals.push(if flip { -normal } else { normal });
         mesh.parameters.push((u, v));
+    }
+    if std::env::var("OG_MESH_DEBUG").is_ok() {
+        eprintln!(
+            "DBG anchors map={} hits={} verts={}",
+            anchored.len(),
+            hits,
+            mesh.positions.len()
+        );
     }
     mesh.triangles = planar
         .triangles
@@ -147,6 +177,10 @@ pub fn face_boundary(
 
 /// The rings bounding a face in parameter space, and whether every boundary
 /// edge met its deflection.
+/// Boundary rings with, per ring vertex, the 3D anchor its edge's own curve
+/// provides — `None` where an edge has no 3D curve to defer to.
+type RingsWithAnchors = (Vec<Vec<Point2>>, Vec<Vec<Option<Point>>>, bool);
+
 fn trimming_rings(
     model: &Model,
     face: &Shape,
@@ -154,22 +188,26 @@ fn trimming_rings(
     surface: &SurfaceGeometry,
     deflection: Deflection,
     tol: Tolerances,
-) -> OgResult<(Vec<Vec<Point2>>, bool)> {
+) -> OgResult<RingsWithAnchors> {
     let mut rings = Vec::new();
+    let mut ring_anchors = Vec::new();
     let mut met = true;
     for wire in model.ordered_children_of(face)? {
-        let (ring, ring_met) = boundary_ring(model, &wire, id, deflection, tol)?;
+        let (ring, anchors, ring_met) = boundary_ring(model, &wire, id, deflection, tol)?;
         met &= ring_met;
         if ring.len() >= 3 {
             rings.push(ring);
+            ring_anchors.push(anchors);
         }
     }
     if rings.is_empty() {
         // A face with no wires covers its surface's whole domain, so the domain
         // rectangle is the boundary.
-        rings.push(domain_ring(surface, deflection, tol));
+        let ring = domain_ring(surface, deflection, tol);
+        ring_anchors.push(vec![None; ring.len()]);
+        rings.push(ring);
     }
-    Ok((rings, met))
+    Ok((rings, ring_anchors, met))
 }
 
 /// Whether a point in parameter space lies inside the region `rings` bound.
@@ -222,8 +260,9 @@ fn boundary_ring(
     surface: og_topo::SurfaceId,
     deflection: Deflection,
     tol: Tolerances,
-) -> OgResult<(Vec<Point2>, bool)> {
+) -> OgResult<(Vec<Point2>, Vec<Option<Point>>, bool)> {
     let mut ring: Vec<Point2> = Vec::new();
+    let mut anchors: Vec<Option<Point>> = Vec::new();
     let mut met = true;
 
     for edge in model.ordered_children_of(wire)? {
@@ -263,11 +302,30 @@ fn boundary_ring(
             og_bail!(Dangling, "pcurve is not in this model");
         };
 
-        // Sample where the *3D* curve says to, so an adjacent face lands on the
-        // same points.
+        // Sample where the *3D* curve says to, so an adjacent face lands on
+        // the same points — and *anchor* the boundary vertices to that curve
+        // too: two faces sharing an edge lift the same parameters through
+        // different surfaces, and on an imported file those surfaces
+        // disagree by the file's own slop. The edge is the shared authority,
+        // so its points are the positions both faces use, and the weld is a
+        // matter of identity rather than luck.
+        let mut edge_anchors: Vec<Option<Point>> = Vec::new();
         let samples = match sample_parameters(model, data, deflection, tol)? {
             Some((parameters, edge_met)) => {
                 met &= edge_met;
+                if let Some(EdgeRepr::Curve3d { curve, .. }) = data.curve3d()
+                    && let Some(geometry) = model.geometry().curve(*curve)
+                    && let Ok(edge_placement) = edge.transform(model.datums())
+                {
+                    for t in &parameters {
+                        edge_anchors.push(
+                            geometry
+                                .point_at(*t, tol)
+                                .ok()
+                                .map(|p| edge_placement.apply(p)),
+                        );
+                    }
+                }
                 map_to_pcurve(&parameters, data, pcurve_range)
             }
             // No 3D curve to defer to — fall back to the pcurve's own shape.
@@ -284,12 +342,18 @@ fn boundary_ring(
             .collect::<OgResult<_>>()?;
         if edge.orientation() == Orientation::Reversed {
             points.reverse();
+            edge_anchors.reverse();
+        }
+        if edge_anchors.len() != points.len() {
+            edge_anchors = vec![None; points.len()];
         }
         // The previous edge already contributed the shared vertex.
         if !ring.is_empty() && !points.is_empty() {
             points.remove(0);
+            edge_anchors.remove(0);
         }
         ring.extend(points);
+        anchors.extend(edge_anchors);
     }
 
     // A closed ring repeats its first point at the end; the triangulator wants
@@ -299,8 +363,9 @@ fn boundary_ring(
         && first.is_equal(last, tol)
     {
         ring.pop();
+        anchors.pop();
     }
-    Ok((ring, met))
+    Ok((ring, anchors, met))
 }
 
 /// Parameters at which to sample an edge, taken from its 3D curve.

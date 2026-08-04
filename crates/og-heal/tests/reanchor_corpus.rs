@@ -47,7 +47,9 @@ fn reanchoring_makes_the_smallest_nist_part_whole() {
         og_algo::is_shell_closed(&import.model, &shell).unwrap(),
         "the healed topology closes"
     );
-    // The volume is not asserted yet: the healed faces mesh individually but
-    // their meshes do not weld along the re-anchored rings — the recorded
-    // remainder in docs/SCOPE.md's deferred table.
+    // The volume is still not asserted: the torus fillets now mesh
+    // watertight through window-coherent pcurves, but the large rim band —
+    // whose rings the anchoring judged already-aligned and therefore left
+    // alone — still carries import-time pcurves with incoherent windows and
+    // meshes full of holes. The deferred table records the remainder.
 }
