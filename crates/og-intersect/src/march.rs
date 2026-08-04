@@ -237,11 +237,40 @@ pub fn branches(
         // real answers.
         if let Ok(branch) = trace(a, b, seed, options, tol)
             && branch.points.len() >= 2
+            && !is_fragment(&branch, options)
         {
             out.push(branch);
         }
     }
     Ok(out)
+}
+
+/// Whether a stalled trace is a fragment rather than a curve.
+///
+/// Coincident or near-coincident surfaces defeat the tangency check at a seed —
+/// rounding in the corrected parameters leaves the two normals a whisker apart,
+/// the walk takes a couple of steps, and then stalls where the arithmetic gives
+/// out. What comes back lies on both surfaces perfectly and describes nothing:
+/// identical spheres yielded six such fragments, each a few points long.
+///
+/// A stalled branch shorter than a handful of chords carries no information the
+/// seed did not, so it is noise from a degenerate configuration and dropped. A
+/// *real* stalled branch — one that ran into a genuine tangency — has length
+/// behind it and is kept, because a truncated real answer is still an answer.
+///
+/// The marcher is deliberately not a coincidence detector: for the pairs with
+/// closed forms, [`surface_surface`](crate::surface_surface) answers
+/// [`Same`](crate::Meeting::Same), and that check belongs before this one.
+fn is_fragment(branch: &Traced, options: Marching) -> bool {
+    if branch.stopped != Stopped::Stalled {
+        return false;
+    }
+    let length: f64 = branch
+        .points
+        .windows(2)
+        .map(|pair| pair[0].distance(pair[1]))
+        .sum();
+    length < options.chord * 10.0
 }
 
 /// Whether a traced branch passes within a distance of a point.
@@ -397,7 +426,17 @@ fn walk(
             step *= (options.chord / sag).sqrt().clamp(0.25, 0.9);
         }
         let Some((next, following)) = taken else {
-            stopped = Stopped::Stalled;
+            // A stall right at a domain edge is the edge, not a singularity.
+            // The walk converges on the boundary from inside and the correction
+            // starts failing when the step would cross it, so the last accepted
+            // point sits a fraction of a step short — inside the strict
+            // parametric band `outside` uses, but unmistakably at the edge at
+            // the scale the walk works at.
+            stopped = if near_edge(a, at.on_a) || near_edge(b, at.on_b) {
+                Stopped::LeftTheDomain
+            } else {
+                Stopped::Stalled
+            };
             break;
         };
 
@@ -430,11 +469,31 @@ fn walk(
     }
 }
 
+/// The sine of the shallowest crossing angle the marcher will follow.
+///
+/// One microradian, and the number is set by the *correction*, not by taste.
+/// `correct` accepts a residual up to the confusion tolerance, so the two
+/// parameter points of a contact can disagree by that much in space — and on
+/// coincident or near-coincident surfaces, that disagreement shows up as a
+/// spurious angle between the two computed normals of about the residual over
+/// the local feature size. A gate below that floor reads the correction's own
+/// noise as a direction and marches along it: identical spheres came back as
+/// six confident little curves that existed nowhere but in rounding.
+///
+/// So below this angle the marcher cannot tell an ultra-shallow crossing from
+/// coincidence, and refuses both rather than guessing. A genuine crossing
+/// shallower than a microradian is also one the Newton correction cannot
+/// reliably follow — its travel constraint becomes numerically dependent on
+/// the surface-gap rows at exactly the same rate — so the gate refuses what
+/// could not have been followed anyway.
+const SHALLOWEST: f64 = 1e-6;
+
 /// The direction the intersection runs at a contact.
 ///
 /// The cross product of the two normals: the one direction lying in both
-/// tangent planes. `None` where the normals are parallel — the surfaces are
-/// tangent, and the intersection has no single direction there.
+/// tangent planes. `None` where the normals are parallel to within
+/// [`SHALLOWEST`] — the surfaces are tangent or coincident there, and the
+/// intersection has no direction the marcher can trust.
 fn tangent_at(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
@@ -447,7 +506,7 @@ fn tangent_at(
     let length = cross.magnitude();
     // Scaled against the normals, which are unit, so this is the sine of the
     // angle between the surfaces rather than an absolute length.
-    if length <= tol.angular().max(1e-9) {
+    if length <= tol.angular().max(SHALLOWEST) {
         return None;
     }
     Some(cross * (1.0 / length))
@@ -554,6 +613,23 @@ fn clamp(surface: &SurfaceGeometry, u: f64, v: f64) -> (f64, f64) {
         fold(u, ua, ub, surface.is_periodic_u()),
         fold(v, va, vb, surface.is_periodic_v()),
     )
+}
+
+/// Whether a parameter sits close enough to a non-periodic edge that a stalled
+/// walk there means the edge rather than a singularity.
+///
+/// The band is a fraction of the domain's own span — a walk stalls within a
+/// step of the boundary, and the step is far larger than the strict band
+/// [`outside`] uses to decide a point has actually crossed.
+fn near_edge(surface: &SurfaceGeometry, at: (f64, f64)) -> bool {
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let close = |x: f64, lo: f64, hi: f64, periodic: bool| {
+        !periodic && {
+            let band = (hi - lo).abs() * 1e-4;
+            x <= lo + band || x >= hi - band
+        }
+    };
+    close(at.0, ua, ub, surface.is_periodic_u()) || close(at.1, va, vb, surface.is_periodic_v())
 }
 
 /// Whether a parameter has left a surface's domain, in a direction that has one.

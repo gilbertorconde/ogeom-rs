@@ -154,9 +154,11 @@ pub fn coverage(
             }
             crossings += 1;
 
-            // A branch point anywhere in the cell counts. The reach is the
-            // cell's own diagonal, because that is how far apart two points in
-            // it can be and the curve may enter anywhere.
+            // A branch passing anywhere through the cell counts. Measured
+            // against the polyline's *segments*, not its vertices: the tracer
+            // spaces its points by curvature, so on a straight stretch they sit
+            // far apart, and comparing to vertices alone marked the cells
+            // between two samples of a perfectly traced line as missed.
             let centre = Point::from_vector(
                 corners
                     .iter()
@@ -166,10 +168,17 @@ pub fn coverage(
             let reach = corners[0]
                 .distance(corners[2])
                 .max(corners[1].distance(corners[3]));
-            if branches
-                .iter()
-                .any(|branch| branch.points.iter().any(|p| p.distance(centre) <= reach))
-            {
+            let reached = branches.iter().any(|branch| {
+                branch
+                    .points
+                    .windows(2)
+                    .any(|pair| segment_distance(centre, pair[0], pair[1]) <= reach)
+                    || branch
+                        .points
+                        .first()
+                        .is_some_and(|p| p.distance(centre) <= reach)
+            });
+            if reached {
                 covered += 1;
             } else {
                 missed.push(centre);
@@ -183,6 +192,17 @@ pub fn coverage(
         missed,
         grid,
     })
+}
+
+/// Distance from a point to a segment.
+fn segment_distance(p: Point, a: Point, b: Point) -> f64 {
+    let along = b - a;
+    let length = along.square_magnitude();
+    if length <= f64::MIN_POSITIVE {
+        return p.distance(a);
+    }
+    let t = ((p - a).dot(along) / length).clamp(0.0, 1.0);
+    p.distance(a + along * t)
 }
 
 /// A surface's domain, clamped to somewhere a real model lives.
