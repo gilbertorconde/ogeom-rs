@@ -24,6 +24,8 @@
 //! each and a name that did not say which would be the wrong kind of convenience.
 
 pub mod native;
+pub mod step;
 pub mod stl;
 
+pub use step::{StepImport, StepReport, read_step};
 pub use stl::{Encoding, read, write};

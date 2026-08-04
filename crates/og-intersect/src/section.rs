@@ -333,8 +333,80 @@ fn exact_pcurve(curve: &Curve, surface: &SurfaceGeometry, tol: Tolerances) -> Op
         SurfaceGeometry::Plane(p) => on_plane(curve, p.plane(), tol),
         SurfaceGeometry::Cylinder(c) => on_cylinder(curve, c.cylinder(), tol),
         SurfaceGeometry::Sphere(s) => on_sphere(curve, s.sphere(), tol),
+        SurfaceGeometry::Torus(t) => on_torus(curve, t.torus(), tol),
         _ => None,
     }
+}
+
+/// The pcurve of a circle on a torus, for the two families that are straight
+/// lines in `(u, v)`.
+///
+/// A *parallel* — centred on the axis, in a plane perpendicular to it — runs
+/// at constant `v`; a *tube circle* — minor radius, centred on the tube's
+/// spine, in a plane through the axis — runs at constant `u`. Both inherit
+/// the circle's own angle, phase and winding included, exactly as the
+/// cylinder case does; the STEP reader is the consumer that forced the torus
+/// into this list, fillet faces being tori more often than not.
+fn on_torus(curve: &Curve, torus: og_math::Torus, tol: Tolerances) -> Option<PlanarCurve> {
+    let Curve::Circle(c) = curve else {
+        return None;
+    };
+    let circle = c.circle();
+    let frame = torus.frame();
+    let axis_z = frame.z().vector();
+    let normal = circle.frame().z().vector();
+    let local = frame.to_local(circle.centre());
+    let tau = core::f64::consts::TAU;
+
+    // A parallel of the sweep.
+    if normal.cross(axis_z).magnitude() <= tol.angular()
+        && local.x.hypot(local.y) <= tol.confusion()
+    {
+        let sin_v = local.z / torus.minor_radius();
+        let cos_v = (circle.radius() - torus.major_radius()) / torus.minor_radius();
+        if (sin_v.hypot(cos_v) - 1.0).abs() > tol.confusion() {
+            return None;
+        }
+        let v = sin_v.atan2(cos_v);
+        let start = circle.centre() + circle.frame().x().vector() * circle.radius();
+        let at = frame.to_local(start);
+        let phase = at.y.atan2(at.x);
+        let winding = normal.dot(axis_z).signum();
+        let towards = og_math::Direction2::new(og_math::Vector2::new(winding, 0.0), tol).ok()?;
+        return Some(
+            Line2d::over(
+                og_math::Axis2::new(Point2::new(phase, v), towards),
+                0.0,
+                tau,
+            )
+            .ok()?
+            .into(),
+        );
+    }
+
+    // A circle of the tube.
+    if (circle.radius() - torus.minor_radius()).abs() <= tol.confusion()
+        && normal.dot(axis_z).abs() <= tol.angular()
+        && (local.x.hypot(local.y) - torus.major_radius()).abs() <= tol.confusion()
+        && local.z.abs() <= tol.confusion()
+    {
+        let u = local.y.atan2(local.x);
+        let radial = frame.x().vector() * u.cos() + frame.y().vector() * u.sin();
+        let xc = circle.frame().x().vector();
+        let phase = xc.dot(axis_z).atan2(xc.dot(radial));
+        let winding = normal.dot(radial.cross(axis_z)).signum();
+        let towards = og_math::Direction2::new(og_math::Vector2::new(0.0, winding), tol).ok()?;
+        return Some(
+            Line2d::over(
+                og_math::Axis2::new(Point2::new(u, phase), towards),
+                0.0,
+                tau,
+            )
+            .ok()?
+            .into(),
+        );
+    }
+    None
 }
 
 /// Project a curve lying in a plane into the plane's own coordinates.

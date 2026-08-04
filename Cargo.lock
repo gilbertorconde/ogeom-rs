@@ -418,6 +418,7 @@ dependencies = [
  "og-algo",
  "og-core",
  "og-geom",
+ "og-intersect",
  "og-math",
  "og-mesh",
  "og-topo",
