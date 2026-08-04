@@ -462,6 +462,7 @@ dependencies = [
  "og-algo",
  "og-bool",
  "og-core",
+ "og-fillet",
  "og-geom",
  "og-intersect",
  "og-math",

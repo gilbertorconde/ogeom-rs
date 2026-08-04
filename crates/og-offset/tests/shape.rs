@@ -147,3 +147,82 @@ fn a_shelled_cylinder_becomes_a_cup() {
     );
     assert!(result.history.is_deleted(&top));
 }
+
+/// A box with its top edge filleted: the part whose offset meets a partial
+/// cylinder, arcs with vertices, and vertices seated on curved faces.
+fn filleted_box(model: &mut og_topo::Model) -> og_topo::Shape {
+    let block = og_algo::make_box(model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
+    let edge = explore(model, &block.shape, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            og_algo::edge_vertices(model, e)
+                .unwrap()
+                .is_some_and(|(a, b)| {
+                    let p = |v: &og_topo::Shape| {
+                        model
+                            .node(v)
+                            .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                            .unwrap()
+                    };
+                    let (pa, pb) = (p(&a), p(&b));
+                    (pa.x - 2.0).abs() < 1e-9
+                        && (pa.z - 2.0).abs() < 1e-9
+                        && (pb.x - 2.0).abs() < 1e-9
+                        && (pb.z - 2.0).abs() < 1e-9
+                })
+        })
+        .expect("the box has that edge");
+    og_fillet::fillet_edge(model, &block.shape, &edge, 0.5, T)
+        .unwrap()
+        .shape
+}
+
+#[test]
+fn a_filleted_box_offsets_with_its_blend() {
+    let pi = core::f64::consts::PI;
+    for (w, side, blend) in [(0.2, 2.4, 0.7), (-0.2, 1.6, 0.3)] {
+        let mut model = og_topo::Model::new();
+        let part = filleted_box(&mut model);
+        let result = og_offset::offset_shape(&mut model, &part, w, T).unwrap();
+        let diagnosis = og_algo::check(&model, &result.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let expected = side * side * side - (1.0 - pi / 4.0) * blend * blend * side;
+        let measured = volume(&model, &result.shape);
+        assert!(
+            (measured - expected).abs() < 2e-3,
+            "offset {w}: volume {measured} against {expected}"
+        );
+        // Topology preserved: still seven faces.
+        assert_eq!(
+            explore(&model, &result.shape, Filter::OfType(ShapeType::Face))
+                .unwrap()
+                .len(),
+            7
+        );
+    }
+}
+
+#[test]
+fn a_filleted_box_shells_blend_and_all() {
+    let mut model = og_topo::Model::new();
+    let part = filleted_box(&mut model);
+    let bottom = face_at(&model, &part, Point::new(1.0, 1.0, 0.0));
+    let t = 0.2;
+    let result =
+        og_offset::make_thick_solid(&mut model, &part, std::slice::from_ref(&bottom), t, T)
+            .unwrap();
+    let diagnosis = og_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    let pi = core::f64::consts::PI;
+    let outer = 8.0 - (1.0 - pi / 4.0) * 0.25 * 2.0;
+    let cavity = 1.6 * 1.6 * 1.8 - (1.0 - pi / 4.0) * 0.09 * 1.6;
+    let expected = outer - cavity;
+    let measured = volume(&model, &result.shape);
+    assert!(
+        (measured - expected).abs() < 2e-3,
+        "filleted shell volume {measured} against {expected}"
+    );
+    assert!(result.history.is_deleted(&bottom));
+}

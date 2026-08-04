@@ -19,6 +19,7 @@ og-bool.workspace = true
 og-mesh.workspace = true
 
 [dev-dependencies]
+og-fillet.workspace = true
 approx.workspace = true
 proptest.workspace = true
 

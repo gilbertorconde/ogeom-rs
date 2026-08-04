@@ -24,8 +24,9 @@ use og_algo::{
     make_revolution_band, make_solid, make_vertex, sew,
 };
 use og_core::{OgResult, Tolerances, og_bail};
+use og_geom::Curve3d as _;
 use og_geom::{Curve, CylinderSurface, LineCurve, PlaneSurface, SurfaceGeometry};
-use og_math::{Axis, Circle, Cylinder, Frame, Plane, Point, Vector};
+use og_math::{Axis, Cylinder, Frame, Plane, Point, Vector};
 use og_topo::{
     EdgeRepr, Filter, Model, NodeData, Orientation, Shape, ShapeType, TShapeId, explore,
     explore_unique,
@@ -110,23 +111,36 @@ struct Prepared {
     surface: SurfaceGeometry,
     /// The outward normal amount this face moved.
     amount: f64,
-    /// For a planar face, its outward unit normal.
-    outward: Option<Vector>,
-    /// For a full revolution band, its two ring edges.
+    /// The sign relating the face's outward side to the surface's own
+    /// normal: `+1` for a Forward face.
+    sign: f64,
+    /// For a full revolution band — seam and two closed rings — the rings.
     rings: Option<[Shape; 2]>,
 }
 
 /// The rebuild under both entry points: every face offset by its own amount,
 /// the topology re-derived on the moved surfaces.
+///
+/// One rule serves every element. A surface moves along its own normal — a
+/// plane translates, a revolution surface's radius grows — which makes the
+/// *displacement* constraint at any point of it exactly planar: normal
+/// there, offset amount along it. Vertices solve those constraints in the
+/// least-squares sense and then Newton-polish onto the moved surfaces
+/// themselves, edges re-derive from the moved pair — a line from its planes'
+/// constraints, a circle from the pair's analytic intersection re-framed on
+/// its old axes so parameters and orientations carry — and faces rebuild
+/// wire by wire with exact pcurves, or wholesale through
+/// [`make_revolution_band`] where a seam says the face wraps.
 fn rebuilt(
     model: &mut Model,
     solid: &Shape,
     amount_of: &dyn Fn(&Shape) -> f64,
     tol: Tolerances,
 ) -> OgResult<Built> {
+    use og_geom::Surface as _;
     let faces = explore(model, solid, Filter::OfType(ShapeType::Face))?;
 
-    // Move every surface, and note what each face is.
+    // Move every surface.
     let mut prepared: Vec<Prepared> = Vec::with_capacity(faces.len());
     for face in &faces {
         let amount = amount_of(face);
@@ -144,8 +158,6 @@ fn rebuilt(
         } else {
             1.0
         };
-        // A face's edge list names its seam twice; a face with a seam and two
-        // closed rings is a band, rebuilt wholesale.
         let edges = explore(model, face, Filter::OfType(ShapeType::Edge))?;
         let mut counts: HashMap<TShapeId, usize> = HashMap::new();
         for e in &edges {
@@ -163,75 +175,91 @@ fn rebuilt(
             .cloned()
             .collect();
 
-        match surface {
+        let grow = amount.abs() * 4.0 + 1.0;
+        let moved: SurfaceGeometry = match surface {
             SurfaceGeometry::Plane(p) => {
                 let plane = p.plane();
-                let outward = plane.normal().vector() * sign;
-                let ((u0, u1), (v0, v1)) = {
-                    use og_geom::Surface as _;
-                    surface.domain()
-                };
-                let grow = amount.abs() * 4.0 + 1.0;
-                let moved = Plane::new(Frame::new(
-                    plane.origin() + outward * amount,
+                let ((u0, u1), (v0, v1)) = surface.domain();
+                let shifted = Plane::new(Frame::new(
+                    plane.origin() + plane.normal().vector() * (sign * amount),
                     plane.normal(),
                     plane.frame().x(),
                     tol,
                 )?);
-                prepared.push(Prepared {
-                    shape: face.clone(),
-                    surface: PlaneSurface::over(
-                        moved,
-                        (u0 - grow, u1 + grow),
-                        (v0 - grow, v1 + grow),
-                    )?
-                    .into(),
-                    amount,
-                    outward: Some(outward),
-                    rings: None,
-                });
+                PlaneSurface::over(shifted, (u0 - grow, u1 + grow), (v0 - grow, v1 + grow))?.into()
             }
             SurfaceGeometry::Cylinder(c) => {
-                if !has_seam || closed_rings.len() != 2 {
-                    og_bail!(
-                        Construction,
-                        "offsetting a partial cylindrical face needs the \
-                         general offset-surface rebuild — see the deferred \
-                         table"
-                    );
-                }
                 let cylinder = c.cylinder();
-                let grown = cylinder.radius() + amount * sign;
+                let grown = sign.mul_add(amount, cylinder.radius());
                 if grown <= tol.confusion() {
                     og_bail!(Construction, "the offset consumes the cylinder's radius");
                 }
-                let ((_, _), (v0, v1)) = {
-                    use og_geom::Surface as _;
-                    surface.domain()
-                };
-                let reach = amount.abs() + 1.0;
-                prepared.push(Prepared {
-                    shape: face.clone(),
-                    surface: CylinderSurface::new(
-                        Cylinder::new(cylinder.frame(), grown, tol)?,
-                        (v0 - reach, v1 + reach),
-                    )?
-                    .into(),
-                    amount,
-                    outward: None,
-                    rings: Some([closed_rings[0].clone(), closed_rings[1].clone()]),
-                });
+                let (_, (v0, v1)) = surface.domain();
+                CylinderSurface::new(
+                    Cylinder::new(cylinder.frame(), grown, tol)?,
+                    (v0 - grow, v1 + grow),
+                )?
+                .into()
+            }
+            SurfaceGeometry::Sphere(sp) => {
+                let sphere = sp.sphere();
+                let grown = sign.mul_add(amount, sphere.radius());
+                if grown <= tol.confusion() {
+                    og_bail!(Construction, "the offset consumes the sphere's radius");
+                }
+                og_geom::SphereSurface::new(og_math::Sphere::centred(sphere.centre(), grown, tol)?)
+                    .into()
+            }
+            SurfaceGeometry::Torus(t) => {
+                let torus = t.torus();
+                let grown = sign.mul_add(amount, torus.minor_radius());
+                if grown <= tol.confusion() {
+                    og_bail!(Construction, "the offset consumes the torus's tube");
+                }
+                og_geom::TorusSurface::new(og_math::Torus::new(
+                    torus.frame(),
+                    torus.major_radius(),
+                    grown,
+                    tol,
+                )?)
+                .into()
+            }
+            SurfaceGeometry::Cone(co) => {
+                let cone = co.cone();
+                // The parallel cone: same axis and half-angle, the reference
+                // radius moved by the offset over the slant's cosine.
+                let grown =
+                    (sign * amount / cone.half_angle().cos()).mul_add(1.0, cone.reference_radius());
+                if grown <= tol.confusion() {
+                    og_bail!(Construction, "the offset consumes the cone's throat");
+                }
+                let (_, (v0, v1)) = surface.domain();
+                og_geom::ConeSurface::new(
+                    og_math::Cone::new(cone.frame(), grown, cone.half_angle(), tol)?,
+                    (v0 - grow, v1 + grow),
+                )?
+                .into()
             }
             _ => og_bail!(
                 Construction,
-                "offsetting a face that is neither a plane nor a cylindrical \
-                 band needs the general offset-surface rebuild — see the \
-                 deferred table"
+                "offsetting a face on this surface needs a construction the \
+                 rebuild does not yet speak — see the deferred table"
             ),
-        }
+        };
+        prepared.push(Prepared {
+            shape: face.clone(),
+            surface: moved,
+            amount,
+            sign,
+            rings: if has_seam && closed_rings.len() == 2 {
+                Some([closed_rings[0].clone(), closed_rings[1].clone()])
+            } else {
+                None
+            },
+        });
     }
 
-    // Which faces share each edge, seams excluded by their double use.
+    // Which faces meet each edge, seams excluded by their double use.
     let mut edge_faces: HashMap<TShapeId, Vec<usize>> = HashMap::new();
     for (fi, face) in faces.iter().enumerate() {
         for e in explore(model, face, Filter::OfType(ShapeType::Edge))? {
@@ -242,14 +270,44 @@ fn rebuilt(
         }
     }
 
-    // New vertices: each old vertex re-solved where its planes now meet.
+    // The displacement constraint each face puts on a point of itself: the
+    // surface normal there, moved its amount along it. Exact, because a
+    // normal offset moves every point of a surface along its own normal.
+    let constraint = |model: &Model, fi: usize, at: Point| -> OgResult<Option<(Vector, f64)>> {
+        let face = &faces[fi];
+        let Some(node) = model.node(face) else {
+            og_bail!(Dangling, "face is not in this model");
+        };
+        let NodeData::Face(data) = node.data() else {
+            og_bail!(Construction, "face node holds no face data");
+        };
+        let Some(surface) = model.geometry().surface(data.surface) else {
+            og_bail!(Dangling, "face refers to a surface not in this model");
+        };
+        let projection = og_algo::project_on_surface(surface, at, 32, tol)?;
+        if projection.distance > tol.confusion() * 100.0 {
+            return Ok(None);
+        }
+        let (u, v) = projection.parameters;
+        let (du, dv) = surface.d1_at(u, v, tol)?;
+        let n = du.cross(dv);
+        let m = n.magnitude();
+        if m <= tol.confusion() {
+            return Ok(None);
+        }
+        let outward = n / m * prepared[fi].sign;
+        Ok(Some((outward, prepared[fi].amount)))
+    };
+
+    // New vertices: the linear constraint solve seeds a Newton polish onto
+    // the moved surfaces themselves — the tangent-plane answer is exact for
+    // planes and off by the surfaces' own curvature otherwise.
     let mut new_vertices: HashMap<TShapeId, (Shape, Point)> = HashMap::new();
     for vertex in explore_unique(model, solid, ShapeType::Vertex)? {
         let Some(data) = model.node(&vertex).and_then(|n| n.data().as_vertex()) else {
             continue;
         };
         let at = vertex.transform(model.datums())?.apply(data.point);
-        // The faces this vertex sits on.
         let mut seats: Vec<usize> = Vec::new();
         for (fi, face) in faces.iter().enumerate() {
             for v in explore(model, face, Filter::OfType(ShapeType::Vertex))? {
@@ -258,29 +316,78 @@ fn rebuilt(
                 }
             }
         }
-        if seats.len() < 3 {
-            // The anchor of a closed ring edge: it has no corner to re-solve
-            // and the rebuilt ring makes its own.
+        if seats.len() < 2 {
             continue;
         }
+        // Independent constraints only: tangent faces share their normal and
+        // must agree on the displacement, or the vertex tears.
         let mut normals: Vec<Vector> = Vec::new();
         let mut amounts: Vec<f64> = Vec::new();
+        let mut kept: Vec<usize> = Vec::new();
         for fi in &seats {
-            let Some(outward) = prepared[*fi].outward else {
-                og_bail!(
-                    Construction,
-                    "a vertex seated on a curved face needs the general \
-                     offset rebuild — see the deferred table"
-                );
+            let Some((n, w)) = constraint(model, *fi, at)? else {
+                continue;
             };
-            normals.push(outward);
-            amounts.push(prepared[*fi].amount);
+            if let Some(k) = normals
+                .iter()
+                .position(|m| m.cross(n).magnitude() <= tol.angular().max(1e-6))
+            {
+                if (amounts[k] - w).abs() > tol.confusion() {
+                    og_bail!(
+                        Construction,
+                        "two tangent faces move a shared vertex by different \
+                         amounts; the offset tears it"
+                    );
+                }
+                continue;
+            }
+            normals.push(n);
+            amounts.push(w);
+            kept.push(*fi);
         }
-        let moved = at + solve_corner(&normals, &amounts, tol)?;
+        if normals.len() < 2 {
+            og_bail!(
+                Construction,
+                "a vertex with fewer than two independent seats cannot be \
+                 re-solved"
+            );
+        }
+        let mut moved = at + solve_corner(&normals, &amounts, tol)?;
+        // Newton onto the moved surfaces: residuals are the signed
+        // distances, gradients the normals, and the same least-squares
+        // machinery takes the step.
+        for _ in 0..8 {
+            let mut ns: Vec<Vector> = Vec::new();
+            let mut rs: Vec<f64> = Vec::new();
+            for fi in &kept {
+                let projection =
+                    og_algo::project_on_surface(&prepared[*fi].surface, moved, 32, tol)?;
+                let (u, v) = projection.parameters;
+                let (du, dv) = prepared[*fi].surface.d1_at(u, v, tol)?;
+                let n = du.cross(dv);
+                let m = n.magnitude();
+                if m <= tol.confusion() {
+                    continue;
+                }
+                let n = n / m;
+                let foot = prepared[*fi].surface.point_at(u, v, tol)?;
+                ns.push(n);
+                rs.push((moved - foot).dot(n));
+            }
+            if ns.len() < 2 {
+                break;
+            }
+            let worst = rs.iter().fold(0.0_f64, |a, r| a.max(r.abs()));
+            if worst <= tol.confusion() * 0.1 {
+                break;
+            }
+            let step: Vec<f64> = rs.iter().map(|r| -r).collect();
+            moved += solve_corner(&ns, &step, tol)?;
+        }
         new_vertices.insert(vertex.node(), (make_vertex(model, moved).shape, moved));
     }
 
-    // New edges on the moved supports, directions preserved.
+    // New edges on the moved supports.
     let mut new_edges: HashMap<TShapeId, Shape> = HashMap::new();
     let mut history = History::new();
     for edge in explore_unique(model, solid, ShapeType::Edge)? {
@@ -301,33 +408,46 @@ fn rebuilt(
             };
             (geometry.clone(), *range)
         };
+        let forward = if edge.orientation() == Orientation::Reversed {
+            edge.reversed()
+        } else {
+            edge.clone()
+        };
         let built = match &curve {
             Curve::Line(line) => {
-                // Between two planes: the direction survives, the anchor
-                // re-solves against both moved planes.
-                let (Some(na), Some(nb)) = (prepared[sides[0]].outward, prepared[sides[1]].outward)
-                else {
-                    og_bail!(
-                        Construction,
-                        "a straight edge on a curved face needs the general \
-                         offset rebuild — see the deferred table"
-                    );
+                // The direction survives; the anchor solves the two faces'
+                // displacement constraints — one constraint where the faces
+                // are tangent along the line, two where they cross there.
+                let mid = curve.point_at(f64::midpoint(range.0, range.1), tol)?;
+                let mut normals: Vec<Vector> = Vec::new();
+                let mut amounts: Vec<f64> = Vec::new();
+                for fi in &sides {
+                    let Some((n, w)) = constraint(model, *fi, mid)? else {
+                        continue;
+                    };
+                    if let Some(k) = normals
+                        .iter()
+                        .position(|m| m.cross(n).magnitude() <= tol.angular().max(1e-6))
+                    {
+                        if (amounts[k] - w).abs() > tol.confusion() {
+                            og_bail!(
+                                Construction,
+                                "tangent faces move a shared edge by different \
+                                 amounts; the offset tears it"
+                            );
+                        }
+                        continue;
+                    }
+                    normals.push(n);
+                    amounts.push(w);
+                }
+                let shift = if normals.len() == 1 {
+                    normals[0] * amounts[0]
+                } else {
+                    solve_corner(&normals, &amounts, tol)?
                 };
-                let shift = solve_corner(
-                    &[na, nb],
-                    &[prepared[sides[0]].amount, prepared[sides[1]].amount],
-                    tol,
-                )?;
                 let anchor = line.axis().location + shift;
                 let moved: Curve = LineCurve::new(Axis::new(anchor, line.axis().direction)).into();
-                // The stored order, whatever this occurrence's orientation:
-                // the new edge keeps the old curve's direction, so old wire
-                // orientation flags carry over unchanged.
-                let forward = if edge.orientation() == Orientation::Reversed {
-                    edge.reversed()
-                } else {
-                    edge.clone()
-                };
                 let Some((sv, ev)) = edge_vertices(model, &forward)? else {
                     og_bail!(Construction, "a straight edge has no vertices");
                 };
@@ -345,77 +465,95 @@ fn rebuilt(
                 make_edge_between(model, moved, (t0, t1), &v_from, &v_to, tol)?.shape
             }
             Curve::Circle(c) => {
-                // An axis-normal ring between a cap plane and a cylindrical
-                // band: the centre rides the cap's own motion, the radius is
-                // the band's new radius.
+                // The moved pair's own analytic intersection, taken in the
+                // circle's old frame so parameters and orientations carry.
                 let circle = c.circle();
-                let z = circle.frame().z().vector();
-                let mut new_radius: Option<f64> = None;
-                let mut lift = Vector::new(0.0, 0.0, 0.0);
-                for fi in &sides {
-                    match (&prepared[*fi].surface, prepared[*fi].outward) {
-                        (_, Some(outward)) => {
-                            if outward.cross(z).magnitude() > tol.angular() {
-                                og_bail!(
-                                    Construction,
-                                    "a ring's cap is not perpendicular to its \
-                                     axis; the general rebuild is deferred"
-                                );
-                            }
-                            lift = outward * prepared[*fi].amount;
-                        }
-                        (SurfaceGeometry::Cylinder(cy), None) => {
-                            let axis = cy.cylinder().axis();
-                            if axis.direction.vector().cross(z).magnitude() > tol.angular()
-                                || axis.distance_to(circle.centre()) > tol.confusion() * 10.0
-                            {
-                                og_bail!(
-                                    Construction,
-                                    "a ring off its wall's axis needs the \
-                                     general rebuild — see the deferred table"
-                                );
-                            }
-                            new_radius = Some(cy.cylinder().radius());
-                        }
-                        _ => og_bail!(
-                            Construction,
-                            "a ring between these faces needs the general \
-                             rebuild — see the deferred table"
-                        ),
-                    }
-                }
-                let Some(radius) = new_radius else {
+                let found = og_intersect::intersect_surfaces(
+                    &prepared[sides[0]].surface,
+                    &prepared[sides[1]].surface,
+                    og_intersect::IntersectOptions::default(),
+                    tol,
+                )?;
+                let og_intersect::SurfaceIntersection::Along(candidates) = found else {
                     og_bail!(
                         Construction,
-                        "a circular edge not seated on a cylindrical band \
-                         needs the general rebuild — see the deferred table"
+                        "the moved faces no longer meet along the edge they \
+                         shared; the offset collapses it"
                     );
                 };
-                let moved_circle = Circle::new(
+                let mut best: Option<(og_math::Circle, f64)> = None;
+                for section in &candidates {
+                    let Curve::Circle(cc) = &section.curve else {
+                        continue;
+                    };
+                    let candidate = cc.circle();
+                    let score = candidate.centre().distance(circle.centre())
+                        + (candidate.radius() - circle.radius()).abs();
+                    if best.as_ref().is_none_or(|(_, held)| score < *held) {
+                        best = Some((candidate, score));
+                    }
+                }
+                let Some((candidate, _)) = best else {
+                    og_bail!(
+                        Construction,
+                        "the moved faces meet along nothing circular where a \
+                         circle was; the offset needs the general rebuild"
+                    );
+                };
+                let reframed = og_math::Circle::new(
                     Frame::new(
-                        circle.centre() + lift,
+                        candidate.centre(),
                         circle.frame().z(),
                         circle.frame().x(),
                         tol,
                     )?,
-                    radius,
+                    candidate.radius(),
                     tol,
                 )?;
-                let moved: Curve = og_geom::CircleCurve::new(moved_circle).into();
+                let moved: Curve = og_geom::CircleCurve::new(reframed).into();
                 let closed = {
-                    let Some((sv, ev)) = edge_vertices(model, &edge)? else {
+                    let Some((sv, ev)) = edge_vertices(model, &forward)? else {
                         og_bail!(Construction, "a ring has no vertex");
                     };
                     sv.node() == ev.node()
                 };
-                if !closed {
-                    og_bail!(
-                        Construction,
-                        "a partial circular edge needs the general rebuild — \
-                         see the deferred table"
-                    );
+                if closed {
+                    make_edge(model, moved, range, tol)?.shape
+                } else {
+                    let Some((sv, ev)) = edge_vertices(model, &forward)? else {
+                        og_bail!(Construction, "an arc has no vertices");
+                    };
+                    let (Some((v_from, p_from)), Some((v_to, p_to))) = (
+                        new_vertices.get(&sv.node()).cloned(),
+                        new_vertices.get(&ev.node()).cloned(),
+                    ) else {
+                        og_bail!(Construction, "an arc end has no re-solved vertex");
+                    };
+                    let angle_of = |p: Point| {
+                        let l = reframed.frame().to_local(p);
+                        l.y.atan2(l.x)
+                    };
+                    let tau = core::f64::consts::TAU;
+                    let mut t0 = angle_of(p_from);
+                    let mut t1 = angle_of(p_to);
+                    // Keep the new range in the old one's winding and span.
+                    while t0 < range.0 - core::f64::consts::PI {
+                        t0 += tau;
+                    }
+                    while t0 > range.0 + core::f64::consts::PI {
+                        t0 -= tau;
+                    }
+                    while t1 <= t0 + tol.parametric() {
+                        t1 += tau;
+                    }
+                    if (t1 - t0) - (range.1 - range.0) > core::f64::consts::PI {
+                        t1 -= tau;
+                    }
+                    if t1 <= t0 + tol.parametric() {
+                        og_bail!(Construction, "the offset collapses an arc");
+                    }
+                    make_edge_between(model, moved, (t0, t1), &v_from, &v_to, tol)?.shape
                 }
-                make_edge(model, moved, range, tol)?.shape
             }
             _ => og_bail!(
                 Construction,
@@ -427,7 +565,8 @@ fn rebuilt(
         new_edges.insert(edge.node(), built);
     }
 
-    // Faces: bands wholesale, planar faces wire by wire.
+    // Faces: bands wholesale, everything else wire by wire with exact
+    // pcurves on the moved surface.
     let mut rebuilt_faces: Vec<Shape> = Vec::with_capacity(prepared.len());
     for prep in &prepared {
         let built = if let Some(rings) = &prep.rings {
@@ -479,8 +618,27 @@ fn rebuilt(
     // The one global guard the local checks cannot give: an offset that
     // moved faces past each other builds a shell that is closed and inside
     // out. Its measured volume is the tell.
-    let mass =
-        og_algo::volume_properties(model, &built.shape, og_mesh::Deflection::default(), tol)?.mass;
+    // The guard meshes at the default deflection, and a thin tangential
+    // cusp — a small blend meeting its face — can defeat that resolution
+    // without anything being wrong. One finer retry separates a mesh that
+    // cannot see the cusp from a solid that is genuinely inside out.
+    let mut mass = None;
+    for chord in [og_mesh::Deflection::default().chord, 1e-4] {
+        let deflection = og_mesh::Deflection {
+            chord,
+            ..og_mesh::Deflection::default()
+        };
+        if let Ok(props) = og_algo::volume_properties(model, &built.shape, deflection, tol) {
+            mass = Some(props.mass);
+            break;
+        }
+    }
+    let Some(mass) = mass else {
+        og_bail!(
+            Construction,
+            "the offset solid's mesh does not close at any tried resolution"
+        );
+    };
     if !mass.is_finite() || mass <= tol.confusion() {
         og_bail!(Construction, "the offset collapses the solid");
     }
