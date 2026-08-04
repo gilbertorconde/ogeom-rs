@@ -347,6 +347,51 @@ impl Reader<'_> {
         };
         let scale = self.report.scale_mm;
         let radius_arg = |args: &[Arg], i: usize| args.get(i).and_then(Arg::number);
+        // B-spline surfaces arrive two ways: a simple instance with every
+        // attribute in one list, or a complex instance whose parts each
+        // carry their own slice — the rational form always the latter.
+        {
+            let (base, knots_part, weights) = {
+                let instance = self.instance(id)?;
+                (
+                    instance.part("B_SPLINE_SURFACE").map(<[Arg]>::to_vec),
+                    instance
+                        .part("B_SPLINE_SURFACE_WITH_KNOTS")
+                        .map(<[Arg]>::to_vec),
+                    instance
+                        .part("RATIONAL_B_SPLINE_SURFACE")
+                        .map(<[Arg]>::to_vec),
+                )
+            };
+            if let Some(kp) = knots_part {
+                let (degrees, grid_arg, mults_knots) = if let Some(base) = base {
+                    (
+                        (base.first().cloned(), base.get(1).cloned()),
+                        base.get(2).cloned(),
+                        (
+                            kp.first().cloned(),
+                            kp.get(1).cloned(),
+                            kp.get(2).cloned(),
+                            kp.get(3).cloned(),
+                        ),
+                    )
+                } else {
+                    (
+                        (kp.get(1).cloned(), kp.get(2).cloned()),
+                        kp.get(3).cloned(),
+                        (
+                            kp.get(8).cloned(),
+                            kp.get(9).cloned(),
+                            kp.get(10).cloned(),
+                            kp.get(11).cloned(),
+                        ),
+                    )
+                };
+                return self
+                    .bspline_surface(id, degrees, grid_arg, mults_knots, weights)
+                    .map(Some);
+            }
+        }
         let out = match keyword.as_str() {
             "PLANE" => {
                 let frame = self.frame(args[1].reference().unwrap_or(0))?;
@@ -403,6 +448,84 @@ impl Reader<'_> {
         Ok(out)
     }
 
+    /// Expand STEP's multiplicity-compressed knots.
+    fn expand_knots(mults: Option<Arg>, knots: Option<Arg>) -> Vec<f64> {
+        let mut out = Vec::new();
+        let (Some(Arg::List(mults)), Some(Arg::List(knots))) = (mults, knots) else {
+            return out;
+        };
+        for (m, k) in mults.iter().zip(&knots) {
+            let count = m.number().unwrap_or(1.0);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let count = count as usize;
+            for _ in 0..count {
+                out.push(k.number().unwrap_or(0.0));
+            }
+        }
+        out
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn bspline_surface(
+        &mut self,
+        id: u64,
+        degrees: (Option<Arg>, Option<Arg>),
+        grid_arg: Option<Arg>,
+        mults_knots: (Option<Arg>, Option<Arg>, Option<Arg>, Option<Arg>),
+        weights: Option<Vec<Arg>>,
+    ) -> OgResult<SurfaceGeometry> {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let deg = |a: Option<Arg>| a.and_then(|x| x.number()).unwrap_or(1.0) as usize;
+        let (u_degree, v_degree) = (deg(degrees.0), deg(degrees.1));
+        let Some(Arg::List(rows)) = grid_arg else {
+            og_bail!(
+                Construction,
+                "#{id}: a b-spline surface without control points"
+            );
+        };
+        let mut points = Vec::new();
+        let (mut u_count, mut v_count) = (0, 0);
+        for row in &rows {
+            let Some(cells) = row.list() else { continue };
+            u_count += 1;
+            v_count = cells.len();
+            for cell in cells {
+                points.push(self.point(cell.reference().unwrap_or(0))?);
+            }
+        }
+        let u_knots = KnotVector::new(Self::expand_knots(mults_knots.0, mults_knots.2), u_degree)?;
+        let v_knots = KnotVector::new(Self::expand_knots(mults_knots.1, mults_knots.3), v_degree)?;
+        let surface = if let Some(weights) = weights {
+            let flat: Vec<f64> = weights
+                .first()
+                .and_then(Arg::list)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(Arg::list)
+                .flatten()
+                .filter_map(Arg::number)
+                .collect();
+            let weighted: Vec<og_math::Weighted<Point>> = points
+                .iter()
+                .zip(flat.iter().chain(std::iter::repeat(&1.0)))
+                .map(|(p, w)| og_math::Weighted::new(*p, *w, self.tol))
+                .collect::<OgResult<_>>()?;
+            og_geom::BSplineSurface::rational(
+                u_knots,
+                v_knots,
+                og_math::ControlGrid::new(weighted, u_count, v_count)?,
+            )?
+        } else {
+            og_geom::BSplineSurface::new(
+                u_knots,
+                v_knots,
+                &og_math::ControlGrid::new(points, u_count, v_count)?,
+                self.tol,
+            )?
+        };
+        Ok(surface.into())
+    }
+
     fn curve(&mut self, id: u64) -> OgResult<Option<Curve>> {
         let (keyword, args) = {
             let instance = self.instance(id)?;
@@ -416,6 +539,49 @@ impl Reader<'_> {
             )
         };
         let scale = self.report.scale_mm;
+        {
+            let (base, kp, weights) = {
+                let instance = self.instance(id)?;
+                (
+                    instance.part("B_SPLINE_CURVE").map(<[Arg]>::to_vec),
+                    instance
+                        .part("B_SPLINE_CURVE_WITH_KNOTS")
+                        .map(<[Arg]>::to_vec),
+                    instance
+                        .part("RATIONAL_B_SPLINE_CURVE")
+                        .map(<[Arg]>::to_vec),
+                )
+            };
+            if let (Some(base), Some(kp), Some(weights)) = (base, kp, weights) {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let degree = base.first().and_then(Arg::number).unwrap_or(1.0) as usize;
+                let control: Vec<Point> = base
+                    .get(1)
+                    .and_then(Arg::list)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(Arg::reference)
+                    .map(|r| self.point(r))
+                    .collect::<OgResult<_>>()?;
+                let knots = KnotVector::new(
+                    Self::expand_knots(kp.first().cloned(), kp.get(1).cloned()),
+                    degree,
+                )?;
+                let flat: Vec<f64> = weights
+                    .first()
+                    .and_then(Arg::list)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(Arg::number)
+                    .collect();
+                let weighted: Vec<og_math::Weighted<Point>> = control
+                    .iter()
+                    .zip(flat.iter().chain(std::iter::repeat(&1.0)))
+                    .map(|(p, w)| og_math::Weighted::new(*p, *w, self.tol))
+                    .collect::<OgResult<_>>()?;
+                return Ok(Some(BSplineCurve::rational(knots, weighted)?.into()));
+            }
+        }
         let out: Option<Curve> = match keyword.as_str() {
             "LINE" => {
                 let through = self.point(args[1].reference().unwrap_or(0))?;

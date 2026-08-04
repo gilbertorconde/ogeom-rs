@@ -97,5 +97,10 @@ fn every_nist_part_reads_and_reports_honestly() {
             import.report.skipped.len()
         );
         assert!(!import.solids.is_empty(), "{name}: no solid read");
+        assert_eq!(
+            closed,
+            import.solids.len(),
+            "{name}: every shell closes as read"
+        );
     }
 }
