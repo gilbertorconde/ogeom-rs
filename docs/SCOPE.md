@@ -383,6 +383,17 @@ the 2D tangency problem proper — see the deferred table.
 
 ## 11. Offsetting, sweeping, features · `og-offset` · P4
 
+**Opened** with the 2D wire offset: each straight or circular edge offset on
+its own support, corners deciding the rest — gaps closed by an arc about the
+old corner or by extension to the sharp meeting, overlaps trimmed to the
+pieces' intersection, all against the wire's own winding. Areas pin to
+Minkowski's arithmetic (perimeter times offset plus `πw²` for rounded
+corners), offsets compose, and the history reads edge-into-offset-edge,
+corner-into-join. The refusals are named: free-form edges, open wires,
+offsets that consume an edge or an arc's radius, and self-intersecting
+results — the arrangement that resolves a collapsed offset into its valid
+loops is in the deferred table.
+
 | | *Elsewhere* |
 |---|---|
 | Offset shape with selectable join type | `BRepOffsetAPI_MakeOffsetShape` |
@@ -610,6 +621,7 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 | General affine transforms over a whole *shape* | §5 | Done at the geometry level: `Curve::general_transformed` converts to the exact B-spline form and moves the control points, which an affine map does exactly, so a sheared circle lands on the ellipse it should rather than near it. `transformed` still takes only a `Transform`, so a placement keeps the analytic type and only this does not. What is owed is the shape-level operation, and it is owed for the same reason whole-shape NURBS conversion is: the parameterization moves, so every edge's range and every pcurve has to be re-derived. |
 | Whole-shape NURBS conversion | §5 | Exact conversions exist for every curve — line, circle, ellipse, hyperbola, parabola, spline, trimmed — and for the ruled surfaces: plane, cylinder, cone, extrusion. Each is exact rather than fitted, and the tests measure it *implicitly*, by how far the patch strays from the analytic surface, because comparing parameters would report the reparameterization instead of the error. **What is owed is the whole-shape operation.** Conversion necessarily reparameterizes — a circle's parameter is its angle and a rational quadratic's is not, and no reparameterization of a rational quadratic makes it one — so converting a shape means restating every edge's range and re-deriving every pcurve against a surface whose parameterization has also moved. Re-deriving a pcurve is a *fit*, which makes it the adaptive-fitting item above, and that is deferred too. |
 | Exact patches for revolved surfaces | §3 | `to_bspline` covers the ruled surfaces exactly and refuses sphere, torus, general revolution and trimmed. Each of those needs a rational profile revolved — a construction of its own, and the same one for all three. Refused rather than fitted: a fit reporting success is indistinguishable from an exact conversion at the call site, and every exchange format written from it would carry the approximation without saying so. |
+| Collapsed 2D offsets | §11 | `offset_wire` refuses a result that self-intersects or consumes an edge whole. The full algorithm arranges the raw offset into its planar subdivision and keeps the loops at the right winding distance — the same tagged-strand arrangement the boolean already runs in 2D, pointed at a different question. Until then the refusal names the collapse instead of returning one of its loops silently. Open wires are refused alongside: capping their ends (round or square) is part of the same rebuild. |
 | 2D corner blends with curved sides | §10 | `fillet_corner_2d` and `chamfer_corner_2d` handle corners between two straight wire edges — the closed-form tangency. A line meeting an arc, or two arcs, is the general 2D tangent-circle problem (`GccAna`'s territory): still closed-form, quadratic rather than linear, and refused by name until that construction exists. |
 | Concave blends | §10 | `chamfer_edge` and `fillet_edge` subtract a wedge, which is only material on a convex edge; both refuse concave and tangent edges by checking that a leg walks behind the other face's plane. The concave blend *adds* material — the mirrored wedge fused rather than cut — and for the fillet the blend face enters with the opposite orientation. Same scaffolding, different sign discipline, deliberately not smuggled into the convex path. |
 | Canonical surfaces from a sweep | §9 | The chamfer found the sweep-side twin of the revolution entry below: `make_prism` builds every wall as an extrusion surface, including walls that are geometrically planes, and the boolean's same-domain resolution — which recognises coincidence between *planes* — walks straight past them. The chamfer builds its wedge from explicit planar faces instead; the durable fix is the sweep recognising a line profile edge and building the plane it actually made. |

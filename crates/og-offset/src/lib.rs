@@ -5,3 +5,7 @@
 //! `GeomFill`, `GeomPlate` and `BRepFeat`.
 //!
 //! The other perennially fragile area. Robustness here is a differentiator.
+
+pub mod wire2d;
+
+pub use wire2d::{Join, offset_wire};
