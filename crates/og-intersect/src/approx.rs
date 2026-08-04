@@ -31,7 +31,7 @@
 //! is; folding it back would re-tear it.
 
 use og_core::{OgResult, Tolerances, og_bail};
-use og_geom::{BSpline2d, BSplineCurve, Surface, SurfaceGeometry, fit};
+use og_geom::{BSpline2d, BSplineCurve, Surface, SurfaceGeometry};
 use og_math::Point2;
 
 use crate::march::Traced;
@@ -107,42 +107,6 @@ pub fn approximate_branch(
         on_b,
         closed: branch.closed(),
     })
-}
-
-/// Fit the parameter-space samples on one surface.
-///
-/// Returns the pcurve and whether its fit met the tolerance, with the
-/// tolerance translated into parameter units by the samples' own ratio.
-fn fit_pcurve(
-    surface: &SurfaceGeometry,
-    samples: &[(f64, f64)],
-    points: &[og_math::Point],
-    tolerance: f64,
-    tol: Tolerances,
-) -> OgResult<(BSpline2d, bool, f64)> {
-    let unwrapped = unwrap_periodic(surface, samples);
-
-    // How many parameter units one space unit is worth, measured over the
-    // whole branch. A local metric would be better and this is the honest
-    // cheap version: the fit's own error is re-measured in space below, so an
-    // underestimate here costs refinement, not correctness.
-    let space_run: f64 = points
-        .windows(2)
-        .map(|pair| pair[0].distance(pair[1]))
-        .sum();
-    let parameter_run: f64 = unwrapped
-        .windows(2)
-        .map(|pair| pair[0].distance(pair[1]))
-        .sum();
-    let scale = if space_run > tol.confusion() {
-        parameter_run / space_run
-    } else {
-        1.0
-    };
-    let target = (tolerance * scale).max(f64::MIN_POSITIVE);
-
-    let fitted = fit::fit_points_2d(&unwrapped, 3, target, tol)?;
-    Ok((fitted.curve, fitted.met, fitted.error))
 }
 
 /// The fitted pcurve's error, converted back into space.

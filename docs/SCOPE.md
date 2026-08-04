@@ -288,9 +288,11 @@ classified by the exact ray classifier, rebuilt with pcurves both sides, sewn,
 closure demanded, shells nested into solids and voids, history recorded.
 Fuse, common, cut and section all select from the one general result. A box is
 drilled by a cylinder — seam, chart folding, holes in planar faces and a
-flipped curved wall, all of it — and the planar cases run through the same
-general path. Same-domain and tangential contact are refused with
-instructions — see the deferred table.
+flipped curved wall, all of it — the planar cases run through the same general
+path, and crossed cylinders run through *marched* sections: fitted curves with
+pcurves both sides, held to each other by the volume identities
+fuse = A + B − common and cut = A − common. Same-domain and tangential contact
+are refused with instructions — see the deferred table.
 
 | | *Elsewhere* |
 |---|---|

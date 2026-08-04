@@ -428,6 +428,62 @@ fn triangulate_region(
     // deflection rather than by a fixed grid.
     add_interior_points(&mut cdt, rings, surface, deflection, tol)?;
 
+    // The grid rows guarantee the deflection along their own lines, but a
+    // hole in the face punches a gap through a row, and where the surface is
+    // flat in one direction — a cylinder along its axis — there may be no
+    // other row for the mesher to reach. The band around the hole then fans
+    // from the rim to the far side of the gap, in triangles that sag through
+    // the solid by far more than the deflection while every one of their
+    // vertices sits exactly on the surface. The boolean caught this as a
+    // fused solid whose faces all had the right area and the wrong volume.
+    //
+    // The repair measures the truth: any kept triangle whose midpoints sag
+    // beyond the chord gets its centre inserted, and the loop runs until the
+    // mesh is honest or the cap says the surface is being unreasonable.
+    if !matches!(surface.kind(), og_geom::SurfaceKind::Plane) {
+        for _ in 0..REFINEMENT_ROUNDS {
+            let mut worst: Vec<SpadePoint<f64>> = Vec::new();
+            for triangle in cdt.inner_faces() {
+                let vertices = triangle.vertices();
+                let centre = triangle.center();
+                let at = Point2::new(centre.x, centre.y);
+                if !inside_region(rings, at) {
+                    continue;
+                }
+                let corners: Vec<(f64, f64)> = vertices
+                    .iter()
+                    .map(|v| {
+                        let p = v.position();
+                        (p.x, p.y)
+                    })
+                    .collect();
+                // The grid already bounds sag along rows and columns, and a
+                // grid triangle's diagonal spanning one cell each way may
+                // legitimately sag up to the sum — twice the chord — which
+                // was the guarantee before this loop existed. The threshold
+                // sits clear above that band so the repair fires only on the
+                // fan triangles it exists for, which sag through a hole's
+                // gap by tens of chords, and an honest grid — including a
+                // perfectly symmetric one, whose mesh must stay symmetric —
+                // is left untouched.
+                let sagged = (0..3).any(|i| {
+                    sag_between(surface, corners[i], corners[(i + 1) % 3], tol)
+                        > deflection.chord * 3.0
+                });
+                if sagged {
+                    worst.push(SpadePoint::new(centre.x, centre.y));
+                }
+            }
+            if worst.is_empty() {
+                break;
+            }
+            for point in worst {
+                cdt.insert(point)
+                    .map_err(|e| og_core::og_err!(NotDone, "refinement insertion failed: {e}"))?;
+            }
+        }
+    }
+
     let mut parameters = Vec::new();
     let mut index_of = std::collections::HashMap::new();
     for (i, vertex) in cdt.vertices().enumerate() {
@@ -536,6 +592,13 @@ fn add_interior_points(
 
 /// How many places across the domain the v resolution is measured at.
 const U_PROBES: usize = 8;
+
+/// How many rounds of sag-driven refinement a region may take.
+///
+/// Each round halves the worst sag roughly; a surface not honest after this
+/// many is degenerate, and the cap makes that a coarse mesh rather than an
+/// exhausted allocator.
+const REFINEMENT_ROUNDS: usize = 12;
 
 /// The most subdivisions one parameter direction may take.
 ///

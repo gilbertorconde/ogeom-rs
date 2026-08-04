@@ -273,6 +273,11 @@ struct SectionRec {
     face_a: usize,
     face_b: usize,
     closed: bool,
+    /// How far the curve may sit from the true intersection: zero for an
+    /// exact section, the trace-plus-fit budget for a marched one. Crossing
+    /// filters widen their acceptance by this, or a fitted section would
+    /// never register against the edges it genuinely meets.
+    tolerance: f64,
 }
 
 /// One kept sub-range of one section.
@@ -409,14 +414,24 @@ fn fill(
         intersect_surfaces,
     };
     let mut sections: Vec<SectionRec> = Vec::new();
+    // Marched sections are fitted; the fit is driven below the confusion
+    // tolerance so a fitted curve meets edges, vertices and the mesh welder
+    // on the same terms as an exact one. The budget each still carries is
+    // recorded per section and widens the crossing filters.
+    let options = IntersectOptions {
+        tolerance: tol.confusion() * 0.5,
+        marching: og_intersect::Marching {
+            chord: tol.confusion() * 0.5,
+            ..og_intersect::Marching::default()
+        },
+    };
     for (ia, fa) in ga.faces.iter().enumerate() {
         for (ib, fb) in gb.faces.iter().enumerate() {
             if !fa.bound.intersects(&fb.bound) {
                 // The faces cannot meet, whatever their surfaces do.
                 continue;
             }
-            let met =
-                intersect_surfaces(&fa.surface, &fb.surface, IntersectOptions::default(), tol)?;
+            let met = intersect_surfaces(&fa.surface, &fb.surface, options, tol)?;
             match met {
                 SurfaceIntersection::Apart => {}
                 SurfaceIntersection::Same => og_bail!(
@@ -448,14 +463,16 @@ fn fill(
                                 face_a: ia,
                                 face_b: ib,
                                 closed: sc.closed,
+                                tolerance: sc.tolerance,
                             }),
                             _ => {
                                 // An exact curve whose projection has no
                                 // closed form: march the pair instead, so
                                 // curve and pcurves are fitted *together*.
-                                for fitted in march_pair(&fa.surface, &fb.surface, tol)? {
+                                for fitted in march_pair(&fa.surface, &fb.surface, &options, tol)? {
                                     sections.push(SectionRec {
                                         closed: fitted.curve.is_closed(tol),
+                                        tolerance: options.marching.chord + fitted.fit_error,
                                         curve: fitted.curve.into(),
                                         pc_a: fitted.on_a.into(),
                                         pc_b: fitted.on_b.into(),
@@ -498,9 +515,15 @@ fn fill(
     // and with every other section sharing a face.
     let mut paves: std::collections::HashMap<og_topo::TShapeId, Vec<f64>> =
         std::collections::HashMap::new();
-    let options = CurveCurveOptions::default();
     let mut pieces: Vec<SectionPiece> = Vec::new();
     for (si, section) in sections.iter().enumerate() {
+        // A fitted section meets an edge within its own budget, not within
+        // rounding.
+        let reach = tol.confusion().max(section.tolerance * 2.0);
+        let cc = CurveCurveOptions {
+            gap: reach.max(CurveCurveOptions::default().gap),
+            ..CurveCurveOptions::default()
+        };
         let domain = section.curve.domain();
         let mut trim_ts: Vec<f64> = Vec::new();
         let mut edge_hits: Vec<(og_topo::TShapeId, f64, f64)> = Vec::new();
@@ -510,9 +533,9 @@ fn fill(
         ] {
             let _ = face_index;
             for e in &own.edges {
-                let found = intersect_curves(&section.curve, &e.curve, options, tol)?;
+                let found = intersect_curves(&section.curve, &e.curve, cc, tol)?;
                 for crossing in &found.crossings {
-                    if crossing.gap > tol.confusion() {
+                    if crossing.gap > reach {
                         continue;
                     }
                     trim_ts.push(crossing.on_a);
@@ -536,9 +559,14 @@ fn fill(
             if other.face_a != section.face_a && other.face_b != section.face_b {
                 continue;
             }
-            let found = intersect_curves(&section.curve, &other.curve, options, tol)?;
+            let both = reach.max(tol.confusion().max(other.tolerance * 2.0));
+            let cc2 = CurveCurveOptions {
+                gap: both.max(CurveCurveOptions::default().gap),
+                ..CurveCurveOptions::default()
+            };
+            let found = intersect_curves(&section.curve, &other.curve, cc2, tol)?;
             for crossing in &found.crossings {
-                if crossing.gap <= tol.confusion() {
+                if crossing.gap <= both {
                     cross_ts.push(crossing.on_a);
                 }
             }
@@ -675,13 +703,14 @@ fn fill(
 fn march_pair(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
+    options: &og_intersect::IntersectOptions,
     tol: Tolerances,
 ) -> OgResult<Vec<og_intersect::IntersectionCurve>> {
-    use og_intersect::{Marching, approximate_branch, branches};
-    let traced = branches(a, b, Marching::default(), tol)?;
+    use og_intersect::{approximate_branch, branches};
+    let traced = branches(a, b, options.marching, tol)?;
     let mut out = Vec::new();
     for branch in &traced {
-        out.push(approximate_branch(a, b, branch, tol.confusion(), tol)?);
+        out.push(approximate_branch(a, b, branch, options.tolerance, tol)?);
     }
     if out.is_empty() {
         og_bail!(
@@ -1493,6 +1522,48 @@ mod tests {
         assert!(
             (got - exact).abs() / exact < 2e-3,
             "volume {got} against {exact}"
+        );
+    }
+
+    #[test]
+    fn crossed_cylinders_run_through_the_marched_sections() {
+        // No closed form exists for cylinder/cylinder: the sections are
+        // marched and fitted, and every stage downstream — paves against
+        // seams on both charts, splitting, classification, rebuilding with
+        // fitted pcurves, sewing, meshing — has to work within the fit's
+        // stated budget. Unequal radii keep the tangential branch points
+        // away. The volumes have no easy closed form, so the operations are
+        // held to each other: fuse = A + B - common and cut = A - common are
+        // identities whatever the shapes.
+        let mut model = Model::new();
+        let upright = make_cylinder(&mut model, Frame::WORLD, 1.0, 4.0, T).unwrap();
+        let across_frame =
+            Frame::new(Point::new(-2.0, 0.0, 2.0), Direction::X, Direction::Y, T).unwrap();
+        let across = make_cylinder(&mut model, across_frame, 0.6, 4.0, T).unwrap();
+
+        let both = fuse(&mut model, &upright.shape, &across.shape, T).unwrap();
+        assert_valid(&model, &both.shape);
+        let shared = common(&mut model, &upright.shape, &across.shape, T).unwrap();
+        assert_valid(&model, &shared.shape);
+        let pierced = cut(&mut model, &upright.shape, &across.shape, T).unwrap();
+        assert_valid(&model, &pierced.shape);
+
+        let va = volume(&model, &upright.shape);
+        let vb = volume(&model, &across.shape);
+        let vf = volume(&model, &both.shape);
+        let vc = volume(&model, &shared.shape);
+        let vx = volume(&model, &pierced.shape);
+
+        assert!(vc > 0.0 && vc < vb, "the overlap is real and partial: {vc}");
+        assert!(
+            (vf - (va + vb - vc)).abs() / vf < 2e-3,
+            "fuse {vf} against A + B - common {}",
+            va + vb - vc
+        );
+        assert!(
+            (vx - (va - vc)).abs() / vx < 2e-3,
+            "cut {vx} against A - common {}",
+            va - vc
         );
     }
 
