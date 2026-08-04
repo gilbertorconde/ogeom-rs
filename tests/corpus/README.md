@@ -32,9 +32,12 @@ it — check the statement on the actual download page before committing files.
 - Legal basis: works of the U.S. federal government are not subject to
   copyright in the United States (17 U.S.C. § 105). NIST distributes them
   with a no-warranty disclaimer and a request to credit NIST as the source.
-  **Verify on the download page** that the specific models carry the standard
-  NIST statement and no contractor copyright notice, then record the exact
-  wording in the manifest.
+  **Verified 2026-08-04** on the download page, which states verbatim: "The
+  test cases, CAD models, and STEP files can be used without any
+  restrictions. Their use in other software or hardware products does not
+  imply a recommendation or endorsement of those products by NIST." The
+  AP203 geometry-only set is committed; exact wording recorded in the
+  manifest.
 
 ### STEPcode sample files — acceptable, verify per file
 
