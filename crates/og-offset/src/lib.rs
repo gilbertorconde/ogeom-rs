@@ -6,6 +6,8 @@
 //!
 //! The other perennially fragile area. Robustness here is a differentiator.
 
+pub mod shape;
 pub mod wire2d;
 
+pub use shape::{make_thick_solid, offset_shape};
 pub use wire2d::{Join, offset_wire};

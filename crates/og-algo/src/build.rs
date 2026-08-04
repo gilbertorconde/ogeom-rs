@@ -479,6 +479,79 @@ pub fn make_face_on(
     Ok(Built::new(face, history))
 }
 
+/// Build a face on `surface` from per-wire edge lists, attaching an exact
+/// same-parameter pcurve to every edge.
+///
+/// The construction path for faces whose curves were *chosen* to have
+/// closed-form charts — blend wedges, offset rebuilds. Every edge's curve
+/// must lie on the surface in a configuration
+/// [`og_intersect::exact_pcurve_of`] recognises; a fitted pcurve here would
+/// manufacture disagreement where none exists, so an edge with no closed
+/// form is refused instead.
+///
+/// # Errors
+///
+/// As [`make_wire`] and [`make_face`], and
+/// [`OgError::Construction`](og_core::OgError::Construction) if an edge has
+/// no 3D curve or no closed-form pcurve on `surface`.
+pub fn make_face_with_pcurves(
+    model: &mut Model,
+    surface: SurfaceGeometry,
+    wires: &[Vec<Shape>],
+    tol: Tolerances,
+) -> OgResult<Built> {
+    let mut rings: Vec<Shape> = Vec::with_capacity(wires.len());
+    for edges in wires {
+        rings.push(make_wire(model, edges, tol)?.shape);
+    }
+    let built = make_face(model, surface.clone(), &rings, tol)?;
+    let surface_id = {
+        let Some(node) = model.node(&built.shape) else {
+            og_bail!(Dangling, "the face just built is not in this model");
+        };
+        let og_topo::NodeData::Face(data) = node.data() else {
+            og_bail!(Construction, "the face holds no face data");
+        };
+        data.surface
+    };
+    for edge in og_topo::explore(
+        model,
+        &built.shape,
+        og_topo::Filter::OfType(ShapeType::Edge),
+    )? {
+        let (curve, prange) = {
+            let Some(node) = model.node(&edge) else {
+                og_bail!(Dangling, "edge is not in this model");
+            };
+            let Some(data) = node.data().as_edge() else {
+                og_bail!(Construction, "edge node holds no edge data");
+            };
+            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+                og_bail!(Construction, "a face edge has no 3D curve");
+            };
+            let Some(geometry) = model.geometry().curve(*curve) else {
+                og_bail!(Dangling, "curve is not in this model");
+            };
+            (geometry.clone(), *range)
+        };
+        let Some(pcurve) = og_intersect::exact_pcurve_of(&curve, &surface, tol) else {
+            og_bail!(
+                Construction,
+                "a face edge has no closed-form pcurve on its surface"
+            );
+        };
+        attach_pcurve(
+            model,
+            &edge,
+            pcurve,
+            surface_id,
+            Location::identity(),
+            prange,
+        )?;
+    }
+    Ok(built)
+}
+
 /// Build a face covering the whole of `surface`, with no trimming.
 ///
 /// # Errors

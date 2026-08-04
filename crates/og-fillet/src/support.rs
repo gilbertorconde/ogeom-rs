@@ -7,12 +7,12 @@
 //! assembled from explicit curves with exact pcurves — is one piece of
 //! scaffolding, kept here so the two operations cannot drift apart.
 
-use og_algo::{attach_pcurve, make_edge_between, make_face, make_vertex, make_wire};
+use og_algo::{make_edge_between, make_vertex};
 use og_core::{OgResult, Tolerances, og_bail};
 use og_geom::Curve3d as _;
 use og_geom::{Curve, LineCurve, PlaneSurface, SurfaceGeometry};
 use og_math::{Direction, Plane, Point, Vector};
-use og_topo::{EdgeRepr, Filter, Location, Model, NodeData, Shape, ShapeType, explore};
+use og_topo::{EdgeRepr, Filter, Model, NodeData, Shape, ShapeType, explore};
 
 /// Where a blend sits on a solid: a straight edge and the two planar faces
 /// meeting there, reduced to the numbers the wedge construction runs on.
@@ -175,59 +175,15 @@ pub(crate) fn segment_between(
 /// A face on `surface` bounded by `edges` in traversal order, with an exact
 /// same-parameter pcurve attached to every edge.
 ///
-/// The edges' curves must lie on the surface in a configuration
-/// [`og_intersect::exact_pcurve_of`] recognises. That is the point: a blend's
-/// faces are built from curves *chosen* to have closed-form charts, and a
-/// fitted pcurve here would manufacture disagreement where none exists.
+/// [`og_algo::make_face_with_pcurves`] with one wire: the blend keeps this
+/// thin name because every wedge face is a single loop.
 pub(crate) fn face_from_edges(
     model: &mut Model,
     surface: SurfaceGeometry,
     edges: &[Shape],
     tol: Tolerances,
 ) -> OgResult<Shape> {
-    let wire = make_wire(model, edges, tol)?.shape;
-    let face = make_face(model, surface.clone(), std::slice::from_ref(&wire), tol)?.shape;
-    let surface_id = {
-        let Some(node) = model.node(&face) else {
-            og_bail!(Dangling, "the face just built is not in this model");
-        };
-        let NodeData::Face(data) = node.data() else {
-            og_bail!(Construction, "the face holds no face data");
-        };
-        data.surface
-    };
-    for pedge in explore(model, &face, Filter::OfType(ShapeType::Edge))? {
-        let (curve, prange) = {
-            let Some(node) = model.node(&pedge) else {
-                og_bail!(Dangling, "edge is not in this model");
-            };
-            let Some(data) = node.data().as_edge() else {
-                og_bail!(Construction, "edge node holds no edge data");
-            };
-            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
-                og_bail!(Construction, "a blend face edge has no 3D curve");
-            };
-            let Some(geometry) = model.geometry().curve(*curve) else {
-                og_bail!(Dangling, "curve is not in this model");
-            };
-            (geometry.clone(), *range)
-        };
-        let Some(pcurve) = og_intersect::exact_pcurve_of(&curve, &surface, tol) else {
-            og_bail!(
-                Construction,
-                "a blend face edge has no closed-form pcurve on its surface"
-            );
-        };
-        attach_pcurve(
-            model,
-            &pedge,
-            pcurve,
-            surface_id,
-            Location::identity(),
-            prange,
-        )?;
-    }
-    Ok(face)
+    Ok(og_algo::make_face_with_pcurves(model, surface, &[edges.to_vec()], tol)?.shape)
 }
 
 /// Sew the wedge's faces, demand a closed shell, subtract it from the solid,
