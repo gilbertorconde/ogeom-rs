@@ -259,7 +259,17 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgResult<Sewn
     // The survivor has to carry the pcurves of the edge it replaced, or the
     // face that used the replaced one loses its description in parameter space
     // and stops being triangulable.
-    for (dropped, (kept, _)) in merged.clone() {
+    //
+    // Carrying is not copying. When the merge *flipped* — the two edges run
+    // opposite ways — the dropped edge's pcurve traverses the shared points
+    // backwards relative to the survivor's own curve, and copied unchanged it
+    // makes the survivor's face walk one edge of its boundary the wrong way:
+    // the parameter-space ring zigzags to zero area and the face stops being
+    // triangulable. The boolean found this by sewing faces whose edges were
+    // annotated before sewing decided which twin survives. The pcurve is
+    // consumed by *proportional* same-parameter mapping, so reversing its
+    // traversal exactly is swapping the stored range's ends.
+    for (dropped, (kept, flipped)) in merged.clone() {
         let carried: Vec<EdgeRepr> = model
             .node_by_id(dropped)
             .and_then(|n| n.data().as_edge())
@@ -282,7 +292,7 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgResult<Sewn
             og_bail!(Construction, "edge node holds no edge data");
         };
         for repr in carried {
-            data.add(repr);
+            data.add(if flipped { reversed_repr(repr) } else { repr });
         }
     }
 
@@ -350,6 +360,43 @@ fn merge_vertices(
         }
     }
     Ok(out)
+}
+
+/// A parametric representation running the other way.
+///
+/// The consumers map a 3D-curve parameter onto the stored range
+/// proportionally, so swapping the range's ends reverses the traversal
+/// exactly, with no new geometry. A seam also swaps which pcurve is the
+/// forward one, since "forward" is defined by the traversal that just
+/// reversed.
+fn reversed_repr(repr: EdgeRepr) -> EdgeRepr {
+    match repr {
+        EdgeRepr::PCurve {
+            curve,
+            surface,
+            location,
+            range,
+        } => EdgeRepr::PCurve {
+            curve,
+            surface,
+            location,
+            range: (range.1, range.0),
+        },
+        EdgeRepr::Seam {
+            forward,
+            reversed,
+            surface,
+            location,
+            range,
+        } => EdgeRepr::Seam {
+            forward: reversed,
+            reversed: forward,
+            surface,
+            location,
+            range: (range.1, range.0),
+        },
+        other => other,
+    }
 }
 
 /// Rebuild every edge whose bounding vertices were merged away.
@@ -872,6 +919,55 @@ mod tests {
             Some(true),
             "the same edge, running the other way"
         );
+    }
+
+    #[test]
+    fn flipped_merges_carry_their_pcurves_the_right_way_round() {
+        // Six faces of a unit cube, each built loose with its own vertices
+        // and pre-attached pcurves, wound counter-clockwise around the
+        // outward normal as a shell is. Sewing merges all twelve edge pairs,
+        // and every merge is *flipped* — the two faces walk their shared
+        // edge opposite ways. A carried pcurve copied unchanged then makes
+        // the losing face walk edges backwards in parameter space; with
+        // several such edges in one ring the boundary zigzags, and faces
+        // stop triangulating or triangulate degenerately. Two squares are
+        // not enough to see it — a single backwards two-point edge self-heals
+        // in ring assembly — which is why this test is a cube.
+        //
+        // The carry must reverse with the merge: consumers map 3D parameters
+        // onto the pcurve range proportionally, so swapping the stored
+        // range's ends reverses the traversal exactly. The boolean found
+        // this by sewing faces annotated before sewing decided which twin
+        // survives.
+        let mut model = Model::new();
+        let c = Point::new;
+        let faces = [
+            [c(0., 0., 0.), c(0., 1., 0.), c(1., 1., 0.), c(1., 0., 0.)],
+            [c(0., 0., 1.), c(1., 0., 1.), c(1., 1., 1.), c(0., 1., 1.)],
+            [c(0., 0., 0.), c(1., 0., 0.), c(1., 0., 1.), c(0., 0., 1.)],
+            [c(0., 1., 0.), c(0., 1., 1.), c(1., 1., 1.), c(1., 1., 0.)],
+            [c(0., 0., 0.), c(0., 0., 1.), c(0., 1., 1.), c(0., 1., 0.)],
+            [c(1., 0., 0.), c(1., 1., 0.), c(1., 1., 1.), c(1., 0., 1.)],
+        ];
+        let built: Vec<Shape> = faces.iter().map(|f| loose_square(&mut model, *f)).collect();
+        let sewn = sew(&mut model, &built, T).unwrap();
+        assert_eq!(sewn.joined, 12, "every edge pair merged");
+        assert!(sewn.free_edges.is_empty());
+        for face in og_topo::explore(
+            &model,
+            &sewn.shells[0],
+            og_topo::Filter::OfType(ShapeType::Face),
+        )
+        .unwrap()
+        {
+            let mesh = og_mesh::triangulate(&model, &face, fine(), T).unwrap();
+            assert_eq!(
+                mesh.triangles.len(),
+                2,
+                "a unit square triangulates into two triangles, whichever twin \
+                 survived and whichever way it runs"
+            );
+        }
     }
 
     #[test]

@@ -756,37 +756,70 @@ enum AxisRelation {
 /// of a rectangle that revolves into a cylinder — and gets no face. An edge
 /// merely touching the axis at an end sweeps out a pole, which is ordinary.
 ///
-/// Sampled, not solved. Deciding exactly where a curve meets a line is the
-/// intersector's work and the intersector does not exist yet.
-///
-/// What is sampled is the *radial vector* — from the axis out to the curve —
-/// rather than the distance to the axis. Testing the distance would only catch
-/// a crossing that a sample lands exactly on, and a crossing almost never does:
-/// a straight profile from `x = -1` to `x = 2` passes through the axis a third
-/// of the way along, which no evenly spaced sample reaches. A crossing reverses
-/// the radial direction, and that shows up in every sample either side of it.
+/// Solved, not sampled. An earlier version sampled the radial vector at
+/// thirty-two places and watched for its direction reversing, with the note
+/// that deciding exactly where a curve meets a line is the intersector's work
+/// and the intersector did not exist yet. It does now, and the decision is
+/// exact in two layers: the intersector names every point where the curve
+/// meets the axis within tolerance, and the extrema machinery names every
+/// stationary nearest approach — which is what catches the case the sampling
+/// never could, a profile grazing the axis *tangentially* between samples,
+/// where the radial direction never reverses and no sample lands on the
+/// touch.
 fn axis_relation(
     curve: &og_geom::Curve,
     range: (f64, f64),
     axis: Axis,
     tol: Tolerances,
 ) -> OgResult<AxisRelation> {
-    let mut radial = Vec::with_capacity(AXIS_SAMPLES + 1);
+    // The cheap layer stays for what it answers exactly: an edge every one of
+    // whose samples sits on the axis is a straight edge lying along it.
+    let mut points = Vec::with_capacity(AXIS_SAMPLES + 1);
     for i in 0..=AXIS_SAMPLES {
         #[allow(clippy::cast_precision_loss)]
         let t = i as f64 / AXIS_SAMPLES as f64;
         let at = range.0 + (range.1 - range.0) * t;
-        let point = curve.point_at(at, tol)?;
-        radial.push(point - axis.project(point));
+        points.push(curve.point_at(at, tol)?);
     }
-
-    let on_axis = |v: &Vector| v.magnitude() <= tol.confusion();
-    if radial.iter().all(on_axis) {
+    let on_axis = |p: &og_math::Point| (*p - axis.project(*p)).magnitude() <= tol.confusion();
+    if points.iter().all(on_axis) {
         return Ok(AxisRelation::On);
     }
-    // An interior sample sitting on the axis is a graze or a crossing that a
-    // sample happened to land on; either way the profile is not clear of it.
-    if radial[1..radial.len() - 1].iter().any(on_axis) {
+
+    // The axis as a bounded line covering the edge's whole extent along it,
+    // with room to spare either side.
+    let along = |p: &og_math::Point| (*p - axis.location).dot(axis.direction.vector());
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for p in &points {
+        lo = lo.min(along(p));
+        hi = hi.max(along(p));
+    }
+    let margin = (hi - lo).max(1.0);
+    let line: og_geom::Curve = og_geom::LineCurve::over(axis, lo - margin, hi + margin)?.into();
+    let trimmed: og_geom::Curve = if (range.0, range.1) == curve.domain() {
+        curve.clone()
+    } else {
+        og_geom::TrimmedCurve::new(curve.clone(), range.0, range.1, tol)?.into()
+    };
+
+    // A contact at an end is a pole and is ordinary; anywhere else the
+    // revolution would pinch or pass through itself.
+    let (start, end) = (points[0], points[AXIS_SAMPLES]);
+    let interior = |p: og_math::Point| {
+        p.distance(start) > tol.confusion() && p.distance(end) > tol.confusion()
+    };
+
+    let hits = og_intersect::intersect_curves(
+        &trimmed,
+        &line,
+        og_intersect::CurveCurveOptions::default(),
+        tol,
+    )?;
+    if !hits.overlaps.is_empty() {
+        // Lying along the axis in part but not whole: the part that veers off
+        // still meets the axis away from the ends. Whole-edge overlap was the
+        // all-samples case above.
         og_bail!(
             Construction,
             "the profile touches the axis away from its ends; revolving it \
@@ -794,19 +827,35 @@ fn axis_relation(
              meets the axis"
         );
     }
-    if radial
-        .windows(2)
-        .any(|w| !on_axis(&w[0]) && !on_axis(&w[1]) && w[0].dot(w[1]) < 0.0)
-    {
+    if hits.crossings.iter().any(|c| interior(c.point)) {
         og_bail!(
             Construction,
-            "the profile passes from one side of the axis to the other; \
+            "the profile passes through the axis away from its ends; \
              revolving it would sweep a surface through itself. Split the \
              profile where it meets the axis"
         );
     }
-    // Only the ends touch it, if anything does: those sweep out poles, which
-    // is ordinary.
+
+    // The tangential graze: no crossing, but a stationary nearest approach
+    // reaching the axis at an interior parameter.
+    let near = og_intersect::extrema_curve_curve(
+        &trimmed,
+        &line,
+        og_intersect::ExtremaOptions::default(),
+        tol,
+    )?;
+    if near
+        .approaches
+        .iter()
+        .any(|a| a.distance <= tol.confusion() && interior(a.point_a))
+    {
+        og_bail!(
+            Construction,
+            "the profile touches the axis away from its ends; revolving it \
+             would sweep a surface through itself. Split the profile where it \
+             meets the axis"
+        );
+    }
     Ok(AxisRelation::Clear)
 }
 
@@ -1535,6 +1584,112 @@ mod tests {
             ],
         );
         assert!(make_revolution(&mut model, &grazing, Axis::Z, TAU, T).is_err());
+    }
+
+    #[test]
+    fn a_profile_grazing_the_axis_between_samples_is_refused_exactly() {
+        // The case the sampled check could never see, and the reason the
+        // exact one replaced it. The bottom of this profile is the quadratic
+        // Bezier x(t) = (1 - 3t)^2: it dips to touch the axis tangentially at
+        // t = 1/3 — not on any evenly spaced sample grid — and comes back
+        // without ever changing side, so the radial direction never reverses
+        // either. Sampling saw a profile clear of the axis; the extrema layer
+        // sees the stationary approach that reaches it, and the revolution
+        // would pinch to a point mid-face there.
+        let mut model = Model::new();
+        let frame = Frame::new(
+            Point::new(1.0, 0.0, 0.0),
+            -og_math::Direction::Y,
+            og_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let surface = model
+            .geometry_mut()
+            .add_surface(og_geom::PlaneSurface::new(og_math::Plane::new(frame)).into());
+        let flat = |p: Point| {
+            let l = frame.to_local(p);
+            Point2::new(l.x, l.y)
+        };
+
+        let controls = [
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(-2.0, 0.0, 0.5),
+            Point::new(4.0, 0.0, 1.0),
+        ];
+        let corners = [
+            controls[0],
+            controls[2],
+            Point::new(5.0, 0.0, 1.0),
+            Point::new(5.0, 0.0, 0.0),
+        ];
+        let vertices: Vec<Shape> = corners
+            .iter()
+            .map(|p| model.add_vertex(og_topo::VertexData::new(*p)))
+            .collect();
+
+        let knots = og_math::KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2).unwrap();
+        let dip: og_geom::Curve = og_geom::BSplineCurve::new(knots.clone(), controls.to_vec(), T)
+            .unwrap()
+            .into();
+        let mut edges = vec![
+            crate::build::make_edge_between(
+                &mut model,
+                dip,
+                (0.0, 1.0),
+                &vertices[0],
+                &vertices[1],
+                T,
+            )
+            .unwrap()
+            .shape,
+        ];
+        crate::attach_pcurve(
+            &mut model,
+            &edges[0],
+            og_geom::BSpline2d::new(knots, controls.iter().map(|p| flat(*p)).collect(), T)
+                .unwrap()
+                .into(),
+            surface,
+            og_topo::Location::identity(),
+            (0.0, 1.0),
+        )
+        .unwrap();
+        for i in 1..corners.len() {
+            let (a, b) = (corners[i], corners[(i + 1) % corners.len()]);
+            let edge = crate::build::make_edge_between(
+                &mut model,
+                og_geom::LineCurve::segment(a, b, T).unwrap().into(),
+                (0.0, a.distance(b)),
+                &vertices[i],
+                &vertices[(i + 1) % corners.len()],
+                T,
+            )
+            .unwrap()
+            .shape;
+            crate::attach_pcurve(
+                &mut model,
+                &edge,
+                Line2d::segment(flat(a), flat(b), T).unwrap().into(),
+                surface,
+                og_topo::Location::identity(),
+                (0.0, a.distance(b)),
+            )
+            .unwrap();
+            edges.push(edge);
+        }
+        let wire = crate::build::make_wire(&mut model, &edges, T)
+            .unwrap()
+            .shape;
+        let profile = crate::build::make_face_on(&mut model, surface, &[wire], T)
+            .unwrap()
+            .shape;
+
+        let err = make_revolution(&mut model, &profile, Axis::Z, TAU, T).unwrap_err();
+        assert!(
+            err.to_string().contains("touches the axis"),
+            "unexpected message: {err}"
+        );
     }
 
     #[test]
