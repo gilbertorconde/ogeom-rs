@@ -317,6 +317,7 @@ dependencies = [
  "og-geom",
  "og-intersect",
  "og-math",
+ "og-mesh",
  "og-topo",
  "proptest",
  "smallvec",

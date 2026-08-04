@@ -15,6 +15,7 @@ og-geom.workspace = true
 og-topo.workspace = true
 og-algo.workspace = true
 og-intersect.workspace = true
+og-mesh.workspace = true
 hashbrown.workspace = true
 indexmap.workspace = true
 smallvec.workspace = true
