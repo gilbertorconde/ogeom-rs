@@ -520,7 +520,7 @@ fn segment_distance(p: Point, a: Point, b: Point) -> f64 {
 }
 
 /// The distance in parameter space from a point to the nearest ring.
-fn distance_to_rings(rings: &[Vec<Point2>], p: Point2) -> f64 {
+pub(crate) fn distance_to_rings(rings: &[Vec<Point2>], p: Point2) -> f64 {
     let mut best = f64::INFINITY;
     for ring in rings {
         for i in 0..ring.len() {
@@ -548,7 +548,7 @@ fn segment_distance_2d(p: Point2, a: Point2, b: Point2) -> f64 {
 /// sphere's pole, a cone's apex — no parameter distance corresponds to a
 /// spatial one, and the band opens to cover the whole neighbourhood rather than
 /// closing to nothing.
-fn parametric_band(
+pub(crate) fn parametric_band(
     surface: &og_geom::SurfaceGeometry,
     at: (f64, f64),
     reach: f64,

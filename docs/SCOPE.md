@@ -248,8 +248,8 @@ Every operation emits history from the commit that introduces it
 | Mass properties: length, area, volume, centroid, inertia, principal axes | `GProp`, `BRepGProp` | done |
 | Point-in-face classification | `BRepTopAdaptor_FClass2d` | done |
 | Point-in-solid classification | `BRepClass3d` | done, both: tessellated with the deflection band stated, and exact by ray casting against the true surfaces |
-| Minimum distance and proximity between shapes | `BRepExtrema` | after §7 |
-| Extrema between curves and surfaces | `Extrema` | after §7 |
+| Minimum distance and proximity between shapes | `BRepExtrema` | done: every element pair swept, interior approaches from the geometry-level extrema, boundary candidates owned by the lower-dimensional pairs |
+| Extrema between curves and surfaces | `Extrema` | done: stationary approaches by Newton on the squared distance, constant-distance loci reported as a family rather than a guessed point |
 | Validity checking against the model invariants | `BRepCheck` | |
 | Curvature analysis; inputs for zebra, draft and thickness analysis | `BRepLProp` | |
 | Self-intersection detection | `BOPAlgo_CheckerSI` | after §8 |
