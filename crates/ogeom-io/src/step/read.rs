@@ -1166,7 +1166,16 @@ impl Reader<'_> {
                     (uv, p.distance(lifted))
                 }
                 None => {
-                    let projection = ogeom_algo::project_on_surface(surface, p, 24, self.tol)?;
+                    let mut projection = ogeom_algo::project_on_surface(surface, p, 24, self.tol)?;
+                    if projection.distance > self.tol.confusion() * 1e5 {
+                        // A miss this large on a spline surface is more often
+                        // a projection stuck in the wrong basin than real
+                        // slop; seed denser before believing it.
+                        let denser = ogeom_algo::project_on_surface(surface, p, 96, self.tol)?;
+                        if denser.distance < projection.distance {
+                            projection = denser;
+                        }
+                    }
                     (
                         ogeom_math::Point2::new(projection.parameters.0, projection.parameters.1),
                         projection.distance,

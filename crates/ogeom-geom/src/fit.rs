@@ -308,7 +308,18 @@ pub fn fit_points_2d_at(
     const ROUNDS: usize = 32;
     let mut best: Option<(KnotVector, Vec<[f64; 2]>, f64)> = None;
     for _ in 0..ROUNDS {
-        let control = least_squares::<2>(&knots, &data, parameters, false)?;
+        // A refinement can place a knot in a span the fixed parameters never
+        // visit — clustered samples leave the system singular. That kills
+        // the *round*, not the fit: the best earlier round still stands.
+        let control = match least_squares::<2>(&knots, &data, parameters, false) {
+            Ok(control) => control,
+            Err(e) => {
+                if best.is_some() {
+                    break;
+                }
+                return Err(e);
+            }
+        };
         let errors = residuals::<2>(&knots, &control, &data, parameters);
         let worst = errors.iter().fold(0.0_f64, |acc, e| acc.max(e.1));
         if best.as_ref().is_none_or(|(_, _, held)| worst < *held) {
