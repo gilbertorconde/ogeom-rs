@@ -182,10 +182,27 @@ canonical recognition and lands in §9.
 
 - A 2D constraint solver that reports degrees of freedom and *names the
   conflicting constraints* when a sketch is over-constrained, rather than
-  merely failing.
+  merely failing. ✓ Closed: the full constraint vocabulary over damped
+  Gauss–Newton with SVD structure-reading — a dimensioned bracket solves and
+  reports itself exactly constrained; adding a disagreeing width makes the
+  solve refuse and name the two distances that fight; the unanchored
+  rectangle names its sliding motions and every movable point; a repeated
+  dimension is called redundant, not conflicting.
 - Ray and rectangle picking with sub-shape granularity, and a stable mapping
-  from a triangle back to the topology that produced it.
-- Features recognized from raw topology.
+  from a triangle back to the topology that produced it. ✓ Closed: a
+  median-split BVH over per-face tessellation, hits depth-sorted, an
+  aperture resolving vertex before edge before face, rectangle and even-odd
+  polygon marquees in inside and crossing modes, and triangle indices
+  assigned in traversal order — the ray cast into a drilled part strikes a
+  triangle whose stable owner is a face the recognized hole claims.
+- Features recognized from raw topology. ✓ Closed: holes (through, blind,
+  counterbored across their shoulders, countersunk), fillets by two-sided
+  tangency (partial cylinders and torus bands), chamfers, pockets and
+  slots, tested on built parts and on the corpus — where the recognizer
+  stays honest: ftc_11's rim tori are tangent on one side only, and it
+  refuses to call them fillets. *Residuals:* boss recognition, feature
+  trees over the flat list, and single-tangent partial rounds, in the
+  deferred table.
 
 ---
 
@@ -580,14 +597,15 @@ Parsing is the easy fifth. The rest is semantic mapping onto our topology, unit
 and assembly-transform handling, and surviving files that violate their own
 specifications — which most real files do.
 
-## 18. Feature recognition · `og-recognize` · later
+## 18. Feature recognition · `ogeom-recognize` · P6
 
 Recognizing holes, pockets, slots, bosses, fillets and chamfers from raw
 topology; deriving feature trees from imported dumb solids; manufacturing
 feature extraction.
 
-Orthogonal to everything above and sequenced after the modeling stack is
-trustworthy.
+Holes, pockets, slots, fillets and chamfers recognize today, as a flat
+feature list; bosses, the tree over the list, and manufacturing extraction
+remain in the deferred table.
 
 ---
 
@@ -733,6 +751,10 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 | ~~Pcurves for edges on B-spline surfaces~~ **done** | §9/§17 | Projection fitting at the curve's own parameters serves every corpus face; slop up to `confusion*1e6` is accepted and *recorded* on the edge's tolerance. Parts still refusing do so for the face-level reasons below. |
 | ~~Welding the cut-imported result~~ **done** | §8/§9 | Edge ends anchor to their vertices within the recorded tolerance, chart points fold onto the ring-continuing periodic branch, and a border-only weld-and-stitch pass runs at the recorded tolerance, floored at a tenth of the chord. The imported cut measures. |
 | ~~Corpus faces that still refuse to triangulate~~ **done** | §9 | All eleven corpus parts triangulate, weld fully shut and measure, deterministically. What it took, in order: bands accept a degenerate apex/pole ring and a one-ring cone face synthesises its apex; a ruling's chart angle is measured over the used range, not at a stated location that may be the apex; half-period fold ties break toward not moving, a mis-wound ring unwinds from its last undecided tie, and two opposite-wound rings merge into one band; subnormal chart coordinates round to the zero they mean and chart-degenerate hair triangles are dropped, not refined; a sphere parallel carries a winding; chart angles across a collapsed direction are interpolated from sound neighbours — except through a pole, where the jump is real; face meshes are re-oriented by what they actually walk, majority-vote parity union-find, so inconsistent file flags cannot poison the flux; and the unit context cited by the geometry's own shape representation wins over whichever one a hash map served first. |
+| Sequential blends on one body | §11 | A second fillet or chamfer on a body already carrying one fails in the intersector ("no closed-form pcurve and marching resolved no branch") even when the two edges are far apart: the second blend's support machinery meets the first blend's modified side faces. One blend per body works in every tested configuration; the M6 close test builds accordingly. |
+| Boss recognition, feature trees, partial rounds | §18 | Recognition returns a flat feature list. Bosses (an all-convex top whose walls meet the base concavely) are not yet claimed; no tree orders the features; and single-tangent partial rounds — ftc_11's rim tori, tangent to their walls but meeting the top face at a deliberate angle — are refused rather than misfiled as fillets, and have no category of their own yet. |
+| Selection beyond the tessellation | §16 | The BVH is built over per-face triangulations; level of detail is the deflection a scene is built at, several scenes independent. Picking against *analytic* geometry — exact ray/surface hits refining a mesh hit — and a shared multi-resolution hierarchy are not started. |
+| Sketch solving at interactive scale | §14 | The solver re-reads the whole system each iteration with a numerically differenced Jacobian — right for correctness, indifferent to interactivity. Analytic derivatives, incremental resolve under dragging, and snapping are application-facing conveniences the crate does not yet offer. |
 | Exact HLR | §13 | The drawing pipeline is polygonal: model edges and mesh silhouettes classified by occlusion sampling against the tessellation, as fine as the chord and the sampling. Exact HLR — curve/surface interference resolved analytically, silhouettes as exact curves on the surfaces — is the other half of `HLRBRep`, and it rests on §7's intersectors plus a curve/surface interference walk that does not exist yet. Isoparametric extraction and reflect lines land with it. |
 | Sections through tangential contact | §13/§8 | A section plane exactly through a bore's axis meets the cylinder wall along its rulings, and the boolean refuses the configuration ("kept pieces did not close") — the same tangential-contact class already recorded for §7. The textbook half-section is exactly this cut, so resolving that class buys the drawing too. Off-axis sections through the same bore measure to arithmetic today. |
 | Documents beyond structure and annotation | §15 | The document holds products, instances, colours, names and semantic PMI, round-trips through STEP, and now persists natively: `write_document`/`read_document` carry the whole document layer after the model section, byte-stable across write–read–write, instance locations rebound through `Model::bind_location` rather than re-minted. Still owed from §15's own table: user-defined properties, materials, textures, layers, validation properties, and undo/redo over a transactional model. |

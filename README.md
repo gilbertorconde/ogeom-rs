@@ -65,8 +65,9 @@ and holds nothing yet.
 • crates/ogeom-hlr         hidden line removal, sections, 2D drawings
 • crates/ogeom-doc         product structure, appearance, semantic PMI
 • crates/ogeom             the public umbrella API
-· crates/ogeom-sketch      2D geometric constraint solver
-· crates/ogeom-select      BVH picking and selection
+• crates/ogeom-sketch      2D geometric constraint solver
+• crates/ogeom-select      BVH picking and selection
+• crates/ogeom-recognize   feature recognition from raw topology
 • tools/ogeom-cli          command-line front end
 • tools/ogeom-view         software renderer, so a wrong result is visible
 • tools/apisurf            API-usage profiler (analysis only)

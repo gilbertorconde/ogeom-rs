@@ -77,8 +77,9 @@ pub enum Feature {
 }
 
 /// Tangency threshold between face normals at a shared edge, radians —
-/// loose enough for a file's slop, far below any deliberate angle.
-const TANGENT_ANGLE: f64 = 1e-3;
+/// loose enough for a real file's slop (the corpus carries hundredths of a
+/// degree), still fifty times under any deliberate chamfer angle.
+const TANGENT_ANGLE: f64 = 1e-2;
 
 /// Recognize features on a solid.
 ///
@@ -177,7 +178,17 @@ impl<'m> Scene<'m> {
         let info = &self.faces[face];
         let placement = info.shape.transform(self.model.datums()).ok()?;
         let local = placement.inverse().ok()?.apply(at);
-        let projection = ogeom_algo::project_on_surface(&info.surface, local, 16, self.tol).ok()?;
+        let mut projection =
+            ogeom_algo::project_on_surface(&info.surface, local, 16, self.tol).ok()?;
+        if projection.distance > self.tol.confusion() * 1e3 {
+            // The point is *on* the face; a projection that says otherwise
+            // fell into the wrong basin of a torus or sphere. Seed denser
+            // before trusting the normal it implies.
+            let denser = ogeom_algo::project_on_surface(&info.surface, local, 96, self.tol).ok()?;
+            if denser.distance < projection.distance {
+                projection = denser;
+            }
+        }
         let (u, v) = projection.parameters;
         let normal = info.surface.normal_at(u, v, self.tol).ok()?;
         let world = placement.apply_vector(normal.vector());
@@ -1001,5 +1012,93 @@ mod tests {
         assert_eq!(pockets.len(), 1, "features: {features:?}");
         assert_eq!(pockets[0].walls.len(), 4);
         assert!(!pockets[0].slot);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod slot_tests {
+    use super::*;
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// An obround mill — a prism over two parallel lines closed by two
+    /// arcs — leaves a slot: a pocket whose floor keeps that outline.
+    #[test]
+    fn a_slot_mill_leaves_a_slot() {
+        use ogeom_geom::{CircleCurve, LineCurve};
+        use ogeom_math::{Circle, Direction, Frame};
+
+        let mut model = Model::new();
+        let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (24.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+
+        // The obround profile at z = 6: line, arc, line, arc.
+        let a = ogeom_algo::make_vertex(&mut model, Point::new(8.0, 8.0, 6.0)).shape;
+        let b = ogeom_algo::make_vertex(&mut model, Point::new(16.0, 8.0, 6.0)).shape;
+        let c = ogeom_algo::make_vertex(&mut model, Point::new(16.0, 12.0, 6.0)).shape;
+        let d = ogeom_algo::make_vertex(&mut model, Point::new(8.0, 12.0, 6.0)).shape;
+        let line = |model: &mut Model, from: Point, to: Point, va: &Shape, vb: &Shape| {
+            let curve: ogeom_geom::Curve = LineCurve::segment(from, to, T).unwrap().into();
+            ogeom_algo::make_edge_between(model, curve, (0.0, from.distance(to)), va, vb, T)
+                .unwrap()
+                .shape
+        };
+        let arc = |model: &mut Model, centre: Point, from: &Shape, to: &Shape| {
+            // A half circle from angle -pi/2 to +pi/2 in the frame whose x
+            // points +y... simplest: frame x toward the `from` vertex.
+            let start = model
+                .node(from)
+                .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                .unwrap();
+            let x = Direction::new(start - centre, T).unwrap();
+            let frame = Frame::new(centre, Direction::Z, x, T).unwrap();
+            let circle = Circle::new(frame, 2.0, T).unwrap();
+            let curve: ogeom_geom::Curve = CircleCurve::new(circle).into();
+            ogeom_algo::make_edge_between(model, curve, (0.0, core::f64::consts::PI), from, to, T)
+                .unwrap()
+                .shape
+        };
+        let bottom = line(
+            &mut model,
+            Point::new(8.0, 8.0, 6.0),
+            Point::new(16.0, 8.0, 6.0),
+            &a,
+            &b,
+        );
+        let right_arc = arc(&mut model, Point::new(16.0, 10.0, 6.0), &b, &c);
+        let top = line(
+            &mut model,
+            Point::new(16.0, 12.0, 6.0),
+            Point::new(8.0, 12.0, 6.0),
+            &c,
+            &d,
+        );
+        let left_arc = arc(&mut model, Point::new(8.0, 10.0, 6.0), &d, &a);
+        let edges = vec![bottom, right_arc, top, left_arc];
+        let probe = ogeom_algo::make_wire(&mut model, &edges, T).unwrap().shape;
+        let plane = ogeom_algo::find_plane(&model, &probe, T).unwrap().unwrap();
+        let surface: SurfaceGeometry =
+            ogeom_geom::PlaneSurface::over(plane, (-30.0, 30.0), (-30.0, 30.0))
+                .unwrap()
+                .into();
+        let profile = ogeom_algo::make_face_with_pcurves(&mut model, surface, &[edges], T)
+            .unwrap()
+            .shape;
+        let mill = ogeom_algo::make_prism(&mut model, &profile, Vector::new(0.0, 0.0, 6.0), T)
+            .unwrap()
+            .shape;
+        let cut = ogeom_bool::cut(&mut model, &block, &mill, T).unwrap().shape;
+
+        let features = recognize(&model, &cut, T).unwrap();
+        let pockets: Vec<&Pocket> = features
+            .iter()
+            .filter_map(|f| match f {
+                Feature::Pocket(p) => Some(p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pockets.len(), 1, "features: {features:?}");
+        assert!(pockets[0].slot, "an obround pocket is a slot");
     }
 }
