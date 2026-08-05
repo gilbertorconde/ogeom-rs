@@ -52,3 +52,79 @@ fn a_scaled_placement_bakes_and_the_boolean_runs() {
         "the scaled cut measures: {v} vs {expected}"
     );
 }
+
+/// A half space finally has its consumer: cutting a box with the solid on
+/// one side of a plane slices it exactly at the plane, and the union with
+/// a half space refuses as the unbounded thing it would be.
+#[test]
+fn a_half_space_cuts_and_refuses_to_fuse() {
+    use ogeom::geom::{LineCurve, PlaneSurface, SurfaceGeometry};
+    use ogeom::math::Plane;
+    use ogeom::topo::Shape;
+
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+
+    // A face on the plane z = 4, and the half space above it.
+    let corners = [
+        Point::new(-5.0, -5.0, 4.0),
+        Point::new(15.0, -5.0, 4.0),
+        Point::new(15.0, 15.0, 4.0),
+        Point::new(-5.0, 15.0, 4.0),
+    ];
+    let vertices: Vec<Shape> = corners
+        .iter()
+        .map(|c| ogeom::algo::make_vertex(&mut model, *c).shape)
+        .collect();
+    let edges: Vec<Shape> = (0..4)
+        .map(|i| {
+            let (a, b) = (corners[i], corners[(i + 1) % 4]);
+            ogeom::algo::make_edge_between(
+                &mut model,
+                LineCurve::segment(a, b, T).unwrap().into(),
+                (0.0, a.distance(b)),
+                &vertices[i],
+                &vertices[(i + 1) % 4],
+                T,
+            )
+            .unwrap()
+            .shape
+        })
+        .collect();
+    let plane_frame = Frame::new(Point::new(0.0, 0.0, 4.0), Direction::Z, Direction::X, T).unwrap();
+    let face = ogeom::algo::make_face_with_pcurves(
+        &mut model,
+        SurfaceGeometry::Plane(PlaneSurface::new(Plane::new(plane_frame))),
+        &[edges],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let upper = ogeom::algo::make_half_space(&mut model, &face, Point::new(0.0, 0.0, 100.0), T)
+        .unwrap()
+        .shape;
+
+    // Cutting away everything above z = 4 leaves the 10x10x4 slab.
+    let slab = ogeom::boolean::cut(&mut model, &block, &upper, T)
+        .unwrap()
+        .shape;
+    let v = ogeom::algo::volume_properties(&model, &slab, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((v - 400.0).abs() < 1e-6, "the slab below the plane: {v}");
+
+    // Common keeps the upper part.
+    let cap = ogeom::boolean::common(&mut model, &block, &upper, T)
+        .unwrap()
+        .shape;
+    let v = ogeom::algo::volume_properties(&model, &cap, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((v - 600.0).abs() < 1e-6, "the cap above the plane: {v}");
+
+    // And the union is refused as unbounded, by name.
+    let err = ogeom::boolean::fuse(&mut model, &block, &upper, T).unwrap_err();
+    assert!(err.to_string().contains("unbounded"), "{err}");
+}

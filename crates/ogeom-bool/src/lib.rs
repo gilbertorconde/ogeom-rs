@@ -1788,6 +1788,73 @@ fn baked_if_scaled(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomRe
     Ok(ogeom_algo::baked_shape(model, shape, tol)?.shape)
 }
 
+/// Whether a shape is a half space: one shell of one planar face, open by
+/// construction.
+fn is_half_space(model: &Model, shape: &Shape) -> OgeomResult<bool> {
+    if model.kind_of(shape)? != ShapeType::Solid {
+        return Ok(false);
+    }
+    let shells = ogeom_topo::explore_unique(model, shape, ShapeType::Shell)?;
+    let faces = ogeom_topo::explore_unique(model, shape, ShapeType::Face)?;
+    if shells.len() != 1 || faces.len() != 1 {
+        return Ok(false);
+    }
+    let Some(data) = model.node(&faces[0]).and_then(|n| n.data().as_face()) else {
+        return Ok(false);
+    };
+    let planar = matches!(
+        model.geometry().surface(data.surface),
+        Some(SurfaceGeometry::Plane(_))
+    );
+    Ok(planar && !ogeom_algo::is_shell_closed(model, &shells[0])?)
+}
+
+/// A half space resolved into the solid the operation can act on: a box
+/// filling the material side of the boundary plane, sized past the other
+/// argument's whole reach.
+///
+/// The box's plane-side face is *coplanar with the boundary itself*, so the
+/// cut the caller sees is the exact plane; the box's far faces stand
+/// outside everything the other shape reaches and never appear in the
+/// result. A shape that is not a half space passes through untouched.
+fn resolved_half_space(
+    model: &mut Model,
+    shape: &Shape,
+    other: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    if !is_half_space(model, shape)? {
+        return Ok(shape.clone());
+    }
+    let face = ogeom_topo::explore_unique(model, shape, ShapeType::Face)?
+        .first()
+        .cloned()
+        .expect("checked above");
+    // The boundary's outward normal points away from the material.
+    let (at, outward) = ogeom_algo::face_normal(model, &face, tol)?;
+    let bound = ogeom_algo::shape_bounds(model, other, tol)?;
+    let Some(centre) = bound.centre() else {
+        ogeom_bail!(
+            Construction,
+            "the other argument has no bound to fill against"
+        );
+    };
+    let reach = bound.diagonal().max(tol.confusion() * 1e3) * 2.0;
+    let into = ogeom_math::Direction::new(-outward, tol)?;
+    let foot = centre - outward * outward.dot(centre - at);
+    let seed = if into.vector().x.abs() < 0.9 {
+        ogeom_math::Vector::new(1.0, 0.0, 0.0)
+    } else {
+        ogeom_math::Vector::new(0.0, 1.0, 0.0)
+    };
+    let frame_x = ogeom_math::Direction::from_cross(into.vector(), seed, tol)?;
+    let oriented = ogeom_math::Frame::new(foot, into, frame_x, tol)?;
+    let corner =
+        foot - oriented.x().vector() * (reach / 2.0) - oriented.y().vector() * (reach / 2.0);
+    let placed = ogeom_math::Frame::new(corner, into, frame_x, tol)?;
+    Ok(ogeom_algo::make_box(model, placed, (reach, reach, reach), tol)?.shape)
+}
+
 /// The union of two solids.
 ///
 /// # Errors
@@ -1797,6 +1864,13 @@ fn baked_if_scaled(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomRe
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) for arguments
 /// that are not closed solids.
 pub fn fuse(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    if is_half_space(model, a)? || is_half_space(model, b)? {
+        ogeom_bail!(
+            Construction,
+            "the union with a half space is unbounded; a half space serves cut, \
+             common and section"
+        );
+    }
     let (a, b) = (
         &baked_if_scaled(model, a, tol)?,
         &baked_if_scaled(model, b, tol)?,
@@ -1823,6 +1897,10 @@ pub fn fuse(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
 ///
 /// As [`fuse`].
 pub fn common(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    let (a, b) = (
+        &resolved_half_space(model, a, b, tol)?,
+        &resolved_half_space(model, b, a, tol)?,
+    );
     let (a, b) = (
         &baked_if_scaled(model, a, tol)?,
         &baked_if_scaled(model, b, tol)?,
@@ -1853,6 +1931,10 @@ pub fn common(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeom
 /// As [`fuse`].
 pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
     let (a, b) = (
+        &resolved_half_space(model, a, b, tol)?,
+        &resolved_half_space(model, b, a, tol)?,
+    );
+    let (a, b) = (
         &baked_if_scaled(model, a, tol)?,
         &baked_if_scaled(model, b, tol)?,
     );
@@ -1882,6 +1964,10 @@ pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRes
 ///
 /// As [`fuse`].
 pub fn section(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    let (a, b) = (
+        &resolved_half_space(model, a, b, tol)?,
+        &resolved_half_space(model, b, a, tol)?,
+    );
     let (a, b) = (
         &baked_if_scaled(model, a, tol)?,
         &baked_if_scaled(model, b, tol)?,
