@@ -259,6 +259,70 @@ fn trimming_rings(
             ring_anchors.push(anchors);
         }
     }
+
+    // A band between two *wound* rings: each boundary winds the periodic
+    // direction once — a bore wall whose ends are a full rim and a staircase
+    // of arcs — and neither ring closes on its own. In the unrolled chart
+    // the face is the strip between the two chains, so the pair is merged
+    // into one ring by two joining runs standing exactly one period apart:
+    // their lifted points are the same 3D points, and the weld closes them
+    // the way it closes a seam.
+    if geometry_winds(surface) {
+        use ogeom_geom::Surface as _;
+        let ((ua, ub), _) = surface.domain();
+        let period = ub - ua;
+        let du_of = |ring: &[Point2]| -> f64 { ring.last().map_or(0.0, |l| l.x - ring[0].x) };
+        let open_wound: Vec<usize> = rings
+            .iter()
+            .enumerate()
+            .filter(|(_, ring)| {
+                ring.len() >= 3
+                    && (du_of(ring).abs() - period).abs() <= period * 1e-3
+                    && ring
+                        .last()
+                        .is_some_and(|l| ring[0].distance(*l) > period * 0.5)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if let [i, j] = open_wound[..]
+            && du_of(&rings[i]).signum() != du_of(&rings[j]).signum()
+        {
+            let sign = du_of(&rings[i]).signum();
+            let b = rings.remove(j);
+            let b_anchors = ring_anchors.remove(j);
+            let a = &mut rings[i];
+            let a_anchors = &mut ring_anchors[i];
+            let a_last = a.last().copied().unwrap_or(a[0]);
+            // Whole periods only: the second chain slides along the unrolled
+            // chart until its start stands nearest the first chain's end.
+            let shift = ((a_last.x - b[0].x) / period).round() * period;
+            let b_first = Point2::new(b[0].x + shift, b[0].y);
+            let steps = 8;
+            for k in 1..steps {
+                let f = f64::from(k) / f64::from(steps);
+                a.push(Point2::new(
+                    a_last.x + (b_first.x - a_last.x) * f,
+                    a_last.y + (b_first.y - a_last.y) * f,
+                ));
+                a_anchors.push(None);
+            }
+            for (p, anchor) in b.iter().zip(&b_anchors) {
+                a.push(Point2::new(p.x + shift, p.y));
+                a_anchors.push(*anchor);
+            }
+            // The way back: the same run, one period over, walked the other
+            // way — the two runs lift to identical points.
+            for k in (1..steps).rev() {
+                let f = f64::from(k) / f64::from(steps);
+                a.push(Point2::new(
+                    a_last.x + (b_first.x - a_last.x) * f - sign * period,
+                    a_last.y + (b_first.y - a_last.y) * f,
+                ));
+                a_anchors.push(None);
+            }
+        }
+    }
+
     if rings.is_empty() {
         // A face with no wires covers its surface's whole domain, so the domain
         // rectangle is the boundary.
@@ -267,6 +331,13 @@ fn trimming_rings(
         rings.push(ring);
     }
     Ok((rings, ring_anchors, met))
+}
+
+/// Whether a surface is periodic in `u` alone — the charts on which a wound
+/// ring cannot close against a translate of itself and needs a partner.
+fn geometry_winds(surface: &SurfaceGeometry) -> bool {
+    use ogeom_geom::Surface as _;
+    surface.is_periodic_u() && !surface.is_periodic_v()
 }
 
 /// Whether a point in parameter space lies inside the region `rings` bound.
