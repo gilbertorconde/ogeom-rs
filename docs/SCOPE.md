@@ -619,11 +619,11 @@ name.
 | Pipe and pipe-shell sweeps with law-driven scaling and orientation | `BRepOffsetAPI_MakePipeShell`, `GeomFill` |
 | Lofting through sections, ruled and smoothed | `BRepOffsetAPI_ThruSections` |
 | Draft angle application | `BRepOffsetAPI_DraftAngle` — done as `apply_draft`: each named face turns about its own line of intersection with the neutral plane, in the sense that leans it inwards (measured, by where the outward normal ends up against the pull, rather than by a convention nobody can check), and the offset's own rebuild puts the solid back together on the turned supports. Planar faces; a curved support needs a rebuild that can turn it |
-| Evolved shapes | `BRepOffsetAPI_MakeEvolved` |
+| Evolved shapes | `BRepOffsetAPI_MakeEvolved` · owed | The construction is a composition of what §11 already has: a planar spine's straight edges sweep the profile as prisms, its arcs sweep it as revolutions about their own axes, and the convex corners between them are the profile revolved about the corner — the same join the 2D offset already decides. What is not written is the assembly and the corner bookkeeping, and it is not claimed until it is |
 | Surface filling from constraints | `BRepOffsetAPI_MakeFilling` |
 | Normal projection onto shapes | `BRepOffsetAPI_NormalProjection` — done as `normal_projection`: each edge is sampled, each sample lands on the nearest face whose *trim* holds its foot, and each run of samples on one face is fitted — curve and pcurve together, so the two share a parameter and the result is an edge a face could be split along. A periodic chart's samples are unwrapped before the fit, or the run arrives torn at the seam. What fell off the shape is absent rather than guessed at |
 | Form features: prism, revol, rib, slot, pocket, glue | `BRepFeat`, `LocOpe` — done as the compositions they are: `feature_prism` and `feature_revol` sweep a profile face and add or remove it, `feature_rib` is a pad of stated thickness, `feature_slot` sweeps from behind the profile to past it so the groove is open at both ends, and each carries the profile through the history as what generated the result. Glue is the boolean's own same-domain unification, recorded there |
-| Bi-tangent construction | `BiTgte` |
+| Bi-tangent construction | `BiTgte` — subsumed, in both dimensions. In 2D it *is* `ogeom-construct2d`: circles tangent to three entities with qualifiers, and the bitangent lines of two circles. In 3D a bi-tangent surface is the rolling ball's envelope, which is §10's blend family — analytic where the seat is analytic, and the marching blend where it is not (owed there, not here) |
 
 ## 12. Tessellation and meshing · `ogeom-mesh` · P2
 
