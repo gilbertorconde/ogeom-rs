@@ -214,7 +214,14 @@ row of §1–§18 is either done or refused by name with the refusal pinned by
 a test and recorded as design rather than debt. Ordering is by dependency,
 as ever.
 
-### M7 — exact-geometry completeness · §1, §2, §3, §6, §7
+### M7 — exact-geometry completeness · §1, §2, §3, §6, §7 · **closed**
+
+Closed at gate 1082: every bullet below holds — the arrangement and the
+shallow-crossing gate decide through predicates and intervals, cancellation
+and bit-identical parallelism are pinned, the §3 repertoire is built down
+to the helix and the hatch, §6 answers draft, thickness and
+self-intersection, and §7's four debts are paid, the corpus re-measuring
+through the new exact pcurves on the way.
 
 - Predicates: the ray/triangle classification test routed through the
   trait; an interval type with outward rounding deciding "genuine tangency
