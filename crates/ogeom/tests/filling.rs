@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
-use ogeom::geom::{Curve3d as _, LineCurve, Surface as _, SurfaceGeometry};
+use ogeom::geom::{LineCurve, Surface as _, SurfaceGeometry};
 use ogeom::math::Point;
 use ogeom::topo::{Model, NodeData, Shape};
 
