@@ -393,10 +393,20 @@ fn boundary_ring(
                 }
                 map_to_pcurve(&parameters, data, pcurve_range)
             }
-            // No 3D curve to defer to — fall back to the pcurve's own shape.
+            // No 3D curve to defer to — the pcurve's own shape, measured in
+            // space through the surface, so the chord tolerance means the
+            // same thing it means everywhere else.
             None => {
-                let (_, parameters) =
-                    crate::discretize::discretize_planar(pcurve, pcurve_range, deflection, tol)?;
+                let Some(geometry) = model.geometry().surface(surface) else {
+                    ogeom_bail!(Dangling, "face refers to a surface not in this model");
+                };
+                let (_, parameters) = crate::discretize::discretize_on_surface(
+                    pcurve,
+                    pcurve_range,
+                    geometry,
+                    deflection,
+                    tol,
+                )?;
                 parameters
             }
         };

@@ -338,6 +338,90 @@ fn needs_split(
 /// # Errors
 ///
 /// As [`discretize`].
+/// Discretize a pcurve with its chord tolerance measured *in space*,
+/// through the surface that gives its chart a metric.
+///
+/// [`discretize_planar`] measures in parameter units because it has no
+/// surface to convert through; this is the version that does. Each candidate
+/// segment is lifted to the surface and the sagitta measured between world
+/// points, so one chord tolerance means one thing whatever the chart's
+/// scale — a quarter-turn on a large cylinder refines further than the same
+/// quarter-turn on a small one.
+///
+/// # Errors
+///
+/// As [`discretize_planar`].
+pub fn discretize_on_surface(
+    curve: &ogeom_geom::PlanarCurve,
+    range: (f64, f64),
+    surface: &ogeom_geom::SurfaceGeometry,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<(Vec<ogeom_math::Point2>, Vec<f64>)> {
+    use ogeom_geom::Curve2d;
+    use ogeom_geom::Surface as _;
+
+    deflection.validate()?;
+    let (lo, hi) = range;
+    if !lo.is_finite() || !hi.is_finite() || hi <= lo + tol.parametric() {
+        ogeom_bail!(Construction, "range [{lo}, {hi}] is empty");
+    }
+    let lift = |uv: ogeom_math::Point2| -> OgeomResult<ogeom_math::Point> {
+        surface.point_at(uv.x, uv.y, tol)
+    };
+
+    let start = if is_straight_planar(curve) {
+        1
+    } else {
+        deflection.min_segments
+    };
+    let mut parameters: Vec<f64> = (0..=start)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let t = i as f64 / start as f64;
+            lo + (hi - lo) * t
+        })
+        .collect();
+    let mut points: Vec<ogeom_math::Point2> = parameters
+        .iter()
+        .map(|u| curve.point_at(*u, tol))
+        .collect::<OgeomResult<_>>()?;
+    let mut lifted: Vec<ogeom_math::Point> = points
+        .iter()
+        .map(|uv| lift(*uv))
+        .collect::<OgeomResult<_>>()?;
+
+    while points.len() <= deflection.max_segments {
+        let mut split_at = None;
+        for i in 0..points.len() - 1 {
+            let mid = f64::midpoint(parameters[i], parameters[i + 1]);
+            let on_curve = curve.point_at(mid, tol)?;
+            let in_space = lift(on_curve)?;
+            // Sagitta in world units: the lifted midpoint against the lifted
+            // chord.
+            let (a, b) = (lifted[i], lifted[i + 1]);
+            let chord_vector = b - a;
+            let length = chord_vector.magnitude();
+            let sagitta = if length <= tol.confusion() {
+                in_space.distance(a)
+            } else {
+                (in_space - a).cross(chord_vector).magnitude() / length
+            };
+            if sagitta > deflection.chord {
+                split_at = Some((i, mid, on_curve, in_space));
+                break;
+            }
+        }
+        let Some((i, mid, on_curve, in_space)) = split_at else {
+            break;
+        };
+        parameters.insert(i + 1, mid);
+        points.insert(i + 1, on_curve);
+        lifted.insert(i + 1, in_space);
+    }
+    Ok((points, parameters))
+}
+
 pub fn discretize_planar(
     curve: &ogeom_geom::PlanarCurve,
     range: (f64, f64),
@@ -747,5 +831,68 @@ mod tests {
         for p in &points {
             assert_relative_eq!(p.to_vector().magnitude(), 5.0, epsilon = 1e-12);
         }
+    }
+}
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod on_surface_tests {
+    use super::*;
+    use ogeom_core::Tolerances;
+    use ogeom_geom::{Circle2d, PlaneSurface, Surface as _};
+    use ogeom_math::{Circle2, Frame, Plane, Point2};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    #[test]
+    fn the_spatial_chord_scales_with_the_surface_not_the_chart() {
+        // Two circles in a plane's chart, radii 5 and 100: one chord
+        // tolerance, measured in space, refines the big one further and
+        // holds both to the same sagitta.
+        let plane: ogeom_geom::SurfaceGeometry =
+            PlaneSurface::over(Plane::new(Frame::WORLD), (-200.0, 200.0), (-200.0, 200.0))
+                .unwrap()
+                .into();
+        let deflection = Deflection {
+            chord: 0.05,
+            ..Deflection::default()
+        };
+        let counts: Vec<usize> = [5.0, 100.0]
+            .iter()
+            .map(|&radius| {
+                let circle: ogeom_geom::PlanarCurve =
+                    Circle2d::new(Circle2::centred(Point2::new(0.0, 0.0), radius, T).unwrap())
+                        .into();
+                let (points, parameters) = discretize_on_surface(
+                    &circle,
+                    (0.0, core::f64::consts::TAU),
+                    &plane,
+                    deflection,
+                    T,
+                )
+                .unwrap();
+                // Every lifted segment's sagitta is within the chord,
+                // measured at the segment's own parameter midpoint.
+                for (pair, params) in points.windows(2).zip(parameters.windows(2)) {
+                    use ogeom_geom::Curve2d as _;
+                    let a = plane.point_at(pair[0].x, pair[0].y, T).unwrap();
+                    let b = plane.point_at(pair[1].x, pair[1].y, T).unwrap();
+                    let mid = circle
+                        .point_at(f64::midpoint(params[0], params[1]), T)
+                        .unwrap();
+                    let on = plane.point_at(mid.x, mid.y, T).unwrap();
+                    let chord = b - a;
+                    let sagitta = (on - a).cross(chord).magnitude() / chord.magnitude();
+                    assert!(
+                        sagitta <= deflection.chord * 1.5,
+                        "sagitta {sagitta} at radius {radius}"
+                    );
+                }
+                points.len()
+            })
+            .collect();
+        assert!(
+            counts[1] > counts[0] * 2,
+            "the larger circle refines further: {counts:?}"
+        );
     }
 }

@@ -15,7 +15,8 @@ pub mod triangulate;
 
 pub use attach::{Tessellated, polyline_of, tessellate, triangulation_of};
 pub use discretize::{
-    Deflection, Polyline, discretize, discretize_planar, is_straight, is_straight_planar,
+    Deflection, Polyline, discretize, discretize_on_surface, discretize_planar, is_straight,
+    is_straight_planar,
 };
 pub use simplify::{Simplified, Target, simplify};
 pub use triangulate::{
