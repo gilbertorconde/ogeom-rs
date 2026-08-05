@@ -101,6 +101,27 @@ enum BvhContent {
     Split(usize, usize),
 }
 
+/// One face's draft reading: the signed angle range against the pull.
+#[derive(Debug, Clone)]
+pub struct FaceDraft {
+    /// The face.
+    pub face: Shape,
+    /// The smallest signed draft angle sampled, radians.
+    pub min: f64,
+    /// The largest.
+    pub max: f64,
+}
+
+/// One face's least material depth.
+#[derive(Debug, Clone)]
+pub struct FaceThickness {
+    /// The face.
+    pub face: Shape,
+    /// The least inward distance to the opposite wall; infinity where the
+    /// rays found none.
+    pub least: f64,
+}
+
 /// A shape flattened for picking, with its acceleration structure.
 #[derive(Debug, Clone)]
 pub struct Pickable {
@@ -222,6 +243,101 @@ impl Pickable {
     #[must_use]
     pub fn triangle_count(&self) -> usize {
         self.triangles.len()
+    }
+
+    /// Draft analysis: each face's signed angle range against a pull
+    /// direction, sampled at this scene's triangles — the deflection the
+    /// scene was built at is the sampling, stated by construction.
+    ///
+    /// The angle at a sample is `asin(n · pull)`: positive where the face
+    /// tilts its outward normal along the pull — drafted — negative where
+    /// it undercuts, zero on a straight wall.
+    #[must_use]
+    pub fn draft_analysis(&self, pull: ogeom_math::Direction) -> Vec<FaceDraft> {
+        let pull = pull.vector();
+        self.faces
+            .iter()
+            .map(|record| {
+                let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+                for t in record.triangles.0..record.triangles.1 {
+                    let [a, b, c] = self.triangles[t];
+                    let (pa, pb, pc) = (
+                        self.positions[a as usize],
+                        self.positions[b as usize],
+                        self.positions[c as usize],
+                    );
+                    let n = (pb - pa).cross(pc - pa);
+                    let m = n.magnitude();
+                    if m <= f64::MIN_POSITIVE {
+                        continue;
+                    }
+                    let angle = (n.dot(pull) / m).clamp(-1.0, 1.0).asin();
+                    lo = lo.min(angle);
+                    hi = hi.max(angle);
+                }
+                FaceDraft {
+                    face: record.shape.clone(),
+                    min: lo,
+                    max: hi,
+                }
+            })
+            .filter(|d| d.min.is_finite())
+            .collect()
+    }
+
+    /// Thickness analysis: for each face, the least material depth found by
+    /// casting inward from its triangle centroids to the first opposite
+    /// wall — sampled at this scene's own triangles, as fine as its
+    /// deflection.
+    ///
+    /// Faces whose inward rays strike nothing — an open sheet — report
+    /// infinity, which is the honest answer for material with no far side.
+    #[must_use]
+    pub fn thickness_analysis(&self) -> Vec<FaceThickness> {
+        self.faces
+            .iter()
+            .map(|record| {
+                let mut least = f64::INFINITY;
+                for t in record.triangles.0..record.triangles.1 {
+                    let [a, b, c] = self.triangles[t];
+                    let (pa, pb, pc) = (
+                        self.positions[a as usize],
+                        self.positions[b as usize],
+                        self.positions[c as usize],
+                    );
+                    let n = (pb - pa).cross(pc - pa);
+                    let m = n.magnitude();
+                    if m <= f64::MIN_POSITIVE {
+                        continue;
+                    }
+                    let inward = n / -m;
+                    let centroid = Point::new(
+                        (pa.x + pb.x + pc.x) / 3.0,
+                        (pa.y + pb.y + pc.y) / 3.0,
+                        (pa.z + pb.z + pc.z) / 3.0,
+                    );
+                    // Step off the surface so the ray does not strike home.
+                    let skin = 1e-9 * (1.0 + centroid.to_vector().magnitude());
+                    let hits = self.pick(
+                        Ray {
+                            origin: centroid + inward * skin,
+                            direction: inward,
+                        },
+                        0.0,
+                    );
+                    for hit in hits {
+                        if hit.triangle != t && hit.distance > skin {
+                            least = least.min(hit.distance + skin);
+                            break;
+                        }
+                    }
+                }
+                FaceThickness {
+                    face: record.shape.clone(),
+                    least,
+                }
+            })
+            .collect()
     }
 
     /// Every hit along a ray, nearest first.

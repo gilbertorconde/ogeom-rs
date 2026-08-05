@@ -9,4 +9,4 @@
 
 mod pick;
 
-pub use pick::{Hit, Marquee, PickKind, Pickable, Ray};
+pub use pick::{FaceDraft, FaceThickness, Hit, Marquee, PickKind, Pickable, Ray};

@@ -32,7 +32,7 @@ pub use build::{
     make_face_on, make_face_with_pcurves, make_natural_face, make_polygon, make_revolution_band,
     make_shell, make_solid, make_vertex, make_wire, surface_iso_u_curve,
 };
-pub use check::{Diagnosis, Problem, Severity, check, check_tessellation};
+pub use check::{Diagnosis, Problem, Severity, check, check_self_intersection, check_tessellation};
 pub use classify::{
     Containment, classify_in_solid, classify_in_solid_exact, classify_in_solid_exact_banded,
     classify_on_face,

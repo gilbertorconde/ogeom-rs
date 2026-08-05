@@ -587,6 +587,62 @@ fn compare(
     Ok(())
 }
 
+/// Faces of one shape that reach each other without sharing topology —
+/// self-intersection, detected as the interference it is.
+///
+/// Every unordered pair of distinct faces that share no edge and no vertex
+/// node is put through the exact minimum-distance machinery; a pair within
+/// the confusion tolerance of touching is reported. Adjacent faces meet at
+/// their shared boundary by construction and are not interference; a valid
+/// solid therefore reports nothing, and a sheet folded through itself names
+/// the faces that cross.
+///
+/// # Errors
+///
+/// As [`crate::distance_between_shapes`].
+pub fn check_self_intersection(
+    model: &Model,
+    shape: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Vec<(Shape, Shape)>> {
+    use ogeom_topo::explore_unique;
+    let faces = explore_unique(model, shape, ShapeType::Face)?;
+    // The topology below each face, for the adjacency exclusion.
+    let mut below: Vec<std::collections::BTreeSet<u64>> = Vec::with_capacity(faces.len());
+    for face in &faces {
+        let mut set = std::collections::BTreeSet::new();
+        for kind in [ShapeType::Edge, ShapeType::Vertex] {
+            for sub in explore_unique(model, face, kind)? {
+                let mut hasher = std::hash::DefaultHasher::new();
+                std::hash::Hash::hash(&sub.node(), &mut hasher);
+                set.insert(std::hash::Hasher::finish(&hasher));
+            }
+        }
+        below.push(set);
+    }
+
+    let mut crossings = Vec::new();
+    for i in 0..faces.len() {
+        for j in i + 1..faces.len() {
+            ogeom_core::progress::checkpoint()?;
+            if !below[i].is_disjoint(&below[j]) {
+                continue;
+            }
+            let reach = crate::distance_between_shapes(
+                model,
+                &faces[i],
+                &faces[j],
+                ogeom_intersect::ExtremaOptions::default(),
+                tol,
+            )?;
+            if reach.distance <= tol.confusion() {
+                crossings.push((faces[i].clone(), faces[j].clone()));
+            }
+        }
+    }
+    Ok(crossings)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

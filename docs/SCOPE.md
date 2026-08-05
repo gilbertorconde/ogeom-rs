@@ -392,8 +392,8 @@ Every operation emits history from the commit that introduces it
 | Minimum distance and proximity between shapes | `BRepExtrema` | done: every element pair swept, interior approaches from the geometry-level extrema, boundary candidates owned by the lower-dimensional pairs |
 | Extrema between curves and surfaces | `Extrema` | done: stationary approaches by Newton on the squared distance, constant-distance loci reported as a family rather than a guessed point |
 | Validity checking against the model invariants | `BRepCheck` | done: `check` grades every finding by severity, `check_tessellation` holds the mesh against the topology |
-| Curvature analysis; inputs for zebra, draft and thickness analysis | `BRepLProp` | local properties done at the geometry level; draft and thickness analysis land with M7 |
-| Self-intersection detection | `BOPAlgo_CheckerSI` | lands with M7: the interference stage against one argument |
+| Curvature analysis; inputs for zebra, draft and thickness analysis | `BRepLProp` | done: local properties at the geometry level; `draft_analysis` reads each face's signed angle range against a pull direction and `thickness_analysis` the least inward depth to the opposite wall, both sampled at a scene's own stated deflection |
+| Self-intersection detection | `BOPAlgo_CheckerSI` | done: `check_self_intersection` puts every non-adjacent face pair through the exact minimum-distance machinery — crossing sheets confess, a valid solid reports nothing |
 | Arc length, arc-length parameterization, deflection-based sampling | `GCPnts` | |
 | Interpolation and fitting: points → curve, points → surface | `GeomAPI_PointsToBSpline` | |
 
