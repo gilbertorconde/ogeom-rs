@@ -194,7 +194,9 @@ fn a_ball_is_boolean_material_like_anything_else() {
     let brick = ogeom::algo::make_box(&mut model, corner, (10.0, 10.0, 10.0), T)
         .unwrap()
         .shape;
-    let apart = ogeom::boolean::fuse(&mut model, &far, &brick, T).unwrap().shape;
+    let apart = ogeom::boolean::fuse(&mut model, &far, &brick, T)
+        .unwrap()
+        .shape;
     assert!(
         (volume(&model, &apart) - (1000.0 + ball_volume)).abs() < 1.0,
         "both lumps, untouched: {}",
@@ -236,7 +238,9 @@ fn a_ball_is_boolean_material_like_anything_else() {
     let brick = ogeom::algo::make_box(&mut model, corner, (10.0, 10.0, 10.0), T)
         .unwrap()
         .shape;
-    let capped = ogeom::boolean::fuse(&mut model, &dome, &brick, T).unwrap().shape;
+    let capped = ogeom::boolean::fuse(&mut model, &dome, &brick, T)
+        .unwrap()
+        .shape;
     assert!(
         (volume(&model, &capped) - (1000.0 + ball_volume / 2.0)).abs() < 1.0,
         "the brick and the half that stands proud: {}",
