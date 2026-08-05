@@ -35,6 +35,14 @@ use ogeom_math::{KnotVector, Point, Point2};
 use crate::curve::BSplineCurve;
 use crate::curve2d::BSpline2d;
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "sample counts are far below 2^52"
+)]
+fn precise(n: usize) -> f64 {
+    n as f64
+}
+
 /// What a fit produced.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fitted<C> {
@@ -621,6 +629,264 @@ fn distance<const D: usize>(a: &[f64; D], b: &[f64; D]) -> f64 {
         .sqrt()
 }
 
+/// Fit a surface to *scattered* points: no grid required.
+///
+/// The points are parameterized by projection onto the cloud's own
+/// principal plane — the two dominant directions of its covariance — and
+/// fitted by tensor-product least squares with a bending penalty at
+/// `smoothing`, which is what keeps the system solvable where the scatter
+/// leaves basis functions unsupported. The reported error is the honest
+/// maximum distance from any input to the surface at its assigned
+/// parameters.
+///
+/// The cloud must be a *height field* over its principal plane: points
+/// that fold over — a closed shell, a cliff — project onto each other, and
+/// the fit answers with a large reported error rather than a lie.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// there are too few points for the control budget, the budget cannot
+/// carry the degree, or the weight is not finite and non-negative.
+pub fn fit_surface_scattered(
+    points: &[Point],
+    degree: usize,
+    controls: (usize, usize),
+    smoothing: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<crate::BSplineSurface>> {
+    use crate::traits::Surface as _;
+    if !smoothing.is_finite() || smoothing < 0.0 {
+        ogeom_bail!(
+            Construction,
+            "a smoothing weight of {smoothing} is not a weight"
+        );
+    }
+    let (nu, nv) = controls;
+    if nu < degree + 1 || nv < degree + 1 {
+        ogeom_bail!(
+            Construction,
+            "{nu}x{nv} control points cannot carry degree {degree}"
+        );
+    }
+    let m = points.len();
+    if m < 4 {
+        ogeom_bail!(Construction, "a scattered fit needs at least four points");
+    }
+
+    // The principal plane: centroid plus the covariance's two dominant
+    // directions.
+    let centroid = {
+        let mut sum = ogeom_math::Vector::ZERO;
+        for p in points {
+            sum += p.to_vector();
+        }
+        sum / precise(m)
+    };
+    let mut covariance = nalgebra::Matrix3::<f64>::zeros();
+    for p in points {
+        let d = p.to_vector() - centroid;
+        let v = nalgebra::Vector3::new(d.x, d.y, d.z);
+        covariance += v * v.transpose();
+    }
+    let eigen = nalgebra::SymmetricEigen::new(covariance);
+    let mut order: Vec<usize> = (0..3).collect();
+    order.sort_by(|a, b| {
+        eigen.eigenvalues[*b]
+            .partial_cmp(&eigen.eigenvalues[*a])
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+    let axis = |i: usize| {
+        let c = eigen.eigenvectors.column(order[i]);
+        ogeom_math::Vector::new(c[0], c[1], c[2])
+    };
+    let (u_axis, v_axis) = (axis(0), axis(1));
+
+    // Parameters over the knot domains, from the projected extents.
+    let mut spans = Vec::with_capacity(m);
+    let (mut ulo, mut uhi) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut vlo, mut vhi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for p in points {
+        let d = p.to_vector() - centroid;
+        let (pu, pv) = (d.dot(u_axis), d.dot(v_axis));
+        ulo = ulo.min(pu);
+        uhi = uhi.max(pu);
+        vlo = vlo.min(pv);
+        vhi = vhi.max(pv);
+        spans.push((pu, pv));
+    }
+    if uhi - ulo <= tol.confusion() || vhi - vlo <= tol.confusion() {
+        ogeom_bail!(
+            Construction,
+            "the cloud is flat in a principal direction; fit a curve"
+        );
+    }
+    let u_knots = KnotVector::clamped_uniform(degree, nu)?;
+    let v_knots = KnotVector::clamped_uniform(degree, nv)?;
+    let (ka, kb) = (u_knots.domain_start(), u_knots.domain_end());
+    let (la, lb) = (v_knots.domain_start(), v_knots.domain_end());
+    let parameters: Vec<(f64, f64)> = spans
+        .iter()
+        .map(|(pu, pv)| {
+            (
+                ka + (kb - ka) * ((pu - ulo) / (uhi - ulo)),
+                la + (lb - la) * ((pv - vlo) / (vhi - vlo)),
+            )
+        })
+        .collect();
+
+    // Tensor design matrix and the bending penalty in both directions.
+    let n = nu * nv;
+    let mut a = nalgebra::DMatrix::<f64>::zeros(m, n);
+    for (k, &(pu, pv)) in parameters.iter().enumerate() {
+        let uspan = u_knots.span_unchecked(pu);
+        let vspan = v_knots.span_unchecked(pv);
+        let ub = u_knots.basis(uspan, pu);
+        let vb = v_knots.basis(vspan, pv);
+        let ufirst = uspan - degree;
+        let vfirst = vspan - degree;
+        for (j, bv) in vb.iter().enumerate() {
+            for (i, bu) in ub.iter().enumerate() {
+                a[(k, (ufirst + i) * nv + (vfirst + j))] = bu * bv;
+            }
+        }
+    }
+    let mut k_full = a.transpose() * &a;
+    let mut add_penalty = |along_u: bool| {
+        // Second differences along one grid direction, in the grid's own
+        // layout: flat index = i_u · nv + j_v.
+        let (count_a, count_b) = if along_u { (nu, nv) } else { (nv, nu) };
+        for jb in 0..count_b {
+            for ia in 0..count_a.saturating_sub(2) {
+                let base = |offset: usize| -> usize {
+                    if along_u {
+                        (ia + offset) * nv + jb
+                    } else {
+                        jb * nv + ia + offset
+                    }
+                };
+                let idx = [base(0), base(1), base(2)];
+                let w = [1.0, -2.0, 1.0];
+                for x in 0..3 {
+                    for y in 0..3 {
+                        k_full[(idx[x], idx[y])] += smoothing * w[x] * w[y];
+                    }
+                }
+            }
+        }
+    };
+    add_penalty(true);
+    add_penalty(false);
+
+    let decomposition = k_full.clone().lu();
+    let mut control = vec![Point::ORIGIN; n];
+    for axis_i in 0..3 {
+        let b = nalgebra::DVector::from_iterator(m, points.iter().map(|p| [p.x, p.y, p.z][axis_i]));
+        let rhs = a.transpose() * &b;
+        let Some(solved) = decomposition.solve(&rhs) else {
+            ogeom_bail!(
+                Numeric,
+                "the scattered system is singular; raise the smoothing or lower the controls"
+            );
+        };
+        for (slot, value) in solved.iter().enumerate() {
+            match axis_i {
+                0 => control[slot].x = *value,
+                1 => control[slot].y = *value,
+                _ => control[slot].z = *value,
+            }
+        }
+    }
+
+    let grid = ogeom_math::ControlGrid::new(control, nu, nv)?;
+    let surface = crate::BSplineSurface::new(u_knots, v_knots, &grid, tol)?;
+    let mut error = 0.0f64;
+    for (p, &(pu, pv)) in points.iter().zip(&parameters) {
+        error = error.max(surface.point_at(pu, pv, tol)?.distance(*p));
+    }
+    Ok(Fitted {
+        curve: surface,
+        error,
+        met: true,
+    })
+}
+
+/// Fill the region bounded by four curves with a fitted patch: the
+/// transfinite Coons blend of the boundaries, sampled and fitted, its error
+/// reported.
+///
+/// The curves must close corner to corner in the order given — `bottom`
+/// runs with `u`, `top` above it, `left` and `right` with `v` — each
+/// traversed over its own domain. The patch *interpolates the Coons
+/// surface's samples* to the stated tolerance; the Coons surface itself
+/// interpolates the boundaries exactly, so the fit error is the whole
+/// distance between the returned patch and the boundary it fills.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// corners do not meet within `tol`, plus whatever the fit refuses.
+pub fn fill_boundary(
+    bottom: &crate::Curve,
+    top: &crate::Curve,
+    left: &crate::Curve,
+    right: &crate::Curve,
+    samples: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<crate::BSplineSurface>> {
+    use crate::traits::Curve3d as _;
+    let samples = samples.max(4);
+    let at = |curve: &crate::Curve, t: f64| -> OgeomResult<Point> {
+        let (lo, hi) = curve.domain();
+        curve.point_at(lo + (hi - lo) * t, tol)
+    };
+    // The four corners, each named twice; they must agree.
+    let c00 = at(bottom, 0.0)?;
+    let c10 = at(bottom, 1.0)?;
+    let c01 = at(top, 0.0)?;
+    let c11 = at(top, 1.0)?;
+    let slack = tol.confusion() * 1e3;
+    for (name, a, b) in [
+        ("bottom-left", c00, at(left, 0.0)?),
+        ("top-left", c01, at(left, 1.0)?),
+        ("bottom-right", c10, at(right, 0.0)?),
+        ("top-right", c11, at(right, 1.0)?),
+    ] {
+        if a.distance(b) > slack {
+            ogeom_bail!(
+                Construction,
+                "the {name} corner does not close: the boundaries miss by {}",
+                a.distance(b)
+            );
+        }
+    }
+
+    let mut rows: Vec<Vec<Point>> = Vec::with_capacity(samples);
+    for j in 0..samples {
+        let v = precise(j) / precise(samples - 1);
+        let mut row = Vec::with_capacity(samples);
+        for i in 0..samples {
+            let u = precise(i) / precise(samples - 1);
+            // The bilinearly blended Coons point: ruled in each direction,
+            // the doubly-ruled corner sheet subtracted once.
+            let cu0 = at(bottom, u)?;
+            let cu1 = at(top, u)?;
+            let d0v = at(left, v)?;
+            let d1v = at(right, v)?;
+            let ruled_u = cu0.to_vector() * (1.0 - v) + cu1.to_vector() * v;
+            let ruled_v = d0v.to_vector() * (1.0 - u) + d1v.to_vector() * u;
+            let corners = c00.to_vector() * ((1.0 - u) * (1.0 - v))
+                + c10.to_vector() * (u * (1.0 - v))
+                + c01.to_vector() * ((1.0 - u) * v)
+                + c11.to_vector() * (u * v);
+            row.push(Point::from_vector(ruled_u + ruled_v - corners));
+        }
+        rows.push(row);
+    }
+    fit_surface_grid(&rows, 3, tolerance, tol)
+}
+
 /// Centripetal parameters over the points, on `[0, 1]`.
 /// Fit a rectangular grid of points with a tensor-product B-spline surface.
 ///
@@ -1166,6 +1432,36 @@ mod tests {
     use super::*;
     use crate::traits::{Curve2d as _, Curve3d as _};
     use core::f64::consts::TAU;
+
+    #[test]
+    fn scattered_points_fit_without_a_grid() {
+        // A paraboloid sampled at pseudo-random spots — a deterministic
+        // congruential walk, no randomness in the test — fits within a
+        // stated error.
+        let mut state = 12345u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            {
+                #[allow(clippy::cast_precision_loss, reason = "31 bits fit exactly")]
+                let r = (state >> 33) as f64;
+                r / f64::from(u32::MAX) * 2.0 - 1.0
+            }
+        };
+        let points: Vec<Point> = (0..200)
+            .map(|_| {
+                let (x, y) = (next() * 5.0, next() * 5.0);
+                Point::new(x, y, 0.2 * (x * x + y * y))
+            })
+            .collect();
+        let fitted = fit_surface_scattered(&points, 3, (8, 8), 1e-3, T).unwrap();
+        assert!(
+            fitted.error < 0.05,
+            "the paraboloid fits to {}",
+            fitted.error
+        );
+    }
 
     #[test]
     fn fairing_trades_closeness_for_straightness_and_says_the_price() {

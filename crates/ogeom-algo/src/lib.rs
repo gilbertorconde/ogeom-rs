@@ -24,6 +24,7 @@ pub mod proximity;
 pub mod reconstruct;
 pub mod sew;
 pub mod sweep;
+pub mod text;
 
 pub use build::{
     attach_pcurve, attach_seam, edge_vertices, find_plane, is_shell_closed, is_wire_closed,
@@ -54,3 +55,4 @@ pub use proximity::{ClosestPair, ShapeDistance, distance_between_shapes};
 pub use reconstruct::{CREASE, Region, planar_regions, to_brep};
 pub use sew::{Sewn, make_wire_unordered, order_edges, sew};
 pub use sweep::{make_prism, make_revolution};
+pub use text::make_text;
