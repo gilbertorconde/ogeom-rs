@@ -49,7 +49,25 @@ type ChartWindow = ((f64, f64), (f64, f64));
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if a pcurve
 /// refit cannot reach its target.
 pub fn to_nurbs(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Built> {
-    rebuild(model, shape, None, tol)
+    rebuild(model, shape, None, true, tol)
+}
+
+/// Rebuild a solid with its placements baked into the geometry, keeping
+/// every surface and curve in its own analytic vocabulary.
+///
+/// A uniform-scale placement carries a cylinder to a cylinder and a line to
+/// a line — `Transformable` states each exactly — but the stored pcurves
+/// describe the *old* parameterizations. This rebuild restates the geometry
+/// in world space and re-derives every pcurve against it, exact where the
+/// chart alignment allows and projection-fitted with recorded slop where
+/// not, which is what lets a scaled shape enter the boolean's analytic
+/// pipeline instead of refusing.
+///
+/// # Errors
+///
+/// As [`to_nurbs`].
+pub fn baked_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    rebuild(model, shape, None, false, tol)
 }
 
 /// Rebuild a solid under a general affine transform.
@@ -70,7 +88,7 @@ pub fn general_transformed_shape(
     transform: &GeneralTransform,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    rebuild(model, shape, Some(transform), tol)
+    rebuild(model, shape, Some(transform), true, tol)
 }
 
 /// The shared engine: convert, refit, optionally move control points.
@@ -78,6 +96,7 @@ fn rebuild(
     model: &mut Model,
     shape: &Shape,
     affine: Option<&GeneralTransform>,
+    convert: bool,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     if model.kind_of(shape)? != ShapeType::Solid {
@@ -114,12 +133,23 @@ fn rebuild(
             // Bounded to the face's own chart region first: a plane declares
             // an enormous domain, and a patch over all of it would map the
             // face to a dot in its chart.
-            let (placed, old_window) = bounded_to_face(model, &face, surface_id_old, &placed, tol)?;
-            let mut patch = placed.to_bspline(tol)?;
-            if let Some(t) = affine {
-                patch = transformed_patch(&patch, t)?;
-            }
-            let patch_surface: SurfaceGeometry = patch.into();
+            let (placed, old_window) = bounded_to_face(
+                model,
+                &face,
+                surface_id_old,
+                &placed,
+                placement.scale_factor().abs(),
+                tol,
+            )?;
+            let patch_surface: SurfaceGeometry = if convert {
+                let mut patch = placed.to_bspline(tol)?;
+                if let Some(t) = affine {
+                    patch = transformed_patch(&patch, t)?;
+                }
+                patch.into()
+            } else {
+                placed.clone()
+            };
             let surface_id = model.geometry_mut().add_surface(patch_surface.clone());
 
             let mut wires = Vec::new();
@@ -186,8 +216,15 @@ fn rebuild(
                     let (new_edge, new_curve, new_range) = match new_edges.get(&key) {
                         Some(found) => found.clone(),
                         None => {
-                            let built =
-                                convert_edge(model, &edge, &data, &map, &mut new_vertices, tol)?;
+                            let built = convert_edge(
+                                model,
+                                &edge,
+                                &data,
+                                &map,
+                                convert,
+                                &mut new_vertices,
+                                tol,
+                            )?;
                             history.modify(&edge, built.0.clone());
                             new_edges.insert(key, built.clone());
                             built
@@ -341,6 +378,7 @@ fn convert_edge(
     edge: &Shape,
     data: &ogeom_topo::EdgeData,
     map: &dyn Fn(Point) -> Point,
+    convert: bool,
     vertices: &mut HashMap<(TShapeId, [u64; 3]), Shape>,
     tol: Tolerances,
 ) -> OgeomResult<(Shape, Curve, (f64, f64))> {
@@ -353,20 +391,36 @@ fn convert_edge(
     let placement = edge.transform(model.datums())?;
     use ogeom_geom::Transformable as _;
     let placed = geometry.transformed(&placement, tol)?;
-    let spline = placed.to_bspline_over(*range, tol)?;
-    // The affine map moves control points; the parameterization and the
-    // weights stay, which is the whole point of converting first.
-    let weighted: Vec<Weighted<Point>> = spline
-        .control_points()
-        .iter()
-        .map(|c| {
-            let p = Point::from_vector(c.scaled.to_vector() / c.weight);
-            Weighted::new(map(p), c.weight, tol)
-        })
-        .collect::<OgeomResult<_>>()?;
-    let spline = ogeom_geom::BSplineCurve::rational(spline.knots().clone(), weighted)?;
-    let curve: Curve = spline.into();
-    let new_range = curve.domain();
+    // A placement with scale rescales a length-parameterized curve's domain
+    // — the same rule `transformed` itself applies — so the edge's range
+    // must move with it or the conversion covers only part of the edge.
+    let stretch = placement.scale_factor().abs();
+    let range_on_placed = match &geometry {
+        Curve::Line(_) => (range.0 * stretch, range.1 * stretch),
+        Curve::Trimmed(t) if matches!(t.basis(), Curve::Line(_)) => {
+            (range.0 * stretch, range.1 * stretch)
+        }
+        _ => *range,
+    };
+    let (curve, new_range): (Curve, (f64, f64)) = if convert {
+        let spline = placed.to_bspline_over(range_on_placed, tol)?;
+        // The affine map moves control points; the parameterization and the
+        // weights stay, which is the whole point of converting first.
+        let weighted: Vec<Weighted<Point>> = spline
+            .control_points()
+            .iter()
+            .map(|c| {
+                let p = Point::from_vector(c.scaled.to_vector() / c.weight);
+                Weighted::new(map(p), c.weight, tol)
+            })
+            .collect::<OgeomResult<_>>()?;
+        let spline = ogeom_geom::BSplineCurve::rational(spline.knots().clone(), weighted)?;
+        let curve: Curve = spline.into();
+        let range = curve.domain();
+        (curve, range)
+    } else {
+        (placed, range_on_placed)
+    };
     // Vertices are shared across every edge that meets them: cached by the
     // old node and the old vertex's own mapped point — the same bits every
     // neighbouring edge computes, unlike each spline's evaluated end.
@@ -608,6 +662,7 @@ fn bounded_to_face(
     face: &Shape,
     surface_id: ogeom_topo::SurfaceId,
     placed: &SurfaceGeometry,
+    stretch: f64,
     tol: Tolerances,
 ) -> OgeomResult<(SurfaceGeometry, ChartWindow)> {
     let (mut u0, mut u1) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -648,6 +703,16 @@ fn bounded_to_face(
     if !u0.is_finite() || u1 - u0 <= tol.confusion() || v1 - v0 <= tol.confusion() {
         return Ok((placed.clone(), placed.domain()));
     }
+    // The window was read off the *old* pcurves, in the old chart's units;
+    // a placement with scale stretches the placed chart's length-like
+    // directions, and the trim must stretch with them. Angle directions
+    // never stretch.
+    let (su, sv) = match placed {
+        SurfaceGeometry::Plane(_) => (stretch, stretch),
+        SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_) => (1.0, stretch),
+        _ => (1.0, 1.0),
+    };
+    let (u0, u1, v0, v1) = (u0 * su, u1 * su, v0 * sv, v1 * sv);
     let margin = ((u1 - u0) + (v1 - v0)) * 0.05 + tol.confusion();
     let bounded: SurfaceGeometry = match placed {
         SurfaceGeometry::Plane(p) => ogeom_geom::PlaneSurface::over(

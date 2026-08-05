@@ -1765,6 +1765,29 @@ fn assemble_result(
 
 // --- the operations ----------------------------------------------------------
 
+/// A shape whose placements carry scale, rebuilt with the scale baked
+/// into its geometry before the pipeline runs.
+///
+/// A scale changes a surface's parameterization out from under its
+/// pcurves — the old refusal — so the bake is the whole-shape conversion:
+/// surfaces restated in world space, edges moved exactly, pcurves
+/// re-derived against the new parameterizations. Unscaled shapes pass
+/// through untouched.
+fn baked_if_scaled(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Shape> {
+    let mut scaled = false;
+    for face in ogeom_topo::explore(model, shape, Filter::OfType(ShapeType::Face))? {
+        let placement = face.transform(model.datums())?;
+        if (placement.scale_factor().abs() - 1.0).abs() > 1e-9 {
+            scaled = true;
+            break;
+        }
+    }
+    if !scaled {
+        return Ok(shape.clone());
+    }
+    Ok(ogeom_algo::baked_shape(model, shape, tol)?.shape)
+}
+
 /// The union of two solids.
 ///
 /// # Errors
@@ -1774,6 +1797,10 @@ fn assemble_result(
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) for arguments
 /// that are not closed solids.
 pub fn fuse(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    let (a, b) = (
+        &baked_if_scaled(model, a, tol)?,
+        &baked_if_scaled(model, b, tol)?,
+    );
     let fused = general_fuse(model, a, b, tol)?;
     // Outward pieces bound the union; a same-domain pair with aligned
     // material keeps one copy, and one with opposed material is interior to
@@ -1796,6 +1823,10 @@ pub fn fuse(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
 ///
 /// As [`fuse`].
 pub fn common(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    let (a, b) = (
+        &baked_if_scaled(model, a, tol)?,
+        &baked_if_scaled(model, b, tol)?,
+    );
     let fused = general_fuse(model, a, b, tol)?;
     // Inward pieces bound the intersection; an aligned same-domain pair
     // bounds it too, once. An opposed pair encloses no volume between them.
@@ -1821,6 +1852,10 @@ pub fn common(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeom
 ///
 /// As [`fuse`].
 pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    let (a, b) = (
+        &baked_if_scaled(model, a, tol)?,
+        &baked_if_scaled(model, b, tol)?,
+    );
     let fused = general_fuse(model, a, b, tol)?;
     // The first argument's outward pieces stay; the tool's inward pieces
     // close the cut with their material side flipped. On the shared surface:
@@ -1847,6 +1882,10 @@ pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRes
 ///
 /// As [`fuse`].
 pub fn section(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    let (a, b) = (
+        &baked_if_scaled(model, a, tol)?,
+        &baked_if_scaled(model, b, tol)?,
+    );
     let fused = general_fuse(model, a, b, tol)?;
     // Every section sub-edge that survived into some piece's ring, built
     // once per distinct sub-range.
