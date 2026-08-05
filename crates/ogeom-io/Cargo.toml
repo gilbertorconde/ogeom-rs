@@ -1,0 +1,31 @@
+[package]
+name = "ogeom-io"
+description = "File formats: BREP, STL, STEP, IGES, glTF, DXF"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ogeom-core.workspace = true
+ogeom-math.workspace = true
+ogeom-geom.workspace = true
+ogeom-topo.workspace = true
+# The STEP reader builds real topology as it reads, and computes exact
+# pcurves for the edges it lands on faces; both live above the data layer.
+ogeom-algo.workspace = true
+ogeom-intersect.workspace = true
+
+[dev-dependencies]
+# The round trip is only worth testing against shapes something really built,
+# so the tests reach for the builders. Nothing in `ogeom-algo` depends on `ogeom-io`,
+# so this adds no cycle and nothing to the library's own dependencies.
+ogeom-algo.workspace = true
+ogeom-mesh.workspace = true
+approx.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

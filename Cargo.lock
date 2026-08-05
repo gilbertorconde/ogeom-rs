@@ -266,65 +266,73 @@ dependencies = [
 ]
 
 [[package]]
-name = "og"
+name = "ogeom"
 version = "0.0.0"
 dependencies = [
  "approx",
- "og-algo",
- "og-bool",
- "og-core",
- "og-doc",
- "og-fillet",
- "og-geom",
- "og-heal",
- "og-hlr",
- "og-intersect",
- "og-io",
- "og-math",
- "og-mesh",
- "og-offset",
- "og-select",
- "og-sketch",
- "og-topo",
+ "ogeom-algo",
+ "ogeom-bool",
+ "ogeom-core",
+ "ogeom-doc",
+ "ogeom-fillet",
+ "ogeom-geom",
+ "ogeom-heal",
+ "ogeom-hlr",
+ "ogeom-intersect",
+ "ogeom-io",
+ "ogeom-math",
+ "ogeom-mesh",
+ "ogeom-offset",
+ "ogeom-select",
+ "ogeom-sketch",
+ "ogeom-topo",
  "proptest",
 ]
 
 [[package]]
-name = "og-algo"
+name = "ogeom-algo"
 version = "0.0.0"
 dependencies = [
  "approx",
  "nalgebra",
- "og-core",
- "og-geom",
- "og-intersect",
- "og-math",
- "og-mesh",
- "og-topo",
+ "ogeom-core",
+ "ogeom-geom",
+ "ogeom-intersect",
+ "ogeom-math",
+ "ogeom-mesh",
+ "ogeom-topo",
  "proptest",
  "smallvec",
 ]
 
 [[package]]
-name = "og-bool"
+name = "ogeom-bool"
 version = "0.0.0"
 dependencies = [
  "approx",
  "hashbrown 0.16.1",
  "indexmap",
- "og-algo",
- "og-core",
- "og-geom",
- "og-intersect",
- "og-math",
- "og-mesh",
- "og-topo",
+ "ogeom-algo",
+ "ogeom-core",
+ "ogeom-geom",
+ "ogeom-intersect",
+ "ogeom-math",
+ "ogeom-mesh",
+ "ogeom-topo",
  "proptest",
  "smallvec",
 ]
 
 [[package]]
-name = "og-core"
+name = "ogeom-cli"
+version = "0.0.0"
+dependencies = [
+ "ogeom",
+ "ogeom-view",
+]
+
+[[package]]
+name = "ogeom-core"
 version = "0.0.0"
 dependencies = [
  "approx",
@@ -335,198 +343,190 @@ dependencies = [
 ]
 
 [[package]]
-name = "og-doc"
+name = "ogeom-doc"
 version = "0.0.0"
 dependencies = [
  "approx",
- "og-core",
- "og-geom",
- "og-math",
- "og-topo",
+ "ogeom-core",
+ "ogeom-geom",
+ "ogeom-math",
+ "ogeom-topo",
  "proptest",
 ]
 
 [[package]]
-name = "og-fillet"
+name = "ogeom-fillet"
 version = "0.0.0"
 dependencies = [
  "approx",
- "og-algo",
- "og-bool",
- "og-core",
- "og-geom",
- "og-intersect",
- "og-math",
- "og-mesh",
- "og-topo",
+ "ogeom-algo",
+ "ogeom-bool",
+ "ogeom-core",
+ "ogeom-geom",
+ "ogeom-intersect",
+ "ogeom-math",
+ "ogeom-mesh",
+ "ogeom-topo",
  "proptest",
 ]
 
 [[package]]
-name = "og-geom"
+name = "ogeom-geom"
 version = "0.0.0"
 dependencies = [
  "approx",
  "nalgebra",
- "og-core",
- "og-math",
+ "ogeom-core",
+ "ogeom-math",
  "proptest",
 ]
 
 [[package]]
-name = "og-heal"
+name = "ogeom-heal"
 version = "0.0.0"
 dependencies = [
  "approx",
- "og-algo",
- "og-core",
- "og-geom",
- "og-intersect",
- "og-io",
- "og-math",
- "og-mesh",
- "og-topo",
+ "ogeom-algo",
+ "ogeom-core",
+ "ogeom-geom",
+ "ogeom-intersect",
+ "ogeom-io",
+ "ogeom-math",
+ "ogeom-mesh",
+ "ogeom-topo",
  "proptest",
 ]
 
 [[package]]
-name = "og-hlr"
+name = "ogeom-hlr"
 version = "0.0.0"
 dependencies = [
  "approx",
- "og-algo",
- "og-core",
- "og-geom",
- "og-math",
- "og-topo",
+ "ogeom-algo",
+ "ogeom-core",
+ "ogeom-geom",
+ "ogeom-math",
+ "ogeom-topo",
  "proptest",
 ]
 
 [[package]]
-name = "og-intersect"
-version = "0.0.0"
-dependencies = [
- "approx",
- "nalgebra",
- "og-core",
- "og-geom",
- "og-math",
- "proptest",
-]
-
-[[package]]
-name = "og-io"
-version = "0.0.0"
-dependencies = [
- "approx",
- "og-algo",
- "og-core",
- "og-geom",
- "og-intersect",
- "og-math",
- "og-mesh",
- "og-topo",
- "proptest",
-]
-
-[[package]]
-name = "og-math"
+name = "ogeom-intersect"
 version = "0.0.0"
 dependencies = [
  "approx",
  "nalgebra",
- "og-core",
+ "ogeom-core",
+ "ogeom-geom",
+ "ogeom-math",
+ "proptest",
+]
+
+[[package]]
+name = "ogeom-io"
+version = "0.0.0"
+dependencies = [
+ "approx",
+ "ogeom-algo",
+ "ogeom-core",
+ "ogeom-geom",
+ "ogeom-intersect",
+ "ogeom-math",
+ "ogeom-mesh",
+ "ogeom-topo",
+ "proptest",
+]
+
+[[package]]
+name = "ogeom-math"
+version = "0.0.0"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "ogeom-core",
  "proptest",
  "smallvec",
 ]
 
 [[package]]
-name = "og-mesh"
+name = "ogeom-mesh"
 version = "0.0.0"
 dependencies = [
  "approx",
- "og-algo",
- "og-core",
- "og-geom",
- "og-math",
- "og-topo",
+ "ogeom-algo",
+ "ogeom-core",
+ "ogeom-geom",
+ "ogeom-math",
+ "ogeom-topo",
  "proptest",
  "spade",
 ]
 
 [[package]]
-name = "og-offset"
+name = "ogeom-offset"
 version = "0.0.0"
 dependencies = [
  "approx",
- "og-algo",
- "og-bool",
- "og-core",
- "og-fillet",
- "og-geom",
- "og-intersect",
- "og-math",
- "og-mesh",
- "og-topo",
+ "ogeom-algo",
+ "ogeom-bool",
+ "ogeom-core",
+ "ogeom-fillet",
+ "ogeom-geom",
+ "ogeom-intersect",
+ "ogeom-math",
+ "ogeom-mesh",
+ "ogeom-topo",
  "proptest",
 ]
 
 [[package]]
-name = "og-select"
+name = "ogeom-select"
 version = "0.0.0"
 dependencies = [
  "approx",
- "og-core",
- "og-geom",
- "og-math",
- "og-mesh",
- "og-topo",
+ "ogeom-core",
+ "ogeom-geom",
+ "ogeom-math",
+ "ogeom-mesh",
+ "ogeom-topo",
  "proptest",
 ]
 
 [[package]]
-name = "og-sketch"
+name = "ogeom-sketch"
 version = "0.0.0"
 dependencies = [
  "approx",
- "og-core",
- "og-geom",
- "og-math",
+ "ogeom-core",
+ "ogeom-geom",
+ "ogeom-math",
  "proptest",
 ]
 
 [[package]]
-name = "og-topo"
+name = "ogeom-topo"
 version = "0.0.0"
 dependencies = [
  "approx",
  "hashbrown 0.16.1",
  "indexmap",
- "og-core",
- "og-geom",
- "og-math",
+ "ogeom-core",
+ "ogeom-geom",
+ "ogeom-math",
  "proptest",
  "smallvec",
 ]
 
 [[package]]
-name = "ogcli"
-version = "0.0.0"
-dependencies = [
- "og",
- "ogview",
-]
-
-[[package]]
-name = "ogview"
+name = "ogeom-view"
 version = "0.0.0"
 dependencies = [
  "approx",
- "og-algo",
- "og-core",
- "og-math",
- "og-mesh",
- "og-topo",
+ "ogeom-algo",
+ "ogeom-core",
+ "ogeom-math",
+ "ogeom-mesh",
+ "ogeom-topo",
 ]
 
 [[package]]

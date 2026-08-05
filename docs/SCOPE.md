@@ -174,7 +174,7 @@ canonical recognition and lands in §9.
 
 ---
 
-## 1. Foundation · `og-core` · P1 · *mostly done*
+## 1. Foundation · `ogeom-core` · P1 · *mostly done*
 
 Arenas and entity identity, errors as values, the tolerance model, geometric
 predicates. Still to come: units, progress reporting and cancellation,
@@ -183,7 +183,7 @@ deterministic parallelism.
 *Elsewhere:* `Standard`, `NCollection`, `TCollection`, `Precision`, `Message`,
 `OSD`, `Quantity`, `Units`.
 
-## 2. Mathematics · `og-math` · P1
+## 2. Mathematics · `ogeom-math` · P1
 
 | | *Elsewhere* |
 |---|---|
@@ -199,7 +199,7 @@ deterministic parallelism.
 | Approximation and fitting: least squares, constrained, smoothing | `AppDef`, `AppParCurves`, `AdvApprox` |
 | Interval arithmetic for filtered predicates | — |
 
-## 3. Geometry · `og-geom` · P1
+## 3. Geometry · `ogeom-geom` · P1
 
 Curve and surface traits first — the adaptor abstraction of `DATA_MODEL.md` §10 —
 then the full type vocabulary in 2D and 3D.
@@ -226,7 +226,7 @@ Rational (weighted) NURBS are load-bearing, not an optional extra: exact circles
 cylinders, cones and spheres in free-form representation all require them, and
 every exchange format assumes they exist.
 
-## 4. Topology · `og-topo` · P1
+## 4. Topology · `ogeom-topo` · P1
 
 The B-rep model of `DATA_MODEL.md`: shared topology nodes, location chains,
 orientation composition, per-entity tolerances, multi-representation edges.
@@ -241,7 +241,7 @@ orientation composition, per-entity tolerances, multi-representation edges.
 | **Non-manifold topology** — edges bounding more than two faces, mixed-dimension compounds | — |
 | Cached triangulation and polygon representations | `Poly` |
 
-## 5. Construction · `og-algo` · P2
+## 5. Construction · `ogeom-algo` · P2
 
 | | *Elsewhere* |
 |---|---|
@@ -259,7 +259,7 @@ orientation composition, per-entity tolerances, multi-representation edges.
 Every operation emits history from the commit that introduces it
 (`DATA_MODEL.md` §7).
 
-## 6. Analysis and measurement · `og-algo` · P2
+## 6. Analysis and measurement · `ogeom-algo` · P2
 
 | | *Elsewhere* | |
 |---|---|---|
@@ -276,7 +276,7 @@ Every operation emits history from the commit that introduces it
 | Arc length, arc-length parameterization, deflection-based sampling | `GCPnts` | |
 | Interpolation and fitting: points → curve, points → surface | `GeomAPI_PointsToBSpline` | |
 
-## 7. Intersection · `og-intersect` · P3
+## 7. Intersection · `ogeom-intersect` · P3
 
 The hardest area in the project, and the one with no existing Rust
 implementation.
@@ -295,7 +295,7 @@ published benchmark datasets before the boolean pipeline is committed to. If it
 does not clear the bar, the project ships as a geometry library rather than
 sinking years into a boolean built on an intersector that cannot carry it.
 
-## 8. Booleans · `og-bool` · P3
+## 8. Booleans · `ogeom-bool` · P3
 
 One algorithm — general fuse — plus selection predicates over its result.
 
@@ -326,7 +326,7 @@ are refused with instructions — see the deferred table.
 | Periodic models, connected assemblies | `BOPAlgo_MakePeriodic` |
 | Fuzzy tolerance, glue mode, non-destructive mode, parallel mode | `BOPAlgo_Options` |
 
-## 9. Healing and simplification · `og-heal` · P3
+## 9. Healing and simplification · `ogeom-heal` · P3
 
 | | *Elsewhere* |
 |---|---|
@@ -340,7 +340,7 @@ are refused with instructions — see the deferred table.
 Real files are broken. This is not a postscript to the boolean work; it is what
 makes the boolean work usable on anything that came from outside.
 
-## 10. Blending · `og-fillet` · P4
+## 10. Blending · `ogeom-fillet` · P4
 
 Constant- and variable-radius edge fillets, vertex blends, face-face blends,
 chamfers (distance-distance and distance-angle), 2D fillets and chamfers, blend
@@ -426,7 +426,7 @@ the 2D tangency problem proper — see the deferred table.
 *Elsewhere:* `ChFi2d`, `ChFi3d`, `Blend`, `BRepBlend`, `BRepFilletAPI`,
 `FilletSurf`.
 
-## 11. Offsetting, sweeping, features · `og-offset` · P4
+## 11. Offsetting, sweeping, features · `ogeom-offset` · P4
 
 **Opened** with the 2D wire offset: each straight or circular edge offset on
 its own support, corners deciding the rest — gaps closed by an arc about the
@@ -484,7 +484,7 @@ name.
 | Form features: prism, revol, rib, slot, pocket, glue | `BRepFeat`, `LocOpe` |
 | Bi-tangent construction | `BiTgte` |
 
-## 12. Tessellation and meshing · `og-mesh` · P2
+## 12. Tessellation and meshing · `ogeom-mesh` · P2
 
 | | *Elsewhere* |
 |---|---|
@@ -496,7 +496,7 @@ name.
 | Mesh simplification and decimation | — |
 | **Mesh to B-rep**: plane, cylinder, cone and sphere fitting; region growing; surface reconstruction | — |
 
-## 13. Drawing generation · `og-hlr` · P5
+## 13. Drawing generation · `ogeom-hlr` · P5
 
 Hidden line removal, exact and polygonal; visible and hidden edge
 classification; section and broken-section views; silhouette and isoparametric
@@ -508,7 +508,7 @@ Producing a 2D drawing from a 3D model is a core CAD capability. A kernel that
 omits it is not a complete alternative, regardless of how few applications reach
 for it directly.
 
-## 14. Sketching and constraints · `og-sketch` · P6
+## 14. Sketching and constraints · `ogeom-sketch` · P6
 
 A 2D geometric constraint solver: coincidence, distance, angle, parallel,
 perpendicular, tangent, symmetry, equality, radius, horizontal and vertical;
@@ -520,7 +520,7 @@ constraints* rather than merely failing.
 so every application built on one supplies its own. A kernel that intends to be a
 complete foundation should not push this back onto every consumer.
 
-## 15. Document, assembly and product structure · `og-doc` · P5
+## 15. Document, assembly and product structure · `ogeom-doc` · P5
 
 | | *Elsewhere* |
 |---|---|
@@ -536,7 +536,7 @@ Required as a *capability*. Deliberately not a reimplementation of OCAF's
 label-and-attribute tree or its file formats — that design is widely considered
 more machinery than the job needs, and format compatibility is a non-goal.
 
-## 16. Selection and display support · `og-select` · P6
+## 16. Selection and display support · `ogeom-select` · P6
 
 BVH construction over tessellated and analytic geometry; ray picking with
 sub-shape granularity; rectangle and polygon selection; depth sorting; level of
@@ -544,9 +544,9 @@ detail; a stable mapping from triangles back to the topology that produced them.
 
 *Elsewhere:* `SelectMgr`, `Select3D`, `BVH`.
 
-Not a renderer. `tools/ogview` consumes this; it is not part of it.
+Not a renderer. `tools/ogeom-view` consumes this; it is not part of it.
 
-## 17. Data exchange · `og-io` · P5
+## 17. Data exchange · `ogeom-io` · P5
 
 | Format | Direction | Notes |
 |---|---|---|
@@ -651,7 +651,7 @@ unlikely to hide from all; each of the first three has already caught a real one
 4. **Round-trip identity.** Write, read, write: the same bytes. Not "close" —
    the same. A format that drifted a little on every save would make a real
    disagreement indistinguishable from noise. *Establishing this exposed two
-   places where exactness was being thrown away in `og-math`.*
+   places where exactness was being thrown away in `ogeom-math`.*
 
 5. **Property tests over the laws.** Composition, inversion, antisymmetry,
    containment — stated as laws and tested over generated inputs, repeated
@@ -726,7 +726,7 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 
 | | Why |
 |---|---|
-| Rendering | A kernel supplies geometry and picking, not a render loop. `tools/ogview` is a *software* renderer to an image, and it is a verification tool rather than a feature: it exists so a wrong result is visible, it has no dependency beyond the kernel, and `check.sh` can therefore run it. A real-time windowed viewer would wrap it and add interaction, not correctness. |
+| Rendering | A kernel supplies geometry and picking, not a render loop. `tools/ogeom-view` is a *software* renderer to an image, and it is a verification tool rather than a feature: it exists so a wrong result is visible, it has no dependency beyond the kernel, and `check.sh` can therefore run it. A real-time windowed viewer would wrap it and add interaction, not correctness. |
 | FEA meshing — tetrahedral, boundary-layer | A separate discipline with its own literature. The kernel supplies the geometry and surface meshes it consumes. |
 | Simulation, CAM toolpath generation | Applications, not kernel. |
 | A parametric *recompute engine* | Application-level. The kernel supplies stable identity and history (`DATA_MODEL.md` §7, §8), which is what such an engine needs from it. |
@@ -803,11 +803,11 @@ adoption rather than remembered from a note.
 | `rapier3d` | Physics. Nothing here needs it |
 | `parry3d` | Proposed for BVH broad-phase only. A BVH over our own triangulations is a small thing to own, and taking a physics crate's spatial types to get one would put a second geometry representation in the tree. Revisit at §16 if picking turns out to want more than a BVH |
 | `inari` | Interval arithmetic, for filtered predicates. Genuinely wanted eventually (§2), and deferred until the filtered predicates it would serve are actually built — the `Predicates` trait is the seam it plugs into, and that seam already exists |
-| `curvo` | NURBS evaluation, curve/curve intersection, 2D region booleans and trimming. The 2D booleans are close to what §8's face-splitting stage needs, so this is the one on the list worth genuinely re-examining — **at the §7 gate**, not before. Taking it earlier would mean two NURBS representations in the tree while `og-geom` is still being shaped |
+| `curvo` | NURBS evaluation, curve/curve intersection, 2D region booleans and trimming. The 2D booleans are close to what §8's face-splitting stage needs, so this is the one on the list worth genuinely re-examining — **at the §7 gate**, not before. Taking it earlier would mean two NURBS representations in the tree while `ogeom-geom` is still being shaped |
 | `truck-geometry` / `truck-topology` | Evaluated as a *reference design* rather than a dependency. Taking a whole topology crate means taking its data model, and `DATA_MODEL.md` diverges from the conventional one deliberately in two places (§8, §9). Those divergences are the point |
 
 **A correction.** An earlier note in this project's planning claimed that
 `robust` was 2D-only and that a separate crate would be needed for `orient3d`
 and `insphere`. That is not true of the version in use: it provides all four
-predicates, and `og-core`'s exact implementation calls them directly. Recorded
+predicates, and `ogeom-core`'s exact implementation calls them directly. Recorded
 so the claim is not re-derived from the old note.

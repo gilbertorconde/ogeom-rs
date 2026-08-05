@@ -1,0 +1,22 @@
+[package]
+name = "ogeom-intersect"
+description = "Curve/curve, curve/surface and surface/surface intersection"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ogeom-core.workspace = true
+ogeom-math.workspace = true
+ogeom-geom.workspace = true
+nalgebra.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

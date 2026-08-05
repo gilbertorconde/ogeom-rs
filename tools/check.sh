@@ -29,7 +29,7 @@ cargo test --workspace --all-features --no-fail-fast 2>&1 | tee "$log"
 # than it looks — but only the *unit* suites hold property tests, and the
 # corpus integration suites are deterministic and heavy. Repeat what benefits
 # from repetition and leave the rest at one honest pass.
-runs="${OG_TEST_RUNS:-2}"
+runs="${OGEOM_TEST_RUNS:-2}"
 for i in $(seq 1 "$runs"); do
     echo "-- unit re-run $i of $runs --"
     cargo test --workspace --all-features --lib --no-fail-fast

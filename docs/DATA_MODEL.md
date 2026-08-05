@@ -85,7 +85,7 @@ A `Datum` is a reference-counted rigid transform. A `Location` is a *sequence* o
   geometry *and* be recognisable as instances of it.
 - **Inverses are exact** — negate the power, rather than inverting a matrix.
 
-The composed `Trsf` is computed lazily and cached. Nothing outside `og-topo`
+The composed `Trsf` is computed lazily and cached. Nothing outside `ogeom-topo`
 should ever need to look at the chain itself.
 
 > *Elsewhere:* `TopLoc_Location`, a linked list of `(datum, power)` pairs.
@@ -215,7 +215,7 @@ pub trait Operation {
 ```
 
 Not optional, not deferred, not "added when something needs it." Every operation in
-`og-algo`, `og-bool`, `og-fillet` and `og-offset` populates these from the first
+`ogeom-algo`, `ogeom-bool`, `ogeom-fillet` and `ogeom-offset` populates these from the first
 commit that introduces it.
 
 The reason is downstream: a parametric application records "fillet *that* edge"
@@ -285,7 +285,7 @@ surfaces has no exact representation to be exact *about*. That is why §5 exists
 why it cannot be traded away. Predicates make the parts that *can* be decided
 exactly decided exactly; tolerances handle the rest.
 
-Tolerance constants live in `og-core`, and the model's unit scale is **explicit**
+Tolerance constants live in `ogeom-core`, and the model's unit scale is **explicit**
 rather than assumed to be millimetres — an assumption kernels commonly bake in,
 which then misbehaves silently on models authored in metres or inches:
 
@@ -348,7 +348,7 @@ That is the correct trade, and it is made explicit in the API rather than hidden
 
 ## 12. Errors are values
 
-`Result<T, OgError>`. The variants cover the failure vocabulary a kernel actually
+`Result<T, OgeomError>`. The variants cover the failure vocabulary a kernel actually
 needs — construction, domain, range, dimension mismatch, null object, not done,
 numeric failure, invariant violation — chosen to line up with the categories
 applications already handle, so they translate cleanly into any host's error

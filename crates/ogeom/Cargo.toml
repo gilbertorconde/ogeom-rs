@@ -1,0 +1,34 @@
+[package]
+name = "ogeom"
+description = "ogeom — a B-rep CAD kernel in Rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ogeom-core.workspace = true
+ogeom-math.workspace = true
+ogeom-geom.workspace = true
+ogeom-topo.workspace = true
+ogeom-algo.workspace = true
+ogeom-mesh.workspace = true
+ogeom-intersect.workspace = true
+ogeom-bool.workspace = true
+ogeom-heal.workspace = true
+ogeom-fillet.workspace = true
+ogeom-offset.workspace = true
+ogeom-io.workspace = true
+ogeom-hlr.workspace = true
+ogeom-sketch.workspace = true
+ogeom-doc.workspace = true
+ogeom-select.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

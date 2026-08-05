@@ -2,9 +2,9 @@
 **/*.rs.bk
 Cargo.lock.orig
 
-# difftest / ogview build artifacts
+# difftest / ogeom-view build artifacts
 /tools/difftest/target
-/tools/ogview/target
+/tools/ogeom-view/target
 
 # Reference material a developer may keep locally. Never committed: the kernel
 # has no dependency on any existing CAD kernel, and nothing in this repo pulls

@@ -52,26 +52,26 @@ Two places where the conventional design is wrong and this one diverges:
 and holds nothing yet.
 
 ```
-• crates/og-core        arenas, identity, errors, tolerances, predicates
-• crates/og-math        primitives, transforms, B-spline basis, solvers
-• crates/og-geom        curves and surfaces behind adaptor traits
-• crates/og-topo        the B-rep data model
-• crates/og-algo        construction, primitives, measurement, classification
-• crates/og-mesh        tessellation, and mesh → B-rep
-• crates/og-io          native format, STEP, IGES, glTF, STL, DXF, and the rest
-• crates/og-intersect   curve/curve, curve/surface, surface/surface
-• crates/og-bool        general fuse and the boolean filters
-• crates/og-heal        healing, simplification, canonical recognition
-• crates/og-fillet      blends and chamfers
-• crates/og-offset      offset, shell, sweep, loft, form features
-• crates/og             the public umbrella API
-· crates/og-hlr         hidden line removal for drawings
-· crates/og-sketch      2D geometric constraint solver
-· crates/og-doc         assemblies, appearance, PMI, undo/redo, persistence
-· crates/og-select      BVH picking and selection
-• tools/ogcli           command-line front end
-• tools/ogview          software renderer, so a wrong result is visible
-• tools/apisurf         API-usage profiler (analysis only; see docs/SCOPE.md)
+• crates/ogeom-core        arenas, identity, errors, tolerances, predicates
+• crates/ogeom-math        primitives, transforms, B-spline basis, solvers
+• crates/ogeom-geom        curves and surfaces behind adaptor traits
+• crates/ogeom-topo        the B-rep data model
+• crates/ogeom-algo        construction, primitives, measurement, classification
+• crates/ogeom-mesh        tessellation, and mesh → B-rep
+• crates/ogeom-io          native format, STEP, IGES, glTF, STL, DXF, and the rest
+• crates/ogeom-intersect   curve/curve, curve/surface, surface/surface
+• crates/ogeom-bool        general fuse and the boolean filters
+• crates/ogeom-heal        healing, simplification, canonical recognition
+• crates/ogeom-fillet      blends and chamfers
+• crates/ogeom-offset      offset, shell, sweep, loft, form features
+• crates/ogeom             the public umbrella API
+· crates/ogeom-hlr         hidden line removal for drawings
+· crates/ogeom-sketch      2D geometric constraint solver
+· crates/ogeom-doc         assemblies, appearance, PMI, undo/redo, persistence
+· crates/ogeom-select      BVH picking and selection
+• tools/ogeom-cli              command-line front end
+• tools/ogeom-view             software renderer, so a wrong result is visible
+• tools/apisurf            API-usage profiler (analysis only; see docs/SCOPE.md)
 ```
 
 None of the crates with code is *finished* — each implements the part of

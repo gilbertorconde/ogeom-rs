@@ -1,0 +1,27 @@
+[package]
+name = "ogeom-offset"
+description = "Offsetting, shelling, sweeping, lofting and draft"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ogeom-core.workspace = true
+ogeom-math.workspace = true
+ogeom-geom.workspace = true
+ogeom-topo.workspace = true
+ogeom-algo.workspace = true
+ogeom-intersect.workspace = true
+ogeom-bool.workspace = true
+ogeom-mesh.workspace = true
+
+[dev-dependencies]
+ogeom-fillet.workspace = true
+approx.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

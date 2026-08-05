@@ -62,7 +62,7 @@ wrong solid does not throw; it corrupts a document six operations later. So:
 - **State the property, then test it.** Round-trips, composition laws, tolerance
   containment, orientation consistency, antisymmetry of predicates. Property
   tests over laws are worth more than a pile of examples — see
-  `crates/og-core/tests/properties.rs`.
+  `crates/ogeom-core/tests/properties.rs`.
 - **Validate against ground truth you can compute independently.** Analytic
   results for analytic inputs; closed-form volumes and areas; known benchmark
   datasets. Not "it looks right in the viewer".

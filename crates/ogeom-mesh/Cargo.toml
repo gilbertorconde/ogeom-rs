@@ -1,0 +1,24 @@
+[package]
+name = "ogeom-mesh"
+description = "Tessellation: edge discretization and constrained Delaunay triangulation per face"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ogeom-core.workspace = true
+ogeom-math.workspace = true
+ogeom-geom.workspace = true
+ogeom-topo.workspace = true
+spade.workspace = true
+
+[dev-dependencies]
+ogeom-algo.workspace = true
+approx.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

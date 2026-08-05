@@ -1,0 +1,21 @@
+[package]
+name = "ogeom-geom"
+description = "Parametric curves and surfaces, 2D and 3D, behind adaptor traits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ogeom-core.workspace = true
+ogeom-math.workspace = true
+nalgebra.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "ogeom-cli"
+description = "Command-line front end for the ogeom kernel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "ogeom-cli"
+path = "src/main.rs"
+
+[dependencies]
+ogeom = { path = "../../crates/ogeom", version = "0.0.0" }
+ogeom-view.workspace = true
+
+[lints]
+workspace = true
