@@ -73,6 +73,57 @@ pub fn fit_points(
         &points.iter().map(|p| [p.x, p.y, p.z]).collect::<Vec<_>>(),
         degree,
         tolerance,
+        false,
+        tol,
+    )?;
+    let curve = BSplineCurve::new(
+        knots,
+        control
+            .into_iter()
+            .map(|c| Point::new(c[0], c[1], c[2]))
+            .collect(),
+        tol,
+    )?;
+    Ok(Fitted { curve, error, met })
+}
+
+/// Fit a smoothly closed loop: as [`fit_points`], with the join C1.
+///
+/// The input must be a loop — the first point repeated at the end — and the
+/// ends are honoured exactly as always. Beyond that, the tangent leaving the
+/// join is constrained to equal the tangent arriving at it, eliminated
+/// exactly inside the least-squares solve rather than patched on after, so a
+/// surface built over the loop shows no crease at the seam.
+///
+/// The constraint spends shape freedom at the join: the last movable control
+/// point follows the first, so a loop fits with slightly more knots than the
+/// same data fitted open, and the tightest reachable error is a little
+/// higher. That is the price of the join being smooth, and it is why this is
+/// a separate entry rather than a change to [`fit_points`].
+///
+/// # Errors
+///
+/// As [`fit_points`], and additionally if the input is not a closed loop.
+pub fn fit_points_closed(
+    points: &[Point],
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgResult<Fitted<BSplineCurve>> {
+    let Some((first, last)) = points.first().zip(points.last()) else {
+        og_bail!(Construction, "a closed fit needs points");
+    };
+    if !first.is_equal(*last, tol) {
+        og_bail!(
+            Construction,
+            "a closed fit needs a loop: the first point repeated at the end"
+        );
+    }
+    let (knots, control, error, met) = fit::<3>(
+        &points.iter().map(|p| [p.x, p.y, p.z]).collect::<Vec<_>>(),
+        degree,
+        tolerance,
+        true,
         tol,
     )?;
     let curve = BSplineCurve::new(
@@ -104,6 +155,7 @@ pub fn fit_points_2d(
         &points.iter().map(|p| [p.x, p.y]).collect::<Vec<_>>(),
         degree,
         tolerance,
+        false,
         tol,
     )?;
     let curve = BSpline2d::new(
@@ -152,7 +204,7 @@ pub fn fit_points_joint(
         .zip(on_b)
         .map(|((p, a), b)| [p.x, p.y, p.z, a.x, a.y, b.x, b.y])
         .collect();
-    let (knots, control, error, met) = fit::<7>(&joined, degree, tolerance, tol)?;
+    let (knots, control, error, met) = fit::<7>(&joined, degree, tolerance, false, tol)?;
     let curve = BSplineCurve::new(
         knots.clone(),
         control
@@ -219,7 +271,7 @@ pub fn fit_points_2d_at(
     const ROUNDS: usize = 32;
     let mut best: Option<(KnotVector, Vec<[f64; 2]>, f64)> = None;
     for _ in 0..ROUNDS {
-        let control = least_squares::<2>(&knots, &data, parameters)?;
+        let control = least_squares::<2>(&knots, &data, parameters, false)?;
         let errors = residuals::<2>(&knots, &control, &data, parameters);
         let worst = errors.iter().fold(0.0_f64, |acc, e| acc.max(e.1));
         if best.as_ref().is_none_or(|(_, _, held)| worst < *held) {
@@ -275,6 +327,7 @@ fn fit<const D: usize>(
     points: &[[f64; D]],
     degree: usize,
     tolerance: f64,
+    smooth_loop: bool,
     tol: Tolerances,
 ) -> OgResult<(KnotVector, Vec<[f64; D]>, f64, bool)> {
     if !tolerance.is_finite() || tolerance <= 0.0 {
@@ -292,6 +345,12 @@ fn fit<const D: usize>(
         );
     }
     let degree = degree.min(points.len() - 1);
+    // A loop the caller asked to close smoothly: the first point repeated at
+    // the end, and the join constrained to matching *tangents* — a surface
+    // built over a C0 loop shows the crease. Opt-in, because the constraint
+    // spends shape freedom at the join that an open fit keeps.
+    let closed =
+        smooth_loop && distance::<D>(&points[0], &points[points.len() - 1]) <= tol.confusion();
     let parameters = centripetal::<D>(&points);
 
     // Start with the fewest control points a clamped curve of this degree can
@@ -309,7 +368,7 @@ fn fit<const D: usize>(
         // a span that refinement checked *before* the slide, and the solve
         // reports itself singular. The rounds before it stand: keep the best
         // of them rather than promoting a bookkeeping casualty to an error.
-        let control = match least_squares::<D>(&knots, &points, &parameters) {
+        let control = match least_squares::<D>(&knots, &points, &parameters, closed) {
             Ok(control) => control,
             Err(e) => {
                 if let Some((knots, control, worst)) = best {
@@ -328,7 +387,7 @@ fn fit<const D: usize>(
         // Newton on the foot of the perpendicular — removes the
         // parameterization's share of the error and leaves the curve's.
         for _ in 0..2 {
-            correct_parameters::<D>(&knots, &control, &points, &mut parameters);
+            correct_parameters::<D>(&knots, &control, &points, &mut parameters, closed);
         }
         let errors = residuals::<D>(&knots, &control, &points, &parameters);
         let worst = errors.iter().fold(0.0_f64, |acc, e| acc.max(e.1));
@@ -340,8 +399,10 @@ fn fit<const D: usize>(
         }
 
         // More control points than data points is interpolation wearing a
-        // different name, and past that adding knots buys nothing.
-        if knots.control_point_count() >= points.len() {
+        // different name, and past that adding knots buys nothing. A closed
+        // fit spent one control point on the C1 join, so its budget runs one
+        // further.
+        if knots.control_point_count() >= points.len() + usize::from(closed) {
             break;
         }
         let Some(refined) = refined_where_bad(&knots, &errors, tolerance)? else {
@@ -500,7 +561,7 @@ fn fit_family<const D: usize>(
         let mut merged: Vec<(f64, f64)> = parameters.iter().map(|u| (*u, 0.0)).collect();
         let mut solvable = true;
         for row in family {
-            match least_squares::<D>(&knots, row, parameters) {
+            match least_squares::<D>(&knots, row, parameters, false) {
                 Ok(control) => {
                     for (slot, entry) in residuals::<D>(&knots, &control, row, parameters)
                         .iter()
@@ -575,43 +636,83 @@ fn least_squares<const D: usize>(
     knots: &KnotVector,
     points: &[[f64; D]],
     parameters: &[f64],
+    closed: bool,
 ) -> OgResult<Vec<[f64; D]>> {
     let n = knots.control_point_count();
     let m = points.len();
     let degree = knots.degree();
-    let interior = n.saturating_sub(2);
 
     let mut control = vec![[0.0; D]; n];
     control[0] = points[0];
     control[n - 1] = points[m - 1];
-    if interior == 0 {
+    if n <= 2 {
+        return Ok(control);
+    }
+
+    // C1 across a closed loop's join: with the ends pinned to the same point,
+    // the clamped end derivatives are degree/(t_{p+1}-t_1) * (P_1 - P_0) and
+    // degree/(t_{n+p-1}-t_{n-1}) * (P_{n-1} - P_{n-2}). Setting them equal
+    // makes P_{n-2} a linear function of P_1 — one unknown eliminated, the
+    // constraint exact in the solve rather than patched on after.
+    let t = knots.knots();
+    let ratio = if closed && n >= 4 {
+        let d_start = t[degree + 1] - t[1];
+        let d_end = t[n + degree - 1] - t[n - 1];
+        (d_start > 0.0 && d_end > 0.0).then(|| d_end / d_start)
+    } else {
+        None
+    };
+    let eliminated = ratio.map(|_| n - 2);
+    let unknown_count = match eliminated {
+        Some(_) => n - 3,
+        None => n - 2,
+    };
+    if unknown_count == 0 {
+        if let (Some(r), Some(e)) = (ratio, eliminated) {
+            // Only P_1 = P_{n-2} remains, and the constraint alone fixes it:
+            // P_{n-2} = P_0 - r (P_1 - P_0) with P_1 = P_{n-2} gives the
+            // point dividing toward P_0.
+            for d in 0..D {
+                control[e][d] = points[0][d];
+            }
+            let _ = r;
+        }
         return Ok(control);
     }
 
     // The collocation rows, with the pinned ends moved to the right-hand side.
-    let mut normal = nalgebra::DMatrix::<f64>::zeros(interior, interior);
-    let mut rhs = vec![nalgebra::DVector::<f64>::zeros(interior); D];
+    let mut normal = nalgebra::DMatrix::<f64>::zeros(unknown_count, unknown_count);
+    let mut rhs = vec![nalgebra::DVector::<f64>::zeros(unknown_count); D];
 
     let mut rows: Vec<(usize, Vec<(usize, f64)>)> = Vec::with_capacity(m);
     for (k, &u) in parameters.iter().enumerate() {
         let span = knots.span_unchecked(u);
         let basis = knots.basis(span, u);
         let first = span - degree;
-        rows.push((
-            k,
-            basis
-                .iter()
-                .enumerate()
-                .map(|(j, b)| (first + j, *b))
-                .collect(),
-        ));
+        let mut row: Vec<(usize, f64)> = basis
+            .iter()
+            .enumerate()
+            .map(|(j, b)| (first + j, *b))
+            .collect();
+        // Substitute the eliminated column: b_e P_e with
+        // P_e = (1 + r) P_0 - r P_1 becomes an extra known share on P_0 and
+        // a coefficient of -r b_e on P_1.
+        if let (Some(r), Some(e)) = (ratio, eliminated)
+            && let Some(position) = row.iter().position(|(i, _)| *i == e)
+        {
+            let (_, b_e) = row.remove(position);
+            row.push((usize::MAX, b_e * (1.0 + r)));
+            row.push((1, -r * b_e));
+        }
+        rows.push((k, row));
     }
 
     for (k, row) in &rows {
-        // The residual this row wants to explain, after the pinned ends.
+        // The residual this row wants to explain, after the pinned ends. The
+        // sentinel usize::MAX marks the eliminated column's share of P_0.
         let mut target = points[*k];
         for (index, b) in row {
-            if *index == 0 {
+            if *index == 0 || *index == usize::MAX {
                 for d in 0..D {
                     target[d] -= b * points[0][d];
                 }
@@ -621,12 +722,13 @@ fn least_squares<const D: usize>(
                 }
             }
         }
+        let is_known = |i: usize| i == 0 || i == n - 1 || i == usize::MAX;
         for (i, bi) in row {
-            if *i == 0 || *i == n - 1 {
+            if is_known(*i) {
                 continue;
             }
             for (j, bj) in row {
-                if *j == 0 || *j == n - 1 {
+                if is_known(*j) {
                     continue;
                 }
                 normal[(i - 1, j - 1)] += bi * bj;
@@ -647,8 +749,13 @@ fn least_squares<const D: usize>(
     };
     for d in 0..D {
         let solved = &inverted * &rhs[d];
-        for i in 0..interior {
+        for i in 0..unknown_count {
             control[i + 1][d] = solved[i];
+        }
+    }
+    if let (Some(r), Some(e)) = (ratio, eliminated) {
+        for d in 0..D {
+            control[e][d] = (1.0 + r).mul_add(points[0][d], -(r * control[1][d]));
         }
     }
     Ok(control)
@@ -664,9 +771,23 @@ fn correct_parameters<const D: usize>(
     control: &[[f64; D]],
     points: &[[f64; D]],
     parameters: &mut [f64],
+    looped: bool,
 ) {
     let (lo, hi) = knots.domain();
     let last = parameters.len() - 1;
+    // On a loop, a trust region of a few sample spacings. Newton on a curve
+    // that is still poor — the early rounds of a fit — can project a point
+    // to the far side of the domain, and a loop's join makes that a cliff:
+    // both ends of the domain are the same place in space, one wild foot
+    // lands at the wrong end, and the monotonicity repair below drags every
+    // parameter after it onto it. An open curve has no such identification,
+    // and clamping its corrections only slows the endgame.
+    #[allow(clippy::cast_precision_loss)]
+    let max_step = if looped {
+        (hi - lo) * 8.0 / parameters.len() as f64
+    } else {
+        hi - lo
+    };
     for (k, u) in parameters.iter_mut().enumerate() {
         if k == 0 || k == last {
             continue;
@@ -679,7 +800,7 @@ fn correct_parameters<const D: usize>(
         if denominator.abs() <= f64::MIN_POSITIVE {
             continue;
         }
-        let stepped = *u - numerator / denominator;
+        let stepped = *u - (numerator / denominator).clamp(-max_step, max_step);
         if stepped.is_finite() {
             *u = stepped.clamp(lo, hi);
         }
@@ -909,7 +1030,11 @@ mod tests {
         let points = circle_points(200, 5.0);
         for tolerance in [1e-2, 1e-4, 1e-6] {
             let fitted = fit_points(&points, 3, tolerance, T).unwrap();
-            assert!(fitted.met, "target {tolerance:e} not met");
+            assert!(
+                fitted.met,
+                "target {tolerance:e} not met, got {:e}",
+                fitted.error
+            );
             assert!(
                 fitted.error <= tolerance,
                 "reported {:e} over target {tolerance:e}",
@@ -995,6 +1120,43 @@ mod tests {
         assert!(start.is_equal(points[0], T), "the start drifted");
         assert!(end.is_equal(*points.last().unwrap(), T), "the end drifted");
         assert!(start.is_equal(end, T), "the loop opened");
+    }
+
+    #[test]
+    fn a_smooth_loop_closes_with_matching_tangents_at_the_join() {
+        use crate::traits::Curve3d as _;
+        let points = circle_points(128, 3.0);
+        let fitted = fit_points_closed(&points, 3, 1e-4, T).unwrap();
+        assert!(fitted.met, "target not met, reached {:e}", fitted.error);
+
+        let curve: crate::curve::Curve = fitted.curve.clone().into();
+        let (a, b) = fitted.curve.knots().domain();
+        let start = curve.point_at(a, T).unwrap();
+        let end = curve.point_at(b, T).unwrap();
+        assert!(start.is_equal(end, T), "the loop opened");
+
+        // The join is C1: the derivative leaving the seam equals the one
+        // arriving, exactly — the constraint is solved, not approximated.
+        let out = curve.d1_at(a, T).unwrap();
+        let back = curve.d1_at(b, T).unwrap();
+        assert!(
+            (out - back).magnitude() <= 1e-9 * out.magnitude(),
+            "the join creases: {out:?} vs {back:?}"
+        );
+
+        // And the open fit of the same data does *not* promise this, which is
+        // why the closed fit is its own entry.
+        let open = fit_points(&points, 3, 1e-4, T).unwrap();
+        let ocurve: crate::curve::Curve = open.curve.into();
+        let (oa, ob) = (a, b);
+        let _ = (ocurve.d1_at(oa, T).unwrap(), ocurve.d1_at(ob, T).unwrap());
+    }
+
+    #[test]
+    fn a_fit_that_is_not_a_loop_is_refused_by_the_closed_entry() {
+        let mut points = circle_points(32, 1.0);
+        points.pop();
+        assert!(fit_points_closed(&points, 3, 1e-3, T).is_err());
     }
 
     #[test]

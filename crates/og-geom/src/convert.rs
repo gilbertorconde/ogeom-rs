@@ -693,14 +693,45 @@ impl crate::surface::SurfaceGeometry {
 
             // Closed in both directions and revolved: build the profile once
             // and turn it, which is the same construction the surface is.
-            S::Sphere(_) | S::Torus(_) | S::Revolution(_) => {
-                og_bail!(
-                    Construction,
-                    "an exact patch for this surface needs the revolution of a \
-                     rational profile, which is not built yet; convert its \
-                     generating curve and revolve that"
+            S::Sphere(sp) => {
+                let sphere = sp.sphere();
+                let frame = sphere.frame();
+                // The meridian at u = 0, framed so its own angle is the
+                // latitude exactly: x one radius out along the equator, y
+                // toward the north pole.
+                let meridian = Frame::new(frame.origin(), -frame.y(), frame.x(), tol)?;
+                let circle = og_math::Circle::new(meridian, sphere.radius(), tol)?;
+                let profile: Curve = crate::curve::CircleCurve::new(circle).into();
+                revolved_patch(
+                    &profile,
+                    (va, vb),
+                    og_math::Axis {
+                        location: frame.origin(),
+                        direction: frame.z(),
+                    },
+                    (ua, ub),
+                    tol,
                 )
             }
+            S::Torus(t) => {
+                let torus = t.torus();
+                let frame = torus.frame();
+                let centre = frame.origin() + frame.x().vector() * torus.major_radius();
+                let tube = Frame::new(centre, -frame.y(), frame.x(), tol)?;
+                let circle = og_math::Circle::new(tube, torus.minor_radius(), tol)?;
+                let profile: Curve = crate::curve::CircleCurve::new(circle).into();
+                revolved_patch(
+                    &profile,
+                    (va, vb),
+                    og_math::Axis {
+                        location: frame.origin(),
+                        direction: frame.z(),
+                    },
+                    (ua, ub),
+                    tol,
+                )
+            }
+            S::Revolution(r) => revolved_patch(r.curve(), (va, vb), r.axis(), (ua, ub), tol),
 
             S::Extrusion(e) => {
                 let base = e.curve().to_bspline(tol)?;
@@ -752,6 +783,53 @@ impl crate::surface::SurfaceGeometry {
         let at = Frame::new(frame.origin() + frame.z() * v, frame.z(), frame.x(), tol)?;
         conic_arc(at, radius, radius, u_range.0, u_range.1, tol)
     }
+}
+
+/// A rational profile revolved about an axis, exactly.
+///
+/// The construction every surface of revolution shares. The profile converts
+/// to its exact rational form; the turn is the exact rational unit circle
+/// over the swept angle; and each surface control point is a profile control
+/// point *rotated by an arc control point*, with the weights multiplied. The
+/// identity behind it: rotation about the axis is linear in `(cos u, sin u)`,
+/// the tensor product factors, and the patch evaluates to precisely
+/// `Rot_u(profile(v))` wherever both conversions were exact.
+fn revolved_patch(
+    profile: &Curve,
+    v_range: (f64, f64),
+    axis: og_math::Axis,
+    u_range: (f64, f64),
+    tol: Tolerances,
+) -> OgResult<crate::surface::BSplineSurface> {
+    let frame = Frame::about(axis.location, axis.direction);
+    let turn: Curve = crate::curve::CircleCurve::new(og_math::Circle::new(frame, 1.0, tol)?).into();
+    let arc = turn.to_bspline_over(u_range, tol)?;
+    let pro = profile.to_bspline_over(v_range, tol)?;
+
+    let locals: Vec<(f64, f64, f64, f64)> = pro
+        .control_points()
+        .iter()
+        .map(|c| {
+            let l = frame.to_local(Point::from_vector(c.scaled.to_vector() / c.weight));
+            (l.x, l.y, l.z, c.weight)
+        })
+        .collect();
+    let mut points = Vec::with_capacity(arc.control_points().len() * locals.len());
+    for ci in arc.control_points() {
+        let l = frame.to_local(Point::from_vector(ci.scaled.to_vector() / ci.weight));
+        let (a, b) = (l.x, l.y);
+        for &(x, y, z, wj) in &locals {
+            let weight = ci.weight * wj;
+            let rotated =
+                frame.to_world(Point::new(a.mul_add(x, -(b * y)), b.mul_add(x, a * y), z));
+            points.push(Weighted {
+                scaled: Point::from_vector(rotated.to_vector() * weight),
+                weight,
+            });
+        }
+    }
+    let grid = og_math::ControlGrid::new(points, arc.control_points().len(), locals.len())?;
+    crate::surface::BSplineSurface::rational(arc.knots().clone(), pro.knots().clone(), grid)
 }
 
 /// A bilinear patch through four corners.
@@ -936,21 +1014,52 @@ mod surface_tests {
     }
 
     #[test]
-    fn the_surfaces_with_no_exact_patch_yet_say_so_rather_than_approximating() {
-        // A sphere, a torus and a general revolution all need a rational
-        // profile revolved, which is a construction of its own. Refused rather
-        // than fitted: a fit that reported success would be indistinguishable
-        // from an exact conversion at the call site, and every exchange format
-        // written from it would carry the approximation without saying so.
-        let sphere: SurfaceGeometry =
-            SphereSurface::new(Sphere::new(Frame::WORLD, 1.0, T).unwrap()).into();
-        let torus: SurfaceGeometry =
-            TorusSurface::new(Torus::new(Frame::WORLD, 3.0, 1.0, T).unwrap()).into();
-        for surface in [sphere, torus] {
-            let err = surface.to_bspline(T).unwrap_err();
-            assert!(err.to_string().contains("not built yet"), "got {err}");
-        }
+    fn a_sphere_becomes_an_exact_rational_patch() {
+        let sphere = Sphere::new(Frame::WORLD, 2.5, T).unwrap();
+        let surface: SurfaceGeometry = SphereSurface::new(sphere).into();
+        let patch = surface.to_bspline(T).unwrap();
+        assert!(patch.is_rational(), "a sphere needs weights");
+        assert!(deviation(|p| sphere.distance_to(p), &patch) < 1e-12);
+        assert!(spans_the_same(&surface, &patch));
+    }
 
+    #[test]
+    fn a_torus_becomes_an_exact_rational_patch() {
+        let torus = Torus::new(Frame::WORLD, 3.0, 1.0, T).unwrap();
+        let surface: SurfaceGeometry = TorusSurface::new(torus).into();
+        let patch = surface.to_bspline(T).unwrap();
+        assert!(patch.is_rational(), "a torus needs weights");
+        assert!(deviation(|p| torus.distance_to(p), &patch) < 1e-12);
+        assert!(spans_the_same(&surface, &patch));
+    }
+
+    #[test]
+    fn a_revolution_becomes_the_exact_patch_its_own_construction_is() {
+        // A line parallel to the axis, revolved three quarters of a turn: the
+        // surface is a cylinder wall, so the patch can be measured against
+        // the cylinder's own signed distance — an independent authority, not
+        // the revolution evaluating itself.
+        use crate::curve::LineCurve;
+        let line =
+            LineCurve::segment(Point::new(2.0, 0.0, 0.0), Point::new(2.0, 0.0, 5.0), T).unwrap();
+        let surface: SurfaceGeometry = crate::surface::RevolutionSurface::new(
+            line.into(),
+            og_math::Axis {
+                location: Point::new(0.0, 0.0, 0.0),
+                direction: og_math::Direction::Z,
+            },
+            1.5 * core::f64::consts::PI,
+        )
+        .unwrap()
+        .into();
+        let cylinder = og_math::Cylinder::new(Frame::WORLD, 2.0, T).unwrap();
+        let patch = surface.to_bspline(T).unwrap();
+        assert!(deviation(|p| cylinder.distance_to(p), &patch) < 1e-12);
+        assert!(spans_the_same(&surface, &patch));
+    }
+
+    #[test]
+    fn a_trimmed_surface_still_says_no_rather_than_approximating() {
         let plane: SurfaceGeometry = PlaneSurface::new(Plane::new(Frame::WORLD)).into();
         let trimmed: SurfaceGeometry = SurfaceGeometry::Trimmed(Box::new(
             TrimmedSurface::new(plane, (0.0, 1.0), (0.0, 1.0), T).unwrap(),
