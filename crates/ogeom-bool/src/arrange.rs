@@ -11,6 +11,7 @@
 //! rebuild works from the exact geometry and the polylines are never promoted
 //! to an answer.
 
+use ogeom_core::predicates::{Exact, Predicates, Sign};
 use ogeom_core::{OgeomResult, ogeom_bail};
 use ogeom_math::Point2;
 
@@ -298,16 +299,33 @@ fn area(ring: &[Point2]) -> f64 {
     doubled * 0.5
 }
 
+/// Whether the ray from `p` toward `+x` crosses the segment `a`→`b`,
+/// decided by the predicate rather than by a computed intersection.
+///
+/// The straddle test picks the segments the ray could cross; for those, the
+/// crossing question is exactly "which side of the segment's line does `p`
+/// lie on", which is `orient2d`'s question. A point exactly on the segment's
+/// line reads as no crossing, matching the strict comparison this replaces —
+/// the callers probe interior sample points, never boundary ones.
+fn ray_crosses_segment<P: Predicates>(a: Point2, b: Point2, p: Point2) -> bool {
+    if (a.y > p.y) == (b.y > p.y) {
+        return false;
+    }
+    let side = P::orient2d([a.x, a.y], [b.x, b.y], [p.x, p.y]);
+    if b.y > a.y {
+        side == Sign::Positive
+    } else {
+        side == Sign::Negative
+    }
+}
+
 /// Even-odd containment of a point in one closed polyline.
 fn inside(ring: &[Point2], p: Point2) -> bool {
     let mut inside = false;
     for i in 0..ring.len() {
         let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
-        if (a.y > p.y) != (b.y > p.y) {
-            let x = (b.x - a.x).mul_add((p.y - a.y) / (b.y - a.y), a.x);
-            if p.x < x {
-                inside = !inside;
-            }
+        if ray_crosses_segment::<Exact>(a, b, p) {
+            inside = !inside;
         }
     }
     inside
@@ -322,12 +340,8 @@ pub(crate) fn inside_many(lines: &[&[Point2]], p: Point2) -> bool {
     let mut inside = false;
     for line in lines {
         for w in line.windows(2) {
-            let (a, b) = (w[0], w[1]);
-            if (a.y > p.y) != (b.y > p.y) {
-                let x = (b.x - a.x).mul_add((p.y - a.y) / (b.y - a.y), a.x);
-                if p.x < x {
-                    inside = !inside;
-                }
+            if ray_crosses_segment::<Exact>(w[0], w[1], p) {
+                inside = !inside;
             }
         }
     }
@@ -376,6 +390,34 @@ fn interior_point(rings: &[Vec<Point2>], snap: f64) -> Option<Point2> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// The even-odd containment is a sign decision, and it goes through the
+    /// predicate: the crossing question near a slanted edge is answered by
+    /// `orient2d` on both sides of the edge, at separations where a computed
+    /// intersection abscissa would be pure rounding.
+    #[test]
+    fn containment_is_decided_by_the_predicate() {
+        let ring = vec![
+            Point2::new(0.0, -1.0),
+            Point2::new(1.0, 0.0),
+            Point2::new(0.0, 1.0),
+            Point2::new(-1.0, 0.0),
+        ];
+        assert!(inside(&ring, Point2::new(0.0, 0.0)));
+        assert!(!inside(&ring, Point2::new(0.75, 0.5)));
+        // Astride the slanted edge x + y = 1: the side flips with the sign.
+        let eps = 1e-14;
+        assert!(inside(&ring, Point2::new(0.5 - eps, 0.5)));
+        assert!(!inside(&ring, Point2::new(0.5 + eps, 0.5)));
+        // A point exactly on the edge's line, straddle satisfied, reads as
+        // no crossing from either side — the convention the strict
+        // comparison had, now stated by `Sign::Zero`.
+        assert!(!ray_crosses_segment::<Exact>(
+            Point2::new(1.0, 0.0),
+            Point2::new(0.0, 1.0),
+            Point2::new(0.5, 0.5),
+        ));
+    }
 
     /// A square's four sides as boundary strands, pre-split at the corners.
     fn square(side: f64) -> Vec<Strand<usize>> {
