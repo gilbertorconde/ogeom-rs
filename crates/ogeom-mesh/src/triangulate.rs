@@ -227,46 +227,84 @@ fn orient_pieces(mesh: &mut Triangulation, pieces: &[(usize, usize)]) {
     }
 
     // Manifold constraints: exactly two pieces sharing a run. Same recorded
-    // direction means exactly one must flip.
-    let mut neighbours: Vec<Vec<(usize, bool)>> = vec![Vec::new(); pieces.len()];
+    // direction means exactly one must flip. A pair of faces shares many
+    // runs and slop can corrupt a few, so each pair's constraint is the
+    // majority of its runs — and ties abstain rather than guess. Everything
+    // is aggregated in sorted order, so the answer does not depend on hash
+    // iteration.
+    let mut votes: std::collections::BTreeMap<(usize, usize), (u32, u32)> =
+        std::collections::BTreeMap::new();
     for list in owners.values() {
         if let [(a, fa), (b, fb)] = list[..]
             && a != b
         {
-            neighbours[a].push((b, fa == fb));
-            neighbours[b].push((a, fa == fb));
-        }
-    }
-
-    let mut flip: Vec<Option<bool>> = vec![None; pieces.len()];
-    for start in 0..pieces.len() {
-        if flip[start].is_some() {
-            continue;
-        }
-        let mut component = Vec::new();
-        let mut queue = std::collections::VecDeque::from([start]);
-        flip[start] = Some(false);
-        while let Some(i) = queue.pop_front() {
-            component.push(i);
-            let here = flip[i] == Some(true);
-            for &(j, same_direction) in &neighbours[i] {
-                let want = here != same_direction;
-                if flip[j].is_none() {
-                    flip[j] = Some(want);
-                    queue.push_back(j);
-                }
+            let pair = (a.min(b), a.max(b));
+            let entry = votes.entry(pair).or_insert((0, 0));
+            if fa == fb {
+                entry.0 += 1;
+            } else {
+                entry.1 += 1;
             }
         }
-        let flipped = component.iter().filter(|&&i| flip[i] == Some(true)).count();
-        if flipped * 2 > component.len() {
-            for &i in &component {
-                flip[i] = Some(flip[i] != Some(true));
+    }
+    // Strongest constraints first: a pair vouched for by many runs outranks
+    // one hanging on a sliver, so when the graph carries a contradiction —
+    // an odd cycle born of slop — the weakest link is the one disbelieved.
+    // Union-find with parity keeps the whole resolution order-independent.
+    // A pair whose runs split evenly still says the faces touch: it joins
+    // the components with the consistent-shell prior, at zero strength, so
+    // a fragment cannot drift off and choose its polarity alone.
+    let mut constraints: Vec<(u32, usize, usize, bool)> = votes
+        .iter()
+        .map(|(&(a, b), &(same, opposite))| (same.abs_diff(opposite), a, b, same > opposite))
+        .collect();
+    constraints.sort_by(|x, y| y.0.cmp(&x.0).then(x.1.cmp(&y.1)).then(x.2.cmp(&y.2)));
+
+    let mut parent: Vec<usize> = (0..pieces.len()).collect();
+    // Whether a piece is flipped relative to its parent.
+    let mut parity: Vec<bool> = vec![false; pieces.len()];
+    fn find(parent: &mut [usize], parity: &mut [bool], i: usize) -> (usize, bool) {
+        if parent[i] == i {
+            return (i, false);
+        }
+        let (root, above) = find(parent, parity, parent[i]);
+        parent[i] = root;
+        parity[i] ^= above;
+        (root, parity[i])
+    }
+    for &(_, a, b, same_direction) in &constraints {
+        let (ra, pa) = find(&mut parent, &mut parity, a);
+        let (rb, pb) = find(&mut parent, &mut parity, b);
+        // One of a same-direction pair flips: their parities must differ.
+        let need = same_direction;
+        if ra == rb {
+            // Agreeing or contradicting, the die is cast; a contradiction
+            // here lost to stronger evidence.
+            continue;
+        }
+        parent[rb] = ra;
+        parity[rb] = (pa != pb) != need;
+    }
+
+    let mut flip: Vec<bool> = vec![false; pieces.len()];
+    let mut components: std::collections::BTreeMap<usize, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (i, f) in flip.iter_mut().enumerate() {
+        let (root, p) = find(&mut parent, &mut parity, i);
+        *f = p;
+        components.entry(root).or_default().push(i);
+    }
+    for members in components.values() {
+        let flipped = members.iter().filter(|&&i| flip[i]).count();
+        if flipped * 2 > members.len() {
+            for &i in members {
+                flip[i] = !flip[i];
             }
         }
     }
 
     for (i, &(t0, t1)) in pieces.iter().enumerate() {
-        if flip[i] != Some(true) {
+        if !flip[i] {
             continue;
         }
         let mut flipped_vertices: Vec<u32> = Vec::new();
@@ -325,6 +363,16 @@ pub fn face_boundary(
 /// provides — `None` where an edge has no 3D curve to defer to.
 type RingsWithAnchors = (Vec<Vec<Point2>>, Vec<Vec<Option<Point>>>, bool);
 
+/// One walked ring: chart points, anchors, deflection honesty, the ambiguous
+/// whole-period folds taken, and the half-period ties left undecided.
+type WalkedRing = (
+    Vec<Point2>,
+    Vec<Option<Point>>,
+    bool,
+    Vec<(usize, f64)>,
+    Vec<usize>,
+);
+
 fn trimming_rings(
     model: &Model,
     face: &Shape,
@@ -335,44 +383,18 @@ fn trimming_rings(
 ) -> OgeomResult<RingsWithAnchors> {
     let mut rings = Vec::new();
     let mut ring_anchors = Vec::new();
+    let mut ring_folds: Vec<Vec<(usize, f64)>> = Vec::new();
+    let mut ring_ties: Vec<Vec<usize>> = Vec::new();
     let mut met = true;
     for wire in model.ordered_children_of(face)? {
-        let (mut ring, mut anchors, ring_met) = boundary_ring(model, &wire, id, deflection, tol)?;
+        let (ring, anchors, ring_met, folds, ties) =
+            boundary_ring(model, &wire, id, deflection, tol)?;
         met &= ring_met;
-        // Points closer than the triangulator's own resolution make it
-        // refuse the constraint; a real file's chart can carry them. The
-        // consecutive near-duplicates collapse, anchors staying aligned.
-        if ring.len() >= 3 {
-            let mut extent = 0.0_f64;
-            for pair in ring.windows(2) {
-                extent = extent.max(pair[0].distance(pair[1]));
-            }
-            let eps = extent.mul_add(1e-9, 1e-12);
-            let mut kept_ring = Vec::with_capacity(ring.len());
-            let mut kept_anchors = Vec::with_capacity(anchors.len());
-            for (p, a) in ring.iter().zip(&anchors) {
-                if kept_ring
-                    .last()
-                    .is_some_and(|held: &Point2| held.distance(*p) <= eps)
-                {
-                    continue;
-                }
-                kept_ring.push(*p);
-                kept_anchors.push(*a);
-            }
-            if kept_ring.len() > 2
-                && let (Some(first), Some(last)) = (kept_ring.first(), kept_ring.last())
-                && first.distance(*last) <= eps
-            {
-                kept_ring.pop();
-                kept_anchors.pop();
-            }
-            ring = kept_ring;
-            anchors = kept_anchors;
-        }
         if ring.len() >= 3 {
             rings.push(ring);
             ring_anchors.push(anchors);
+            ring_folds.push(folds);
+            ring_ties.push(ties);
         }
     }
 
@@ -406,6 +428,8 @@ fn trimming_rings(
             let sign = du_of(&rings[i]).signum();
             let b = rings.remove(j);
             let b_anchors = ring_anchors.remove(j);
+            ring_folds.remove(j);
+            ring_ties.remove(j);
             let a = &mut rings[i];
             let a_anchors = &mut ring_anchors[i];
             let a_last = a.last().copied().unwrap_or(a[0]);
@@ -438,6 +462,89 @@ fn trimming_rings(
             }
         }
     }
+
+    // A single ring still winding after the pairing had no partner, and if
+    // it cannot close it was mis-folded: a jump of exactly one period is the
+    // same 3D point, and the greedy fold that zeroed it may have wound the
+    // ring instead. Undoing one such ambiguous fold — translating the walk
+    // from there on by a period — closes the ring; the join it reopens
+    // still lifts to a single point.
+    if geometry_winds(surface) {
+        use ogeom_geom::Surface as _;
+        let ((ua, ub), _) = surface.domain();
+        let period = ub - ua;
+        for ((ring, folds), ties) in rings.iter_mut().zip(&ring_folds).zip(&ring_ties) {
+            let Some(last) = ring.last().copied() else {
+                continue;
+            };
+            let du = last.x - ring[0].x;
+            let k = (du / period).round();
+            if k == 0.0
+                || (du - k * period).abs() > period * 1e-3
+                || ring[0].distance(last) <= period * 1e-3
+            {
+                continue;
+            }
+            // The last ambiguous fold whose applied shift matches the
+            // winding is the one to undo.
+            if let Some(&(fold_start, _)) = folds
+                .iter()
+                .rev()
+                .find(|(_, shift)| (shift - k * period).abs() <= period * 1e-6)
+                && fold_start < ring.len()
+            {
+                // Translating from the last undecided tie before the fold —
+                // where the walk first guessed — keeps the period jump on
+                // the degenerate row, where it lifts to nothing.
+                let start = ties
+                    .iter()
+                    .rev()
+                    .find(|&&t| t < fold_start)
+                    .copied()
+                    .unwrap_or(fold_start);
+                for p in &mut ring[start..] {
+                    p.x -= k * period;
+                }
+            }
+        }
+    }
+
+    // Points closer than the triangulator's own resolution make it refuse
+    // the constraint; a real file's chart can carry them. The consecutive
+    // near-duplicates collapse, anchors staying aligned.
+    for (ring, anchors) in rings.iter_mut().zip(ring_anchors.iter_mut()) {
+        if ring.len() < 3 {
+            continue;
+        }
+        let mut extent = 0.0_f64;
+        for pair in ring.windows(2) {
+            extent = extent.max(pair[0].distance(pair[1]));
+        }
+        let eps = extent.mul_add(1e-9, 1e-12);
+        let mut kept_ring = Vec::with_capacity(ring.len());
+        let mut kept_anchors = Vec::with_capacity(anchors.len());
+        for (p, a) in ring.iter().zip(anchors.iter()) {
+            if kept_ring
+                .last()
+                .is_some_and(|held: &Point2| held.distance(*p) <= eps)
+            {
+                continue;
+            }
+            kept_ring.push(*p);
+            kept_anchors.push(*a);
+        }
+        if kept_ring.len() > 2
+            && let (Some(first), Some(last)) = (kept_ring.first(), kept_ring.last())
+            && first.distance(*last) <= eps
+        {
+            kept_ring.pop();
+            kept_anchors.pop();
+        }
+        *ring = kept_ring;
+        *anchors = kept_anchors;
+    }
+    rings.retain(|r| r.len() >= 3);
+    ring_anchors.retain(|a| a.len() >= 3);
 
     if rings.is_empty() {
         // A face with no wires covers its surface's whole domain, so the domain
@@ -506,9 +613,16 @@ fn boundary_ring(
     surface: ogeom_topo::SurfaceId,
     deflection: Deflection,
     tol: Tolerances,
-) -> OgeomResult<(Vec<Point2>, Vec<Option<Point>>, bool)> {
+) -> OgeomResult<WalkedRing> {
     let mut ring: Vec<Point2> = Vec::new();
     let mut anchors: Vec<Option<Point>> = Vec::new();
+    // Ambiguous folds: where an edge was translated a whole period to
+    // continue the walk from a start that already coincided modulo the
+    // period — the fold was one of two defensible choices, recorded so a
+    // mis-wound ring can be unwound.
+    let mut folds: Vec<(usize, f64)> = Vec::new();
+    // Half-period jumps whose side could not be decided when walked.
+    let mut ties: Vec<usize> = Vec::new();
     let mut met = true;
 
     // Start the walk off a seam if the wire allows it: a seam's side is
@@ -705,7 +819,20 @@ fn boundary_ring(
             };
             let mut shift = Point2::new(0.0, 0.0);
             if geometry.is_periodic_u() && (ub - ua) > 0.0 {
-                shift.x = whole_periods(last.x - first.x, ub - ua);
+                let span = ub - ua;
+                let gap = last.x - first.x;
+                shift.x = whole_periods(gap, span);
+                if shift.x != 0.0 && (gap - shift.x).abs() <= span * 1e-6 {
+                    // The start already stood a whole period from the walk —
+                    // the same 3D point — so this fold is a choice, not a
+                    // repair; recorded so a mis-wound ring can be unwound.
+                    folds.push((ring.len(), shift.x));
+                } else if ((gap / span).fract().abs() - 0.5).abs() <= 1e-9 {
+                    // A half-period tie: either side of the degenerate row
+                    // was defensible, and if the ring comes out wound the
+                    // unwinding starts here rather than at the later fold.
+                    ties.push(ring.len());
+                }
             }
             if geometry.is_periodic_v() && (vb - va) > 0.0 {
                 shift.y = whole_periods(last.y - first.y, vb - va);
@@ -850,7 +977,7 @@ fn boundary_ring(
             }
         }
     }
-    Ok((ring, anchors, met))
+    Ok((ring, anchors, met, folds, ties))
 }
 
 /// Parameters at which to sample an edge, taken from its 3D curve.

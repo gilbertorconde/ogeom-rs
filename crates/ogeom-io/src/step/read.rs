@@ -178,9 +178,46 @@ impl Reader<'_> {
     /// conversion — and which applies is not a matter of existence but of
     /// assignment: `GLOBAL_UNIT_ASSIGNED_CONTEXT` lists the ones in force.
     fn assigned_units(&self) -> Vec<u64> {
+        // A file may carry several unit contexts — inches for the model,
+        // millimetres for its annotation sheet — and the shapes' own
+        // representations name the one their coordinates mean. That context
+        // goes first; the rest follow in entity order, so the answer never
+        // depends on how a map happens to iterate.
+        let mut cited: Vec<u64> = self
+            .exchange
+            .data
+            .values()
+            .filter(|inst| {
+                inst.parts
+                    .iter()
+                    .any(|(k, _)| k.ends_with("SHAPE_REPRESENTATION"))
+            })
+            .filter_map(|inst| {
+                inst.parts
+                    .iter()
+                    .find(|(k, _)| k.ends_with("SHAPE_REPRESENTATION"))
+                    .and_then(|(_, args)| args.last())
+                    .and_then(Arg::reference)
+            })
+            .collect();
+        cited.sort_unstable();
+        cited.dedup();
+
+        let mut contexts: Vec<u64> = self
+            .exchange
+            .data
+            .iter()
+            .filter(|(_, inst)| inst.part("GLOBAL_UNIT_ASSIGNED_CONTEXT").is_some())
+            .map(|(id, _)| *id)
+            .collect();
+        contexts.sort_unstable();
+        contexts.sort_by_key(|id| !cited.contains(id));
+
         let mut out = Vec::new();
-        for instance in self.exchange.data.values() {
-            if let Some(args) = instance.part("GLOBAL_UNIT_ASSIGNED_CONTEXT") {
+        for id in contexts {
+            if let Some(instance) = self.exchange.data.get(&id)
+                && let Some(args) = instance.part("GLOBAL_UNIT_ASSIGNED_CONTEXT")
+            {
                 for arg in args.iter().filter_map(Arg::list).flatten() {
                     if let Some(r) = arg.reference() {
                         out.push(r);
@@ -1236,6 +1273,54 @@ impl Reader<'_> {
                 }
             }
         }
+        // Where the chart collapses — a sphere's pole, a cone's apex — the
+        // u of a sample is atan2 of noise: the point determines no angle.
+        // The *arc* does: a smooth curve through the pole approaches it at
+        // a definite chart angle, which is the limit of its well-conditioned
+        // neighbours. Samples whose u-direction has collapsed relative to
+        // their v-direction are repaired by interpolating u between the
+        // nearest sound samples, extrapolating at the ends.
+        let weak: Vec<bool> = trace
+            .iter()
+            .map(|uv| {
+                surface
+                    .d1_at(uv.x, uv.y, self.tol)
+                    .is_ok_and(|(du, dv)| du.magnitude() < dv.magnitude() * 1e-3)
+            })
+            .collect();
+        if weak.iter().any(|w| *w) && weak.iter().filter(|w| !**w).count() >= 2 {
+            let strong: Vec<usize> = (0..trace.len()).filter(|&i| !weak[i]).collect();
+            let u_span = if surface.is_periodic_u() {
+                ua.max(ub) - ua.min(ub)
+            } else {
+                f64::INFINITY
+            };
+            for i in 0..trace.len() {
+                if !weak[i] {
+                    continue;
+                }
+                let after = strong.iter().position(|&s| s > i);
+                let (a, b) = match after {
+                    Some(0) => (strong[0], strong[1]),
+                    Some(k) => (strong[k - 1], strong[k]),
+                    None => (strong[strong.len() - 2], strong[strong.len() - 1]),
+                };
+                // A curve *through* the pole genuinely jumps its angle
+                // there; only a run whose sound neighbours agree is noise
+                // to smooth over.
+                if a < i && i < b && (trace[b].x - trace[a].x).abs() > u_span * 0.25 {
+                    continue;
+                }
+                let (ta, tb) = (parameters[a], parameters[b]);
+                let f = if (tb - ta).abs() <= f64::MIN_POSITIVE {
+                    0.0
+                } else {
+                    (parameters[i] - ta) / (tb - ta)
+                };
+                trace[i].x = trace[a].x + (trace[b].x - trace[a].x) * f;
+            }
+        }
+
         // The tolerance carried into the chart through the trace's own
         // metric — the honest cheap version, refined by the fit's report.
         let scale = if space_run > self.tol.confusion() {
