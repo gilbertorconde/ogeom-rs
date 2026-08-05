@@ -7,5 +7,7 @@
 //! 3D model is a core CAD capability and not optional for a complete kernel.
 
 pub mod project;
+pub mod section;
 
 pub use project::{Drawing, DrawnCurve, Source, View, Visibility, project};
+pub use section::{SectionView, broken_section, section};
