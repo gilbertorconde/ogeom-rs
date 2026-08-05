@@ -14,7 +14,9 @@
 //! consumer solve it again.
 
 mod model;
+mod snap;
 mod solve;
 
 pub use model::{ArcId, CircleId, Constraint, ConstraintId, LineId, PointId, Sketch, TangencySide};
+pub use snap::{Snap, SnapKind, SnapOptions};
 pub use solve::{Diagnosis, Freedom, Solution, SolveOptions};
