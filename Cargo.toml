@@ -19,6 +19,7 @@ members = [
     "crates/ogeom-recognize",
     "crates/ogeom-select",
     "crates/ogeom",
+    "tools/ogeom-bench",
     "tools/ogeom-cli",
     "tools/ogeom-view",
 ]

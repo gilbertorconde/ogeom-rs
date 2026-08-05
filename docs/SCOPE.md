@@ -868,6 +868,20 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 
 ---
 
+## Appendix: performance
+
+`tools/ogeom-bench` times the hot paths the usage profile named —
+construction, traversal, tessellation, the boolean, corpus import — as
+medians over repeated runs, each normalized by a fixed arithmetic spin so
+the recorded numbers are machine-portable ratios rather than milliseconds.
+The baseline ratios are checked in beside the tool; `--check` reports the
+drift against them, and `check.sh` runs it *informationally* — watched,
+never gated, because a loaded machine would turn a performance gate into a
+coin flip. A regression that matters shows up as a ratio, in review, where
+a person decides whether it bought something.
+
+---
+
 ## Appendix: usage evidence
 
 `tools/apisurf` measures how an application exercises a kernel of this shape.

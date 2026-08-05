@@ -1,0 +1,7 @@
+{
+  "construct_boxes": 0.3084,
+  "traverse_box": 0.3939,
+  "tessellate_torus": 0.0742,
+  "boolean_drill": 0.2839,
+  "import_ftc11": 0.0022
+}

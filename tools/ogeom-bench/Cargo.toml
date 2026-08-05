@@ -1,0 +1,18 @@
+[package]
+name = "ogeom-bench"
+description = "Benchmark harness for the ogeom kernel's hot paths"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ogeom-bench"
+path = "src/main.rs"
+
+[dependencies]
+ogeom = { path = "../../crates/ogeom", version = "0.0.0" }
+
+[lints]
+workspace = true

@@ -307,6 +307,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ogeom-bench"
+version = "0.0.0"
+dependencies = [
+ "ogeom",
+]
+
+[[package]]
 name = "ogeom-bool"
 version = "0.0.0"
 dependencies = [

@@ -35,6 +35,12 @@ for i in $(seq 1 "$runs"); do
     cargo test --workspace --all-features --lib --no-fail-fast
 done
 
+echo "== bench (informational) =="
+# Watched, not gated: a loaded box would turn a performance gate into a
+# coin flip. The ratios are calibrated against a fixed arithmetic spin, so
+# they mean the same thing across machines.
+cargo run --quiet --release -p ogeom-bench -- --check tools/ogeom-bench/baseline.json || true
+
 echo "== docs =="
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
 
