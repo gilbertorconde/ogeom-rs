@@ -110,8 +110,21 @@ pub fn approximate_branch(
     // error bounds every coordinate.
     let unwrapped_a = unwrap_periodic(a, &kept_a);
     let unwrapped_b = unwrap_periodic(b, &kept_b);
-    let (space, on_a, on_b) =
-        ogeom_geom::fit::fit_points_joint(&points, &unwrapped_a, &unwrapped_b, 3, tolerance, tol)?;
+    // A closed branch takes the loop-smoothing fit: the join's tangents are
+    // constrained to agree in all seven coordinates, so the section curve and
+    // both pcurves cross their own seam without a crease.
+    let (space, on_a, on_b) = if branch.closed() {
+        ogeom_geom::fit::fit_points_joint_closed(
+            &points,
+            &unwrapped_a,
+            &unwrapped_b,
+            3,
+            tolerance,
+            tol,
+        )?
+    } else {
+        ogeom_geom::fit::fit_points_joint(&points, &unwrapped_a, &unwrapped_b, 3, tolerance, tol)?
+    };
 
     Ok(IntersectionCurve {
         fit_error: space

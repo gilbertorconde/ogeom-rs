@@ -192,6 +192,43 @@ pub fn fit_points_joint(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<(Fitted<BSplineCurve>, BSpline2d, BSpline2d)> {
+    fit_points_joint_inner(points, on_a, on_b, degree, tolerance, false, tol)
+}
+
+/// As [`fit_points_joint`], with a closed loop's join made C1.
+///
+/// The seven-dimensional twin of [`fit_points_closed`]: when the trace is a
+/// loop — the first sample repeated at the end in every space — the join's
+/// tangent constraint is eliminated inside the shared solve, so the curve
+/// *and both pcurves* cross their seam smoothly, still same-parameter by
+/// construction. An input that is not closed in all seven coordinates fits
+/// as [`fit_points_joint`] would; the constraint simply never engages.
+///
+/// # Errors
+///
+/// As [`fit_points_joint`].
+#[allow(clippy::type_complexity)]
+pub fn fit_points_joint_closed(
+    points: &[Point],
+    on_a: &[Point2],
+    on_b: &[Point2],
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<(Fitted<BSplineCurve>, BSpline2d, BSpline2d)> {
+    fit_points_joint_inner(points, on_a, on_b, degree, tolerance, true, tol)
+}
+
+#[allow(clippy::type_complexity)]
+fn fit_points_joint_inner(
+    points: &[Point],
+    on_a: &[Point2],
+    on_b: &[Point2],
+    degree: usize,
+    tolerance: f64,
+    smooth_loop: bool,
+    tol: Tolerances,
+) -> OgeomResult<(Fitted<BSplineCurve>, BSpline2d, BSpline2d)> {
     if points.len() != on_a.len() || points.len() != on_b.len() {
         ogeom_bail!(
             Construction,
@@ -204,7 +241,7 @@ pub fn fit_points_joint(
         .zip(on_b)
         .map(|((p, a), b)| [p.x, p.y, p.z, a.x, a.y, b.x, b.y])
         .collect();
-    let (knots, control, error, met) = fit::<7>(&joined, degree, tolerance, false, tol)?;
+    let (knots, control, error, met) = fit::<7>(&joined, degree, tolerance, smooth_loop, tol)?;
     let curve = BSplineCurve::new(
         knots.clone(),
         control
@@ -1151,6 +1188,40 @@ mod tests {
         let ocurve: crate::curve::Curve = open.curve.into();
         let (oa, ob) = (a, b);
         let _ = (ocurve.d1_at(oa, T).unwrap(), ocurve.d1_at(ob, T).unwrap());
+    }
+
+    #[test]
+    fn a_joint_closed_fit_is_smooth_in_all_seven_coordinates() {
+        use crate::traits::{Curve2d as _, Curve3d as _};
+        let n = 96;
+        let mut points = Vec::new();
+        let mut on_a = Vec::new();
+        let mut on_b = Vec::new();
+        for i in 0..=n {
+            #[allow(clippy::cast_precision_loss)]
+            let t = core::f64::consts::TAU * i as f64 / n as f64;
+            points.push(Point::new(4.0 * t.cos(), 4.0 * t.sin(), 1.0));
+            // Two different smooth closed chart images of the same loop.
+            on_a.push(Point2::new(t.cos(), t.sin()));
+            on_b.push(Point2::new(2.0 * t.sin(), t.cos() - 3.0));
+        }
+        let (space, pa, pb) = fit_points_joint_closed(&points, &on_a, &on_b, 3, 1e-4, T).unwrap();
+        assert!(space.met, "reached {:e}", space.error);
+
+        let curve: crate::curve::Curve = space.curve.into();
+        let (lo, hi) = curve.domain();
+        let out3 = curve.d1_at(lo, T).unwrap();
+        let back3 = curve.d1_at(hi, T).unwrap();
+        assert!((out3 - back3).magnitude() <= 1e-9 * out3.magnitude());
+        for plane in [&pa, &pb] {
+            let planar: crate::curve2d::PlanarCurve = plane.clone().into();
+            let out2 = planar.d1_at(lo, T).unwrap();
+            let back2 = planar.d1_at(hi, T).unwrap();
+            assert!(
+                (out2 - back2).magnitude() <= 1e-9 * out2.magnitude(),
+                "a pcurve creases at its seam"
+            );
+        }
     }
 
     #[test]
