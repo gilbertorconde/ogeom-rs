@@ -201,7 +201,21 @@ pub fn write(model: &Model, roots: &[Shape], options: WriteOptions) -> OgeomResu
 /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if it names a handle that
 /// is not in the file.
 pub fn read(text: &str) -> OgeomResult<(Model, Vec<Shape>)> {
+    let (model, roots, leftover, _) = read_core(text)?;
+    if let Some(keyword) = leftover {
+        ogeom_bail!(Construction, "unknown record `{keyword}`");
+    }
+    Ok((model, roots))
+}
+
+/// The model section, stopping at the first record it does not know.
+///
+/// Returns the leftover keyword and the cursor standing just past it, so a
+/// layered reader — the document's — can pick up where the model's ends.
+#[allow(clippy::type_complexity)]
+fn read_core(text: &str) -> OgeomResult<(Model, Vec<Shape>, Option<String>, Cursor<'_>)> {
     let mut cursor = Cursor::new(text);
+    let mut leftover = None;
 
     if cursor.word()? != MAGIC {
         ogeom_bail!(Construction, "not an ogeom document");
@@ -279,7 +293,10 @@ pub fn read(text: &str) -> OgeomResult<(Model, Vec<Shape>)> {
             }
             "operation" => parts.current_op = OpId(cursor.small()?),
             "root" => roots.push(cursor.shape()?),
-            other => ogeom_bail!(Construction, "unknown record `{other}`"),
+            other => {
+                leftover = Some(other.to_string());
+                break;
+            }
         }
     }
 
@@ -293,7 +310,7 @@ pub fn read(text: &str) -> OgeomResult<(Model, Vec<Shape>)> {
         .iter()
         .map(|root| model.bind(root))
         .collect::<OgeomResult<Vec<_>>>()?;
-    Ok((model, roots))
+    Ok((model, roots, leftover, cursor))
 }
 
 /// Read the `units` record, which every document since version 1 carries.
@@ -337,6 +354,378 @@ fn expect_datum(key: (u32, u32), next: usize) -> OgeomResult<()> {
 }
 
 // --- writing -----------------------------------------------------------------
+
+// --- the document layer -------------------------------------------------------
+
+/// Write a document: the model, then the product structure, appearance,
+/// names and PMI over it.
+///
+/// The model section is exactly what [`write`] emits, so a model-only reader
+/// stops cleanly at the document records; writing what [`read_document`]
+/// read reproduces the bytes, the same contract the model layer keeps.
+///
+/// # Errors
+///
+/// As [`write`].
+pub fn write_document(
+    document: &ogeom_doc::Document,
+    options: WriteOptions,
+) -> OgeomResult<String> {
+    let mut out = write(document.model(), &[], options)?;
+
+    for (_, product) in document.products() {
+        let mut t = Vec::new();
+        w(&mut t, "product");
+        text(&mut t, &product.name);
+        match product.colour {
+            Some(c) => {
+                flag(&mut t, true);
+                for channel in [c.r, c.g, c.b, c.a] {
+                    n(&mut t, channel);
+                }
+            }
+            None => flag(&mut t, false),
+        }
+        match &product.kind {
+            ogeom_doc::ProductKind::Part { shape: part } => {
+                w(&mut t, "part");
+                shape(&mut t, part);
+            }
+            ogeom_doc::ProductKind::Assembly { children } => {
+                w(&mut t, "assembly");
+                u(&mut t, children.len() as u64);
+                for instance in children {
+                    u(&mut t, u64::from(instance.product.index()));
+                    location(&mut t, &instance.location);
+                    match &instance.name {
+                        Some(name) => text(&mut t, name),
+                        None => w(&mut t, "-"),
+                    }
+                }
+            }
+        }
+        emit(&mut out, &t);
+    }
+
+    let mut colours: Vec<_> = document.colours().collect();
+    colours.sort_by_key(|(node, _)| (node.index(), node.generation()));
+    for (node, colour) in colours {
+        let mut t = Vec::new();
+        w(&mut t, "doc-colour");
+        key(&mut t, node);
+        for channel in [colour.r, colour.g, colour.b, colour.a] {
+            n(&mut t, channel);
+        }
+        emit(&mut out, &t);
+    }
+    let mut names: Vec<_> = document.names().collect();
+    names.sort_by_key(|(node, _)| (node.index(), node.generation()));
+    for (node, name) in names {
+        let mut t = Vec::new();
+        w(&mut t, "doc-name");
+        key(&mut t, node);
+        text(&mut t, name);
+        emit(&mut out, &t);
+    }
+
+    let pmi = document.pmi();
+    for dimension in &pmi.dimensions {
+        let mut t = Vec::new();
+        w(&mut t, "pmi-dim");
+        text(&mut t, &dimension.name);
+        w(
+            &mut t,
+            match dimension.kind {
+                ogeom_doc::MeasureKind::Length => "L",
+                ogeom_doc::MeasureKind::Angle => "A",
+            },
+        );
+        flag(&mut t, dimension.location);
+        optional(&mut t, dimension.plus);
+        optional(&mut t, dimension.minus);
+        u(&mut t, dimension.values.len() as u64);
+        for v in &dimension.values {
+            n(&mut t, *v);
+        }
+        u(&mut t, dimension.features.len() as u64);
+        for feature in &dimension.features {
+            u(&mut t, feature.len() as u64);
+            for node in feature {
+                key(&mut t, *node);
+            }
+        }
+        emit(&mut out, &t);
+    }
+    for tolerance in &pmi.tolerances {
+        let mut t = Vec::new();
+        w(&mut t, "pmi-tol");
+        text(&mut t, &tolerance.kind);
+        text(&mut t, &tolerance.name);
+        n(&mut t, tolerance.magnitude);
+        u(&mut t, tolerance.datums.len() as u64);
+        for label in &tolerance.datums {
+            text(&mut t, label);
+        }
+        u(&mut t, tolerance.items.len() as u64);
+        for node in &tolerance.items {
+            key(&mut t, *node);
+        }
+        emit(&mut out, &t);
+    }
+    for datum in &pmi.datums {
+        let mut t = Vec::new();
+        w(&mut t, "pmi-datum");
+        text(&mut t, &datum.label);
+        u(&mut t, datum.items.len() as u64);
+        for node in &datum.items {
+            key(&mut t, *node);
+        }
+        emit(&mut out, &t);
+    }
+    Ok(out)
+}
+
+/// Read a document back: the model plus everything over it.
+///
+/// # Errors
+///
+/// As [`read`], plus a malformed document record.
+pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
+    let (model, _roots, mut pending, mut cursor) = read_core(text)?;
+    let mut document = ogeom_doc::Document::over(model);
+    // Product ids are issued in write order, so index references bind by
+    // re-adding in order; instances arrive after every product exists in the
+    // file's own ordering discipline, which parts first would break — so
+    // instances are held back and applied at the end.
+    let mut ids: Vec<ogeom_doc::ProductId> = Vec::new();
+    let mut instances: Vec<(usize, usize, Location, Option<String>)> = Vec::new();
+    let mut order = 0_usize;
+
+    loop {
+        let Some(tag) = pending.take().or_else(|| {
+            if cursor.done() {
+                None
+            } else {
+                cursor.word().ok().map(ToString::to_string)
+            }
+        }) else {
+            break;
+        };
+        match tag.as_str() {
+            "product" => {
+                let name = read_text(&mut cursor)?;
+                let colour = if cursor.flag()? {
+                    Some(ogeom_doc::Colour {
+                        r: cursor.number()?,
+                        g: cursor.number()?,
+                        b: cursor.number()?,
+                        a: cursor.number()?,
+                    })
+                } else {
+                    None
+                };
+                match cursor.word()? {
+                    "part" => {
+                        let part = document.model().bind(&cursor.shape()?)?;
+                        let id = document.add_part(&name, part);
+                        ids.push(id);
+                    }
+                    "assembly" => {
+                        let id = document.add_assembly(&name);
+                        ids.push(id);
+                        let count = cursor.count()?;
+                        for _ in 0..count {
+                            let child = cursor.count()?;
+                            let at = cursor.location()?;
+                            let instance_name = match cursor.peek() {
+                                Some("-") => {
+                                    cursor.word()?;
+                                    None
+                                }
+                                _ => Some(read_text(&mut cursor)?),
+                            };
+                            instances.push((order, child, at, instance_name));
+                        }
+                    }
+                    other => {
+                        ogeom_bail!(
+                            Construction,
+                            "a product is `part` or `assembly`, not `{other}`"
+                        )
+                    }
+                }
+                if let Some(c) = colour {
+                    let id = ids[ids.len() - 1];
+                    document.set_product_colour(id, c)?;
+                }
+                order += 1;
+            }
+            "doc-colour" => {
+                let node: TShapeId = cursor.handle()?;
+                let node = bind_node(&document, node)?;
+                let colour = ogeom_doc::Colour {
+                    r: cursor.number()?,
+                    g: cursor.number()?,
+                    b: cursor.number()?,
+                    a: cursor.number()?,
+                };
+                document.set_colour(&Shape::of(node), colour);
+            }
+            "doc-name" => {
+                let node: TShapeId = cursor.handle()?;
+                let node = bind_node(&document, node)?;
+                let name = read_text(&mut cursor)?;
+                document.set_name(&Shape::of(node), name);
+            }
+            "pmi-dim" => {
+                let name = read_text(&mut cursor)?;
+                let kind = match cursor.word()? {
+                    "A" => ogeom_doc::MeasureKind::Angle,
+                    _ => ogeom_doc::MeasureKind::Length,
+                };
+                let location = cursor.flag()?;
+                let plus = read_optional(&mut cursor)?;
+                let minus = read_optional(&mut cursor)?;
+                let mut values = Vec::new();
+                for _ in 0..cursor.count()? {
+                    values.push(cursor.number()?);
+                }
+                let mut features = Vec::new();
+                for _ in 0..cursor.count()? {
+                    let mut feature = Vec::new();
+                    for _ in 0..cursor.count()? {
+                        let node: TShapeId = cursor.handle()?;
+                        feature.push(bind_node(&document, node)?);
+                    }
+                    features.push(feature);
+                }
+                document.pmi_mut().dimensions.push(ogeom_doc::Dimension {
+                    name,
+                    values,
+                    kind,
+                    plus,
+                    minus,
+                    features,
+                    location,
+                });
+            }
+            "pmi-tol" => {
+                let kind = read_text(&mut cursor)?;
+                let name = read_text(&mut cursor)?;
+                let magnitude = cursor.number()?;
+                let mut datums = Vec::new();
+                for _ in 0..cursor.count()? {
+                    datums.push(read_text(&mut cursor)?);
+                }
+                let mut items = Vec::new();
+                for _ in 0..cursor.count()? {
+                    let node: TShapeId = cursor.handle()?;
+                    items.push(bind_node(&document, node)?);
+                }
+                document
+                    .pmi_mut()
+                    .tolerances
+                    .push(ogeom_doc::GeometricTolerance {
+                        kind,
+                        name,
+                        magnitude,
+                        datums,
+                        items,
+                    });
+            }
+            "pmi-datum" => {
+                let label = read_text(&mut cursor)?;
+                let mut items = Vec::new();
+                for _ in 0..cursor.count()? {
+                    let node: TShapeId = cursor.handle()?;
+                    items.push(bind_node(&document, node)?);
+                }
+                document
+                    .pmi_mut()
+                    .datums
+                    .push(ogeom_doc::Datum { label, items });
+            }
+            other => ogeom_bail!(Construction, "unknown record `{other}`"),
+        }
+    }
+
+    for (parent, child, at, name) in instances {
+        let (Some(&parent), Some(&child)) = (ids.get(parent), ids.get(child)) else {
+            ogeom_bail!(Dangling, "an instance names a product not in the file");
+        };
+        let at = document.model().bind_location(&at)?;
+        document.add_instance_at(parent, child, at, name)?;
+    }
+    Ok(document)
+}
+
+/// A raw node handle bound into the document's model scope.
+fn bind_node(document: &ogeom_doc::Document, node: TShapeId) -> OgeomResult<TShapeId> {
+    Ok(document.model().bind(&Shape::of(node))?.node())
+}
+
+/// Append a text token: `'` then the percent-encoded body, so names survive
+/// whitespace tokenization and an empty name survives at all.
+fn text(t: &mut Vec<String>, s: &str) {
+    let mut token = String::from("'");
+    for byte in s.bytes() {
+        if byte.is_ascii_graphic() && byte != b'%' {
+            token.push(byte as char);
+        } else {
+            token.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    t.push(token);
+}
+
+/// Read a text token back.
+fn read_text(cursor: &mut Cursor<'_>) -> OgeomResult<String> {
+    let token = cursor.word()?;
+    let Some(body) = token.strip_prefix('\'') else {
+        ogeom_bail!(Construction, "expected a text token, got `{token}`");
+    };
+    let mut out = Vec::new();
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() + 1 && i + 2 < bytes.len() + 1 {
+            let hex = body.get(i + 1..i + 3).unwrap_or("");
+            let Ok(byte) = u8::from_str_radix(hex, 16) else {
+                ogeom_bail!(
+                    Construction,
+                    "a text token escapes `%{hex}`, which is not hex"
+                );
+            };
+            out.push(byte);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out)
+        .map_err(|_| ogeom_core::ogeom_err!(Construction, "a text token is not UTF-8"))
+}
+
+/// An optional number: a presence flag then the value.
+fn optional(t: &mut Vec<String>, v: Option<f64>) {
+    match v {
+        Some(value) => {
+            flag(t, true);
+            n(t, value);
+        }
+        None => flag(t, false),
+    }
+}
+
+/// Read an optional number back.
+fn read_optional(cursor: &mut Cursor<'_>) -> OgeomResult<Option<f64>> {
+    Ok(if cursor.flag()? {
+        Some(cursor.number()?)
+    } else {
+        None
+    })
+}
 
 /// Append a word.
 fn w(t: &mut Vec<String>, s: &str) {
@@ -879,6 +1268,10 @@ impl<'a> Cursor<'a> {
             .flat_map(str::split_whitespace)
             .collect();
         Self { items, at: 0 }
+    }
+
+    fn peek(&self) -> Option<&'a str> {
+        self.items.get(self.at).copied()
     }
 
     fn done(&self) -> bool {
@@ -1480,6 +1873,90 @@ mod tests {
 
     /// One model holding every kind of shape this can build, and the roots that
     /// name them.
+    #[test]
+    fn a_document_round_trips_with_everything_it_says() {
+        use ogeom_doc::{Colour, Dimension, GeometricTolerance, MeasureKind};
+        let mut document = ogeom_doc::Document::new();
+        let plate = make_box(document.model_mut(), Frame::WORLD, (40.0, 40.0, 5.0), T)
+            .unwrap()
+            .shape;
+        let bolt = make_box(document.model_mut(), Frame::WORLD, (8.0, 8.0, 20.0), T)
+            .unwrap()
+            .shape;
+        let plate_id = document.add_part("plate", plate.clone());
+        let bolt_id = document.add_part("bolt", bolt.clone());
+        let assembly = document.add_assembly("bolted plate");
+        document
+            .add_instance(assembly, plate_id, Transform::IDENTITY, None)
+            .unwrap();
+        document
+            .add_instance(
+                assembly,
+                bolt_id,
+                Transform::translation(ogeom_math::Vector::new(10.0, 10.0, 5.0)),
+                Some("bolt one".into()),
+            )
+            .unwrap();
+        document
+            .set_product_colour(plate_id, Colour::rgb(0.1, 0.8, 0.2))
+            .unwrap();
+        let face = explore_unique(document.model(), &bolt, ShapeType::Face).unwrap()[0].clone();
+        document.set_colour(&face, Colour::rgb(0.9, 0.1, 0.1));
+        document.set_name(&face, "the mounting face");
+        document.pmi_mut().dimensions.push(Dimension {
+            name: "length".into(),
+            values: vec![20.0],
+            kind: MeasureKind::Length,
+            plus: Some(0.1),
+            minus: Some(-0.1),
+            features: vec![vec![face.node()]],
+            location: false,
+        });
+        document.pmi_mut().tolerances.push(GeometricTolerance {
+            kind: "flatness".into(),
+            name: "Flatness.1".into(),
+            magnitude: 0.05,
+            datums: vec!["A".into()],
+            items: vec![face.node()],
+        });
+        document.pmi_mut().datums.push(ogeom_doc::Datum {
+            label: "A".into(),
+            items: vec![face.node()],
+        });
+
+        let text = write_document(&document, WriteOptions::default()).unwrap();
+        let back = read_document(&text).unwrap();
+        let again = write_document(&back, WriteOptions::default()).unwrap();
+        assert_eq!(text, again, "the second write reproduces the first");
+
+        // Structure: same products, same occurrences at the same places.
+        let names: Vec<&str> = back.products().map(|(_, p)| p.name.as_str()).collect();
+        assert_eq!(names, ["plate", "bolt", "bolted plate"]);
+        let root = back.roots()[0];
+        let mut occurrences = back.occurrences_of(root).unwrap();
+        occurrences.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(occurrences.len(), 2);
+        assert_eq!(occurrences[0].path, "bolted plate/bolt one");
+        let world = occurrences[0]
+            .shape
+            .transform(back.model().datums())
+            .unwrap()
+            .apply(Point::new(0.0, 0.0, 0.0));
+        assert!(world.is_equal(Point::new(10.0, 10.0, 5.0), T));
+
+        // Appearance, names and PMI, intact.
+        let bolt_face = explore_unique(back.model(), &occurrences[0].shape, ShapeType::Face)
+            .unwrap()[0]
+            .clone();
+        assert_eq!(back.colour_of(&bolt_face), Some(Colour::rgb(0.9, 0.1, 0.1)));
+        assert_eq!(back.name_of(&bolt_face), Some("the mounting face"));
+        assert_eq!(back.pmi().dimensions.len(), 1);
+        assert_eq!(back.pmi().dimensions[0].values, [20.0]);
+        assert_eq!(back.pmi().tolerances[0].kind, "flatness");
+        assert_eq!(back.pmi().datums[0].label, "A");
+        assert_eq!(back.pmi().datums[0].items.len(), 1);
+    }
+
     #[test]
     fn asymmetric_conic_domains_round_trip() {
         // The domain a constructor happens to produce is symmetric; the

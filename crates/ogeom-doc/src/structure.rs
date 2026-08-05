@@ -21,6 +21,15 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProductId(u32);
 
+impl ProductId {
+    /// The id's position in the document's own product order — the index a
+    /// file format writes and rebinds by re-adding in order.
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+}
+
 /// An RGBA colour, each channel in `[0, 1]`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Colour {
@@ -194,6 +203,45 @@ impl Document {
         } else {
             Location::of(self.model.add_datum(at))
         };
+        let Some(entry) = self.products.get_mut(assembly.0 as usize) else {
+            ogeom_bail!(Dangling, "the assembly is not in this document");
+        };
+        let ProductKind::Assembly { children } = &mut entry.kind else {
+            ogeom_bail!(Construction, "instances go inside assemblies, not parts");
+        };
+        children.push(Instance {
+            product,
+            location,
+            name,
+        });
+        Ok(())
+    }
+
+    /// Place `product` inside `assembly` at an already-resolved location.
+    ///
+    /// The persistence path: a file carries the instance's location chain
+    /// verbatim, and re-minting a datum for it would renumber what the file
+    /// preserved. Checks are as [`Document::add_instance`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Document::add_instance`].
+    pub fn add_instance_at(
+        &mut self,
+        assembly: ProductId,
+        product: ProductId,
+        location: Location,
+        name: Option<String>,
+    ) -> OgeomResult<()> {
+        if self.get(product).is_none() {
+            ogeom_bail!(Dangling, "the product to place is not in this document");
+        }
+        if self.contains_product(product, assembly) {
+            ogeom_bail!(
+                Construction,
+                "placing this product here would make it contain itself"
+            );
+        }
         let Some(entry) = self.products.get_mut(assembly.0 as usize) else {
             ogeom_bail!(Dangling, "the assembly is not in this document");
         };

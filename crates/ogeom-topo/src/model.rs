@@ -196,6 +196,28 @@ impl Model {
         Ok(bound)
     }
 
+    /// Bind a bare location to this model's datum store.
+    ///
+    /// The persistence path's sibling of [`Model::bind`]: a location read
+    /// from a file names datum handles that are unscoped until the store
+    /// that holds them exists. Binding checks them too — a chain naming a
+    /// datum not in this model is an error here rather than wherever it is
+    /// first resolved.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the chain
+    /// names a datum not in this model.
+    pub fn bind_location(&self, location: &Location) -> OgeomResult<Location> {
+        let bound = location.with_datum_scope(self.datums.scope());
+        for &(datum, _) in bound.chain() {
+            if self.datums.get(datum).is_none() {
+                ogeom_bail!(Dangling, "location refers to a datum not in this model");
+            }
+        }
+        Ok(bound)
+    }
+
     /// Bind every handle in a freshly restored model to the arena that holds it.
     fn bind_handles(&mut self) {
         let nodes = self.nodes.scope();
