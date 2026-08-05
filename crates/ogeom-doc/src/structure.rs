@@ -375,6 +375,29 @@ impl Document {
         self.names.iter().map(|(&node, name)| (node, name.as_str()))
     }
 
+    /// Replace a part's shape — the modification step of an edit.
+    ///
+    /// The old shape's node-attached colours, names and PMI stay where they
+    /// are: entities that survived the modification keep their annotations,
+    /// entities that did not simply no longer resolve.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+    /// `product` is not a part;
+    /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if it is not
+    /// in this document.
+    pub fn replace_part_shape(&mut self, product: ProductId, shape: Shape) -> OgeomResult<()> {
+        let Some(entry) = self.products.get_mut(product.0 as usize) else {
+            ogeom_bail!(Dangling, "the product is not in this document");
+        };
+        let ProductKind::Part { shape: slot } = &mut entry.kind else {
+            ogeom_bail!(Construction, "only a part carries a shape to replace");
+        };
+        *slot = shape;
+        Ok(())
+    }
+
     /// The document's semantic PMI.
     #[must_use]
     pub const fn pmi(&self) -> &crate::pmi::Pmi {

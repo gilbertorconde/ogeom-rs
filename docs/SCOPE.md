@@ -156,12 +156,27 @@ canonical recognition and lands in §9.
   resolution, seams said honestly in the sweeps, and "touching is not
   crossing" enforced at every level from surface pairs down to paves.
 
-### M5 — a documents-and-drawings kernel · P5 · §13, §15, §17
+### M5 — a documents-and-drawings kernel · P5 · §13, §15, §17 · **closed, residuals listed**
 
 - A multi-body STEP assembly imported with colours, names and PMI, modified,
-  exported, reimported, and compared against what went in.
+  exported, reimported, and compared against what went in. ✓ Closed: the
+  bolted-plate assembly arrives as three named products with per-product and
+  per-face colours and its semantic PMI (a toleranced dimension, a flatness,
+  a datum); the plate is drilled through the boolean, a third bolt instanced,
+  a colour and a dimension added; the written file reimports with the same
+  products, four occurrences at their placements, the assembly volume equal
+  to the arithmetic of the modification, and every annotation intact.
+  *Residuals:* PMI beyond the semantic core — presentation polylines,
+  modifiers, composite datum systems — and §15's transactional machinery,
+  in the deferred table.
 - A 2D drawing generated from a 3D model: hidden lines removed, visible and
-  hidden edges classified, sections taken.
+  hidden edges classified, sections taken. ✓ Closed: a bored block in
+  three-quarter view classifies every curve, draws the bore by silhouette
+  and keeps the far side dashed rather than gone; the section through the
+  bore reveals the rectangle minus the chord-width slot to arithmetic.
+  *Residuals:* the HLR is polygonal (exact interference deferred), and a
+  section exactly through a bore's axis meets the boolean's tangential
+  refusal — both in the deferred table.
 
 ### M6 — a complete kernel · P6 · §14, §16, §18
 
@@ -718,6 +733,11 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 | ~~Pcurves for edges on B-spline surfaces~~ **done** | §9/§17 | Projection fitting at the curve's own parameters serves every corpus face; slop up to `confusion*1e6` is accepted and *recorded* on the edge's tolerance. Parts still refusing do so for the face-level reasons below. |
 | ~~Welding the cut-imported result~~ **done** | §8/§9 | Edge ends anchor to their vertices within the recorded tolerance, chart points fold onto the ring-continuing periodic branch, and a border-only weld-and-stitch pass runs at the recorded tolerance, floored at a tenth of the chord. The imported cut measures. |
 | Corpus faces that still refuse to triangulate | §9 | Nine corpus parts stay unmeasured for reasons the scan bench isolated per part. Three classes remain. (1) A face bounded by *one* ring that winds a periodic direction — a torus band, a cone around its apex — has a uv boundary that is an open chain once folded, so the trim culls incoherently; it needs the seam-and-split synthesis the two-ring bands already get (ftc_06/07/08/10 cones and tori, ctc_01's apex cones). (2) A plane face whose boundary insertion reports `TooSmall` (ctc_03). (3) ctc_02/04/05 close to within a few hundred border segments of measurable, all of class 1. The reader-side pcurve and weld machinery is done; what remains is per-face boundary synthesis. |
+| Exact HLR | §13 | The drawing pipeline is polygonal: model edges and mesh silhouettes classified by occlusion sampling against the tessellation, as fine as the chord and the sampling. Exact HLR — curve/surface interference resolved analytically, silhouettes as exact curves on the surfaces — is the other half of `HLRBRep`, and it rests on §7's intersectors plus a curve/surface interference walk that does not exist yet. Isoparametric extraction and reflect lines land with it. |
+| Sections through tangential contact | §13/§8 | A section plane exactly through a bore's axis meets the cylinder wall along its rulings, and the boolean refuses the configuration ("kept pieces did not close") — the same tangential-contact class already recorded for §7. The textbook half-section is exactly this cut, so resolving that class buys the drawing too. Off-axis sections through the same bore measure to arithmetic today. |
+| Documents beyond structure and annotation | §15 | The document holds products, instances, colours, names and semantic PMI, and round-trips through STEP. Still owed from §15's own table: user-defined properties, materials, textures, layers, validation properties, undo/redo over a transactional model, and native persistence of the *document* layer (the model already round-trips; the product structure above it does not yet). |
+| PMI beyond the semantic core | §15/§17 | Read and written: dimensional characteristics with values and plus/minus bounds, geometric tolerances with magnitudes and datum precedence, datum letters. Not yet: presentation PMI (the annotation polylines and planes), tolerance modifiers, composite datum systems (A|B), datum targets, and per-feature associations finer than the aspect graph resolves — the angle dimension in the NIST file resolves to no topology because its aspects sit deeper than the two-step walk. A written location dimension keeps its flag but collapses its two features into one aspect. |
+| Exchange formats beyond STEP, STL and native | §17 | The §17 table names IGES, glTF, OBJ, PLY, 3MF, VRML, DXF and the rest; none is started. STEP now runs both directions with assemblies, colours, names and semantic PMI; STL both directions; the native format both directions. |
 | Spindle-torus signed distance | §2 | `Torus::distance_to` handles every torus, including the folded branch of a spindle. `signed_distance_to` is documented as ring and horn tori only: a spindle torus encloses two regions and "inside" does not name one of them. |
 
 ---
