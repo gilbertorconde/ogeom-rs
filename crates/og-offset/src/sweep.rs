@@ -11,8 +11,8 @@
 //! the deferred table, not approximated here.
 
 use og_algo::{
-    Built, edge_vertices, make_cone, make_cylinder, make_edge_between, make_face_with_pcurves,
-    make_solid, make_torus, make_vertex, sew,
+    Built, edge_vertices, make_cone, make_cylinder, make_edge, make_edge_between,
+    make_face_with_pcurves, make_solid, make_torus, make_vertex, sew,
 };
 use og_core::{OgResult, Tolerances, og_bail};
 use og_geom::Curve3d as _;
@@ -491,5 +491,421 @@ pub fn make_loft(
     let mut built = make_solid(model, std::slice::from_ref(&sewn.shells[0]))?;
     built.history.generate(bottom, built.shape.clone());
     built.history.generate(top, built.shape.clone());
+    Ok(built)
+}
+
+/// A solid skinned over a grid of section samples, closed the way round.
+///
+/// The wall is [`og_geom::fit::fit_surface_grid`]'s surface with each row's
+/// first sample repeated at its end: the row fits pin their ends, so the two
+/// border control columns are *equal* and the seam closes exactly, not
+/// within tolerance. The border iso-curves come straight off the control
+/// net — the v-borders are the fitted sections, planar whenever the
+/// sections are, which is what lets the caps be planes — and every pcurve
+/// is an iso line in the fitted chart, same-parameter by construction.
+fn skinned_solid(
+    model: &mut Model,
+    rows: &[Vec<Point>],
+    cap_outward: (Vector, Vector),
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgResult<Built> {
+    use og_geom::Surface as _;
+    let mut closed_rows: Vec<Vec<Point>> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut r = row.clone();
+        r.push(row[0]);
+        closed_rows.push(r);
+    }
+    let fitted = og_geom::fit::fit_surface_grid(&closed_rows, 3, tolerance, tol)?;
+    if !fitted.met {
+        og_bail!(
+            NotDone,
+            "the skin reached {} against a target of {tolerance}",
+            fitted.error
+        );
+    }
+    let surface = fitted.curve;
+    let (u_knots, v_knots) = (surface.u_knots().clone(), surface.v_knots().clone());
+    let (k, l, net) = {
+        let grid = surface.grid();
+        let net: Vec<Point> = grid.points().iter().map(|w| (*w).point()).collect();
+        (grid.u_count(), grid.v_count(), net)
+    };
+    let point_at = |i: usize, j: usize| -> Point { net[i * l + j] };
+    let (u_dom, v_dom) = surface.domain();
+
+    // Border curves straight off the net: v-borders are the end sections,
+    // the u-border is the seam.
+    let border_v = |j: usize| -> OgResult<og_geom::Curve> {
+        let control: Vec<Point> = (0..k).map(|i| point_at(i, j)).collect();
+        Ok(og_geom::Curve::BSpline(og_geom::BSplineCurve::new(
+            u_knots.clone(),
+            control,
+            tol,
+        )?))
+    };
+    let seam_curve = {
+        let control: Vec<Point> = (0..l).map(|j| point_at(0, j)).collect();
+        og_geom::Curve::BSpline(og_geom::BSplineCurve::new(v_knots.clone(), control, tol)?)
+    };
+
+    let surface_geo: SurfaceGeometry = surface.into();
+    let surface_id = model.geometry_mut().add_surface(surface_geo.clone());
+
+    let ring0 = make_edge(model, border_v(0)?, u_dom, tol)?.shape;
+    let ring1 = make_edge(model, border_v(l - 1)?, u_dom, tol)?.shape;
+    let anchor0 = og_algo::edge_vertices(model, &ring0)?
+        .map(|(a, _)| a)
+        .ok_or_else(|| og_core::og_err!(Construction, "a skinned ring has no vertex"))?;
+    let anchor1 = og_algo::edge_vertices(model, &ring1)?
+        .map(|(a, _)| a)
+        .ok_or_else(|| og_core::og_err!(Construction, "a skinned ring has no vertex"))?;
+    let seam = make_edge_between(model, seam_curve, v_dom, &anchor0, &anchor1, tol)?.shape;
+
+    // Pcurves: rows for the rings, both columns for the seam.
+    let row_line = |v: f64| -> OgResult<og_geom::PlanarCurve> {
+        Ok(Line2d::over(
+            og_math::Axis2::new(Point2::new(0.0, v), og_math::Direction2::X),
+            u_dom.0 - 1.0,
+            u_dom.1 + 1.0,
+        )?
+        .into())
+    };
+    let column_line = |u: f64| -> OgResult<og_geom::PlanarCurve> {
+        Ok(Line2d::over(
+            og_math::Axis2::new(Point2::new(u, 0.0), og_math::Direction2::Y),
+            v_dom.0 - 1.0,
+            v_dom.1 + 1.0,
+        )?
+        .into())
+    };
+    og_algo::attach_pcurve(
+        model,
+        &ring0,
+        row_line(v_dom.0)?,
+        surface_id,
+        og_topo::Location::identity(),
+        u_dom,
+    )?;
+    og_algo::attach_pcurve(
+        model,
+        &ring1,
+        row_line(v_dom.1)?,
+        surface_id,
+        og_topo::Location::identity(),
+        u_dom,
+    )?;
+    og_algo::attach_seam(
+        model,
+        &seam,
+        column_line(u_dom.0)?,
+        column_line(u_dom.1)?,
+        surface_id,
+        og_topo::Location::identity(),
+        v_dom,
+    )?;
+
+    let wall = {
+        let wire = og_algo::make_wire(
+            model,
+            &[
+                ring0.clone(),
+                seam.clone(),
+                ring1.reversed(),
+                seam.reversed(),
+            ],
+            tol,
+        )?
+        .shape;
+        let face =
+            og_algo::make_face_on(model, surface_id, std::slice::from_ref(&wire), tol)?.shape;
+        // Outward by measurement at the middle of the skin.
+        let mid_u = f64::midpoint(u_dom.0, u_dom.1);
+        let mid_v = f64::midpoint(v_dom.0, v_dom.1);
+        let s_mid = surface_geo.point_at(mid_u, mid_v, tol)?;
+        let (du, dv) = surface_geo.d1_at(mid_u, mid_v, tol)?;
+        let centroid = {
+            let mut c = Vector::new(0.0, 0.0, 0.0);
+            let mut n = 0.0;
+            for row in rows {
+                for p in row {
+                    c += p.to_vector();
+                    n += 1.0;
+                }
+            }
+            Point::from_vector(c / n)
+        };
+        if du.cross(dv).dot(s_mid - centroid) >= 0.0 {
+            face
+        } else {
+            face.reversed()
+        }
+    };
+
+    let cap = |model: &mut Model,
+               ring: &Shape,
+               curve: og_geom::Curve,
+               outward: Vector|
+     -> OgResult<Shape> {
+        let at = curve.point_at(u_dom.0, tol)?;
+        let plane = Plane::through(at, Direction::new(outward, tol)?);
+        let mut reach = 1.0_f64;
+        for t in 0..8 {
+            let p = curve.point_at(u_dom.0 + (u_dom.1 - u_dom.0) * f64::from(t) / 8.0, tol)?;
+            reach = reach.max(p.distance(at) * 2.0);
+        }
+        let cap_surface: SurfaceGeometry =
+            PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
+        let wire = og_algo::make_wire(model, std::slice::from_ref(ring), tol)?.shape;
+        let face =
+            og_algo::make_face(model, cap_surface.clone(), std::slice::from_ref(&wire), tol)?.shape;
+        let id = {
+            let Some(node) = model.node(&face) else {
+                og_bail!(Dangling, "the cap just built is not in this model");
+            };
+            let og_topo::NodeData::Face(data) = node.data() else {
+                og_bail!(Construction, "the cap holds no face data");
+            };
+            data.surface
+        };
+        let Some(pcurve) = og_intersect::exact_pcurve_of(&curve, &cap_surface, tol) else {
+            og_bail!(Construction, "a cap edge has no closed-form pcurve");
+        };
+        og_algo::attach_pcurve(
+            model,
+            ring,
+            pcurve,
+            id,
+            og_topo::Location::identity(),
+            u_dom,
+        )?;
+        Ok(face)
+    };
+    let cap0 = cap(model, &ring0, border_v(0)?, cap_outward.0)?;
+    let cap1 = cap(model, &ring1, border_v(l - 1)?, cap_outward.1)?;
+
+    let faces = [wall, cap0, cap1];
+    let sewn = sew(model, &faces, tol)?;
+    if sewn.shells.len() != 1 || !og_algo::is_shell_closed(model, &sewn.shells[0])? {
+        og_bail!(Construction, "the skinned solid did not close");
+    }
+    make_solid(model, std::slice::from_ref(&sewn.shells[0]))
+}
+
+/// Loft a solid through many closed planar sections, skinned smoothly.
+///
+/// The sections are sampled at matched arc-length fractions from their own
+/// traversal starts — aligning those starts is the caller's authorship —
+/// and the skin holds every section to `tolerance`. The caps are the first
+/// and last sections' own planes.
+///
+/// # Errors
+///
+/// [`OgError::Construction`](og_core::OgError::Construction) if fewer than
+/// two sections, a section is open or not planar;
+/// [`OgError::NotDone`](og_core::OgError::NotDone) if
+/// the skin cannot reach the tolerance.
+pub fn make_loft_skinned(
+    model: &mut Model,
+    sections: &[Shape],
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgResult<Built> {
+    if sections.len() < 2 {
+        og_bail!(Construction, "a loft needs at least two sections");
+    }
+    const AROUND: usize = 48;
+    let mut rows: Vec<Vec<Point>> = Vec::with_capacity(sections.len());
+    let mut planes: Vec<Plane> = Vec::with_capacity(sections.len());
+    for wire in sections {
+        if model.kind_of(wire)? != ShapeType::Wire {
+            og_bail!(Construction, "a loft section is a wire");
+        }
+        if !og_algo::is_wire_closed(model, wire, tol)? {
+            og_bail!(Construction, "a loft section must be closed");
+        }
+        let Some(plane) = og_algo::find_plane(model, wire, tol)? else {
+            og_bail!(Construction, "a loft section must be planar");
+        };
+        planes.push(plane);
+        rows.push(sample_wire(model, wire, AROUND, tol)?);
+    }
+    let outward0 = {
+        let towards = rows[1][0] - rows[0][0];
+        let n = planes[0].normal().vector();
+        if n.dot(towards) > 0.0 { -n } else { n }
+    };
+    let outward1 = {
+        let towards = rows[rows.len() - 2][0] - rows[rows.len() - 1][0];
+        let n = planes[planes.len() - 1].normal().vector();
+        if n.dot(towards) > 0.0 { -n } else { n }
+    };
+    let mut built = skinned_solid(model, &rows, (outward0, outward1), tolerance, tol)?;
+    for section in sections {
+        built.history.generate(section, built.shape.clone());
+    }
+    Ok(built)
+}
+
+/// Sample a closed wire at `count` matched arc-length fractions.
+fn sample_wire(model: &Model, wire: &Shape, count: usize, tol: Tolerances) -> OgResult<Vec<Point>> {
+    // Dense polyline by traversal, then resample by cumulative length.
+    let mut dense: Vec<Point> = Vec::new();
+    for edge in explore(model, wire, Filter::OfType(ShapeType::Edge))? {
+        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            og_bail!(Construction, "a section edge holds no data");
+        };
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            og_bail!(Construction, "a section edge has no curve");
+        };
+        let Some(geometry) = model.geometry().curve(*curve) else {
+            og_bail!(Dangling, "curve is not in this model");
+        };
+        let reversed = edge.orientation() == og_topo::Orientation::Reversed;
+        for i in 0..64 {
+            let f = f64::from(i) / 64.0;
+            let t = if reversed {
+                range.1 - (range.1 - range.0) * f
+            } else {
+                range.0 + (range.1 - range.0) * f
+            };
+            dense.push(geometry.point_at(t, tol)?);
+        }
+    }
+    let mut lengths = vec![0.0];
+    for w in dense.windows(2) {
+        let last = lengths[lengths.len() - 1];
+        lengths.push(last + w[0].distance(w[1]));
+    }
+    let closing = dense[dense.len() - 1].distance(dense[0]);
+    let total = lengths[lengths.len() - 1] + closing;
+    let mut out = Vec::with_capacity(count);
+    let mut cursor = 0usize;
+    for s in 0..count {
+        #[allow(clippy::cast_precision_loss)]
+        let target = total * (s as f64) / (count as f64);
+        while cursor + 1 < lengths.len() && lengths[cursor + 1] < target {
+            cursor += 1;
+        }
+        let (a, b) = (dense[cursor], dense[(cursor + 1) % dense.len()]);
+        let la = lengths[cursor];
+        let lb = if cursor + 1 < lengths.len() {
+            lengths[cursor + 1]
+        } else {
+            total
+        };
+        let f = if lb > la {
+            (target - la) / (lb - la)
+        } else {
+            0.0
+        };
+        out.push(a + (b - a) * f.clamp(0.0, 1.0));
+    }
+    Ok(out)
+}
+
+/// Sweep a circular profile along a free-form spine, skinned.
+///
+/// Frames along the spine are rotation-minimizing (the double-reflection
+/// construction), so the tube neither twists nor kinks where the spine
+/// bends; the skin holds the sampled circles to `tolerance`, and the caps
+/// sit perpendicular to the spine's ends.
+///
+/// # Errors
+///
+/// As [`make_pipe`], plus [`OgError::NotDone`](og_core::OgError::NotDone) if
+/// the skin cannot reach the
+/// tolerance.
+pub fn make_pipe_skinned(
+    model: &mut Model,
+    spine: &Shape,
+    radius: f64,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgResult<Built> {
+    if !radius.is_finite() || radius <= tol.confusion() {
+        og_bail!(Construction, "a pipe of radius {radius} holds nothing");
+    }
+    let (curve, range) = {
+        let Some(data) = model.node(spine).and_then(|n| n.data().as_edge()) else {
+            og_bail!(Construction, "a pipe runs along an edge");
+        };
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            og_bail!(Construction, "the spine has no curve");
+        };
+        let Some(geometry) = model.geometry().curve(*curve) else {
+            og_bail!(Dangling, "curve is not in this model");
+        };
+        (geometry.clone(), *range)
+    };
+    const STATIONS: usize = 33;
+    const AROUND: usize = 40;
+    // Rotation-minimizing frames by double reflection.
+    let mut stations: Vec<(Point, Vector)> = Vec::with_capacity(STATIONS);
+    for i in 0..STATIONS {
+        #[allow(clippy::cast_precision_loss)]
+        let t = range.0 + (range.1 - range.0) * (i as f64) / ((STATIONS - 1) as f64);
+        let p = curve.point_at(t, tol)?;
+        let d = curve.d1_at(t, tol)?;
+        let m = d.magnitude();
+        if m <= tol.confusion() {
+            og_bail!(Construction, "the spine is degenerate at {t}");
+        }
+        stations.push((p, d / m));
+    }
+    let mut normals: Vec<Vector> = Vec::with_capacity(STATIONS);
+    {
+        let t0 = stations[0].1;
+        let seed = if t0.cross(og_math::Vector::Z).magnitude() > 0.5 {
+            og_math::Vector::Z
+        } else {
+            og_math::Vector::X
+        };
+        let n0 = {
+            let v = seed - t0 * seed.dot(t0);
+            v / v.magnitude()
+        };
+        normals.push(n0);
+        for i in 1..STATIONS {
+            let (p0, t0) = stations[i - 1];
+            let (p1, t1) = stations[i];
+            let n = normals[i - 1];
+            // Double reflection: reflect in the chord plane, then in the
+            // plane bisecting the tangents.
+            let v1 = p1 - p0;
+            let c1 = v1.dot(v1);
+            let nl = n - v1 * (2.0 / c1 * v1.dot(n));
+            let tl = t0 - v1 * (2.0 / c1 * v1.dot(t0));
+            let v2 = t1 - tl;
+            let c2 = v2.dot(v2);
+            let next = if c2 > 1e-20 {
+                nl - v2 * (2.0 / c2 * v2.dot(nl))
+            } else {
+                nl
+            };
+            normals.push(next / next.magnitude());
+        }
+    }
+    let mut rows: Vec<Vec<Point>> = Vec::with_capacity(STATIONS);
+    for (i, (p, t)) in stations.iter().enumerate() {
+        let x = normals[i];
+        let y = t.cross(x);
+        let mut row = Vec::with_capacity(AROUND);
+        for a in 0..AROUND {
+            #[allow(clippy::cast_precision_loss)]
+            let ang = core::f64::consts::TAU * (a as f64) / (AROUND as f64);
+            row.push(*p + (x * ang.cos() + y * ang.sin()) * radius);
+        }
+        rows.push(row);
+    }
+    let mut built = skinned_solid(
+        model,
+        &rows,
+        (-stations[0].1, stations[STATIONS - 1].1),
+        tolerance,
+        tol,
+    )?;
+    built.history.generate(spine, built.shape.clone());
     Ok(built)
 }

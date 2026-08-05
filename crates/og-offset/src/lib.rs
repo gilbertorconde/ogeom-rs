@@ -11,5 +11,5 @@ pub mod sweep;
 pub mod wire2d;
 
 pub use shape::{make_thick_solid, offset_shape};
-pub use sweep::{make_loft, make_pipe};
+pub use sweep::{make_loft, make_loft_skinned, make_pipe, make_pipe_skinned};
 pub use wire2d::{Join, offset_wire};

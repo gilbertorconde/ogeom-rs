@@ -183,3 +183,82 @@ fn a_twisted_loft_is_refused_as_skew() {
         .shape;
     assert!(og_offset::make_loft(&mut model, &bottom, &top, T).is_err());
 }
+
+#[test]
+fn a_skinned_loft_through_cone_sections_measures_as_the_frustum() {
+    let mut model = og_topo::Model::new();
+    let ring = |model: &mut og_topo::Model, r: f64, z: f64| {
+        let frame = Frame::new(
+            Point::new(0.0, 0.0, z),
+            og_math::Direction::Z,
+            og_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let circle = Circle::new(frame, r, T).unwrap();
+        let curve = og_geom::Curve::Circle(og_geom::CircleCurve::new(circle));
+        let domain = curve.domain();
+        let edge = og_algo::make_edge(model, curve, domain, T).unwrap().shape;
+        og_algo::make_wire(model, std::slice::from_ref(&edge), T)
+            .unwrap()
+            .shape
+    };
+    let sections = [
+        ring(&mut model, 1.0, 0.0),
+        ring(&mut model, 0.75, 1.0),
+        ring(&mut model, 0.5, 2.0),
+    ];
+    let result = og_offset::make_loft_skinned(&mut model, &sections, 1e-3, T).unwrap();
+    let diagnosis = og_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // Linear radii through cone sections: the skin reproduces the frustum.
+    let pi = core::f64::consts::PI;
+    let expected = pi * 2.0 / 3.0 * (1.0 + 0.5 + 0.25);
+    let measured = volume(&model, &result.shape);
+    // A skin at its own stated error: the volume deficit is the fitted
+    // sections riding just inside their circles.
+    assert!(
+        (measured - expected).abs() < 1e-2,
+        "skinned frustum volume {measured} against {expected}"
+    );
+}
+
+#[test]
+fn a_pipe_along_a_free_form_spine_holds_pappus() {
+    let mut model = og_topo::Model::new();
+    // A gentle S in the xz plane.
+    let spine_curve = og_geom::Curve::BSpline(
+        og_geom::BSplineCurve::new(
+            og_math::KnotVector::new(vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 3).unwrap(),
+            vec![
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(2.0, 0.0, 1.0),
+                Point::new(4.0, 0.0, -1.0),
+                Point::new(6.0, 0.0, 0.0),
+            ],
+            T,
+        )
+        .unwrap(),
+    );
+    let domain = og_geom::Curve3d::domain(&spine_curve);
+    let spine = og_algo::make_edge(&mut model, spine_curve.clone(), domain, T)
+        .unwrap()
+        .shape;
+    let r = 0.2;
+    let result = og_offset::make_pipe_skinned(&mut model, &spine, r, 1e-4, T).unwrap();
+    let diagnosis = og_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // Pappus for a rotation-minimizing tube: area times spine length, to
+    // second order in curvature times radius.
+    let length = og_algo::curve_length(&spine_curve, domain, T).unwrap();
+    let pi = core::f64::consts::PI;
+    let expected = pi * r * r * length;
+    let measured = volume(&model, &result.shape);
+    assert!(
+        (measured - expected).abs() < expected * 0.01,
+        "free-form pipe volume {measured} against {expected}"
+    );
+    assert!(!result.history.generated(&spine).is_empty());
+}
