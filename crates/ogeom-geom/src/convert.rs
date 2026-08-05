@@ -120,6 +120,14 @@ impl Curve {
                 normalized(out)
             }
 
+            // A helix is transcendental: no rational B-spline states it
+            // exactly, and this function's contract is exactness. Fit it
+            // through the fitting machinery at a stated tolerance instead.
+            Self::Helix(_) => ogeom_bail!(
+                Construction,
+                "a helix has no exact B-spline form; fit it at a stated tolerance instead"
+            ),
+
             Self::Trimmed(t) => {
                 // A trim does not renumber anything: its parameter *is* its
                 // basis's, restricted to a sub-interval. Only a reversed trim

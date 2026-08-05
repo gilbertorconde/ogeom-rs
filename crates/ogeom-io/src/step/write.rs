@@ -479,8 +479,10 @@ impl Writer<'_> {
             }
             Curve::BSpline(b) => self.bspline_curve(b),
             other => {
-                // Exact for every remaining kind this kernel has: the
-                // conversion is the §3 machinery, not a fit.
+                // Exact for the conics and trims: the conversion is the §3
+                // machinery, not a fit. A helix refuses inside the
+                // conversion — it has no exact spline form, and writing a
+                // fit without saying so is the lie this crate does not tell.
                 let spline = other.to_bspline_over(range, self.tol)?;
                 self.bspline_curve(&spline)
             }

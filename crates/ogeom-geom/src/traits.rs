@@ -57,6 +57,8 @@ pub enum CurveKind {
     Bezier,
     /// A polynomial or rational B-spline.
     BSpline,
+    /// A helix about an axis.
+    Helix,
     /// A restriction of another curve to a sub-interval.
     Trimmed,
     /// A curve offset from another.

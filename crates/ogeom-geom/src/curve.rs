@@ -28,8 +28,8 @@
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{
-    Axis, Circle, Ellipse, Hyperbola, KnotVector, Parabola, Point, Transform, Vector, Weighted,
-    bspline, elementary,
+    Axis, Circle, Ellipse, Frame, Hyperbola, KnotVector, Parabola, Point, Transform, Vector,
+    Weighted, bspline, elementary,
 };
 
 use crate::traits::{Continuity, Curve3d, CurveKind, Reversible, Transformable};
@@ -56,6 +56,8 @@ pub enum Curve {
     Parabola(ParabolaCurve),
     /// A polynomial or rational B-spline.
     BSpline(BSplineCurve),
+    /// A helix about an axis, the one transcendental the vocabulary keeps.
+    Helix(HelixCurve),
     /// Another curve restricted to a sub-interval.
     Trimmed(Box<TrimmedCurve>),
 }
@@ -93,6 +95,23 @@ pub struct HyperbolaCurve {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ParabolaCurve {
     parabola: Parabola,
+    domain: (f64, f64),
+    reversed: bool,
+}
+
+/// A helix about its frame's `z`, parameterized by turn angle.
+///
+/// The point at `t` sits at angle `t` around the axis, radius out along the
+/// turned `x`, risen by `pitch·t/2π` along `z` — so one full turn advances
+/// exactly one pitch, and a negative pitch winds the other hand. The speed
+/// `√(r² + (pitch/2π)²)` is constant, which gives the arc length a closed
+/// form. A helix is transcendental: no rational B-spline states it exactly,
+/// which is why it is its own type rather than a conversion.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HelixCurve {
+    frame: Frame,
+    radius: f64,
+    pitch: f64,
     domain: (f64, f64),
     reversed: bool,
 }
@@ -332,6 +351,157 @@ impl ParabolaCurve {
     #[must_use]
     pub const fn is_reversed(&self) -> bool {
         self.reversed
+    }
+}
+
+impl HelixCurve {
+    /// A helix over `turns` full revolutions from angle zero.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+    /// the radius is not finite and positive, the pitch is not finite and
+    /// non-zero — a zero pitch is a circle, and there is a type for that —
+    /// or `turns` is not finite and positive.
+    pub fn new(frame: Frame, radius: f64, pitch: f64, turns: f64) -> OgeomResult<Self> {
+        if !turns.is_finite() || turns <= 0.0 {
+            ogeom_bail!(Construction, "a helix over {turns} turns is not a curve");
+        }
+        Self::over(frame, radius, pitch, 0.0, core::f64::consts::TAU * turns)
+    }
+
+    /// A helix over an arbitrary increasing angle interval.
+    ///
+    /// # Errors
+    ///
+    /// As [`HelixCurve::new`], with the interval checked instead of the turn
+    /// count.
+    pub fn over(frame: Frame, radius: f64, pitch: f64, start: f64, end: f64) -> OgeomResult<Self> {
+        if !radius.is_finite() || radius <= 0.0 {
+            ogeom_bail!(
+                Construction,
+                "helix radius {radius} must be finite and positive"
+            );
+        }
+        if !pitch.is_finite() || pitch == 0.0 {
+            ogeom_bail!(
+                Construction,
+                "helix pitch {pitch} must be finite and non-zero; a zero pitch is a circle"
+            );
+        }
+        if !start.is_finite() || !end.is_finite() || start >= end {
+            ogeom_bail!(
+                Construction,
+                "helix domain [{start}, {end}] must be finite and increasing"
+            );
+        }
+        Ok(Self {
+            frame,
+            radius,
+            pitch,
+            domain: (start, end),
+            reversed: false,
+        })
+    }
+
+    /// The frame the helix turns about.
+    #[must_use]
+    pub const fn frame(&self) -> &Frame {
+        &self.frame
+    }
+
+    /// The radius.
+    #[must_use]
+    pub const fn radius(&self) -> f64 {
+        self.radius
+    }
+
+    /// The advance along the axis per full turn; negative winds left-handed.
+    #[must_use]
+    pub const fn pitch(&self) -> f64 {
+        self.pitch
+    }
+
+    /// Whether evaluation runs the domain backwards.
+    #[must_use]
+    pub const fn is_reversed(&self) -> bool {
+        self.reversed
+    }
+
+    /// The exact arc length between two parameters: constant speed times the
+    /// swept angle.
+    #[must_use]
+    pub fn arc_length(&self, from: f64, to: f64) -> f64 {
+        (to - from).abs() * self.radius.hypot(self.pitch / core::f64::consts::TAU)
+    }
+
+    /// Point and first three derivatives at the raw (unreversed) angle.
+    fn at(&self, t: f64) -> (Point, Vector, Vector, Vector) {
+        let (sin, cos) = t.sin_cos();
+        let x = self.frame.x().vector();
+        let y = self.frame.y().vector();
+        let z = self.frame.z().vector();
+        let rise = self.pitch / core::f64::consts::TAU;
+        let point = self.frame.origin()
+            + x * (self.radius * cos)
+            + y * (self.radius * sin)
+            + z * (rise * t);
+        let d1 = x * (-self.radius * sin) + y * (self.radius * cos) + z * rise;
+        let d2 = x * (-self.radius * cos) + y * (-self.radius * sin);
+        let d3 = x * (self.radius * sin) + y * (-self.radius * cos);
+        (point, d1, d2, d3)
+    }
+}
+
+impl Curve3d for HelixCurve {
+    fn domain(&self) -> (f64, f64) {
+        self.domain
+    }
+
+    fn point_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Point> {
+        let u = self.normalize_parameter(u, tol)?;
+        let t = if self.reversed {
+            mirror(u, self.domain.0, self.domain.1)
+        } else {
+            u
+        };
+        Ok(self.at(t).0)
+    }
+
+    fn d1_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Vector> {
+        Ok(self.derivatives_at(u, 1, tol)?[1])
+    }
+
+    fn derivatives_at(&self, u: f64, n: usize, tol: Tolerances) -> OgeomResult<Vec<Vector>> {
+        let u = self.normalize_parameter(u, tol)?;
+        let t = if self.reversed {
+            mirror(u, self.domain.0, self.domain.1)
+        } else {
+            u
+        };
+        let (point, d1, d2, d3) = self.at(t);
+        // The chain rule for the reversal: odd orders flip sign.
+        let sign = if self.reversed { -1.0 } else { 1.0 };
+        let mut out = vec![point.to_vector(), d1 * sign, d2, d3 * sign];
+        out.resize(n.max(3) + 1, Vector::ZERO);
+        out.truncate(n + 1);
+        Ok(out)
+    }
+
+    fn kind(&self) -> CurveKind {
+        CurveKind::Helix
+    }
+
+    fn continuity(&self) -> Continuity {
+        Continuity::CInfinity
+    }
+
+    fn is_closed(&self, _tol: Tolerances) -> bool {
+        false
+    }
+
+    fn is_periodic(&self) -> bool {
+        false
     }
 }
 
@@ -874,6 +1044,7 @@ macro_rules! dispatch {
             Self::Hyperbola($c) => $body,
             Self::Parabola($c) => $body,
             Self::BSpline($c) => $body,
+            Self::Helix($c) => $body,
             Self::Trimmed($c) => $body,
         }
     };
@@ -959,6 +1130,12 @@ impl Transformable for Curve {
                     ..c.clone()
                 })
             }
+            Self::Helix(c) => Self::Helix(HelixCurve {
+                frame: t.apply_frame(&c.frame, tol)?,
+                radius: c.radius * t.scale_factor().abs(),
+                pitch: c.pitch * t.scale_factor().abs(),
+                ..*c
+            }),
             Self::Trimmed(c) => Self::Trimmed(Box::new(TrimmedCurve {
                 basis: c.basis.transformed(t, tol)?,
                 // A line's parameter is a length and rescales; every other
@@ -1009,6 +1186,10 @@ impl Reversible for Curve {
                     ..c.clone()
                 })
             }
+            Self::Helix(c) => Self::Helix(HelixCurve {
+                reversed: !c.reversed,
+                ..*c
+            }),
             // A flag rather than reversing the basis: mirroring the trim range
             // within the basis domain would move this curve's own domain, and
             // trimming ranges held elsewhere refer to it.
@@ -1035,6 +1216,12 @@ impl From<EllipseCurve> for Curve {
         Self::Ellipse(c)
     }
 }
+impl From<HelixCurve> for Curve {
+    fn from(c: HelixCurve) -> Self {
+        Self::Helix(c)
+    }
+}
+
 impl From<HyperbolaCurve> for Curve {
     fn from(c: HyperbolaCurve) -> Self {
         Self::Hyperbola(c)
@@ -1100,10 +1287,71 @@ mod tests {
                 .unwrap()
                 .into(),
             spline.clone().into(),
+            HelixCurve::new(tilted(), 2.5, 1.25, 2.0).unwrap().into(),
             TrimmedCurve::new(spline.into(), 0.2, 0.8, T)
                 .unwrap()
                 .into(),
         ]
+    }
+
+    #[test]
+    fn a_helix_rises_one_pitch_per_turn_and_knows_its_length() {
+        let helix = HelixCurve::new(Frame::WORLD, 3.0, 2.0, 2.0).unwrap();
+        let tau = core::f64::consts::TAU;
+        let start = helix.point_at(0.0, T).unwrap();
+        let after_one_turn = helix.point_at(tau, T).unwrap();
+        assert_relative_eq!(start.x, 3.0);
+        assert_relative_eq!(after_one_turn.x, 3.0, epsilon = 1e-12);
+        assert_relative_eq!(after_one_turn.y, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(after_one_turn.z - start.z, 2.0, epsilon = 1e-12);
+
+        // Closed-form length: constant speed times swept angle — checked
+        // against a fine chordal sum.
+        let exact = helix.arc_length(0.0, 2.0 * tau);
+        assert_relative_eq!(exact, 2.0 * tau * 3.0f64.hypot(2.0 / tau), epsilon = 1e-12);
+        let mut chords = 0.0;
+        let n = 20_000;
+        for i in 0..n {
+            let a = 2.0 * tau * f64::from(i) / f64::from(n);
+            let b = 2.0 * tau * f64::from(i + 1) / f64::from(n);
+            chords += helix
+                .point_at(a, T)
+                .unwrap()
+                .distance(helix.point_at(b, T).unwrap());
+        }
+        assert!((exact - chords) / exact < 1e-6, "{exact} vs {chords}");
+
+        // A negative pitch winds the other hand: same rise magnitude, the
+        // quarter-turn point mirrored through the xz-plane... the y stays,
+        // the z descends.
+        let left = HelixCurve::new(Frame::WORLD, 3.0, -2.0, 2.0).unwrap();
+        let q = left.point_at(tau / 4.0, T).unwrap();
+        assert_relative_eq!(q.y, 3.0, epsilon = 1e-12);
+        assert!(q.z < 0.0);
+    }
+
+    #[test]
+    fn a_reversed_helix_swaps_its_ends_and_flips_its_tangent() {
+        let helix: Curve = HelixCurve::new(tilted(), 2.0, 1.0, 1.5).unwrap().into();
+        let (lo, hi) = helix.domain();
+        let back = helix.reversed();
+        assert_relative_eq!(
+            helix
+                .point_at(lo, T)
+                .unwrap()
+                .distance(back.point_at(hi, T).unwrap()),
+            0.0,
+            epsilon = 1e-12
+        );
+        let d_fwd = helix.d1_at(f64::midpoint(lo, hi), T).unwrap();
+        let d_back = back.d1_at(f64::midpoint(lo, hi), T).unwrap();
+        assert_relative_eq!((d_fwd + d_back).magnitude(), 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn a_helix_has_no_exact_spline_and_says_so() {
+        let helix: Curve = HelixCurve::new(Frame::WORLD, 1.0, 1.0, 1.0).unwrap().into();
+        assert!(helix.to_bspline(T).is_err());
     }
 
     /// Sample a curve evenly across its domain, avoiding the exact ends.
@@ -1488,6 +1736,7 @@ mod tests {
                 CurveKind::Hyperbola,
                 CurveKind::Parabola,
                 CurveKind::BSpline,
+                CurveKind::Helix,
                 CurveKind::Trimmed,
             ]
         );

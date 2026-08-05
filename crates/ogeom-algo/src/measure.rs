@@ -59,6 +59,21 @@ pub fn curve_bounds(curve: &Curve, tol: Tolerances) -> OgeomResult<Aabb> {
             )
         }
 
+        // A helix never leaves its cylinder, and its rise over the trimmed
+        // angle interval is linear — so the cylinder's box over that rise
+        // contains it, tight along the axis and whole-circle-loose across,
+        // the same convention the circle uses.
+        Curve::Helix(h) => {
+            let rise = h.pitch() / core::f64::consts::TAU;
+            let (a, b) = h.domain();
+            let mid = h.frame().origin() + h.frame().z().vector() * (rise * f64::midpoint(a, b));
+            frame_bounds(
+                mid,
+                *h.frame(),
+                (h.radius(), h.radius(), (rise * (b - a) / 2.0).abs()),
+            )
+        }
+
         // A hyperbola and a parabola are unbounded, so only the trimmed extent
         // has a bound at all. Both are convex in their own frame, so the hull
         // of the two ends and the vertex contains the arc between them.

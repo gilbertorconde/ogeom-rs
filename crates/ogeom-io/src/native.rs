@@ -39,9 +39,9 @@ use ogeom_core::{
 };
 use ogeom_geom::{
     BSpline2d, BSplineCurve, BSplineSurface, Circle2d, CircleCurve, ConeSurface, Curve, Curve2d,
-    Curve3d, CylinderSurface, Ellipse2d, EllipseCurve, ExtrusionSurface, HyperbolaCurve, Line2d,
-    LineCurve, ParabolaCurve, PlanarCurve, PlaneSurface, RevolutionSurface, SphereSurface, Surface,
-    SurfaceGeometry, TorusSurface, Trimmed2d, TrimmedCurve, TrimmedSurface,
+    Curve3d, CylinderSurface, Ellipse2d, EllipseCurve, ExtrusionSurface, HelixCurve,
+    HyperbolaCurve, Line2d, LineCurve, ParabolaCurve, PlanarCurve, PlaneSurface, RevolutionSurface,
+    SphereSurface, Surface, SurfaceGeometry, TorusSurface, Trimmed2d, TrimmedCurve, TrimmedSurface,
 };
 use ogeom_math::{
     Axis, Axis2, Circle, Circle2, Cone, ControlGrid, Cylinder, Direction, Direction2, Ellipse,
@@ -1089,6 +1089,14 @@ fn curve(t: &mut Vec<String>, c: &Curve) -> OgeomResult<()> {
             range(t, p.domain());
             flag(t, p.is_reversed());
         }
+        Curve::Helix(h) => {
+            w(t, "helix");
+            frame(t, h.frame());
+            n(t, h.radius());
+            n(t, h.pitch());
+            range(t, Curve3d::domain(h));
+            flag(t, h.is_reversed());
+        }
         Curve::BSpline(b) => {
             if b.is_periodic() {
                 ogeom_bail!(
@@ -1675,6 +1683,14 @@ impl<'a> Cursor<'a> {
                 let p = Parabola::new(frame, self.number()?, tol)?;
                 let (lo, hi) = self.range()?;
                 let curve = ParabolaCurve::over(p, lo, hi)?;
+                reverse_if(curve.into(), self.flag()?)
+            }
+            "helix" => {
+                let frame = self.frame(tol)?;
+                let radius = self.number()?;
+                let pitch = self.number()?;
+                let (lo, hi) = self.range()?;
+                let curve = HelixCurve::over(frame, radius, pitch, lo, hi)?;
                 reverse_if(curve.into(), self.flag()?)
             }
             "bspline" => {
@@ -2284,6 +2300,42 @@ mod tests {
             .collect();
         assert!(domains.contains(&(-0.5, 1.75)));
         assert!(domains.contains(&(0.25, 3.0)));
+    }
+
+    #[test]
+    fn a_helix_edge_round_trips_byte_stable() {
+        let mut model = Model::new();
+        let helix = ogeom_geom::HelixCurve::over(
+            Frame::new(
+                ogeom_math::Point::new(1.0, 2.0, -0.5),
+                ogeom_math::Direction::from_coords(0.0, 0.6, 0.8, T).unwrap(),
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap(),
+            4.0,
+            -1.5,
+            0.5,
+            9.0,
+        )
+        .unwrap();
+        let domain = Curve3d::domain(&helix);
+        ogeom_algo::make_edge(&mut model, Curve::Helix(helix), domain, T).unwrap();
+        let text = write(&model, &[], WriteOptions::default()).unwrap();
+        let (back, _) = read(&text).unwrap();
+        let again = write(&back, &[], WriteOptions::default()).unwrap();
+        assert_eq!(text, again, "the second write reproduces the first");
+        let restored = back
+            .geometry()
+            .curves()
+            .find_map(|(_, c)| match c {
+                Curve::Helix(h) => Some(*h),
+                _ => None,
+            })
+            .expect("the helix survives");
+        assert_eq!(restored.radius(), 4.0);
+        assert_eq!(restored.pitch(), -1.5);
+        assert_eq!(Curve3d::domain(&restored), (0.5, 9.0));
     }
 
     fn everything() -> (Model, Vec<Shape>) {
