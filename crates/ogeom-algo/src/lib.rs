@@ -12,6 +12,7 @@
 pub mod build;
 pub mod check;
 pub mod classify;
+pub mod convert;
 pub mod fit;
 pub mod history;
 pub mod length;
@@ -35,6 +36,7 @@ pub use classify::{
     Containment, classify_in_solid, classify_in_solid_exact, classify_in_solid_exact_banded,
     classify_on_face,
 };
+pub use convert::{general_transformed_shape, to_nurbs};
 pub use fit::{Spacing, approximate, approximate_within, interpolate};
 pub use history::{Built, History};
 pub use length::{curve_length, parameter_at_length, points_by_count, points_by_spacing};
