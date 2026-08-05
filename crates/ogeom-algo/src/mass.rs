@@ -34,6 +34,7 @@
 //! also why the three agree with each other rather than drifting apart.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
+use ogeom_geom::Transformable as _;
 use ogeom_math::{Direction, Matrix3, Point, Vector};
 use ogeom_mesh::{Deflection, discretize};
 use ogeom_topo::{EdgeRepr, Filter, Model, NodeData, Shape, ShapeType, explore, explore_unique};
@@ -194,6 +195,9 @@ pub fn surface_properties(
     tol: Tolerances,
 ) -> OgeomResult<MassProperties> {
     deflection.validate()?;
+    if let Some(exact) = exact_surface_properties(model, shape, tol)? {
+        return Ok(exact);
+    }
     let mut acc = Accumulator::new();
 
     for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
@@ -226,6 +230,9 @@ pub fn volume_properties(
     tol: Tolerances,
 ) -> OgeomResult<MassProperties> {
     deflection.validate()?;
+    if let Some(exact) = exact_volume_properties(model, shape, tol)? {
+        return Ok(exact);
+    }
     let mesh = ogeom_mesh::triangulate(model, shape, deflection, tol)?;
     if mesh.is_empty() {
         return Ok(MassProperties::none(deflection.chord));
@@ -259,6 +266,510 @@ pub fn volume_properties(
         );
     }
     Ok(acc.finish(deflection.chord))
+}
+
+// --- exact properties on the exact surfaces ----------------------------------
+
+/// A face whose trim the exact integrator can walk: an analytic surface
+/// trimmed to a chart rectangle, or a plane trimmed to a full disc.
+enum ExactFace {
+    /// `[u0, u1] x [v0, v1]` on the (placed) surface.
+    ChartRectangle {
+        surface: ogeom_geom::SurfaceGeometry,
+        rect: (f64, f64, f64, f64),
+        sign: f64,
+    },
+    /// A full circular disc on a plane.
+    Disc {
+        centre: Point,
+        e1: Vector,
+        e2: Vector,
+        normal: Vector,
+        radius: f64,
+        sign: f64,
+    },
+}
+
+/// Mass properties integrated on the exact surfaces, when every face allows.
+///
+/// The integrands over an analytic surface's chart are trigonometric
+/// polynomials, and panels no wider than a quarter turn under the ten-point
+/// Gauss rule integrate them to rounding — exact in every sense that
+/// matters, with `deflection` reported as zero. The first face that resists
+/// — a non-analytic surface, a trim that is not a chart rectangle or a disc
+/// — returns `None`, and the caller falls back to the tessellation with its
+/// stated chord.
+fn exact_volume_properties(
+    model: &Model,
+    shape: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<MassProperties>> {
+    let faces = explore(model, shape, Filter::OfType(ShapeType::Face))?;
+    if faces.is_empty() {
+        return Ok(None);
+    }
+    let mut exact = Vec::with_capacity(faces.len());
+    for face in &faces {
+        match exact_face(model, face, tol)? {
+            Some(found) => exact.push(found),
+            None => return Ok(None),
+        }
+    }
+    // The divergence theorem needs a closed boundary; topology says whether
+    // it has one. A shape with no shell at all — a bare face — has nothing
+    // to close, and falls back to the mesh path, which refuses it properly.
+    let shells = explore_unique(model, shape, ShapeType::Shell)?;
+    if shells.is_empty() {
+        return Ok(None);
+    }
+    for shell in shells {
+        if !crate::build::is_shell_closed(model, &shell)? {
+            ogeom_bail!(
+                Construction,
+                "the boundary is not closed, so it encloses no volume to measure"
+            );
+        }
+    }
+
+    let reference = reference_point(&exact, tol)?;
+    let mut mass = 0.0;
+    let mut first = Vector::ZERO;
+    let mut second = Matrix3::ZERO;
+    for face in &exact {
+        integrate_face(face, reference, tol, &mut |p, n_da| {
+            let q = p - reference;
+            mass += q.dot(n_da) / 3.0;
+            first += Vector::new(
+                q.x * q.x * n_da.x / 2.0,
+                q.y * q.y * n_da.y / 2.0,
+                q.z * q.z * n_da.z / 2.0,
+            );
+            let d = [q.x, q.y, q.z];
+            let nd = [n_da.x, n_da.y, n_da.z];
+            for i in 0..3 {
+                // Diagonal: int q_i^2 dV = surface int q_i^3 n_i / 3.
+                second.rows[i][i] += d[i] * d[i] * d[i] * nd[i] / 3.0;
+                // Off-diagonal: int q_i q_j dV = surface int q_i^2 q_j n_i / 2.
+                for j in 0..3 {
+                    if i != j {
+                        second.rows[i][j] += d[i] * d[i] * d[j] * nd[i] / 2.0;
+                    }
+                }
+            }
+        })?;
+    }
+    // The off-diagonal identity fills each pair twice, once from each axis;
+    // average them, which also symmetrizes rounding.
+    for i in 0..3 {
+        for j in (i + 1)..3 {
+            let mean = f64::midpoint(second.rows[i][j], second.rows[j][i]);
+            second.rows[i][j] = mean;
+            second.rows[j][i] = mean;
+        }
+    }
+    if mass < 0.0 {
+        ogeom_bail!(
+            Construction,
+            "the boundary is wound inward, so the volume came out negative"
+        );
+    }
+    let acc = Accumulator {
+        reference: Some(reference),
+        mass,
+        first,
+        second,
+    };
+    Ok(Some(acc.finish(0.0)))
+}
+
+/// Surface area and its distribution, on the exact surfaces.
+fn exact_surface_properties(
+    model: &Model,
+    shape: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<MassProperties>> {
+    let faces = explore(model, shape, Filter::OfType(ShapeType::Face))?;
+    if faces.is_empty() {
+        return Ok(None);
+    }
+    let mut exact = Vec::with_capacity(faces.len());
+    for face in &faces {
+        match exact_face(model, face, tol)? {
+            Some(found) => exact.push(found),
+            None => return Ok(None),
+        }
+    }
+    let reference = reference_point(&exact, tol)?;
+    let mut mass = 0.0;
+    let mut first = Vector::ZERO;
+    let mut second = Matrix3::ZERO;
+    for face in &exact {
+        integrate_face(face, reference, tol, &mut |p, n_da| {
+            let da = n_da.magnitude();
+            let q = p - reference;
+            mass += da;
+            first += q * da;
+            for (i, qi) in [q.x, q.y, q.z].iter().enumerate() {
+                for (j, qj) in [q.x, q.y, q.z].iter().enumerate() {
+                    second.rows[i][j] += qi * qj * da;
+                }
+            }
+        })?;
+    }
+    let acc = Accumulator {
+        reference: Some(reference),
+        mass,
+        first,
+        second,
+    };
+    Ok(Some(acc.finish(0.0)))
+}
+
+/// Somewhere on the shape to measure moments from.
+fn reference_point(faces: &[ExactFace], tol: Tolerances) -> OgeomResult<Point> {
+    use ogeom_geom::Surface as _;
+    match &faces[0] {
+        ExactFace::ChartRectangle { surface, rect, .. } => surface.point_at(rect.0, rect.2, tol),
+        ExactFace::Disc { centre, .. } => Ok(*centre),
+    }
+}
+
+/// Drive the callback over every quadrature sample of a face.
+///
+/// The callback receives the world point and the outward-signed `n dA`
+/// already weighted — summing the callback's contributions *is* the
+/// integral.
+fn integrate_face(
+    face: &ExactFace,
+    _reference: Point,
+    tol: Tolerances,
+    contribute: &mut dyn FnMut(Point, Vector),
+) -> OgeomResult<()> {
+    use ogeom_geom::Surface as _;
+    const QUARTER: f64 = core::f64::consts::FRAC_PI_2;
+    match face {
+        ExactFace::ChartRectangle {
+            surface,
+            rect,
+            sign,
+        } => {
+            let (u0, u1, v0, v1) = *rect;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let u_panels = (((u1 - u0) / QUARTER).ceil() as usize).max(1);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let v_panels = (((v1 - v0) / QUARTER).ceil() as usize).max(1);
+            let mut failure = None;
+            for iu in 0..u_panels {
+                #[allow(clippy::cast_precision_loss)]
+                let (ua, ub) = (
+                    u0 + (u1 - u0) * iu as f64 / u_panels as f64,
+                    u0 + (u1 - u0) * (iu + 1) as f64 / u_panels as f64,
+                );
+                for iv in 0..v_panels {
+                    #[allow(clippy::cast_precision_loss)]
+                    let (va, vb) = (
+                        v0 + (v1 - v0) * iv as f64 / v_panels as f64,
+                        v0 + (v1 - v0) * (iv + 1) as f64 / v_panels as f64,
+                    );
+                    // Nested Gauss with the callback fed directly: the outer
+                    // integrand returns 0 and the samples carry the payload,
+                    // with the weights recovered from unit integrands.
+                    gauss2(ua, ub, va, vb, &mut |u, v, weight| {
+                        if failure.is_some() {
+                            return;
+                        }
+                        let sample = (|| -> OgeomResult<()> {
+                            let p = surface.point_at(u, v, tol)?;
+                            let (du, dv) = surface.d1_at(u, v, tol)?;
+                            contribute(p, du.cross(dv) * (sign * weight));
+                            Ok(())
+                        })();
+                        if let Err(e) = sample {
+                            failure = Some(e);
+                        }
+                    });
+                }
+            }
+            match failure {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
+        }
+        ExactFace::Disc {
+            centre,
+            e1,
+            e2,
+            normal,
+            radius,
+            sign,
+        } => {
+            let mut failure: Option<ogeom_core::OgeomError> = None;
+            let turns = 4;
+            for k in 0..turns {
+                #[allow(clippy::cast_precision_loss)]
+                let (ta, tb) = (
+                    core::f64::consts::TAU * k as f64 / turns as f64,
+                    core::f64::consts::TAU * (k + 1) as f64 / turns as f64,
+                );
+                gauss2(0.0, *radius, ta, tb, &mut |rho, theta, weight| {
+                    if failure.is_some() {
+                        return;
+                    }
+                    let p = *centre + (*e1 * theta.cos() + *e2 * theta.sin()) * rho;
+                    contribute(p, *normal * (sign * rho * weight));
+                });
+            }
+            match failure {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
+        }
+    }
+}
+
+/// A tensor-product ten-by-ten Gauss rule over `[a,b] x [c,d]`, feeding each
+/// sample and its weight to the callback.
+fn gauss2(a: f64, b: f64, c: f64, d: f64, f: &mut dyn FnMut(f64, f64, f64)) {
+    // The rule's nodes recovered through the public one-dimensional
+    // integrator: integrating a delta-free payload is not possible, so the
+    // nodes are collected by integrating an indicator that records them.
+    let mut us: Vec<(f64, f64)> = Vec::with_capacity(10);
+    ogeom_math::gauss_legendre(
+        |u| {
+            us.push((u, 0.0));
+            1.0
+        },
+        a,
+        b,
+    );
+    // Weight of node i: integrate a basis that is 1 at that sample order.
+    // Simpler: the rule is linear, so the weight is the integral of the
+    // indicator sequence — recovered by a second pass per node.
+    let n = us.len();
+    for i in 0..n {
+        let mut k = 0;
+        let w = ogeom_math::gauss_legendre(
+            |_| {
+                let value = if k == i { 1.0 } else { 0.0 };
+                k += 1;
+                value
+            },
+            a,
+            b,
+        );
+        us[i].1 = w;
+    }
+    let mut vs: Vec<(f64, f64)> = Vec::with_capacity(10);
+    ogeom_math::gauss_legendre(
+        |v| {
+            vs.push((v, 0.0));
+            1.0
+        },
+        c,
+        d,
+    );
+    let m = vs.len();
+    for j in 0..m {
+        let mut k = 0;
+        let w = ogeom_math::gauss_legendre(
+            |_| {
+                let value = if k == j { 1.0 } else { 0.0 };
+                k += 1;
+                value
+            },
+            c,
+            d,
+        );
+        vs[j].1 = w;
+    }
+    for &(u, wu) in &us {
+        for &(v, wv) in &vs {
+            f(u, v, wu * wv);
+        }
+    }
+}
+
+/// The exact-integrable reading of one face, or `None` where there is none.
+fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<ExactFace>> {
+    use ogeom_geom::Surface as _;
+    let Some(node) = model.node(face) else {
+        return Ok(None);
+    };
+    let NodeData::Face(data) = node.data() else {
+        return Ok(None);
+    };
+    let Some(surface) = model.geometry().surface(data.surface) else {
+        return Ok(None);
+    };
+    let analytic = matches!(
+        surface,
+        ogeom_geom::SurfaceGeometry::Plane(_)
+            | ogeom_geom::SurfaceGeometry::Cylinder(_)
+            | ogeom_geom::SurfaceGeometry::Cone(_)
+            | ogeom_geom::SurfaceGeometry::Sphere(_)
+            | ogeom_geom::SurfaceGeometry::Torus(_)
+    );
+    if !analytic {
+        return Ok(None);
+    }
+    let placement = face.transform(model.datums())?;
+    // The chart rectangle comes from the pcurves, whose windows are the
+    // *unscaled* surface's; a scaling placement changes the chart's metric
+    // and the windows with it, so only rigid placements take the exact path.
+    if !matches!(
+        placement.kind(),
+        ogeom_math::TransformKind::Identity
+            | ogeom_math::TransformKind::Translation
+            | ogeom_math::TransformKind::Rotation
+    ) {
+        return Ok(None);
+    }
+    let placed = surface.clone().transformed(&placement, tol)?;
+    let sign = if face.orientation() == ogeom_topo::Orientation::Reversed {
+        -1.0
+    } else {
+        1.0
+    };
+
+    let wires = model.ordered_children_of(face)?;
+    if wires.len() != 1 {
+        return Ok(None);
+    }
+    // Gather each boundary edge's chart segments on this face.
+    let mut segments: Vec<(ogeom_math::Point2, ogeom_math::Point2)> = Vec::new();
+    let mut circle: Option<ogeom_geom::Circle2d> = None;
+    let mut pieces = 0_usize;
+    // A seam bounds the face twice; its two chart sides are gathered once.
+    let mut seams_seen: Vec<ogeom_topo::TShapeId> = Vec::new();
+    for edge in model.ordered_children_of(&wires[0])? {
+        let Some(edge_data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            return Ok(None);
+        };
+        let Some(repr) = edge_data.pcurve_for(data.surface, edge.location()) else {
+            return Ok(None);
+        };
+        pieces += 1;
+        match repr {
+            EdgeRepr::PCurve { curve, range, .. } => {
+                let Some(pcurve) = model.geometry().pcurve(*curve) else {
+                    return Ok(None);
+                };
+                match pcurve {
+                    ogeom_geom::PlanarCurve::Line(_) => {
+                        use ogeom_geom::Curve2d as _;
+                        let a = pcurve.point_at(range.0, tol)?;
+                        let b = pcurve.point_at(range.1, tol)?;
+                        segments.push((a, b));
+                    }
+                    ogeom_geom::PlanarCurve::Circle(arc) => {
+                        // A full circle bounding the whole wire: the disc.
+                        if (range.1 - range.0 - core::f64::consts::TAU).abs() > 1e-9 {
+                            return Ok(None);
+                        }
+                        circle = Some(arc.clone());
+                    }
+                    _ => return Ok(None),
+                }
+            }
+            EdgeRepr::Seam {
+                forward, reversed, ..
+            } => {
+                use ogeom_geom::Curve2d as _;
+                if seams_seen.contains(&edge.node()) {
+                    pieces -= 1;
+                    continue;
+                }
+                seams_seen.push(edge.node());
+                for id in [forward, reversed] {
+                    let Some(pcurve) = model.geometry().pcurve(*id) else {
+                        return Ok(None);
+                    };
+                    let ogeom_geom::PlanarCurve::Line(_) = pcurve else {
+                        return Ok(None);
+                    };
+                }
+                // The seam's two sides are the rectangle's left and right
+                // columns; their endpoints join the pool like any segment.
+                for id in [forward, reversed] {
+                    if let Some(pcurve) = model.geometry().pcurve(*id) {
+                        let (lo, hi) = pcurve.domain();
+                        let a = pcurve.point_at(lo, tol)?;
+                        let b = pcurve.point_at(hi, tol)?;
+                        segments.push((a, b));
+                    }
+                }
+            }
+            _ => return Ok(None),
+        }
+    }
+
+    if let Some(arc) = circle {
+        // The disc: one circular ring, nothing else, on a plane.
+        if pieces != 1 {
+            return Ok(None);
+        }
+        let ogeom_geom::SurfaceGeometry::Plane(plane) = &placed else {
+            return Ok(None);
+        };
+        let frame = plane.plane().frame();
+        let centre2 = arc.circle().centre();
+        let centre = placed.point_at(centre2.x, centre2.y, tol)?;
+        let radius = arc.circle().radius();
+        let normal = frame.z().vector();
+        return Ok(Some(ExactFace::Disc {
+            centre,
+            e1: frame.x().vector(),
+            e2: frame.y().vector(),
+            normal,
+            radius,
+            sign,
+        }));
+    }
+
+    // A chart rectangle: every segment axis-aligned and on the hull's edge.
+    if segments.is_empty() {
+        return Ok(None);
+    }
+    let (mut u0, mut u1) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut v0, mut v1) = (f64::INFINITY, f64::NEG_INFINITY);
+    for (a, b) in &segments {
+        for p in [a, b] {
+            u0 = u0.min(p.x);
+            u1 = u1.max(p.x);
+            v0 = v0.min(p.y);
+            v1 = v1.max(p.y);
+        }
+    }
+    if u1 - u0 <= tol.confusion() || v1 - v0 <= tol.confusion() {
+        return Ok(None);
+    }
+    let eps = tol.confusion().max(1e-9 * (u1 - u0).max(v1 - v0));
+    let on_side =
+        |value: f64, lo: f64, hi: f64| (value - lo).abs() <= eps || (value - hi).abs() <= eps;
+    let mut perimeter = 0.0;
+    for (a, b) in &segments {
+        let horizontal = (a.y - b.y).abs() <= eps;
+        let vertical = (a.x - b.x).abs() <= eps;
+        if !(horizontal ^ vertical) {
+            return Ok(None);
+        }
+        if horizontal && !on_side(a.y, v0, v1) {
+            return Ok(None);
+        }
+        if vertical && !on_side(a.x, u0, u1) {
+            return Ok(None);
+        }
+        perimeter += a.distance(*b);
+    }
+    let expected = 2.0 * ((u1 - u0) + (v1 - v0));
+    if (perimeter - expected).abs() > 1e-6 * expected {
+        return Ok(None);
+    }
+    Ok(Some(ExactFace::ChartRectangle {
+        surface: placed,
+        rect: (u0, u1, v0, v1),
+        sign,
+    }))
 }
 
 /// Running totals over simplices, measured from a fixed reference point.
@@ -418,6 +929,51 @@ mod tests {
             angular: 0.05,
             ..Deflection::default()
         }
+    }
+
+    #[test]
+    fn analytic_primitives_measure_exactly_on_their_own_surfaces() {
+        // The exact path reports zero deflection and machine-precision
+        // numbers: no chord band, no inscribed deficit.
+        let mut model = Model::new();
+        let pi = core::f64::consts::PI;
+
+        let cylinder = crate::make_cylinder(&mut model, Frame::WORLD, 2.0, 5.0, T).unwrap();
+        let props = volume_properties(&model, &cylinder.shape, fine(), T).unwrap();
+        assert_eq!(props.deflection, 0.0, "the exact path was taken");
+        assert_relative_eq!(props.mass, pi * 4.0 * 5.0, epsilon = 1e-10);
+        assert!(props.centre.is_equal(Point::new(0.0, 0.0, 2.5), T));
+        // I_zz of a solid cylinder: m r^2 / 2.
+        let m = pi * 4.0 * 5.0;
+        assert_relative_eq!(props.inertia.rows[2][2], m * 4.0 / 2.0, epsilon = 1e-8);
+
+        let sphere = crate::make_sphere(&mut model, Frame::WORLD, 3.0, T).unwrap();
+        let props = volume_properties(&model, &sphere.shape, fine(), T).unwrap();
+        assert_eq!(props.deflection, 0.0);
+        assert_relative_eq!(props.mass, 4.0 / 3.0 * pi * 27.0, epsilon = 1e-10);
+        // I = 2/5 m r^2 about any axis through the centre.
+        let m = 4.0 / 3.0 * pi * 27.0;
+        assert_relative_eq!(props.inertia.rows[0][0], 0.4 * m * 9.0, epsilon = 1e-8);
+
+        let torus = crate::make_torus(&mut model, Frame::WORLD, 5.0, 1.5, T).unwrap();
+        let props = volume_properties(&model, &torus.shape, fine(), T).unwrap();
+        assert_eq!(props.deflection, 0.0);
+        assert_relative_eq!(props.mass, 2.0 * pi * pi * 5.0 * 1.5 * 1.5, epsilon = 1e-10);
+
+        let cone = crate::make_cone(&mut model, Frame::WORLD, 3.0, 1.0, 4.0, T).unwrap();
+        let props = volume_properties(&model, &cone.shape, fine(), T).unwrap();
+        assert_eq!(props.deflection, 0.0);
+        // A frustum: pi h (R^2 + R r + r^2) / 3.
+        assert_relative_eq!(
+            props.mass,
+            pi * 4.0 * (9.0 + 3.0 + 1.0) / 3.0,
+            epsilon = 1e-10
+        );
+
+        // Areas ride the same path: a sphere's is 4 pi r^2, exactly.
+        let props = surface_properties(&model, &sphere.shape, fine(), T).unwrap();
+        assert_eq!(props.deflection, 0.0);
+        assert_relative_eq!(props.mass, 4.0 * pi * 9.0, epsilon = 1e-10);
     }
 
     #[test]

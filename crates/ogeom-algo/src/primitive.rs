@@ -1440,16 +1440,23 @@ mod revolution_tests {
         let mut model = Model::new();
         let built = make_cylinder(&mut model, Frame::WORLD, radius, height, T).unwrap();
 
+        // The *mesh* is inscribed and converges from below; the measurement
+        // itself now runs on the exact surface and lands on the closed form.
         let mut previous = 0.0;
         for chord in [0.1_f64, 0.02, 0.005] {
             let mesh = triangulate(&model, &built.shape, deflection(chord), T).unwrap();
             assert!(mesh.is_closed(), "the mesh has a hole at chord {chord}");
-            let props = volume_properties(&model, &built.shape, deflection(chord), T).unwrap();
-            assert!(props.mass < exact, "an inscribed volume cannot exceed it");
-            assert!(props.mass > previous, "refining lost volume");
-            previous = props.mass;
+            assert!(
+                mesh.volume() < exact,
+                "an inscribed volume cannot exceed it"
+            );
+            assert!(mesh.volume() > previous, "refining lost volume");
+            previous = mesh.volume();
         }
         assert!(previous > exact * 0.995, "{previous} against {exact}");
+        let props = volume_properties(&model, &built.shape, deflection(0.005), T).unwrap();
+        assert_relative_eq!(props.mass, exact, epsilon = 1e-9);
+        assert_eq!(props.deflection, 0.0, "measured on the exact surface");
     }
 
     #[test]
@@ -1502,21 +1509,17 @@ mod revolution_tests {
         let built = make_sphere(&mut model, Frame::WORLD, radius, T).unwrap();
 
         let props = volume_properties(&model, &built.shape, deflection(0.01), T).unwrap();
-        assert!(props.mass < volume);
+        assert_relative_eq!(props.mass, volume, epsilon = 1e-9);
+        assert_eq!(props.deflection, 0.0, "measured on the exact surface");
         assert!(
-            props.mass > volume * 0.995,
-            "{} against {volume}",
-            props.mass
-        );
-        assert!(
-            props.centre.distance(Point::ORIGIN) < 1e-3,
+            props.centre.distance(Point::ORIGIN) < 1e-9,
             "got {:?}",
             props.centre
         );
 
         let surface = surface_properties(&model, &built.shape, deflection(0.01), T).unwrap();
-        assert!(surface.mass < area);
-        assert!(surface.mass > area * 0.995);
+        assert_relative_eq!(surface.mass, area, epsilon = 1e-9);
+        assert_eq!(surface.deflection, 0.0, "measured on the exact surface");
     }
 
     #[test]
@@ -1643,9 +1646,9 @@ mod more_primitive_tests {
         assert!(mesh.is_closed(), "the mesh has a hole");
 
         let props = volume_properties(&model, &built.shape, deflection(0.02), T).unwrap();
-        assert!(props.mass < exact);
-        assert!(props.mass > exact * 0.99, "{} against {exact}", props.mass);
-        assert!(props.centre.distance(Point::ORIGIN) < 1e-3);
+        assert_relative_eq!(props.mass, exact, epsilon = 1e-9);
+        assert_eq!(props.deflection, 0.0, "measured on the exact surface");
+        assert!(props.centre.distance(Point::ORIGIN) < 1e-9);
     }
 
     #[test]
