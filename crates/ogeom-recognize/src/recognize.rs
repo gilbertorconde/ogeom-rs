@@ -63,6 +63,26 @@ pub struct Pocket {
     pub slot: bool,
 }
 
+/// A recognized protrusion: a top whose whole boundary stands out, on
+/// walls that meet the base folding in.
+#[derive(Debug, Clone)]
+pub struct Boss {
+    /// The planar top.
+    pub top: Shape,
+    /// The faces dropping from its boundary.
+    pub walls: Vec<Shape>,
+}
+
+/// A blend tangent on one side only — a bull-nose rim, a partial round —
+/// which is a deliberate shape of its own, not a failed fillet.
+#[derive(Debug, Clone)]
+pub struct PartialRound {
+    /// The rounded face, a partial cylinder or a torus band.
+    pub face: Shape,
+    /// The rolling radius.
+    pub radius: f64,
+}
+
 /// One recognized feature.
 #[derive(Debug, Clone)]
 pub enum Feature {
@@ -70,10 +90,46 @@ pub enum Feature {
     Hole(Hole),
     /// A fillet or round.
     Fillet(Fillet),
+    /// A blend tangent on one side only.
+    PartialRound(PartialRound),
     /// A chamfer.
     Chamfer(Chamfer),
     /// A pocket or slot.
     Pocket(Pocket),
+    /// A boss.
+    Boss(Boss),
+}
+
+impl Feature {
+    /// The faces this feature claims as its own.
+    #[must_use]
+    pub fn faces(&self) -> Vec<&Shape> {
+        match self {
+            Feature::Hole(h) => h.faces.iter().collect(),
+            Feature::Fillet(f) => vec![&f.face],
+            Feature::PartialRound(r) => vec![&r.face],
+            Feature::Chamfer(c) => vec![&c.face],
+            Feature::Pocket(p) => vec![&p.floor],
+            Feature::Boss(b) => vec![&b.top],
+        }
+    }
+}
+
+/// A feature with the features that sit on it.
+///
+/// The tree is adjacency read as ancestry: a feature whose faces share an
+/// edge with an earlier-recognized feature's own faces — a hole drilled
+/// through a pocket's floor, a fillet easing a boss's rim — hangs under
+/// it; features touching nothing but the base are roots. A feature
+/// adjacent to several parents hangs under the first in recognition
+/// order, which is deterministic if not always the one story a person
+/// would tell.
+#[derive(Debug, Clone)]
+pub struct FeatureNode {
+    /// The feature at this node.
+    pub feature: Feature,
+    /// The features that sit on it.
+    pub children: Vec<FeatureNode>,
 }
 
 /// Tangency threshold between face normals at a shared edge, radians —
@@ -106,8 +162,91 @@ pub fn recognize(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<V
     fillets(&scene, &mut features, &mut claimed)?;
     chamfers(&scene, &mut features, &mut claimed)?;
     pockets(&scene, &mut features, &mut claimed)?;
+    bosses(&scene, &mut features, &mut claimed)?;
 
     Ok(features)
+}
+
+/// Recognize features and arrange them by what they sit on.
+///
+/// As [`recognize`], then adjacency read as ancestry — see [`FeatureNode`].
+///
+/// # Errors
+///
+/// As [`recognize`].
+pub fn feature_tree(
+    model: &Model,
+    shape: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Vec<FeatureNode>> {
+    let features = recognize(model, shape, tol)?;
+    // Which faces belong to which feature, and which faces each feature's
+    // faces touch.
+    let mut edge_faces: std::collections::HashMap<TShapeId, Vec<TShapeId>> =
+        std::collections::HashMap::new();
+    for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
+        for wire in model.ordered_children_of(&face)? {
+            for edge in model.ordered_children_of(&wire)? {
+                let list = edge_faces.entry(edge.node()).or_default();
+                if !list.contains(&face.node()) {
+                    list.push(face.node());
+                }
+            }
+        }
+    }
+    let owner_of: std::collections::HashMap<TShapeId, usize> = features
+        .iter()
+        .enumerate()
+        .flat_map(|(i, f)| f.faces().into_iter().map(move |s| (s.node(), i)))
+        .collect();
+
+    let mut parent: Vec<Option<usize>> = vec![None; features.len()];
+    for (i, feature) in features.iter().enumerate() {
+        'search: for face in feature.faces() {
+            let face_node = face.node();
+            for (edge, faces) in &edge_faces {
+                let _ = edge;
+                if !faces.contains(&face_node) {
+                    continue;
+                }
+                for other in faces {
+                    if *other == face_node {
+                        continue;
+                    }
+                    if let Some(&p) = owner_of.get(other)
+                        && p != i
+                        && parent[p] != Some(i)
+                    {
+                        parent[i] = Some(p);
+                        break 'search;
+                    }
+                }
+            }
+        }
+    }
+
+    // Assemble bottom-up: children indices per parent, roots the rest.
+    let mut children_of: Vec<Vec<usize>> = vec![Vec::new(); features.len()];
+    let mut roots = Vec::new();
+    for (i, p) in parent.iter().enumerate() {
+        match p {
+            Some(p) => children_of[*p].push(i),
+            None => roots.push(i),
+        }
+    }
+    fn build(i: usize, features: &[Feature], children_of: &[Vec<usize>]) -> FeatureNode {
+        FeatureNode {
+            feature: features[i].clone(),
+            children: children_of[i]
+                .iter()
+                .map(|&c| build(c, features, children_of))
+                .collect(),
+        }
+    }
+    Ok(roots
+        .into_iter()
+        .map(|i| build(i, &features, &children_of))
+        .collect())
 }
 
 // --- the shared measurements ------------------------------------------------
@@ -120,6 +259,10 @@ struct Scene<'m> {
     faces: Vec<FaceInfo>,
     /// Edge node to the indices of the faces using it.
     adjacency: std::collections::HashMap<TShapeId, Vec<usize>>,
+    /// The tessellation the parity probes ask.
+    mesh: ogeom_topo::Triangulation,
+    /// The probe offset, comfortably above the mesh's own chord error.
+    probe: f64,
 }
 
 struct FaceInfo {
@@ -127,6 +270,10 @@ struct FaceInfo {
     surface: SurfaceGeometry,
     /// Edge nodes per wire, first wire outer.
     wires: Vec<Vec<Shape>>,
+    /// Whether the stored orientation lies about outwardness — measured
+    /// against the solid itself, because rebuilt faces' flags are not a
+    /// convention this crate can afford to trust.
+    flipped: bool,
 }
 
 impl<'m> Scene<'m> {
@@ -162,19 +309,105 @@ impl<'m> Scene<'m> {
                 shape: face,
                 surface,
                 wires,
+                flipped: false,
             });
         }
 
-        Ok(Self {
+        // The parity oracle's mesh: fine enough that a probe a whisker off
+        // a face is not swallowed by the chord error.
+        let coarse = ogeom_mesh::triangulate(model, shape, ogeom_mesh::Deflection::default(), tol)?;
+        let bounds = coarse
+            .positions
+            .iter()
+            .fold(ogeom_math::Aabb::EMPTY, |acc, p| acc.with_point(*p));
+        let diagonal = bounds.diagonal().max(1.0);
+        let fine = ogeom_mesh::Deflection {
+            chord: diagonal * 2e-4,
+            ..ogeom_mesh::Deflection::default()
+        };
+        let mesh = ogeom_mesh::triangulate(model, shape, fine, tol)?;
+        let probe = diagonal * 1e-3;
+        let mut scene = Self {
             model,
             tol,
             faces,
             adjacency,
-        })
+            mesh,
+            probe,
+        };
+        // Calibrate each face's outwardness against the solid: a point in
+        // the face's interior, nudged along the claimed outward normal,
+        // must land in air. One that lands in material belongs to a face
+        // whose flag lies, and the lie is recorded rather than believed.
+        let deflection = ogeom_mesh::Deflection::default();
+        for f in 0..scene.faces.len() {
+            let Ok(piece) =
+                ogeom_mesh::triangulate_face(scene.model, &scene.faces[f].shape, deflection, tol)
+            else {
+                continue;
+            };
+            let Some(t) = piece.triangles.first() else {
+                continue;
+            };
+            let [a, b, c] = t.map(|k| piece.positions[k as usize]);
+            let centroid = Point::new(
+                (a.x + b.x + c.x) / 3.0,
+                (a.y + b.y + c.y) / 3.0,
+                (a.z + b.z + c.z) / 3.0,
+            );
+            let Some((n, foot)) = scene.normal_and_foot(f, centroid) else {
+                continue;
+            };
+            if scene.inside(foot + n * scene.probe) {
+                scene.faces[f].flipped = true;
+            }
+        }
+        Ok(scene)
+    }
+
+    /// Whether a point sits inside the solid: even-odd parity along a
+    /// deliberately generic direction — an axis-aligned ray grazes the
+    /// axis-aligned edges these meshes are full of, and a graze counts a
+    /// crossing twice.
+    fn inside(&self, p: Point) -> bool {
+        let direction = Vector::new(1.0, 0.238_528_7, 0.126_849_3);
+        let mut crossings = 0_u32;
+        for t in &self.mesh.triangles {
+            let [a, b, c] = t.map(|k| self.mesh.positions[k as usize]);
+            let e1 = b - a;
+            let e2 = c - a;
+            let h = direction.cross(e2);
+            let det = e1.dot(h);
+            if det.abs() < 1e-14 {
+                continue;
+            }
+            let inv = 1.0 / det;
+            let s = p - a;
+            let u = s.dot(h) * inv;
+            if !(0.0..=1.0).contains(&u) {
+                continue;
+            }
+            let q = s.cross(e1);
+            let v = direction.dot(q) * inv;
+            if v < 0.0 || u + v > 1.0 {
+                continue;
+            }
+            if e2.dot(q) * inv > 0.0 {
+                crossings += 1;
+            }
+        }
+        crossings % 2 == 1
     }
 
     /// The outward normal of a face at a point on it.
     fn outward_normal(&self, face: usize, at: Point) -> Option<Vector> {
+        self.normal_and_foot(face, at).map(|(n, _)| n)
+    }
+
+    /// The outward normal near a point, with the on-surface foot it was
+    /// evaluated at — the probe origin a curved face's chord error cannot
+    /// contaminate.
+    fn normal_and_foot(&self, face: usize, at: Point) -> Option<(Vector, Point)> {
         let info = &self.faces[face];
         let placement = info.shape.transform(self.model.datums()).ok()?;
         let local = placement.inverse().ok()?.apply(at);
@@ -192,13 +425,13 @@ impl<'m> Scene<'m> {
         let (u, v) = projection.parameters;
         let normal = info.surface.normal_at(u, v, self.tol).ok()?;
         let world = placement.apply_vector(normal.vector());
-        Some(
-            if info.shape.orientation() == ogeom_topo::Orientation::Reversed {
-                -world
-            } else {
-                world
-            },
-        )
+        let claimed = if info.shape.orientation() == ogeom_topo::Orientation::Reversed {
+            -world
+        } else {
+            world
+        };
+        let foot = placement.apply(info.surface.point_at(u, v, self.tol).ok()?);
+        Some((if info.flipped { -claimed } else { claimed }, foot))
     }
 
     /// The midpoint of an edge's curve, placed.
@@ -218,11 +451,14 @@ impl<'m> Scene<'m> {
 
     /// How the solid folds at an edge between two faces.
     ///
-    /// The classical reading: `t` is the edge as `f1` traverses it —
-    /// orientation composition hands it over directly — and the sign of
-    /// `(n1 × n2) · t` says which way the surface turns. Positive is an
-    /// outside edge, negative an inside one; parallel normals are a smooth
-    /// join and have no fold to name.
+    /// Convention-free, by asking the solid: two probes stand just off the
+    /// edge, each mostly *along* one face's surface direction and tipped a
+    /// whisker toward the void bisector. At a convex edge the material
+    /// wedge is narrower than a half turn and both probes stand in air; at
+    /// a concave one it is wider and both stand in material; anything
+    /// mixed is a fold the probes cannot name. No wire winding convention
+    /// participates, which matters because rebuilt boolean faces do not
+    /// all share one.
     fn edge_fold(&self, edge: &Shape, f1: usize, f2: usize) -> Option<Fold> {
         let p = self.edge_midpoint(edge)?;
         let n1 = self.outward_normal(f1, p)?;
@@ -230,40 +466,22 @@ impl<'m> Scene<'m> {
         if n1.cross(n2).magnitude() <= TANGENT_ANGLE {
             return Some(Fold::Smooth);
         }
-        let occurrence = self.faces[f1]
-            .wires
-            .iter()
-            .flatten()
-            .find(|e| e.node() == edge.node())?;
-        let tangent = self.edge_tangent(edge)?;
-        let t = if occurrence.orientation() == ogeom_topo::Orientation::Reversed {
-            -tangent
-        } else {
-            tangent
-        };
-        Some(if n1.cross(n2).dot(t) > 0.0 {
-            Fold::Convex
-        } else {
-            Fold::Concave
-        })
-    }
-
-    /// The direction of an edge's curve at its middle.
-    fn edge_tangent(&self, edge: &Shape) -> Option<Vector> {
-        use ogeom_geom::Curve3d as _;
-        let data = self.model.node(edge)?.data().as_edge()?;
-        let EdgeRepr::Curve3d { curve, range, .. } = data.curve3d()? else {
+        let mean = n1 + n2;
+        let diff = n1 - n2;
+        let (m, d) = (mean.magnitude(), diff.magnitude());
+        if m <= f64::MIN_POSITIVE || d <= f64::MIN_POSITIVE {
             return None;
-        };
-        let geometry = self.model.geometry().curve(*curve)?;
-        let mid = f64::midpoint(range.0, range.1);
-        let h = (range.1 - range.0).abs().max(1e-9) * 1e-4;
-        let a = geometry.point_at(mid - h, self.tol).ok()?;
-        let b = geometry.point_at(mid + h, self.tol).ok()?;
-        let placement = edge.transform(self.model.datums()).ok()?;
-        let d = placement.apply(b) - placement.apply(a);
-        let magnitude = d.magnitude();
-        (magnitude > f64::MIN_POSITIVE).then(|| d / magnitude)
+        }
+        let mean = mean / m;
+        let diff = diff / d;
+        let lean = 0.25;
+        let a = self.inside(p + (diff + mean * lean) * self.probe);
+        let b = self.inside(p + (-diff + mean * lean) * self.probe);
+        match (a, b) {
+            (true, true) => Some(Fold::Concave),
+            (false, false) => Some(Fold::Convex),
+            _ => None,
+        }
     }
 
     /// The other face across an edge from `face`, where the edge is
@@ -299,6 +517,24 @@ impl<'m> Scene<'m> {
             .iter()
             .all(|wire| wire.len() == 1 || wire.iter().any(|e| self.is_seam_in(face, e)));
         seam || (info.wires.len() >= 2 && ring_wires)
+    }
+
+    /// The outermost wire of a face, judged by spatial reach — rebuilt
+    /// boolean faces do not reliably keep the outer wire first.
+    fn outer_wire(&self, face: usize) -> Option<&Vec<Shape>> {
+        let info = &self.faces[face];
+        let mut best: Option<(f64, &Vec<Shape>)> = None;
+        for wire in &info.wires {
+            let bounds = wire
+                .iter()
+                .filter_map(|e| self.edge_midpoint(e))
+                .fold(ogeom_math::Aabb::EMPTY, |acc, p| acc.with_point(p));
+            let reach = bounds.diagonal();
+            if best.is_none_or(|(held, _)| reach > held) {
+                best = Some((reach, wire));
+            }
+        }
+        best.map(|(_, wire)| wire)
     }
 
     /// The line-curve edges of a face — a cylinder's rulings.
@@ -598,6 +834,16 @@ fn fillets(
                 fold => fold_probe = fold.or(fold_probe),
             }
         }
+        if smooth == 1 {
+            // Tangent on one side only: a bull-nose rim, a deliberate
+            // partial round — its own feature, not a failed fillet.
+            claimed.push(scene.faces[f].shape.node());
+            features.push(Feature::PartialRound(PartialRound {
+                face: scene.faces[f].shape.clone(),
+                radius,
+            }));
+            continue;
+        }
         if smooth < 2 {
             continue;
         }
@@ -720,7 +966,7 @@ fn pockets(
             continue;
         }
         let info = &scene.faces[f];
-        let Some(outer) = info.wires.first() else {
+        let Some(outer) = scene.outer_wire(f) else {
             continue;
         };
         if outer.is_empty() {
@@ -777,6 +1023,80 @@ fn pockets(
             floor: info.shape.clone(),
             walls,
             slot,
+        }));
+    }
+    Ok(())
+}
+
+// --- bosses ------------------------------------------------------------------
+
+fn bosses(
+    scene: &Scene,
+    features: &mut Vec<Feature>,
+    claimed: &mut Vec<TShapeId>,
+) -> OgeomResult<()> {
+    for f in 0..scene.faces.len() {
+        if claimed.contains(&scene.faces[f].shape.node()) {
+            continue;
+        }
+        if !matches!(scene.faces[f].surface, SurfaceGeometry::Plane(_)) {
+            continue;
+        }
+        let info = &scene.faces[f];
+        let Some(outer) = scene.outer_wire(f) else {
+            continue;
+        };
+        if outer.is_empty() {
+            continue;
+        }
+        // The top stands proud: every boundary edge convex.
+        let mut walls: Vec<usize> = Vec::new();
+        let mut all_convex = true;
+        for edge in outer {
+            let Some(other) = scene.other_face(edge, f) else {
+                all_convex = false;
+                break;
+            };
+            match scene.edge_fold(edge, f, other) {
+                Some(Fold::Convex) => {
+                    if !walls.contains(&other) {
+                        walls.push(other);
+                    }
+                }
+                _ => {
+                    all_convex = false;
+                    break;
+                }
+            }
+        }
+        if !all_convex || walls.is_empty() {
+            continue;
+        }
+        // What separates a boss from a box: its walls land on a base,
+        // folding inward there. A plain box's sides meet the bottom face
+        // convexly and this face is just a top.
+        // Every wall must land on the base concavely — `any` lets a whole
+        // box masquerade as a boss the moment its top face borders one
+        // genuine concavity somewhere.
+        let base_reached = walls.iter().all(|&wall| {
+            scene.faces[wall].wires.iter().flatten().any(|edge| {
+                scene.other_face(edge, wall).is_some_and(|beyond| {
+                    beyond != f
+                        && !walls.contains(&beyond)
+                        && scene.edge_fold(edge, wall, beyond) == Some(Fold::Concave)
+                })
+            })
+        });
+        if !base_reached {
+            continue;
+        }
+        claimed.push(info.shape.node());
+        features.push(Feature::Boss(Boss {
+            top: info.shape.clone(),
+            walls: walls
+                .iter()
+                .map(|&w| scene.faces[w].shape.clone())
+                .collect(),
         }));
     }
     Ok(())
@@ -1100,5 +1420,139 @@ mod slot_tests {
             .collect();
         assert_eq!(pockets.len(), 1, "features: {features:?}");
         assert!(pockets[0].slot, "an obround pocket is a slot");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod boss_tests {
+    use super::*;
+    use ogeom_math::Frame;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// A pad fused onto a base reads as a boss with its walls; the base's
+    /// own top face does not.
+    #[test]
+    fn a_pad_on_a_base_is_a_boss() {
+        let mut model = Model::new();
+        let base = ogeom_algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 5.0), T)
+            .unwrap()
+            .shape;
+        let pad = ogeom_algo::make_box(
+            &mut model,
+            Frame::new(
+                Point::new(7.0, 7.0, 5.0),
+                ogeom_math::Direction::Z,
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap(),
+            (6.0, 6.0, 4.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let fused = ogeom_bool::fuse(&mut model, &base, &pad, T).unwrap().shape;
+        let features = recognize(&model, &fused, T).unwrap();
+        let bosses: Vec<&Boss> = features
+            .iter()
+            .filter_map(|f| match f {
+                Feature::Boss(b) => Some(b),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bosses.len(), 1, "features: {features:?}");
+        assert_eq!(bosses[0].walls.len(), 4);
+    }
+
+    /// The corpus's smallest part wears the real thing: two torus rims
+    /// tangent to their walls but meeting the top face at a deliberate
+    /// angle. They are partial rounds — their own feature — and not
+    /// fillets.
+    #[test]
+    fn a_bull_nose_is_a_partial_round_not_a_fillet() {
+        let path = format!(
+            "{}/../../tests/corpus/nist_ftc_11_asme1_rb.stp",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let text = std::fs::read_to_string(path).unwrap();
+        let mut import = ogeom_io::read_step(&text, T).unwrap();
+        let solid = import.solids[0].clone();
+        let healed = ogeom_heal::reanchor_periodic_rings(import.document.model_mut(), &solid, T)
+            .unwrap()
+            .shape;
+        let features = recognize(import.document.model(), &healed, T).unwrap();
+        let rounds: Vec<&PartialRound> = features
+            .iter()
+            .filter_map(|f| match f {
+                Feature::PartialRound(r) => Some(r),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rounds.len(), 2, "features: {features:?}");
+        for round in &rounds {
+            assert!(
+                (round.radius - 1.5).abs() < 1e-6,
+                "the file's own rim radius: {}",
+                round.radius
+            );
+        }
+        assert!(
+            !features.iter().any(|f| matches!(f, Feature::Fillet(_))),
+            "one tangency is not a fillet"
+        );
+    }
+
+    /// A hole drilled through a pocket's floor hangs under the pocket in
+    /// the feature tree.
+    #[test]
+    fn a_hole_through_a_pocket_floor_is_the_pockets_child() {
+        let mut model = Model::new();
+        let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let mill = ogeom_algo::make_box(
+            &mut model,
+            Frame::new(
+                Point::new(5.0, 5.0, 6.0),
+                ogeom_math::Direction::Z,
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap(),
+            (10.0, 10.0, 5.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let pocketed = ogeom_bool::cut(&mut model, &block, &mill, T).unwrap().shape;
+        let drill = ogeom_algo::make_cylinder(
+            &mut model,
+            Frame::new(
+                Point::new(10.0, 10.0, -1.0),
+                ogeom_math::Direction::Z,
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap(),
+            2.0,
+            9.0,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let part = ogeom_bool::cut(&mut model, &pocketed, &drill, T)
+            .unwrap()
+            .shape;
+
+        let tree = feature_tree(&model, &part, T).unwrap();
+        assert_eq!(tree.len(), 1, "one root: {tree:?}");
+        assert!(
+            matches!(tree[0].feature, Feature::Pocket(_)),
+            "tree: {tree:?}"
+        );
+        assert_eq!(tree[0].children.len(), 1);
+        assert!(matches!(tree[0].children[0].feature, Feature::Hole(_)));
     }
 }

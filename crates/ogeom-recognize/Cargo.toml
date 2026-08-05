@@ -17,6 +17,8 @@ ogeom-mesh.workspace = true
 
 [dev-dependencies]
 ogeom-bool.workspace = true
+ogeom-io.workspace = true
+ogeom-heal.workspace = true
 ogeom-fillet.workspace = true
 approx.workspace = true
 proptest.workspace = true

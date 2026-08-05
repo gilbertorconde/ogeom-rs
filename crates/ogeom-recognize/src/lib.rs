@@ -16,4 +16,7 @@
 
 mod recognize;
 
-pub use recognize::{Chamfer, Feature, Fillet, Hole, HoleKind, Pocket, recognize};
+pub use recognize::{
+    Boss, Chamfer, Feature, FeatureNode, Fillet, Hole, HoleKind, PartialRound, Pocket,
+    feature_tree, recognize,
+};
