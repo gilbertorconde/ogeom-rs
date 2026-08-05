@@ -13,6 +13,7 @@
 pub mod bounds;
 pub mod bspline;
 pub mod conic;
+pub mod construct2d;
 pub mod direction;
 pub mod elementary;
 pub mod frame;
@@ -31,6 +32,10 @@ pub mod vector;
 pub use bounds::Aabb;
 pub use bspline::{Blend, ControlGrid, Weighted};
 pub use conic::{Circle, Circle2, Ellipse, Ellipse2, Hyperbola, Hyperbola2, Parabola, Parabola2};
+pub use construct2d::{
+    Bisector2, Placement, TangentCircle, Target2, bisector, circles_of_radius_tangent_to_two,
+    circles_tangent_to_three, lines_tangent_to_two_circles,
+};
 pub use direction::{Direction, Direction2};
 pub use elementary::{CurvePoint, SurfacePoint};
 pub use frame::{Axis, Axis2, Frame, Frame2, Handedness};
