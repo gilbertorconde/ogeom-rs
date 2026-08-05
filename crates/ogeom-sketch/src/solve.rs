@@ -182,6 +182,47 @@ impl Sketch {
         })
     }
 
+    /// Drag a point toward a target, re-solving from where the sketch
+    /// stands.
+    ///
+    /// The target is a *soft* objective: two lightly weighted rows pull
+    /// the point while every constraint keeps its full weight, so the
+    /// solve lands on the constraint-satisfying configuration nearest the
+    /// pointer rather than fighting the dimensions. Warm-started from the
+    /// current parameters, this is the primitive an interactive sketcher
+    /// calls every frame.
+    ///
+    /// # Errors
+    ///
+    /// As [`Sketch::solve`], plus
+    /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the point is
+    /// not from this sketch.
+    pub fn drag(
+        &mut self,
+        point: crate::model::PointId,
+        to: ogeom_math::Point2,
+        options: SolveOptions,
+    ) -> OgeomResult<Solution> {
+        // The pull enters as an ordinary constraint at a whisper of the
+        // weight, then leaves; ids of real constraints are untouched
+        // because the pull is appended last and popped before any
+        // diagnosis the caller sees is produced... but diagnosis happens
+        // inside solve, so instead: solve against a temporary constraint
+        // and re-diagnose without it.
+        let pull = self.constrain(crate::model::Constraint::Fixed(point, to))?;
+        let _ = pull;
+        self.soft_last = true;
+        let outcome = self.solve(options);
+        self.soft_last = false;
+        self.constraints.pop();
+        outcome?;
+        // Release polish: even a whisper of a pull perturbs the hard
+        // constraints at its squared weight, so the sketch re-solves
+        // without it — warm-started, a step or two — and lands exactly on
+        // the constraints, at the configuration the drag chose.
+        self.solve(options)
+    }
+
     /// Read the sketch's structure at its current parameters, without
     /// moving anything.
     #[must_use]
@@ -330,25 +371,43 @@ impl Sketch {
         }
     }
 
-    /// The Jacobian of the residuals by central differences.
+    /// The Jacobian of the residuals by central differences, exploiting
+    /// structural sparsity: each constraint is differentiated only over
+    /// the parameters of the entities it names, so the cost scales with
+    /// the constraint count rather than with constraints times the whole
+    /// parameter vector — the difference between a solver that re-reads
+    /// the world and one that can keep up with a drag.
     fn numeric_jacobian(&self, scale: f64, m: usize) -> DMatrix<f64> {
         let n = self.params.len();
         let mut jacobian = DMatrix::zeros(m, n);
         let mut params = self.params.clone();
-        let mut forward = Vec::with_capacity(m);
-        let mut backward = Vec::with_capacity(m);
-        for j in 0..n {
-            let h = 1e-6 * params[j].abs().max(1.0);
-            let held = params[j];
-            params[j] = held + h;
-            self.residuals(&params, scale, &mut forward);
-            params[j] = held - h;
-            self.residuals(&params, scale, &mut backward);
-            params[j] = held;
-            for i in 0..m {
-                jacobian[(i, j)] = (forward[i] - backward[i]) / (2.0 * h);
+        let mut forward = Vec::new();
+        let mut backward = Vec::new();
+        let mut row = 0;
+        for constraint in &self.constraints {
+            let rows = Self::rows_of(constraint);
+            for j in self.parameters_of(constraint) {
+                let h = 1e-6 * params[j].abs().max(1.0);
+                let held = params[j];
+                params[j] = held + h;
+                forward.clear();
+                self.constraint_residuals(constraint, &params, scale, &mut forward);
+                params[j] = held - h;
+                backward.clear();
+                self.constraint_residuals(constraint, &params, scale, &mut backward);
+                params[j] = held;
+                let weight = if self.soft_last && row + rows == m {
+                    crate::model::SOFT_WEIGHT
+                } else {
+                    1.0
+                };
+                for k in 0..rows {
+                    jacobian[(row + k, j)] = weight * (forward[k] - backward[k]) / (2.0 * h);
+                }
             }
+            row += rows;
         }
+        debug_assert_eq!(row, m);
         jacobian
     }
 
@@ -757,5 +816,128 @@ mod tests {
         );
         let after = sketch.diagnose();
         assert_eq!(after.freedom.degrees, 4, "measuring moved nothing");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod sparse_tests {
+    use super::*;
+    use crate::model::{Constraint, Sketch};
+    use approx::assert_relative_eq;
+    use ogeom_math::Point2;
+
+    const T_OPTS: SolveOptions = SolveOptions {
+        tolerance: 1e-9,
+        max_iterations: 100,
+    };
+
+    /// The sparse Jacobian equals the dense one entry for entry, on a
+    /// sketch exercising every kind of coupling.
+    #[test]
+    fn the_sparse_jacobian_is_the_dense_one() {
+        let mut sketch = Sketch::new();
+        let p0 = sketch.add_point(Point2::new(0.3, -0.1));
+        let p1 = sketch.add_point(Point2::new(9.0, 1.0));
+        let p2 = sketch.add_point(Point2::new(8.0, 7.0));
+        let centre = sketch.add_point(Point2::new(4.0, 3.0));
+        let l1 = sketch.add_line(p0, p1).unwrap();
+        let l2 = sketch.add_line(p1, p2).unwrap();
+        let circle = sketch.add_circle(centre, 2.0).unwrap();
+        sketch
+            .constrain(Constraint::Fixed(p0, Point2::new(0.0, 0.0)))
+            .unwrap();
+        sketch.constrain(Constraint::Distance(p0, p1, 9.0)).unwrap();
+        sketch.constrain(Constraint::Perpendicular(l1, l2)).unwrap();
+        sketch
+            .constrain(Constraint::TangentLineCircle(l1, circle))
+            .unwrap();
+        sketch.constrain(Constraint::Symmetric(p1, p2, l1)).unwrap();
+        sketch.constrain(Constraint::Radius(circle, 2.0)).unwrap();
+
+        let scale = sketch.characteristic_scale();
+        let mut residual = Vec::new();
+        sketch.residuals(&sketch.params.clone(), scale, &mut residual);
+        let m = residual.len();
+        let sparse = sketch.numeric_jacobian(scale, m);
+
+        // The dense reference: perturb every parameter, evaluate everything.
+        let n = sketch.params.len();
+        let mut dense = nalgebra::DMatrix::zeros(m, n);
+        let mut params = sketch.params.clone();
+        let (mut forward, mut backward) = (Vec::new(), Vec::new());
+        for j in 0..n {
+            let h = 1e-6 * params[j].abs().max(1.0);
+            let held = params[j];
+            params[j] = held + h;
+            sketch.residuals(&params, scale, &mut forward);
+            params[j] = held - h;
+            sketch.residuals(&params, scale, &mut backward);
+            params[j] = held;
+            for i in 0..m {
+                dense[(i, j)] = (forward[i] - backward[i]) / (2.0 * h);
+            }
+        }
+        for i in 0..m {
+            for j in 0..n {
+                assert_relative_eq!(sparse[(i, j)], dense[(i, j)], epsilon = 1e-9);
+            }
+        }
+    }
+
+    /// Dragging slides a rectangle's free corner along what the
+    /// constraints allow: the dimensions hold exactly, and the corner
+    /// lands as near the pointer as the dimensions permit.
+    #[test]
+    fn dragging_moves_what_may_move_and_nothing_else() {
+        let mut sketch = Sketch::new();
+        let p0 = sketch.add_point(Point2::new(0.0, 0.0));
+        let p1 = sketch.add_point(Point2::new(40.0, 0.0));
+        let p2 = sketch.add_point(Point2::new(40.0, 30.0));
+        let p3 = sketch.add_point(Point2::new(0.0, 30.0));
+        let bottom = sketch.add_line(p0, p1).unwrap();
+        let right = sketch.add_line(p1, p2).unwrap();
+        let top = sketch.add_line(p3, p2).unwrap();
+        let left = sketch.add_line(p0, p3).unwrap();
+        sketch.constrain(Constraint::Horizontal(bottom)).unwrap();
+        sketch
+            .constrain(Constraint::Distance(p0, p1, 40.0))
+            .unwrap();
+        sketch.constrain(Constraint::Vertical(right)).unwrap();
+        sketch
+            .constrain(Constraint::Distance(p1, p2, 30.0))
+            .unwrap();
+        sketch.constrain(Constraint::Horizontal(top)).unwrap();
+        sketch.constrain(Constraint::Vertical(left)).unwrap();
+
+        // Unanchored: the rectangle may translate. Drag the origin corner.
+        let before = sketch.constraints().len();
+        let solution = sketch.drag(p0, Point2::new(5.0, 7.0), T_OPTS).unwrap();
+        assert!(solution.converged, "residual {}", solution.residual);
+        assert_eq!(sketch.constraints().len(), before, "the pull left no trace");
+        let at = sketch.point(p0).unwrap();
+        assert_relative_eq!(at.x, 5.0, epsilon = 1e-3);
+        assert_relative_eq!(at.y, 7.0, epsilon = 1e-3);
+        assert_relative_eq!(
+            sketch.measure_distance(p0, p1).unwrap(),
+            40.0,
+            epsilon = 1e-6
+        );
+        assert_relative_eq!(
+            sketch.measure_distance(p1, p2).unwrap(),
+            30.0,
+            epsilon = 1e-6
+        );
+
+        // Anchored, the drag can only fail politely: the corner stays put
+        // and the dimensions still hold.
+        sketch
+            .constrain(Constraint::Fixed(p0, Point2::new(5.0, 7.0)))
+            .unwrap();
+        let held = sketch.drag(p0, Point2::new(90.0, 90.0), T_OPTS).unwrap();
+        assert!(held.converged);
+        let at = sketch.point(p0).unwrap();
+        assert_relative_eq!(at.x, 5.0, epsilon = 1e-6);
+        assert_relative_eq!(at.y, 7.0, epsilon = 1e-6);
     }
 }

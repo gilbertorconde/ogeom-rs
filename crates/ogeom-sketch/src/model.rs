@@ -138,6 +138,11 @@ pub enum Constraint {
     ArcRadii(ArcId),
 }
 
+/// How much of its weight a soft objective keeps: light enough that every
+/// real constraint wins the fight, heavy enough to pick among the
+/// configurations they leave open.
+pub(crate) const SOFT_WEIGHT: f64 = 1e-3;
+
 /// A 2D sketch: geometry, constraints, and the parameter vector under both.
 #[derive(Debug, Clone, Default)]
 pub struct Sketch {
@@ -147,6 +152,9 @@ pub struct Sketch {
     pub(crate) circles: Vec<CircleData>,
     pub(crate) arcs: Vec<ArcData>,
     pub(crate) constraints: Vec<Constraint>,
+    /// Whether the last constraint is a soft objective — a drag target —
+    /// whose rows enter at a whisper of the weight.
+    pub(crate) soft_last: bool,
 }
 
 impl Sketch {
@@ -456,6 +464,26 @@ impl Sketch {
     /// radian's sine in another and call them comparable.
     pub(crate) fn residuals(&self, params: &[f64], scale: f64, out: &mut Vec<f64>) {
         out.clear();
+        for (i, constraint) in self.constraints.iter().enumerate() {
+            let start = out.len();
+            self.constraint_residuals(constraint, params, scale, out);
+            if self.soft_last && i + 1 == self.constraints.len() {
+                for r in &mut out[start..] {
+                    *r *= SOFT_WEIGHT;
+                }
+            }
+        }
+    }
+
+    /// Append one constraint's residual rows.
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn constraint_residuals(
+        &self,
+        constraint: &Constraint,
+        params: &[f64],
+        scale: f64,
+        out: &mut Vec<f64>,
+    ) {
         let point = |id: PointId| -> (f64, f64) {
             let at = self.points[id.0].at;
             (params[at], params[at + 1])
@@ -473,7 +501,7 @@ impl Sketch {
         };
         let dist = |a: (f64, f64), b: (f64, f64)| (b.0 - a.0).hypot(b.1 - a.1);
 
-        for constraint in &self.constraints {
+        {
             match constraint {
                 Constraint::Coincident(a, b) => {
                     let (pa, pb) = (point(*a), point(*b));
@@ -605,6 +633,86 @@ impl Sketch {
                 }
             }
         }
+    }
+
+    /// The parameter indices one constraint's residuals can touch —
+    /// structural sparsity, exact by construction, because a constraint
+    /// only ever reads the entities it names.
+    pub(crate) fn parameters_of(&self, constraint: &Constraint) -> Vec<usize> {
+        let mut out = Vec::new();
+        let point = |id: PointId, out: &mut Vec<usize>| {
+            let at = self.points[id.0].at;
+            out.push(at);
+            out.push(at + 1);
+        };
+        let line = |id: LineId, out: &mut Vec<usize>| {
+            let data = self.lines[id.0].clone();
+            point(data.a, out);
+            point(data.b, out);
+        };
+        match constraint {
+            Constraint::Coincident(a, b) | Constraint::Distance(a, b, _) => {
+                point(*a, &mut out);
+                point(*b, &mut out);
+            }
+            Constraint::Fixed(p, _) => point(*p, &mut out),
+            Constraint::PointLineDistance(p, l, _) | Constraint::PointOnLine(p, l) => {
+                point(*p, &mut out);
+                line(*l, &mut out);
+            }
+            Constraint::PointOnCircle(p, c) => {
+                point(*p, &mut out);
+                let data = self.circles[c.0].clone();
+                point(data.centre, &mut out);
+                out.push(data.radius_at);
+            }
+            Constraint::Horizontal(l) | Constraint::Vertical(l) => line(*l, &mut out),
+            Constraint::Parallel(a, b)
+            | Constraint::Perpendicular(a, b)
+            | Constraint::Angle(a, b, _)
+            | Constraint::EqualLength(a, b) => {
+                line(*a, &mut out);
+                line(*b, &mut out);
+            }
+            Constraint::EqualRadius(a, b) => {
+                out.push(self.circles[a.0].radius_at);
+                out.push(self.circles[b.0].radius_at);
+            }
+            Constraint::Radius(c, _) => out.push(self.circles[c.0].radius_at),
+            Constraint::TangentLineCircle(l, c) => {
+                line(*l, &mut out);
+                let data = self.circles[c.0].clone();
+                point(data.centre, &mut out);
+                out.push(data.radius_at);
+            }
+            Constraint::TangentLineArc(l, arc) => {
+                line(*l, &mut out);
+                let data = self.arcs[arc.0].clone();
+                point(data.centre, &mut out);
+                point(data.start, &mut out);
+            }
+            Constraint::TangentCircles(a, b, _) => {
+                for c in [a, b] {
+                    let data = self.circles[c.0].clone();
+                    point(data.centre, &mut out);
+                    out.push(data.radius_at);
+                }
+            }
+            Constraint::Symmetric(p, q, l) => {
+                point(*p, &mut out);
+                point(*q, &mut out);
+                line(*l, &mut out);
+            }
+            Constraint::ArcRadii(arc) => {
+                let data = self.arcs[arc.0].clone();
+                point(data.centre, &mut out);
+                point(data.start, &mut out);
+                point(data.end, &mut out);
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// The sketch's characteristic length: the parameter spread, floored at
