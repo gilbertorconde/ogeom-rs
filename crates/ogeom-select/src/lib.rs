@@ -6,3 +6,7 @@
 //! produced it.
 //!
 //! Not a renderer. `tools/ogeom-view` consumes this crate; it is not part of it.
+
+mod pick;
+
+pub use pick::{Hit, Marquee, PickKind, Pickable, Ray};

@@ -488,6 +488,7 @@ name = "ogeom-select"
 version = "0.0.0"
 dependencies = [
  "approx",
+ "ogeom-algo",
  "ogeom-core",
  "ogeom-geom",
  "ogeom-math",

@@ -15,6 +15,7 @@ ogeom-topo.workspace = true
 ogeom-mesh.workspace = true
 
 [dev-dependencies]
+ogeom-algo.workspace = true
 approx.workspace = true
 proptest.workspace = true
 
