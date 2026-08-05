@@ -791,7 +791,10 @@ fn on_sphere(curve: &Curve, sphere: ogeom_math::Sphere, tol: Tolerances) -> Opti
     let start = circle.centre() + circle.frame().x().vector() * circle.radius();
     let at = frame.to_local(start);
     let phase = at.y.atan2(at.x);
-    let towards = ogeom_math::Direction2::new(ogeom_math::Vector2::new(1.0, 0.0), tol).ok()?;
+    // Phase and winding exactly as the cylinder case: a parallel whose own
+    // axis opposes the sphere's marches its angle *down* the longitude.
+    let winding = circle.frame().z().vector().dot(frame.z().vector()).signum();
+    let towards = ogeom_math::Direction2::new(ogeom_math::Vector2::new(winding, 0.0), tol).ok()?;
     Some(
         Line2d::over(
             ogeom_math::Axis2::new(Point2::new(phase, latitude), towards),
