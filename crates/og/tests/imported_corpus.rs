@@ -98,22 +98,23 @@ fn an_imported_part_takes_a_boolean_cut() {
     let result = og::boolean::cut(&mut import.model, &healed, &post.shape, T).unwrap();
 
     // The cut runs on the imported part: the result is a solid whose shell
-    // closes, built from pieces of the world's geometry and this kernel's.
-    // Its mesh does not yet weld everywhere — the rebuilt revolution pieces
-    // still meet the plate pieces within the file's slop — so the volume is
-    // reported when measurable and the structure asserted regardless.
+    // closes, built from pieces of the world's geometry and this kernel's,
+    // and it *measures* — the mesh welds across the file's slop because the
+    // slop is recorded on the edges and vertices and the weld honours it.
     let shell = explore_unique(&import.model, &result.shape, ShapeType::Shell)
         .unwrap()
         .remove(0);
     assert!(og::algo::is_shell_closed(&import.model, &shell).unwrap());
-    match og::algo::volume_properties(&import.model, &result.shape, fine, T) {
-        Ok(props) => {
-            eprintln!("REPORT cut imported: {before:.3} -> {:.3} mm^3", props.mass);
-            assert!(props.mass < before, "the cut removed material");
-            assert!(props.mass > 0.0);
-        }
-        Err(e) => eprintln!("REPORT cut imported: unmeasured ({e})"),
-    }
+    let props = og::algo::volume_properties(&import.model, &result.shape, fine, T).unwrap();
+    eprintln!("REPORT cut imported: {before:.3} -> {:.3} mm^3", props.mass);
+    assert!(props.mass < before, "the cut removed material");
+    assert!(props.mass > 0.0);
+    // The post removes at most its own volume, and the difference cannot
+    // exceed it: the bound the arithmetic itself provides.
+    assert!(
+        before - props.mass <= 8.0 * 8.0 * 6.0,
+        "the cut removed more than the post could"
+    );
 
     // History carried through: the imported solid is recorded as modified
     // into the result, and at least one of its faces was split or consumed.
