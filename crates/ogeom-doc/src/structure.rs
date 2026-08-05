@@ -365,6 +365,16 @@ impl Document {
     pub fn name_of(&self, shape: &Shape) -> Option<&str> {
         self.names.get(&shape.node()).map(String::as_str)
     }
+
+    /// Every node-attached colour, for a writer to carry out.
+    pub fn colours(&self) -> impl Iterator<Item = (TShapeId, Colour)> + '_ {
+        self.colours.iter().map(|(&node, &colour)| (node, colour))
+    }
+
+    /// Every node-attached name, for a writer to carry out.
+    pub fn names(&self) -> impl Iterator<Item = (TShapeId, &str)> {
+        self.names.iter().map(|(&node, name)| (node, name.as_str()))
+    }
 }
 
 #[cfg(test)]

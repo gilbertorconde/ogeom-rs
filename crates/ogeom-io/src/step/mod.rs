@@ -8,5 +8,7 @@
 
 pub mod parse;
 pub mod read;
+pub mod write;
 
 pub use read::{StepImport, StepReport, read_step};
+pub use write::write_step;

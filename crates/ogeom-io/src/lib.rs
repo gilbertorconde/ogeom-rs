@@ -27,5 +27,5 @@ pub mod native;
 pub mod step;
 pub mod stl;
 
-pub use step::{StepImport, StepReport, read_step};
+pub use step::{StepImport, StepReport, read_step, write_step};
 pub use stl::{Encoding, read, write};
