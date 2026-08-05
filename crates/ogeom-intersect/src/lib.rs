@@ -61,7 +61,7 @@ pub use extrema::{
     Approach, Extrema, ExtremaOptions, extrema_curve_curve, extrema_curve_surface,
     extrema_surface_surface,
 };
-pub use march::{Contact, Marching, Stopped, Traced, branches, seeds, trace};
+pub use march::{Contact, Marching, Stopped, Traced, branches, seeds, trace, trace_tangential};
 pub use section::{
     IntersectOptions, SectionCurve, SurfaceIntersection, exact_pcurve_of, exact_pcurve_over,
     intersect_surfaces,

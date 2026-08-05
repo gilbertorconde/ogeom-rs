@@ -527,9 +527,23 @@ fn tangent_at(
     let nb = normal_at(b, at.on_b, tol)?;
     let cross = na.cross(nb);
     let length = cross.magnitude();
-    // Scaled against the normals, which are unit, so this is the sine of the
-    // angle between the surfaces rather than an absolute length.
-    if length <= tol.angular().max(SHALLOWEST) {
+    // The decision is made through intervals rather than a bare compare:
+    // each normal component carries the correction's stated residual as an
+    // uncertainty, the squared cross magnitude is computed as an enclosure,
+    // and only a crossing *certainly* above the floor is followed. A sine
+    // inside the enclosure's undecided band is exactly the case the floor
+    // exists for — the correction's own noise masquerading as an angle —
+    // and it is refused with a certificate instead of a guess.
+    let floor = tol.angular().max(SHALLOWEST);
+    let widen = |value: f64| ogeom_math::Interval::about(value, tol.confusion());
+    let (ax, ay, az) = (widen(na.x), widen(na.y), widen(na.z));
+    let (bx, by, bz) = (widen(nb.x), widen(nb.y), widen(nb.z));
+    let cx = ay.mul(&bz).sub(&az.mul(&by));
+    let cy = az.mul(&bx).sub(&ax.mul(&bz));
+    let cz = ax.mul(&by).sub(&ay.mul(&bx));
+    let magnitude2 = cx.square().add(&cy.square()).add(&cz.square());
+    let above = magnitude2.sub(&ogeom_math::Interval::point(floor * floor));
+    if above.certain_sign() != Some(ogeom_core::Sign::Positive) || length <= f64::MIN_POSITIVE {
         return None;
     }
     Some(cross * (1.0 / length))
@@ -1098,6 +1112,232 @@ fn stitch_stalled(
         });
     }
     out
+}
+
+/// Newton projection of a point onto a surface, warm-started — the local
+/// tool the tangential walker corrects with.
+fn nearest_on(
+    surface: &SurfaceGeometry,
+    seed: (f64, f64),
+    target: Point,
+    tol: Tolerances,
+) -> Option<((f64, f64), Point)> {
+    let (mut u, mut v) = seed;
+    for _ in 0..16 {
+        let (u_ok, v_ok) = surface.normalize_parameters(u, v, tol).ok()?;
+        u = u_ok;
+        v = v_ok;
+        let p = surface.point_at(u, v, tol).ok()?;
+        let (su, sv) = surface.d1_at(u, v, tol).ok()?;
+        let r = p - target;
+        let (a11, a12, a22) = (su.dot(su), su.dot(sv), sv.dot(sv));
+        let det = a11.mul_add(a22, -(a12 * a12));
+        if det.abs() <= f64::MIN_POSITIVE {
+            break;
+        }
+        let (b1, b2) = (-su.dot(r), -sv.dot(r));
+        let du = b1.mul_add(a22, -(b2 * a12)) / det;
+        let dv = a11.mul_add(b2, -(a12 * b1)) / det;
+        u += du;
+        v += dv;
+        if du.hypot(dv) < 1e-14 {
+            break;
+        }
+    }
+    let (u, v) = surface.normalize_parameters(u, v, tol).ok()?;
+    Some(((u, v), surface.point_at(u, v, tol).ok()?))
+}
+
+/// Trace tangential contact along a curve — the walker the deferred table
+/// owed, following the valley of the gap function rather than a crossing.
+///
+/// Where two surfaces touch along a whole curve there is no transversal
+/// direction to march: the crossing angle is zero along the entire
+/// contact, and the crossing walker honestly stalls. But the contact is
+/// still a curve, and it is the locus where the *gap* between the surfaces
+/// stays zero. This walker steps along the contact and corrects each step
+/// transversally: project the candidate onto the first surface, project
+/// that onto the second, and slide on the first surface to close the gap —
+/// a minimization, not a root-find, because at tangency the gap touches
+/// zero without crossing it.
+///
+/// The seed must be a genuine contact: on both surfaces within tolerance
+/// and near-tangent there. A transversal crossing is refused — the
+/// ordinary walker owns those.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// settings are unusable or the seed is not a tangential contact.
+pub fn trace_tangential(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    from: Contact,
+    options: Marching,
+    tol: Tolerances,
+) -> OgeomResult<Traced> {
+    options.validate()?;
+    let accept = tol.confusion() * 100.0;
+    let sine = crossing_sine(a, b, from.on_a, from.on_b, tol);
+    if sine > BRANCH_POINT_SINE {
+        ogeom_bail!(
+            Construction,
+            "the surfaces cross here at sine {sine}; tangential tracing wants a contact"
+        );
+    }
+    let reach = span(a).max(span(b));
+    let step = (options.chord * reach)
+        .sqrt()
+        .clamp(tol.confusion(), reach / 16.0);
+
+    type Walked = (Vec<Point>, Vec<(f64, f64)>, Vec<(f64, f64)>, Stopped);
+    let walk_one = |sense: f64| -> OgeomResult<Walked> {
+        let mut points = vec![from.point];
+        let mut on_a = vec![from.on_a];
+        let mut on_b = vec![from.on_b];
+        let mut at = from;
+        let mut previous: Option<Vector> = None;
+        let mut stopped = Stopped::RanOut;
+        while points.len() < options.max_points {
+            ogeom_core::progress::checkpoint()?;
+            // The contact direction: in the common tangent plane. With the
+            // normals parallel, one surface's normal serves for both; the
+            // step direction is the previous one projected back into the
+            // tangent plane, or any tangent direction to begin with.
+            let Some(normal) = normal_at(a, at.on_a, tol) else {
+                stopped = Stopped::Stalled;
+                break;
+            };
+            let direction = match previous {
+                Some(d) => {
+                    let flat = d - normal * d.dot(normal);
+                    let m = flat.magnitude();
+                    if m <= f64::MIN_POSITIVE {
+                        stopped = Stopped::Stalled;
+                        break;
+                    }
+                    flat / m
+                }
+                None => {
+                    // First step: the tangent direction along which the gap
+                    // grows least, found by sampling the tangent circle.
+                    let (su, _) = a.d1_at(at.on_a.0, at.on_a.1, tol).map_err(|_| {
+                        ogeom_core::ogeom_err!(Construction, "the seed cannot be evaluated")
+                    })?;
+                    let t1 = {
+                        let flat = su - normal * su.dot(normal);
+                        let m = flat.magnitude();
+                        if m <= f64::MIN_POSITIVE {
+                            stopped = Stopped::Stalled;
+                            break;
+                        }
+                        flat / m
+                    };
+                    let t2 = normal.cross(t1);
+                    let mut best = (f64::INFINITY, t1);
+                    for k in 0..16 {
+                        let angle = core::f64::consts::TAU * f64::from(k) / 16.0;
+                        let dir = t1 * angle.cos() + t2 * angle.sin();
+                        let probe = at.point + dir * step;
+                        let Some((_, qa)) = nearest_on(a, at.on_a, probe, tol) else {
+                            continue;
+                        };
+                        let Some((_, qb)) = nearest_on(b, at.on_b, qa, tol) else {
+                            continue;
+                        };
+                        let gap = qa.distance(qb);
+                        if gap < best.0 {
+                            best = (gap, dir);
+                        }
+                    }
+                    best.1 * sense
+                }
+            };
+
+            // Step and correct: onto a, gap closed against b by sliding on
+            // a a few times.
+            let mut candidate = at.point + direction * step;
+            let mut pa = at.on_a;
+            let mut pb = at.on_b;
+            let mut gap = f64::INFINITY;
+            for _ in 0..8 {
+                let Some((ua, qa)) = nearest_on(a, pa, candidate, tol) else {
+                    break;
+                };
+                let Some((ub, qb)) = nearest_on(b, pb, qa, tol) else {
+                    break;
+                };
+                pa = ua;
+                pb = ub;
+                gap = qa.distance(qb);
+                if gap <= tol.confusion() {
+                    candidate = qa;
+                    break;
+                }
+                // Slide the working point toward the midpoint of the gap.
+                candidate = qa + (qb - qa) * 0.5;
+            }
+            if gap > accept {
+                stopped = Stopped::Stalled;
+                break;
+            }
+            let next = Contact {
+                on_a: pa,
+                on_b: pb,
+                point: candidate,
+            };
+            if points.len() > 3 && next.point.distance(from.point) <= step {
+                points.push(from.point);
+                on_a.push(from.on_a);
+                on_b.push(from.on_b);
+                stopped = Stopped::Closed;
+                break;
+            }
+            if next.point.distance(at.point) <= step * 1e-3 {
+                stopped = Stopped::Stalled;
+                break;
+            }
+            previous = Some(next.point - at.point);
+            points.push(next.point);
+            on_a.push(next.on_a);
+            on_b.push(next.on_b);
+            at = next;
+        }
+        Ok((points, on_a, on_b, stopped))
+    };
+
+    let (points, on_a, on_b, stopped) = walk_one(1.0)?;
+    if stopped == Stopped::Closed {
+        return Ok(Traced {
+            points,
+            on_a,
+            on_b,
+            stopped,
+        });
+    }
+    let (mut back_points, mut back_a, mut back_b, back_stopped) = walk_one(-1.0)?;
+    back_points.reverse();
+    back_a.reverse();
+    back_b.reverse();
+    back_points.pop();
+    back_a.pop();
+    back_b.pop();
+    back_points.extend(points);
+    back_a.extend(on_a);
+    back_b.extend(on_b);
+    let stopped = if stopped == Stopped::RanOut || back_stopped == Stopped::RanOut {
+        Stopped::RanOut
+    } else if stopped == Stopped::Stalled || back_stopped == Stopped::Stalled {
+        Stopped::Stalled
+    } else {
+        Stopped::LeftTheDomain
+    };
+    Ok(Traced {
+        points: back_points,
+        on_a: back_a,
+        on_b: back_b,
+        stopped,
+    })
 }
 
 #[cfg(test)]
