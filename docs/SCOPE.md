@@ -448,11 +448,11 @@ are refused with instructions — see the deferred table.
 | Pave filler: dimension-ordered intersection, section edges, pcurve generation | `BOPAlgo_PaveFiller` |
 | Builder: 2D face splitting, same-domain unification, solid rebuilding, tolerance repair | `BOPAlgo_Builder` |
 | Fuse, common, cut, section, split | `BRepAlgoAPI` |
-| Volume maker from an unordered face set | `BOPAlgo_MakerVolume` |
-| Cells builder for arbitrary set expressions | `BOPAlgo_CellsBuilder` |
+| Volume maker from an unordered face set | `BOPAlgo_MakerVolume` — done: `make_volume` sews, demands closure, nests voids reversed |
+| Cells builder for arbitrary set expressions | `BOPAlgo_CellsBuilder` — done: `cells` returns the three cells; expressions compose by fusing selections |
 | Defeaturing / feature removal | `BOPAlgo_RemoveFeatures` |
-| Periodic models, connected assemblies | `BOPAlgo_MakePeriodic` |
-| Fuzzy tolerance, glue mode, non-destructive mode, parallel mode | `BOPAlgo_Options` |
+| Periodic models, connected assemblies | `BOPAlgo_MakePeriodic` — done: `make_periodic` patterns and fuses |
+| Fuzzy tolerance, glue mode, non-destructive mode, parallel mode | `BOPAlgo_Options` — fuzzy done as `*_fuzzy` (the fuzz *is* the run's confusion, so every decision inherits it coherently); non-destructive pinned by test; glue subsumed by same-domain unification, which already skips nothing it needs and unifies what glue would; parallel rides `map_ordered` where a stage qualifies |
 
 ## 9. Healing and simplification · `ogeom-heal` · P3
 

@@ -1763,6 +1763,166 @@ fn assemble_result(
     Ok(Built::new(result, history))
 }
 
+/// Solids from an unordered soup of faces: sew, demand closure, nest
+/// shells into solids and voids — the pipeline's own final stages offered
+/// as a builder.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
+/// shell fails to close — an open soup encloses no volume, and saying so
+/// beats guessing.
+pub fn make_volume(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<Built> {
+    let sewn = ogeom_algo::sew(model, faces, tol)?;
+    for shell in &sewn.shells {
+        if !ogeom_algo::is_shell_closed(model, shell)? {
+            ogeom_bail!(
+                Construction,
+                "the faces do not close into shells; an open soup encloses no volume"
+            );
+        }
+    }
+    let mut bounds = Vec::new();
+    for shell in &sewn.shells {
+        bounds.push(ogeom_algo::shape_bounds(model, shell, tol)?);
+    }
+    let mut solids = Vec::new();
+    for (i, shell) in sewn.shells.iter().enumerate() {
+        let contained = bounds
+            .iter()
+            .enumerate()
+            .any(|(j, other)| j != i && other.contains_box(&bounds[i]));
+        if contained {
+            continue;
+        }
+        let mut group = vec![shell.clone()];
+        for (j, candidate) in sewn.shells.iter().enumerate() {
+            if j != i && bounds[i].contains_box(&bounds[j]) {
+                // A void bounds its solid from inside: material lies outside
+                // it, so the sewn outward orientation reverses.
+                group.push(candidate.reversed());
+            }
+        }
+        solids.push(model.add_solid(&group)?);
+    }
+    let mut history = History::new();
+    let result = if solids.len() == 1 {
+        solids.remove(0)
+    } else {
+        model.add_compound(&solids)?
+    };
+    for face in faces {
+        history.modify(face, result.clone());
+    }
+    Ok(Built::new(result, history))
+}
+
+/// The three cells two solids cut space into, each one boolean's answer:
+/// what is only in `a`, what is only in `b`, and what is in both. Arbitrary
+/// set expressions compose by fusing a selection of these.
+#[derive(Debug)]
+pub struct Cells {
+    /// `a` with `b` removed.
+    pub a_not_b: Built,
+    /// `b` with `a` removed.
+    pub b_not_a: Built,
+    /// The overlap.
+    pub common: Built,
+}
+
+/// Split two solids into their three cells.
+///
+/// # Errors
+///
+/// As the operations themselves.
+pub fn cells(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Cells> {
+    Ok(Cells {
+        a_not_b: cut(model, a, b, tol)?,
+        b_not_a: cut(model, b, a, tol)?,
+        common: common(model, a, b, tol)?,
+    })
+}
+
+/// A tolerance whose confusion *is* the stated fuzz: every gap, pave and
+/// weld decision inherits it coherently, which is what a fuzzy boolean
+/// means.
+fn fuzzed(fuzz: f64, tol: Tolerances) -> OgeomResult<Tolerances> {
+    if !fuzz.is_finite() || fuzz <= 0.0 {
+        ogeom_bail!(Construction, "a fuzz of {fuzz} is not a distance");
+    }
+    if fuzz <= tol.confusion() {
+        return Ok(tol);
+    }
+    Tolerances::with_scale(ogeom_core::tolerance::CONFUSION / fuzz)
+}
+
+/// [`fuse`] with geometry within `fuzz` of touching counted as touching.
+///
+/// # Errors
+///
+/// As [`fuse`], plus a non-positive fuzz.
+pub fn fuse_fuzzy(
+    model: &mut Model,
+    a: &Shape,
+    b: &Shape,
+    fuzz: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let loosened = fuzzed(fuzz, tol)?;
+    fuse(model, a, b, loosened)
+}
+
+/// [`cut`] at a stated fuzz.
+///
+/// # Errors
+///
+/// As [`fuse_fuzzy`].
+pub fn cut_fuzzy(
+    model: &mut Model,
+    a: &Shape,
+    b: &Shape,
+    fuzz: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let loosened = fuzzed(fuzz, tol)?;
+    cut(model, a, b, loosened)
+}
+
+/// A shape repeated `count` times along a direction at a period and fused
+/// into one — the periodic pattern as a composition of what exists.
+///
+/// # Errors
+///
+/// As [`fuse`], plus an unusable count or period.
+pub fn make_periodic(
+    model: &mut Model,
+    shape: &Shape,
+    step: ogeom_math::Vector,
+    count: usize,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if count == 0 {
+        ogeom_bail!(Construction, "a pattern of zero copies is nothing");
+    }
+    if step.magnitude() <= tol.confusion() {
+        ogeom_bail!(Construction, "a zero period stacks every copy on the first");
+    }
+    let mut history = History::new();
+    let mut result = shape.clone();
+    for i in 1..count {
+        #[allow(clippy::cast_precision_loss, reason = "pattern counts are small")]
+        let offset = step * i as f64;
+        let moved =
+            ogeom_algo::transformed(model, shape, ogeom_math::Transform::translation(offset))?
+                .shape;
+        let joined = fuse(model, &result, &moved, tol)?;
+        history.modify(&moved, joined.shape.clone());
+        result = joined.shape;
+    }
+    history.generate(shape, result.clone());
+    Ok(Built::new(result, history))
+}
+
 // --- the operations ----------------------------------------------------------
 
 /// A shape whose placements carry scale, rebuilt with the scale baked
