@@ -360,3 +360,54 @@ fn a_line_arc_corner_takes_a_chamfer_by_arc_length() {
         5
     );
 }
+
+#[test]
+fn a_prism_wall_is_a_plane_a_chamfer_can_melt_into() {
+    // The deferred entry's own acceptance: make_prism builds planes for its
+    // straight walls now, so the wedge's same-domain melt works on them.
+    let mut model = og_topo::Model::new();
+    let base = og_algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 1.0), T).unwrap();
+    let profile = explore(&model, &base.shape, Filter::OfType(ShapeType::Face))
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            og_algo::classify_on_face(&model, f, Point::new(1.0, 1.0, 1.0), fine(), T)
+                .map(|c| c == og_algo::Containment::In)
+                .unwrap_or(false)
+        })
+        .expect("the base has its top face");
+    let solid = og_algo::make_prism(&mut model, &profile, og_math::Vector::new(0.0, 0.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let edge = explore(&model, &solid, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            og_algo::edge_vertices(&model, e)
+                .unwrap()
+                .is_some_and(|(a, b)| {
+                    let p = |v: &og_topo::Shape| {
+                        let d = model
+                            .node(v)
+                            .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                            .unwrap();
+                        v.transform(model.datums()).unwrap().apply(d)
+                    };
+                    let (pa, pb) = (p(&a), p(&b));
+                    (pa.x - 2.0).abs() < 1e-9
+                        && (pa.y - 0.0).abs() < 1e-9
+                        && (pb.x - 2.0).abs() < 1e-9
+                        && (pb.y - 0.0).abs() < 1e-9
+                        && (pa.z - pb.z).abs() > 1.5
+                })
+        })
+        .expect("the prism has its vertical edge");
+    let result = og_fillet::chamfer_edge(&mut model, &solid, &edge, 0.5, T).unwrap();
+    let props = og_algo::volume_properties(&model, &result.shape, fine(), T).unwrap();
+    let exact = 8.0 - 0.5 * 0.5 / 2.0 * 2.0;
+    assert!(
+        (props.mass - exact).abs() < 1e-9,
+        "prism chamfer volume {} against {exact}",
+        props.mass
+    );
+}

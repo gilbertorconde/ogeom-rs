@@ -238,9 +238,39 @@ fn prism_over_edge(
     );
     let travel = vector.magnitude();
     let direction = og_math::Direction::new(vector, tol)?;
-    let surface = model
-        .geometry_mut()
-        .add_surface(ExtrusionSurface::new(geometry, direction, travel)?.into());
+    // A straight profile edge sweeps a plane, and the plane is built so its
+    // chart *is* the extrusion's — origin on the line, x along it, y along
+    // the travel — so every pcurve below serves either surface unchanged.
+    // Naming the plane it actually made is what lets the boolean's
+    // same-domain resolution meet a prism wall as the plane it is.
+    let canonical: Option<og_geom::SurfaceGeometry> = if let og_geom::Curve::Line(line) = &geometry
+        && line.axis().direction.vector().dot(vector).abs() <= tol.angular() * travel
+    {
+        // Chart identity needs the travel perpendicular to the line; an
+        // oblique sweep's plane exists too, but with a sheared chart the
+        // pcurves below would no longer describe.
+        let axis = line.axis();
+        let normal = og_math::Direction::new(axis.direction.vector().cross(vector), tol).ok();
+        normal
+            .map(|n| -> OgResult<og_geom::SurfaceGeometry> {
+                let frame = og_math::Frame::new(axis.location, n, axis.direction, tol)?;
+                let plane = og_math::Plane::new(frame);
+                let margin = (hi - lo).abs().max(travel) * 0.1 + 1.0;
+                Ok(og_geom::PlaneSurface::over(
+                    plane,
+                    (lo.min(hi) - margin, lo.max(hi) + margin),
+                    (-margin, travel + margin),
+                )?
+                .into())
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let surface = model.geometry_mut().add_surface(match canonical {
+        Some(plane) => plane,
+        None => ExtrusionSurface::new(geometry, direction, travel)?.into(),
+    });
 
     // The extrusion's `u` is the *curve's* own parameter, and the curve does
     // not care which way the wire walks it. So a reversed occurrence is
@@ -562,6 +592,23 @@ fn revolution_over_edge(
         return Ok((None, History::new()));
     }
 
+    // A profile line perpendicular to the axis stays at one height as it
+    // turns: the face it sweeps is a region of a *plane*, and naming that
+    // plane — rather than dressing it as a revolution with a polar chart, a
+    // seam and a degenerate centre edge — is what lets a revolved rectangle
+    // match `make_cylinder` face for face and edge for edge.
+    if let og_geom::Curve::Line(line) = &geometry
+        && line
+            .axis()
+            .direction
+            .vector()
+            .dot(turn.axis.direction.vector())
+            .abs()
+            <= tol.angular()
+    {
+        return flat_revolution(model, rails, edge, &geometry, (lo, hi), turn, tol);
+    }
+
     let surface = model
         .geometry_mut()
         .add_surface(og_geom::RevolutionSurface::new(geometry, turn.axis, turn.angle)?.into());
@@ -653,6 +700,132 @@ fn revolution_over_edge(
     history.generate(edge, face.clone());
     if !turn.full {
         history.generate(edge, displaced);
+    }
+    Ok((Some(face), history))
+}
+
+/// The planar face a radial profile line sweeps: a disc, an annulus or a
+/// pie, on the plane it actually turns in.
+fn flat_revolution(
+    model: &mut Model,
+    rails: &mut Rails,
+    edge: &Shape,
+    geometry: &og_geom::Curve,
+    range: (f64, f64),
+    turn: &Turn,
+    tol: Tolerances,
+) -> OgResult<(Option<Shape>, History)> {
+    use og_geom::Curve3d as _;
+    let (lo, hi) = range;
+    let axis_dir = turn.axis.direction;
+    let at = geometry.point_at(lo, tol)?;
+    let height = (at - turn.axis.location).dot(axis_dir.vector());
+    let foot = turn.axis.location + axis_dir.vector() * height;
+    let radius_of = |p: og_math::Point| (p - foot).magnitude();
+    let far = geometry.point_at(hi, tol)?;
+    let reach = radius_of(at).max(radius_of(far)) * 2.0 + 1.0;
+    let plane = og_math::Plane::new(og_math::Frame::about(foot, axis_dir));
+    let plane_surface: og_geom::SurfaceGeometry =
+        og_geom::PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
+    let surface = model.geometry_mut().add_surface(plane_surface.clone());
+
+    let start_rail = revolved_rail(model, rails, edge, turn, false, tol)?;
+    let end_rail = revolved_rail(model, rails, edge, turn, true, tol)?;
+    let is_degenerate = |model: &Model, e: &Shape| -> bool {
+        model
+            .node(e)
+            .and_then(|n| n.data().as_edge())
+            .is_some_and(|d| d.curve3d().is_none())
+    };
+
+    // Exact Cartesian pcurves for whichever edges bound the face; the
+    // degenerate centre of the old polar chart simply has no place here.
+    let attach = |model: &mut Model, occurrence: &Shape| -> OgResult<()> {
+        let Some(data) = model.node(occurrence).and_then(|n| n.data().as_edge()) else {
+            og_bail!(Construction, "a flat revolution edge holds no data");
+        };
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            og_bail!(Construction, "a flat revolution edge has no curve");
+        };
+        let (curve, range) = (*curve, *range);
+        let Some(stored) = model.geometry().curve(curve) else {
+            og_bail!(Dangling, "curve is not in this model");
+        };
+        let placed = stored
+            .clone()
+            .transformed(&occurrence.transform(model.datums())?, tol)?;
+        let Some(pc) = og_intersect::exact_pcurve_of(&placed, &plane_surface, tol) else {
+            og_bail!(
+                Construction,
+                "a flat revolution edge has no closed-form pcurve on its plane"
+            );
+        };
+        crate::build::attach_pcurve(
+            model,
+            occurrence,
+            pc,
+            surface,
+            occurrence.location().clone(),
+            range,
+        )
+    };
+
+    let reversed = edge.orientation() == Orientation::Reversed;
+    let built = if turn.full {
+        let mut wires = Vec::new();
+        for rail in [&start_rail, &end_rail] {
+            if is_degenerate(model, rail) {
+                continue;
+            }
+            attach(model, rail)?;
+            wires.push(make_wire(model, std::slice::from_ref(rail), tol)?.shape);
+        }
+        if wires.is_empty() {
+            og_bail!(Construction, "a flat revolution swept out no boundary");
+        }
+        make_face_on(model, surface, &wires, tol)?.shape
+    } else {
+        let displaced = edge.moved(&turn.displacement);
+        let mut ring: Vec<Shape> = Vec::new();
+        if !is_degenerate(model, &start_rail) {
+            attach(model, &start_rail)?;
+            ring.push(start_rail.clone());
+        }
+        attach(model, &displaced)?;
+        ring.push(displaced.clone());
+        if !is_degenerate(model, &end_rail) {
+            attach(model, &end_rail)?;
+            ring.push(end_rail.reversed());
+        }
+        attach(model, edge)?;
+        ring.push(edge.reversed());
+        let boundary = make_wire(model, &ring, tol)?.shape;
+        make_face_on(model, surface, std::slice::from_ref(&boundary), tol)?.shape
+    };
+
+    // The material side is the profile wire's business, as for every sweep;
+    // the plane's own normal relates to the revolution's by the sign of the
+    // line's outward sense.
+    let outward_sense = {
+        let radial = if radius_of(far) >= radius_of(at) {
+            far - foot
+        } else {
+            at - foot
+        };
+        let d = (far - at).dot(radial);
+        d < 0.0
+    };
+    let face = if reversed != outward_sense {
+        built.reversed()
+    } else {
+        built
+    };
+    model.set_derived(&face, std::slice::from_ref(edge), roles::SWEEP_SIDE)?;
+
+    let mut history = History::new();
+    history.generate(edge, face.clone());
+    if !turn.full {
+        history.generate(edge, edge.moved(&turn.displacement));
     }
     Ok((Some(face), history))
 }
@@ -1160,7 +1333,7 @@ mod tests {
             .add_surface(og_geom::PlaneSurface::new(og_math::Plane::new(frame)).into());
         for (i, edge) in edges.iter().enumerate() {
             let (a, b) = (corners[i], corners[(i + 1) % 4]);
-            let flat = |p: Point| {
+            let flat = |p: og_math::Point| {
                 let l = frame.to_local(p);
                 Point2::new(l.x, l.y)
             };
@@ -1194,9 +1367,10 @@ mod tests {
         assert_eq!(counts(ShapeType::Face), 4, "one per profile edge, no caps");
         assert_eq!(
             counts(ShapeType::Edge),
-            8,
-            "a rail per profile vertex, and each profile edge surviving as its \
-             face's seam"
+            6,
+            "a rail per profile vertex, and a seam only on the cylindrical \
+             walls — the flat annuli are plane faces bounded by their rails \
+             alone"
         );
         assert_eq!(counts(ShapeType::Vertex), 4, "a full turn adds none");
 
@@ -1267,7 +1441,7 @@ mod tests {
         let surface = model
             .geometry_mut()
             .add_surface(og_geom::PlaneSurface::new(og_math::Plane::new(frame)).into());
-        let flat = |p: Point| {
+        let flat = |p: og_math::Point| {
             let l = frame.to_local(p);
             Point2::new(l.x, l.y)
         };
@@ -1305,19 +1479,13 @@ mod tests {
     #[test]
     fn a_rectangle_with_a_side_on_the_axis_revolves_into_a_cylinder_face_for_face() {
         // The claim the seam decision rests on: the same solid gets the same
-        // *face count* whichever way it was built, because each lateral face is
-        // one face closed on itself at a seam rather than two halves. A side
-        // lying along the axis turns onto itself and contributes no face, so
-        // the result has a lateral face and two caps — not four faces, one of
-        // them of no area.
-        //
-        // The edge and vertex counts do *not* match, and should not be expected
-        // to. A cap here is a surface of revolution — polar coordinates on a
-        // plane — so it is seamed like any other, and carries a seam edge and a
-        // degenerate edge at its centre; `make_cylinder` builds its caps on
-        // planes, whose boundary is the rim circle and nothing else. Noticing
-        // that a revolved plane is a plane is canonical recognition, which
-        // belongs to healing (`docs/SCOPE.md` §9).
+        // counts whichever way it was built. Each lateral face is one face
+        // closed on itself at a seam rather than two halves; a side lying
+        // along the axis turns onto itself and contributes no face; and a
+        // radial side sweeps a *plane* — the sweep names it as one, so the
+        // caps are plane faces bounded by their rim circles alone, with no
+        // seam and no degenerate centre, exactly as `make_cylinder` builds
+        // them. Faces, edges and vertices all agree.
         let (radius, height) = (2.0_f64, 5.0_f64);
         let mut model = Model::new();
         let profile = profile_from(
@@ -1339,6 +1507,13 @@ mod tests {
             "a side and two caps, the same as make_cylinder"
         );
         assert_eq!(counts(&revolved.shape, ShapeType::Face), 3);
+        for kind in [ShapeType::Edge, ShapeType::Vertex] {
+            assert_eq!(
+                counts(&revolved.shape, kind),
+                counts(&primitive.shape, kind),
+                "canonical caps carry a rim circle and nothing else: {kind:?}"
+            );
+        }
 
         let shell = explore_unique(&model, &revolved.shape, ShapeType::Shell).unwrap()[0].clone();
         assert!(is_shell_closed(&model, &shell).unwrap());
@@ -1607,7 +1782,7 @@ mod tests {
         let surface = model
             .geometry_mut()
             .add_surface(og_geom::PlaneSurface::new(og_math::Plane::new(frame)).into());
-        let flat = |p: Point| {
+        let flat = |p: og_math::Point| {
             let l = frame.to_local(p);
             Point2::new(l.x, l.y)
         };
