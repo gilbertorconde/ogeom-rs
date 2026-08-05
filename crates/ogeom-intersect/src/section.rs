@@ -406,7 +406,7 @@ fn exact_pcurve(
 ) -> Option<PlanarCurve> {
     match surface {
         SurfaceGeometry::Plane(p) => on_plane(curve, p.plane(), tol),
-        SurfaceGeometry::Cylinder(c) => on_cylinder(curve, c.cylinder(), tol),
+        SurfaceGeometry::Cylinder(c) => on_cylinder(curve, range, c.cylinder(), tol),
         SurfaceGeometry::Sphere(s) => on_sphere(curve, s.sphere(), tol),
         SurfaceGeometry::Torus(t) => on_torus(curve, t.torus(), tol),
         SurfaceGeometry::Cone(c) => on_cone(curve, range, c.cone(), tol),
@@ -681,6 +681,7 @@ fn on_plane(curve: &Curve, plane: ogeom_math::Plane, tol: Tolerances) -> Option<
 /// curve's own parameter — height for the line, angle for the circle.
 fn on_cylinder(
     curve: &Curve,
+    range: (f64, f64),
     cylinder: ogeom_math::Cylinder,
     tol: Tolerances,
 ) -> Option<PlanarCurve> {
@@ -794,19 +795,22 @@ fn on_cylinder(
             let c0 = f64::midpoint(l0.z, lh.z);
             let a = (l0.z - lh.z) / 2.0;
             let b = lq.z - c0;
+            // The trig formula is global — cosine wraps, the linear angle
+            // unwraps the chart — so the pcurve lives on whatever range the
+            // edge actually spans, a loop crossing the period included.
             let candidate = ogeom_geom::Trig2d::new(
                 Point2::new(phase, c0),
                 ogeom_math::Vector2::new(winding, 0.0),
                 ogeom_math::Vector2::new(0.0, a),
                 ogeom_math::Vector2::new(0.0, b),
-                (0.0, tau),
+                range,
             )
             .ok()?;
             // The same-parameter law, verified at points the derivation
-            // never touched.
+            // never touched, inside the range the edge will use.
             use ogeom_geom::Curve2d as _;
             for i in 0..7 {
-                let t = tau * (0.09 + 0.13 * f64::from(i));
+                let t = range.0 + (range.1 - range.0) * (0.09 + 0.13 * f64::from(i)) / 0.91;
                 let l = local(t)?;
                 let chart = candidate.point_at(t, tol).ok()?;
                 let du = (chart.x - l.y.atan2(l.x)).rem_euclid(tau);
