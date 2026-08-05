@@ -3,9 +3,11 @@
 A boundary-representation CAD kernel, written from scratch in Rust.
 
 **Status: geometry, topology, construction, tessellation, intersection,
-booleans, STEP import with healing, blends and chamfers, offsets, shells,
-sweeps and lofts are built and tested. Drawings, sketching, assemblies and the
-application-facing layers are not started.**
+booleans, blends and chamfers, offsets, shells, sweeps and lofts, STEP in both
+directions with assemblies, colours and semantic PMI, healing, product
+structure, and 2D drawings with hidden line removal and sections are built and
+tested. Sketching, selection and the remaining exchange formats are not
+started.**
 
 ## What this is
 
@@ -60,10 +62,10 @@ and holds nothing yet.
 • crates/ogeom-heal        healing, simplification, canonical recognition
 • crates/ogeom-fillet      blends and chamfers
 • crates/ogeom-offset      offset, shell, sweep, loft, form features
+• crates/ogeom-hlr         hidden line removal, sections, 2D drawings
+• crates/ogeom-doc         product structure, appearance, semantic PMI
 • crates/ogeom             the public umbrella API
-· crates/ogeom-hlr         hidden line removal for drawings
 · crates/ogeom-sketch      2D geometric constraint solver
-· crates/ogeom-doc         assemblies, appearance, PMI, undo/redo, persistence
 · crates/ogeom-select      BVH picking and selection
 • tools/ogeom-cli          command-line front end
 • tools/ogeom-view         software renderer, so a wrong result is visible
