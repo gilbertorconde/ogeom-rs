@@ -865,6 +865,15 @@ fn triangulate_region(
     // deflection rather than by a fixed grid.
     add_interior_points(&mut cdt, rings, surface, deflection, tol)?;
 
+    // The scale a degenerate chart triangle is measured against.
+    let extent = rings
+        .iter()
+        .flatten()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+            (lo.min(p.x.min(p.y)), hi.max(p.x.max(p.y)))
+        });
+    let degenerate_area = ((extent.1 - extent.0).max(1.0)).powi(2) * 1e-12;
+
     // The grid rows guarantee the deflection along their own lines, but a
     // hole in the face punches a gap through a row, and where the surface is
     // flat in one direction — a cylinder along its axis — there may be no
@@ -894,6 +903,16 @@ fn triangulate_region(
                         (p.x, p.y)
                     })
                     .collect();
+                // A chart-degenerate hair is dropped from the mesh, not
+                // refined: its 3D chord can sag enormously, and feeding its
+                // centre back in only breeds more hairs along the same line.
+                let area = ((corners[1].0 - corners[0].0) * (corners[2].1 - corners[0].1)
+                    - (corners[1].1 - corners[0].1) * (corners[2].0 - corners[0].0))
+                    .abs()
+                    / 2.0;
+                if area < degenerate_area {
+                    continue;
+                }
                 // The grid already bounds sag along rows and columns, and a
                 // grid triangle's diagonal spanning one cell each way may
                 // legitimately sag up to the sum — twice the chord — which
@@ -938,6 +957,23 @@ fn triangulate_region(
         // triangles outside the trimmed region — across a concavity, or inside
         // a hole — have to be discarded. Winding tells them apart.
         if !inside_region(rings, Point2::new(centre.x, centre.y)) {
+            continue;
+        }
+        // A boundary run whose points differ by last-bit noise — a chart row
+        // whose corner came off a different pcurve than its interior — lets
+        // the triangulation weave a hair of a triangle along it: chart area
+        // measured in ulps, a centroid *on* the boundary that even-odd
+        // counting places wherever rounding falls, and a lifted sliver that
+        // spans the run in one spurious stroke. It bounds nothing; drop it.
+        let area = {
+            let [a, b, c] = [
+                vertices[0].position(),
+                vertices[1].position(),
+                vertices[2].position(),
+            ];
+            ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)).abs() / 2.0
+        };
+        if area < degenerate_area {
             continue;
         }
         #[allow(clippy::cast_possible_truncation)]
