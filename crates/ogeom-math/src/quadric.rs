@@ -597,18 +597,32 @@ impl Torus {
         self.kind(tol) == TorusKind::Spindle
     }
 
-    /// The signed distance from `p`, negative inside the tube.
+    /// The signed distance from `p`: negative inside, magnitude the
+    /// distance to the nearest sheet.
     ///
-    /// Meaningful for a [`TorusKind::Ring`] or [`TorusKind::Horn`] torus, where
-    /// inside and outside are well defined. A [`TorusKind::Spindle`] torus
-    /// passes through itself and has no consistent interior, so use
-    /// [`Torus::distance_to`] there.
+    /// For a [`TorusKind::Ring`] or [`TorusKind::Horn`] torus, inside is
+    /// the tube. A [`TorusKind::Spindle`] torus passes through itself and
+    /// bounds two nested regions, and "inside" cannot name both; here it
+    /// names the *outer* one — the apple, the solid of revolution the
+    /// outer sheet bounds, which contains the lemon — because that is the
+    /// region the torus-as-a-solid occupies. The magnitude is measured to
+    /// whichever sheet is nearer, the folded inner sheet included, so a
+    /// point on either sheet reads zero.
     #[must_use]
     pub fn signed_distance_to(&self, p: Point) -> f64 {
         let local = self.frame.to_local(p);
-        // Distance to the tube's centre circle, then out by the tube radius.
-        let radial = local.xy().to_vector().magnitude() - self.major_radius;
-        radial.hypot(local.z) - self.minor_radius
+        let radial = local.xy().to_vector().magnitude();
+        // The generating circle, and its fold about the axis. For a ring
+        // torus the folded branch is never nearer and this reduces to the
+        // classical tube distance.
+        let unfolded = (radial - self.major_radius).hypot(local.z) - self.minor_radius;
+        let folded = (radial + self.major_radius).hypot(local.z) - self.minor_radius;
+        let magnitude = unfolded.abs().min(folded.abs());
+        if unfolded < 0.0 {
+            -magnitude
+        } else {
+            magnitude
+        }
     }
 
     /// The distance from `p` to the surface.
@@ -973,5 +987,71 @@ mod tests {
         let on_surface = Point::new(4.0, 0.0, 0.0);
         assert!(s.contains(on_surface, T));
         assert!(moved.contains(t.apply(on_surface), T));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod spindle_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// The spindle's signed distance names the apple: negative through the
+    /// whole enclosed solid, zero on either sheet, positive beyond — and a
+    /// ring torus keeps its classical values exactly.
+    #[test]
+    fn a_spindle_signs_its_apple_and_a_ring_is_unchanged() {
+        let f = Frame::WORLD;
+        let spindle = Torus::new(f, 2.0, 5.0, T).unwrap();
+        // The axis point: inside, three units from the folded sheet.
+        assert_relative_eq!(
+            spindle.signed_distance_to(Point::new(0.0, 0.0, 0.0)),
+            -3.0,
+            epsilon = 1e-12
+        );
+        // Where the lemon's sheet crosses the axis: on the surface.
+        let cusp_z = (5.0_f64 * 5.0 - 2.0 * 2.0).sqrt();
+        assert_relative_eq!(
+            spindle.signed_distance_to(Point::new(0.0, 0.0, cusp_z)),
+            0.0,
+            epsilon = 1e-12
+        );
+        // The outer equator, and beyond it.
+        assert_relative_eq!(
+            spindle.signed_distance_to(Point::new(7.0, 0.0, 0.0)),
+            0.0,
+            epsilon = 1e-12
+        );
+        assert_relative_eq!(
+            spindle.signed_distance_to(Point::new(10.0, 0.0, 0.0)),
+            3.0,
+            epsilon = 1e-12
+        );
+        // Signed magnitude everywhere agrees with the unsigned distance.
+        for p in [
+            Point::new(0.0, 0.0, 2.0),
+            Point::new(1.0, 1.0, 3.0),
+            Point::new(4.0, -2.0, 1.0),
+        ] {
+            assert_relative_eq!(
+                spindle.signed_distance_to(p).abs(),
+                spindle.distance_to(p),
+                epsilon = 1e-12
+            );
+        }
+
+        let ring = Torus::new(f, 5.0, 1.0, T).unwrap();
+        for p in [
+            Point::new(5.0, 0.0, 0.0),
+            Point::new(6.5, 0.0, 0.0),
+            Point::new(0.0, 4.2, 0.3),
+            Point::new(0.0, 0.0, 0.0),
+        ] {
+            let local_radial = p.x.hypot(p.y) - 5.0;
+            let classical = local_radial.hypot(p.z) - 1.0;
+            assert_relative_eq!(ring.signed_distance_to(p), classical, epsilon = 1e-12);
+        }
     }
 }
