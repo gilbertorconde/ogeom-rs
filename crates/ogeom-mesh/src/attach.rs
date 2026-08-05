@@ -72,36 +72,61 @@ pub fn tessellate(
     // Edges first. A face's triangulation is built from its boundary edges, so
     // doing them in the other order would store a face mesh whose boundary the
     // edge polylines then contradict.
+    ogeom_core::progress::stage("tessellate: edges");
     for edge in explore_unique(model, shape, ShapeType::Edge)? {
+        ogeom_core::progress::checkpoint()?;
         if attach_polyline(model, &edge, deflection, tol)? {
             done.edges += 1;
         }
     }
 
-    for face in ogeom_topo::explore(model, shape, Filter::OfType(ShapeType::Face))? {
-        let mesh = triangulate_face(model, &face, deflection, tol)?;
+    // Faces in two phases: the expensive computation — triangulation and the
+    // edge paths through it — reads the model immutably and runs in parallel,
+    // one result slot per face in face order; the attachment then mutates
+    // sequentially in that same order. The split is what makes the output
+    // bit-identical at any thread count: nothing about scheduling can reach
+    // the model.
+    ogeom_core::progress::stage("tessellate: faces");
+    let faces: Vec<Shape> = ogeom_topo::explore(model, shape, Filter::OfType(ShapeType::Face))?
+        .into_iter()
+        .collect();
+    let read_model: &Model = model;
+    type FaceWork = (Triangulation, Vec<(Shape, Vec<u32>)>);
+    let computed: Vec<OgeomResult<FaceWork>> =
+        ogeom_core::parallel::map_ordered(&faces, |_, face| {
+            ogeom_core::progress::checkpoint()?;
+            let mesh = triangulate_face(read_model, face, deflection, tol)?;
+
+            // Each boundary edge's path through this mesh, as node indices —
+            // the PolygonOnTriangulation representation. Matched while the
+            // mesh is still owned, attached after it is stored.
+            let mut paths: Vec<(Shape, Vec<u32>)> = Vec::new();
+            let mut seen: Vec<(ogeom_topo::TShapeId, ogeom_topo::Location)> = Vec::new();
+            for edge in ogeom_topo::explore(read_model, face, Filter::OfType(ShapeType::Edge))? {
+                let key = (edge.node(), edge.location().clone());
+                if seen.contains(&key) {
+                    continue;
+                }
+                seen.push(key);
+                let points =
+                    crate::triangulate::polyline_of_edge(read_model, &edge, deflection, tol)?;
+                if points.len() < 2 {
+                    continue;
+                }
+                if let Some(indices) =
+                    index_path(&mesh, &points, edge_reach(read_model, &edge, tol))
+                {
+                    paths.push((edge, indices));
+                }
+            }
+            Ok((mesh, paths))
+        });
+
+    for (face, work) in faces.iter().zip(computed) {
+        let face = face.clone();
+        let (mesh, paths) = work?;
         done.triangles += mesh.triangle_count();
         done.deflection_met &= mesh.deflection_met;
-
-        // Each boundary edge's path through this mesh, as node indices — the
-        // PolygonOnTriangulation representation. Matched while the mesh is
-        // still owned, attached after it is stored.
-        let mut paths: Vec<(Shape, Vec<u32>)> = Vec::new();
-        let mut seen: Vec<(ogeom_topo::TShapeId, ogeom_topo::Location)> = Vec::new();
-        for edge in ogeom_topo::explore(model, &face, Filter::OfType(ShapeType::Edge))? {
-            let key = (edge.node(), edge.location().clone());
-            if seen.contains(&key) {
-                continue;
-            }
-            seen.push(key);
-            let points = crate::triangulate::polyline_of_edge(model, &edge, deflection, tol)?;
-            if points.len() < 2 {
-                continue;
-            }
-            if let Some(indices) = index_path(&mesh, &points, edge_reach(model, &edge, tol)) {
-                paths.push((edge, indices));
-            }
-        }
 
         let id = model.geometry_mut().add_triangulation(mesh);
         for (edge, indices) in paths {

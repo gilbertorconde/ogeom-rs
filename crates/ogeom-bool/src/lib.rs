@@ -1137,14 +1137,18 @@ fn distance_to_edge_curve(
 }
 
 fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<GeneralFused> {
+    ogeom_core::progress::stage("boolean: gather");
     let ga = gather(model, a, tol)?;
     let gb = gather(model, b, tol)?;
+    ogeom_core::progress::stage("boolean: intersect");
     let (sections, section_pieces, contacts, contact_along, paves, same_a, same_b) =
         fill(&ga, &gb, tol)?;
 
+    ogeom_core::progress::stage("boolean: split");
     let mut pieces: Vec<FacePiece> = Vec::new();
     for (from_a, own, other) in [(true, &ga, &gb.solid), (false, &gb, &ga.solid)] {
         for (fi, face) in own.faces.iter().enumerate() {
+            ogeom_core::progress::checkpoint()?;
             let mut strands: Vec<Strand<Tag>> = Vec::new();
             for (ei, e) in face.edges.iter().enumerate() {
                 let mut stops = vec![e.crange.0];

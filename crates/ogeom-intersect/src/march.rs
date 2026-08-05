@@ -323,11 +323,11 @@ pub fn trace(
 
     // Forwards first. If it closes, that is the whole branch and there is
     // nothing behind us.
-    let ahead = walk(a, b, from, 1.0, options, tol);
+    let ahead = walk(a, b, from, 1.0, options, tol)?;
     if ahead.stopped == Stopped::Closed {
         return Ok(ahead);
     }
-    let behind = walk(a, b, from, -1.0, options, tol);
+    let behind = walk(a, b, from, -1.0, options, tol)?;
 
     // Join them, the backward half reversed and its shared first point dropped.
     let mut points = behind.points;
@@ -368,7 +368,7 @@ fn walk(
     sense: f64,
     options: Marching,
     tol: Tolerances,
-) -> Traced {
+) -> OgeomResult<Traced> {
     let mut points = vec![from.point];
     let mut on_a = vec![from.on_a];
     let mut on_b = vec![from.on_b];
@@ -388,6 +388,7 @@ fn walk(
         .clamp(tol.confusion(), ceiling);
 
     while points.len() < options.max_points {
+        ogeom_core::progress::checkpoint()?;
         let Some(direction) = tangent_at(a, b, at, tol) else {
             stopped = Stopped::Stalled;
             break;
@@ -461,12 +462,12 @@ fn walk(
         step = following;
     }
 
-    Traced {
+    Ok(Traced {
         points,
         on_a,
         on_b,
         stopped,
-    }
+    })
 }
 
 /// The sine of the shallowest crossing angle the marcher will follow.

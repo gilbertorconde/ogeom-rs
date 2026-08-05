@@ -27,13 +27,16 @@
 pub mod arena;
 pub mod error;
 pub mod id;
+pub mod parallel;
 pub mod predicates;
+pub mod progress;
 pub mod tolerance;
 
 pub use arena::{Arena, Key, UNSCOPED};
 pub use error::{Cause, OgeomError, OgeomResult};
 pub use id::{EntityId, OpId, Provenance, ProvenanceTable, Role, SourceId};
 pub use predicates::{Exact, Fast, P2, P3, Predicates, Sign};
+pub use progress::{Canceller, Watch};
 pub use tolerance::{Tolerance, Tolerances, check_containment};
 
 /// The predicate implementation algorithms use unless told otherwise.

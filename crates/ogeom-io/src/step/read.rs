@@ -100,6 +100,8 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         .collect();
     ids.sort_unstable();
     for id in ids {
+        ogeom_core::progress::checkpoint()?;
+        ogeom_core::progress::stage("step: solid");
         let solid = reader.solid(id)?;
         by_msb.insert(id, solid.clone());
         solids.push(solid);

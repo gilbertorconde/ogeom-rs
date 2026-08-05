@@ -291,9 +291,14 @@ as ever.
 ## 1. Foundation · `ogeom-core` · P1 · *mostly done*
 
 Arenas and entity identity, errors as values, the tolerance model, geometric
-predicates, units carried by the model and honoured by the formats. Still to
-come, scheduled under M7: progress reporting and cancellation, deterministic
-parallelism.
+predicates, units carried by the model and honoured by the formats. Progress
+and cancellation: a scope-installed `Watch` whose `checkpoint()` every long
+loop offers — tessellation, the boolean pipeline, the marcher, the STEP
+reader — cancellation landing as an error, never a partial result.
+Parallelism: `parallel::map_ordered`, whose rule is that the answer is
+bit-identical at any thread count; face tessellation runs through it, its
+compute phase immutable and its attachment sequential in face order, pinned
+by a byte-equality test on the native serialization.
 
 *Elsewhere:* `Standard`, `NCollection`, `TCollection`, `Precision`, `Message`,
 `OSD`, `Quantity`, `Units`.
