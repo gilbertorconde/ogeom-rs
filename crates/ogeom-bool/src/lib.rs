@@ -650,18 +650,12 @@ fn fill(
                         }
                     }
                 }
-                SurfaceIntersection::Touching(points)
-                    if points
-                        .iter()
-                        .any(|p| fa.bound.contains(*p) && fb.bound.contains(*p)) =>
-                {
-                    ogeom_bail!(
-                        NotDone,
-                        "two surfaces touch tangentially where both faces \
-                         reach; tangential contact is refused rather than \
-                         resolved — see the deferred table in docs/SCOPE.md"
-                    )
-                }
+                // A touch at a point bounds nothing: no curve to split a
+                // face along, no side that is inside on one hand and
+                // outside on the other. It contributes to the arrangement
+                // exactly what a tangential contact curve does, which is
+                // nothing, and the result carries the touch as the
+                // non-manifold contact it is.
                 SurfaceIntersection::Touching(_) => {}
                 SurfaceIntersection::Along(curves) => {
                     for sc in curves {

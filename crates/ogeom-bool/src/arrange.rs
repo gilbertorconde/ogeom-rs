@@ -386,7 +386,14 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
         levels.insert(2, (gap, gap.mul_add(0.25, level)));
     }
 
-    let mut out = Vec::new();
+    // Every inside interval of every scanline is a candidate, and they are
+    // ranked by width. The first interval of the roomiest scanline is not
+    // good enough: a piece with a cusp — the sliver beside a line tangent
+    // to a circle, which is what a ball inscribed in a cylinder leaves on
+    // any plane through both — puts that interval inside the cusp, where
+    // the "interior" point is within rounding of the boundary and reads as
+    // lying on it.
+    let mut candidates: Vec<(f64, Point2)> = Vec::new();
     for (gap, level) in levels {
         if gap <= snap {
             continue;
@@ -401,18 +408,16 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
             }
         }
         crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-        if crossings.len() < 2 {
-            continue;
-        }
-        out.push(Point2::new(
-            f64::midpoint(crossings[0], crossings[1]),
-            level,
-        ));
-        if out.len() >= 5 {
-            break;
+        for pair in crossings.chunks_exact(2) {
+            let width = pair[1] - pair[0];
+            if width > snap {
+                candidates.push((width, Point2::new(f64::midpoint(pair[0], pair[1]), level)));
+            }
         }
     }
-    out
+    candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
+    candidates.truncate(5);
+    candidates.into_iter().map(|(_, p)| p).collect()
 }
 
 #[cfg(test)]

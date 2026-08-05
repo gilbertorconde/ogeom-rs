@@ -247,3 +247,44 @@ fn a_ball_is_boolean_material_like_anything_else() {
         volume(&model, &capped)
     );
 }
+
+/// A ball resting exactly on a lid touches it at one point. A point bounds
+/// no material — there is no side of it that is inside on one hand and
+/// outside on the other — so the boolean carries the touch instead of
+/// refusing it, and what comes back is both volumes joined at that point.
+#[test]
+fn a_point_touch_is_carried_rather_than_refused() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let ball = ogeom::algo::make_sphere(
+        &mut model,
+        Frame::new(Point::new(10.0, 10.0, 13.0), Direction::Z, Direction::X, T).unwrap(),
+        3.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+
+    let pi = core::f64::consts::PI;
+    let ball_volume = 4.0 / 3.0 * pi * 27.0;
+    let fused = ogeom::boolean::fuse(&mut model, &block, &ball, T)
+        .unwrap()
+        .shape;
+    assert!(
+        (volume(&model, &fused) - (4000.0 + ball_volume)).abs() < 1.0,
+        "both volumes, joined at the point they share: {}",
+        volume(&model, &fused)
+    );
+    // And the cut takes nothing: the ball meets the block in a point, and a
+    // point has no volume to remove.
+    let cut = ogeom::boolean::cut(&mut model, &block, &ball, T)
+        .unwrap()
+        .shape;
+    assert!(
+        (volume(&model, &cut) - 4000.0).abs() < 1e-6,
+        "a point removes nothing: {}",
+        volume(&model, &cut)
+    );
+}
