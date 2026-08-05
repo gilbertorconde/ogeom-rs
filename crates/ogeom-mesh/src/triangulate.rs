@@ -134,9 +134,14 @@ pub fn triangulate(
     tol: Tolerances,
 ) -> OgeomResult<Triangulation> {
     let mut mesh = Triangulation::new();
+    let mut pieces: Vec<(usize, usize)> = Vec::new();
     for face in ogeom_topo::explore(model, shape, ogeom_topo::Filter::OfType(ShapeType::Face))? {
-        mesh.append(&triangulate_face(model, &face, deflection, tol)?);
+        let piece = triangulate_face(model, &face, deflection, tol)?;
+        let t0 = mesh.triangles.len();
+        mesh.append(&piece);
+        pieces.push((t0, mesh.triangles.len()));
     }
+    orient_pieces(&mut mesh, &pieces);
     let mesh = mesh.welded(tol);
 
     // A second, border-only pass at the tolerance the model itself recorded:
@@ -163,6 +168,117 @@ pub fn triangulate(
         Ok(mesh.border_welded(reach).border_stitched(reach))
     } else {
         Ok(mesh)
+    }
+}
+
+/// Make the appended face meshes traverse their shared boundaries in
+/// opposite directions, flipping as few faces as possible.
+///
+/// A closed oriented surface walks each interior edge once each way. A file
+/// whose face orientation flags disagree with each other still *pairs* every
+/// edge — closed by counting, two-sided nowhere — and every integral over the
+/// result is reference-dependent garbage. The face flags cannot be judged
+/// from the model's wires (a synthesised seam's occurrence directions are
+/// chart bookkeeping, not 3D traversal), but the meshes tell the truth:
+/// shared boundary vertices are anchored to their edges' own curves, so two
+/// faces meeting along an edge carry bitwise-identical positions, and the
+/// direction each walks them is right there in the triangles. Faces are
+/// flood-filled across those shared runs, each constrained to oppose its
+/// neighbour, and each connected component keeps the polarity that flips the
+/// minority — flipping means reversing the piece's windings and negating its
+/// normals. Conflicts are left standing: this repairs orientation, not
+/// topology.
+fn orient_pieces(mesh: &mut Triangulation, pieces: &[(usize, usize)]) {
+    use std::collections::HashMap;
+    type Key = (u64, u64, u64);
+    let key = |p: &Point| -> Key { (p.x.to_bits(), p.y.to_bits(), p.z.to_bits()) };
+
+    // Directed boundary edges per piece, keyed by position: only each
+    // piece's *border* edges (used once within the piece) face other pieces.
+    let mut owners: HashMap<(Key, Key), Vec<(usize, bool)>> = HashMap::new();
+    for (i, &(t0, t1)) in pieces.iter().enumerate() {
+        let mut inside: HashMap<(u32, u32), u32> = HashMap::new();
+        for t in &mesh.triangles[t0..t1] {
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                *inside.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        for t in &mesh.triangles[t0..t1] {
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                if inside.get(&(a.min(b), a.max(b))).copied() != Some(1) {
+                    continue;
+                }
+                let (ka, kb) = (
+                    key(&mesh.positions[a as usize]),
+                    key(&mesh.positions[b as usize]),
+                );
+                // One undirected key, direction recorded: `true` where this
+                // piece walks the smaller key first.
+                let (lo, hi, forward) = if ka <= kb {
+                    (ka, kb, true)
+                } else {
+                    (kb, ka, false)
+                };
+                owners.entry((lo, hi)).or_default().push((i, forward));
+            }
+        }
+    }
+
+    // Manifold constraints: exactly two pieces sharing a run. Same recorded
+    // direction means exactly one must flip.
+    let mut neighbours: Vec<Vec<(usize, bool)>> = vec![Vec::new(); pieces.len()];
+    for list in owners.values() {
+        if let [(a, fa), (b, fb)] = list[..]
+            && a != b
+        {
+            neighbours[a].push((b, fa == fb));
+            neighbours[b].push((a, fa == fb));
+        }
+    }
+
+    let mut flip: Vec<Option<bool>> = vec![None; pieces.len()];
+    for start in 0..pieces.len() {
+        if flip[start].is_some() {
+            continue;
+        }
+        let mut component = Vec::new();
+        let mut queue = std::collections::VecDeque::from([start]);
+        flip[start] = Some(false);
+        while let Some(i) = queue.pop_front() {
+            component.push(i);
+            let here = flip[i] == Some(true);
+            for &(j, same_direction) in &neighbours[i] {
+                let want = here != same_direction;
+                if flip[j].is_none() {
+                    flip[j] = Some(want);
+                    queue.push_back(j);
+                }
+            }
+        }
+        let flipped = component.iter().filter(|&&i| flip[i] == Some(true)).count();
+        if flipped * 2 > component.len() {
+            for &i in &component {
+                flip[i] = Some(flip[i] != Some(true));
+            }
+        }
+    }
+
+    for (i, &(t0, t1)) in pieces.iter().enumerate() {
+        if flip[i] != Some(true) {
+            continue;
+        }
+        let mut flipped_vertices: Vec<u32> = Vec::new();
+        for t in &mut mesh.triangles[t0..t1] {
+            t.swap(1, 2);
+            flipped_vertices.extend_from_slice(&t[..]);
+        }
+        flipped_vertices.sort_unstable();
+        flipped_vertices.dedup();
+        for v in flipped_vertices {
+            mesh.normals[v as usize] = -mesh.normals[v as usize];
+        }
     }
 }
 
