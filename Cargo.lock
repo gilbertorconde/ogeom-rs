@@ -416,6 +416,7 @@ dependencies = [
  "ogeom-bool",
  "ogeom-core",
  "ogeom-geom",
+ "ogeom-intersect",
  "ogeom-math",
  "ogeom-mesh",
  "ogeom-topo",
