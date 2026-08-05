@@ -194,5 +194,5 @@ fn bevel(
         planar_face(model, &[apex0, b0, b1, apex1], seat.normals[1] * sign, tol)?,
         planar_face(model, &[a0, b0, b1, a1], bevel_out, tol)?,
     ];
-    apply_wedge(model, solid, edge, &faces, !seat.convex, tol)
+    apply_wedge(model, solid, Some(edge), &faces, !seat.convex, tol)
 }

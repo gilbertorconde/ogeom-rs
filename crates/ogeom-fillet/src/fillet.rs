@@ -12,7 +12,7 @@
 //! the blend.
 
 use crate::support::{
-    apply_wedge, edge_curve, face_from_edges, planar_face, planar_seat, segment_between,
+    Seat, apply_wedge, edge_curve, face_from_edges, planar_face, planar_seat, segment_between,
 };
 use ogeom_algo::{Built, make_edge, make_edge_between, make_revolution_band, make_vertex};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -307,7 +307,7 @@ pub fn fillet_edge_variable(
     let cap1 = cap(model, 1, seat.along)?.shape;
 
     let faces = [leg_a, leg_b, cap0, cap1, blend];
-    apply_wedge(model, solid, edge, &faces, !seat.convex, tol)
+    apply_wedge(model, solid, Some(edge), &faces, !seat.convex, tol)
 }
 
 /// The straight-edge fillet: the rolling ball's envelope is a cylinder.
@@ -319,7 +319,24 @@ fn planar_fillet(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let seat = planar_seat(model, solid, edge, tol)?;
+    seated_fillet(model, solid, &seat, radius, Some(edge), tol)
+}
 
+/// The cylindrical blend of a seat, whatever found the seat.
+///
+/// A blend's construction cares about the seat — where the ball rolls and
+/// which way the two planes face — and not at all about whether an edge of
+/// the solid runs along it. An edge gives one; two faces that share nothing
+/// give the same one through their planes' own intersection, and everything
+/// from here down is common to both.
+pub(crate) fn seated_fillet(
+    model: &mut Model,
+    solid: &Shape,
+    seat: &Seat,
+    radius: f64,
+    edge: Option<&Shape>,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     // Order the two faces so the blend arc sweeps positively about the edge
     // direction — the cylinder's parameterization and every arc below then
     // run from the first face's tangency line to the second's.
@@ -671,5 +688,5 @@ fn revolved_fillet(
     };
 
     let faces = [wall_band, annulus, blend_band];
-    apply_wedge(model, solid, edge, &faces, additive, tol)
+    apply_wedge(model, solid, Some(edge), &faces, additive, tol)
 }

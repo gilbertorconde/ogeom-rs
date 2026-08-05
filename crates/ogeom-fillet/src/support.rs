@@ -249,7 +249,7 @@ pub(crate) fn face_from_edges(
 pub(crate) fn apply_wedge(
     model: &mut Model,
     solid: &Shape,
-    edge: &Shape,
+    edge: Option<&Shape>,
     faces: &[Shape],
     additive: bool,
     tol: Tolerances,
@@ -264,7 +264,9 @@ pub(crate) fn apply_wedge(
     } else {
         ogeom_bool::cut(model, solid, &wedge.shape, tol)?
     };
-    result.history.delete(edge);
+    if let Some(edge) = edge {
+        result.history.delete(edge);
+    }
     Ok(result)
 }
 
