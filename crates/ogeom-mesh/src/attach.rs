@@ -82,7 +82,41 @@ pub fn tessellate(
         let mesh = triangulate_face(model, &face, deflection, tol)?;
         done.triangles += mesh.triangle_count();
         done.deflection_met &= mesh.deflection_met;
+
+        // Each boundary edge's path through this mesh, as node indices — the
+        // PolygonOnTriangulation representation. Matched while the mesh is
+        // still owned, attached after it is stored.
+        let mut paths: Vec<(Shape, Vec<u32>)> = Vec::new();
+        let mut seen: Vec<(ogeom_topo::TShapeId, ogeom_topo::Location)> = Vec::new();
+        for edge in ogeom_topo::explore(model, &face, Filter::OfType(ShapeType::Edge))? {
+            let key = (edge.node(), edge.location().clone());
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            let points = crate::triangulate::polyline_of_edge(model, &edge, deflection, tol)?;
+            if points.len() < 2 {
+                continue;
+            }
+            if let Some(indices) = index_path(&mesh, &points, edge_reach(model, &edge, tol)) {
+                paths.push((edge, indices));
+            }
+        }
+
         let id = model.geometry_mut().add_triangulation(mesh);
+        for (edge, indices) in paths {
+            let Some(node) = model.node_mut(&edge) else {
+                continue;
+            };
+            let NodeData::Edge(data) = node.data_mut() else {
+                continue;
+            };
+            data.representations.push(EdgeRepr::PolygonOnTriangulation {
+                triangulation: id,
+                indices,
+                location: edge.location().clone(),
+            });
+        }
 
         let Some(node) = model.node_mut(&face) else {
             ogeom_bail!(Dangling, "face is not in this model");
@@ -94,6 +128,72 @@ pub fn tessellate(
         done.faces += 1;
     }
     Ok(done)
+}
+
+/// How far a polyline point may sit from its mesh node and still be it:
+/// the edge's own recorded tolerance, floored at a resolution the weld uses.
+fn edge_reach(model: &Model, edge: &Shape, tol: Tolerances) -> f64 {
+    let recorded = model
+        .node(edge)
+        .and_then(|n| n.data().as_edge())
+        .map_or(0.0, |d| d.tolerance.get());
+    recorded.max(tol.confusion() * 1e3)
+}
+
+/// The polyline's node indices in the mesh, chosen so consecutive indices
+/// are triangle edges.
+///
+/// A position may name several nodes — a seam's two chart columns lift to
+/// the same points — so matching by position alone can jump between the
+/// copies. Candidates come from position (exact bits, else within `reach`),
+/// and the walk picks, at each step, a candidate adjacent in the mesh to the
+/// one before it; the first point tries each of its candidates as a start.
+/// `None` if no adjacency-respecting path exists.
+fn index_path(mesh: &Triangulation, points: &[ogeom_math::Point], reach: f64) -> Option<Vec<u32>> {
+    use std::collections::{HashMap, HashSet};
+    let mut by_bits: HashMap<[u64; 3], Vec<u32>> = HashMap::new();
+    for (i, p) in mesh.positions.iter().enumerate() {
+        #[allow(clippy::cast_possible_truncation)]
+        by_bits
+            .entry([p.x.to_bits(), p.y.to_bits(), p.z.to_bits()])
+            .or_default()
+            .push(i as u32);
+    }
+    let mut adjacent: HashSet<(u32, u32)> = HashSet::new();
+    for t in &mesh.triangles {
+        for i in 0..3 {
+            let (a, b) = (t[i], t[(i + 1) % 3]);
+            adjacent.insert((a.min(b), a.max(b)));
+        }
+    }
+    let candidates = |p: &ogeom_math::Point| -> Vec<u32> {
+        if let Some(exact) = by_bits.get(&[p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]) {
+            return exact.clone();
+        }
+        let mut near: Vec<(f64, u32)> = Vec::new();
+        for (i, q) in mesh.positions.iter().enumerate() {
+            let d = q.distance(*p);
+            if d <= reach {
+                #[allow(clippy::cast_possible_truncation)]
+                near.push((d, i as u32));
+            }
+        }
+        near.sort_by(|a, b| a.0.total_cmp(&b.0));
+        near.into_iter().map(|(_, i)| i).collect()
+    };
+
+    let walk = |start: u32| -> Option<Vec<u32>> {
+        let mut out = vec![start];
+        for p in &points[1..] {
+            let previous = *out.last()?;
+            let next = candidates(p)
+                .into_iter()
+                .find(|&c| adjacent.contains(&(previous.min(c), previous.max(c))))?;
+            out.push(next);
+        }
+        Some(out)
+    };
+    candidates(points.first()?).into_iter().find_map(walk)
 }
 
 /// The triangulation stored on a face, if one has been built.
@@ -149,8 +249,12 @@ fn attach_polyline(
     let NodeData::Edge(data) = node.data_mut() else {
         ogeom_bail!(Construction, "edge node holds no edge data");
     };
-    data.representations
-        .retain(|repr| !matches!(repr, EdgeRepr::Polyline { .. }));
+    data.representations.retain(|repr| {
+        !matches!(
+            repr,
+            EdgeRepr::Polyline { .. } | EdgeRepr::PolygonOnTriangulation { .. }
+        )
+    });
     data.add(EdgeRepr::Polyline {
         points: line.points,
         parameters: line.parameters,
@@ -274,5 +378,86 @@ mod tests {
 
         let face = explore_unique(&model, &built.shape, ShapeType::Face).unwrap()[0].clone();
         assert!(triangulation_of(&model, &face).is_none());
+    }
+}
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod polygon_on_tests {
+    use super::*;
+    use ogeom_core::Tolerances;
+    use ogeom_math::Frame;
+    use ogeom_topo::{EdgeRepr, Filter, ShapeType, explore};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn fine() -> Deflection {
+        Deflection {
+            chord: 1e-2,
+            ..Deflection::default()
+        }
+    }
+
+    #[test]
+    fn every_edge_walks_its_faces_triangulations_by_index() {
+        let mut model = Model::new();
+        let solid = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 2.0, 5.0, T).unwrap();
+        tessellate(&mut model, &solid.shape, fine(), T).unwrap();
+
+        let mut checked = 0;
+        for face in explore(&model, &solid.shape, Filter::OfType(ShapeType::Face)).unwrap() {
+            let mesh_id = {
+                let ogeom_topo::NodeData::Face(data) = model.node(&face).unwrap().data() else {
+                    panic!("face data");
+                };
+                data.triangulation.unwrap()
+            };
+            let mesh = model.geometry().triangulation(mesh_id).unwrap();
+            // Triangle edge set for the adjacency check.
+            let mut edges_of = std::collections::HashSet::new();
+            for t in &mesh.triangles {
+                for i in 0..3 {
+                    let (a, b) = (t[i], t[(i + 1) % 3]);
+                    edges_of.insert((a.min(b), a.max(b)));
+                }
+            }
+            for edge in explore(&model, &face, Filter::OfType(ShapeType::Edge)).unwrap() {
+                let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+                if data.degenerate {
+                    continue;
+                }
+                let paths: Vec<&Vec<u32>> = data
+                    .representations
+                    .iter()
+                    .filter_map(|r| match r {
+                        EdgeRepr::PolygonOnTriangulation {
+                            triangulation,
+                            indices,
+                            ..
+                        } if *triangulation == mesh_id => Some(indices),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(
+                    !paths.is_empty(),
+                    "an edge of a tessellated face walks its triangulation"
+                );
+                for indices in paths {
+                    assert!(indices.len() >= 2);
+                    for pair in indices.windows(2) {
+                        let key = (pair[0].min(pair[1]), pair[0].max(pair[1]));
+                        assert!(
+                            edges_of.contains(&key),
+                            "consecutive indices are a triangle edge of the mesh: \
+                             {:?} at {:?} and {:?}",
+                            pair,
+                            mesh.positions[pair[0] as usize],
+                            mesh.positions[pair[1] as usize]
+                        );
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked >= 6, "rings, seam sides and rims all walked");
     }
 }

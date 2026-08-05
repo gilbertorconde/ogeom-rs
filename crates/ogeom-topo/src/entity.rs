@@ -148,6 +148,9 @@ impl GeometryStore {
             }
             // Carries its points itself, so there is nothing to resolve.
             EdgeRepr::Polyline { .. } => true,
+            EdgeRepr::PolygonOnTriangulation { triangulation, .. } => {
+                self.triangulation(*triangulation).is_some()
+            }
         }
     }
 
@@ -232,6 +235,21 @@ pub enum EdgeRepr {
         /// The portion both curves cover.
         range: (f64, f64),
     },
+    /// The edge's path through one face's cached triangulation, as indices.
+    ///
+    /// What a renderer wants to draw a shared edge without hunting for
+    /// coincident vertices: consecutive indices are consecutive mesh nodes
+    /// along the edge, in the edge's own direction. Only meaningful while
+    /// the named triangulation is the one stored; retessellating replaces
+    /// both together.
+    PolygonOnTriangulation {
+        /// The face triangulation the indices point into.
+        triangulation: TriangulationId,
+        /// Node indices along the edge, in curve order.
+        indices: Vec<u32>,
+        /// Where the edge occurrence sits.
+        location: Location,
+    },
     /// A cached polyline approximation, with the deflection it was built to.
     ///
     /// Carried alongside the exact geometry rather than replacing it: display
@@ -293,6 +311,14 @@ impl EdgeRepr {
             Self::Polyline { location, .. } => {
                 *location = location.with_datum_scope(datums);
             }
+            Self::PolygonOnTriangulation {
+                triangulation,
+                location,
+                ..
+            } => {
+                *triangulation = triangulation.with_scope(geometry.triangulations);
+                *location = location.with_datum_scope(datums);
+            }
         }
     }
 
@@ -301,7 +327,9 @@ impl EdgeRepr {
     pub const fn surface(&self) -> Option<SurfaceId> {
         match self {
             Self::PCurve { surface, .. } | Self::Seam { surface, .. } => Some(*surface),
-            Self::Curve3d { .. } | Self::Polyline { .. } => None,
+            Self::Curve3d { .. } | Self::Polyline { .. } | Self::PolygonOnTriangulation { .. } => {
+                None
+            }
         }
     }
 
@@ -312,7 +340,8 @@ impl EdgeRepr {
             Self::Curve3d { location, .. }
             | Self::PCurve { location, .. }
             | Self::Seam { location, .. }
-            | Self::Polyline { location, .. } => Some(location),
+            | Self::Polyline { location, .. }
+            | Self::PolygonOnTriangulation { location, .. } => Some(location),
         }
     }
 
@@ -323,7 +352,7 @@ impl EdgeRepr {
             Self::Curve3d { range, .. } | Self::PCurve { range, .. } | Self::Seam { range, .. } => {
                 Some(*range)
             }
-            Self::Polyline { .. } => None,
+            Self::Polyline { .. } | Self::PolygonOnTriangulation { .. } => None,
         }
     }
 

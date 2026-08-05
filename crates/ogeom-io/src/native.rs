@@ -1148,8 +1148,19 @@ fn write_node(
             n(&mut t, e.tolerance.get());
             flag(&mut t, e.same_parameter());
             flag(&mut t, e.degenerate);
-            u(&mut t, e.representations.len() as u64);
-            for repr in &e.representations {
+            // Index paths are derived data over the cached meshes; when the
+            // meshes are omitted by request, the paths that index them go
+            // with them rather than dangling.
+            let kept: Vec<&EdgeRepr> = e
+                .representations
+                .iter()
+                .filter(|repr| {
+                    options.triangulations
+                        || !matches!(repr, EdgeRepr::PolygonOnTriangulation { .. })
+                })
+                .collect();
+            u(&mut t, kept.len() as u64);
+            for repr in kept {
                 let mut line = Vec::new();
                 w(&mut line, "r");
                 write_repr(&mut line, repr)?;
@@ -1234,6 +1245,19 @@ fn write_repr(t: &mut Vec<String>, repr: &EdgeRepr) -> OgeomResult<()> {
             u(t, parameters.len() as u64);
             for at in parameters {
                 n(t, *at);
+            }
+        }
+        EdgeRepr::PolygonOnTriangulation {
+            triangulation,
+            indices,
+            location: at,
+        } => {
+            w(t, "polygon-on");
+            key(t, *triangulation);
+            location(t, at);
+            u(t, indices.len() as u64);
+            for index in indices {
+                u(t, u64::from(*index));
             }
         }
         // `EdgeRepr` is non-exhaustive, so a variant added later lands here.
@@ -1794,6 +1818,23 @@ impl<'a> Cursor<'a> {
                     parameters,
                     location,
                     deflection,
+                }
+            }
+            "polygon-on" => {
+                let triangulation = self.handle()?;
+                let location = self.location()?;
+                let n = self.count()?;
+                let mut indices = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let raw = self.count()?;
+                    indices.push(u32::try_from(raw).map_err(|_| {
+                        ogeom_core::ogeom_err!(Construction, "a mesh index does not fit u32")
+                    })?);
+                }
+                EdgeRepr::PolygonOnTriangulation {
+                    triangulation,
+                    indices,
+                    location,
                 }
             }
             other => ogeom_bail!(
