@@ -60,6 +60,11 @@ pub enum Curve {
     Helix(HelixCurve),
     /// Another curve restricted to a sub-interval.
     Trimmed(Box<TrimmedCurve>),
+    /// A curve at a constant distance from another, offset in the plane
+    /// perpendicular to a reference direction.
+    Offset(Box<OffsetCurve>),
+    /// A surface curve: a pcurve composed with the surface it is drawn on.
+    OnSurface(Box<CurveOnSurface>),
 }
 
 /// A straight line, parameterized by length from its origin.
@@ -502,6 +507,245 @@ impl Curve3d for HelixCurve {
 
     fn is_periodic(&self) -> bool {
         false
+    }
+}
+
+/// A space curve displaced a constant signed distance perpendicular to a
+/// reference direction: the offset direction at `t` is the unit vector of
+/// `tangent x reference`, the classical spelling.
+///
+/// Point and first derivative are exact from the basis's first two
+/// derivatives; the second would need the basis's third, which the
+/// vocabulary does not carry, so `derivatives_at` beyond order one refuses
+/// by name. Where the tangent runs along the reference the offset direction
+/// is undefined and evaluation refuses.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OffsetCurve {
+    basis: Curve,
+    distance: f64,
+    reference: ogeom_math::Direction,
+}
+
+impl OffsetCurve {
+    /// Offset `basis` by `distance` along `tangent x reference`.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+    /// distance is not finite and non-zero.
+    pub fn new(basis: Curve, distance: f64, reference: ogeom_math::Direction) -> OgeomResult<Self> {
+        if !distance.is_finite() || distance == 0.0 {
+            ogeom_bail!(
+                Construction,
+                "an offset of {distance} is not a displacement"
+            );
+        }
+        Ok(Self {
+            basis,
+            distance,
+            reference,
+        })
+    }
+
+    /// The curve being offset.
+    #[must_use]
+    pub const fn basis(&self) -> &Curve {
+        &self.basis
+    }
+
+    /// The signed displacement.
+    #[must_use]
+    pub const fn distance(&self) -> f64 {
+        self.distance
+    }
+
+    /// The direction the offset plane is perpendicular to.
+    #[must_use]
+    pub const fn reference(&self) -> ogeom_math::Direction {
+        self.reference
+    }
+
+    /// The unit offset direction and its derivative at `t`.
+    fn direction_and_slope(&self, t: f64, tol: Tolerances) -> OgeomResult<(Vector, Vector)> {
+        let d = self.basis.derivatives_at(t, 2, tol)?;
+        let v = self.reference.vector();
+        let w = d[1].cross(v);
+        let m = w.magnitude();
+        if m <= tol.confusion() * d[1].magnitude().max(1.0) {
+            ogeom_bail!(
+                Construction,
+                "the tangent at {t} runs along the reference; the offset direction is undefined"
+            );
+        }
+        let n = w / m;
+        let wp = d[2].cross(v);
+        let np = (wp - n * n.dot(wp)) / m;
+        Ok((n, np))
+    }
+}
+
+impl Curve3d for OffsetCurve {
+    fn domain(&self) -> (f64, f64) {
+        self.basis.domain()
+    }
+
+    fn point_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Point> {
+        let base = self.basis.point_at(u, tol)?;
+        let (n, _) = self.direction_and_slope(u, tol)?;
+        Ok(base + n * self.distance)
+    }
+
+    fn d1_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Vector> {
+        let d1 = self.basis.d1_at(u, tol)?;
+        let (_, np) = self.direction_and_slope(u, tol)?;
+        Ok(d1 + np * self.distance)
+    }
+
+    fn derivatives_at(&self, u: f64, n: usize, tol: Tolerances) -> OgeomResult<Vec<Vector>> {
+        if n >= 2 {
+            ogeom_bail!(
+                Construction,
+                "an offset curve's second derivative needs its basis's third, which the \
+                 vocabulary does not carry"
+            );
+        }
+        let mut out = vec![self.point_at(u, tol)?.to_vector()];
+        if n >= 1 {
+            out.push(self.d1_at(u, tol)?);
+        }
+        Ok(out)
+    }
+
+    fn kind(&self) -> CurveKind {
+        CurveKind::Offset
+    }
+
+    fn continuity(&self) -> Continuity {
+        match self.basis.continuity() {
+            Continuity::CInfinity => Continuity::CInfinity,
+            Continuity::C2 | Continuity::G2 => Continuity::C1,
+            Continuity::C1 | Continuity::G1 | Continuity::C0 => Continuity::C0,
+        }
+    }
+
+    fn is_closed(&self, tol: Tolerances) -> bool {
+        self.basis.is_closed(tol)
+    }
+
+    fn is_periodic(&self) -> bool {
+        self.basis.is_periodic()
+    }
+}
+
+/// A pcurve composed with the surface it is drawn on: the space curve a
+/// trimming boundary actually traces.
+///
+/// Everything is exact — the chain rule composes the pcurve's derivatives
+/// with the surface's, both of which the vocabulary carries to second
+/// order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CurveOnSurface {
+    pcurve: crate::curve2d::PlanarCurve,
+    surface: crate::surface::SurfaceGeometry,
+}
+
+impl CurveOnSurface {
+    /// The composition of `pcurve` with `surface`.
+    #[must_use]
+    pub const fn new(
+        pcurve: crate::curve2d::PlanarCurve,
+        surface: crate::surface::SurfaceGeometry,
+    ) -> Self {
+        Self { pcurve, surface }
+    }
+
+    /// The curve in parameter space.
+    #[must_use]
+    pub const fn pcurve(&self) -> &crate::curve2d::PlanarCurve {
+        &self.pcurve
+    }
+
+    /// The surface the pcurve is drawn on.
+    #[must_use]
+    pub const fn surface(&self) -> &crate::surface::SurfaceGeometry {
+        &self.surface
+    }
+}
+
+impl Curve3d for CurveOnSurface {
+    fn domain(&self) -> (f64, f64) {
+        use crate::traits::Curve2d as _;
+        self.pcurve.domain()
+    }
+
+    fn point_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Point> {
+        use crate::traits::{Curve2d as _, Surface as _};
+        let p = self.pcurve.point_at(u, tol)?;
+        self.surface.point_at(p.x, p.y, tol)
+    }
+
+    fn d1_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Vector> {
+        Ok(self.derivatives_at(u, 1, tol)?[1])
+    }
+
+    fn derivatives_at(&self, u: f64, n: usize, tol: Tolerances) -> OgeomResult<Vec<Vector>> {
+        use crate::traits::{Curve2d as _, Surface as _};
+        if n >= 3 {
+            ogeom_bail!(
+                Construction,
+                "a surface curve's third derivative needs the surface's, which the \
+                 vocabulary does not carry"
+            );
+        }
+        let d = self.pcurve.derivatives_at(u, n.max(2), tol)?;
+        let at = d[0];
+        let point = self.surface.point_at(at.x, at.y, tol)?;
+        let mut out = vec![point.to_vector()];
+        if n >= 1 {
+            let (su, sv) = self.surface.d1_at(at.x, at.y, tol)?;
+            out.push(su * d[1].x + sv * d[1].y);
+            if n >= 2 {
+                let (suu, suv, svv) = self.surface.d2_at(at.x, at.y, tol)?;
+                // The chain rule's second order: quadratic in the pcurve's
+                // slope, linear in its curvature.
+                let second = suu * (d[1].x * d[1].x)
+                    + suv * (2.0 * d[1].x * d[1].y)
+                    + svv * (d[1].y * d[1].y)
+                    + su * d[2].x
+                    + sv * d[2].y;
+                out.push(second);
+            }
+        }
+        Ok(out)
+    }
+
+    fn kind(&self) -> CurveKind {
+        CurveKind::OnSurface
+    }
+
+    fn continuity(&self) -> Continuity {
+        use crate::traits::Surface as _;
+        // The composition is as smooth as the rougher of the two.
+        self.pcurve_continuity().min(self.surface.continuity())
+    }
+
+    fn is_closed(&self, tol: Tolerances) -> bool {
+        use crate::traits::Curve2d as _;
+        self.pcurve.is_closed(tol)
+    }
+
+    fn is_periodic(&self) -> bool {
+        use crate::traits::Curve2d as _;
+        self.pcurve.is_periodic()
+    }
+}
+
+impl CurveOnSurface {
+    fn pcurve_continuity(&self) -> Continuity {
+        // Planar curves in the vocabulary are analytic or spline; the spline
+        // reports through its own knots elsewhere, and C2 is the floor the
+        // fitting machinery guarantees. Conservative either way.
+        Continuity::C2
     }
 }
 
@@ -1046,6 +1290,8 @@ macro_rules! dispatch {
             Self::BSpline($c) => $body,
             Self::Helix($c) => $body,
             Self::Trimmed($c) => $body,
+            Self::Offset($c) => $body,
+            Self::OnSurface($c) => $body,
         }
     };
 }
@@ -1136,6 +1382,15 @@ impl Transformable for Curve {
                 pitch: c.pitch * t.scale_factor().abs(),
                 ..*c
             }),
+            Self::Offset(c) => Self::Offset(Box::new(OffsetCurve {
+                basis: c.basis.transformed(t, tol)?,
+                distance: c.distance * t.scale_factor().abs(),
+                reference: t.apply_direction(c.reference, tol)?,
+            })),
+            Self::OnSurface(c) => Self::OnSurface(Box::new(CurveOnSurface {
+                pcurve: c.pcurve.clone(),
+                surface: c.surface.transformed(t, tol)?,
+            })),
             Self::Trimmed(c) => Self::Trimmed(Box::new(TrimmedCurve {
                 basis: c.basis.transformed(t, tol)?,
                 // A line's parameter is a length and rescales; every other
@@ -1190,6 +1445,17 @@ impl Reversible for Curve {
                 reversed: !c.reversed,
                 ..*c
             }),
+            // Reversing flips the tangent and with it the offset direction,
+            // so the distance negates to keep the same point set.
+            Self::Offset(c) => Self::Offset(Box::new(OffsetCurve {
+                basis: c.basis.reversed(),
+                distance: -c.distance,
+                reference: c.reference,
+            })),
+            Self::OnSurface(c) => Self::OnSurface(Box::new(CurveOnSurface {
+                pcurve: c.pcurve.reversed(),
+                surface: c.surface.clone(),
+            })),
             // A flag rather than reversing the basis: mirroring the trim range
             // within the basis domain would move this curve's own domain, and
             // trimming ranges held elsewhere refer to it.
@@ -1346,6 +1612,66 @@ mod tests {
         let d_fwd = helix.d1_at(f64::midpoint(lo, hi), T).unwrap();
         let d_back = back.d1_at(f64::midpoint(lo, hi), T).unwrap();
         assert_relative_eq!((d_fwd + d_back).magnitude(), 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn an_offset_circle_is_the_larger_circle() {
+        // The offset of a circle perpendicular to its own axis is the
+        // concentric circle: for the counterclockwise traversal, tangent x z
+        // points radially outward, so a positive distance grows the radius.
+        let circle: Curve = CircleCurve::new(Circle::new(tilted(), 2.0, T).unwrap()).into();
+        let bigger = Circle::new(tilted(), 3.0, T).unwrap();
+        let offset = OffsetCurve::new(circle, 1.0, tilted().z()).unwrap();
+        for i in 0..8 {
+            let t = core::f64::consts::TAU * f64::from(i) / 8.0;
+            let p = offset.point_at(t, T).unwrap();
+            assert_relative_eq!(p.distance(bigger.centre()), 3.0, epsilon = 1e-12);
+        }
+        // The exact first derivative agrees with differencing the points.
+        let h = 1e-6;
+        let d = offset.d1_at(1.0, T).unwrap();
+        let fd = (offset.point_at(1.0 + h, T).unwrap() - offset.point_at(1.0 - h, T).unwrap())
+            / (2.0 * h);
+        assert_relative_eq!((d - fd).magnitude(), 0.0, epsilon = 1e-5);
+        // The second derivative is refused by name, not differenced quietly.
+        assert!(offset.derivatives_at(1.0, 2, T).is_err());
+    }
+
+    #[test]
+    fn a_sloped_line_on_a_cylinder_chart_is_a_helix() {
+        use crate::curve2d::{Line2d, PlanarCurve};
+        use crate::surface::{CylinderSurface, SurfaceGeometry};
+        use ogeom_math::{Cylinder, Point2};
+
+        // The pcurve u = t, v = pitch·t/2π on a cylinder chart lifts to
+        // exactly the helix with that pitch — two constructions, no shared
+        // code path, one curve.
+        let radius = 3.0;
+        let pitch = 2.0;
+        let tau = core::f64::consts::TAU;
+        let cylinder = SurfaceGeometry::Cylinder(
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, radius, T).unwrap(), (-1.0, 5.0))
+                .unwrap(),
+        );
+        let rise = pitch / tau;
+        let slope = (1.0 + rise * rise).sqrt();
+        let line = Line2d::segment(Point2::new(0.0, 0.0), Point2::new(tau, pitch), T).unwrap();
+        let on_surface = CurveOnSurface::new(PlanarCurve::Line(line), cylinder);
+        let helix = HelixCurve::new(Frame::WORLD, radius, pitch, 1.0).unwrap();
+        for i in 0..=8 {
+            let angle = tau * f64::from(i) / 8.0;
+            // The line is parameterized by 2D arc length; the helix by angle.
+            let lifted = on_surface.point_at(angle * slope, T).unwrap();
+            let wound = helix.point_at(angle, T).unwrap();
+            assert_relative_eq!(lifted.distance(wound), 0.0, epsilon = 1e-9);
+        }
+        // Exact second derivative through the chain rule, checked against
+        // differencing the exact first.
+        let h = 1e-6;
+        let d2 = on_surface.derivatives_at(2.0, 2, T).unwrap()[2];
+        let fd = (on_surface.d1_at(2.0 + h, T).unwrap() - on_surface.d1_at(2.0 - h, T).unwrap())
+            / (2.0 * h);
+        assert_relative_eq!((d2 - fd).magnitude(), 0.0, epsilon = 1e-5);
     }
 
     #[test]

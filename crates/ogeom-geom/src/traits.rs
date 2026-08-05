@@ -63,6 +63,8 @@ pub enum CurveKind {
     Trimmed,
     /// A curve offset from another.
     Offset,
+    /// A pcurve composed with the surface it is drawn on.
+    OnSurface,
 }
 
 /// What kind of surface this is, for analytic fast paths.

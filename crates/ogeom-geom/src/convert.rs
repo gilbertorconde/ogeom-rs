@@ -128,6 +128,18 @@ impl Curve {
                 "a helix has no exact B-spline form; fit it at a stated tolerance instead"
             ),
 
+            // The same contract refuses the derived types whose spelling is
+            // a quotient or a composition: nothing rational states them.
+            Self::Offset(_) => ogeom_bail!(
+                Construction,
+                "an offset curve has no exact B-spline form; fit it at a stated tolerance instead"
+            ),
+            Self::OnSurface(_) => ogeom_bail!(
+                Construction,
+                "a surface curve has no exact B-spline form in general; fit it at a stated \
+                 tolerance instead"
+            ),
+
             Self::Trimmed(t) => {
                 // A trim does not renumber anything: its parameter *is* its
                 // basis's, restricted to a sub-interval. Only a reversed trim
@@ -676,6 +688,15 @@ impl crate::surface::SurfaceGeometry {
         use crate::surface::SurfaceGeometry as S;
         let ((ua, ub), (va, vb)) = self.domain();
         match self {
+            // An offset of a free-form basis has no exact spline form —
+            // the unit normal is a quotient — and this function's contract
+            // is exactness.
+            S::Offset(_) => ogeom_bail!(
+                Construction,
+                "an offset surface has no exact B-spline form; offset the basis analytically \
+                 or fit at a stated tolerance instead"
+            ),
+
             // Ruled both ways: four corners and a bilinear patch, which is a
             // degree-one B-spline in each direction and exact for a plane.
             S::Plane(_) => {

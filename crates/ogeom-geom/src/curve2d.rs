@@ -35,6 +35,8 @@ pub enum PlanarCurve {
     BSpline(BSpline2d),
     /// Another planar curve restricted to a sub-interval.
     Trimmed(Box<Trimmed2d>),
+    /// A curve at a constant signed distance along another's left normal.
+    Offset(Box<Offset2d>),
 }
 
 /// A straight line in the plane, parameterized by length.
@@ -77,6 +79,115 @@ pub struct Trimmed2d {
 /// Reverse a parameter within `[a, b]`, preserving the interval.
 fn mirror(u: f64, a: f64, b: f64) -> f64 {
     a + b - u
+}
+
+/// A planar curve displaced a constant signed distance along its basis's
+/// left normal — the tangent turned a quarter left — sharing the basis's
+/// parameterization.
+///
+/// Point and first derivative are exact from the basis's first and second
+/// derivatives; the second would need the basis's third, which the
+/// vocabulary does not carry, so `d2_at` refuses by name. Where the basis's
+/// tangent vanishes the offset direction is undefined and evaluation
+/// refuses.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Offset2d {
+    basis: PlanarCurve,
+    distance: f64,
+}
+
+impl Offset2d {
+    /// Offset `basis` by a signed `distance` along its left normal.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+    /// distance is not finite and non-zero.
+    pub fn new(basis: PlanarCurve, distance: f64) -> OgeomResult<Self> {
+        if !distance.is_finite() || distance == 0.0 {
+            ogeom_bail!(
+                Construction,
+                "an offset of {distance} is not a displacement"
+            );
+        }
+        Ok(Self { basis, distance })
+    }
+
+    /// The curve being offset.
+    #[must_use]
+    pub const fn basis(&self) -> &PlanarCurve {
+        &self.basis
+    }
+
+    /// The signed displacement along the left normal.
+    #[must_use]
+    pub const fn distance(&self) -> f64 {
+        self.distance
+    }
+
+    /// The unit left normal and its derivative at `t`, from the basis's
+    /// first two derivatives.
+    fn normal_and_slope(&self, t: f64, tol: Tolerances) -> OgeomResult<(Vector2, Vector2)> {
+        let d = self.basis.derivatives_at(t, 2, tol)?;
+        let rot = |v: Vector2| Vector2::new(-v.y, v.x);
+        let w = rot(d[1]);
+        let m = w.magnitude();
+        if m <= tol.confusion() {
+            ogeom_bail!(
+                Construction,
+                "the basis has no tangent at {t}; the offset direction is undefined"
+            );
+        }
+        let n = w / m;
+        let wp = rot(d[2]);
+        let np = (wp - n * n.dot(wp)) / m;
+        Ok((n, np))
+    }
+}
+
+impl Curve2d for Offset2d {
+    fn domain(&self) -> (f64, f64) {
+        self.basis.domain()
+    }
+
+    fn point_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Point2> {
+        let base = self.basis.point_at(u, tol)?;
+        let (n, _) = self.normal_and_slope(u, tol)?;
+        Ok(base + n * self.distance)
+    }
+
+    fn d1_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Vector2> {
+        let d1 = self.basis.d1_at(u, tol)?;
+        let (_, np) = self.normal_and_slope(u, tol)?;
+        Ok(d1 + np * self.distance)
+    }
+
+    fn derivatives_at(&self, u: f64, n: usize, tol: Tolerances) -> OgeomResult<Vec<Vector2>> {
+        if n >= 2 {
+            ogeom_bail!(
+                Construction,
+                "an offset curve's second derivative needs its basis's third, which the \
+                 vocabulary does not carry"
+            );
+        }
+        let mut out = vec![self.point_at(u, tol)?.to_vector()];
+        if n >= 1 {
+            out.push(self.d1_at(u, tol)?);
+        }
+        Ok(out)
+    }
+
+    fn kind(&self) -> CurveKind {
+        CurveKind::Offset
+    }
+
+    fn is_closed(&self, tol: Tolerances) -> bool {
+        self.basis.is_closed(tol)
+    }
+
+    fn is_periodic(&self) -> bool {
+        self.basis.is_periodic()
+    }
 }
 
 impl Line2d {
@@ -516,6 +627,7 @@ macro_rules! dispatch {
             Self::Ellipse($c) => $body,
             Self::BSpline($c) => $body,
             Self::Trimmed($c) => $body,
+            Self::Offset($c) => $body,
         }
     };
 }
@@ -584,6 +696,10 @@ impl PlanarCurve {
                     .collect::<OgeomResult<Vec<_>>>()?,
                 ..c.clone()
             }),
+            Self::Offset(c) => Self::Offset(Box::new(Offset2d {
+                basis: c.basis.transformed(t, tol)?,
+                distance: c.distance * scale,
+            })),
             Self::Trimmed(c) => Self::Trimmed(Box::new(Trimmed2d {
                 basis: c.basis.transformed(t, tol)?,
                 domain: if matches!(c.basis, Self::Line(_)) {
@@ -626,6 +742,13 @@ impl Reversible for PlanarCurve {
             Self::Trimmed(c) => Self::Trimmed(Box::new(Trimmed2d {
                 reversed: !c.reversed,
                 ..(**c).clone()
+            })),
+            // Reversing flips the tangent and with it the left normal, so
+            // the distance negates to keep the same point set traversed
+            // backwards.
+            Self::Offset(c) => Self::Offset(Box::new(Offset2d {
+                basis: c.basis.reversed(),
+                distance: -c.distance,
             })),
         }
     }
@@ -680,6 +803,27 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
     use ogeom_math::Frame2;
+
+    #[test]
+    fn an_offset_2d_circle_is_the_larger_circle() {
+        use ogeom_math::Circle2;
+        // Counterclockwise circle: the left normal points inward, so a
+        // negative distance grows the radius.
+        let frame = Frame2::new(Point2::new(1.0, -2.0), Direction2::X);
+        let circle = PlanarCurve::Circle(Circle2d::new(Circle2::new(frame, 2.0, T).unwrap()));
+        let offset = Offset2d::new(circle, -1.0).unwrap();
+        for i in 0..8 {
+            let t = core::f64::consts::TAU * f64::from(i) / 8.0;
+            let p = offset.point_at(t, T).unwrap();
+            assert!((p.distance(Point2::new(1.0, -2.0)) - 3.0).abs() < 1e-12);
+        }
+        let h = 1e-6;
+        let d = offset.d1_at(1.0, T).unwrap();
+        let fd = (offset.point_at(1.0 + h, T).unwrap() - offset.point_at(1.0 - h, T).unwrap())
+            / (2.0 * h);
+        assert!((d - fd).magnitude() < 1e-5);
+        assert!(offset.derivatives_at(1.0, 2, T).is_err());
+    }
 
     const T: Tolerances = Tolerances::millimetres();
 

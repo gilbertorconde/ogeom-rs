@@ -74,6 +74,15 @@ pub fn curve_bounds(curve: &Curve, tol: Tolerances) -> OgeomResult<Aabb> {
             )
         }
 
+        // An offset never strays farther than its distance from the basis:
+        // the basis's bound grown by |d| on every axis contains it, exactly
+        // the guarantee and no tighter.
+        Curve::Offset(o) => curve_bounds(o.basis(), tol)?.expanded(o.distance().abs()),
+
+        // A surface curve never leaves its surface, whose bound is already
+        // guaranteed.
+        Curve::OnSurface(c) => surface_bounds(c.surface(), tol)?,
+
         // A hyperbola and a parabola are unbounded, so only the trimmed extent
         // has a bound at all. Both are convex in their own frame, so the hull
         // of the two ends and the vertex contains the arc between them.
@@ -107,6 +116,9 @@ pub fn curve_bounds(curve: &Curve, tol: Tolerances) -> OgeomResult<Aabb> {
 /// evaluated over its own domain.
 pub fn surface_bounds(surface: &SurfaceGeometry, tol: Tolerances) -> OgeomResult<Aabb> {
     Ok(match surface {
+        // An offset never strays farther than its distance from the basis.
+        SurfaceGeometry::Offset(o) => surface_bounds(o.basis(), tol)?.expanded(o.distance().abs()),
+
         // A plane is unbounded; its declared domain is what there is to bound,
         // and the four corners span it exactly.
         SurfaceGeometry::Plane(p) => {

@@ -1119,6 +1119,17 @@ fn curve(t: &mut Vec<String>, c: &Curve) -> OgeomResult<()> {
             flag(t, x.is_reversed());
             curve(t, x.basis())?;
         }
+        Curve::Offset(o) => {
+            w(t, "offset");
+            n(t, o.distance());
+            direction(t, o.reference());
+            curve(t, o.basis())?;
+        }
+        Curve::OnSurface(c) => {
+            w(t, "onsurface");
+            pcurve(t, c.pcurve())?;
+            surface(t, c.surface())?;
+        }
     }
     Ok(())
 }
@@ -1156,6 +1167,11 @@ fn pcurve(t: &mut Vec<String>, c: &PlanarCurve) -> OgeomResult<()> {
             range(t, x.domain());
             flag(t, x.is_reversed());
             pcurve(t, x.basis())?;
+        }
+        PlanarCurve::Offset(o) => {
+            w(t, "offset2");
+            n(t, o.distance());
+            pcurve(t, o.basis())?;
         }
     }
     Ok(())
@@ -1221,6 +1237,11 @@ fn surface(t: &mut Vec<String>, s: &SurfaceGeometry) -> OgeomResult<()> {
             range(t, u_domain);
             range(t, v_domain);
             surface(t, x.basis())?;
+        }
+        SurfaceGeometry::Offset(o) => {
+            w(t, "osurface");
+            n(t, o.distance());
+            surface(t, o.basis())?;
         }
     }
     Ok(())
@@ -1709,6 +1730,19 @@ impl<'a> Cursor<'a> {
                 let curve = TrimmedCurve::new(basis, lo, hi, tol)?;
                 reverse_if(Curve::Trimmed(Box::new(curve)), reversed)
             }
+            "offset" => {
+                let distance = self.number()?;
+                let reference = self.direction(tol)?;
+                let basis = self.curve(tol)?;
+                Curve::Offset(Box::new(ogeom_geom::OffsetCurve::new(
+                    basis, distance, reference,
+                )?))
+            }
+            "onsurface" => {
+                let pcurve = self.pcurve(tol)?;
+                let surface = self.surface(tol)?;
+                Curve::OnSurface(Box::new(ogeom_geom::CurveOnSurface::new(pcurve, surface)))
+            }
             other => ogeom_bail!(Construction, "`{other}` is not a curve this reads"),
         })
     }
@@ -1744,6 +1778,11 @@ impl<'a> Cursor<'a> {
                 let basis = self.pcurve(tol)?;
                 let curve = Trimmed2d::new(basis, lo, hi, tol)?;
                 reverse_if(PlanarCurve::Trimmed(Box::new(curve)), reversed)
+            }
+            "offset2" => {
+                let distance = self.number()?;
+                let basis = self.pcurve(tol)?;
+                PlanarCurve::Offset(Box::new(ogeom_geom::Offset2d::new(basis, distance)?))
             }
             other => ogeom_bail!(Construction, "`{other}` is not a planar curve this reads"),
         })
@@ -1818,6 +1857,11 @@ impl<'a> Cursor<'a> {
                 SurfaceGeometry::Trimmed(Box::new(TrimmedSurface::new(
                     basis, u_range, v_range, tol,
                 )?))
+            }
+            "osurface" => {
+                let distance = self.number()?;
+                let basis = self.surface(tol)?;
+                SurfaceGeometry::Offset(Box::new(ogeom_geom::OffsetSurface::new(basis, distance)?))
             }
             other => ogeom_bail!(Construction, "`{other}` is not a surface this reads"),
         })
@@ -2300,6 +2344,63 @@ mod tests {
             .collect();
         assert!(domains.contains(&(-0.5, 1.75)));
         assert!(domains.contains(&(0.25, 3.0)));
+    }
+
+    #[test]
+    fn derived_geometry_round_trips_byte_stable() {
+        use ogeom_geom::{
+            CurveOnSurface, CylinderSurface, OffsetCurve, OffsetSurface, PlanarCurve,
+        };
+        use ogeom_math::Cylinder;
+
+        let mut model = Model::new();
+        // An edge on an offset circle: the concentric circle by another
+        // spelling.
+        let circle: Curve =
+            ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(Frame::WORLD, 2.0, T).unwrap())
+                .into();
+        let offset = Curve::Offset(Box::new(
+            OffsetCurve::new(circle, 1.0, ogeom_math::Direction::Z).unwrap(),
+        ));
+        let domain = Curve3d::domain(&offset);
+        ogeom_algo::make_edge(&mut model, offset, domain, T).unwrap();
+
+        // An edge on a surface curve: a sloped chart line on a cylinder.
+        let cylinder = SurfaceGeometry::Cylinder(
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, 3.0, T).unwrap(), (0.0, 8.0)).unwrap(),
+        );
+        let chart_line = PlanarCurve::Line(
+            ogeom_geom::Line2d::segment(
+                ogeom_math::Point2::new(0.0, 0.0),
+                ogeom_math::Point2::new(3.0, 5.0),
+                T,
+            )
+            .unwrap(),
+        );
+        let lifted = Curve::OnSurface(Box::new(CurveOnSurface::new(chart_line, cylinder.clone())));
+        let domain = Curve3d::domain(&lifted);
+        ogeom_algo::make_edge(&mut model, lifted, domain, T).unwrap();
+
+        // A loose offset surface in the store.
+        model
+            .geometry_mut()
+            .add_surface(SurfaceGeometry::Offset(Box::new(
+                OffsetSurface::new(cylinder, -0.5).unwrap(),
+            )));
+
+        let text = write(&model, &[], WriteOptions::default()).unwrap();
+        let (back, _) = read(&text).unwrap();
+        let again = write(&back, &[], WriteOptions::default()).unwrap();
+        assert_eq!(text, again, "the second write reproduces the first");
+        assert!(
+            back.geometry()
+                .curves()
+                .any(|(_, c)| matches!(c, Curve::Offset(_)))
+                && back
+                    .geometry()
+                    .curves()
+                    .any(|(_, c)| matches!(c, Curve::OnSurface(_)))
+        );
     }
 
     #[test]

@@ -53,6 +53,8 @@ pub enum SurfaceGeometry {
     Extrusion(Box<ExtrusionSurface>),
     /// Another surface restricted to a sub-rectangle.
     Trimmed(Box<TrimmedSurface>),
+    /// A surface at a constant signed distance along another's normal.
+    Offset(Box<OffsetSurface>),
 }
 
 /// A plane, parameterized by its frame's `x` and `y` axes.
@@ -122,6 +124,22 @@ pub struct ExtrusionSurface {
 pub struct TrimmedSurface {
     basis: SurfaceGeometry,
     domain: ((f64, f64), (f64, f64)),
+}
+
+/// A surface displaced a constant signed distance along its basis's normal,
+/// sharing the basis's parameterization.
+///
+/// Point and first derivatives are exact — the normal's derivative is the
+/// projection formula over the basis's second derivatives. The *second*
+/// derivative would need the basis's third, which the vocabulary does not
+/// carry, so `d2_at` refuses by name rather than differencing quietly. For
+/// an analytic basis the offset is itself analytic and the direct type is
+/// the better spelling; this type exists for the free-form bases that have
+/// no such spelling.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OffsetSurface {
+    basis: SurfaceGeometry,
+    distance: f64,
 }
 
 /// Reject an empty or non-finite parameter range.
@@ -426,6 +444,108 @@ impl TrimmedSurface {
     #[must_use]
     pub const fn basis(&self) -> &SurfaceGeometry {
         &self.basis
+    }
+}
+
+impl OffsetSurface {
+    /// Offset `basis` by a signed `distance` along its own normal.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+    /// distance is not finite and non-zero.
+    pub fn new(basis: SurfaceGeometry, distance: f64) -> OgeomResult<Self> {
+        if !distance.is_finite() || distance == 0.0 {
+            ogeom_bail!(
+                Construction,
+                "an offset of {distance} is not a displacement"
+            );
+        }
+        Ok(Self { basis, distance })
+    }
+
+    /// The surface being offset.
+    #[must_use]
+    pub const fn basis(&self) -> &SurfaceGeometry {
+        &self.basis
+    }
+
+    /// The signed displacement along the basis normal.
+    #[must_use]
+    pub const fn distance(&self) -> f64 {
+        self.distance
+    }
+}
+
+impl Surface for OffsetSurface {
+    fn domain(&self) -> ((f64, f64), (f64, f64)) {
+        self.basis.domain()
+    }
+
+    fn point_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<Point> {
+        let base = self.basis.point_at(u, v, tol)?;
+        let normal = self.basis.normal_at(u, v, tol)?;
+        Ok(base + normal.vector() * self.distance)
+    }
+
+    fn d1_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<(Vector, Vector)> {
+        // Differentiate S + d·c/|c| with c = Su x Sv: the unit normal's
+        // derivative is the tangential projection of c's derivative, scaled
+        // by the magnitude — exact from the basis's first and second
+        // derivatives.
+        let (su, sv) = self.basis.d1_at(u, v, tol)?;
+        let (suu, suv, svv) = self.basis.d2_at(u, v, tol)?;
+        let c = su.cross(sv);
+        let m = c.magnitude();
+        let scale = su.magnitude().max(sv.magnitude());
+        if m <= tol.angular() * scale * scale {
+            ogeom_bail!(
+                Construction,
+                "the basis is degenerate at ({u}, {v}); the offset has no tangent plane there"
+            );
+        }
+        let n = c / m;
+        let cu = suu.cross(sv) + su.cross(suv);
+        let cv = suv.cross(sv) + su.cross(svv);
+        let nu = (cu - n * n.dot(cu)) / m;
+        let nv = (cv - n * n.dot(cv)) / m;
+        Ok((su + nu * self.distance, sv + nv * self.distance))
+    }
+
+    fn d2_at(&self, _u: f64, _v: f64, _tol: Tolerances) -> OgeomResult<(Vector, Vector, Vector)> {
+        ogeom_bail!(
+            Construction,
+            "an offset surface's second derivative needs its basis's third, which the              vocabulary does not carry; offset the basis analytically or fit at a stated              tolerance instead"
+        )
+    }
+
+    fn kind(&self) -> SurfaceKind {
+        SurfaceKind::Offset
+    }
+
+    fn continuity(&self) -> Continuity {
+        // Offsetting spends one order of smoothness.
+        match self.basis.continuity() {
+            Continuity::CInfinity => Continuity::CInfinity,
+            Continuity::C2 | Continuity::G2 => Continuity::C1,
+            Continuity::C1 | Continuity::G1 | Continuity::C0 => Continuity::C0,
+        }
+    }
+
+    fn is_closed_u(&self, tol: Tolerances) -> bool {
+        self.basis.is_closed_u(tol)
+    }
+
+    fn is_closed_v(&self, tol: Tolerances) -> bool {
+        self.basis.is_closed_v(tol)
+    }
+
+    fn is_periodic_u(&self) -> bool {
+        self.basis.is_periodic_u()
+    }
+
+    fn is_periodic_v(&self) -> bool {
+        self.basis.is_periodic_v()
     }
 }
 
@@ -978,6 +1098,7 @@ macro_rules! dispatch {
             Self::Revolution($s) => $body,
             Self::Extrusion($s) => $body,
             Self::Trimmed($s) => $body,
+            Self::Offset($s) => $body,
         }
     };
 }
@@ -1041,6 +1162,10 @@ impl Transformable for SurfaceGeometry {
                 cylinder: s.cylinder.transformed(t, tol)?,
                 height: (s.height.0 * scale, s.height.1 * scale),
             }),
+            Self::Offset(s) => Self::Offset(Box::new(OffsetSurface {
+                basis: s.basis.transformed(t, tol)?,
+                distance: s.distance * scale,
+            })),
             Self::Cone(s) => Self::Cone(ConeSurface {
                 cone: s.cone.transformed(t, tol)?,
                 height: (s.height.0 * scale, s.height.1 * scale),
@@ -1151,6 +1276,35 @@ mod tests {
     use ogeom_math::{Circle, Frame};
 
     const T: Tolerances = Tolerances::millimetres();
+
+    #[test]
+    fn an_offset_cylinder_is_the_larger_cylinder() {
+        use ogeom_math::Cylinder;
+        let basis = SurfaceGeometry::Cylinder(
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, 2.0, T).unwrap(), (0.0, 5.0)).unwrap(),
+        );
+        let offset = OffsetSurface::new(basis, 1.5).unwrap();
+        // The cylinder's outward normal is radial, so every offset point
+        // stands at the grown radius, at the same height.
+        for (u, v) in [(0.0, 0.0), (1.0, 2.0), (3.5, 4.5)] {
+            let p = offset.point_at(u, v, T).unwrap();
+            let radial = (p.x * p.x + p.y * p.y).sqrt();
+            assert_relative_eq!(radial, 3.5, epsilon = 1e-12);
+        }
+        // Exact first derivatives against differencing the exact points.
+        let h = 1e-6;
+        let (du, dv) = offset.d1_at(1.0, 2.0, T).unwrap();
+        let fdu = (offset.point_at(1.0 + h, 2.0, T).unwrap()
+            - offset.point_at(1.0 - h, 2.0, T).unwrap())
+            / (2.0 * h);
+        let fdv = (offset.point_at(1.0, 2.0 + h, T).unwrap()
+            - offset.point_at(1.0, 2.0 - h, T).unwrap())
+            / (2.0 * h);
+        assert_relative_eq!((du - fdu).magnitude(), 0.0, epsilon = 1e-5);
+        assert_relative_eq!((dv - fdv).magnitude(), 0.0, epsilon = 1e-5);
+        // The second derivative refuses by name.
+        assert!(offset.d2_at(1.0, 2.0, T).is_err());
+    }
 
     fn tilted() -> Frame {
         Frame::new(
