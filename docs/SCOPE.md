@@ -243,7 +243,17 @@ through the new exact pcurves on the way.
   own curve, and the sub-microradian gate decided by intervals rather
   than taste.
 
-### M8 — boolean and healing completeness · §8, §9
+### M8 — boolean and healing completeness · §8, §9 · **closed**
+
+Closed at gate 1100: every bullet below holds, and two things the sweep
+found on the way are in with them — tangential contact is routed rather
+than refused (recognised on both the analytic and the marched path, kept
+out of the classification because a touch bounds no material, and reported
+by `section` as the edge it is), and a chart's *poles* are boundary strands,
+without which no boolean over a sphere worked at all, wherever the sphere
+was. What §8 still owes is named in the deferred table: a section running
+exactly through a pole, a ball on a box's corner vertex, and scaled
+placements.
 
 - Curved same-domain pairs unified through the elementary inversions;
   edge- and vertex-only contact handled by name; partially-outside closed
