@@ -1,6 +1,6 @@
 [package]
-name = "ogeom"
-description = "ogeom — a B-rep CAD kernel in Rust"
+name = "ogeom-recognize"
+description = "Feature recognition from raw B-rep topology"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,19 +14,10 @@ ogeom-geom.workspace = true
 ogeom-topo.workspace = true
 ogeom-algo.workspace = true
 ogeom-mesh.workspace = true
-ogeom-intersect.workspace = true
-ogeom-bool.workspace = true
-ogeom-heal.workspace = true
-ogeom-fillet.workspace = true
-ogeom-offset.workspace = true
-ogeom-io.workspace = true
-ogeom-hlr.workspace = true
-ogeom-sketch.workspace = true
-ogeom-doc.workspace = true
-ogeom-recognize.workspace = true
-ogeom-select.workspace = true
 
 [dev-dependencies]
+ogeom-bool.workspace = true
+ogeom-fillet.workspace = true
 approx.workspace = true
 proptest.workspace = true
 

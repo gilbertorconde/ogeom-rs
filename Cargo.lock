@@ -283,6 +283,7 @@ dependencies = [
  "ogeom-math",
  "ogeom-mesh",
  "ogeom-offset",
+ "ogeom-recognize",
  "ogeom-select",
  "ogeom-sketch",
  "ogeom-topo",
@@ -477,6 +478,22 @@ dependencies = [
  "ogeom-fillet",
  "ogeom-geom",
  "ogeom-intersect",
+ "ogeom-math",
+ "ogeom-mesh",
+ "ogeom-topo",
+ "proptest",
+]
+
+[[package]]
+name = "ogeom-recognize"
+version = "0.0.0"
+dependencies = [
+ "approx",
+ "ogeom-algo",
+ "ogeom-bool",
+ "ogeom-core",
+ "ogeom-fillet",
+ "ogeom-geom",
  "ogeom-math",
  "ogeom-mesh",
  "ogeom-topo",
