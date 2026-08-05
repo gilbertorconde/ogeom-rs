@@ -79,6 +79,20 @@ struct BoundaryEdge {
     other_side: Option<(PlanarCurve, (f64, f64))>,
 }
 
+/// A pole: an edge that bounds a face in parameter space and collapses to
+/// a point in space.
+///
+/// A sphere's poles and a cone's apex have no curve to split, but they are
+/// half the chart's boundary — leave them out and the face's outline does
+/// not close, and nothing can be arranged inside it.
+struct PoleEdge {
+    /// Where the pole sits in space.
+    point: Point,
+    /// The chart line the pole runs along.
+    pcurve: PlanarCurve,
+    prange: (f64, f64),
+}
+
 /// One face, gathered and vetted.
 struct GFace {
     face: Shape,
@@ -91,6 +105,7 @@ struct GFace {
     /// conflict where the faces could actually meet.
     bound: ogeom_math::Aabb,
     edges: Vec<BoundaryEdge>,
+    poles: Vec<PoleEdge>,
 }
 
 /// An argument solid.
@@ -132,6 +147,7 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
         let surface_id = data.surface;
 
         let mut edges = Vec::new();
+        let mut poles = Vec::new();
         for edge in explore_unique(model, &face, ShapeType::Edge)? {
             let Some(edge_node) = model.node(&edge) else {
                 ogeom_bail!(Dangling, "edge is not in this model");
@@ -140,7 +156,31 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
                 ogeom_bail!(Construction, "edge node holds no edge data");
             };
             let Some(EdgeRepr::Curve3d { curve, range, .. }) = edge_data.curve3d() else {
-                // A degenerate edge — a cone's apex — has no extent to split.
+                // A degenerate edge — a sphere's pole, a cone's apex — has
+                // no extent to split, but it *does* bound the chart, and a
+                // chart whose top is missing bounds nothing.
+                if let Some(EdgeRepr::PCurve {
+                    curve: pc, range, ..
+                }) = edge_data.pcurve_for(surface_id, edge.location())
+                {
+                    let Some(planar) = model.geometry().pcurve(*pc) else {
+                        ogeom_bail!(Dangling, "pcurve is not in this model");
+                    };
+                    let at = explore_unique(model, &edge, ShapeType::Vertex)?;
+                    let Some(point) = at
+                        .first()
+                        .and_then(|v| model.node(v))
+                        .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                    else {
+                        ogeom_bail!(Construction, "a pole with no vertex is nowhere");
+                    };
+                    let placed = edge.transform(model.datums())?.apply(point);
+                    poles.push(PoleEdge {
+                        point: placed,
+                        pcurve: planar.clone(),
+                        prange: *range,
+                    });
+                }
                 continue;
             };
             let Some(geometry) = model.geometry().curve(*curve) else {
@@ -206,6 +246,7 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
         };
         let bound = bound.expanded(bulge + tol.confusion() * 1e2);
         faces.push(GFace {
+            poles,
             face,
             surface,
             bound,
@@ -280,6 +321,96 @@ struct SectionRec {
     tolerance: f64,
 }
 
+/// The parameter intervals of a contact curve over which *both* faces
+/// actually reach it.
+///
+/// Two surfaces touch along the whole of their contact; two faces touch
+/// along whatever part of it their trims both hold. That part is found by
+/// sampling — sixty-four stations along the curve, each asked of both
+/// charts — rather than by intersecting the contact with the boundary
+/// edges, because a contact meets those boundaries tangentially too and the
+/// crossing finder is the wrong instrument for it. The cost of sampling is
+/// the usual one: a stretch shorter than a station can be missed, and an
+/// endpoint is placed within a station of the truth.
+fn contact_intervals(
+    fused: &GeneralFused,
+    contact: &TangentRec,
+    tol: Tolerances,
+) -> OgeomResult<Vec<(f64, f64)>> {
+    let outline = |face: &GFace| -> OgeomResult<Vec<Vec<Point2>>> {
+        let mut lines = Vec::new();
+        for e in &face.edges {
+            lines.push(pcurve_polyline(
+                &e.pcurve, e.prange, e.crange, e.crange, tol,
+            )?);
+        }
+        Ok(lines)
+    };
+    let rings_a = outline(&fused.a.faces[contact.face_a])?;
+    let rings_b = outline(&fused.b.faces[contact.face_b])?;
+    let refs_a: Vec<&[Point2]> = rings_a.iter().map(Vec::as_slice).collect();
+    let refs_b: Vec<&[Point2]> = rings_b.iter().map(Vec::as_slice).collect();
+
+    const STATIONS: usize = 64;
+    let domain = contact.curve.domain();
+    let span = domain.1 - domain.0;
+    let mut runs: Vec<(f64, f64)> = Vec::new();
+    let mut open: Option<f64> = None;
+    for k in 0..=STATIONS {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a station index, far below the mantissa"
+        )]
+        let t = span.mul_add(k as f64 / STATIONS as f64, domain.0);
+        // A periodic chart's parameters run out past its own window; the
+        // trim test is only meaningful once they are folded back into it.
+        let held = matches!(
+            (
+                contact.pc_a.point_at(t, tol),
+                contact.pc_b.point_at(t, tol)
+            ),
+            (Ok(pa), Ok(pb))
+                if arrange::inside_many(
+                    &refs_a,
+                    fold_point_into_chart(pa, &fused.a.faces[contact.face_a].surface),
+                ) && arrange::inside_many(
+                    &refs_b,
+                    fold_point_into_chart(pb, &fused.b.faces[contact.face_b].surface),
+                )
+        );
+        match (held, open) {
+            (true, None) => open = Some(t),
+            (false, Some(from)) => {
+                if t - from > tol.parametric() {
+                    runs.push((from, t));
+                }
+                open = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(from) = open
+        && domain.1 - from > tol.parametric()
+    {
+        runs.push((from, domain.1));
+    }
+    Ok(runs)
+}
+
+/// One curve along which two faces *touch* without crossing.
+///
+/// A contact carries no boundary parity — neither face passes through the
+/// other — so it takes no part in the arrangement or the classification.
+/// It is still a curve that exists on the result, and a section view
+/// through a tangency has to show it, so it is carried alongside.
+struct TangentRec {
+    curve: Curve,
+    pc_a: PlanarCurve,
+    pc_b: PlanarCurve,
+    face_a: usize,
+    face_b: usize,
+}
+
 /// One kept sub-range of one section.
 #[derive(Clone)]
 struct SectionPiece {
@@ -313,6 +444,10 @@ enum Tag {
     /// A sub-range of a global contact edge — another face's boundary edge
     /// lying in this face's own surface, splitting it.
     Contact { contact: usize, range: (f64, f64) },
+    /// A sub-range of a pole of the face's own chart. The edge is a point in
+    /// space whatever the range says; the range is where it runs in the
+    /// chart, which is the only place it has length.
+    Pole { pole: usize, range: (f64, f64) },
 }
 
 /// Where a piece stands relative to the other solid.
@@ -447,6 +582,7 @@ fn fill(
     Vec<SectionRec>,
     Vec<SectionPiece>,
     Vec<ContactRec>,
+    Vec<TangentRec>,
     Vec<Vec<(f64, f64)>>,
     std::collections::HashMap<ogeom_topo::TShapeId, Vec<f64>>,
     Vec<Vec<usize>>,
@@ -458,6 +594,7 @@ fn fill(
     };
     let mut sections: Vec<SectionRec> = Vec::new();
     let mut contacts: Vec<ContactRec> = Vec::new();
+    let mut tangents: Vec<TangentRec> = Vec::new();
     let mut same_pairs: Vec<(usize, usize)> = Vec::new();
     // Marched sections are fitted; the fit is driven below the confusion
     // tolerance so a fitted curve meets edges, vertices and the mesh welder
@@ -528,6 +665,23 @@ fn fill(
                 SurfaceIntersection::Touching(_) => {}
                 SurfaceIntersection::Along(curves) => {
                     for sc in curves {
+                        // A tangential curve is contact, not crossing: the
+                        // two faces meet along it and neither passes
+                        // through the other, so it is set aside from the
+                        // arrangement entirely and kept for the consumers
+                        // that draw contact rather than classify by it.
+                        if sc.tangential {
+                            if let (Some(pa), Some(pb)) = (sc.on_a, sc.on_b) {
+                                tangents.push(TangentRec {
+                                    curve: sc.curve,
+                                    pc_a: pa,
+                                    pc_b: pb,
+                                    face_a: ia,
+                                    face_b: ib,
+                                });
+                            }
+                            continue;
+                        }
                         match (sc.on_a, sc.on_b) {
                             (Some(pa), Some(pb)) => sections.push(SectionRec {
                                 curve: sc.curve,
@@ -542,7 +696,13 @@ fn fill(
                                 // An exact curve whose projection has no
                                 // closed form: march the pair instead, so
                                 // curve and pcurves are fitted *together*.
-                                for fitted in march_pair(&fa.surface, &fb.surface, &options, tol)? {
+                                let shared = fa.bound.intersection(&fb.bound);
+                                for fitted in march_pair(
+                                    &windowed_to(&fa.surface, &shared),
+                                    &windowed_to(&fb.surface, &shared),
+                                    &options,
+                                    tol,
+                                )? {
                                     sections.push(SectionRec {
                                         closed: fitted.curve.is_closed(tol),
                                         tolerance: options.marching.chord + fitted.fit_error,
@@ -906,11 +1066,74 @@ fn fill(
         sections,
         pieces,
         contacts,
+        tangents,
         contact_along,
         paves,
         same_a,
         same_b,
     ))
+}
+
+/// A surface narrowed to the reach of a bound, for the marcher's benefit.
+///
+/// Seeding samples a surface's *parameter box*, so a plane stored over
+/// ±10^9 — which is how an unbounded carrier reaches this code — is sampled
+/// at a spacing a hundred million times anything it could be meeting, and
+/// no seed ever lands near the curve. Narrowing to where the two faces
+/// actually are is what lets the seeding see it. The chart is untouched:
+/// only the window the marcher walks changes, so pcurves fitted in it mean
+/// the same thing on the surface as stored.
+fn windowed_to(surface: &SurfaceGeometry, bound: &ogeom_math::Aabb) -> SurfaceGeometry {
+    let corners = bound.corners();
+    if corners.is_empty() {
+        return surface.clone();
+    }
+    match surface {
+        SurfaceGeometry::Plane(p) => {
+            let frame = p.plane().frame();
+            let (mut u0, mut u1, mut v0, mut v1) = (
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            );
+            for c in &corners {
+                let local = frame.to_local(*c);
+                u0 = u0.min(local.x);
+                u1 = u1.max(local.x);
+                v0 = v0.min(local.y);
+                v1 = v1.max(local.y);
+            }
+            let margin = ((u1 - u0) + (v1 - v0)).mul_add(0.25, 1.0);
+            let (want_u, want_v) = ((u0 - margin, u1 + margin), (v0 - margin, v1 + margin));
+            let (have_u, have_v) = ogeom_geom::Surface::domain(p);
+            if have_u.1 - have_u.0 <= want_u.1 - want_u.0
+                && have_v.1 - have_v.0 <= want_v.1 - want_v.0
+            {
+                return surface.clone();
+            }
+            ogeom_geom::PlaneSurface::over(p.plane(), want_u, want_v)
+                .map_or_else(|_| surface.clone(), Into::into)
+        }
+        SurfaceGeometry::Cylinder(c) => {
+            let frame = c.cylinder().frame();
+            let (mut h0, mut h1) = (f64::INFINITY, f64::NEG_INFINITY);
+            for corner in &corners {
+                let h = (*corner - frame.origin()).dot(frame.z().vector());
+                h0 = h0.min(h);
+                h1 = h1.max(h);
+            }
+            let margin = (h1 - h0).mul_add(0.25, 1.0);
+            let want = (h0 - margin, h1 + margin);
+            let have = ogeom_geom::Surface::domain(c).1;
+            if have.1 - have.0 <= want.1 - want.0 {
+                return surface.clone();
+            }
+            ogeom_geom::CylinderSurface::new(c.cylinder(), want)
+                .map_or_else(|_| surface.clone(), Into::into)
+        }
+        other => other.clone(),
+    }
 }
 
 /// March a pair whose exact section has no closed-form pcurve.
@@ -1009,6 +1232,10 @@ struct GeneralFused {
     b: GSolid,
     sections: Vec<SectionRec>,
     contacts: Vec<ContactRec>,
+    /// Curves the two boundaries touch along without crossing. They take no
+    /// part in the classification below — that is what tangency means — and
+    /// are carried for the consumers that want the contact itself.
+    tangents: Vec<TangentRec>,
     pieces: Vec<FacePiece>,
 }
 
@@ -1141,7 +1368,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     let ga = gather(model, a, tol)?;
     let gb = gather(model, b, tol)?;
     ogeom_core::progress::stage("boolean: intersect");
-    let (sections, section_pieces, contacts, contact_along, paves, same_a, same_b) =
+    let (sections, section_pieces, contacts, tangents, contact_along, paves, same_a, same_b) =
         fill(&ga, &gb, tol)?;
 
     ogeom_core::progress::stage("boolean: split");
@@ -1243,6 +1470,53 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     boundary: false,
                 });
             }
+            // The poles, after the sections, because a section can end *on*
+            // a pole — a plane through a ball's axis cuts it exactly there —
+            // and the pole has to be cut where that happens or the two meet
+            // at no shared node and the arrangement sees a dangling section.
+            for (pi, pole) in face.poles.iter().enumerate() {
+                let mut stops = vec![pole.prange.0, pole.prange.1];
+                if let PlanarCurve::Line(line) = &pole.pcurve {
+                    let axis = line.axis();
+                    for strand in &strands {
+                        if strand.boundary {
+                            continue;
+                        }
+                        for end in [strand.polyline.first(), strand.polyline.last()]
+                            .into_iter()
+                            .flatten()
+                        {
+                            let along = (*end - axis.location).dot(axis.direction.vector());
+                            let foot = axis.point_at(along);
+                            if foot.distance(*end) <= PARAM_SNAP
+                                && along > pole.prange.0 + PARAM_SNAP
+                                && along < pole.prange.1 - PARAM_SNAP
+                            {
+                                stops.push(along);
+                            }
+                        }
+                    }
+                }
+                stops.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+                stops.dedup_by(|a, b| (*a - *b).abs() <= PARAM_SNAP);
+                for pair in stops.windows(2) {
+                    let sub = (pair[0], pair[1]);
+                    strands.push(Strand {
+                        polyline: pcurve_polyline(
+                            &pole.pcurve,
+                            pole.prange,
+                            pole.prange,
+                            sub,
+                            tol,
+                        )?,
+                        tag: Tag::Pole {
+                            pole: pi,
+                            range: sub,
+                        },
+                        boundary: true,
+                    });
+                }
+            }
             for (ci, contact) in contacts.iter().enumerate() {
                 if contact.target_from_a != from_a || contact.target_face != fi {
                     continue;
@@ -1319,10 +1593,29 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
 
             let split = arrange_pieces(&strands, PARAM_SNAP)?;
             for piece in split {
-                let probe = face
-                    .surface
-                    .point_at(piece.interior.x, piece.interior.y, tol)?;
-                let state = match classify_in_solid_exact(model, other, probe, tol)? {
+                // Where a piece stands is asked at its interior probes in
+                // turn. The first is the roomiest, and usually the only one
+                // needed; the rest are for the piece that merely *touches*
+                // the other solid, whose roomiest probe can land on the
+                // contact and read neither in nor out.
+                let mut chosen = None;
+                for candidate in &piece.interiors {
+                    let at = face.surface.point_at(candidate.x, candidate.y, tol)?;
+                    let says = classify_in_solid_exact(model, other, at, tol)?;
+                    if chosen.is_none() || !matches!(says, Containment::On) {
+                        chosen = Some((*candidate, at, says));
+                    }
+                    if !matches!(says, Containment::On) {
+                        break;
+                    }
+                }
+                let Some((interior, probe, said)) = chosen else {
+                    ogeom_bail!(
+                        Construction,
+                        "a piece of a face has no interior point to classify at"
+                    );
+                };
+                let state = match said {
                     Containment::In => PieceState::In,
                     Containment::Out => PieceState::Out,
                     Containment::On => {
@@ -1330,7 +1623,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                         // partner face on the shared surface decides whether
                         // the two materials lie on the same side or oppose.
                         let partners = if from_a { &same_a[fi] } else { &same_b[fi] };
-                        let own_normal = outward_normal(face, piece.interior, tol)?;
+                        let own_normal = outward_normal(face, interior, tol)?;
                         let mut resolved = None;
                         for &pi in partners {
                             let partner = if from_a { &gb.faces[pi] } else { &ga.faces[pi] };
@@ -1404,6 +1697,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         b: gb,
         sections,
         contacts,
+        tangents,
         pieces,
     })
 }
@@ -1494,6 +1788,7 @@ fn build_piece(
                 Tag::Boundary { edge, range } => (*edge, 0_u8, *range),
                 Tag::Section { section, range } => (*section, 1, *range),
                 Tag::Contact { contact, range } => (*contact, 2, *range),
+                Tag::Pole { pole, range } => (*pole, 3, *range),
             };
             let near = |a: (f64, f64), b: (f64, f64)| {
                 (a.0 - b.0).abs() <= tol.parametric() && (a.1 - b.1).abs() <= tol.parametric()
@@ -1522,27 +1817,6 @@ fn build_piece(
                 built
             });
         }
-        if let Err(e) = make_wire(rebuild.model, &edges, tol) {
-            for (i, edge) in edges.iter().enumerate() {
-                if let Ok(Some((a, b))) = ogeom_algo::edge_vertices(rebuild.model, edge) {
-                    let pa = rebuild
-                        .model
-                        .node(&a)
-                        .and_then(|n| n.data().as_vertex().map(|v| v.point));
-                    let pb = rebuild
-                        .model
-                        .node(&b)
-                        .and_then(|n| n.data().as_vertex().map(|v| v.point));
-                    eprintln!(
-                        "DBG edge {i} rev={} {:?} -> {:?}",
-                        edge.orientation() == ogeom_topo::Orientation::Reversed,
-                        pa,
-                        pb
-                    );
-                }
-            }
-            return Err(e);
-        }
         wires.push(make_wire(rebuild.model, &edges, tol)?.shape);
     }
     let built = make_face_on(rebuild.model, surface_id, &wires, tol)?.shape;
@@ -1566,6 +1840,26 @@ fn build_sub_edge(
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     match tag {
+        Tag::Pole { pole, range } => {
+            // A pole rebuilds as what it was: one vertex, an edge with no
+            // curve bounded by it twice, and the chart line that says where
+            // it runs in this face's parameters.
+            let p = &face.poles[*pole];
+            let at = rebuild.vertex(p.point, tol);
+            let model = &mut *rebuild.model;
+            let mut data = ogeom_topo::EdgeData::new();
+            data.degenerate = true;
+            let built = model.add_edge(data, &[at.clone(), at])?;
+            ogeom_algo::attach_pcurve(
+                model,
+                &built,
+                p.pcurve.clone(),
+                surface_id,
+                Location::identity(),
+                *range,
+            )?;
+            Ok(built)
+        }
         Tag::Boundary { edge, range } => {
             let e = &face.edges[*edge];
             let from = e.curve.point_at(range.0, tol)?;
@@ -2164,6 +2458,24 @@ pub fn section(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeo
         let v0 = make_vertex(model, from).shape;
         let v1 = make_vertex(model, to).shape;
         edges.push(make_edge_between(model, s.curve.clone(), (f0, f1), &v0, &v1, tol)?.shape);
+    }
+    // Contacts are not crossings, so no piece's ring carries them and the
+    // loop above cannot see them — but a section through a tangency has a
+    // curve in it, and this is where it comes from.
+    for contact in &fused.tangents {
+        for (lo, hi) in contact_intervals(&fused, contact, tol)? {
+            let from = contact.curve.point_at(lo, tol)?;
+            let to = contact.curve.point_at(hi, tol)?;
+            let v0 = make_vertex(model, from).shape;
+            let v1 = if from.distance(to) <= tol.confusion() {
+                v0.clone()
+            } else {
+                make_vertex(model, to).shape
+            };
+            edges.push(
+                make_edge_between(model, contact.curve.clone(), (lo, hi), &v0, &v1, tol)?.shape,
+            );
+        }
     }
     let result = model.add_compound(&edges)?;
     history.modify(a, result.clone());

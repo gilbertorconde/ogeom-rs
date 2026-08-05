@@ -26,12 +26,13 @@
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{
-    Circle2d, Curve, Curve3d, Ellipse2d, Line2d, PlanarCurve, Surface, SurfaceGeometry,
+    Circle2d, Curve, Curve2d as _, Curve3d, Ellipse2d, Line2d, PlanarCurve, Surface,
+    SurfaceGeometry,
 };
 use ogeom_math::{Circle2, Ellipse2, Frame2, Point, Point2};
 
 use crate::approx::approximate_branch;
-use crate::march::{Marching, branches};
+use crate::march::{Marching, branches, trace_tangential};
 use crate::surface::{Meeting, surface_surface};
 
 /// How to intersect, when the general path runs.
@@ -75,6 +76,16 @@ pub struct SectionCurve {
     pub exact: bool,
     /// Whether it is a closed loop.
     pub closed: bool,
+    /// Whether the surfaces *touch* along this curve rather than crossing
+    /// it.
+    ///
+    /// A tangential contact is a real curve — the two surfaces meet there,
+    /// and a drawing has to show it — but it carries no boundary parity:
+    /// neither surface passes through the other, so nothing is inside on
+    /// one side and outside on the other. Consumers that classify by
+    /// crossing must leave these out of that arithmetic; consumers that
+    /// draw or measure contact want them.
+    pub tangential: bool,
 }
 
 /// What two surfaces do to each other.
@@ -194,12 +205,15 @@ fn exact_section(
             };
             Some(Line2d::over(l.axis(), lo, hi).ok()?.into())
         };
+        let (ca, cb) = (on_a.as_ref().and_then(clip2), on_b.as_ref().and_then(clip2));
+        let tangential = touching_along(&clipped, ca.as_ref(), cb.as_ref(), a, b, tol);
         return Some(SectionCurve {
-            on_a: on_a.as_ref().and_then(clip2),
-            on_b: on_b.as_ref().and_then(clip2),
+            on_a: ca,
+            on_b: cb,
             tolerance: 0.0,
             exact: true,
             closed: false,
+            tangential,
             curve: clipped,
         });
     }
@@ -213,14 +227,51 @@ fn exact_section(
             return None;
         }
     }
+    let tangential = touching_along(&curve, on_a.as_ref(), on_b.as_ref(), a, b, tol);
     Some(SectionCurve {
         on_a,
         on_b,
         tolerance: 0.0,
         exact: true,
         closed,
+        tangential,
         curve,
     })
+}
+
+/// Whether the surfaces touch along an exact curve rather than crossing it:
+/// their normals parallel at stations along its length.
+///
+/// Decided through the curve's own pcurves, which is where the normals can
+/// be read without inverting anything. A curve missing a pcurve on either
+/// surface is reported as a crossing — the honest default, since a section
+/// nobody can place in a chart is one nothing can classify as contact
+/// either.
+fn touching_along(
+    curve: &Curve,
+    on_a: Option<&PlanarCurve>,
+    on_b: Option<&PlanarCurve>,
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    tol: Tolerances,
+) -> bool {
+    let (Some(pa), Some(pb)) = (on_a, on_b) else {
+        return false;
+    };
+    let (lo, hi) = curve.domain();
+    for k in 0..5 {
+        let t = (hi - lo).mul_add(f64::from(k) / 4.0, lo);
+        let (Ok(ua), Ok(ub)) = (pa.point_at(t, tol), pb.point_at(t, tol)) else {
+            return false;
+        };
+        let (Ok(na), Ok(nb)) = (a.normal_at(ua.x, ua.y, tol), b.normal_at(ub.x, ub.y, tol)) else {
+            return false;
+        };
+        if na.vector().cross(nb.vector()).magnitude() > 1e-6 {
+            return false;
+        }
+    }
+    true
 }
 
 /// The parameter interval over which a 2D line stays inside a surface's
@@ -292,15 +343,20 @@ fn marched(
         return Ok(SurfaceIntersection::Apart);
     }
     let mut out = Vec::with_capacity(traced.len());
+    let mut contacts: Vec<crate::march::Traced> = Vec::new();
     for branch in &traced {
         // A branch along which the two surfaces share their normal is a
         // tangency, not a crossing: the marcher's seeding cannot tell the
         // noise floor of a tangential valley from a genuine sign change, and
-        // what it traces there is the valley, not a section. Touching is not
-        // crossing at the marched level exactly as at the analytic one, and
-        // a tangency contributes no boundary parity — so the branch is
-        // dropped rather than fitted into a phantom edge.
+        // what it traces there is a stalled fragment of the valley, not a
+        // section. The valley is still a curve, though, and the tangential
+        // walker is the one that can follow it — so the fragment becomes a
+        // seed rather than a discard, and what comes back is marked as
+        // contact so nobody classifies by it.
         if branch_is_tangential(a, b, branch, tol)? {
+            if let Some(contact) = walk_contact(a, b, branch, &contacts, options.marching, tol)? {
+                contacts.push(contact);
+            }
             continue;
         }
         let fitted = approximate_branch(a, b, branch, options.tolerance, tol)?;
@@ -313,14 +369,76 @@ fn marched(
             tolerance: options.marching.chord + fitted.fit_error,
             exact: false,
             closed: fitted.closed,
+            tangential: false,
+        });
+    }
+    for contact in &contacts {
+        let fitted = approximate_branch(a, b, contact, options.tolerance, tol)?;
+        out.push(SectionCurve {
+            curve: fitted.curve.into(),
+            on_a: Some(fitted.on_a.into()),
+            on_b: Some(fitted.on_b.into()),
+            tolerance: options.marching.chord + fitted.fit_error,
+            exact: false,
+            closed: fitted.closed,
+            tangential: true,
         });
     }
     if out.is_empty() {
-        // Only tangential contact: no curve crosses, and classification
-        // above is unaffected by a touch.
         return Ok(SurfaceIntersection::Apart);
     }
     Ok(SurfaceIntersection::Along(out))
+}
+
+/// Follow the contact a tangential fragment sits on, unless one already
+/// traced covers it.
+///
+/// A tangential valley hands the crossing marcher several stalled fragments
+/// — the seeds converge onto the contact from wherever they started and
+/// wander there — so the fragments are candidates for *one* curve, not
+/// several. A fragment whose middle already lies on a traced contact is one
+/// of those repeats.
+fn walk_contact(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    fragment: &crate::march::Traced,
+    already: &[crate::march::Traced],
+    marching: Marching,
+    tol: Tolerances,
+) -> OgeomResult<Option<crate::march::Traced>> {
+    let middle = fragment.points.len() / 2;
+    let Some(point) = fragment.points.get(middle).copied() else {
+        return Ok(None);
+    };
+    for traced in already {
+        // Traced points sit a step apart, so "on this curve" has to allow
+        // half a step of gap to the nearest sample plus the chord budget.
+        let spacing = traced
+            .points
+            .windows(2)
+            .map(|w| w[0].distance(w[1]))
+            .fold(0.0f64, f64::max);
+        let near = traced
+            .points
+            .iter()
+            .map(|p| p.distance(point))
+            .fold(f64::INFINITY, f64::min);
+        if near <= spacing.mul_add(0.5, marching.chord.max(tol.confusion())) {
+            return Ok(None);
+        }
+    }
+    let seed = crate::march::Contact {
+        point,
+        on_a: fragment.on_a[middle],
+        on_b: fragment.on_b[middle],
+    };
+    // The walker refuses a seed that is not a contact; that refusal is an
+    // answer, not a failure — the fragment simply had nothing to follow.
+    // A walk that stalls where it started says the same thing in points:
+    // too few to fit, so there is no contact curve to report here.
+    Ok(trace_tangential(a, b, seed, marching, tol)
+        .ok()
+        .filter(|traced| traced.points.len() >= 4))
 }
 
 /// Whether a traced branch runs along a tangency of the two surfaces:

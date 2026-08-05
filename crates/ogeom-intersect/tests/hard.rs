@@ -15,7 +15,8 @@
 
 use ogeom_core::Tolerances;
 use ogeom_geom::{
-    ConeSurface, CylinderSurface, PlaneSurface, SphereSurface, SurfaceGeometry, TorusSurface,
+    ConeSurface, Curve3d as _, CylinderSurface, PlaneSurface, SphereSurface, SurfaceGeometry,
+    TorusSurface,
 };
 use ogeom_intersect::{Marching, Meeting, Stopped, branches, coverage, surface_surface};
 use ogeom_math::{Cone, Cylinder, Direction, Frame, Plane, Point, Sphere, Torus, Vector};
@@ -193,6 +194,106 @@ fn tangency_along_a_circle_produces_fragments_not_a_curve() {
             assert!((radial - 3.0).abs() < 0.1 && (p.z - 1.0).abs() < 0.01);
         }
     }
+}
+
+#[test]
+fn the_same_tangency_asked_of_the_one_call_comes_back_as_contact() {
+    // The fragments above are what the *crossing* marcher can say. Asked
+    // through `intersect_surfaces`, the same plane on the same torus routes
+    // those fragments into the tangential walker and comes back with the
+    // contact itself: one curve, closed, marked as touching rather than
+    // crossing, on the circle of radius 3 at z = 1.
+    let torus: SurfaceGeometry =
+        TorusSurface::new(Torus::new(Frame::WORLD, 3.0, 1.0, T).unwrap()).into();
+    let resting = pln(Point::new(0.0, 0.0, 1.0), Vector::Z);
+
+    let found = ogeom_intersect::intersect_surfaces(
+        &torus,
+        &resting,
+        ogeom_intersect::IntersectOptions {
+            tolerance: 1e-4,
+            marching: options(),
+        },
+        T,
+    )
+    .unwrap();
+    let ogeom_intersect::SurfaceIntersection::Along(curves) = found else {
+        panic!("the surfaces meet along the contact: {found:?}");
+    };
+    assert_eq!(curves.len(), 1, "one contact, not one per fragment");
+    let contact = &curves[0];
+    assert!(contact.tangential, "they touch here, they do not cross");
+    assert!(contact.closed, "the contact circle closes");
+    let domain = contact.curve.domain();
+    for k in 0..=16 {
+        let t = domain.0 + (domain.1 - domain.0) * f64::from(k) / 16.0;
+        let p = contact.curve.point_at(t, T).unwrap();
+        assert!(
+            (p.x.hypot(p.y) - 3.0).abs() < 1e-3 && (p.z - 1.0).abs() < 1e-3,
+            "the contact is the circle of radius 3 at z = 1: {p:?}"
+        );
+    }
+}
+
+#[test]
+fn a_ball_seated_in_a_torus_tube_has_its_contact_walked() {
+    // The tangency with no closed form: a unit ball centred on the tube's
+    // own centre line touches the torus along a whole tube cross-section.
+    // Nothing analytic answers this pair, so it goes through the marcher —
+    // which stalls, as tangencies make it — and the stalled fragments seed
+    // the tangential walker instead of being discarded.
+    //
+    // The contact comes back in two arcs rather than one loop, and that is
+    // the sphere's parameterization talking: the tube circle runs through
+    // both of the ball's chart poles, where its derivatives degenerate and
+    // the walk has nothing to step along. Two arcs meeting at the poles
+    // cover the circle; the number of pieces is a fact about the chart, the
+    // curve they lie on is a fact about the surfaces.
+    let torus: SurfaceGeometry =
+        TorusSurface::new(Torus::new(Frame::WORLD, 3.0, 1.0, T).unwrap()).into();
+    let seated = sph(Point::new(3.0, 0.0, 0.0), 1.0);
+
+    let found = ogeom_intersect::intersect_surfaces(
+        &torus,
+        &seated,
+        ogeom_intersect::IntersectOptions {
+            tolerance: 1e-4,
+            marching: options(),
+        },
+        T,
+    )
+    .unwrap();
+    let ogeom_intersect::SurfaceIntersection::Along(curves) = found else {
+        panic!("the ball meets the tube along the contact: {found:?}");
+    };
+    assert!(!curves.is_empty(), "the contact was not walked at all");
+    assert!(
+        curves.iter().all(|c| c.tangential && !c.exact),
+        "every piece is marched contact, not a crossing"
+    );
+    let centre = Point::new(3.0, 0.0, 0.0);
+    let mut length = 0.0;
+    for c in &curves {
+        let domain = c.curve.domain();
+        let mut previous = None;
+        for k in 0..=64 {
+            let t = domain.0 + (domain.1 - domain.0) * f64::from(k) / 64.0;
+            let p = c.curve.point_at(t, T).unwrap();
+            assert!(
+                (p.distance(centre) - 1.0).abs() < 1e-3 && p.y.abs() < 1e-3,
+                "the contact is the tube circle at the ball's radius: {p:?}"
+            );
+            if let Some(q) = previous {
+                length += p.distance(q);
+            }
+            previous = Some(p);
+        }
+    }
+    let circle = 2.0 * core::f64::consts::PI;
+    assert!(
+        (length - circle).abs() < circle * 0.02,
+        "the arcs together are the whole circle: {length}"
+    );
 }
 
 #[test]

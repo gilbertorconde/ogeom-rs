@@ -45,8 +45,13 @@ pub(crate) struct Piece<T> {
     /// contour, counter-clockwise in parameter space; further rings are
     /// holes, clockwise.
     pub rings: Vec<Vec<Traversal<T>>>,
-    /// A point strictly inside the piece.
-    pub interior: Point2,
+    /// Points strictly inside the piece, best first.
+    ///
+    /// More than one, because a single probe can be unlucky: a piece that
+    /// merely *touches* the other solid has a probe on that contact reading
+    /// neither in nor out, and the way past it is to ask somewhere else in
+    /// the same piece.
+    pub interiors: Vec<Point2>,
 }
 
 /// Assemble pre-split strands into the pieces they bound.
@@ -255,13 +260,20 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
                 rings_outline.push(hole.clone());
             }
         }
-        let Some(interior) = interior_point(&rings_outline, snap) else {
+        let interiors = interior_points(&rings_outline, snap);
+        let Some(interior) = interiors.first().copied() else {
             continue;
         };
         if !inside_many(&material, interior) {
             continue;
         }
-        pieces.push(Piece { rings, interior });
+        // Only probes inside the material this arrangement bounds are of
+        // any use to a caller asking "where does this piece stand".
+        let interiors: Vec<Point2> = interiors
+            .into_iter()
+            .filter(|p| inside_many(&material, *p))
+            .collect();
+        pieces.push(Piece { rings, interiors });
     }
     if pieces.is_empty() {
         ogeom_bail!(Construction, "arrangement left no piece of the face");
@@ -354,36 +366,53 @@ pub(crate) fn inside_many(lines: &[&[Point2]], p: Point2) -> bool {
 /// cannot pass through a vertex or run along a horizontal segment, so its
 /// crossings are transversal and the midpoint of the first inside interval
 /// is interior with room to spare.
-fn interior_point(rings: &[Vec<Point2>], snap: f64) -> Option<Point2> {
+fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
     let mut heights: Vec<f64> = rings.iter().flatten().map(|p| p.y).collect();
     heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
     heights.dedup_by(|a, b| (*a - *b).abs() <= snap);
-    let mut best: Option<(f64, f64)> = None;
-    for pair in heights.windows(2) {
-        let gap = pair[1] - pair[0];
-        if best.is_none_or(|(g, _)| gap > g) {
-            best = Some((gap, f64::midpoint(pair[0], pair[1])));
-        }
+    // Widest gap first — that is the scanline with the most room — then the
+    // rest, so a caller that needs a second opinion has one.
+    let mut levels: Vec<(f64, f64)> = heights
+        .windows(2)
+        .map(|pair| (pair[1] - pair[0], f64::midpoint(pair[0], pair[1])))
+        .collect();
+    levels.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
+    // An unsplit chart — a whole sphere, pole to pole — has exactly one gap
+    // and therefore one scanline, straight across its middle. That is
+    // precisely where a solid seated on its equator touches it, so the widest
+    // gap also offers its quarter heights: same piece, different latitude.
+    if let Some(&(gap, level)) = levels.first() {
+        levels.insert(1, (gap, gap.mul_add(-0.25, level)));
+        levels.insert(2, (gap, gap.mul_add(0.25, level)));
     }
-    let (_, level) = best?;
 
-    let mut crossings: Vec<f64> = Vec::new();
-    for ring in rings {
-        for i in 0..ring.len() {
-            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
-            if (a.y > level) != (b.y > level) {
-                crossings.push((b.x - a.x).mul_add((level - a.y) / (b.y - a.y), a.x));
+    let mut out = Vec::new();
+    for (gap, level) in levels {
+        if gap <= snap {
+            continue;
+        }
+        let mut crossings: Vec<f64> = Vec::new();
+        for ring in rings {
+            for i in 0..ring.len() {
+                let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                if (a.y > level) != (b.y > level) {
+                    crossings.push((b.x - a.x).mul_add((level - a.y) / (b.y - a.y), a.x));
+                }
             }
         }
+        crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+        if crossings.len() < 2 {
+            continue;
+        }
+        out.push(Point2::new(
+            f64::midpoint(crossings[0], crossings[1]),
+            level,
+        ));
+        if out.len() >= 5 {
+            break;
+        }
     }
-    crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-    if crossings.len() < 2 {
-        return None;
-    }
-    Some(Point2::new(
-        f64::midpoint(crossings[0], crossings[1]),
-        level,
-    ))
+    out
 }
 
 #[cfg(test)]

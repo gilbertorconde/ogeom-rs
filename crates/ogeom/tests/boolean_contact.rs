@@ -124,3 +124,122 @@ fn edge_and_vertex_contact_pass_through_the_boolean() {
         );
     }
 }
+
+/// A ball seated in a bore touches it along the equator and crosses it
+/// nowhere. The boolean keeps that curve out of its arithmetic — a contact
+/// carries no parity, so nothing is inside on one side of it — and the
+/// section still reports it, because the curve is there.
+#[test]
+fn a_tangential_contact_is_sectioned_but_not_classified() {
+    let mut model = Model::new();
+    let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 2.0, T)
+        .unwrap()
+        .shape;
+    let bore = ogeom::algo::make_cylinder(
+        &mut model,
+        Frame::new(Point::new(0.0, 0.0, -3.0), Direction::Z, Direction::X, T).unwrap(),
+        2.0,
+        6.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+
+    // Classification is untouched by the touch: the ball is inside the bore,
+    // so their fuse is the bore and their common is the ball.
+    let pi = core::f64::consts::PI;
+    let fused = ogeom::boolean::fuse(&mut model, &ball, &bore, T)
+        .unwrap()
+        .shape;
+    let cylinder_volume = pi * 4.0 * 6.0;
+    assert!(
+        (volume(&model, &fused) - cylinder_volume).abs() < cylinder_volume * 1e-3,
+        "the ball adds nothing outside the bore: {}",
+        volume(&model, &fused)
+    );
+
+    // The section is the contact circle: radius 2 in the plane z = 0.
+    let cut = ogeom::boolean::section(&mut model, &ball, &bore, T)
+        .unwrap()
+        .shape;
+    let edges = ogeom::topo::explore_unique(&model, &cut, ogeom::topo::ShapeType::Edge).unwrap();
+    assert_eq!(edges.len(), 1, "one contact curve, once");
+    let length = ogeom::algo::linear_properties(&model, &edges[0], fine(), T)
+        .unwrap()
+        .mass;
+    let circle = 2.0 * pi * 2.0;
+    assert!(
+        (length - circle).abs() < circle * 1e-3,
+        "the whole equator: {length}"
+    );
+}
+
+/// A sphere's chart is bounded above and below by *poles* — edges that are
+/// points in space — and by a seam it meets twice. Leave the poles out of
+/// the arrangement and the chart has no top or bottom, so nothing can be
+/// arranged inside it and every boolean over a ball fails, whether or not
+/// the ball is anywhere near the other solid. They are in it now.
+#[test]
+fn a_ball_is_boolean_material_like_anything_else() {
+    let corner = Frame::new(Point::new(-5.0, -5.0, -5.0), Direction::Z, Direction::X, T).unwrap();
+    let at = |p: Point| Frame::new(p, Direction::Z, Direction::X, T).unwrap();
+    let pi = core::f64::consts::PI;
+    let ball_volume = 4.0 / 3.0 * pi * 8.0;
+
+    // Apart: the fuse is both, and the common is nothing.
+    let mut model = Model::new();
+    let far = ogeom::algo::make_sphere(&mut model, at(Point::new(20.0, 0.0, 0.0)), 2.0, T)
+        .unwrap()
+        .shape;
+    let brick = ogeom::algo::make_box(&mut model, corner, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let apart = ogeom::boolean::fuse(&mut model, &far, &brick, T).unwrap().shape;
+    assert!(
+        (volume(&model, &apart) - (1000.0 + ball_volume)).abs() < 1.0,
+        "both lumps, untouched: {}",
+        volume(&model, &apart)
+    );
+
+    // Swallowed: the ball is inside, so the fuse is the brick and the cut
+    // hollows a spherical void out of it.
+    let mut model = Model::new();
+    let inside = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 2.0, T)
+        .unwrap()
+        .shape;
+    let brick = ogeom::algo::make_box(&mut model, corner, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let swallowed = ogeom::boolean::fuse(&mut model, &inside, &brick, T)
+        .unwrap()
+        .shape;
+    assert!(
+        (volume(&model, &swallowed) - 1000.0).abs() < 1.0,
+        "the brick already held it: {}",
+        volume(&model, &swallowed)
+    );
+    let hollow = ogeom::boolean::cut(&mut model, &brick, &inside, T)
+        .unwrap()
+        .shape;
+    assert!(
+        (volume(&model, &hollow) - (1000.0 - ball_volume)).abs() < 1.0,
+        "a spherical void: {}",
+        volume(&model, &hollow)
+    );
+
+    // Sitting on the lid: the section circle wraps the sphere's seam, and
+    // the halves classify either side of it.
+    let mut model = Model::new();
+    let dome = ogeom::algo::make_sphere(&mut model, at(Point::new(0.0, 0.0, 5.0)), 2.0, T)
+        .unwrap()
+        .shape;
+    let brick = ogeom::algo::make_box(&mut model, corner, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let capped = ogeom::boolean::fuse(&mut model, &dome, &brick, T).unwrap().shape;
+    assert!(
+        (volume(&model, &capped) - (1000.0 + ball_volume / 2.0)).abs() < 1.0,
+        "the brick and the half that stands proud: {}",
+        volume(&model, &capped)
+    );
+}
