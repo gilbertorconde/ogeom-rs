@@ -12,3 +12,9 @@
 //! No conventional CAD kernel ships this; applications built on them each supply
 //! their own. A kernel meant to be a complete foundation should not make every
 //! consumer solve it again.
+
+mod model;
+mod solve;
+
+pub use model::{ArcId, CircleId, Constraint, ConstraintId, LineId, PointId, Sketch, TangencySide};
+pub use solve::{Diagnosis, Freedom, Solution, SolveOptions};
