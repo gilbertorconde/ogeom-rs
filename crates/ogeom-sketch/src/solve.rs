@@ -25,6 +25,12 @@ pub struct SolveOptions {
     pub tolerance: f64,
     /// Iterations before the solver admits a stall.
     pub max_iterations: usize,
+    /// Compute each step through the sparse conjugate-gradient solver
+    /// instead of the dense SVD. Same minimum-norm answer, cost scaling
+    /// with the constraints actually written rather than with the whole
+    /// parameter vector — the choice for large sketches. Diagnosis always
+    /// reads structure through the SVD regardless.
+    pub sparse: bool,
 }
 
 impl Default for SolveOptions {
@@ -32,6 +38,7 @@ impl Default for SolveOptions {
         Self {
             tolerance: 1e-9,
             max_iterations: 100,
+            sparse: false,
         }
     }
 }
@@ -136,11 +143,27 @@ impl Sketch {
             }
             iterations += 1;
 
-            let jacobian = self.numeric_jacobian(scale, residual.len());
             let r = nalgebra::DVector::from_column_slice(&residual);
-            let svd = jacobian.svd(true, true);
-            let Ok(step) = svd.solve(&(-&r), rank_epsilon(&svd)) else {
-                break;
+            let step: Vec<f64> = if options.sparse {
+                let triplets = self.jacobian_triplets(scale, residual.len());
+                let a = ogeom_math::SparseMatrix::from_triplets(
+                    residual.len(),
+                    self.params.len(),
+                    &triplets,
+                );
+                let negated: Vec<f64> = residual.iter().map(|v| -v).collect();
+                let budget = 4 * self.params.len().max(residual.len()).max(8);
+                match ogeom_math::least_squares_cgnr(&a, &negated, 1e-10, budget) {
+                    Some(step) => step,
+                    None => break,
+                }
+            } else {
+                let jacobian = self.numeric_jacobian(scale, residual.len());
+                let svd = jacobian.svd(true, true);
+                let Ok(step) = svd.solve(&(-&r), rank_epsilon(&svd)) else {
+                    break;
+                };
+                step.iter().copied().collect()
             };
 
             // Halving line search: accept the first step that reduces the
@@ -378,8 +401,18 @@ impl Sketch {
     /// parameter vector — the difference between a solver that re-reads
     /// the world and one that can keep up with a drag.
     fn numeric_jacobian(&self, scale: f64, m: usize) -> DMatrix<f64> {
-        let n = self.params.len();
-        let mut jacobian = DMatrix::zeros(m, n);
+        let mut jacobian = DMatrix::zeros(m, self.params.len());
+        for (row, col, value) in self.jacobian_triplets(scale, m) {
+            jacobian[(row, col)] = value;
+        }
+        jacobian
+    }
+
+    /// The sparse Jacobian as `(row, column, value)` entries — only the
+    /// parameters each constraint names are differenced, so the entry count
+    /// is the coupling structure itself.
+    fn jacobian_triplets(&self, scale: f64, m: usize) -> Vec<(usize, usize, f64)> {
+        let mut triplets = Vec::new();
         let mut params = self.params.clone();
         let mut forward = Vec::new();
         let mut backward = Vec::new();
@@ -402,13 +435,13 @@ impl Sketch {
                     1.0
                 };
                 for k in 0..rows {
-                    jacobian[(row + k, j)] = weight * (forward[k] - backward[k]) / (2.0 * h);
+                    triplets.push((row + k, j, weight * (forward[k] - backward[k]) / (2.0 * h)));
                 }
             }
             row += rows;
         }
         debug_assert_eq!(row, m);
-        jacobian
+        triplets
     }
 
     /// Which constraint owns each residual row.
@@ -830,10 +863,66 @@ mod sparse_tests {
     const T_OPTS: SolveOptions = SolveOptions {
         tolerance: 1e-9,
         max_iterations: 100,
+        sparse: false,
     };
 
     /// The sparse Jacobian equals the dense one entry for entry, on a
     /// sketch exercising every kind of coupling.
+    #[test]
+    fn the_sparse_step_solves_the_same_sketch() {
+        // The same dimensioned rectangle twice: the dense SVD path and the
+        // sparse conjugate-gradient path must both converge, and land on
+        // the same measured geometry.
+        let build = || {
+            let mut sketch = Sketch::new();
+            let p0 = sketch.add_point(Point2::new(0.1, -0.3));
+            let p1 = sketch.add_point(Point2::new(52.0, 2.0));
+            let p2 = sketch.add_point(Point2::new(49.0, 21.0));
+            let p3 = sketch.add_point(Point2::new(-2.0, 19.0));
+            let bottom = sketch.add_line(p0, p1).unwrap();
+            let right = sketch.add_line(p1, p2).unwrap();
+            let top = sketch.add_line(p3, p2).unwrap();
+            let left = sketch.add_line(p0, p3).unwrap();
+            sketch
+                .constrain(Constraint::Fixed(p0, Point2::new(0.0, 0.0)))
+                .unwrap();
+            sketch.constrain(Constraint::Horizontal(bottom)).unwrap();
+            sketch
+                .constrain(Constraint::Distance(p0, p1, 50.0))
+                .unwrap();
+            sketch.constrain(Constraint::Vertical(right)).unwrap();
+            sketch
+                .constrain(Constraint::Distance(p1, p2, 20.0))
+                .unwrap();
+            sketch.constrain(Constraint::Horizontal(top)).unwrap();
+            sketch.constrain(Constraint::Vertical(left)).unwrap();
+            (sketch, p0, p1, p2)
+        };
+
+        let (mut dense_sketch, _, d1, d2) = build();
+        let dense = dense_sketch.solve(T_OPTS).unwrap();
+        assert!(dense.converged);
+
+        let (mut sparse_sketch, s0, s1, s2) = build();
+        let sparse = sparse_sketch
+            .solve(SolveOptions {
+                sparse: true,
+                ..T_OPTS
+            })
+            .unwrap();
+        assert!(sparse.converged, "residual {}", sparse.residual);
+        assert_relative_eq!(
+            sparse_sketch.measure_distance(s0, s1).unwrap(),
+            50.0,
+            epsilon = 1e-6
+        );
+        assert_relative_eq!(
+            sparse_sketch.measure_distance(s1, s2).unwrap(),
+            dense_sketch.measure_distance(d1, d2).unwrap(),
+            epsilon = 1e-6
+        );
+    }
+
     #[test]
     fn the_sparse_jacobian_is_the_dense_one() {
         let mut sketch = Sketch::new();
