@@ -239,6 +239,27 @@ impl HyperbolaCurve {
         })
     }
 
+    /// A hyperbola branch over an arbitrary `[start, end]` in its natural
+    /// parameter.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+    /// interval is not finite and increasing.
+    pub fn over(hyperbola: Hyperbola, start: f64, end: f64) -> OgeomResult<Self> {
+        if !start.is_finite() || !end.is_finite() || start >= end {
+            ogeom_bail!(
+                Construction,
+                "hyperbola domain [{start}, {end}] must be finite and increasing"
+            );
+        }
+        Ok(Self {
+            hyperbola,
+            domain: (start, end),
+            reversed: false,
+        })
+    }
+
     /// The underlying hyperbola.
     #[must_use]
     pub const fn hyperbola(&self) -> Hyperbola {
@@ -273,6 +294,26 @@ impl ParabolaCurve {
         Ok(Self {
             parabola,
             domain: (-extent, extent),
+            reversed: false,
+        })
+    }
+
+    /// A parabola over an arbitrary `[start, end]`.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+    /// interval is not finite and increasing.
+    pub fn over(parabola: Parabola, start: f64, end: f64) -> OgeomResult<Self> {
+        if !start.is_finite() || !end.is_finite() || start >= end {
+            ogeom_bail!(
+                Construction,
+                "parabola domain [{start}, {end}] must be finite and increasing"
+            );
+        }
+        Ok(Self {
+            parabola,
+            domain: (start, end),
             reversed: false,
         })
     }

@@ -1086,14 +1086,14 @@ impl<'a> Cursor<'a> {
                 let frame = self.frame(tol)?;
                 let h = Hyperbola::new(frame, self.number()?, self.number()?, tol)?;
                 let (lo, hi) = self.range()?;
-                let curve = HyperbolaCurve::new(h, extent(lo, hi)?)?;
+                let curve = HyperbolaCurve::over(h, lo, hi)?;
                 reverse_if(curve.into(), self.flag()?)
             }
             "parabola" => {
                 let frame = self.frame(tol)?;
                 let p = Parabola::new(frame, self.number()?, tol)?;
                 let (lo, hi) = self.range()?;
-                let curve = ParabolaCurve::new(p, extent(lo, hi)?)?;
+                let curve = ParabolaCurve::over(p, lo, hi)?;
                 reverse_if(curve.into(), self.flag()?)
             }
             "bspline" => {
@@ -1411,18 +1411,6 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// A trimmed curve's half-width, from the symmetric domain it was written as.
-fn extent(lo: f64, hi: f64) -> OgeomResult<f64> {
-    if (lo + hi).abs() > 1e-12 * hi.abs().max(1.0) {
-        ogeom_bail!(
-            Construction,
-            "a hyperbola or parabola spans [-extent, extent]; [{lo}, {hi}] is \
-             not symmetric, and this version has no way to express it"
-        );
-    }
-    Ok(hi)
-}
-
 /// Reverse a curve if the file says it runs backwards.
 fn reverse_if<T: ogeom_geom::Reversible>(curve: T, reversed: bool) -> T {
     if reversed { curve.reversed() } else { curve }
@@ -1492,6 +1480,40 @@ mod tests {
 
     /// One model holding every kind of shape this can build, and the roots that
     /// name them.
+    #[test]
+    fn asymmetric_conic_domains_round_trip() {
+        // The domain a constructor happens to produce is symmetric; the
+        // format carries whatever the curve actually spans.
+        let mut model = Model::new();
+        let hyperbola = ogeom_geom::HyperbolaCurve::over(
+            Hyperbola::new(Frame::WORLD, 2.0, 1.0, T).unwrap(),
+            -0.5,
+            1.75,
+        )
+        .unwrap();
+        let parabola = ogeom_geom::ParabolaCurve::over(
+            Parabola::new(Frame::WORLD, 1.5, T).unwrap(),
+            0.25,
+            3.0,
+        )
+        .unwrap();
+        for curve in [Curve::Hyperbola(hyperbola), Curve::Parabola(parabola)] {
+            let domain = Curve3d::domain(&curve);
+            ogeom_algo::make_edge(&mut model, curve, domain, T).unwrap();
+        }
+        let text = write(&model, &[], WriteOptions::default()).unwrap();
+        let (back, _) = read(&text).unwrap();
+        let again = write(&back, &[], WriteOptions::default()).unwrap();
+        assert_eq!(text, again, "the second write reproduces the first");
+        let domains: Vec<(f64, f64)> = back
+            .geometry()
+            .curves()
+            .map(|(_, c)| Curve3d::domain(c))
+            .collect();
+        assert!(domains.contains(&(-0.5, 1.75)));
+        assert!(domains.contains(&(0.25, 3.0)));
+    }
+
     fn everything() -> (Model, Vec<Shape>) {
         let mut model = Model::new();
         let mut roots = vec![
