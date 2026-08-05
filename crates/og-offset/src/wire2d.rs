@@ -139,15 +139,32 @@ pub fn offset_wire(
     if model.kind_of(wire)? != ShapeType::Wire {
         og_bail!(Construction, "offsetting starts from a wire");
     }
-    if !og_algo::is_wire_closed(model, wire, tol)? {
-        og_bail!(
-            Construction,
-            "an open wire has no inside to offset away from; capping open \
-             ends is recorded in the deferred table"
-        );
-    }
-    let Some(plane) = find_plane(model, wire, tol)? else {
-        og_bail!(Construction, "the wire is not planar");
+    let open = !og_algo::is_wire_closed(model, wire, tol)?;
+    let plane = match find_plane(model, wire, tol)? {
+        Some(plane) => plane,
+        None if open => {
+            // A straight open path spans no plane of its own; its outline
+            // is symmetric about it, so any plane holding the line serves.
+            let ends = explore(model, wire, Filter::OfType(ShapeType::Vertex))?;
+            let mut points = Vec::new();
+            for v in &ends {
+                if let Some(data) = model.node(v).and_then(|n| n.data().as_vertex()) {
+                    points.push(v.transform(model.datums())?.apply(data.point));
+                }
+            }
+            if points.len() < 2 {
+                og_bail!(Construction, "the wire is not planar");
+            }
+            let along = og_math::Direction::new(points[1] - points[0], tol)?;
+            let reference = if along.vector().cross(og_math::Vector::Z).magnitude() > 0.5 {
+                og_math::Direction::Z
+            } else {
+                og_math::Direction::X
+            };
+            let normal = og_math::Direction::new(along.vector().cross(reference.vector()), tol)?;
+            og_math::Plane::through(points[0], normal)
+        }
+        None => og_bail!(Construction, "the wire is not planar"),
     };
     let frame = plane.frame();
     let flat = |p: Point| {
@@ -224,9 +241,41 @@ pub fn offset_wire(
         }
     }
 
+    // An open wire offsets on both sides and closes over its ends: the
+    // outline of the thick path. The return pass is the same pieces walked
+    // backwards, and every corner rule below then applies unchanged — the
+    // ends become 180-degree corners, which is what the caps close.
+    let source_count = pieces.len();
+    if open {
+        for piece in pieces.clone().iter().rev() {
+            pieces.push(match piece {
+                Piece::Seg { from, to } => Piece::Seg {
+                    from: *to,
+                    to: *from,
+                },
+                Piece::Arc {
+                    centre,
+                    radius,
+                    start,
+                    end,
+                } => Piece::Arc {
+                    centre: *centre,
+                    radius: *radius,
+                    start: *end,
+                    end: *start,
+                },
+            });
+        }
+    }
+
     // The wire's winding decides which side is out. Signed area by shoelace
-    // over a sampling fine enough for the decision it makes.
-    let winding = {
+    // over a sampling fine enough for the decision it makes. An open path's
+    // outline encloses nothing yet; its offset surrounds it, so the side is
+    // fixed and the amount is the magnitude.
+    let offset = if open { offset.abs() } else { offset };
+    let winding = if open {
+        1.0
+    } else {
         let mut area = 0.0;
         let mut samples: Vec<Point2> = Vec::new();
         for piece in &pieces {
@@ -254,6 +303,7 @@ pub fn offset_wire(
         }
         area.signum()
     };
+    let _ = source_count;
     // Rotating the traversal tangent by -90° (times the winding) points out
     // of the enclosed region; `offset` moves along it.
     let outward = |tangent: Vector2| Vector2::new(tangent.y, -tangent.x) * winding;
@@ -327,19 +377,59 @@ pub fn offset_wire(
             continue; // Tangent-continuous: nothing to do.
         }
         let corner = pieces[i].end_point();
-        if turn * offset * winding > 0.0 {
+        // A 180-degree corner — an open path's end — is a gap whatever the
+        // turn's vanishing cross product says.
+        let is_cap =
+            turn.abs() <= 1e-9 && pieces[i].tangent(true).dot(pieces[j].tangent(false)) < 0.0;
+        if is_cap && join == Join::Intersection {
+            // The square cap: both offsets extended one width past the end,
+            // joined across.
+            let d = pieces[i].tangent(true);
+            let e_ext = e + d * offset.abs();
+            let s_ext = s + d * offset.abs();
+            chain.insert(
+                at_i + 1,
+                (Piece::Seg { from: e, to: e_ext }, Provenance::Join(i)),
+            );
+            chain.insert(
+                at_i + 2,
+                (
+                    Piece::Seg {
+                        from: e_ext,
+                        to: s_ext,
+                    },
+                    Provenance::Join(i),
+                ),
+            );
+            chain.insert(
+                at_i + 3,
+                (Piece::Seg { from: s_ext, to: s }, Provenance::Join(i)),
+            );
+            continue;
+        }
+        if is_cap || turn * offset * winding > 0.0 {
             // Gap.
             match join {
                 Join::Arc => {
                     let a0 = (e - corner).y.atan2((e - corner).x);
                     let mut a1 = (s - corner).y.atan2((s - corner).x);
-                    // The short way round is the way the gap opens.
+                    // The short way round is the way the gap opens — and a
+                    // cap's exact semicircle has no short way, so the end
+                    // tangent breaks the tie: the cap bulges past the end,
+                    // not back through the path.
                     let tau = core::f64::consts::TAU;
                     while a1 - a0 > core::f64::consts::PI {
                         a1 -= tau;
                     }
                     while a0 - a1 > core::f64::consts::PI {
                         a1 += tau;
+                    }
+                    if ((a1 - a0).abs() - core::f64::consts::PI).abs() < 1e-9 {
+                        let mid = at_angle(corner, offset.abs(), f64::midpoint(a0, a1));
+                        let ahead = pieces[i].tangent(true);
+                        if (mid - corner).dot(ahead) < 0.0 {
+                            a1 -= tau * (a1 - a0).signum();
+                        }
                     }
                     chain.insert(
                         at_i + 1,
@@ -380,95 +470,282 @@ pub fn offset_wire(
             trim_start(&mut chain[at_j].0, met, tol)?;
         }
     }
-    // A piece whose trims crossed has been consumed; a chain that crosses
-    // itself somewhere non-adjacent has collapsed. Both are refusals.
-    for (piece, _) in &chain {
-        match piece {
-            Piece::Seg { from, to } => {
-                if from.distance(*to) <= tol.confusion() {
-                    og_bail!(
-                        Construction,
-                        "the offset consumes an edge whole; resolving a \
-                         collapsed offset into its valid loops is recorded \
-                         in the deferred table"
-                    );
-                }
-            }
-            Piece::Arc { start, end, .. } => {
-                if (end - start).abs() <= tol.parametric() {
-                    og_bail!(Construction, "the offset consumes an arc whole");
-                }
-            }
-        }
+    // Consumed pieces are the collapse announcing itself; drop them and let
+    // the distance filter and the reconnection below say what survives.
+    chain.retain(|(piece, _)| match piece {
+        Piece::Seg { from, to } => from.distance(*to) > tol.confusion(),
+        Piece::Arc { start, end, .. } => (end - start).abs() > tol.parametric(),
+    });
+    if chain.is_empty() {
+        og_bail!(Construction, "the offset consumes the wire whole");
     }
+
+    // Where the raw offset crosses itself, split; every sub-piece then
+    // stands or falls by the offset's own definition — a point of the true
+    // offset boundary is a full offset from the source, and a collapsed
+    // sliver is closer.
     let m = chain.len();
+    let mut cuts: Vec<Vec<Point2>> = vec![Vec::new(); m];
     for i in 0..m {
         for j in i + 1..m {
             if j == i + 1 || (i == 0 && j == m - 1) {
                 continue;
             }
-            if pieces_cross(&chain[i].0, &chain[j].0, tol)? {
-                og_bail!(
-                    Construction,
-                    "the offset self-intersects; resolving a collapsed \
-                     offset into its valid loops is recorded in the deferred \
-                     table"
-                );
+            for p in crossings(&chain[i].0, &chain[j].0, tol)? {
+                if within(&chain[i].0, p, tol) && within(&chain[j].0, p, tol) {
+                    cuts[i].push(p);
+                    cuts[j].push(p);
+                }
             }
         }
     }
+    let mut resolved: Vec<(Piece, Provenance)> = Vec::new();
+    for (k, (piece, provenance)) in chain.iter().enumerate() {
+        for sub in split_at(piece, &cuts[k]) {
+            resolved.push((sub, *provenance));
+        }
+    }
 
-    // Lift back to space and rebuild the wire, vertices shared along the way.
+    // The source, densely enough to measure against.
+    let source: Vec<Point2> = {
+        let mut out = Vec::new();
+        for piece in pieces.iter().take(source_count) {
+            match piece {
+                Piece::Seg { from, to } => {
+                    out.push(*from);
+                    out.push(*to);
+                }
+                Piece::Arc {
+                    centre,
+                    radius,
+                    start,
+                    end,
+                } => {
+                    for i in 0..=32 {
+                        let a = start + (end - start) * f64::from(i) / 32.0;
+                        out.push(at_angle(*centre, *radius, a));
+                    }
+                }
+            }
+        }
+        out
+    };
+    let source_distance = |p: Point2| -> f64 {
+        let mut best = f64::INFINITY;
+        for w in source.windows(2) {
+            let d = w[1] - w[0];
+            let len2 = d.dot(d);
+            let t = if len2 > 0.0 {
+                ((p - w[0]).dot(d) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            best = best.min(p.distance(w[0] + d * t));
+        }
+        best
+    };
+    let keep_beyond = offset.abs() - (tol.confusion() * 1e3).max(offset.abs() * 1e-3);
+    let had_cuts = cuts.iter().any(|c| !c.is_empty());
+    let survivors: Vec<(Piece, Provenance)> = resolved
+        .into_iter()
+        .filter(|(piece, _)| {
+            let mid = match piece {
+                Piece::Seg { from, to } => from.midpoint(*to),
+                Piece::Arc {
+                    centre,
+                    radius,
+                    start,
+                    end,
+                } => at_angle(*centre, *radius, f64::midpoint(*start, *end)),
+            };
+            source_distance(mid) >= keep_beyond
+        })
+        .collect();
+    if survivors.is_empty() {
+        og_bail!(Construction, "the offset consumes the wire whole");
+    }
+
+    // Reconnect the survivors into loops by endpoint adjacency.
+    let loops: Vec<Vec<(Piece, Provenance)>> = if !had_cuts && survivors.len() == chain.len() {
+        vec![survivors]
+    } else {
+        let eps = tol.confusion() * 100.0;
+        let mut pool = survivors;
+        let mut out: Vec<Vec<(Piece, Provenance)>> = Vec::new();
+        while let Some(first) = pool.pop() {
+            let mut current = vec![first];
+            loop {
+                let tail = current.last().map(|(p, _)| p.end_point());
+                let Some(tail) = tail else { break };
+                let head = current.first().map(|(p, _)| p.start_point());
+                if head.is_some_and(|h| h.distance(tail) <= eps) && current.len() > 1 {
+                    out.push(current);
+                    break;
+                }
+                let Some(next) = pool
+                    .iter()
+                    .position(|(p, _)| p.start_point().distance(tail) <= eps)
+                else {
+                    // An open fragment closes nothing; the collapse ate its
+                    // continuation.
+                    break;
+                };
+                current.push(pool.remove(next));
+            }
+        }
+        if out.is_empty() {
+            og_bail!(
+                Construction,
+                "the offset's survivors close no loop; the collapse consumed \
+                 the wire"
+            );
+        }
+        out
+    };
+
+    // Lift each loop back to space and rebuild, vertices shared along the
+    // way. One loop is a wire; a collapse that split the offset into islands
+    // is a compound of them.
     let lift = |p: Point2| frame.origin() + frame.x().vector() * p.x + frame.y().vector() * p.y;
     let normal = frame.z();
     let x_ref = frame.x();
     let mut history = History::new();
-    let mut new_edges: Vec<Shape> = Vec::with_capacity(m);
-    let vertices: Vec<Shape> = (0..m)
-        .map(|k| make_vertex(model, lift(chain[k].0.start_point())).shape)
-        .collect();
-    for (k, (piece, provenance)) in chain.iter().enumerate() {
-        let from = &vertices[k];
-        let to = &vertices[(k + 1) % m];
-        let built = match piece {
-            Piece::Seg { from: a, to: b } => {
-                let line = LineCurve::segment(lift(*a), lift(*b), tol)?;
-                let curve = Curve::Line(line);
-                let domain = curve.domain();
-                make_edge_between(model, curve, domain, from, to, tol)?.shape
-            }
-            Piece::Arc {
-                centre,
-                radius,
-                start,
-                end,
-            } => {
-                // Always built counter-clockwise about the plane normal; a
-                // clockwise piece enters the wire reversed.
-                let ccw = end > start;
-                let circle =
-                    Circle::new(Frame::new(lift(*centre), normal, x_ref, tol)?, *radius, tol)?;
-                let curve = Curve::Circle(CircleCurve::new(circle));
-                let (lo, hi) = if ccw { (*start, *end) } else { (*end, *start) };
-                let (va, vb) = if ccw { (from, to) } else { (to, from) };
-                let edge = make_edge_between(model, curve, (lo, hi), va, vb, tol)?.shape;
-                if ccw { edge } else { edge.reversed() }
-            }
-        };
-        match provenance {
-            Provenance::Offset(i) => history.modify(&edges[*i], built.clone()),
-            Provenance::Join(i) => {
-                // The join stands where the corner vertex stood.
-                if let Some((_, corner_vertex)) = edge_vertices(model, &edges[*i])? {
-                    history.generate(&corner_vertex, built.clone());
+    let mut wires: Vec<Shape> = Vec::new();
+    for ring in &loops {
+        let count = ring.len();
+        let mut new_edges: Vec<Shape> = Vec::with_capacity(count);
+        let vertices: Vec<Shape> = (0..count)
+            .map(|k| make_vertex(model, lift(ring[k].0.start_point())).shape)
+            .collect();
+        for (k, (piece, provenance)) in ring.iter().enumerate() {
+            let from = &vertices[k];
+            let to = &vertices[(k + 1) % count];
+            let built = match piece {
+                Piece::Seg { from: a, to: b } => {
+                    let line = LineCurve::segment(lift(*a), lift(*b), tol)?;
+                    let curve = Curve::Line(line);
+                    let domain = curve.domain();
+                    make_edge_between(model, curve, domain, from, to, tol)?.shape
+                }
+                Piece::Arc {
+                    centre,
+                    radius,
+                    start,
+                    end,
+                } => {
+                    // Always built counter-clockwise about the plane normal;
+                    // a clockwise piece enters the wire reversed.
+                    let ccw = end > start;
+                    let circle =
+                        Circle::new(Frame::new(lift(*centre), normal, x_ref, tol)?, *radius, tol)?;
+                    let curve = Curve::Circle(CircleCurve::new(circle));
+                    let (lo, hi) = if ccw { (*start, *end) } else { (*end, *start) };
+                    let (va, vb) = if ccw { (from, to) } else { (to, from) };
+                    let edge = make_edge_between(model, curve, (lo, hi), va, vb, tol)?.shape;
+                    if ccw { edge } else { edge.reversed() }
+                }
+            };
+            match provenance {
+                Provenance::Offset(i) => history.modify(&edges[i % edges.len()], built.clone()),
+                Provenance::Join(i) => {
+                    // The join stands where the corner vertex stood — for an
+                    // open path's cap, the end vertex itself.
+                    if let Some((_, corner_vertex)) = edge_vertices(model, &edges[i % edges.len()])?
+                    {
+                        history.generate(&corner_vertex, built.clone());
+                    }
                 }
             }
+            new_edges.push(built);
         }
-        new_edges.push(built);
+        wires.push(make_wire(model, &new_edges, tol)?.shape);
     }
-    let built = make_wire(model, &new_edges, tol)?;
-    history.modify(wire, built.shape.clone());
-    Ok(Built::new(built.shape, history))
+    let shape = if wires.len() == 1 {
+        wires.remove(0)
+    } else {
+        og_algo::build::make_compound(model, &wires)?.shape
+    };
+    history.modify(wire, shape.clone());
+    Ok(Built::new(shape, history))
+}
+
+/// Split a piece at the given points on it, in traversal order.
+fn split_at(piece: &Piece, points: &[Point2]) -> Vec<Piece> {
+    if points.is_empty() {
+        return vec![piece.clone()];
+    }
+    match piece {
+        Piece::Seg { from, to } => {
+            let d = *to - *from;
+            let len = d.magnitude();
+            let mut ts: Vec<f64> = points
+                .iter()
+                .map(|p| (*p - *from).dot(d / len))
+                .filter(|t| *t > 1e-12 && *t < len - 1e-12)
+                .collect();
+            ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+            ts.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+            let mut out = Vec::with_capacity(ts.len() + 1);
+            let mut last = *from;
+            for t in ts {
+                let p = *from + (d / len) * t;
+                out.push(Piece::Seg { from: last, to: p });
+                last = p;
+            }
+            out.push(Piece::Seg {
+                from: last,
+                to: *to,
+            });
+            out
+        }
+        Piece::Arc {
+            centre,
+            radius,
+            start,
+            end,
+        } => {
+            let toward = (end - start).signum();
+            let mut ts: Vec<f64> = points
+                .iter()
+                .filter_map(|p| {
+                    let v = *p - *centre;
+                    let mut a = v.y.atan2(v.x);
+                    let tau = core::f64::consts::TAU;
+                    while (a - start) * toward < 0.0 {
+                        a += tau * toward;
+                    }
+                    while (a - end) * toward > 0.0 {
+                        a -= tau * toward;
+                    }
+                    ((a - start) * toward > 1e-12 && (end - a) * toward > 1e-12).then_some(a)
+                })
+                .collect();
+            ts.sort_by(|a, b| {
+                ((a - start) * toward)
+                    .partial_cmp(&((b - start) * toward))
+                    .unwrap_or(core::cmp::Ordering::Equal)
+            });
+            ts.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+            let mut out = Vec::with_capacity(ts.len() + 1);
+            let mut last = *start;
+            for t in ts {
+                out.push(Piece::Arc {
+                    centre: *centre,
+                    radius: *radius,
+                    start: last,
+                    end: t,
+                });
+                last = t;
+            }
+            out.push(Piece::Arc {
+                centre: *centre,
+                radius: *radius,
+                start: last,
+                end: *end,
+            });
+            out
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -534,16 +811,6 @@ fn crossings(a: &Piece, b: &Piece, tol: Tolerances) -> OgResult<Vec<Point2>> {
         tol,
     )?;
     Ok(found.crossings.into_iter().map(|c| c.point).collect())
-}
-
-/// Whether two pieces cross within their own spans.
-fn pieces_cross(a: &Piece, b: &Piece, tol: Tolerances) -> OgResult<bool> {
-    for point in crossings(a, b, tol)? {
-        if within(a, point, tol) && within(b, point, tol) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 /// Whether a support crossing lands within the piece's own span, endpoints

@@ -23,7 +23,7 @@ fn rectangle(model: &mut og_topo::Model) -> og_topo::Shape {
 
 /// The wire's enclosed area, by shoelace over a fine sampling.
 fn area(model: &og_topo::Model, wire: &og_topo::Shape) -> f64 {
-    let mut samples: Vec<(f64, f64)> = Vec::new();
+    let mut samples: Vec<(f64, f64, f64)> = Vec::new();
     for edge in explore(model, wire, Filter::OfType(ShapeType::Edge)).unwrap() {
         let node = model.node(&edge).unwrap();
         let data = node.data().as_edge().unwrap();
@@ -41,15 +41,21 @@ fn area(model: &og_topo::Model, wire: &og_topo::Shape) -> f64 {
                 a + (b - a) * f
             };
             let p = geometry.point_at(t, T).unwrap();
-            samples.push((p.x, p.y));
+            samples.push((p.x, p.y, p.z));
         }
     }
-    let mut doubled = 0.0;
+    // The vector area: half the norm of the cross-product sum, which works
+    // in whatever plane the wire lies.
+    let mut sum = og_math::Vector::new(0.0, 0.0, 0.0);
     for i in 0..samples.len() {
         let (p, q) = (samples[i], samples[(i + 1) % samples.len()]);
-        doubled += p.0.mul_add(q.1, -(q.0 * p.1));
+        sum += og_math::Vector::new(
+            p.1 * q.2 - p.2 * q.1,
+            p.2 * q.0 - p.0 * q.2,
+            p.0 * q.1 - p.1 * q.0,
+        );
     }
-    (doubled / 2.0).abs()
+    sum.magnitude() / 2.0
 }
 
 #[test]
@@ -147,4 +153,90 @@ fn history_reports_the_edit_edge_by_edge() {
         );
     }
     assert_eq!(result.history.modified(&wire).len(), 1);
+}
+
+/// The wire's total enclosed area works for compounds too: sum per wire.
+fn area_of_all(model: &og_topo::Model, shape: &og_topo::Shape) -> (usize, f64) {
+    let wires = if model.kind_of(shape).unwrap() == og_topo::ShapeType::Wire {
+        vec![shape.clone()]
+    } else {
+        explore(model, shape, Filter::OfType(og_topo::ShapeType::Wire)).unwrap()
+    };
+    let total = wires.iter().map(|w| area(model, w)).sum();
+    (wires.len(), total)
+}
+
+#[test]
+fn an_open_path_offsets_into_its_rounded_outline() {
+    let mut model = og_topo::Model::new();
+    let path = og_algo::make_polygon(
+        &mut model,
+        &[Point::new(0.0, 0.0, 0.0), Point::new(6.0, 0.0, 0.0)],
+        false,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let w = 0.5;
+    let result = og_offset::offset_wire(&mut model, &path, w, Join::Arc, T).unwrap();
+    assert!(og_algo::is_wire_closed(&model, &result.shape, T).unwrap());
+    let expected = 2.0 * w * 6.0 + core::f64::consts::PI * w * w;
+    let measured = area(&model, &result.shape);
+    assert!(
+        (measured - expected).abs() < 1e-3,
+        "rounded outline area {measured} against {expected}"
+    );
+}
+
+#[test]
+fn an_open_path_offsets_into_its_square_outline() {
+    let mut model = og_topo::Model::new();
+    let path = og_algo::make_polygon(
+        &mut model,
+        &[Point::new(0.0, 0.0, 0.0), Point::new(6.0, 0.0, 0.0)],
+        false,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let w = 0.5;
+    let result = og_offset::offset_wire(&mut model, &path, w, Join::Intersection, T).unwrap();
+    assert!(og_algo::is_wire_closed(&model, &result.shape, T).unwrap());
+    let expected = 2.0 * w * (6.0 + 2.0 * w);
+    let measured = area(&model, &result.shape);
+    assert!(
+        (measured - expected).abs() < 1e-9,
+        "square outline area {measured} against {expected}"
+    );
+}
+
+#[test]
+fn a_collapsing_inward_offset_resolves_into_its_islands() {
+    // A dumbbell: two 4-squares joined by a thin neck. Offsetting inward
+    // past the neck's half-width severs it, and the survivors are two loops.
+    let mut model = og_topo::Model::new();
+    let outline = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(4.0, 0.0, 0.0),
+        Point::new(4.0, 1.5, 0.0),
+        Point::new(5.0, 1.5, 0.0),
+        Point::new(5.0, 0.0, 0.0),
+        Point::new(9.0, 0.0, 0.0),
+        Point::new(9.0, 4.0, 0.0),
+        Point::new(5.0, 4.0, 0.0),
+        Point::new(5.0, 2.5, 0.0),
+        Point::new(4.0, 2.5, 0.0),
+        Point::new(4.0, 4.0, 0.0),
+        Point::new(0.0, 4.0, 0.0),
+    ];
+    let wire = og_algo::make_polygon(&mut model, &outline, true, T)
+        .unwrap()
+        .shape;
+    let result = og_offset::offset_wire(&mut model, &wire, -0.8, Join::Arc, T).unwrap();
+    let (loops, total) = area_of_all(&model, &result.shape);
+    assert_eq!(loops, 2, "the severed neck leaves two islands");
+    assert!(
+        total > 9.0 && total < 13.0,
+        "island area sum {total} within the plausible band"
+    );
 }
