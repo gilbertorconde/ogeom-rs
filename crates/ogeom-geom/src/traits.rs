@@ -65,6 +65,8 @@ pub enum CurveKind {
     Offset,
     /// A pcurve composed with the surface it is drawn on.
     OnSurface,
+    /// An affine-plus-trigonometric chart curve.
+    Trig,
 }
 
 /// What kind of surface this is, for analytic fast paths.

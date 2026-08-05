@@ -22,7 +22,7 @@ pub use curve::{
     LineCurve, OffsetCurve, ParabolaCurve, TrimmedCurve,
 };
 pub use curve2d::{
-    BSpline2d, Circle2d, Ellipse2d, Line2d, Offset2d, PlanarCurve, Trimmed2d, tangent_angle,
+    BSpline2d, Circle2d, Ellipse2d, Line2d, Offset2d, PlanarCurve, Trig2d, Trimmed2d, tangent_angle,
 };
 pub use surface::{
     BSplineSurface, ConeSurface, CylinderSurface, ExtrusionSurface, OffsetSurface, PlaneSurface,

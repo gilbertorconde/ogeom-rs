@@ -37,6 +37,10 @@ pub enum PlanarCurve {
     Trimmed(Box<Trimmed2d>),
     /// A curve at a constant signed distance along another's left normal.
     Offset(Box<Offset2d>),
+    /// An affine-plus-trigonometric curve: `c + d·t + a·cos t + b·sin t` —
+    /// the exact chart trace of an oblique analytic section on a periodic
+    /// surface.
+    Trig(Trig2d),
 }
 
 /// A straight line in the plane, parameterized by length.
@@ -79,6 +83,155 @@ pub struct Trimmed2d {
 /// Reverse a parameter within `[a, b]`, preserving the interval.
 fn mirror(u: f64, a: f64, b: f64) -> f64 {
     a + b - u
+}
+
+/// The affine-plus-trigonometric curve `p(t) = c + d·t + a·cos t + b·sin t`.
+///
+/// This is the family chart traces of oblique analytic sections live in: an
+/// oblique plane's ellipse on a cylinder runs linearly in the chart angle
+/// and sinusoidally in height, which no line, conic or spline states
+/// exactly. Closed under similarity transforms and reversal, exact
+/// derivatives to any order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Trig2d {
+    c: Point2,
+    d: Vector2,
+    a: Vector2,
+    b: Vector2,
+    domain: (f64, f64),
+    reversed: bool,
+}
+
+impl Trig2d {
+    /// A trig curve over an increasing domain.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+    /// any coefficient is not finite or the domain is not increasing.
+    pub fn new(
+        c: Point2,
+        d: Vector2,
+        a: Vector2,
+        b: Vector2,
+        domain: (f64, f64),
+    ) -> OgeomResult<Self> {
+        let finite = c.to_vector().is_finite()
+            && d.is_finite()
+            && a.is_finite()
+            && b.is_finite()
+            && domain.0.is_finite()
+            && domain.1.is_finite();
+        if !finite || domain.0 >= domain.1 {
+            ogeom_bail!(
+                Construction,
+                "a trig curve needs finite coefficients and an increasing domain"
+            );
+        }
+        Ok(Self {
+            c,
+            d,
+            a,
+            b,
+            domain,
+            reversed: false,
+        })
+    }
+
+    /// The constant term.
+    #[must_use]
+    pub const fn constant(&self) -> Point2 {
+        self.c
+    }
+
+    /// The linear coefficient.
+    #[must_use]
+    pub const fn linear(&self) -> Vector2 {
+        self.d
+    }
+
+    /// The cosine coefficient.
+    #[must_use]
+    pub const fn cosine(&self) -> Vector2 {
+        self.a
+    }
+
+    /// The sine coefficient.
+    #[must_use]
+    pub const fn sine(&self) -> Vector2 {
+        self.b
+    }
+
+    /// Whether evaluation runs the domain backwards.
+    #[must_use]
+    pub const fn is_reversed(&self) -> bool {
+        self.reversed
+    }
+
+    fn raw(&self, t: f64) -> Point2 {
+        let (sin, cos) = t.sin_cos();
+        self.c + self.d * t + self.a * cos + self.b * sin
+    }
+}
+
+impl Curve2d for Trig2d {
+    fn domain(&self) -> (f64, f64) {
+        self.domain
+    }
+
+    fn point_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Point2> {
+        let u = clamp_to_domain(u, self.domain, false, tol)?;
+        let t = if self.reversed {
+            self.domain.0 + self.domain.1 - u
+        } else {
+            u
+        };
+        Ok(self.raw(t))
+    }
+
+    fn d1_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Vector2> {
+        Ok(self.derivatives_at(u, 1, tol)?[1])
+    }
+
+    fn derivatives_at(&self, u: f64, n: usize, tol: Tolerances) -> OgeomResult<Vec<Vector2>> {
+        let u = clamp_to_domain(u, self.domain, false, tol)?;
+        let t = if self.reversed {
+            self.domain.0 + self.domain.1 - u
+        } else {
+            u
+        };
+        let (sin, cos) = t.sin_cos();
+        let sign = if self.reversed { -1.0 } else { 1.0 };
+        let mut out = Vec::with_capacity(n + 1);
+        out.push(self.raw(t).to_vector());
+        for order in 1..=n {
+            // The trig part cycles with period four; the linear part
+            // survives only to first order. Odd orders pick up the
+            // reversal sign.
+            let trig = match order % 4 {
+                1 => self.a * -sin + self.b * cos,
+                2 => self.a * -cos + self.b * -sin,
+                3 => self.a * sin + self.b * -cos,
+                _ => self.a * cos + self.b * sin,
+            };
+            let linear = if order == 1 { self.d } else { Vector2::ZERO };
+            let odd = if order % 2 == 1 { sign } else { 1.0 };
+            out.push((trig + linear) * odd);
+        }
+        Ok(out)
+    }
+
+    fn kind(&self) -> CurveKind {
+        CurveKind::Trig
+    }
+
+    fn is_closed(&self, tol: Tolerances) -> bool {
+        self.raw(self.domain.0).distance(self.raw(self.domain.1)) <= tol.confusion()
+    }
+
+    fn is_periodic(&self) -> bool {
+        false
+    }
 }
 
 /// A planar curve displaced a constant signed distance along its basis's
@@ -628,6 +781,7 @@ macro_rules! dispatch {
             Self::BSpline($c) => $body,
             Self::Trimmed($c) => $body,
             Self::Offset($c) => $body,
+            Self::Trig($c) => $body,
         }
     };
 }
@@ -700,6 +854,13 @@ impl PlanarCurve {
                 basis: c.basis.transformed(t, tol)?,
                 distance: c.distance * scale,
             })),
+            Self::Trig(c) => Self::Trig(Trig2d {
+                c: t.apply(c.c),
+                d: t.apply_vector(c.d),
+                a: t.apply_vector(c.a),
+                b: t.apply_vector(c.b),
+                ..*c
+            }),
             Self::Trimmed(c) => Self::Trimmed(Box::new(Trimmed2d {
                 basis: c.basis.transformed(t, tol)?,
                 domain: if matches!(c.basis, Self::Line(_)) {
@@ -750,6 +911,10 @@ impl Reversible for PlanarCurve {
                 basis: c.basis.reversed(),
                 distance: -c.distance,
             })),
+            Self::Trig(c) => Self::Trig(Trig2d {
+                reversed: !c.reversed,
+                ..*c
+            }),
         }
     }
 }

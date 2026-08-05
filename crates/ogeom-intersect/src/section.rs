@@ -757,6 +757,68 @@ fn on_cylinder(
                 .into(),
             )
         }
+        Curve::Ellipse(_) => {
+            // An oblique plane's section: its plan projection is the
+            // cylinder's own cross-section circle traced *uniformly*, so
+            // the chart trace is u = s·t + φ, v = c₀ + a·cos t + b·sin t —
+            // the trig-affine family. Derived from the curve's own
+            // evaluations and verified by sample, never assumed.
+            use ogeom_geom::Curve3d as _;
+            let tau = core::f64::consts::TAU;
+            let local = |t: f64| -> Option<ogeom_math::Point> {
+                Some(frame.to_local(curve.point_at(t, tol).ok()?))
+            };
+            let l0 = local(0.0)?;
+            let lq = local(tau / 4.0)?;
+            let lh = local(tau / 2.0)?;
+            // On the surface at all: plan radius must be the cylinder's.
+            let r = cylinder.radius();
+            for l in [&l0, &lq, &lh] {
+                if (l.x.hypot(l.y) - r).abs() > tol.confusion() * 10.0 {
+                    return None;
+                }
+            }
+            let phase = l0.y.atan2(l0.x);
+            // Winding from the quarter-turn sample: uniform tracing puts it
+            // a quarter turn away, one side or the other.
+            let uq = lq.y.atan2(lq.x);
+            let step = (uq - phase).rem_euclid(tau);
+            let winding = if (step - tau / 4.0).abs() < 1e-6 {
+                1.0
+            } else if (step - 3.0 * tau / 4.0).abs() < 1e-6 {
+                -1.0
+            } else {
+                return None;
+            };
+            // Height coefficients from three samples.
+            let c0 = f64::midpoint(l0.z, lh.z);
+            let a = (l0.z - lh.z) / 2.0;
+            let b = lq.z - c0;
+            let candidate = ogeom_geom::Trig2d::new(
+                Point2::new(phase, c0),
+                ogeom_math::Vector2::new(winding, 0.0),
+                ogeom_math::Vector2::new(0.0, a),
+                ogeom_math::Vector2::new(0.0, b),
+                (0.0, tau),
+            )
+            .ok()?;
+            // The same-parameter law, verified at points the derivation
+            // never touched.
+            use ogeom_geom::Curve2d as _;
+            for i in 0..7 {
+                let t = tau * (0.09 + 0.13 * f64::from(i));
+                let l = local(t)?;
+                let chart = candidate.point_at(t, tol).ok()?;
+                let du = (chart.x - l.y.atan2(l.x)).rem_euclid(tau);
+                if du.min(tau - du) > 1e-9 {
+                    return None;
+                }
+                if (chart.y - l.z).abs() > tol.confusion() * 10.0 {
+                    return None;
+                }
+            }
+            Some(PlanarCurve::Trig(candidate))
+        }
         _ => None,
     }
 }
@@ -890,6 +952,36 @@ mod tests {
             assert_same_parameter(section, &drum, on_a, 50);
             assert_same_parameter(section, &cut, on_b, 50);
         }
+    }
+
+    #[test]
+    fn an_oblique_cut_gives_the_ellipse_a_trig_pcurve_on_the_drum() {
+        // The pcurve the deferred table owed: the oblique ellipse runs
+        // linearly in the chart angle and sinusoidally in height — the
+        // trig-affine family — exactly, same-parameter, both sides.
+        let drum = cylinder(Vector::Z, 2.0);
+        let angle: f64 = 0.5;
+        let cut = plane(Point::ORIGIN, Vector::new(0.0, angle.sin(), angle.cos()));
+        let SurfaceIntersection::Along(curves) =
+            intersect_surfaces(&drum, &cut, IntersectOptions::default(), T).unwrap()
+        else {
+            panic!("an oblique plane meets the cylinder along its ellipse");
+        };
+        assert_eq!(curves.len(), 1);
+        let section = &curves[0];
+        assert!(section.exact);
+        assert!(matches!(section.curve, Curve::Ellipse(_)));
+        let on_drum = section
+            .on_a
+            .as_ref()
+            .expect("the oblique ellipse now carries its cylinder pcurve");
+        assert!(
+            matches!(on_drum, PlanarCurve::Trig(_)),
+            "the chart trace is trig-affine: {on_drum:?}"
+        );
+        assert_same_parameter(section, &drum, on_drum, 60);
+        let on_plane = section.on_b.as_ref().expect("and its plane pcurve");
+        assert_same_parameter(section, &cut, on_plane, 60);
     }
 
     #[test]

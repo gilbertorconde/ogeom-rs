@@ -1173,6 +1173,18 @@ fn pcurve(t: &mut Vec<String>, c: &PlanarCurve) -> OgeomResult<()> {
             n(t, o.distance());
             pcurve(t, o.basis())?;
         }
+        PlanarCurve::Trig(x) => {
+            w(t, "trig2");
+            point2(t, x.constant());
+            n(t, x.linear().x);
+            n(t, x.linear().y);
+            n(t, x.cosine().x);
+            n(t, x.cosine().y);
+            n(t, x.sine().x);
+            n(t, x.sine().y);
+            range(t, Curve2d::domain(x));
+            flag(t, x.is_reversed());
+        }
     }
     Ok(())
 }
@@ -1783,6 +1795,15 @@ impl<'a> Cursor<'a> {
                 let distance = self.number()?;
                 let basis = self.pcurve(tol)?;
                 PlanarCurve::Offset(Box::new(ogeom_geom::Offset2d::new(basis, distance)?))
+            }
+            "trig2" => {
+                let c = self.point2()?;
+                let d = ogeom_math::Vector2::new(self.number()?, self.number()?);
+                let a = ogeom_math::Vector2::new(self.number()?, self.number()?);
+                let b = ogeom_math::Vector2::new(self.number()?, self.number()?);
+                let (lo, hi) = self.range()?;
+                let curve = ogeom_geom::Trig2d::new(c, d, a, b, (lo, hi))?;
+                reverse_if(PlanarCurve::Trig(curve), self.flag()?)
             }
             other => ogeom_bail!(Construction, "`{other}` is not a planar curve this reads"),
         })
