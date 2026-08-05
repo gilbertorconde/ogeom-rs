@@ -215,3 +215,24 @@ fn a_drawing_comes_off_the_model_with_hidden_lines_and_a_section() {
     );
     assert!(!section.drawing.visible.is_empty());
 }
+
+#[test]
+fn a_projected_drawing_writes_as_dxf() {
+    let mut model = ogeom::topo::Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 6.0, 4.0), T).unwrap();
+    let view = View::looking(Vector::new(-1.0, -1.2, -0.9), Vector::new(0.0, 0.0, 1.0), T).unwrap();
+    let drawing = ogeom::hlr::project(&model, &block.shape, &view, fine(), T).unwrap();
+    // Model edges only: a box's silhouettes retrace its own edges, and a
+    // drawing does not draw the same line twice.
+    let of_edges = |curves: &[ogeom::hlr::DrawnCurve]| -> Vec<Vec<ogeom::math::Point2>> {
+        curves
+            .iter()
+            .filter(|c| matches!(c.source, Source::Edge(_)))
+            .map(|c| c.points.clone())
+            .collect()
+    };
+    let dxf = ogeom::io::dxf::write_dxf(&of_edges(&drawing.visible), &of_edges(&drawing.hidden));
+    // Nine visible and three hidden box edges, each one polyline.
+    assert_eq!(dxf.matches("POLYLINE").count(), 12);
+    assert!(dxf.trim_end().ends_with("EOF"));
+}
