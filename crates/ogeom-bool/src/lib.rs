@@ -1826,10 +1826,12 @@ fn resolved_half_space(
     if !is_half_space(model, shape)? {
         return Ok(shape.clone());
     }
-    let face = ogeom_topo::explore_unique(model, shape, ShapeType::Face)?
+    let Some(face) = ogeom_topo::explore_unique(model, shape, ShapeType::Face)?
         .first()
         .cloned()
-        .expect("checked above");
+    else {
+        ogeom_bail!(Construction, "the half space lost its face between checks");
+    };
     // The boundary's outward normal points away from the material.
     let (at, outward) = ogeom_algo::face_normal(model, &face, tol)?;
     let bound = ogeom_algo::shape_bounds(model, other, tol)?;
