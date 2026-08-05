@@ -26,6 +26,24 @@ use og_topo::{
 };
 use std::collections::HashMap;
 
+/// A face bounded by two closed rings on a periodic surface, and what the
+/// repair needs to know about it.
+struct Broken {
+    face: Shape,
+    surface_id: og_topo::SurfaceId,
+    surface: SurfaceGeometry,
+    /// Each ring: its single closed edge, that edge's vertex, curve and
+    /// range.
+    rings: Vec<(Shape, Shape, Curve, (f64, f64))>,
+}
+
+/// A coaxial chain of broken faces, healed with one shared half-plane.
+struct Chain {
+    point: Point,
+    dir: og_math::Vector,
+    members: Vec<usize>,
+}
+
 /// Re-anchor misaligned ring vertices so every periodic face can carry a seam.
 ///
 /// Faces already whole pass through untouched; a shape with nothing to heal
@@ -46,14 +64,6 @@ pub fn reanchor_periodic_rings(
     }
 
     // --- find the broken faces ---------------------------------------------
-    struct Broken {
-        face: Shape,
-        surface_id: og_topo::SurfaceId,
-        surface: SurfaceGeometry,
-        /// Each ring: its single closed edge, that edge's vertex, curve and
-        /// range.
-        rings: Vec<(Shape, Shape, Curve, (f64, f64))>,
-    }
     let mut revolution: Vec<Broken> = Vec::new();
     let mut any_broken = false;
     for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
@@ -134,95 +144,79 @@ pub fn reanchor_periodic_rings(
     }
     let broken = revolution;
 
-    // --- one half-plane for the whole chain ----------------------------------
+    // --- one half-plane per coaxial chain ------------------------------------
     //
     // Re-anchoring one ring per face is not enough: rings are shared, and a
     // neighbouring face's seam ties to the vertex being moved. For a coaxial
     // chain — which a fillet stack is — a single half-plane through the axis
     // meets every ring exactly once, and anchoring them all there satisfies
-    // every face's equal-angle constraint at one stroke.
+    // every face's equal-angle constraint at one stroke. A real part carries
+    // several such chains on several axes — every bored hole is its own —
+    // so the broken faces are grouped by axis first and each group healed
+    // with its own half-plane; a group whose rings resist (a non-circle
+    // ring, a stray non-coaxial circle) is left alone rather than damning
+    // the rest of the part.
     let mut history = History::new();
-    let (axis_point, axis_dir, radial) = {
-        let (_, vertex, curve, _) = &broken[0].rings[0];
-        let Curve::Circle(c) = curve else {
-            og_bail!(
-                Construction,
-                "a ring to re-anchor is not a circle; the repair does not \
-                 know its parameterization"
-            );
-        };
-        let circle = c.circle();
-        let Some(node) = model.node(vertex) else {
-            og_bail!(Dangling, "vertex is not in this model");
-        };
-        let Some(data) = node.data().as_vertex() else {
-            og_bail!(Construction, "vertex node holds no vertex data");
-        };
-        let axis_dir = circle.frame().z().vector();
-        let r = data.point - circle.centre();
-        let radial = r - axis_dir * r.dot(axis_dir);
-        (circle.centre(), axis_dir, radial / radial.magnitude())
+    let axis_of = |s: &SurfaceGeometry| -> Option<(Point, og_math::Vector)> {
+        match s {
+            SurfaceGeometry::Cylinder(c) => {
+                let f = c.cylinder().frame();
+                Some((f.origin(), f.z().vector()))
+            }
+            SurfaceGeometry::Cone(c) => {
+                let f = c.cone().frame();
+                Some((f.origin(), f.z().vector()))
+            }
+            SurfaceGeometry::Sphere(c) => {
+                let f = c.sphere().frame();
+                Some((f.origin(), f.z().vector()))
+            }
+            SurfaceGeometry::Torus(c) => {
+                let f = c.torus().frame();
+                Some((f.origin(), f.z().vector()))
+            }
+            _ => None,
+        }
     };
+    let mut chains: Vec<Chain> = Vec::new();
+    for (i, b) in broken.iter().enumerate() {
+        let Some((point, dir)) = axis_of(&b.surface) else {
+            continue;
+        };
+        let joined = chains.iter_mut().find(|c| {
+            c.dir.cross(dir).magnitude() < 1e-6
+                && (point - c.point).cross(c.dir).magnitude() < tol.confusion() * 1e3
+        });
+        match joined {
+            Some(c) => c.members.push(i),
+            None => chains.push(Chain {
+                point,
+                dir,
+                members: vec![i],
+            }),
+        }
+    }
 
     let mut substitution: HashMap<TShapeId, Shape> = HashMap::new();
-    for b in &broken {
-        for (old_edge, old_vertex, curve, _) in &b.rings {
-            if substitution.contains_key(&old_edge.node()) {
-                continue;
+    let mut healable: Vec<usize> = Vec::new();
+    for chain in &chains {
+        let anchored = anchor_chain(model, &broken, chain, tol);
+        match anchored {
+            Ok(subs) => {
+                for (node, edge, old_edge, old_vertex) in subs {
+                    history.modify(&old_edge, edge.clone());
+                    history.delete(&old_vertex);
+                    substitution.insert(node, edge);
+                }
+                healable.extend_from_slice(&chain.members);
             }
-            let Curve::Circle(c) = curve else {
-                og_bail!(
-                    Construction,
-                    "a ring to re-anchor is not a circle; the repair does \
-                     not know its parameterization"
-                );
-            };
-            let circle = c.circle();
-            // Coaxial or nothing: the half-plane trick needs one axis.
-            if circle.frame().z().vector().cross(axis_dir).magnitude() > 1e-6
-                || (circle.centre() - axis_point).cross(axis_dir).magnitude()
-                    > tol.confusion() * 1e3
-            {
-                og_bail!(
-                    Construction,
-                    "the rings are not coaxial; the half-plane repair does \
-                     not apply"
-                );
+            Err(_) => {
+                // This chain resists; its faces stay as imported.
             }
-            let target = circle.centre() + radial * circle.radius();
-            let current = {
-                let Some(node) = model.node(old_vertex) else {
-                    og_bail!(Dangling, "vertex is not in this model");
-                };
-                let Some(data) = node.data().as_vertex() else {
-                    og_bail!(Construction, "vertex node holds no vertex data");
-                };
-                data.point
-            };
-            if current.distance(target) <= tol.confusion() * 1e2 {
-                continue;
-            }
-            let Some(t_star) = circle_parameter(curve, target) else {
-                og_bail!(Construction, "an anchor point fell off its circle");
-            };
-            let period = {
-                let (lo, hi) = curve.domain();
-                hi - lo
-            };
-            let vertex = make_vertex(model, target).shape;
-            let rebuilt = make_edge_between(
-                model,
-                curve.clone(),
-                (t_star, t_star + period),
-                &vertex,
-                &vertex,
-                tol,
-            )?
-            .shape;
-            history.modify(old_edge, rebuilt.clone());
-            history.delete(old_vertex);
-            substitution.insert(old_edge.node(), rebuilt);
         }
+    }
+    if healable.is_empty() {
+        return Ok(Built::new(shape.clone(), History::new()));
     }
 
     // --- rebuild every face that touches a substituted edge ------------------
@@ -236,11 +230,15 @@ pub fn reanchor_periodic_rings(
         let uses_any = explore_unique(model, &face, ShapeType::Edge)?
             .iter()
             .any(|e| substitution.contains_key(&e.node()));
-        let is_revolution = broken.iter().any(|b| b.face.is_same(&face));
+        let is_revolution = healable.iter().any(|&i| broken[i].face.is_same(&face));
         if !uses_any && !is_revolution {
             continue;
         }
-        let rebuilt = if let Some(b) = broken.iter().find(|b| b.face.is_same(&face)) {
+        let rebuilt = if let Some(b) = healable
+            .iter()
+            .map(|&i| &broken[i])
+            .find(|b| b.face.is_same(&face))
+        {
             rebuild_broken_face(
                 model,
                 b.surface_id,
@@ -290,6 +288,112 @@ pub fn reanchor_periodic_rings(
     let solid = make_solid(model, &shells)?.shape;
     history.modify(shape, solid.clone());
     Ok(Built::new(solid, history))
+}
+
+/// Anchor every ring of one coaxial chain at the chain's own half-plane.
+///
+/// Returns the substitutions to apply — `(old node, new edge, old edge, old
+/// vertex)` — or an error if any ring in the chain resists, in which case
+/// nothing has been decided and the chain is left as imported. New vertices
+/// and edges may have been added to the model, but nothing references them.
+#[allow(clippy::type_complexity)]
+fn anchor_chain(
+    model: &mut Model,
+    broken: &[Broken],
+    chain: &Chain,
+    tol: Tolerances,
+) -> OgResult<Vec<(TShapeId, Shape, Shape, Shape)>> {
+    let (axis_point, axis_dir) = (chain.point, chain.dir);
+    let radial = {
+        let (_, vertex, curve, _) = &broken[chain.members[0]].rings[0];
+        let Curve::Circle(c) = curve else {
+            og_bail!(
+                Construction,
+                "a ring to re-anchor is not a circle; the repair does not \
+                 know its parameterization"
+            );
+        };
+        let circle = c.circle();
+        let Some(node) = model.node(vertex) else {
+            og_bail!(Dangling, "vertex is not in this model");
+        };
+        let Some(data) = node.data().as_vertex() else {
+            og_bail!(Construction, "vertex node holds no vertex data");
+        };
+        let r = data.point - circle.centre();
+        let radial = r - axis_dir * r.dot(axis_dir);
+        if radial.magnitude() <= tol.confusion() {
+            og_bail!(Construction, "an anchor vertex sits on the axis");
+        }
+        radial / radial.magnitude()
+    };
+
+    let mut out = Vec::new();
+    let mut done: Vec<TShapeId> = Vec::new();
+    for &i in &chain.members {
+        for (old_edge, old_vertex, curve, _) in &broken[i].rings {
+            if done.contains(&old_edge.node()) {
+                continue;
+            }
+            done.push(old_edge.node());
+            let Curve::Circle(c) = curve else {
+                og_bail!(
+                    Construction,
+                    "a ring to re-anchor is not a circle; the repair does \
+                     not know its parameterization"
+                );
+            };
+            let circle = c.circle();
+            // Coaxial or nothing: the half-plane trick needs one axis.
+            if circle.frame().z().vector().cross(axis_dir).magnitude() > 1e-6
+                || (circle.centre() - axis_point).cross(axis_dir).magnitude()
+                    > tol.confusion() * 1e3
+            {
+                og_bail!(
+                    Construction,
+                    "the rings are not coaxial; the half-plane repair does \
+                     not apply"
+                );
+            }
+            let target = circle.centre() + radial * circle.radius();
+            let current = {
+                let Some(node) = model.node(old_vertex) else {
+                    og_bail!(Dangling, "vertex is not in this model");
+                };
+                let Some(data) = node.data().as_vertex() else {
+                    og_bail!(Construction, "vertex node holds no vertex data");
+                };
+                data.point
+            };
+            if current.distance(target) <= tol.confusion() * 1e2 {
+                continue;
+            }
+            let Some(t_star) = circle_parameter(curve, target) else {
+                og_bail!(Construction, "an anchor point fell off its circle");
+            };
+            let period = {
+                let (lo, hi) = curve.domain();
+                hi - lo
+            };
+            let vertex = make_vertex(model, target).shape;
+            let rebuilt = make_edge_between(
+                model,
+                curve.clone(),
+                (t_star, t_star + period),
+                &vertex,
+                &vertex,
+                tol,
+            )?
+            .shape;
+            out.push((
+                old_edge.node(),
+                rebuilt,
+                old_edge.clone(),
+                old_vertex.clone(),
+            ));
+        }
+    }
+    Ok(out)
 }
 
 /// The circle parameter of a point on a circle curve.

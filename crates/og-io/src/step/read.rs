@@ -1039,13 +1039,23 @@ impl Reader<'_> {
                 // held fixed, so same-parameter is preserved by construction
                 // and the reported error is the true chart deviation.
                 match self.fit_projected_pcurve(curve, range, surface) {
-                    Ok((fitted, error, met)) => {
+                    Ok((fitted, error, met, worst_off)) => {
                         if !met {
                             self.report.warnings.push(format!(
                                 "face #{face_id}: a projected pcurve fit \
                                  stopped at {error:.2e}; the face's mesh may \
                                  sit that far off along this edge"
                             ));
+                        }
+                        // The edge provably sits `worst_off` from the surface
+                        // it bounds; its tolerance grows to cover that, the
+                        // same honesty the vertex ends get.
+                        if worst_off > self.tol.confusion()
+                            && let Some(node) = self.model.node_mut(edge)
+                            && let og_topo::NodeData::Edge(data) = node.data_mut()
+                        {
+                            data.tolerance =
+                                data.tolerance.widen_to(worst_off + self.tol.confusion());
                         }
                         fitted
                     }
@@ -1096,7 +1106,7 @@ impl Reader<'_> {
         curve: &Curve,
         range: (f64, f64),
         surface: &SurfaceGeometry,
-    ) -> OgResult<(PlanarCurve, f64, bool)> {
+    ) -> OgResult<(PlanarCurve, f64, bool, f64)> {
         const SAMPLES: usize = 96;
         let mut worst_off = 0.0_f64;
         let mut parameters = Vec::with_capacity(SAMPLES + 1);
@@ -1124,7 +1134,13 @@ impl Reader<'_> {
                     )
                 }
             };
-            if off > self.tol.confusion() * 1e4 {
+            // The cap separates a file's own slop — routinely a micron or
+            // two on these parts — from an edge paired with the wrong
+            // surface, which misses by whole millimetres. Slop inside the
+            // cap is accepted and *recorded*: the edge's tolerance is
+            // widened to cover it, so the model says what it knows instead
+            // of refusing to triangulate.
+            if off > self.tol.confusion() * 1e6 {
                 og_bail!(
                     Construction,
                     "the edge sits {off:.2e} from the surface it should bound"
@@ -1187,7 +1203,7 @@ impl Reader<'_> {
                  bounds; the file's own slop, carried into the chart"
             ));
         }
-        Ok((fitted.curve.into(), fitted.error, fitted.met))
+        Ok((fitted.curve.into(), fitted.error, fitted.met, worst_off))
     }
 
     fn solid(&mut self, id: u64) -> OgResult<Shape> {

@@ -819,7 +819,14 @@ pub fn make_revolution_band(
             };
             data.point
         };
-        let (_, row) = crate::measure::project_on_surface(surface, at, 32, tol)?.parameters;
+        let row = match analytic_chart_of(surface, at) {
+            Some(uv) => uv.y,
+            None => {
+                crate::measure::project_on_surface(surface, at, 32, tol)?
+                    .parameters
+                    .1
+            }
+        };
         rings.push(Ring {
             edge: edge.clone(),
             vertex,
@@ -837,7 +844,14 @@ pub fn make_revolution_band(
         };
         data.point
     };
-    let (ua, _) = crate::measure::project_on_surface(surface, anchor, 32, tol)?.parameters;
+    let ua = match analytic_chart_of(surface, anchor) {
+        Some(uv) => uv.x,
+        None => {
+            crate::measure::project_on_surface(surface, anchor, 32, tol)?
+                .parameters
+                .0
+        }
+    };
 
     // Window-coherent ring pcurves: u(t) spans [ua, ua + span] whichever way
     // each ring winds.
@@ -887,7 +901,13 @@ pub fn make_revolution_band(
             true,
         )
     };
-    let seam = make_edge_between(model, seam_curve, range, &from, &to, tol)?.shape;
+    // The edge lives on the curve's own parameterization; the chart rows map
+    // onto it linearly, which is exactly the rescale a pcurve range states.
+    let curve_range = (
+        iso_curve_parameter_at(surface, range.0),
+        iso_curve_parameter_at(surface, range.1),
+    );
+    let seam = make_edge_between(model, seam_curve, curve_range, &from, &to, tol)?.shape;
 
     // The walk closes only if the top ring's traversal starts where the
     // bottom's ends, and the seam sides sit at the columns the walk visits.
@@ -946,6 +966,50 @@ pub fn make_revolution_band(
     Ok(make_face_on(model, surface_id, &[wire], tol)?.shape)
 }
 
+/// The chart coordinates of a point on a periodic analytic surface, by
+/// closed-form inversion, folded into the surface's own stated window.
+///
+/// The band synthesis needs the *row* each ring stands on and the *column*
+/// the seam anchors to; iterative projection over an imported surface's
+/// enormous stated extents can converge to a clamped boundary and place a
+/// seam whole units from the vertex it must meet, so the analytic kinds
+/// invert exactly instead.
+fn analytic_chart_of(surface: &SurfaceGeometry, p: og_math::Point) -> Option<og_math::Point2> {
+    use og_geom::Surface as _;
+    let tau = core::f64::consts::TAU;
+    let raw = match surface {
+        SurfaceGeometry::Cylinder(s) => {
+            let l = s.cylinder().frame().to_local(p);
+            og_math::Point2::new(l.y.atan2(l.x), l.z)
+        }
+        SurfaceGeometry::Cone(s) => {
+            let l = s.cone().frame().to_local(p);
+            og_math::Point2::new(l.y.atan2(l.x), l.z)
+        }
+        SurfaceGeometry::Sphere(s) => {
+            let sphere = s.sphere();
+            let l = sphere.frame().to_local(p);
+            let lat = (l.z / sphere.radius()).clamp(-1.0, 1.0).asin();
+            og_math::Point2::new(l.y.atan2(l.x), lat)
+        }
+        SurfaceGeometry::Torus(s) => {
+            let torus = s.torus();
+            let l = torus.frame().to_local(p);
+            let radial = l.x.hypot(l.y) - torus.major_radius();
+            og_math::Point2::new(l.y.atan2(l.x), l.z.atan2(radial))
+        }
+        _ => return None,
+    };
+    let ((ua, _), (va, vb)) = surface.domain();
+    let u = ua + (raw.x - ua).rem_euclid(tau);
+    let v = if surface.is_periodic_v() {
+        va + (raw.y - va).rem_euclid(vb - va)
+    } else {
+        raw.y
+    };
+    Some(og_math::Point2::new(u, v))
+}
+
 /// The revolution axis direction of a periodic analytic surface.
 fn surface_iso_axis(surface: &og_geom::SurfaceGeometry) -> Option<og_math::Vector> {
     match surface {
@@ -998,7 +1062,55 @@ pub fn surface_iso_u_curve(
             let circle = og_math::Circle::new(circle_frame, torus.minor_radius(), tol).ok()?;
             Some(og_geom::CircleCurve::new(circle).into())
         }
+        og_geom::SurfaceGeometry::Cone(c) => {
+            let cone = c.cone();
+            let frame = cone.frame();
+            let radial = frame.x().vector() * at.cos() + frame.y().vector() * at.sin();
+            // The ruling through v = 0, arc-length parameterized: the chart's
+            // v maps onto it linearly, by t = v / cos(half angle), which the
+            // seam construction recovers through `iso_curve_parameter_at`.
+            let location = frame.origin() + radial * cone.radius_at(0.0);
+            let direction =
+                og_math::Direction::new(frame.z().vector() + radial * cone.half_angle().tan(), tol)
+                    .ok()?;
+            Some(
+                og_geom::LineCurve::new(og_math::Axis {
+                    location,
+                    direction,
+                })
+                .into(),
+            )
+        }
+        og_geom::SurfaceGeometry::Sphere(sp) => {
+            let sphere = sp.sphere();
+            let frame = sphere.frame();
+            let radial = frame.x().vector() * at.cos() + frame.y().vector() * at.sin();
+            // The meridian framed so its own angle is the latitude exactly:
+            // x one radius out along the parallel, y toward the north pole.
+            let circle_frame = og_math::Frame::new(
+                frame.origin(),
+                og_math::Direction::new(radial.cross(frame.z().vector()), tol).ok()?,
+                og_math::Direction::new(radial, tol).ok()?,
+                tol,
+            )
+            .ok()?;
+            let circle = og_math::Circle::new(circle_frame, sphere.radius(), tol).ok()?;
+            Some(og_geom::CircleCurve::new(circle).into())
+        }
         _ => None,
+    }
+}
+
+/// The parameter on a surface's iso-curve that lands at chart row `v`.
+///
+/// Identity for the kinds whose iso-curve is parameterized by `v` itself —
+/// a cylinder ruling, a torus tube circle, a sphere meridian — and the slant
+/// rescale for a cone, whose ruling is arc-length parameterized while the
+/// chart's `v` is the height.
+fn iso_curve_parameter_at(surface: &SurfaceGeometry, v: f64) -> f64 {
+    match surface {
+        og_geom::SurfaceGeometry::Cone(c) => v / c.cone().half_angle().cos(),
+        _ => v,
     }
 }
 

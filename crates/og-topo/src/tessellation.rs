@@ -117,6 +117,198 @@ impl Triangulation {
         !uses.is_empty() && uses.values().all(|&n| n == 2)
     }
 
+    /// Weld only the mesh's *border* vertices, within `reach`.
+    ///
+    /// The second pass after [`Triangulation::welded`]: interior edges are
+    /// already manifold, and touching them at a widened tolerance would eat
+    /// real features. Borders are where imported slop lives — an edge's curve
+    /// and its neighbour's disagree by the file's own tolerance, which the
+    /// model records on the edge — so only vertices on unmatched triangle
+    /// edges are candidates, merged to their nearest counterpart within
+    /// `reach`.
+    #[must_use]
+    pub fn border_welded(&self, reach: f64) -> Self {
+        use std::collections::HashMap;
+        if !reach.is_finite() || reach <= 0.0 {
+            return self.clone();
+        }
+        // Border vertices: endpoints of triangle edges used an odd number of
+        // times.
+        let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+        for t in &self.triangles {
+            for i in 0..3 {
+                let (a, b) = (t[i], t[(i + 1) % 3]);
+                *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        let mut border: Vec<u32> = uses
+            .iter()
+            .filter(|&(_, &n)| n % 2 == 1)
+            .flat_map(|(&(a, b), _)| [a, b])
+            .collect();
+        border.sort_unstable();
+        border.dedup();
+        if border.is_empty() {
+            return self.clone();
+        }
+
+        // Cluster border vertices within reach, first-seen wins, checked
+        // against the cluster representative so chains cannot creep.
+        let cell = reach.max(f64::MIN_POSITIVE);
+        let key = |p: Point| {
+            #[allow(clippy::cast_possible_truncation)]
+            (
+                (p.x / cell).round() as i64,
+                (p.y / cell).round() as i64,
+                (p.z / cell).round() as i64,
+            )
+        };
+        let mut buckets: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
+        #[allow(clippy::cast_possible_truncation)]
+        let mut remap: Vec<u32> = (0..self.positions.len() as u32).collect();
+        for &v in &border {
+            let p = self.positions[v as usize];
+            let (kx, ky, kz) = key(p);
+            let mut found = None;
+            'search: for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        for &candidate in buckets
+                            .get(&(kx + dx, ky + dy, kz + dz))
+                            .map_or(&[][..], Vec::as_slice)
+                        {
+                            if self.positions[candidate as usize].distance(p) <= reach {
+                                found = Some(candidate);
+                                break 'search;
+                            }
+                        }
+                    }
+                }
+            }
+            match found {
+                Some(rep) => remap[v as usize] = rep,
+                None => buckets.entry((kx, ky, kz)).or_default().push(v),
+            }
+        }
+
+        let mut out = Self::new();
+        out.deflection_met = self.deflection_met;
+        // Compact: keep every vertex that survives as its own representative
+        // or is referenced; simplest is to keep all and let triangles remap.
+        out.positions = self.positions.clone();
+        out.normals = self.normals.clone();
+        out.parameters = self.parameters.clone();
+        for t in &self.triangles {
+            let mapped = t.map(|i| remap[i as usize]);
+            if mapped[0] != mapped[1] && mapped[1] != mapped[2] && mapped[2] != mapped[0] {
+                out.triangles.push(mapped);
+            }
+        }
+        out
+    }
+
+    /// Split border segments at border vertices that lie on them.
+    ///
+    /// The T-junction repair that follows [`Triangulation::border_welded`]:
+    /// after welding, two faces' border chains share their vertices but may
+    /// subdivide the same stretch differently — one face's segment spans two
+    /// of its neighbour's. Splitting the long segment *at the neighbour's own
+    /// vertex index* makes the chains segment-for-segment identical, which is
+    /// what closure counts. No positions move and none are added.
+    #[must_use]
+    pub fn border_stitched(&self, reach: f64) -> Self {
+        use std::collections::HashMap;
+        if !reach.is_finite() || reach <= 0.0 {
+            return self.clone();
+        }
+        let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+        for t in &self.triangles {
+            for i in 0..3 {
+                let (a, b) = (t[i], t[(i + 1) % 3]);
+                *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        let border_edges: Vec<(u32, u32)> = uses
+            .iter()
+            .filter(|&(_, &n)| n % 2 == 1)
+            .map(|(&e, _)| e)
+            .collect();
+        if border_edges.is_empty() {
+            return self.clone();
+        }
+        let mut border_vertices: Vec<u32> =
+            border_edges.iter().flat_map(|&(a, b)| [a, b]).collect();
+        border_vertices.sort_unstable();
+        border_vertices.dedup();
+
+        // For every border segment, the border vertices sitting on its
+        // interior, ordered along it.
+        let mut splits: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+        for &(a, b) in &border_edges {
+            let (pa, pb) = (self.positions[a as usize], self.positions[b as usize]);
+            let d = pb - pa;
+            let l2 = d.dot(d);
+            if l2 <= 0.0 {
+                continue;
+            }
+            let mut on: Vec<(f64, u32)> = border_vertices
+                .iter()
+                .filter(|&&v| v != a && v != b)
+                .filter_map(|&v| {
+                    let p = self.positions[v as usize];
+                    let t = (p - pa).dot(d) / l2;
+                    if !(0.001..=0.999).contains(&t) {
+                        return None;
+                    }
+                    ((pa + d * t).distance(p) <= reach).then_some((t, v))
+                })
+                .collect();
+            if on.is_empty() {
+                continue;
+            }
+            on.sort_by(|x, y| x.0.total_cmp(&y.0));
+            splits.insert((a, b), on.into_iter().map(|(_, v)| v).collect());
+        }
+        if splits.is_empty() {
+            return self.clone();
+        }
+
+        let mut out = Self::new();
+        out.deflection_met = self.deflection_met;
+        out.positions = self.positions.clone();
+        out.normals = self.normals.clone();
+        out.parameters = self.parameters.clone();
+        for t in &self.triangles {
+            // The triangle's ring with any split points inserted, fanned from
+            // its first corner.
+            let mut ring: Vec<u32> = Vec::with_capacity(6);
+            let mut any = false;
+            for i in 0..3 {
+                let (a, b) = (t[i], t[(i + 1) % 3]);
+                ring.push(a);
+                if let Some(vs) = splits.get(&(a.min(b), a.max(b))) {
+                    any = true;
+                    if a < b {
+                        ring.extend(vs.iter().copied());
+                    } else {
+                        ring.extend(vs.iter().rev().copied());
+                    }
+                }
+            }
+            if !any {
+                out.triangles.push(*t);
+                continue;
+            }
+            for i in 1..ring.len() - 1 {
+                let tri = [ring[0], ring[i], ring[i + 1]];
+                if tri[0] != tri[1] && tri[1] != tri[2] && tri[2] != tri[0] {
+                    out.triangles.push(tri);
+                }
+            }
+        }
+        out
+    }
+
     /// Append another mesh, shifting its indices.
     pub fn append(&mut self, other: &Self) {
         #[allow(clippy::cast_possible_truncation)]

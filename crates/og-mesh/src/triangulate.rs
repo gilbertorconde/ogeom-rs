@@ -135,7 +135,33 @@ pub fn triangulate(
     for face in og_topo::explore(model, shape, og_topo::Filter::OfType(ShapeType::Face))? {
         mesh.append(&triangulate_face(model, &face, deflection, tol)?);
     }
-    Ok(mesh.welded(tol))
+    let mesh = mesh.welded(tol);
+
+    // A second, border-only pass at the tolerance the model itself recorded:
+    // imported edges carry the file's slop in their widened tolerances, and
+    // two faces lifting the same edge through disagreeing geometry land that
+    // far apart. Interior edges are already manifold and are not touched.
+    let mut reach = 0.0_f64;
+    for kind in [ShapeType::Edge, ShapeType::Vertex] {
+        for shape in og_topo::explore(model, shape, og_topo::Filter::OfType(kind))? {
+            let recorded = model.node(&shape).map_or(0.0, |n| match n.data() {
+                NodeData::Edge(d) => d.tolerance.get(),
+                NodeData::Vertex(d) => d.tolerance.get(),
+                _ => 0.0,
+            });
+            reach = reach.max(recorded);
+        }
+    }
+    // Floored at a tenth of the chord the caller asked for: a border gap
+    // smaller than that is below the resolution of the mesh they accepted,
+    // whether or not the model recorded the slop that caused it.
+    let reach = reach.max(deflection.chord * 0.1);
+    if reach > tol.confusion() {
+        let reach = reach + tol.confusion();
+        Ok(mesh.border_welded(reach).border_stitched(reach))
+    } else {
+        Ok(mesh)
+    }
 }
 
 /// A face's trimming boundary, in its surface's parameter space.
@@ -385,6 +411,67 @@ fn boundary_ring(
         }
         if edge_anchors.len() != points.len() {
             edge_anchors = vec![None; points.len()];
+        }
+        // The ends of an edge belong to its *vertices* — the one authority
+        // every face and every neighbouring edge shares — but only within the
+        // tolerance the vertex itself records. An imported curve ends within
+        // the vertex's widened tolerance of it, and lifting the ends through
+        // the curve alone would leave each corner split as many ways as there
+        // are curves meeting there; a vertex that sits *beyond* its stated
+        // tolerance from the curve is not describing the curve's end at all,
+        // and the curve stays the authority.
+        if !points.is_empty()
+            && let Ok(vs) = model.children_of(&edge)
+            && vs.len() >= 2
+            && let Ok(edge_placement) = edge.transform(model.datums())
+        {
+            let point_of = |v: &Shape| -> Option<(Point, f64)> {
+                let data = model.node(v)?.data().as_vertex()?;
+                Some((edge_placement.apply(data.point), data.tolerance.get()))
+            };
+            let (from, to) = if edge.orientation() == Orientation::Reversed {
+                (&vs[vs.len() - 1], &vs[0])
+            } else {
+                (&vs[0], &vs[vs.len() - 1])
+            };
+            if let Some((p, within)) = point_of(from)
+                && let Some(a) = edge_anchors.first_mut()
+                && a.is_none_or(|end| end.distance(p) <= within + tol.confusion())
+            {
+                *a = Some(p);
+            }
+            if let Some((p, within)) = point_of(to)
+                && let Some(a) = edge_anchors.last_mut()
+                && a.is_none_or(|end| end.distance(p) <= within + tol.confusion())
+            {
+                *a = Some(p);
+            }
+        }
+        // Fold onto the branch that continues the ring. Two faces sharing an
+        // edge share its pcurve, and on a periodic surface the pcurve sits in
+        // *one* face's window: a cylinder split into two halves has a ruling
+        // at u = 0 that the other half needs at u = 2pi. The chart cannot
+        // store both; continuity with the ring being walked recovers the
+        // right branch, exactly as the seam sides are chosen.
+        if let Some(last) = ring.last().copied()
+            && let Some(first) = points.first().copied()
+            && let Some(geometry) = model.geometry().surface(surface)
+        {
+            use og_geom::Surface as _;
+            let ((ua, ub), (va, vb)) = geometry.domain();
+            let mut shift = Point2::new(0.0, 0.0);
+            if geometry.is_periodic_u() && (ub - ua) > 0.0 {
+                shift.x = ((last.x - first.x) / (ub - ua)).round() * (ub - ua);
+            }
+            if geometry.is_periodic_v() && (vb - va) > 0.0 {
+                shift.y = ((last.y - first.y) / (vb - va)).round() * (vb - va);
+            }
+            if shift.x != 0.0 || shift.y != 0.0 {
+                for p in &mut points {
+                    p.x += shift.x;
+                    p.y += shift.y;
+                }
+            }
         }
         // The previous edge already contributed the shared vertex.
         if !ring.is_empty() && !points.is_empty() {
