@@ -114,6 +114,12 @@ pub struct Document {
     colours: HashMap<TShapeId, Colour>,
     names: HashMap<TShapeId, String>,
     pmi: crate::pmi::Pmi,
+    properties: HashMap<TShapeId, Vec<crate::attributes::Property>>,
+    materials: Vec<crate::attributes::Material>,
+    material_of: HashMap<TShapeId, crate::attributes::MaterialId>,
+    layers: Vec<crate::attributes::Layer>,
+    on_layer: HashMap<TShapeId, Vec<crate::attributes::LayerId>>,
+    validation: HashMap<TShapeId, crate::attributes::ValidationProperties>,
 }
 
 impl Document {
@@ -455,6 +461,157 @@ impl Document {
     /// The PMI, for annotating.
     pub const fn pmi_mut(&mut self) -> &mut crate::pmi::Pmi {
         &mut self.pmi
+    }
+
+    // --- attributes ---------------------------------------------------------
+
+    /// Pin a user-defined property to a shape. Properties accumulate; a
+    /// repeated name replaces the earlier value.
+    pub fn set_property(&mut self, shape: &Shape, property: crate::attributes::Property) {
+        let list = self.properties.entry(shape.node()).or_default();
+        if let Some(held) = list.iter_mut().find(|p| p.name == property.name) {
+            *held = property;
+        } else {
+            list.push(property);
+        }
+    }
+
+    /// The properties pinned to a shape.
+    #[must_use]
+    pub fn properties_of(&self, shape: &Shape) -> &[crate::attributes::Property] {
+        self.properties
+            .get(&shape.node())
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Every shape with properties, for persistence.
+    pub fn properties(&self) -> impl Iterator<Item = (TShapeId, &[crate::attributes::Property])> {
+        self.properties.iter().map(|(k, v)| (*k, v.as_slice()))
+    }
+
+    /// Add a material to the document's list.
+    pub fn add_material(
+        &mut self,
+        material: crate::attributes::Material,
+    ) -> crate::attributes::MaterialId {
+        self.materials.push(material);
+        crate::attributes::MaterialId(self.materials.len() - 1)
+    }
+
+    /// A material by id.
+    #[must_use]
+    pub fn material(
+        &self,
+        id: crate::attributes::MaterialId,
+    ) -> Option<&crate::attributes::Material> {
+        self.materials.get(id.0)
+    }
+
+    /// The materials, in id order.
+    #[must_use]
+    pub fn materials(&self) -> &[crate::attributes::Material] {
+        &self.materials
+    }
+
+    /// The id at a list position, for rebinding persisted references.
+    #[must_use]
+    pub fn material_id(&self, index: usize) -> Option<crate::attributes::MaterialId> {
+        (index < self.materials.len()).then_some(crate::attributes::MaterialId(index))
+    }
+
+    /// Assign a shape its material.
+    pub fn assign_material(&mut self, shape: &Shape, id: crate::attributes::MaterialId) {
+        self.material_of.insert(shape.node(), id);
+    }
+
+    /// The material a shape is assigned, if any.
+    #[must_use]
+    pub fn material_of(&self, shape: &Shape) -> Option<crate::attributes::MaterialId> {
+        self.material_of.get(&shape.node()).copied()
+    }
+
+    /// Every material assignment, for persistence.
+    pub fn material_assignments(
+        &self,
+    ) -> impl Iterator<Item = (TShapeId, crate::attributes::MaterialId)> + '_ {
+        self.material_of.iter().map(|(k, v)| (*k, *v))
+    }
+
+    /// Add a layer, visible by default.
+    pub fn add_layer(&mut self, name: impl Into<String>) -> crate::attributes::LayerId {
+        self.layers.push(crate::attributes::Layer {
+            name: name.into(),
+            visible: true,
+        });
+        crate::attributes::LayerId(self.layers.len() - 1)
+    }
+
+    /// A layer by id.
+    #[must_use]
+    pub fn layer(&self, id: crate::attributes::LayerId) -> Option<&crate::attributes::Layer> {
+        self.layers.get(id.0)
+    }
+
+    /// The layers, in id order.
+    #[must_use]
+    pub fn layers(&self) -> &[crate::attributes::Layer] {
+        &self.layers
+    }
+
+    /// The id at a list position, for rebinding persisted references.
+    #[must_use]
+    pub fn layer_id(&self, index: usize) -> Option<crate::attributes::LayerId> {
+        (index < self.layers.len()).then_some(crate::attributes::LayerId(index))
+    }
+
+    /// Show or hide a layer.
+    pub fn set_layer_visible(&mut self, id: crate::attributes::LayerId, visible: bool) {
+        if let Some(layer) = self.layers.get_mut(id.0) {
+            layer.visible = visible;
+        }
+    }
+
+    /// Put a shape on a layer. A shape may sit on several.
+    pub fn place_on_layer(&mut self, shape: &Shape, layer: crate::attributes::LayerId) {
+        let list = self.on_layer.entry(shape.node()).or_default();
+        if !list.contains(&layer) {
+            list.push(layer);
+        }
+    }
+
+    /// The layers a shape sits on.
+    #[must_use]
+    pub fn layers_of(&self, shape: &Shape) -> &[crate::attributes::LayerId] {
+        self.on_layer.get(&shape.node()).map_or(&[], Vec::as_slice)
+    }
+
+    /// Every layer membership, for persistence.
+    pub fn layer_memberships(
+        &self,
+    ) -> impl Iterator<Item = (TShapeId, &[crate::attributes::LayerId])> {
+        self.on_layer.iter().map(|(k, v)| (*k, v.as_slice()))
+    }
+
+    /// Record validation values for a shape.
+    pub fn set_validation(
+        &mut self,
+        shape: &Shape,
+        values: crate::attributes::ValidationProperties,
+    ) {
+        self.validation.insert(shape.node(), values);
+    }
+
+    /// The recorded validation values for a shape.
+    #[must_use]
+    pub fn validation_of(&self, shape: &Shape) -> Option<crate::attributes::ValidationProperties> {
+        self.validation.get(&shape.node()).copied()
+    }
+
+    /// Every validation record, for persistence.
+    pub fn validations(
+        &self,
+    ) -> impl Iterator<Item = (TShapeId, crate::attributes::ValidationProperties)> + '_ {
+        self.validation.iter().map(|(k, v)| (*k, *v))
     }
 }
 

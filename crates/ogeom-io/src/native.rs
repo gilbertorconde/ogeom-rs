@@ -482,6 +482,92 @@ pub fn write_document(
         }
         emit(&mut out, &t);
     }
+
+    // The attribute layer: properties, materials, layers, validation —
+    // shape-keyed maps in key order, lists in id order, so writing what
+    // was read gives the same bytes.
+    let mut with_properties: Vec<_> = document.properties().collect();
+    with_properties.sort_by_key(|(node, _)| (node.index(), node.generation()));
+    for (node, properties) in with_properties {
+        for property in properties {
+            let mut t = Vec::new();
+            w(&mut t, "doc-prop");
+            key(&mut t, node);
+            text(&mut t, &property.name);
+            match &property.value {
+                ogeom_doc::PropertyValue::Text(value) => {
+                    w(&mut t, "T");
+                    text(&mut t, value);
+                }
+                ogeom_doc::PropertyValue::Number(value) => {
+                    w(&mut t, "N");
+                    n(&mut t, *value);
+                }
+                ogeom_doc::PropertyValue::Flag(value) => {
+                    w(&mut t, "F");
+                    flag(&mut t, *value);
+                }
+            }
+            emit(&mut out, &t);
+        }
+    }
+    for material in document.materials() {
+        let mut t = Vec::new();
+        w(&mut t, "doc-material");
+        text(&mut t, &material.name);
+        optional(&mut t, material.density);
+        match material.colour {
+            Some(c) => {
+                flag(&mut t, true);
+                for channel in [c.r, c.g, c.b, c.a] {
+                    n(&mut t, channel);
+                }
+            }
+            None => flag(&mut t, false),
+        }
+        emit(&mut out, &t);
+    }
+    let mut assigned: Vec<_> = document.material_assignments().collect();
+    assigned.sort_by_key(|(node, _)| (node.index(), node.generation()));
+    for (node, material) in assigned {
+        let mut t = Vec::new();
+        w(&mut t, "doc-material-of");
+        key(&mut t, node);
+        u(&mut t, material.index() as u64);
+        emit(&mut out, &t);
+    }
+    for layer in document.layers() {
+        let mut t = Vec::new();
+        w(&mut t, "doc-layer");
+        text(&mut t, &layer.name);
+        flag(&mut t, layer.visible);
+        emit(&mut out, &t);
+    }
+    let mut memberships: Vec<_> = document.layer_memberships().collect();
+    memberships.sort_by_key(|(node, _)| (node.index(), node.generation()));
+    for (node, layers) in memberships {
+        let mut t = Vec::new();
+        w(&mut t, "doc-on-layer");
+        key(&mut t, node);
+        u(&mut t, layers.len() as u64);
+        for layer in layers {
+            u(&mut t, layer.index() as u64);
+        }
+        emit(&mut out, &t);
+    }
+    let mut checks: Vec<_> = document.validations().collect();
+    checks.sort_by_key(|(node, _)| (node.index(), node.generation()));
+    for (node, values) in checks {
+        let mut t = Vec::new();
+        w(&mut t, "doc-check");
+        key(&mut t, node);
+        n(&mut t, values.volume);
+        n(&mut t, values.area);
+        for v in [values.centroid.x, values.centroid.y, values.centroid.z] {
+            n(&mut t, v);
+        }
+        emit(&mut out, &t);
+    }
     Ok(out)
 }
 
@@ -573,6 +659,78 @@ pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
                 let node = bind_node(&document, node)?;
                 let name = read_text(&mut cursor)?;
                 document.set_name(&Shape::of(node), name);
+            }
+            "doc-prop" => {
+                let node: TShapeId = cursor.handle()?;
+                let node = bind_node(&document, node)?;
+                let name = read_text(&mut cursor)?;
+                let value = match cursor.word()? {
+                    "T" => ogeom_doc::PropertyValue::Text(read_text(&mut cursor)?),
+                    "F" => ogeom_doc::PropertyValue::Flag(cursor.flag()?),
+                    _ => ogeom_doc::PropertyValue::Number(cursor.number()?),
+                };
+                document.set_property(&Shape::of(node), ogeom_doc::Property { name, value });
+            }
+            "doc-material" => {
+                let name = read_text(&mut cursor)?;
+                let density = read_optional(&mut cursor)?;
+                let colour = if cursor.flag()? {
+                    Some(ogeom_doc::Colour {
+                        r: cursor.number()?,
+                        g: cursor.number()?,
+                        b: cursor.number()?,
+                        a: cursor.number()?,
+                    })
+                } else {
+                    None
+                };
+                document.add_material(ogeom_doc::Material {
+                    name,
+                    density,
+                    colour,
+                });
+            }
+            "doc-material-of" => {
+                let node: TShapeId = cursor.handle()?;
+                let node = bind_node(&document, node)?;
+                let index = cursor.count()?;
+                let Some(id) = document.material_id(index) else {
+                    ogeom_bail!(Construction, "material {index} is not in this document");
+                };
+                document.assign_material(&Shape::of(node), id);
+            }
+            "doc-layer" => {
+                let name = read_text(&mut cursor)?;
+                let visible = cursor.flag()?;
+                let id = document.add_layer(name);
+                document.set_layer_visible(id, visible);
+            }
+            "doc-on-layer" => {
+                let node: TShapeId = cursor.handle()?;
+                let node = bind_node(&document, node)?;
+                for _ in 0..cursor.count()? {
+                    let index = cursor.count()?;
+                    let Some(id) = document.layer_id(index) else {
+                        ogeom_bail!(Construction, "layer {index} is not in this document");
+                    };
+                    document.place_on_layer(&Shape::of(node), id);
+                }
+            }
+            "doc-check" => {
+                let node: TShapeId = cursor.handle()?;
+                let node = bind_node(&document, node)?;
+                let volume = cursor.number()?;
+                let area = cursor.number()?;
+                let centroid =
+                    ogeom_math::Point::new(cursor.number()?, cursor.number()?, cursor.number()?);
+                document.set_validation(
+                    &Shape::of(node),
+                    ogeom_doc::ValidationProperties {
+                        volume,
+                        area,
+                        centroid,
+                    },
+                );
             }
             "pmi-dim" => {
                 let name = read_text(&mut cursor)?;
@@ -1962,10 +2120,94 @@ mod tests {
             items: vec![face.node()],
         });
 
+        // The attribute layer, all of it: a property of each kind, a
+        // material with density and colour assigned to the bolt, two
+        // layers with the face on both and one hidden, and validation
+        // values recorded against the plate.
+        document.set_property(
+            &face,
+            ogeom_doc::Property {
+                name: "finish".into(),
+                value: ogeom_doc::PropertyValue::Text("brushed".into()),
+            },
+        );
+        document.set_property(
+            &face,
+            ogeom_doc::Property {
+                name: "cost".into(),
+                value: ogeom_doc::PropertyValue::Number(12.5),
+            },
+        );
+        document.set_property(
+            &bolt,
+            ogeom_doc::Property {
+                name: "critical".into(),
+                value: ogeom_doc::PropertyValue::Flag(true),
+            },
+        );
+        let steel = document.add_material(ogeom_doc::Material {
+            name: "AISI 304".into(),
+            density: Some(7900.0),
+            colour: Some(Colour::rgb(0.7, 0.7, 0.75)),
+        });
+        document.assign_material(&bolt, steel);
+        let outline = document.add_layer("outline");
+        let hidden = document.add_layer("construction");
+        document.set_layer_visible(hidden, false);
+        document.place_on_layer(&face, outline);
+        document.place_on_layer(&face, hidden);
+        document.set_validation(
+            &plate,
+            ogeom_doc::ValidationProperties {
+                volume: 8000.0,
+                area: 2400.0,
+                centroid: ogeom_math::Point::new(10.0, 10.0, 2.5),
+            },
+        );
+
         let text = write_document(&document, WriteOptions::default()).unwrap();
         let back = read_document(&text).unwrap();
         let again = write_document(&back, WriteOptions::default()).unwrap();
         assert_eq!(text, again, "the second write reproduces the first");
+
+        // The attribute layer survives whole.
+        // The face rebinds through its persisted key: the names carry it.
+        let read_face = back
+            .names()
+            .find(|(_, n)| *n == "the mounting face")
+            .map(|(node, _)| ogeom_topo::Shape::of(node))
+            .unwrap();
+        let properties = back.properties_of(&read_face);
+        assert_eq!(properties.len(), 2);
+        assert!(
+            properties.iter().any(|p| p.name == "finish"
+                && p.value == ogeom_doc::PropertyValue::Text("brushed".into()))
+        );
+        assert!(
+            properties
+                .iter()
+                .any(|p| p.name == "cost" && p.value == ogeom_doc::PropertyValue::Number(12.5))
+        );
+        assert_eq!(back.materials().len(), 1);
+        assert_eq!(back.materials()[0].name, "AISI 304");
+        assert_eq!(back.materials()[0].density, Some(7900.0));
+        assert_eq!(back.layers().len(), 2);
+        assert!(back.layers()[0].visible);
+        assert!(!back.layers()[1].visible);
+        assert_eq!(back.layers_of(&read_face).len(), 2);
+        let validation = back
+            .validations()
+            .next()
+            .map(|(_, v)| v)
+            .expect("the plate's check values survive");
+        assert!(validation.agrees_with(
+            &ogeom_doc::ValidationProperties {
+                volume: 8000.0,
+                area: 2400.0,
+                centroid: ogeom_math::Point::new(10.0, 10.0, 2.5),
+            },
+            1e-9,
+        ));
 
         // Structure: same products, same occurrences at the same places.
         let names: Vec<&str> = back.products().map(|(_, p)| p.name.as_str()).collect();
