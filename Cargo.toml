@@ -28,7 +28,6 @@ edition = "2024"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/gilbertorconde/ogeom-rs"
-authors = ["ogeom contributors"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
