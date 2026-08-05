@@ -104,6 +104,7 @@ pub struct Document {
     products: Vec<Product>,
     colours: HashMap<TShapeId, Colour>,
     names: HashMap<TShapeId, String>,
+    pmi: crate::pmi::Pmi,
 }
 
 impl Document {
@@ -118,9 +119,7 @@ impl Document {
     pub fn over(model: Model) -> Self {
         Self {
             model,
-            products: Vec::new(),
-            colours: HashMap::new(),
-            names: HashMap::new(),
+            ..Self::default()
         }
     }
 
@@ -374,6 +373,17 @@ impl Document {
     /// Every node-attached name, for a writer to carry out.
     pub fn names(&self) -> impl Iterator<Item = (TShapeId, &str)> {
         self.names.iter().map(|(&node, name)| (node, name.as_str()))
+    }
+
+    /// The document's semantic PMI.
+    #[must_use]
+    pub const fn pmi(&self) -> &crate::pmi::Pmi {
+        &self.pmi
+    }
+
+    /// The PMI, for annotating.
+    pub const fn pmi_mut(&mut self) -> &mut crate::pmi::Pmi {
+        &mut self.pmi
     }
 }
 

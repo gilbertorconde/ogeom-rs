@@ -69,6 +69,7 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
     // shape representation before the assembly edges tie them together.
     let mut pd_of: HashMap<ProductId, u64> = HashMap::new();
     let mut sr_of: HashMap<ProductId, u64> = HashMap::new();
+    let mut anchor_pds: Option<(u64, u64)> = None;
     for (id, product) in document.products() {
         let name = escape(&product.name);
         let p = writer.entity(format!("PRODUCT('{name}','{name}','',(#{pctx}))"));
@@ -101,6 +102,9 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
         sr_of.insert(id, sr);
         let pds = writer.entity(format!("PRODUCT_DEFINITION_SHAPE('','',#{pd})"));
         writer.entity(format!("SHAPE_DEFINITION_REPRESENTATION(#{pds},#{sr})"));
+        if anchor_pds.is_none() && matches!(product.kind, ProductKind::Part { .. }) {
+            anchor_pds = Some((pds, sr));
+        }
     }
 
     // Assembly edges: one usage occurrence per instance, its placement said
@@ -174,6 +178,18 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
         writer.entity(format!(
             "MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',({list}),#{gctx})"
         ));
+    }
+
+    // Semantic PMI: datums first, so tolerances can reference their letters.
+    let pmi = document.pmi();
+    if !pmi.is_empty() {
+        let Some((pds, absr)) = anchor_pds else {
+            ogeom_bail!(
+                Construction,
+                "PMI needs at least one part to anchor its aspects to"
+            );
+        };
+        writer.pmi(pmi, pds, absr, lu, au, gctx)?;
     }
 
     let mut out = String::new();
@@ -604,6 +620,112 @@ impl Writer<'_> {
             Ok(self.entity(format!(
                 "B_SPLINE_SURFACE_WITH_KNOTS('',{u_deg},{v_deg},({grid_text}),.UNSPECIFIED.,.F.,.F.,.F.,({um}),({vm}),({uk}),({vk}),.UNSPECIFIED.)"
             )))
+        }
+    }
+
+    /// The document's PMI, written over the aspects of the anchor part.
+    #[allow(clippy::many_single_char_names)]
+    fn pmi(
+        &mut self,
+        pmi: &ogeom_doc::Pmi,
+        pds: u64,
+        absr: u64,
+        lu: u64,
+        au: u64,
+        gctx: u64,
+    ) -> OgeomResult<()> {
+        let by_node: HashMap<ogeom_topo::TShapeId, u64> =
+            self.written_nodes.iter().copied().collect();
+        let aspect_for = |w: &mut Self, items: &[ogeom_topo::TShapeId]| -> u64 {
+            let aspect = w.entity(format!("SHAPE_ASPECT('','',#{pds},.T.)"));
+            for item in items {
+                if let Some(&step_id) = by_node.get(item) {
+                    w.entity(format!(
+                        "GEOMETRIC_ITEM_SPECIFIC_USAGE('','',#{aspect},#{absr},#{step_id})"
+                    ));
+                }
+            }
+            aspect
+        };
+
+        let mut datum_ids: HashMap<&str, u64> = HashMap::new();
+        for datum in &pmi.datums {
+            let label = escape(&datum.label);
+            let id = self.entity(format!("DATUM('','',#{pds},.F.,'{label}')"));
+            for item in &datum.items {
+                if let Some(&step_id) = by_node.get(item) {
+                    self.entity(format!(
+                        "GEOMETRIC_ITEM_SPECIFIC_USAGE('','',#{id},#{absr},#{step_id})"
+                    ));
+                }
+            }
+            datum_ids.insert(datum.label.as_str(), id);
+        }
+
+        for dimension in &pmi.dimensions {
+            let aspect = aspect_for(self, &dimension.items);
+            let name = escape(&dimension.name);
+            let dim = if dimension.location {
+                self.entity(format!(
+                    "DIMENSIONAL_LOCATION('{name}','',#{aspect},#{aspect})"
+                ))
+            } else {
+                self.entity(format!("DIMENSIONAL_SIZE(#{aspect},'{name}')"))
+            };
+            let measures: Vec<String> = dimension
+                .values
+                .iter()
+                .map(|&v| format!("#{}", self.measure(v, dimension.kind, lu, au)))
+                .collect();
+            let list = measures.join(",");
+            let sdr = self.entity(format!(
+                "SHAPE_DIMENSION_REPRESENTATION('',({list}),#{gctx})"
+            ));
+            self.entity(format!(
+                "DIMENSIONAL_CHARACTERISTIC_REPRESENTATION(#{dim},#{sdr})"
+            ));
+            if dimension.plus.is_some() || dimension.minus.is_some() {
+                let lower = self.measure(dimension.minus.unwrap_or(0.0), dimension.kind, lu, au);
+                let upper = self.measure(dimension.plus.unwrap_or(0.0), dimension.kind, lu, au);
+                let tv = self.entity(format!("TOLERANCE_VALUE(#{lower},#{upper})"));
+                self.entity(format!("PLUS_MINUS_TOLERANCE(#{tv},#{dim})"));
+            }
+        }
+
+        for tolerance in &pmi.tolerances {
+            let aspect = aspect_for(self, &tolerance.items);
+            let name = escape(&tolerance.name);
+            let magnitude =
+                self.measure(tolerance.magnitude, ogeom_doc::MeasureKind::Length, lu, au);
+            let keyword = format!("{}_TOLERANCE", tolerance.kind.to_uppercase());
+            if tolerance.datums.is_empty() {
+                self.entity(format!("{keyword}('{name}','',#{magnitude},#{aspect})"));
+            } else {
+                let refs: Vec<String> = tolerance
+                    .datums
+                    .iter()
+                    .filter_map(|d| datum_ids.get(d.as_str()))
+                    .map(|i| format!("#{i}"))
+                    .collect();
+                let refs = refs.join(",");
+                self.entity(format!(
+                    "{keyword}('{name}','',#{magnitude},#{aspect},({refs}))"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// A measure representation item, in the document's own units.
+    fn measure(&mut self, value: f64, kind: ogeom_doc::MeasureKind, lu: u64, au: u64) -> u64 {
+        let v = real(value);
+        match kind {
+            ogeom_doc::MeasureKind::Length => self.entity(format!(
+                "(LENGTH_MEASURE_WITH_UNIT()MEASURE_REPRESENTATION_ITEM()MEASURE_WITH_UNIT(LENGTH_MEASURE({v}),#{lu})REPRESENTATION_ITEM(''))"
+            )),
+            ogeom_doc::MeasureKind::Angle => self.entity(format!(
+                "(MEASURE_REPRESENTATION_ITEM()MEASURE_WITH_UNIT(PLANE_ANGLE_MEASURE({v}),#{au})PLANE_ANGLE_MEASURE_WITH_UNIT()REPRESENTATION_ITEM(''))"
+            )),
         }
     }
 

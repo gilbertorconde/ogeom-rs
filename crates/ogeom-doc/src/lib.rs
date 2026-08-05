@@ -13,6 +13,8 @@
 //! Deliberately not a label-and-attribute tree. The capability is required; that
 //! particular design, and compatibility with anyone's file format, are not.
 
+pub mod pmi;
 pub mod structure;
 
+pub use pmi::{Datum, Dimension, GeometricTolerance, MeasureKind, Pmi};
 pub use structure::{Colour, Document, Instance, Occurrence, Product, ProductId, ProductKind};

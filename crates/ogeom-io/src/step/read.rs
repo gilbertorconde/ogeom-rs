@@ -1269,6 +1269,7 @@ impl Reader<'_> {
         // through the reader's own unit handling.
         let structure = self.product_structure(by_msb);
         let colours = self.colours(by_msb);
+        let pmi = self.pmi_of();
 
         let mut document = ogeom_doc::Document::over(std::mem::take(&mut self.model));
         match structure {
@@ -1282,6 +1283,7 @@ impl Reader<'_> {
         for (shape, colour) in colours {
             document.set_colour(&shape, colour);
         }
+        *document.pmi_mut() = pmi;
         Ok(document)
     }
 
@@ -1667,6 +1669,338 @@ impl Reader<'_> {
         collect_refs(&args, &mut refs);
         refs.into_iter()
             .find_map(|next| self.colour_in(next, depth + 1))
+    }
+
+    // --- semantic PMI --------------------------------------------------------
+
+    /// The file's semantic PMI: dimensions, geometric tolerances, datums.
+    ///
+    /// Annotations that resist stay out with a warning; PMI never takes the
+    /// geometry down.
+    fn pmi_of(&mut self) -> ogeom_doc::Pmi {
+        let mut pmi = ogeom_doc::Pmi::new();
+
+        // Which topology each shape aspect describes: directly through
+        // GEOMETRIC_ITEM_SPECIFIC_USAGE, and one relationship step outward,
+        // because composite aspects hold their pieces through relationships.
+        let mut aspect_items: HashMap<u64, Vec<ogeom_topo::TShapeId>> = HashMap::new();
+        let mut gisus = self.ids_with("GEOMETRIC_ITEM_SPECIFIC_USAGE");
+        gisus.sort_unstable();
+        for id in gisus {
+            let Ok(args) = self.args(id, "GEOMETRIC_ITEM_SPECIFIC_USAGE") else {
+                continue;
+            };
+            let (Some(aspect), Some(item)) = (
+                args.get(2).and_then(Arg::reference),
+                args.get(4).and_then(Arg::reference),
+            ) else {
+                continue;
+            };
+            let node = self
+                .faces
+                .get(&item)
+                .map(Shape::node)
+                .or_else(|| self.edges.get(&item).map(|(shape, ..)| shape.node()));
+            if let Some(node) = node {
+                aspect_items.entry(aspect).or_default().push(node);
+            }
+        }
+        let mut adjacency: HashMap<u64, Vec<u64>> = HashMap::new();
+        for id in self.ids_with("SHAPE_ASPECT_RELATIONSHIP") {
+            let Ok(args) = self.args(id, "SHAPE_ASPECT_RELATIONSHIP") else {
+                continue;
+            };
+            if let (Some(a), Some(b)) = (
+                args.get(2).and_then(Arg::reference),
+                args.get(3).and_then(Arg::reference),
+            ) {
+                adjacency.entry(a).or_default().push(b);
+                adjacency.entry(b).or_default().push(a);
+            }
+        }
+        let items_for = |aspect: u64| -> Vec<ogeom_topo::TShapeId> {
+            // Two relationship steps: a composite aspect holds components,
+            // and a datum sits one link behind its datum features.
+            let mut reach = vec![aspect];
+            for _ in 0..2 {
+                let mut next = reach.clone();
+                for a in &reach {
+                    next.extend(adjacency.get(a).into_iter().flatten().copied());
+                }
+                next.sort_unstable();
+                next.dedup();
+                reach = next;
+            }
+            let mut out: Vec<ogeom_topo::TShapeId> = Vec::new();
+            for a in reach {
+                out.extend(aspect_items.get(&a).into_iter().flatten().copied());
+            }
+            out.sort_unstable();
+            out.dedup();
+            out
+        };
+
+        // Dimensions: characteristic -> representation, values from the
+        // measure items, bounds from any plus/minus tolerance over the same
+        // characteristic.
+        let mut plus_minus: HashMap<u64, (Option<f64>, Option<f64>)> = HashMap::new();
+        for id in self.ids_with("PLUS_MINUS_TOLERANCE") {
+            let Ok(args) = self.args(id, "PLUS_MINUS_TOLERANCE") else {
+                continue;
+            };
+            let (Some(tv), Some(dim)) = (
+                args.first().and_then(Arg::reference),
+                args.get(1).and_then(Arg::reference),
+            ) else {
+                continue;
+            };
+            let Ok(tv_args) = self.args(tv, "TOLERANCE_VALUE") else {
+                continue;
+            };
+            let lower = tv_args
+                .first()
+                .and_then(Arg::reference)
+                .and_then(|r| self.measure_value(r))
+                .map(|(v, _)| v);
+            let upper = tv_args
+                .get(1)
+                .and_then(Arg::reference)
+                .and_then(|r| self.measure_value(r))
+                .map(|(v, _)| v);
+            plus_minus.insert(dim, (lower, upper));
+        }
+        let mut dcrs = self.ids_with("DIMENSIONAL_CHARACTERISTIC_REPRESENTATION");
+        dcrs.sort_unstable();
+        for id in dcrs {
+            let Ok(args) = self.args(id, "DIMENSIONAL_CHARACTERISTIC_REPRESENTATION") else {
+                continue;
+            };
+            let (Some(dim), Some(sdr)) = (
+                args.first().and_then(Arg::reference),
+                args.get(1).and_then(Arg::reference),
+            ) else {
+                continue;
+            };
+            let mut values = Vec::new();
+            let mut kind = ogeom_doc::MeasureKind::Length;
+            if let Ok(sdr_args) = self.args(sdr, "SHAPE_DIMENSION_REPRESENTATION") {
+                for item in sdr_args.get(1).and_then(Arg::list).unwrap_or(&[]) {
+                    if let Some(r) = item.reference()
+                        && let Some((v, k)) = self.measure_value(r)
+                    {
+                        values.push(v);
+                        kind = k;
+                    }
+                }
+            }
+            let (name, location, aspects) = self.dimension_shape(dim);
+            let mut items = Vec::new();
+            for aspect in aspects {
+                items.extend(items_for(aspect));
+            }
+            items.sort_unstable();
+            items.dedup();
+            let (minus, plus) = plus_minus.get(&dim).copied().unwrap_or((None, None));
+            pmi.dimensions.push(ogeom_doc::Dimension {
+                name,
+                values,
+                kind,
+                plus,
+                minus,
+                items,
+                location,
+            });
+        }
+
+        // Geometric tolerances: any instance whose subtype names one. The
+        // complex form keeps its attributes on the GEOMETRIC_TOLERANCE part;
+        // the simple form flattens them into the subtype's own list.
+        let is_subtype = |k: &str| {
+            k.ends_with("_TOLERANCE")
+                && !matches!(
+                    k,
+                    "GEOMETRIC_TOLERANCE"
+                        | "GEOMETRIC_TOLERANCE_WITH_DATUM_REFERENCE"
+                        | "GEOMETRIC_TOLERANCE_WITH_DEFINED_UNIT"
+                        | "GEOMETRIC_TOLERANCE_WITH_MODIFIERS"
+                        | "GEOMETRIC_TOLERANCE_WITH_MAXIMUM_TOLERANCE"
+                        | "PLUS_MINUS_TOLERANCE"
+                        | "TOLERANCE_VALUE"
+                )
+        };
+        let mut gts: Vec<u64> = self
+            .exchange
+            .data
+            .iter()
+            .filter(|(_, inst)| inst.parts().any(|(k, _)| is_subtype(k)))
+            .map(|(id, _)| *id)
+            .collect();
+        gts.sort_unstable();
+        for id in gts {
+            let (name, magnitude_ref, aspect, kind, datum_refs) = {
+                let Ok(instance) = self.instance(id) else {
+                    continue;
+                };
+                let subtype = instance
+                    .parts()
+                    .map(|(k, _)| k.to_owned())
+                    .find(|k| is_subtype(k));
+                let Some(subtype) = subtype else {
+                    continue;
+                };
+                let base = instance
+                    .part("GEOMETRIC_TOLERANCE")
+                    .or_else(|| instance.part(&subtype))
+                    .unwrap_or(&[])
+                    .to_vec();
+                let name = match base.first() {
+                    Some(Arg::Str(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                let magnitude_ref = base.get(2).and_then(Arg::reference);
+                let aspect = base.get(3).and_then(Arg::reference);
+                let kind = Some(subtype.trim_end_matches("_TOLERANCE").to_lowercase());
+                // The complex form keeps the datum list on its own part;
+                // the simple form appends it as the subtype's fifth argument.
+                let datum_refs: Vec<u64> = instance
+                    .part("GEOMETRIC_TOLERANCE_WITH_DATUM_REFERENCE")
+                    .and_then(|args| args.first())
+                    .and_then(Arg::list)
+                    .or_else(|| base.get(4).and_then(Arg::list))
+                    .map(|list| list.iter().filter_map(Arg::reference).collect())
+                    .unwrap_or_default();
+                (name, magnitude_ref, aspect, kind, datum_refs)
+            };
+            let Some(kind) = kind else {
+                continue;
+            };
+            let magnitude = magnitude_ref
+                .and_then(|r| self.measure_value(r))
+                .map_or(0.0, |(v, _)| v);
+            let datums: Vec<String> = datum_refs
+                .iter()
+                .filter_map(|&r| self.datum_letter(r, 0))
+                .collect();
+            let items = aspect.map(items_for).unwrap_or_default();
+            pmi.tolerances.push(ogeom_doc::GeometricTolerance {
+                kind,
+                name,
+                magnitude,
+                datums,
+                items,
+            });
+        }
+
+        // Datums: the letters, with the features they mark reached through
+        // the aspect graph.
+        let mut datums = self.ids_with("DATUM");
+        datums.sort_unstable();
+        for id in datums {
+            let letter = {
+                let Ok(instance) = self.instance(id) else {
+                    continue;
+                };
+                if instance.part("DATUM_FEATURE").is_some()
+                    || instance.part("DATUM_REFERENCE").is_some()
+                    || instance.part("DATUM_REFERENCE_COMPARTMENT").is_some()
+                    || instance.part("DATUM_SYSTEM").is_some()
+                {
+                    continue;
+                }
+                let Some(args) = instance.part("DATUM") else {
+                    continue;
+                };
+                match args.get(4) {
+                    Some(Arg::Str(s)) if !s.is_empty() => s.clone(),
+                    _ => continue,
+                }
+            };
+            pmi.datums.push(ogeom_doc::Datum {
+                label: letter,
+                items: items_for(id),
+            });
+        }
+        pmi
+    }
+
+    /// Every instance id carrying a part with this keyword.
+    fn ids_with(&self, keyword: &str) -> Vec<u64> {
+        self.exchange
+            .data
+            .iter()
+            .filter(|(_, inst)| inst.part(keyword).is_some())
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// A measure item's value and kind, scaled into the document's units.
+    fn measure_value(&mut self, id: u64) -> Option<(f64, ogeom_doc::MeasureKind)> {
+        let args = {
+            let instance = self.instance(id).ok()?;
+            instance.part("MEASURE_WITH_UNIT")?.to_vec()
+        };
+        match args.first() {
+            Some(Arg::Typed(kind, inner)) => {
+                let value = inner.first().and_then(Arg::number)?;
+                if kind.contains("ANGLE") {
+                    Some((value * self.angle_scale, ogeom_doc::MeasureKind::Angle))
+                } else {
+                    Some((value * self.report.scale_mm, ogeom_doc::MeasureKind::Length))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// A dimensional characteristic's name, kind and aspects.
+    fn dimension_shape(&mut self, dim: u64) -> (String, bool, Vec<u64>) {
+        if let Ok(args) = self.args(dim, "DIMENSIONAL_SIZE") {
+            let name = match args.get(1) {
+                Some(Arg::Str(s)) => s.clone(),
+                _ => String::new(),
+            };
+            let aspects = args.first().and_then(Arg::reference).into_iter().collect();
+            return (name, false, aspects);
+        }
+        if let Ok(args) = self.args(dim, "DIMENSIONAL_LOCATION") {
+            let name = match args.first() {
+                Some(Arg::Str(s)) => s.clone(),
+                _ => String::new(),
+            };
+            let aspects = [args.get(2), args.get(3)]
+                .into_iter()
+                .flatten()
+                .filter_map(Arg::reference)
+                .collect();
+            return (name, true, aspects);
+        }
+        (String::new(), false, Vec::new())
+    }
+
+    /// The datum letter reachable from a datum reference, depth-bounded: the
+    /// reference chain runs through compartments and systems, and files
+    /// arrange it differently.
+    fn datum_letter(&mut self, id: u64, depth: usize) -> Option<String> {
+        if depth > 4 {
+            return None;
+        }
+        let (letter, refs) = {
+            let instance = self.instance(id).ok()?;
+            let letter = instance.part("DATUM").and_then(|args| match args.get(4) {
+                Some(Arg::Str(s)) if !s.is_empty() => Some(s.clone()),
+                _ => None,
+            });
+            let mut refs = Vec::new();
+            for (_, args) in instance.parts() {
+                collect_refs(args, &mut refs);
+            }
+            (letter, refs)
+        };
+        if let Some(letter) = letter {
+            return Some(letter);
+        }
+        refs.into_iter()
+            .find_map(|r| self.datum_letter(r, depth + 1))
     }
 }
 
