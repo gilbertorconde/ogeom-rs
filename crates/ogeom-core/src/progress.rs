@@ -6,7 +6,7 @@
 //! [`watched`], hand its [`Canceller`] to whoever may pull the plug, and
 //! every long loop inside the kernel calls [`checkpoint`] at its own
 //! boundaries. A cancelled checkpoint returns
-//! [`OgeomError::Cancelled`](crate::OgeomError::Cancelled), which unwinds as
+//! [`OgeomError::Cancelled`], which unwinds as
 //! an ordinary error — no partial result pretends to be whole.
 //!
 //! The watch travels implicitly, by scope: operations keep their signatures,
@@ -142,7 +142,7 @@ pub fn watched<T>(watch: &Watch, f: impl FnOnce() -> T) -> T {
 ///
 /// # Errors
 ///
-/// [`OgeomError::Cancelled`](crate::OgeomError::Cancelled) if the active
+/// [`OgeomError::Cancelled`] if the active
 /// watch has been cancelled.
 pub fn checkpoint() -> OgeomResult<()> {
     ACTIVE.with(|active| {
