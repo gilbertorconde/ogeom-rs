@@ -62,23 +62,34 @@ pub fn recognize_points(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<Recognized>> {
-    if points.len() < 6 || points.len() != normals.len() {
+    if points.len() < 3 || points.len() != normals.len() {
         ogeom_bail!(
             Construction,
-            "recognition needs at least six samples with matching normals"
+            "recognition needs at least three samples with matching normals"
         );
     }
     if !tolerance.is_finite() || tolerance <= 0.0 {
         ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
     }
 
-    let candidates = [
-        fit_plane(points, tol),
-        fit_sphere(points, tol),
-        fit_cylinder(points, normals, tol),
-        fit_cone(points, normals, tol),
-        fit_torus(points, normals, tol),
-    ];
+    // Each kind has its own sample floor: below it the fit is
+    // underdetermined and the verification would rubber-stamp whatever the
+    // algebra produced. A plane is honest from three samples; the torus
+    // wants eight.
+    let n = points.len();
+    let mut candidates: Vec<Option<Canonical>> = vec![fit_plane(points, tol)];
+    if n >= 5 {
+        candidates.push(fit_sphere(points, tol));
+    }
+    if n >= 6 {
+        candidates.push(fit_cylinder(points, normals, tol));
+    }
+    if n >= 7 {
+        candidates.push(fit_cone(points, normals, tol));
+    }
+    if n >= 8 {
+        candidates.push(fit_torus(points, normals, tol));
+    }
     for candidate in candidates.into_iter().flatten() {
         let deviation = worst_deviation(&candidate, points);
         if deviation <= tolerance {
@@ -395,6 +406,89 @@ fn fit_torus(points: &[Point], normals: &[Vector], tol: Tolerances) -> Option<Ca
     Some(Canonical::Torus(
         Torus::new(Frame::about(centre, axis), major, minor, tol).ok()?,
     ))
+}
+
+/// Rebuild a mesh as topology with canonical recognition deciding the
+/// curved regions — the whole §9 debt in one call.
+///
+/// Planar recovery is exact as before; every curved region is recognized
+/// through [`recognize_points`] at `tolerance` and rebuilt on the surface
+/// it *is*, its boundary chords shared with the planar neighbours and
+/// their sag recorded. A region that is genuinely free-form at the stated
+/// tolerance still refuses the rebuild, by name.
+///
+/// # Errors
+///
+/// As [`ogeom_algo::to_brep`].
+pub fn mesh_to_brep(
+    model: &mut ogeom_topo::Model,
+    mesh: &ogeom_topo::Triangulation,
+    crease: f64,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<ogeom_algo::Built> {
+    ogeom_algo::to_brep_with(model, mesh, crease, tolerance, tol, &|points, normals| {
+        let Some(found) = recognize_points(points, normals, tolerance, tol)? else {
+            return Ok(None);
+        };
+        // Window the recognized surface to the samples' own reach, with a
+        // margin — an unbounded canonical maps a face to a dot in its
+        // chart.
+        Ok(Some(windowed(found.surface, points, tol)?))
+    })
+}
+
+/// A canonical surface bounded to cover `points` with a margin.
+fn windowed(
+    canonical: Canonical,
+    points: &[Point],
+    tol: Tolerances,
+) -> OgeomResult<SurfaceGeometry> {
+    use ogeom_geom::{ConeSurface, CylinderSurface, PlaneSurface, SphereSurface, TorusSurface};
+    Ok(match canonical {
+        Canonical::Plane(p) => {
+            let frame = p.frame();
+            let (mut u0, mut u1, mut v0, mut v1) = (
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            );
+            for point in points {
+                let local = frame.to_local(*point);
+                u0 = u0.min(local.x);
+                u1 = u1.max(local.x);
+                v0 = v0.min(local.y);
+                v1 = v1.max(local.y);
+            }
+            let margin = ((u1 - u0) + (v1 - v0)).mul_add(0.25, tol.confusion());
+            PlaneSurface::over(p, (u0 - margin, u1 + margin), (v0 - margin, v1 + margin))?.into()
+        }
+        Canonical::Cylinder(c) => {
+            let frame = c.frame();
+            let (mut h0, mut h1) = (f64::INFINITY, f64::NEG_INFINITY);
+            for point in points {
+                let h = (*point - frame.origin()).dot(frame.z().vector());
+                h0 = h0.min(h);
+                h1 = h1.max(h);
+            }
+            let margin = (h1 - h0).mul_add(0.25, tol.confusion());
+            CylinderSurface::new(c, (h0 - margin, h1 + margin))?.into()
+        }
+        Canonical::Cone(c) => {
+            let frame = c.frame();
+            let (mut h0, mut h1) = (f64::INFINITY, f64::NEG_INFINITY);
+            for point in points {
+                let h = (*point - frame.origin()).dot(frame.z().vector());
+                h0 = h0.min(h);
+                h1 = h1.max(h);
+            }
+            let margin = (h1 - h0).mul_add(0.25, tol.confusion());
+            ConeSurface::new(c, (h0 - margin, h1 + margin))?.into()
+        }
+        Canonical::Sphere(s) => SphereSurface::new(s).into(),
+        Canonical::Torus(t) => TorusSurface::new(t).into(),
+    })
 }
 
 #[cfg(test)]

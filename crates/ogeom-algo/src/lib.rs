@@ -52,7 +52,7 @@ pub use primitive::{
     make_box, make_cone, make_cylinder, make_half_space, make_sphere, make_torus, make_wedge,
 };
 pub use proximity::{ClosestPair, ShapeDistance, distance_between_shapes};
-pub use reconstruct::{CREASE, Region, planar_regions, to_brep};
+pub use reconstruct::{CREASE, Region, SurfaceRecognizer, planar_regions, to_brep, to_brep_with};
 pub use sew::{Sewn, make_wire_unordered, order_edges, sew};
 pub use sweep::{make_prism, make_revolution};
 pub use text::make_text;

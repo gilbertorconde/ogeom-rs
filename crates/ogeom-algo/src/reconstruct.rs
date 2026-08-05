@@ -194,6 +194,368 @@ pub fn planar_regions(
     Ok((regions, leftover))
 }
 
+/// A curved region: triangles grown across smooth (sub-crease) edges, with
+/// its boundary loops — the raw material canonical recognition decides on.
+#[derive(Debug, Clone)]
+pub struct CurvedRegion {
+    /// Which triangles of the mesh belong to it.
+    pub triangles: Vec<usize>,
+    /// Its boundary, as loops of mesh vertex indices, outer first.
+    pub loops: Vec<Vec<u32>>,
+    /// One sample per triangle: centroid and unit normal.
+    pub samples: Vec<(Point, Vector)>,
+}
+
+/// Distance to a surface's *unbounded* carrier, where it has one — the
+/// adoption test must not be defeated by a window clamped tight around a
+/// half-grown region.
+fn carrier_distance(surface: &ogeom_geom::SurfaceGeometry, p: Point) -> Option<f64> {
+    use ogeom_geom::SurfaceGeometry as S;
+    Some(match surface {
+        S::Plane(pl) => pl.plane().signed_distance_to(p).abs(),
+        S::Cylinder(c) => c.cylinder().distance_to(p),
+        S::Cone(c) => c.cone().distance_to(p),
+        S::Sphere(s) => (p.distance(s.sphere().centre()) - s.sphere().radius()).abs(),
+        S::Torus(t) => t.torus().distance_to(p),
+        _ => return None,
+    })
+}
+
+/// Segment the triangles no planar region claimed, *recognition-driven*:
+/// a region grows only while the recognizer still accounts for it.
+///
+/// Tangent-smooth junctions — a fillet meeting its wall — are invisible to
+/// the crease test, so a smooth blob can span several true surfaces. The
+/// segmentation therefore grows greedily but validates: below the sample
+/// floor it takes the smoothest continuation, and from there on a triangle
+/// joins only if the grown set still recognizes as one surface. A blob no
+/// segmentation of which recognizes refuses the rebuild, by name.
+fn segmented_regions(
+    mesh: &Triangulation,
+    leftover: &[usize],
+    crease: f64,
+    recognition_tolerance: f64,
+    tol: Tolerances,
+    planar: &mut [Region],
+    recognize: &SurfaceRecognizer<'_>,
+) -> OgeomResult<Vec<(CurvedRegion, ogeom_geom::SurfaceGeometry)>> {
+    let in_leftover: HashSet<usize> = leftover.iter().copied().collect();
+    let neighbours = adjacency(mesh);
+    let sample_of = |t: usize| -> Option<(Point, Vector)> {
+        let [a, b, c] = mesh.triangles[t];
+        let (pa, pb, pc) = (
+            mesh.positions[a as usize],
+            mesh.positions[b as usize],
+            mesh.positions[c as usize],
+        );
+        let n = (pb - pa).cross(pc - pa);
+        let m = n.magnitude();
+        if m <= tol.confusion() {
+            return None;
+        }
+        let centroid = Point::new(
+            (pa.x + pb.x + pc.x) / 3.0,
+            (pa.y + pb.y + pc.y) / 3.0,
+            (pa.z + pb.z + pc.z) / 3.0,
+        );
+        Some((centroid, n / m))
+    };
+    let try_recognize = |members: &[usize]| -> OgeomResult<Option<ogeom_geom::SurfaceGeometry>> {
+        let mut points = Vec::with_capacity(members.len());
+        let mut normals = Vec::with_capacity(members.len());
+        for t in members {
+            let Some((p, n)) = sample_of(*t) else {
+                continue;
+            };
+            points.push(p);
+            normals.push(n);
+        }
+        if points.len() < 3 {
+            return Ok(None);
+        }
+        recognize(&points, &normals)
+    };
+
+    let mut taken: HashSet<usize> = HashSet::new();
+    let mut grown: Vec<(Vec<usize>, ogeom_geom::SurfaceGeometry)> = Vec::new();
+    // Seeds re-run until nothing changes: a triangle peeled back by one
+    // region's validation gets its own chance to seed the next.
+    let mut pool: Vec<usize> = leftover.to_vec();
+    pool.sort_unstable();
+    let mut passes = 0;
+    loop {
+        passes += 1;
+        let claimed_before = taken.len();
+        let mut seeds: Vec<usize> = pool
+            .iter()
+            .copied()
+            .filter(|t| !taken.contains(t))
+            .collect();
+        // Interiors first: a seed whose neighbourhood is flattest sits deep
+        // inside one surface, so the blind opening of its growth cannot
+        // straddle a junction. Junction triangles join late, when validation
+        // is already deciding.
+        let interiorness = |t: &usize| -> u64 {
+            let Some((_, n)) = sample_of(*t) else {
+                return u64::MAX;
+            };
+            let worst = neighbours
+                .get(t)
+                .into_iter()
+                .flatten()
+                .filter_map(|other| {
+                    sample_of(*other).map(|(_, m)| n.dot(m).clamp(-1.0, 1.0).acos())
+                })
+                .fold(0.0f64, f64::max);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a bounded angle key"
+            )]
+            let key = (worst * 1e9) as u64;
+            key
+        };
+        seeds.sort_by_key(|t| (interiorness(t), *t));
+        for seed in seeds {
+            if taken.contains(&seed) || sample_of(seed).is_none() {
+                taken.insert(seed);
+                continue;
+            }
+            let mut members = vec![seed];
+            taken.insert(seed);
+            let mut surface: Option<ogeom_geom::SurfaceGeometry> = None;
+            // A flat seed bootstraps smoothest-first and stays on its plane; a
+            // curved seed bootstraps roughest-first so its opening samples span
+            // the curvature instead of running along a coplanar strip.
+            let seed_is_flat = {
+                let local = sample_of(seed).map(|(_, n)| {
+                    neighbours
+                        .get(&seed)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|other| {
+                            sample_of(*other).map(|(_, m)| n.dot(m).clamp(-1.0, 1.0).acos())
+                        })
+                        .fold(0.0f64, f64::max)
+                });
+                local.is_some_and(|worst| worst < 1e-6)
+            };
+            loop {
+                ogeom_core::progress::checkpoint()?;
+                // Frontier: unclaimed leftover triangles smooth against some
+                // member, ordered smoothest-first so the bootstrap stays on one
+                // surface.
+                let mut frontier: Vec<(f64, usize)> = Vec::new();
+                for m in &members {
+                    let Some((_, nm)) = sample_of(*m) else {
+                        continue;
+                    };
+                    for next in neighbours.get(m).into_iter().flatten() {
+                        if taken.contains(next) || !in_leftover.contains(next) {
+                            continue;
+                        }
+                        let Some((_, nn)) = sample_of(*next) else {
+                            continue;
+                        };
+                        let turn = nm.dot(nn).clamp(-1.0, 1.0).acos();
+                        if turn < crease && !frontier.iter().any(|(_, t)| t == next) {
+                            frontier.push((turn, *next));
+                        }
+                    }
+                }
+                // Bootstrap roughest-first: the opening samples must *span* the
+                // region's curvature, or a curved band bootstraps along its own
+                // coplanar strips and locks as the plane those strips are.
+                // Once the kind is locked, validation decides and the order
+                // stops mattering.
+                if surface.is_none() && !seed_is_flat {
+                    frontier.sort_by(|x, y| {
+                        y.0.partial_cmp(&x.0).unwrap_or(core::cmp::Ordering::Equal)
+                    });
+                } else {
+                    frontier.sort_by(|x, y| {
+                        x.0.partial_cmp(&y.0).unwrap_or(core::cmp::Ordering::Equal)
+                    });
+                }
+                let mut grew = false;
+                // The first validation happens on the members alone, before any
+                // ninth candidate — so the lock is set by what the seed's own
+                // neighbourhood is, not by what a mixture happens to fit.
+                if members.len() >= 8 && surface.is_none() {
+                    surface = try_recognize(&members)?;
+                    if surface.is_none() {
+                        break;
+                    }
+                }
+                for (_, candidate) in frontier {
+                    if members.len() < 8 {
+                        members.push(candidate);
+                        taken.insert(candidate);
+                        grew = true;
+                        break;
+                    }
+                    let mut trial = members.clone();
+                    trial.push(candidate);
+                    if let Some(fit) = try_recognize(&trial)? {
+                        // Kind lock: a region that has recognized as one kind
+                        // may not morph into another as it grows — a nearly
+                        // planar sample set also fits a giant cylinder, and
+                        // without the lock a plane eats its neighbouring blend
+                        // through exactly that loophole.
+                        if let Some(held) = &surface
+                            && core::mem::discriminant(held) != core::mem::discriminant(&fit)
+                        {
+                            continue;
+                        }
+                        members = trial;
+                        taken.insert(candidate);
+                        surface = Some(fit);
+                        grew = true;
+                        break;
+                    }
+                }
+                if !grew {
+                    break;
+                }
+            }
+            let mut surface = match surface {
+                Some(s) => Some(s),
+                None => try_recognize(&members)?,
+            };
+            // The blind bootstrap can straddle a tangent junction: peel the
+            // most recent additions back until what remains recognizes, and
+            // return the peeled triangles to the pool for their own region.
+            while surface.is_none() && members.len() > 1 {
+                let popped = members.pop().unwrap_or(seed);
+                taken.remove(&popped);
+                if members.len() >= 3 {
+                    surface = try_recognize(&members)?;
+                }
+            }
+            if let Some(surface) = surface {
+                grown.push((members, surface));
+            } else if members.len() >= 3 {
+                ogeom_bail!(
+                    Construction,
+                    "{} of {} triangles form a curved region canonical recognition \
+                 does not account for. Fitting a surface anyway would give a \
+                 solid that looks right and has the wrong surface underneath \
+                 every later operation",
+                    members.len(),
+                    mesh.triangles.len()
+                );
+            } else {
+                // Too small to recognize alone; the adoption pass below places
+                // it with a neighbour whose surface accounts for it.
+                for t in members {
+                    taken.remove(&t);
+                }
+            }
+        }
+
+        if taken.len() == claimed_before || passes >= 8 {
+            break;
+        }
+    }
+
+    // Adoption: a leftover triangle joins an adjacent recognized region if
+    // it lies on that region's own surface.
+    let mut orphans: Vec<usize> = leftover
+        .iter()
+        .copied()
+        .filter(|t| !taken.contains(t))
+        .collect();
+    orphans.sort_unstable();
+    let mut settled = true;
+    let mut dirty_planar = false;
+    while settled {
+        settled = false;
+        orphans.retain(|orphan| {
+            let Some((centroid, _)) = sample_of(*orphan) else {
+                return false;
+            };
+            // Every vertex-sharing region is a candidate; the orphan goes
+            // to the one whose carrier it actually lies on — best fit, not
+            // first fit, because a corner triangle can graze several
+            // planes within any reasonable gate.
+            let orphan_vertices: Vec<u32> = mesh.triangles[*orphan].to_vec();
+            let touches = |t: &usize| {
+                mesh.triangles[*t]
+                    .iter()
+                    .any(|v| orphan_vertices.contains(v))
+            };
+            let mut candidates: Vec<(f64, usize, bool)> = Vec::new();
+            for (index, region) in planar.iter().enumerate() {
+                if region.triangles.iter().any(touches) {
+                    candidates.push((region.plane.signed_distance_to(centroid).abs(), index, true));
+                }
+            }
+            for (index, (members, surface)) in grown.iter().enumerate() {
+                if members.iter().any(touches) {
+                    let d = carrier_distance(surface, centroid)
+                        .or_else(|| {
+                            crate::measure::project_on_surface(surface, centroid, 12, tol)
+                                .ok()
+                                .map(|projection| projection.point.distance(centroid))
+                        })
+                        .unwrap_or(f64::INFINITY);
+                    candidates.push((d, index, false));
+                }
+            }
+            candidates.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(core::cmp::Ordering::Equal));
+            eprintln!("DBGX orphan {orphan} at {centroid:?}");
+            for (d, index, is_planar) in candidates {
+                if d > recognition_tolerance.max(tol.confusion() * 10.0) {
+                    continue;
+                }
+                if is_planar {
+                    planar[index].triangles.push(*orphan);
+                    dirty_planar = true;
+                } else {
+                    grown[index].0.push(*orphan);
+                }
+                settled = true;
+                return false;
+            }
+            true
+        });
+    }
+    if !orphans.is_empty() {
+        ogeom_bail!(
+            Construction,
+            "{} of {} triangles form a curved region canonical recognition \
+             does not account for. Fitting a surface anyway would give a \
+             solid that looks right and has the wrong surface underneath \
+             every later operation",
+            orphans.len(),
+            mesh.triangles.len()
+        );
+    }
+    if dirty_planar {
+        for region in planar.iter_mut() {
+            region.loops = boundary_loops(mesh, &region.triangles);
+        }
+    }
+
+    let mut out = Vec::new();
+    for (members, surface) in grown {
+        let loops = boundary_loops(mesh, &members);
+        if loops.is_empty() {
+            continue;
+        }
+        let samples = members.iter().filter_map(|t| sample_of(*t)).collect();
+        out.push((
+            CurvedRegion {
+                triangles: members,
+                loops,
+                samples,
+            },
+            surface,
+        ));
+    }
+    Ok(out)
+}
+
 /// Rebuild a mesh as topology.
 ///
 /// Every triangle must belong to a planar region: a mesh with a curved part is
@@ -214,22 +576,50 @@ pub fn to_brep(
     crease: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    to_brep_with(model, mesh, crease, tol.confusion() * 1e3, tol, &|_, _| {
+        Ok(None)
+    })
+}
+
+/// The kind of recognizer [`to_brep_with`] consumes: samples with normals
+/// in, a recognized surface out — or `None`, which is a refusal to guess.
+pub type SurfaceRecognizer<'a> =
+    dyn Fn(&[Point], &[Vector]) -> OgeomResult<Option<ogeom_geom::SurfaceGeometry>> + 'a;
+
+/// As [`to_brep`], with a canonical recognizer deciding the curved regions.
+///
+/// Triangles no planar region claims are grown into smooth curved regions
+/// and handed to `recognize`; a region the recognizer declines still
+/// refuses the whole rebuild, because fitting a wrong surface underneath is
+/// worse than failing. Curved boundary edges keep the mesh's own chords,
+/// shared with their planar neighbours — which is what closes the shell —
+/// and each records the measured sag between chord and surface on its own
+/// tolerance.
+///
+/// # Errors
+///
+/// As [`to_brep`].
+pub fn to_brep_with(
+    model: &mut Model,
+    mesh: &Triangulation,
+    crease: f64,
+    recognition_tolerance: f64,
+    tol: Tolerances,
+    recognize: &SurfaceRecognizer<'_>,
+) -> OgeomResult<Built> {
     if mesh.triangles.is_empty() {
         ogeom_bail!(Construction, "there are no triangles to rebuild from");
     }
-    let (regions, leftover) = planar_regions(mesh, crease, tol)?;
-    if !leftover.is_empty() {
-        ogeom_bail!(
-            Construction,
-            "{} of {} triangles are not in any planar region, so this mesh has \
-             curved parts. Recognising a curved region as the surface it came \
-             from is canonical recognition, and fitting one instead would give \
-             a solid that looks right and has the wrong surface underneath \
-             every later operation",
-            leftover.len(),
-            mesh.triangles.len()
-        );
-    }
+    let (mut regions, leftover) = planar_regions(mesh, crease, tol)?;
+    let recognized = segmented_regions(
+        mesh,
+        &leftover,
+        crease,
+        recognition_tolerance,
+        tol,
+        &mut regions,
+        recognize,
+    )?;
     model.begin_operation();
 
     // One vertex per mesh vertex that any boundary uses, shared between every
@@ -291,6 +681,109 @@ pub fn to_brep(
             wires.push(make_wire(model, &edges, tol)?.shape);
         }
         let face = make_face_on(model, surface, &wires, tol)?.shape;
+        model.set_derived(&face, &[], roles::RECOVERED_FACE)?;
+        faces.push(face);
+    }
+
+    for (region, curved_surface) in &recognized {
+        use ogeom_geom::Surface as _;
+        let surface_id = model.geometry_mut().add_surface(curved_surface.clone());
+        let periodic_u = curved_surface.is_periodic_u();
+        let u_period = {
+            let ((ua, ub), _) = curved_surface.domain();
+            ub - ua
+        };
+        let mut wires = Vec::with_capacity(region.loops.len());
+        for ring in &region.loops {
+            // Chart parameters per ring vertex, the angle unwrapped so a
+            // ring that crosses the chart's period stays continuous.
+            let mut params: Vec<Point2> = Vec::with_capacity(ring.len());
+            for (k, index) in ring.iter().enumerate() {
+                let p = mesh.positions[*index as usize];
+                let projected = crate::measure::project_on_surface(curved_surface, p, 16, tol)?;
+                let (mut u, v) = projected.parameters;
+                if periodic_u && k > 0 {
+                    let prev = params[k - 1].x;
+                    while u - prev > u_period / 2.0 {
+                        u -= u_period;
+                    }
+                    while prev - u > u_period / 2.0 {
+                        u += u_period;
+                    }
+                }
+                params.push(Point2::new(u, v));
+            }
+            let mut edges = Vec::with_capacity(ring.len());
+            for i in 0..ring.len() {
+                let (from, to) = (ring[i], ring[(i + 1) % ring.len()]);
+                let (a, b) = (mesh.positions[from as usize], mesh.positions[to as usize]);
+                for (index, at) in [(from, a), (to, b)] {
+                    vertices
+                        .entry(index)
+                        .or_insert_with(|| model.add_vertex(ogeom_topo::VertexData::new(at)));
+                }
+                let key = (from.min(to), from.max(to));
+                let edge = match shared.get(&key) {
+                    Some(existing) => existing.reversed(),
+                    None => {
+                        let fresh = crate::build::make_edge_between(
+                            model,
+                            ogeom_geom::LineCurve::segment(a, b, tol)?.into(),
+                            (0.0, a.distance(b)),
+                            &vertices[&from].clone(),
+                            &vertices[&to].clone(),
+                            tol,
+                        )?
+                        .shape;
+                        shared.insert(key, fresh.clone());
+                        fresh
+                    }
+                };
+                let (pa2, pb2) = if edge.orientation() == ogeom_topo::Orientation::Reversed {
+                    (params[(i + 1) % ring.len()], params[i])
+                } else {
+                    (params[i], params[(i + 1) % ring.len()])
+                };
+                let length = a.distance(b);
+                let span = pb2 - pa2;
+                if span.magnitude() <= f64::MIN_POSITIVE || length <= tol.confusion() {
+                    ogeom_bail!(
+                        Construction,
+                        "a curved boundary chord collapsed in the chart"
+                    );
+                }
+                let towards = ogeom_math::Direction2::new(span / length, tol).map_err(|_| {
+                    ogeom_core::ogeom_err!(
+                        Construction,
+                        "a curved boundary chord has no chart direction"
+                    )
+                })?;
+                crate::build::attach_pcurve(
+                    model,
+                    &edge,
+                    ogeom_geom::Line2d::over(ogeom_math::Axis2::new(pa2, towards), 0.0, length)?
+                        .into(),
+                    surface_id,
+                    Location::identity(),
+                    (0.0, length),
+                )?;
+                // The chord stands off the recognized surface by its sag;
+                // the edge's own tolerance records it.
+                let mid2 = pa2 + span * 0.5;
+                if let Ok(on_surface) = curved_surface.point_at(mid2.x, mid2.y, tol) {
+                    let chord_mid = a + (b - a) * 0.5;
+                    let sag = on_surface.distance(chord_mid);
+                    if let Some(node) = model.node_mut(&edge)
+                        && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+                    {
+                        data.tolerance = data.tolerance.widen_to(sag + tol.confusion());
+                    }
+                }
+                edges.push(edge);
+            }
+            wires.push(make_wire(model, &edges, tol)?.shape);
+        }
+        let face = make_face_on(model, surface_id, &wires, tol)?.shape;
         model.set_derived(&face, &[], roles::RECOVERED_FACE)?;
         faces.push(face);
     }
