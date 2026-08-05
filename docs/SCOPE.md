@@ -166,9 +166,10 @@ canonical recognition and lands in §9.
   a colour and a dimension added; the written file reimports with the same
   products, four occurrences at their placements, the assembly volume equal
   to the arithmetic of the modification, and every annotation intact.
-  *Residuals:* PMI beyond the semantic core — presentation polylines,
-  modifiers, composite datum systems — and §15's transactional machinery,
-  in the deferred table.
+  *Residuals:* PMI beyond the semantic core and §15's transactional
+  machinery, in the deferred table — modifiers and composite datum
+  references have since been paid; presentation polylines, datum targets
+  and undo/redo remain, and land with M11.
 - A 2D drawing generated from a 3D model: hidden lines removed, visible and
   hidden edges classified, sections taken. ✓ Closed: a bored block in
   three-quarter view classifies every curve, draws the bore by silhouette
@@ -204,13 +205,95 @@ canonical recognition and lands in §9.
   rounds as their own category, and `feature_tree()` — all against a parity
   oracle that asks the solid itself.
 
+### The conclusion — M7 through M12
+
+M6 closed the last of the phase milestones while the section tables still
+hold unbuilt rows and the deferred table still holds milestone-scale debt.
+These six milestones are the remainder, all of it: when M12 closes, every
+row of §1–§18 is either done or refused by name with the refusal pinned by
+a test and recorded as design rather than debt. Ordering is by dependency,
+as ever.
+
+### M7 — exact-geometry completeness · §1, §2, §3, §6, §7
+
+- Predicates: the ray/triangle classification test routed through the
+  trait; an interval type with outward rounding deciding "genuine tangency
+  or correction noise" at the marcher's shallow-crossing gate; sparse
+  linear algebra serving the sketch solver's normal equations.
+- Progress reporting and cancellation through every long operation;
+  deterministic parallel tessellation whose output is bit-identical at any
+  thread count; a benchmark harness with a checked-in baseline.
+- The §3 repertoire: offset curves and surfaces and curve-on-surface as
+  first-class types; the Gcc tangency constructions with qualified
+  solutions; bisectors; fair curves; plate/filling surfaces from boundary
+  constraints; hatching; text to wires; a helical curve with exact
+  derivatives and closed-form arc length, swept into a thread.
+- §6 closed: draft and thickness analysis with their sampling stated;
+  self-intersection detection as the interference stage against one
+  argument.
+- §7's deferred entries paid: sinusoidal exact pcurves where the closed
+  form exists, branch-point stitching, tangential contact traced as its
+  own curve, and the sub-microradian gate decided by intervals rather
+  than taste.
+
+### M8 — boolean and healing completeness · §8, §9
+
+- Curved same-domain pairs unified through the elementary inversions;
+  edge- and vertex-only contact handled by name; partially-outside closed
+  sections restricted to arcs.
+- The option set: fuzzy tolerance, glue mode, non-destructive pinned;
+  a consumer for the half-space; volumes from an unordered face soup;
+  the cells builder over the general-fuse result; scaled placements baked
+  through the whole-shape conversion or refused with instructions.
+- Canonical recognition — a NURBS patch confessed as the cylinder it is,
+  within a stated tolerance — and, on it, curved regions in mesh→B-rep;
+  same-domain face unification, edge-chain merging and tolerance
+  reduction as standalone upgrades; the reshape substitution framework.
+
+### M9 — blend and feature completeness · §10, §11
+
+- The restored blend vocabulary: face-face blends, marching blends over
+  offset-surface spines, the setback vertex blend, and blend analysis
+  that reports tangency error instead of asserting it.
+- Draft angle about a neutral plane; the form-feature vocabulary (prism,
+  revol, rib, slot, pocket, glue) as history-carrying compositions;
+  normal projection of wires onto shapes; evolved shapes over planar
+  spines; bi-tangent construction where those need it.
+
+### M10 — exact drawings · §13
+
+- Exact silhouettes on the analytic surfaces, projected edges and
+  silhouettes split at their exact 2D crossings, visibility decided by
+  the exact classifier — the polygonal pipeline kept as the measured
+  fallback. Isoparametric extraction and reflect lines. Broken sections;
+  the on-axis half-section once M8's contact handling lands.
+
+### M11 — interaction and document completeness · §14, §15, §16, §18
+
+- Sketch: analytic Jacobians pinned against the numeric oracle,
+  construction geometry, driven dimensions, snapping.
+- Selection: one pick structure serving several deflections.
+- Documents: undo/redo over transactions, textures, datum targets,
+  presentation PMI polylines both directions.
+- Recognition: the feature tree mapped to manufacturing operations.
+
+### M12 — exchange completeness · §17
+
+- The conventional kernel's B-rep text format, both directions, from the
+  published description. IGES both directions, staged like STEP was.
+  Readers for the mesh formats already written (glTF, OBJ, PLY), VRML
+  and 3MF writing and reading, DXF reading. The documented proprietary
+  tail — SAT, X_T, JT — read exactly as far as public documentation
+  carries, refusals named past that line.
+
 ---
 
 ## 1. Foundation · `ogeom-core` · P1 · *mostly done*
 
 Arenas and entity identity, errors as values, the tolerance model, geometric
-predicates. Still to come: units, progress reporting and cancellation,
-deterministic parallelism.
+predicates, units carried by the model and honoured by the formats. Still to
+come, scheduled under M7: progress reporting and cancellation, deterministic
+parallelism.
 
 *Elsewhere:* `Standard`, `NCollection`, `TCollection`, `Precision`, `Message`,
 `OSD`, `Quantity`, `Units`.
@@ -244,6 +327,7 @@ then the full type vocabulary in 2D and 3D.
 | Analytic surfaces: plane, cylinder, cone, sphere, torus | `Geom_ElementarySurface` |
 | Free-form surfaces: Bézier, B-spline, **rational (NURBS)** | `Geom_BSplineSurface` |
 | Procedural surfaces: revolution, linear extrusion, ruled | `Geom_SurfaceOfRevolution` |
+| Helical curves, with exact derivatives and closed-form arc length | — (the conventional kernel approximates helices; threads deserve better) |
 | Derived surfaces: trimmed, offset | `Geom_OffsetSurface` |
 | Local properties: derivatives, tangent, normal, curvature, torsion, principal curvatures | `GeomLProp`, `LProp` |
 | Conversion: analytic ⇄ NURBS, B-spline ⇄ Bézier, knot and degree manipulation | `GeomConvert` |
@@ -302,9 +386,9 @@ Every operation emits history from the commit that introduces it
 | Point-in-solid classification | `BRepClass3d` | done, both: tessellated with the deflection band stated, and exact by ray casting against the true surfaces |
 | Minimum distance and proximity between shapes | `BRepExtrema` | done: every element pair swept, interior approaches from the geometry-level extrema, boundary candidates owned by the lower-dimensional pairs |
 | Extrema between curves and surfaces | `Extrema` | done: stationary approaches by Newton on the squared distance, constant-distance loci reported as a family rather than a guessed point |
-| Validity checking against the model invariants | `BRepCheck` | |
-| Curvature analysis; inputs for zebra, draft and thickness analysis | `BRepLProp` | |
-| Self-intersection detection | `BOPAlgo_CheckerSI` | after §8 |
+| Validity checking against the model invariants | `BRepCheck` | done: `check` grades every finding by severity, `check_tessellation` holds the mesh against the topology |
+| Curvature analysis; inputs for zebra, draft and thickness analysis | `BRepLProp` | local properties done at the geometry level; draft and thickness analysis land with M7 |
+| Self-intersection detection | `BOPAlgo_CheckerSI` | lands with M7: the interference stage against one argument |
 | Arc length, arc-length parameterization, deflection-based sampling | `GCPnts` | |
 | Interpolation and fitting: points → curve, points → surface | `GeomAPI_PointsToBSpline` | |
 
@@ -603,9 +687,11 @@ Recognizing holes, pockets, slots, bosses, fillets and chamfers from raw
 topology; deriving feature trees from imported dumb solids; manufacturing
 feature extraction.
 
-Holes, pockets, slots, fillets and chamfers recognize today, as a flat
-feature list; bosses, the tree over the list, and manufacturing extraction
-remain in the deferred table.
+Holes, pockets, slots, fillets, chamfers, bosses and partial rounds
+recognize today, and `feature_tree()` orders them into ancestry — all
+against a parity oracle that asks the solid itself. Manufacturing feature
+extraction — the recognized tree mapped to machining operations — remains,
+and lands with M11.
 
 ---
 
@@ -751,6 +837,7 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 | ~~Pcurves for edges on B-spline surfaces~~ **done** | §9/§17 | Projection fitting at the curve's own parameters serves every corpus face; slop up to `confusion*1e6` is accepted and *recorded* on the edge's tolerance. Parts still refusing do so for the face-level reasons below. |
 | ~~Welding the cut-imported result~~ **done** | §8/§9 | Edge ends anchor to their vertices within the recorded tolerance, chart points fold onto the ring-continuing periodic branch, and a border-only weld-and-stitch pass runs at the recorded tolerance, floored at a tenth of the chord. The imported cut measures. |
 | ~~Corpus faces that still refuse to triangulate~~ **done** | §9 | All eleven corpus parts triangulate, weld fully shut and measure, deterministically. What it took, in order: bands accept a degenerate apex/pole ring and a one-ring cone face synthesises its apex; a ruling's chart angle is measured over the used range, not at a stated location that may be the apex; half-period fold ties break toward not moving, a mis-wound ring unwinds from its last undecided tie, and two opposite-wound rings merge into one band; subnormal chart coordinates round to the zero they mean and chart-degenerate hair triangles are dropped, not refined; a sphere parallel carries a winding; chart angles across a collapsed direction are interpolated from sound neighbours — except through a pole, where the jump is real; face meshes are re-oriented by what they actually walk, majority-vote parity union-find, so inconsistent file flags cannot poison the flux; and the unit context cited by the geometry's own shape representation wins over whichever one a hash map served first. |
+| Vertex blends, face-face blends, marching blends, blend analysis | §10 · M9 | The blend vocabulary speaks edges whose envelope is analytic: straight and circular edges, constant and linear-law radii, both signs. Not yet spoken: the corner patch where three fillets meet (the setback vertex blend — a sphere octant in the equal-radius planar case), the blend between two faces that share no edge, edges whose envelope has no closed form (the spine is the intersection of the two offset surfaces, marched, with circular sections skinned — every part of which now exists separately), and a report of a blend's own tangency error. An earlier cleanup dropped this row while its work was still owed; restored, and scheduled under M9. |
 | ~~Sequential blends on one body~~ **done** | §11/§7 | The failure was the marcher's: a second blend's tools march against the first blend's faces — a bevel plane against a blend cylinder is an ellipse with no closed-form pcurve — and an empty marching result was reported as a refusal even though the extended surfaces genuinely never meet. No branch found now asks which story it is in: a conservative projected-grid measurement, and a pair that measurably keeps its distance over its stated extents gets the empty section that is the true answer, while a close pair that resolves nothing keeps the honest refusal. A chamfer and a fillet share one block and the volume pins to the arithmetic. |
 | ~~Boss recognition, feature trees, partial rounds~~ **done** | §18 | Convexity is now measured against the solid itself — two parity probes standing just off the edge, both-in-material concave, both-in-air convex — with outward normals calibrated per face from the surface's own foot and the parity ray run in a deliberately generic direction, because rebuilt boolean faces wind their wires however they like, orientation flags lie, and axis-aligned rays graze axis-aligned mesh edges. On that oracle: bosses (an all-convex top whose every wall lands concave on the base), partial rounds as their own category — ftc_11's rim tori come back as two 1.5 mm partial rounds and no false fillets — and `feature_tree()` ordering the flat list into ancestry by face adjacency. |
 | A shared multi-resolution pick hierarchy | §16 | Exact picking landed: `pick_refined` lets the tessellation find and order the hits, then intersects the ray with the struck face's *exact* surface over a segment bracketing the mesh answer — a coarsely meshed drum's half-millimetre sag refines onto the true radius within a nanometre — and `Hit::refined` says which kind of number the caller is holding when refinement resolves nothing. What remains is level of detail as a structure: one hierarchy serving several deflections, instead of independent scenes each built at one. |
@@ -759,7 +846,7 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 | Sections through tangential contact | §13/§8 | A section plane exactly through a bore's axis meets the cylinder wall along its rulings, and the boolean refuses the configuration ("kept pieces did not close") — the same tangential-contact class already recorded for §7. The textbook half-section is exactly this cut, so resolving that class buys the drawing too. Off-axis sections through the same bore measure to arithmetic today. |
 | Documents: textures, undo/redo | §15 | The document holds products, instances, colours, names and semantic PMI, round-trips through STEP, and persists natively byte-stable. The attribute layer landed: user-defined properties (text, number, flag — accumulating by name with replacement), materials with density and an optional colour assigned per shape by id, layers with visibility a shape may sit on several of, and validation properties whose `agrees_with()` compares another measurement at a relative tolerance so a receiver can verify a translation lost nothing — computing the numbers stays with the code that owns the geometry. Still owed from §15's own table: textures, and undo/redo over a transactional model. |
 | PMI beyond the semantic core | §15/§17 | Read and written: dimensional characteristics with values and plus/minus bounds — sizes and locations, linear and angular by their own spellings — geometric tolerances with magnitudes, datum precedence, material-condition modifiers (the complex tolerance form, both directions) and composite datum references (a hyphen-joined `A-B` entry, bound into a compartment on write and resolved back out of one on read), datum letters. Locations keep their two feature groups through the round trip, and the deeper aspect walk resolves the NIST angle to its faces. Still not carried: presentation PMI (the annotation polylines and planes) and datum targets. |
-| Exchange formats beyond the written set | §17 | DXF writes: R12 polylines on VISIBLE and HIDDEN layers with their linetypes, taking bare polylines so drawings, sections and sketches all serve without the io crate knowing them. glTF (as GLB: one buffer, one node per mesh, POSITION bounds, a metallic-roughness material where a colour was given), OBJ (the file-wide one-based index space) and PLY (ASCII, normals always, per-vertex colour when given) write on the same philosophy, taking bare tessellations. The §17 table's remainder — IGES, 3MF, VRML, and *reading* any of the mesh and drawing formats — is not started. STEP runs both directions with assemblies, colours, names and semantic PMI; STL both directions; the native format both directions, document layer included. |
+| Exchange formats beyond the written set | §17 | DXF writes: R12 polylines on VISIBLE and HIDDEN layers with their linetypes, taking bare polylines so drawings, sections and sketches all serve without the io crate knowing them. glTF (as GLB: one buffer, one node per mesh, POSITION bounds, a metallic-roughness material where a colour was given), OBJ (the file-wide one-based index space) and PLY (ASCII, normals always, per-vertex colour when given) write on the same philosophy, taking bare tessellations. The §17 table's remainder — the conventional kernel's B-rep text format, IGES, 3MF, VRML, *reading* any of the mesh and drawing formats, and the documented proprietary tail — is not started; it is the whole of M12. STEP runs both directions with assemblies, colours, names and semantic PMI; STL both directions; the native format both directions, document layer included. |
 | ~~Spindle-torus signed distance~~ **done** | §2 | The sign names the apple — the region the torus-as-a-solid occupies, bounded by the outer sheet, containing the lemon — and the magnitude is measured to whichever sheet is nearer, the folded inner branch included, so a point on either sheet reads zero. For a ring torus the folded branch is never the nearer one and the function reduces to the classical tube distance exactly, pinned point by point, so every consumer keeps the values it had. |
 
 ---
