@@ -24,9 +24,11 @@
 //! each and a name that did not say which would be the wrong kind of convenience.
 
 pub mod dxf;
+pub mod mesh_formats;
 pub mod native;
 pub mod step;
 pub mod stl;
 
+pub use mesh_formats::{ExportMesh, write_glb, write_obj, write_ply};
 pub use step::{StepImport, StepReport, read_step, write_step};
 pub use stl::{Encoding, read, write};
