@@ -13,6 +13,7 @@ ogeom-math.workspace = true
 ogeom-geom.workspace = true
 ogeom-topo.workspace = true
 ogeom-algo.workspace = true
+ogeom-mesh.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
