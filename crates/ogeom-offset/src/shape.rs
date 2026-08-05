@@ -26,7 +26,7 @@ use ogeom_algo::{
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::{Curve, CylinderSurface, LineCurve, PlaneSurface, SurfaceGeometry};
-use ogeom_math::{Axis, Cylinder, Frame, Plane, Point, Vector};
+use ogeom_math::{Cylinder, Frame, Plane, Point, Vector};
 use ogeom_topo::{
     EdgeRepr, Filter, Model, NodeData, Orientation, Shape, ShapeType, TShapeId, explore,
     explore_unique,
@@ -51,7 +51,7 @@ pub fn offset_shape(
     if !offset.is_finite() || offset.abs() <= tol.confusion() {
         ogeom_bail!(Construction, "an offset of {offset} moves nothing");
     }
-    rebuilt(model, solid, &|_| offset, tol)
+    rebuilt(model, solid, &|_| offset, &|_| None, tol)
 }
 
 /// Hollow a solid into a shell of the given wall `thickness`, opening it at
@@ -95,6 +95,7 @@ pub fn make_thick_solid(
                 -thickness
             }
         },
+        &|_| None,
         tol,
     )?;
     let mut result = ogeom_bool::cut(model, solid, &cavity.shape, tol)?;
@@ -131,10 +132,18 @@ struct Prepared {
 /// its old axes so parameters and orientations carry — and faces rebuild
 /// wire by wire with exact pcurves, or wholesale through
 /// [`make_revolution_band`] where a seam says the face wraps.
-fn rebuilt(
+/// Rebuild a solid's topology on moved supports.
+///
+/// `amount_of` says how far each face travels along its own outward normal;
+/// `instead_of` may hand back a surface to use *in place* of that move,
+/// which is how an operation that turns a face rather than translating it —
+/// a draft — rides the same rebuild. The two are exclusive per face: a
+/// surface supplied by `instead_of` is taken as it stands.
+pub(crate) fn rebuilt(
     model: &mut Model,
     solid: &Shape,
     amount_of: &dyn Fn(&Shape) -> f64,
+    instead_of: &dyn Fn(&Shape) -> Option<SurfaceGeometry>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     use ogeom_geom::Surface as _;
@@ -176,79 +185,85 @@ fn rebuilt(
             .collect();
 
         let grow = amount.abs() * 4.0 + 1.0;
-        let moved: SurfaceGeometry = match surface {
-            SurfaceGeometry::Plane(p) => {
-                let plane = p.plane();
-                let ((u0, u1), (v0, v1)) = surface.domain();
-                let shifted = Plane::new(Frame::new(
-                    plane.origin() + plane.normal().vector() * (sign * amount),
-                    plane.normal(),
-                    plane.frame().x(),
-                    tol,
-                )?);
-                PlaneSurface::over(shifted, (u0 - grow, u1 + grow), (v0 - grow, v1 + grow))?.into()
-            }
-            SurfaceGeometry::Cylinder(c) => {
-                let cylinder = c.cylinder();
-                let grown = sign.mul_add(amount, cylinder.radius());
-                if grown <= tol.confusion() {
-                    ogeom_bail!(Construction, "the offset consumes the cylinder's radius");
+        let replacement = instead_of(face);
+        let moved: SurfaceGeometry = if let Some(given) = replacement {
+            given
+        } else {
+            match surface {
+                SurfaceGeometry::Plane(p) => {
+                    let plane = p.plane();
+                    let ((u0, u1), (v0, v1)) = surface.domain();
+                    let shifted = Plane::new(Frame::new(
+                        plane.origin() + plane.normal().vector() * (sign * amount),
+                        plane.normal(),
+                        plane.frame().x(),
+                        tol,
+                    )?);
+                    PlaneSurface::over(shifted, (u0 - grow, u1 + grow), (v0 - grow, v1 + grow))?
+                        .into()
                 }
-                let (_, (v0, v1)) = surface.domain();
-                CylinderSurface::new(
-                    Cylinder::new(cylinder.frame(), grown, tol)?,
-                    (v0 - grow, v1 + grow),
-                )?
-                .into()
-            }
-            SurfaceGeometry::Sphere(sp) => {
-                let sphere = sp.sphere();
-                let grown = sign.mul_add(amount, sphere.radius());
-                if grown <= tol.confusion() {
-                    ogeom_bail!(Construction, "the offset consumes the sphere's radius");
+                SurfaceGeometry::Cylinder(c) => {
+                    let cylinder = c.cylinder();
+                    let grown = sign.mul_add(amount, cylinder.radius());
+                    if grown <= tol.confusion() {
+                        ogeom_bail!(Construction, "the offset consumes the cylinder's radius");
+                    }
+                    let (_, (v0, v1)) = surface.domain();
+                    CylinderSurface::new(
+                        Cylinder::new(cylinder.frame(), grown, tol)?,
+                        (v0 - grow, v1 + grow),
+                    )?
+                    .into()
                 }
-                ogeom_geom::SphereSurface::new(ogeom_math::Sphere::centred(
-                    sphere.centre(),
-                    grown,
-                    tol,
-                )?)
-                .into()
-            }
-            SurfaceGeometry::Torus(t) => {
-                let torus = t.torus();
-                let grown = sign.mul_add(amount, torus.minor_radius());
-                if grown <= tol.confusion() {
-                    ogeom_bail!(Construction, "the offset consumes the torus's tube");
+                SurfaceGeometry::Sphere(sp) => {
+                    let sphere = sp.sphere();
+                    let grown = sign.mul_add(amount, sphere.radius());
+                    if grown <= tol.confusion() {
+                        ogeom_bail!(Construction, "the offset consumes the sphere's radius");
+                    }
+                    ogeom_geom::SphereSurface::new(ogeom_math::Sphere::centred(
+                        sphere.centre(),
+                        grown,
+                        tol,
+                    )?)
+                    .into()
                 }
-                ogeom_geom::TorusSurface::new(ogeom_math::Torus::new(
-                    torus.frame(),
-                    torus.major_radius(),
-                    grown,
-                    tol,
-                )?)
-                .into()
-            }
-            SurfaceGeometry::Cone(co) => {
-                let cone = co.cone();
-                // The parallel cone: same axis and half-angle, the reference
-                // radius moved by the offset over the slant's cosine.
-                let grown =
-                    (sign * amount / cone.half_angle().cos()).mul_add(1.0, cone.reference_radius());
-                if grown <= tol.confusion() {
-                    ogeom_bail!(Construction, "the offset consumes the cone's throat");
+                SurfaceGeometry::Torus(t) => {
+                    let torus = t.torus();
+                    let grown = sign.mul_add(amount, torus.minor_radius());
+                    if grown <= tol.confusion() {
+                        ogeom_bail!(Construction, "the offset consumes the torus's tube");
+                    }
+                    ogeom_geom::TorusSurface::new(ogeom_math::Torus::new(
+                        torus.frame(),
+                        torus.major_radius(),
+                        grown,
+                        tol,
+                    )?)
+                    .into()
                 }
-                let (_, (v0, v1)) = surface.domain();
-                ogeom_geom::ConeSurface::new(
-                    ogeom_math::Cone::new(cone.frame(), grown, cone.half_angle(), tol)?,
-                    (v0 - grow, v1 + grow),
-                )?
-                .into()
+                SurfaceGeometry::Cone(co) => {
+                    let cone = co.cone();
+                    // The parallel cone: same axis and half-angle, the reference
+                    // radius moved by the offset over the slant's cosine.
+                    let grown = (sign * amount / cone.half_angle().cos())
+                        .mul_add(1.0, cone.reference_radius());
+                    if grown <= tol.confusion() {
+                        ogeom_bail!(Construction, "the offset consumes the cone's throat");
+                    }
+                    let (_, (v0, v1)) = surface.domain();
+                    ogeom_geom::ConeSurface::new(
+                        ogeom_math::Cone::new(cone.frame(), grown, cone.half_angle(), tol)?,
+                        (v0 - grow, v1 + grow),
+                    )?
+                    .into()
+                }
+                _ => ogeom_bail!(
+                    Construction,
+                    "offsetting a face on this surface needs a construction \
+                     the rebuild does not yet speak — see the deferred table"
+                ),
             }
-            _ => ogeom_bail!(
-                Construction,
-                "offsetting a face on this surface needs a construction the \
-                 rebuild does not yet speak — see the deferred table"
-            ),
         };
         prepared.push(Prepared {
             shape: face.clone(),
@@ -418,40 +433,13 @@ fn rebuilt(
             edge.clone()
         };
         let built = match &curve {
-            Curve::Line(line) => {
-                // The direction survives; the anchor solves the two faces'
-                // displacement constraints — one constraint where the faces
-                // are tangent along the line, two where they cross there.
-                let mid = curve.point_at(f64::midpoint(range.0, range.1), tol)?;
-                let mut normals: Vec<Vector> = Vec::new();
-                let mut amounts: Vec<f64> = Vec::new();
-                for fi in &sides {
-                    let Some((n, w)) = constraint(model, *fi, mid)? else {
-                        continue;
-                    };
-                    if let Some(k) = normals
-                        .iter()
-                        .position(|m| m.cross(n).magnitude() <= tol.angular().max(1e-6))
-                    {
-                        if (amounts[k] - w).abs() > tol.confusion() {
-                            ogeom_bail!(
-                                Construction,
-                                "tangent faces move a shared edge by different \
-                                 amounts; the offset tears it"
-                            );
-                        }
-                        continue;
-                    }
-                    normals.push(n);
-                    amounts.push(w);
-                }
-                let shift = if normals.len() == 1 {
-                    normals[0] * amounts[0]
-                } else {
-                    solve_corner(&normals, &amounts, tol)?
-                };
-                let anchor = line.axis().location + shift;
-                let moved: Curve = LineCurve::new(Axis::new(anchor, line.axis().direction)).into();
+            Curve::Line(_) => {
+                // A straight edge is the line through its own re-solved
+                // ends. That is true whether the supports were translated
+                // or turned — an offset leaves the direction alone and this
+                // reproduces it, a draft does not and this follows it —
+                // whereas a line anchored where the old one sat misses its
+                // own vertices the moment either end moves sideways.
                 let Some((sv, ev)) = edge_vertices(model, &forward)? else {
                     ogeom_bail!(Construction, "a straight edge has no vertices");
                 };
@@ -461,11 +449,12 @@ fn rebuilt(
                 ) else {
                     ogeom_bail!(Construction, "an edge end has no re-solved vertex");
                 };
-                let d = line.axis().direction.vector();
-                let (t0, t1) = ((p_from - anchor).dot(d), (p_to - anchor).dot(d));
-                if t1 <= t0 + tol.parametric() {
+                if p_to.distance(p_from) <= tol.parametric() {
                     ogeom_bail!(Construction, "the offset collapses an edge");
                 }
+                let segment = LineCurve::segment(p_from, p_to, tol)?;
+                let (t0, t1) = segment.domain();
+                let moved: Curve = segment.into();
                 make_edge_between(model, moved, (t0, t1), &v_from, &v_to, tol)?.shape
             }
             Curve::Circle(c) => {
