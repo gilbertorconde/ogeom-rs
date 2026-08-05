@@ -81,7 +81,7 @@ fn an_assembly_imports_modifies_exports_and_returns_the_same() {
             kind: MeasureKind::Length,
             plus: Some(0.05),
             minus: Some(-0.05),
-            items: Vec::new(),
+            features: Vec::new(),
             location: false,
         });
 

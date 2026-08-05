@@ -32,11 +32,19 @@ pub struct Dimension {
     pub plus: Option<f64>,
     /// The lower allowance — typically negative — when one applies.
     pub minus: Option<f64>,
-    /// The topology the dimension measures.
-    pub items: Vec<TShapeId>,
+    /// The topology the dimension measures, one group per feature: a size
+    /// has one group, a location has one per end.
+    pub features: Vec<Vec<TShapeId>>,
     /// Whether the dimension runs *between* two features — a location —
     /// rather than sizing one.
     pub location: bool,
+}
+
+impl Dimension {
+    /// Every measured node, features flattened.
+    pub fn items(&self) -> impl Iterator<Item = TShapeId> + '_ {
+        self.features.iter().flatten().copied()
+    }
 }
 
 /// A geometric tolerance: flatness, position, profile, and their kin.

@@ -1719,10 +1719,11 @@ impl Reader<'_> {
             }
         }
         let items_for = |aspect: u64| -> Vec<ogeom_topo::TShapeId> {
-            // Two relationship steps: a composite aspect holds components,
-            // and a datum sits one link behind its datum features.
+            // Three relationship steps: a composite aspect holds components,
+            // a derived aspect sits behind a composite, and a datum one link
+            // behind its features — the deepest chain the corpus exhibits.
             let mut reach = vec![aspect];
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let mut next = reach.clone();
                 for a in &reach {
                     next.extend(adjacency.get(a).into_iter().flatten().copied());
@@ -1794,12 +1795,8 @@ impl Reader<'_> {
                 }
             }
             let (name, location, aspects) = self.dimension_shape(dim);
-            let mut items = Vec::new();
-            for aspect in aspects {
-                items.extend(items_for(aspect));
-            }
-            items.sort_unstable();
-            items.dedup();
+            let features: Vec<Vec<ogeom_topo::TShapeId>> =
+                aspects.into_iter().map(&items_for).collect();
             let (minus, plus) = plus_minus.get(&dim).copied().unwrap_or((None, None));
             pmi.dimensions.push(ogeom_doc::Dimension {
                 name,
@@ -1807,7 +1804,7 @@ impl Reader<'_> {
                 kind,
                 plus,
                 minus,
-                items,
+                features,
                 location,
             });
         }
@@ -1953,8 +1950,21 @@ impl Reader<'_> {
     }
 
     /// A dimensional characteristic's name, kind and aspects.
+    ///
+    /// Sizes apply to one feature; locations — linear or angular — run
+    /// between two. `ANGULAR_SIZE` and `ANGULAR_LOCATION` are the same
+    /// shapes with an extra angle-selection argument at the end.
     fn dimension_shape(&mut self, dim: u64) -> (String, bool, Vec<u64>) {
-        if let Ok(args) = self.args(dim, "DIMENSIONAL_SIZE") {
+        let size = {
+            let Ok(instance) = self.instance(dim) else {
+                return (String::new(), false, Vec::new());
+            };
+            instance
+                .part("DIMENSIONAL_SIZE")
+                .or_else(|| instance.part("ANGULAR_SIZE"))
+                .map(<[Arg]>::to_vec)
+        };
+        if let Some(args) = size {
             let name = match args.get(1) {
                 Some(Arg::Str(s)) => s.clone(),
                 _ => String::new(),
@@ -1962,7 +1972,16 @@ impl Reader<'_> {
             let aspects = args.first().and_then(Arg::reference).into_iter().collect();
             return (name, false, aspects);
         }
-        if let Ok(args) = self.args(dim, "DIMENSIONAL_LOCATION") {
+        let location = {
+            let Ok(instance) = self.instance(dim) else {
+                return (String::new(), false, Vec::new());
+            };
+            instance
+                .part("DIMENSIONAL_LOCATION")
+                .or_else(|| instance.part("ANGULAR_LOCATION"))
+                .map(<[Arg]>::to_vec)
+        };
+        if let Some(args) = location {
             let name = match args.first() {
                 Some(Arg::Str(s)) => s.clone(),
                 _ => String::new(),

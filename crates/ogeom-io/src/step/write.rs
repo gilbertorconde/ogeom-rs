@@ -663,14 +663,30 @@ impl Writer<'_> {
         }
 
         for dimension in &pmi.dimensions {
-            let aspect = aspect_for(self, &dimension.items);
             let name = escape(&dimension.name);
+            let angular = dimension.kind == ogeom_doc::MeasureKind::Angle;
             let dim = if dimension.location {
-                self.entity(format!(
-                    "DIMENSIONAL_LOCATION('{name}','',#{aspect},#{aspect})"
-                ))
+                // A location runs between two features; each keeps its own
+                // aspect, so what was read as two ends writes as two ends.
+                let empty = Vec::new();
+                let first = dimension.features.first().unwrap_or(&empty);
+                let second = dimension.features.get(1).unwrap_or(first);
+                let a = aspect_for(self, first);
+                let b = aspect_for(self, second);
+                if angular {
+                    self.entity(format!("ANGULAR_LOCATION('{name}','',#{a},#{b},.EQUAL.)"))
+                } else {
+                    self.entity(format!("DIMENSIONAL_LOCATION('{name}','',#{a},#{b})"))
+                }
             } else {
-                self.entity(format!("DIMENSIONAL_SIZE(#{aspect},'{name}')"))
+                let empty = Vec::new();
+                let items = dimension.features.first().unwrap_or(&empty);
+                let aspect = aspect_for(self, items);
+                if angular {
+                    self.entity(format!("ANGULAR_SIZE(#{aspect},'{name}',.EQUAL.)"))
+                } else {
+                    self.entity(format!("DIMENSIONAL_SIZE(#{aspect},'{name}')"))
+                }
             };
             let measures: Vec<String> = dimension
                 .values

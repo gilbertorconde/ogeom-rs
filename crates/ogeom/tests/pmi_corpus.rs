@@ -34,7 +34,7 @@ fn summary(pmi: &Pmi) -> (Vec<DimensionRow>, Vec<ToleranceRow>, Vec<DatumRow>) {
                     .map(f)
                     .zip(d.minus.map(f))
                     .map(|(p, m)| format!("{p}/{m}")),
-                d.items.len(),
+                d.items().count(),
             )
         })
         .collect();
@@ -112,6 +112,18 @@ fn the_nist_part_reads_its_annotations_semantically() {
     // Three datums: A, B, C.
     let labels: Vec<&str> = pmi.datums.iter().map(|d| d.label.as_str()).collect();
     assert_eq!(labels, ["A", "B", "C"]);
+
+    // The deeper aspect walk resolves the angular dimension to real
+    // topology: its aspects sit three relationship steps out.
+    let angle = pmi
+        .dimensions
+        .iter()
+        .find(|d| d.kind == MeasureKind::Angle)
+        .unwrap();
+    assert!(
+        angle.items().count() > 0,
+        "the angle dimension names the faces it measures"
+    );
 }
 
 #[test]
