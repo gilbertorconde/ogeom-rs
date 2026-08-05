@@ -207,6 +207,85 @@ fn box_like(model: &mut Model, corner_points: &[Point], tol: Tolerances) -> Ogeo
     Ok(Built::from_nothing(solid))
 }
 
+/// A solid from explicit planar rings over shared corners.
+///
+/// The generalization `box_like` is a special case of: vertices per corner,
+/// one edge per corner pair shared by both faces that meet along it, each
+/// ring wound counter-clockwise seen from outside so its first three corners
+/// give the outward normal. Every ring must be planar; the collapsed wedges
+/// are, by construction.
+fn faceted_solid(
+    model: &mut Model,
+    points: &[Point],
+    rings: &[&[usize]],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let vertices: Vec<Shape> = points
+        .iter()
+        .map(|p| model.add_vertex(ogeom_topo::VertexData::new(*p)))
+        .collect();
+    let mut edge_of: std::collections::HashMap<(usize, usize), Shape> =
+        std::collections::HashMap::new();
+    let mut faces = Vec::with_capacity(rings.len());
+    for ring_corners in rings {
+        let origin = points[ring_corners[0]];
+        let normal = Direction::from_cross(
+            points[ring_corners[1]] - origin,
+            points[ring_corners[2]] - points[ring_corners[1]],
+            tol,
+        )?;
+        let x = Direction::new(points[ring_corners[1]] - origin, tol)?;
+        let plane = Plane::new(Frame::new(origin, normal, x, tol)?);
+        let surface = model
+            .geometry_mut()
+            .add_surface(PlaneSurface::new(plane).into());
+        let mut ring = Vec::with_capacity(ring_corners.len());
+        for step in 0..ring_corners.len() {
+            let (from, to) = (
+                ring_corners[step],
+                ring_corners[(step + 1) % ring_corners.len()],
+            );
+            let key = (from.min(to), from.max(to));
+            let edge = match edge_of.get(&key) {
+                Some(edge) => edge.clone(),
+                None => {
+                    let curve: Curve =
+                        LineCurve::segment(points[key.0], points[key.1], tol)?.into();
+                    let length = points[key.0].distance(points[key.1]);
+                    let edge = make_edge_between(
+                        model,
+                        curve,
+                        (0.0, length),
+                        &vertices[key.0],
+                        &vertices[key.1],
+                        tol,
+                    )?
+                    .shape;
+                    edge_of.insert(key, edge.clone());
+                    edge
+                }
+            };
+            // The pcurve follows the edge's own parameterization — its
+            // canonical low-to-high corner order — not the ring's traversal.
+            attach_plane_pcurve(
+                model,
+                &edge,
+                &plane,
+                surface,
+                points[key.0],
+                points[key.1],
+                tol,
+            )?;
+            ring.push(if from == key.0 { edge } else { edge.reversed() });
+        }
+        let wire = make_wire(model, &ring, tol)?.shape;
+        faces.push(make_face_on(model, surface, std::slice::from_ref(&wire), tol)?.shape);
+    }
+    let shell = make_shell(model, &faces)?.shape;
+    let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
+    Ok(Built::from_nothing(solid))
+}
+
 /// The plane of a box face, with its normal pointing outward.
 fn face_plane(points: &[Point], corners: [usize; 4], tol: Tolerances) -> OgeomResult<Plane> {
     let origin = points[corners[0]];
@@ -834,18 +913,79 @@ pub fn make_wedge(
         check_size(&format!("wedge {name} size"), value, tol)?;
     }
     for (name, value) in [("x", top.0), ("y", top.1)] {
-        if !value.is_finite() || value <= tol.confusion() {
+        if !value.is_finite() || value < 0.0 {
             ogeom_bail!(
                 Construction,
-                "wedge top {name} extent {value} must be finite and positive; a \
-                 wedge whose top collapses to a ridge or a point is a different \
-                 topology — it has five faces or four, not six — and building it \
-                 here would give it a face with no area. Sweep a triangular \
-                 profile instead."
+                "wedge top {name} extent {value} must be finite and non-negative"
             );
         }
     }
     model.begin_operation();
+
+    // A zero top extent is a different topology, not a box with a flat face
+    // of no area: the top collapses to a ridge (five faces) or to a point
+    // (five faces, four of them triangles), and each is built as itself.
+    let (dx_, dy_, dz_) = size;
+    let collapsed = (top.0 <= tol.confusion(), top.1 <= tol.confusion());
+    match collapsed {
+        (true, true) => {
+            let local = [
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(dx_, 0.0, 0.0),
+                Point::new(dx_, dy_, 0.0),
+                Point::new(0.0, dy_, 0.0),
+                Point::new(0.0, 0.0, dz_),
+            ];
+            let points: Vec<Point> = local.iter().map(|p| frame.to_world(*p)).collect();
+            let rings: [&[usize]; 5] = [
+                &[0, 3, 2, 1],
+                &[0, 1, 4],
+                &[1, 2, 4],
+                &[2, 3, 4],
+                &[3, 0, 4],
+            ];
+            return faceted_solid(model, &points, &rings, tol);
+        }
+        (false, true) => {
+            let local = [
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(dx_, 0.0, 0.0),
+                Point::new(dx_, dy_, 0.0),
+                Point::new(0.0, dy_, 0.0),
+                Point::new(0.0, 0.0, dz_),
+                Point::new(top.0, 0.0, dz_),
+            ];
+            let points: Vec<Point> = local.iter().map(|p| frame.to_world(*p)).collect();
+            let rings: [&[usize]; 5] = [
+                &[0, 3, 2, 1],
+                &[0, 1, 5, 4],
+                &[1, 2, 5],
+                &[2, 3, 4, 5],
+                &[3, 0, 4],
+            ];
+            return faceted_solid(model, &points, &rings, tol);
+        }
+        (true, false) => {
+            let local = [
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(dx_, 0.0, 0.0),
+                Point::new(dx_, dy_, 0.0),
+                Point::new(0.0, dy_, 0.0),
+                Point::new(0.0, 0.0, dz_),
+                Point::new(0.0, top.1, dz_),
+            ];
+            let points: Vec<Point> = local.iter().map(|p| frame.to_world(*p)).collect();
+            let rings: [&[usize]; 5] = [
+                &[0, 3, 2, 1],
+                &[0, 4, 5, 3],
+                &[0, 1, 4],
+                &[1, 2, 5, 4],
+                &[2, 3, 5],
+            ];
+            return faceted_solid(model, &points, &rings, tol);
+        }
+        (false, false) => {}
+    }
 
     // Same eight corners and the same six faces as a box; only where the top
     // four sit differs. Every side stays planar because the top face stays a
@@ -1532,10 +1672,38 @@ mod more_primitive_tests {
     }
 
     #[test]
-    fn a_wedge_that_collapses_is_refused_rather_than_built_with_a_face_of_no_area() {
+    fn a_wedge_collapsing_to_a_ridge_is_five_faces_and_a_prismatoid_volume() {
+        // Top y extent zero: the top is a ridge along x at y = 0. The
+        // prismatoid volume integral in closed form:
+        // dz*dy*(dx/2 + (a - dx)/6) for ridge length a.
         let mut model = Model::new();
-        assert!(make_wedge(&mut model, Frame::WORLD, (2.0, 3.0, 4.0), (0.0, 3.0), T).is_err());
-        assert!(make_wedge(&mut model, Frame::WORLD, (2.0, 3.0, 4.0), (0.0, 0.0), T).is_err());
+        let wedge = make_wedge(&mut model, Frame::WORLD, (4.0, 3.0, 6.0), (2.0, 0.0), T).unwrap();
+        let faces = ogeom_topo::explore_unique(&model, &wedge.shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(faces, 5, "a ridge wedge has five faces, none of them empty");
+        let props = volume_properties(&model, &wedge.shape, deflection(0.01), T).unwrap();
+        assert_relative_eq!(props.mass, 6.0 * 3.0 * (2.0 - 2.0 / 6.0), epsilon = 1e-9);
+        assert!(closed(&model, &wedge.shape));
+
+        // And the other axis mirrors.
+        let other = make_wedge(&mut model, Frame::WORLD, (3.0, 4.0, 6.0), (0.0, 2.0), T).unwrap();
+        let props = volume_properties(&model, &other.shape, deflection(0.01), T).unwrap();
+        assert_relative_eq!(props.mass, 6.0 * 3.0 * (2.0 - 2.0 / 6.0), epsilon = 1e-9);
+        assert!(closed(&model, &other.shape));
+    }
+
+    #[test]
+    fn a_wedge_collapsing_to_a_point_is_a_pyramid() {
+        let mut model = Model::new();
+        let wedge = make_wedge(&mut model, Frame::WORLD, (4.0, 3.0, 6.0), (0.0, 0.0), T).unwrap();
+        let faces = ogeom_topo::explore_unique(&model, &wedge.shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(faces, 5, "a base and four triangles");
+        let props = volume_properties(&model, &wedge.shape, deflection(0.01), T).unwrap();
+        assert_relative_eq!(props.mass, 4.0 * 3.0 * 6.0 / 3.0, epsilon = 1e-9);
+        assert!(closed(&model, &wedge.shape));
     }
 
     #[test]
