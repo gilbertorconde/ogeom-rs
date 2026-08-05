@@ -44,6 +44,9 @@ pub struct Hit {
     /// The index of the struck triangle — stable across the scene's life,
     /// resolvable back to its face through [`Pickable::triangle_face`].
     pub triangle: usize,
+    /// Whether [`Hit::position`] and [`Hit::distance`] were refined onto
+    /// the face's exact surface, or stand on the tessellation alone.
+    pub refined: bool,
 }
 
 /// Whether a marquee keeps only what it swallows or everything it touches.
@@ -69,6 +72,8 @@ struct FaceRecord {
     shape: Shape,
     /// Triangle range `[start, end)` in the flat arrays.
     triangles: (usize, usize),
+    /// The face's surface, for exact refinement.
+    surface: ogeom_geom::SurfaceGeometry,
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +143,18 @@ impl Pickable {
         let mut owner = Vec::new();
 
         for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
+            let surface = {
+                let Some(node) = model.node(&face) else {
+                    ogeom_bail!(Dangling, "face is not in this model");
+                };
+                let ogeom_topo::NodeData::Face(data) = node.data() else {
+                    ogeom_bail!(Construction, "face node holds no face data");
+                };
+                let Some(surface) = model.geometry().surface(data.surface) else {
+                    ogeom_bail!(Dangling, "face refers to a surface not in this model");
+                };
+                surface.clone()
+            };
             let mesh = triangulate_face(model, &face, deflection, tol)?;
             let base = u32::try_from(positions.len()).map_err(|_| {
                 ogeom_core::ogeom_err!(Construction, "a scene of four billion vertices")
@@ -151,6 +168,7 @@ impl Pickable {
             faces.push(FaceRecord {
                 shape: face,
                 triangles: (start, triangles.len()),
+                surface,
             });
         }
 
@@ -263,6 +281,7 @@ impl Pickable {
                     position,
                     distance: t,
                     triangle,
+                    refined: false,
                 }
             })
             .collect()
@@ -272,6 +291,62 @@ impl Pickable {
     #[must_use]
     pub fn pick_first(&self, ray: Ray, aperture: f64) -> Option<Hit> {
         self.pick(ray, aperture).into_iter().next()
+    }
+
+    /// As [`Pickable::pick`], with each hit refined onto its face's exact
+    /// surface.
+    ///
+    /// The tessellation finds the hits and orders them; the analytic
+    /// surface then answers *where*, exactly: the ray is intersected with
+    /// the struck face's own geometry and the crossing nearest the mesh
+    /// answer replaces it. A hit whose exact refinement resolves nothing —
+    /// a grazing ray, a surface kind the intersector seeds poorly — keeps
+    /// the tessellated answer and says so through [`Hit::refined`].
+    #[must_use]
+    pub fn pick_refined(&self, ray: Ray, aperture: f64, tol: Tolerances) -> Vec<Hit> {
+        let mut hits = self.pick(ray, aperture);
+        let length = ray.direction.magnitude();
+        if length <= 0.0 || !length.is_finite() {
+            return hits;
+        }
+        let direction = ray.direction / length;
+        for hit in &mut hits {
+            let face = &self.faces[self.owner[hit.triangle] as usize];
+            // A segment comfortably bracketing the mesh answer.
+            let margin = (hit.distance * 0.5).max(1.0);
+            let Ok(segment) = ogeom_geom::LineCurve::segment(
+                ray.origin + direction * (hit.distance - margin).max(0.0),
+                ray.origin + direction * (hit.distance + margin),
+                tol,
+            ) else {
+                continue;
+            };
+            let curve: ogeom_geom::Curve = segment.into();
+            let Ok(pierced) = ogeom_intersect::intersect_curve_surface(
+                &curve,
+                &face.surface,
+                ogeom_intersect::CurveSurfaceOptions::default(),
+                tol,
+            ) else {
+                continue;
+            };
+            let Some(best) = pierced
+                .crossings
+                .iter()
+                .min_by(|x, y| {
+                    x.point
+                        .distance(hit.position)
+                        .total_cmp(&y.point.distance(hit.position))
+                })
+                .filter(|c| c.point.distance(hit.position) < margin)
+            else {
+                continue;
+            };
+            hit.position = best.point;
+            hit.distance = (best.point - ray.origin).dot(direction);
+            hit.refined = true;
+        }
+        hits
     }
 
     /// Sub-shape resolution: the vertex, else the edge, else the face.
@@ -722,5 +797,51 @@ mod tests {
         assert!(!picked.is_empty());
         let none = scene.select_polygon(&view, &marquee[..2], Marquee::Crossing);
         assert!(none.is_empty(), "two points are not a polygon");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod refine_tests {
+    use super::*;
+    use ogeom_math::Frame;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// On a coarsely meshed cylinder the tessellated hit sits a visible
+    /// sagitta off the true wall; the refined hit stands on the exact
+    /// radius.
+    #[test]
+    fn refinement_lands_on_the_exact_surface() {
+        let mut model = Model::new();
+        let drum = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 8.0, 10.0, T)
+            .unwrap()
+            .shape;
+        let coarse = Deflection {
+            chord: 0.5,
+            ..Deflection::default()
+        };
+        let scene = Pickable::build(&model, &drum, coarse, T).unwrap();
+        let ray = Ray {
+            origin: Point::new(20.0, 1.7, 5.0),
+            direction: Vector::new(-1.0, 0.0, 0.0),
+        };
+        let mesh_hit = scene.pick_first(ray, 0.0).unwrap();
+        let refined = scene.pick_refined(ray, 0.0, T).into_iter().next().unwrap();
+        assert!(refined.refined);
+        let radius_of = |p: Point| p.x.hypot(p.y);
+        assert!(
+            (radius_of(refined.position) - 8.0).abs() < 1e-9,
+            "refined radius {}",
+            radius_of(refined.position)
+        );
+        assert!(
+            (radius_of(mesh_hit.position) - 8.0).abs() > 1e-4,
+            "the coarse mesh visibly sags: {}",
+            radius_of(mesh_hit.position)
+        );
+        // Depth order and ownership survive refinement.
+        assert_eq!(refined.triangle, mesh_hit.triangle);
+        assert!(refined.distance < mesh_hit.distance + 1.0);
     }
 }
