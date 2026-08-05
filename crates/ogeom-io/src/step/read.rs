@@ -1957,7 +1957,7 @@ impl Reader<'_> {
             .collect();
         gts.sort_unstable();
         for id in gts {
-            let (name, magnitude_ref, aspect, kind, datum_refs) = {
+            let (name, magnitude_ref, aspect, kind, modifiers, datum_refs) = {
                 let Ok(instance) = self.instance(id) else {
                     continue;
                 };
@@ -1980,6 +1980,21 @@ impl Reader<'_> {
                 let magnitude_ref = base.get(2).and_then(Arg::reference);
                 let aspect = base.get(3).and_then(Arg::reference);
                 let kind = Some(subtype.trim_end_matches("_TOLERANCE").to_lowercase());
+                // Modifiers ride on their own part in the complex form, as
+                // a list of enumeration words.
+                let modifiers: Vec<String> = instance
+                    .part("GEOMETRIC_TOLERANCE_WITH_MODIFIERS")
+                    .and_then(|args| args.first())
+                    .and_then(Arg::list)
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(|arg| match arg {
+                                Arg::Enum(word) => Some(word.to_lowercase()),
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 // The complex form keeps the datum list on its own part;
                 // the simple form appends it as the subtype's fifth argument.
                 let datum_refs: Vec<u64> = instance
@@ -1989,7 +2004,7 @@ impl Reader<'_> {
                     .or_else(|| base.get(4).and_then(Arg::list))
                     .map(|list| list.iter().filter_map(Arg::reference).collect())
                     .unwrap_or_default();
-                (name, magnitude_ref, aspect, kind, datum_refs)
+                (name, magnitude_ref, aspect, kind, modifiers, datum_refs)
             };
             let Some(kind) = kind else {
                 continue;
@@ -2006,6 +2021,7 @@ impl Reader<'_> {
                 kind,
                 name,
                 magnitude,
+                modifiers,
                 datums,
                 items,
             });
@@ -2126,20 +2142,40 @@ impl Reader<'_> {
         if depth > 4 {
             return None;
         }
-        let (letter, refs) = {
+        let (letter, members, refs) = {
             let instance = self.instance(id).ok()?;
             let letter = instance.part("DATUM").and_then(|args| match args.get(4) {
                 Some(Arg::Str(s)) if !s.is_empty() => Some(s.clone()),
                 _ => None,
             });
+            // A compartment or common datum carrying a list of constituent
+            // references is a composite: every constituent contributes a
+            // letter, and the letters act as one datum.
+            let members: Vec<u64> = ["DATUM_REFERENCE_COMPARTMENT", "COMMON_DATUM"]
+                .iter()
+                .find_map(|k| instance.part(k))
+                .into_iter()
+                .flatten()
+                .find_map(Arg::list)
+                .map(|list| list.iter().filter_map(Arg::reference).collect())
+                .unwrap_or_default();
             let mut refs = Vec::new();
             for (_, args) in instance.parts() {
                 collect_refs(args, &mut refs);
             }
-            (letter, refs)
+            (letter, members, refs)
         };
         if let Some(letter) = letter {
             return Some(letter);
+        }
+        if !members.is_empty() {
+            let letters: Vec<String> = members
+                .into_iter()
+                .filter_map(|r| self.datum_letter(r, depth + 1))
+                .collect();
+            if !letters.is_empty() {
+                return Some(letters.join("-"));
+            }
         }
         refs.into_iter()
             .find_map(|r| self.datum_letter(r, depth + 1))

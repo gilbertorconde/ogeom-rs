@@ -57,7 +57,13 @@ pub struct GeometricTolerance {
     pub name: String,
     /// The tolerance zone's magnitude.
     pub magnitude: f64,
-    /// The datum letters the tolerance references, in precedence order.
+    /// Zone and material-condition modifiers, as lower-case words:
+    /// `maximum_material_requirement`, `unequally_disposed`, … — the
+    /// exchange vocabulary for Ⓜ, Ⓤ and their kin.
+    pub modifiers: Vec<String>,
+    /// The datum letters the tolerance references, in precedence order. A
+    /// composite reference — two datums acting as one, ISO's `A-B` — is a
+    /// single entry with its labels hyphen-joined.
     pub datums: Vec<String>,
     /// The topology the tolerance controls.
     pub items: Vec<TShapeId>,

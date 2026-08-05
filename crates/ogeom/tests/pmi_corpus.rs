@@ -126,6 +126,45 @@ fn the_nist_part_reads_its_annotations_semantically() {
     );
 }
 
+/// Material-condition modifiers and a composite datum reference survive
+/// the writer: the modifiers force the complex tolerance form, the
+/// hyphen-joined label a compartment binding two datums into one, and the
+/// reader hands both back as they went in.
+#[test]
+fn modifiers_and_composite_datums_survive_the_writer() {
+    let text = corpus("nist_ctc_01_asme1_ap242-e1.stp");
+    let mut first = ogeom::io::read_step(&text, T).unwrap();
+    {
+        let tolerance = first
+            .document
+            .pmi_mut()
+            .tolerances
+            .iter_mut()
+            .find(|t| t.kind == "perpendicularity")
+            .expect("the part carries a perpendicularity");
+        tolerance.modifiers = vec![
+            "maximum_material_requirement".into(),
+            "projected_tolerance_zone".into(),
+        ];
+        tolerance.datums = vec!["A-B".into(), "C".into()];
+    }
+    let written = ogeom::io::write_step(&first.document, T).unwrap();
+    let second = ogeom::io::read_step(&written, T).unwrap();
+    let tolerance = second
+        .document
+        .pmi()
+        .tolerances
+        .iter()
+        .find(|t| t.kind == "perpendicularity")
+        .expect("the perpendicularity survives");
+    assert_eq!(
+        tolerance.modifiers,
+        ["maximum_material_requirement", "projected_tolerance_zone"]
+    );
+    assert_eq!(tolerance.datums, ["A-B", "C"]);
+    assert!((tolerance.magnitude - 1.5).abs() < 1e-12);
+}
+
 #[test]
 fn pmi_round_trips_through_the_writer() {
     let text = corpus("nist_ctc_01_asme1_ap242-e1.stp");

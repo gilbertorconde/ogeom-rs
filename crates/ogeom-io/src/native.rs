@@ -462,6 +462,10 @@ pub fn write_document(
         text(&mut t, &tolerance.kind);
         text(&mut t, &tolerance.name);
         n(&mut t, tolerance.magnitude);
+        u(&mut t, tolerance.modifiers.len() as u64);
+        for word in &tolerance.modifiers {
+            text(&mut t, word);
+        }
         u(&mut t, tolerance.datums.len() as u64);
         for label in &tolerance.datums {
             text(&mut t, label);
@@ -768,6 +772,10 @@ pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
                 let kind = read_text(&mut cursor)?;
                 let name = read_text(&mut cursor)?;
                 let magnitude = cursor.number()?;
+                let mut modifiers = Vec::new();
+                for _ in 0..cursor.count()? {
+                    modifiers.push(read_text(&mut cursor)?);
+                }
                 let mut datums = Vec::new();
                 for _ in 0..cursor.count()? {
                     datums.push(read_text(&mut cursor)?);
@@ -784,6 +792,7 @@ pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
                         kind,
                         name,
                         magnitude,
+                        modifiers,
                         datums,
                         items,
                     });
@@ -2112,7 +2121,8 @@ mod tests {
             kind: "flatness".into(),
             name: "Flatness.1".into(),
             magnitude: 0.05,
-            datums: vec!["A".into()],
+            modifiers: vec!["maximum_material_requirement".into()],
+            datums: vec!["A".into(), "A-B".into()],
             items: vec![face.node()],
         });
         document.pmi_mut().datums.push(ogeom_doc::Datum {
@@ -2233,6 +2243,11 @@ mod tests {
         assert_eq!(back.pmi().dimensions.len(), 1);
         assert_eq!(back.pmi().dimensions[0].values, [20.0]);
         assert_eq!(back.pmi().tolerances[0].kind, "flatness");
+        assert_eq!(
+            back.pmi().tolerances[0].modifiers,
+            ["maximum_material_requirement"]
+        );
+        assert_eq!(back.pmi().tolerances[0].datums, ["A", "A-B"]);
         assert_eq!(back.pmi().datums[0].label, "A");
         assert_eq!(back.pmi().datums[0].items.len(), 1);
     }

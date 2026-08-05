@@ -714,19 +714,62 @@ impl Writer<'_> {
             let magnitude =
                 self.measure(tolerance.magnitude, ogeom_doc::MeasureKind::Length, lu, au);
             let keyword = format!("{}_TOLERANCE", tolerance.kind.to_uppercase());
-            if tolerance.datums.is_empty() {
-                self.entity(format!("{keyword}('{name}','',#{magnitude},#{aspect})"));
+            // A hyphen-joined label is a composite reference: its
+            // constituent datums go through a compartment that binds them
+            // into one.
+            let refs: Vec<String> = tolerance
+                .datums
+                .iter()
+                .filter_map(|d| {
+                    if let Some(id) = datum_ids.get(d.as_str()) {
+                        return Some(format!("#{id}"));
+                    }
+                    let parts: Vec<String> = d
+                        .split('-')
+                        .filter_map(|label| datum_ids.get(label))
+                        .map(|i| format!("#{i}"))
+                        .collect();
+                    if parts.len() < 2 {
+                        return None;
+                    }
+                    let list = parts.join(",");
+                    let compartment = self.entity(format!(
+                        "DATUM_REFERENCE_COMPARTMENT('','',#{pds},.F.,({list}),())"
+                    ));
+                    Some(format!("#{compartment}"))
+                })
+                .collect();
+            let refs = refs.join(",");
+            if tolerance.modifiers.is_empty() {
+                if refs.is_empty() {
+                    self.entity(format!("{keyword}('{name}','',#{magnitude},#{aspect})"));
+                } else {
+                    self.entity(format!(
+                        "{keyword}('{name}','',#{magnitude},#{aspect},({refs}))"
+                    ));
+                }
             } else {
-                let refs: Vec<String> = tolerance
-                    .datums
+                // Modifiers force the complex form: the shared attributes
+                // sit on the GEOMETRIC_TOLERANCE part, the datum list and
+                // the modifier words on their own parts, the subtype empty.
+                let words: Vec<String> = tolerance
+                    .modifiers
                     .iter()
-                    .filter_map(|d| datum_ids.get(d.as_str()))
-                    .map(|i| format!("#{i}"))
+                    .map(|m| format!(".{}.", m.to_uppercase()))
                     .collect();
-                let refs = refs.join(",");
-                self.entity(format!(
-                    "{keyword}('{name}','',#{magnitude},#{aspect},({refs}))"
-                ));
+                let words = words.join(",");
+                let mut parts = vec![
+                    format!("GEOMETRIC_TOLERANCE('{name}','',#{magnitude},#{aspect})"),
+                    format!("GEOMETRIC_TOLERANCE_WITH_MODIFIERS(({words}))"),
+                    format!("{keyword}()"),
+                ];
+                if !refs.is_empty() {
+                    parts.push(format!(
+                        "GEOMETRIC_TOLERANCE_WITH_DATUM_REFERENCE(({refs}))"
+                    ));
+                }
+                parts.sort();
+                self.entity(format!("({})", parts.concat()));
             }
         }
         Ok(())
