@@ -579,6 +579,69 @@ pub fn make_natural_face(model: &mut Model, surface: SurfaceGeometry) -> OgeomRe
 /// # Errors
 ///
 /// As [`Model::add_compound`].
+/// Build a compsolid: solids gluing along shared faces.
+///
+/// A compsolid is more than a bag of solids — its members must actually
+/// glue. Every pair connected through the whole is connected through shared
+/// *face nodes*: the same face entity bounding two solids, once from each
+/// side, which is the sharing a boolean or a sew produces. A set of solids
+/// that merely touch, faces coincident but distinct, is a compound, not a
+/// compsolid, and is refused as one.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// fewer than two solids are given, a member is not a solid, or the members
+/// do not glue into one connected whole through shared faces.
+pub fn make_compsolid(model: &mut Model, solids: &[Shape]) -> OgeomResult<Built> {
+    if solids.len() < 2 {
+        ogeom_bail!(
+            Construction,
+            "a compsolid glues at least two solids; one solid is just a solid"
+        );
+    }
+    // Which face nodes bound each solid.
+    let mut faces_of: Vec<std::collections::HashSet<ogeom_topo::TShapeId>> = Vec::new();
+    for solid in solids {
+        if model.kind_of(solid)? != ShapeType::Solid {
+            ogeom_bail!(Construction, "a compsolid's members are solids");
+        }
+        let set = ogeom_topo::explore(model, solid, ogeom_topo::Filter::OfType(ShapeType::Face))?
+            .iter()
+            .map(Shape::node)
+            .collect();
+        faces_of.push(set);
+    }
+    // Connectivity over shared face nodes: a flood fill from the first.
+    let mut joined = vec![false; solids.len()];
+    joined[0] = true;
+    let mut frontier = vec![0_usize];
+    while let Some(current) = frontier.pop() {
+        for (other, other_faces) in faces_of.iter().enumerate() {
+            if joined[other] {
+                continue;
+            }
+            if !faces_of[current].is_disjoint(other_faces) {
+                joined[other] = true;
+                frontier.push(other);
+            }
+        }
+    }
+    if joined.iter().any(|j| !j) {
+        ogeom_bail!(
+            Construction,
+            "the solids do not glue into one connected whole: at least one              shares no face with the rest. Coincident-but-distinct faces are              a compound's arrangement, not a compsolid's; sew or fuse first."
+        );
+    }
+
+    let compsolid = model.add_compsolid(solids)?;
+    let mut history = History::new();
+    for solid in solids {
+        history.generate(solid, compsolid.clone());
+    }
+    Ok(Built::new(compsolid, history))
+}
+
 pub fn make_compound(model: &mut Model, shapes: &[Shape]) -> OgeomResult<Built> {
     let compound = model.add_compound(shapes)?;
     let mut history = History::new();
@@ -1637,5 +1700,138 @@ mod polygon_tests {
             find_plane(&model, &solid, T).unwrap().is_none(),
             "a box is not planar"
         );
+    }
+}
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod compsolid_tests {
+    use super::*;
+    use ogeom_geom::PlaneSurface;
+    use ogeom_math::{Frame, Plane, Point};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// Two unit cubes glued along one shared face node at `x = 1`.
+    fn glued_cubes(model: &mut Model) -> (Shape, Shape) {
+        let a = crate::make_box(model, Frame::WORLD, (1.0, 1.0, 1.0), T)
+            .unwrap()
+            .shape;
+        // The face of `a` at x = 1: the one whose every vertex has x = 1.
+        let shared = ogeom_topo::explore(model, &a, ogeom_topo::Filter::OfType(ShapeType::Face))
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                ogeom_topo::explore(model, f, ogeom_topo::Filter::OfType(ShapeType::Vertex))
+                    .unwrap()
+                    .iter()
+                    .all(|v| {
+                        let p = model.node(v).unwrap().data().as_vertex().unwrap().point;
+                        let world = v.transform(model.datums()).unwrap().apply(p);
+                        (world.x - 1.0).abs() < 1e-9
+                    })
+            })
+            .expect("the box has a face at x = 1");
+
+        // The second cube: the shared face seen from the other side, plus
+        // five new faces over the shared boundary vertices.
+        let corner = |x: f64, y: f64, z: f64| Point::new(x, y, z);
+        let quad = |model: &mut Model, points: [Point; 4]| -> Shape {
+            let wire = crate::make_polygon(model, &points, true, T).unwrap().shape;
+            let plane = crate::find_plane(model, &wire, T).unwrap().unwrap();
+            make_face(
+                model,
+                PlaneSurface::over(Plane::new(plane.frame()), (-4.0, 4.0), (-4.0, 4.0))
+                    .unwrap()
+                    .into(),
+                std::slice::from_ref(&wire),
+                T,
+            )
+            .unwrap()
+            .shape
+        };
+        let faces = [
+            quad(
+                model,
+                [
+                    corner(2.0, 0.0, 0.0),
+                    corner(2.0, 1.0, 0.0),
+                    corner(2.0, 1.0, 1.0),
+                    corner(2.0, 0.0, 1.0),
+                ],
+            ),
+            quad(
+                model,
+                [
+                    corner(1.0, 0.0, 0.0),
+                    corner(2.0, 0.0, 0.0),
+                    corner(2.0, 0.0, 1.0),
+                    corner(1.0, 0.0, 1.0),
+                ],
+            ),
+            quad(
+                model,
+                [
+                    corner(1.0, 1.0, 0.0),
+                    corner(1.0, 1.0, 1.0),
+                    corner(2.0, 1.0, 1.0),
+                    corner(2.0, 1.0, 0.0),
+                ],
+            ),
+            quad(
+                model,
+                [
+                    corner(1.0, 0.0, 0.0),
+                    corner(1.0, 1.0, 0.0),
+                    corner(2.0, 1.0, 0.0),
+                    corner(2.0, 0.0, 0.0),
+                ],
+            ),
+            quad(
+                model,
+                [
+                    corner(1.0, 0.0, 1.0),
+                    corner(2.0, 0.0, 1.0),
+                    corner(2.0, 1.0, 1.0),
+                    corner(1.0, 1.0, 1.0),
+                ],
+            ),
+        ];
+        let mut shell_faces = vec![shared.reversed()];
+        shell_faces.extend(faces);
+        let shell = make_shell(model, &shell_faces).unwrap().shape;
+        let b = make_solid(model, std::slice::from_ref(&shell))
+            .unwrap()
+            .shape;
+        (a, b)
+    }
+
+    #[test]
+    fn glued_solids_build_a_compsolid_and_loose_ones_are_refused() {
+        let mut model = Model::new();
+        let (a, b) = glued_cubes(&mut model);
+        let built = make_compsolid(&mut model, &[a.clone(), b.clone()]).unwrap();
+        assert_eq!(model.kind_of(&built.shape).unwrap(), ShapeType::CompSolid);
+        assert_eq!(
+            built.history.generated(&a),
+            std::slice::from_ref(&built.shape)
+        );
+
+        // Two boxes merely sitting apart share nothing and are refused.
+        let mut model = Model::new();
+        let a = crate::make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
+            .unwrap()
+            .shape;
+        let far = Frame::new(
+            Point::new(5.0, 0.0, 0.0),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let b = crate::make_box(&mut model, far, (1.0, 1.0, 1.0), T)
+            .unwrap()
+            .shape;
+        assert!(make_compsolid(&mut model, &[a.clone(), b]).is_err());
+        assert!(make_compsolid(&mut model, std::slice::from_ref(&a)).is_err());
     }
 }
