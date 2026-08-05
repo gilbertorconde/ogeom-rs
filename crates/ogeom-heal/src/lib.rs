@@ -9,5 +9,7 @@
 //! are.
 
 pub mod reanchor;
+pub mod same_parameter;
 
 pub use reanchor::reanchor_periodic_rings;
+pub use same_parameter::{SameParameterReport, repair_same_parameter};

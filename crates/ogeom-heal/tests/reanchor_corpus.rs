@@ -61,3 +61,34 @@ fn reanchoring_makes_the_smallest_nist_part_whole() {
     eprintln!("REPORT healed volume {:.3} mm^3", props.mass);
     assert!(props.mass > 0.0, "the healed part encloses volume");
 }
+
+#[test]
+fn the_imported_part_repairs_its_same_parameter_claims() {
+    let path = format!(
+        "{}/../../tests/corpus/nist_ftc_11_asme1_rb.stp",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let text = std::fs::read_to_string(path).unwrap();
+    let mut import = ogeom_io::read_step(&text, T).unwrap();
+    let solid = import.solids[0].clone();
+    let report = ogeom_heal::repair_same_parameter(import.document.model_mut(), &solid, T).unwrap();
+    assert!(report.checked > 0);
+    // Imported pcurves were fitted against the file's own slop; some edges
+    // widen, and afterwards every claim is true.
+    let all_true = ogeom_topo::explore(
+        import.document.model(),
+        &solid,
+        ogeom_topo::Filter::OfType(ogeom_topo::ShapeType::Edge),
+    )
+    .unwrap()
+    .iter()
+    .all(|e| {
+        import
+            .document
+            .model()
+            .node(e)
+            .and_then(|n| n.data().as_edge())
+            .is_some_and(ogeom_topo::EdgeData::same_parameter)
+    });
+    assert!(all_true, "every edge's claim holds after the repair");
+}
