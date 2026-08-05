@@ -12,6 +12,7 @@ ogeom-core.workspace = true
 ogeom-math.workspace = true
 ogeom-geom.workspace = true
 ogeom-topo.workspace = true
+ogeom-doc.workspace = true
 # The STEP reader builds real topology as it reads, and computes exact
 # pcurves for the edges it lands on faces; both live above the data layer.
 ogeom-algo.workspace = true

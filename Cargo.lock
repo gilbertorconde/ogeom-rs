@@ -430,6 +430,7 @@ dependencies = [
  "approx",
  "ogeom-algo",
  "ogeom-core",
+ "ogeom-doc",
  "ogeom-geom",
  "ogeom-intersect",
  "ogeom-math",

@@ -90,6 +90,12 @@ impl Instance {
     pub fn keyword(&self) -> &str {
         self.parts.first().map_or("", |(k, _)| k.as_str())
     }
+
+    /// Every part of the instance: one for a simple instance, several for a
+    /// complex one, in file order.
+    pub fn parts(&self) -> impl Iterator<Item = (&str, &[Arg])> {
+        self.parts.iter().map(|(k, a)| (k.as_str(), a.as_slice()))
+    }
 }
 
 /// A parsed exchange file: the data section as a graph, the header kept as

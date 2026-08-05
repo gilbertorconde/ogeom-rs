@@ -40,16 +40,16 @@ fn the_corpus_heals_and_the_analytic_parts_measure() {
         let solid = import.solids[0].clone();
         // Healing is idempotent where nothing is broken and surgery where
         // something is; either way the shell must close.
-        let healed = ogeom::heal::reanchor_periodic_rings(&mut import.model, &solid, T)
+        let healed = ogeom::heal::reanchor_periodic_rings(import.document.model_mut(), &solid, T)
             .map_or(solid, |h| h.shape);
-        let shell = explore_unique(&import.model, &healed, ShapeType::Shell)
+        let shell = explore_unique(import.document.model(), &healed, ShapeType::Shell)
             .unwrap()
             .remove(0);
         assert!(
-            ogeom::algo::is_shell_closed(&import.model, &shell).unwrap(),
+            ogeom::algo::is_shell_closed(import.document.model(), &shell).unwrap(),
             "{name}: the healed shell closes"
         );
-        match ogeom::algo::volume_properties(&import.model, &healed, fine, T) {
+        match ogeom::algo::volume_properties(import.document.model(), &healed, fine, T) {
             Ok(props) => {
                 assert!(props.mass > 0.0, "{name}: a part encloses volume");
                 eprintln!("REPORT {name}: volume {:.3} mm^3", props.mass);
@@ -72,14 +72,14 @@ fn an_imported_part_takes_a_boolean_cut() {
     let text = corpus("nist_ftc_11_asme1_rb.stp");
     let mut import = ogeom::io::read_step(&text, T).unwrap();
     let solid = import.solids[0].clone();
-    let healed = ogeom::heal::reanchor_periodic_rings(&mut import.model, &solid, T)
+    let healed = ogeom::heal::reanchor_periodic_rings(import.document.model_mut(), &solid, T)
         .unwrap()
         .shape;
     let fine = ogeom::mesh::Deflection {
         chord: 1e-2,
         ..ogeom::mesh::Deflection::default()
     };
-    let before = ogeom::algo::volume_properties(&import.model, &healed, fine, T)
+    let before = ogeom::algo::volume_properties(import.document.model(), &healed, fine, T)
         .unwrap()
         .mass;
 
@@ -94,18 +94,20 @@ fn an_imported_part_takes_a_boolean_cut() {
         T,
     )
     .unwrap();
-    let post = ogeom::algo::make_box(&mut import.model, frame, (8.0, 8.0, 6.0), T).unwrap();
-    let result = ogeom::boolean::cut(&mut import.model, &healed, &post.shape, T).unwrap();
+    let post =
+        ogeom::algo::make_box(import.document.model_mut(), frame, (8.0, 8.0, 6.0), T).unwrap();
+    let result = ogeom::boolean::cut(import.document.model_mut(), &healed, &post.shape, T).unwrap();
 
     // The cut runs on the imported part: the result is a solid whose shell
     // closes, built from pieces of the world's geometry and this kernel's,
     // and it *measures* — the mesh welds across the file's slop because the
     // slop is recorded on the edges and vertices and the weld honours it.
-    let shell = explore_unique(&import.model, &result.shape, ShapeType::Shell)
+    let shell = explore_unique(import.document.model(), &result.shape, ShapeType::Shell)
         .unwrap()
         .remove(0);
-    assert!(ogeom::algo::is_shell_closed(&import.model, &shell).unwrap());
-    let props = ogeom::algo::volume_properties(&import.model, &result.shape, fine, T).unwrap();
+    assert!(ogeom::algo::is_shell_closed(import.document.model(), &shell).unwrap());
+    let props =
+        ogeom::algo::volume_properties(import.document.model(), &result.shape, fine, T).unwrap();
     eprintln!("REPORT cut imported: {before:.3} -> {:.3} mm^3", props.mass);
     assert!(props.mass < before, "the cut removed material");
     assert!(props.mass > 0.0);
@@ -122,10 +124,14 @@ fn an_imported_part_takes_a_boolean_cut() {
         result.history.modified(&healed),
         std::slice::from_ref(&result.shape)
     );
-    let touched = explore(&import.model, &healed, Filter::OfType(ShapeType::Face))
-        .unwrap()
-        .iter()
-        .filter(|f| result.history.is_affected(f))
-        .count();
+    let touched = explore(
+        import.document.model(),
+        &healed,
+        Filter::OfType(ShapeType::Face),
+    )
+    .unwrap()
+    .iter()
+    .filter(|f| result.history.is_affected(f))
+    .count();
     assert!(touched > 0, "faces of the imported part appear in history");
 }

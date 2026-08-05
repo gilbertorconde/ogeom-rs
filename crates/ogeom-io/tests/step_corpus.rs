@@ -26,10 +26,11 @@ fn the_smallest_nist_part_reads_into_a_closed_solid() {
 
     // The topology closes even where meshing cannot yet follow.
     let solid = &import.solids[0];
-    let shell = ogeom_topo::explore_unique(&import.model, solid, ogeom_topo::ShapeType::Shell)
-        .unwrap()
-        .remove(0);
-    assert!(ogeom_algo::is_shell_closed(&import.model, &shell).unwrap());
+    let shell =
+        ogeom_topo::explore_unique(import.document.model(), solid, ogeom_topo::ShapeType::Shell)
+            .unwrap()
+            .remove(0);
+    assert!(ogeom_algo::is_shell_closed(import.document.model(), &shell).unwrap());
 
     // Four of the six faces triangulate — planes and full cylinder bands,
     // the bands through synthesised seams. The two torus fillets are the
@@ -42,13 +43,13 @@ fn the_smallest_nist_part_reads_into_a_closed_solid() {
     };
     let mut meshed = 0;
     for face in ogeom_topo::explore(
-        &import.model,
+        import.document.model(),
         solid,
         ogeom_topo::Filter::OfType(ogeom_topo::ShapeType::Face),
     )
     .unwrap()
     {
-        if ogeom_mesh::triangulate(&import.model, &face, fine, T).is_ok() {
+        if ogeom_mesh::triangulate(import.document.model(), &face, fine, T).is_ok() {
             meshed += 1;
         }
     }
@@ -82,11 +83,14 @@ fn every_nist_part_reads_and_reports_honestly() {
             ogeom_io::read_step(&text, T).unwrap_or_else(|e| panic!("{name} failed to read: {e}"));
         let mut closed = 0;
         for solid in &import.solids {
-            let shell =
-                ogeom_topo::explore_unique(&import.model, solid, ogeom_topo::ShapeType::Shell)
-                    .unwrap()
-                    .remove(0);
-            if ogeom_algo::is_shell_closed(&import.model, &shell).unwrap() {
+            let shell = ogeom_topo::explore_unique(
+                import.document.model(),
+                solid,
+                ogeom_topo::ShapeType::Shell,
+            )
+            .unwrap()
+            .remove(0);
+            if ogeom_algo::is_shell_closed(import.document.model(), &shell).unwrap() {
                 closed += 1;
             }
         }

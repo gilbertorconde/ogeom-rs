@@ -20,7 +20,8 @@ fn reanchoring_makes_the_smallest_nist_part_whole() {
     );
 
     let healed =
-        ogeom_heal::reanchor_periodic_rings(&mut import.model, &import.solids[0], T).unwrap();
+        ogeom_heal::reanchor_periodic_rings(import.document.model_mut(), &import.solids[0], T)
+            .unwrap();
     assert!(!healed.history.is_empty(), "something was healed");
 
     // Every face of the healed solid now triangulates, and the part
@@ -31,28 +32,32 @@ fn reanchoring_makes_the_smallest_nist_part_whole() {
         ..ogeom_mesh::Deflection::default()
     };
     let faces = ogeom_topo::explore(
-        &import.model,
+        import.document.model(),
         &healed.shape,
         ogeom_topo::Filter::OfType(ogeom_topo::ShapeType::Face),
     )
     .unwrap();
     assert_eq!(faces.len(), 6);
     for face in &faces {
-        ogeom_mesh::triangulate(&import.model, face, fine, T)
+        ogeom_mesh::triangulate(import.document.model(), face, fine, T)
             .unwrap_or_else(|e| panic!("a healed face fails to mesh: {e}"));
     }
-    let shell =
-        ogeom_topo::explore_unique(&import.model, &healed.shape, ogeom_topo::ShapeType::Shell)
-            .unwrap()
-            .remove(0);
+    let shell = ogeom_topo::explore_unique(
+        import.document.model(),
+        &healed.shape,
+        ogeom_topo::ShapeType::Shell,
+    )
+    .unwrap()
+    .remove(0);
     assert!(
-        ogeom_algo::is_shell_closed(&import.model, &shell).unwrap(),
+        ogeom_algo::is_shell_closed(import.document.model(), &shell).unwrap(),
         "the healed topology closes"
     );
     // The part measures: every revolution face was re-annotated with
     // window-coherent pcurves, boundary vertices anchor to their edges'
     // curves, and the volume integral has a watertight boundary.
-    let props = ogeom_algo::volume_properties(&import.model, &healed.shape, fine, T).unwrap();
+    let props =
+        ogeom_algo::volume_properties(import.document.model(), &healed.shape, fine, T).unwrap();
     eprintln!("REPORT healed volume {:.3} mm^3", props.mass);
     assert!(props.mass > 0.0, "the healed part encloses volume");
 }
