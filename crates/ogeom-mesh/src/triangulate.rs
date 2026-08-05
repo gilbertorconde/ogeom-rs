@@ -31,7 +31,9 @@ use ogeom_geom::Curve3d as _;
 use ogeom_geom::{Curve2d, Surface, SurfaceGeometry};
 use ogeom_math::{Direction, Point, Point2, Vector};
 use ogeom_topo::{EdgeRepr, Model, NodeData, Orientation, Shape, ShapeType, Triangulation};
-use spade::{ConstrainedDelaunayTriangulation, Point2 as SpadePoint, Triangulation as _};
+use spade::{
+    ConstrainedDelaunayTriangulation, Point2 as SpadePoint, Triangulation as _, mitigate_underflow,
+};
 
 use crate::discretize::{Deflection, discretize};
 
@@ -771,8 +773,11 @@ fn triangulate_region(
     for ring in rings {
         let mut ring_handles = Vec::with_capacity(ring.len());
         for p in ring {
+            // A chart coordinate can come out subnormal-tiny — the sine of
+            // a fold angle, the residue of an exact cancellation — and the
+            // triangulation refuses what is, for every purpose, zero.
             let handle = cdt
-                .insert(SpadePoint::new(p.x, p.y))
+                .insert(mitigate_underflow(SpadePoint::new(p.x, p.y)))
                 .map_err(|e| ogeom_core::ogeom_err!(NotDone, "boundary insertion failed: {e}"))?;
             ring_handles.push(handle);
         }
@@ -839,7 +844,7 @@ fn triangulate_region(
                 break;
             }
             for point in worst {
-                cdt.insert(point).map_err(|e| {
+                cdt.insert(mitigate_underflow(point)).map_err(|e| {
                     ogeom_core::ogeom_err!(NotDone, "refinement insertion failed: {e}")
                 })?;
             }
@@ -948,7 +953,7 @@ fn add_interior_points(
             if !inside_region(rings, Point2::new(u, v)) {
                 continue;
             }
-            cdt.insert(SpadePoint::new(u, v))
+            cdt.insert(mitigate_underflow(SpadePoint::new(u, v)))
                 .map_err(|e| ogeom_core::ogeom_err!(NotDone, "interior insertion failed: {e}"))?;
         }
     }
