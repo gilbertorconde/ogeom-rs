@@ -380,6 +380,163 @@ fn distance<const D: usize>(a: &[f64; D], b: &[f64; D]) -> f64 {
 }
 
 /// Centripetal parameters over the points, on `[0, 1]`.
+/// Fit a rectangular grid of points with a tensor-product B-spline surface.
+///
+/// The deferred grid fit, kept honest the way the curve fit is: rows first,
+/// columns second, both passes at *fixed* parameters — a grid's
+/// parameterization is shared property, and correcting it per row is how a
+/// grid stops being one. Each pass adapts one shared knot vector against the
+/// worst residual across its whole family, so every row rides the same
+/// basis, which is what makes the second pass a fit over control points
+/// rather than a guess. The reported error is measured at the end, surface
+/// against every input point, and `met` does not round up.
+///
+/// `rows[j][i]` runs `i` along `u` and `j` along `v`.
+///
+/// # Errors
+///
+/// [`OgError::Construction`](og_core::OgError::Construction) if the grid is
+/// not rectangular or is smaller than two by two, or the tolerance is not a
+/// distance.
+pub fn fit_surface_grid(
+    rows: &[Vec<Point>],
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgResult<Fitted<crate::BSplineSurface>> {
+    use crate::traits::Surface as _;
+    if !tolerance.is_finite() || tolerance <= 0.0 {
+        og_bail!(Construction, "a tolerance of {tolerance} is not a distance");
+    }
+    let nv = rows.len();
+    if nv < 2 {
+        og_bail!(Construction, "a surface fit needs at least two rows");
+    }
+    let nu = rows[0].len();
+    if nu < 2 || rows.iter().any(|r| r.len() != nu) {
+        og_bail!(Construction, "a surface fit needs a rectangular grid");
+    }
+    let raw: Vec<Vec<[f64; 3]>> = rows
+        .iter()
+        .map(|r| r.iter().map(|p| [p.x, p.y, p.z]).collect())
+        .collect();
+
+    // Averaged centripetal parameters: one shared assignment per direction.
+    let average = |families: &[Vec<[f64; 3]>]| -> Vec<f64> {
+        let mut sums = vec![0.0; families[0].len()];
+        for family in families {
+            for (s, p) in sums.iter_mut().zip(centripetal::<3>(family)) {
+                *s += p;
+            }
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let n = families.len() as f64;
+        sums.iter().map(|s| s / n).collect()
+    };
+    let u_params = average(&raw);
+    let columns: Vec<Vec<[f64; 3]>> = (0..nu)
+        .map(|i| raw.iter().map(|r| r[i]).collect())
+        .collect();
+    let v_params = average(&columns);
+
+    // Pass one: every row on one shared knot vector.
+    let (u_knots, row_controls) = fit_family::<3>(&raw, &u_params, degree, tolerance * 0.5)?;
+    // Pass two: the columns of control points, against the v parameters.
+    let k = u_knots.control_point_count();
+    let control_columns: Vec<Vec<[f64; 3]>> = (0..k)
+        .map(|i| row_controls.iter().map(|r| r[i]).collect())
+        .collect();
+    let (v_knots, column_controls) =
+        fit_family::<3>(&control_columns, &v_params, degree, tolerance * 0.5)?;
+    let l = v_knots.control_point_count();
+
+    // Assemble: `column_controls[i][j]` is the control at u-index i,
+    // v-index j; the grid is row-major in u.
+    let mut net: Vec<Point> = Vec::with_capacity(k * l);
+    for column in &column_controls {
+        for c in column {
+            net.push(Point::new(c[0], c[1], c[2]));
+        }
+    }
+    let grid = og_math::ControlGrid::new(net, k, l)?;
+    let surface = crate::BSplineSurface::new(u_knots, v_knots, &grid, tol)?;
+
+    // The honest error: the surface against every input point, at the
+    // grid's own parameters.
+    let mut worst = 0.0_f64;
+    for (j, row) in rows.iter().enumerate() {
+        for (i, p) in row.iter().enumerate() {
+            let at = surface.point_at(u_params[i], v_params[j], tol)?;
+            worst = worst.max(at.distance(*p));
+        }
+    }
+    Ok(Fitted {
+        curve: surface,
+        error: worst,
+        met: worst <= tolerance,
+    })
+}
+
+/// Fit a family of point rows sharing parameters onto one knot vector,
+/// refined against the worst residual across the whole family, parameters
+/// held fixed.
+/// The best round a family fit reached: knots, one control row per member,
+/// and the worst residual.
+type FamilyRound<const D: usize> = (KnotVector, Vec<Vec<[f64; D]>>, f64);
+
+fn fit_family<const D: usize>(
+    family: &[Vec<[f64; D]>],
+    parameters: &[f64],
+    degree: usize,
+    tolerance: f64,
+) -> OgResult<(KnotVector, Vec<Vec<[f64; D]>>)> {
+    let degree = degree.min(parameters.len() - 1).max(1);
+    let (a, b) = (parameters[0], parameters[parameters.len() - 1]);
+    let mut knots = single_span(degree, a, b)?;
+    const ROUNDS: usize = 24;
+    let mut best: Option<FamilyRound<D>> = None;
+    for _ in 0..ROUNDS {
+        let mut controls = Vec::with_capacity(family.len());
+        let mut merged: Vec<(f64, f64)> = parameters.iter().map(|u| (*u, 0.0)).collect();
+        let mut solvable = true;
+        for row in family {
+            match least_squares::<D>(&knots, row, parameters) {
+                Ok(control) => {
+                    for (slot, entry) in residuals::<D>(&knots, &control, row, parameters)
+                        .iter()
+                        .zip(merged.iter_mut())
+                    {
+                        entry.1 = entry.1.max(slot.1);
+                    }
+                    controls.push(control);
+                }
+                Err(_) => {
+                    solvable = false;
+                    break;
+                }
+            }
+        }
+        if !solvable {
+            break;
+        }
+        let worst = merged.iter().fold(0.0_f64, |acc, e| acc.max(e.1));
+        if best.as_ref().is_none_or(|(_, _, held)| worst < *held) {
+            best = Some((knots.clone(), controls, worst));
+        }
+        if worst <= tolerance || knots.control_point_count() >= parameters.len() {
+            break;
+        }
+        let Some(refined) = refined_where_bad(&knots, &merged, tolerance)? else {
+            break;
+        };
+        knots = refined;
+    }
+    let Some((knots, controls, _)) = best else {
+        og_bail!(NotDone, "the family fit solved no round at all");
+    };
+    Ok((knots, controls))
+}
+
 fn centripetal<const D: usize>(points: &[[f64; D]]) -> Vec<f64> {
     let mut out = Vec::with_capacity(points.len());
     out.push(0.0);
@@ -627,6 +784,78 @@ fn refined_where_bad(
         }
     }
     Ok(if changed { Some(refined) } else { None })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod grid_tests {
+    use super::*;
+    use crate::traits::Surface as _;
+    use og_core::Tolerances;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    #[test]
+    fn a_torus_patch_grid_fits_to_tolerance_on_and_off_the_grid() {
+        let torus = og_math::Torus::new(og_math::Frame::WORLD, 2.0, 0.5, T).unwrap();
+        let surface = crate::TorusSurface::new(torus);
+        let (nu, nv) = (25, 17);
+        let span_u = 1.2_f64;
+        let span_v = 0.9_f64;
+        let sample = |fu: f64, fv: f64| surface.point_at(span_u * fu, span_v * fv, T).unwrap();
+        let mut rows = Vec::new();
+        for j in 0..nv {
+            let mut row = Vec::new();
+            for i in 0..nu {
+                row.push(sample(
+                    f64::from(i) / f64::from(nu - 1),
+                    f64::from(j) / f64::from(nv - 1),
+                ));
+            }
+            rows.push(row);
+        }
+        let fitted = fit_surface_grid(&rows, 3, 1e-4, T).unwrap();
+        assert!(fitted.met, "error {} above the target", fitted.error);
+
+        // Off the grid too: the fit describes the surface, not just its
+        // samples. The fitted chart and the torus's differ, so compare by
+        // distance to the true surface rather than at matched parameters.
+        let (ud, vd) = fitted.curve.domain();
+        for i in 0..8 {
+            for j in 0..8 {
+                let u = ud.0 + (ud.1 - ud.0) * (0.07 + 0.9 * f64::from(i) / 7.0);
+                let v = vd.0 + (vd.1 - vd.0) * (0.07 + 0.9 * f64::from(j) / 7.0);
+                let p = fitted.curve.point_at(u, v, T).unwrap();
+                let d = torus.distance_to(p);
+                assert!(d < 5e-4, "off-grid deviation {d} at ({u}, {v})");
+            }
+        }
+    }
+
+    #[test]
+    fn a_grid_the_basis_can_represent_fits_to_rounding() {
+        // Points from a bilinear patch: degree one in both directions.
+        let corner = |x: f64, y: f64| Point::new(x, y, 0.3 * x - 0.2 * y);
+        let mut rows = Vec::new();
+        for j in 0..6 {
+            let mut row = Vec::new();
+            for i in 0..6 {
+                row.push(corner(f64::from(i), 2.0 * f64::from(j)));
+            }
+            rows.push(row);
+        }
+        let fitted = fit_surface_grid(&rows, 1, 1e-9, T).unwrap();
+        assert!(fitted.met, "error {} above rounding", fitted.error);
+    }
+
+    #[test]
+    fn a_ragged_grid_is_refused() {
+        let rows = vec![
+            vec![Point::ORIGIN, Point::new(1.0, 0.0, 0.0)],
+            vec![Point::new(0.0, 1.0, 0.0)],
+        ];
+        assert!(fit_surface_grid(&rows, 2, 1e-6, T).is_err());
+    }
 }
 
 #[cfg(test)]
