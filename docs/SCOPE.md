@@ -460,10 +460,10 @@ are refused with instructions — see the deferred table.
 |---|---|
 | Analysis: wire order and orientation, edge/face consistency, tolerance survey, free bounds | `ShapeAnalysis` |
 | Fixing: wires, faces, shells, solids, small edges and faces, missing pcurves, seams | `ShapeFix` |
-| Upgrade: same-domain unification, face and edge splitting, canonical conversion | `ShapeUpgrade` |
-| Reshape and substitution framework | `ShapeBuild_ReShape` |
-| **Canonical recognition** — detecting that a NURBS patch is really a cylinder | `ShapeAnalysis_CanonicalRecognition` |
-| Simplification: face merging, edge merging, tolerance reduction | — |
+| Upgrade: same-domain unification, face and edge splitting, canonical conversion | `ShapeUpgrade` — unification done for planar carriers as `unify_same_domain`: one carrier means one *plane*, not one frame, so the two halves of a fused wall group despite carrying their own origins, and the absorbed half's edges get pcurves projected into the kept chart. Curved carriers stay split by choice — transporting a parameterization between two charts is a guess this refuses to make |
+| Reshape and substitution framework | `ShapeBuild_ReShape` — done as `heal::Reshape`: a batch of substitutions, one bottom-up rebuild, rebuilt nodes shared so a replaced edge is one new node however many faces reach it, and the ordinary history reporting what became of each input |
+| **Canonical recognition** — detecting that a NURBS patch is really a cylinder | `ShapeAnalysis_CanonicalRecognition` — done as `heal::canonical`: plane, sphere, cylinder, cone and torus recovered from sampled points with per-kind sample floors, and a `SurfaceRecognizer` the mesh→B-rep path drives its segmentation from |
+| Simplification: face merging, edge merging, tolerance reduction | — done: `unify_same_domain`; `merge_edges`, which joins each pcurve alongside the curve and then *measures* the join the way a face would read it, leaving the pair split when it does not measure up; `reduce_tolerances`, which re-measures each edge's pcurve-against-curve agreement and shrinks the claim to it |
 
 Real files are broken. This is not a postscript to the boolean work; it is what
 makes the boolean work usable on anything that came from outside.
