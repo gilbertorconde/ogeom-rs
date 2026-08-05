@@ -13,28 +13,31 @@ fn corpus(name: &str) -> String {
 }
 
 /// Healing sweeps the whole corpus: every part reads, every shell closes,
-/// and the parts whose faces the kernel can annotate measure real volumes.
+/// every part measures, and each volume pins to its known figure — the
+/// values ftc_07 and ftc_11 arbitrated against the kernel's exact ray
+/// classifier and ctc_01 against an orientation-free even-odd grid. A loose
+/// relative band absorbs future mesh refinements; an orientation or unit
+/// mistake moves a volume by whole factors and cannot hide inside it.
 #[test]
-fn the_corpus_heals_and_the_analytic_parts_measure() {
-    let files = [
-        "nist_ctc_01_asme1_rd.stp",
-        "nist_ctc_02_asme1_rc.stp",
-        "nist_ctc_03_asme1_rc.stp",
-        "nist_ctc_04_asme1_rd.stp",
-        "nist_ctc_05_asme1_rd.stp",
-        "nist_ftc_06_asme1_rd.stp",
-        "nist_ftc_07_asme1_rd.stp",
-        "nist_ftc_08_asme1_rc.stp",
-        "nist_ftc_09_asme1_rd.stp",
-        "nist_ftc_10_asme1_rb.stp",
-        "nist_ftc_11_asme1_rb.stp",
+fn the_corpus_heals_and_every_part_measures() {
+    let files: [(&str, f64); 11] = [
+        ("nist_ctc_01_asme1_rd.stp", 14_643_073.4),
+        ("nist_ctc_02_asme1_rc.stp", 47_101_909.1),
+        ("nist_ctc_03_asme1_rc.stp", 331_884.8),
+        ("nist_ctc_04_asme1_rd.stp", 17_519_472.2),
+        ("nist_ctc_05_asme1_rd.stp", 12_694_721.1),
+        ("nist_ftc_06_asme1_rd.stp", 3_289_989.2),
+        ("nist_ftc_07_asme1_rd.stp", 1_726_286.9),
+        ("nist_ftc_08_asme1_rc.stp", 503_596.4),
+        ("nist_ftc_09_asme1_rd.stp", 136_453.8),
+        ("nist_ftc_10_asme1_rb.stp", 188_388.8),
+        ("nist_ftc_11_asme1_rb.stp", 5_122.3),
     ];
     let fine = ogeom::mesh::Deflection {
         chord: 1e-2,
         ..ogeom::mesh::Deflection::default()
     };
-    let mut measured = 0;
-    for name in files {
+    for (name, expected) in files {
         let text = corpus(name);
         let mut import = ogeom::io::read_step(&text, T).unwrap();
         let solid = import.solids[0].clone();
@@ -49,20 +52,15 @@ fn the_corpus_heals_and_the_analytic_parts_measure() {
             ogeom::algo::is_shell_closed(import.document.model(), &shell).unwrap(),
             "{name}: the healed shell closes"
         );
-        match ogeom::algo::volume_properties(import.document.model(), &healed, fine, T) {
-            Ok(props) => {
-                assert!(props.mass > 0.0, "{name}: a part encloses volume");
-                eprintln!("REPORT {name}: volume {:.3} mm^3", props.mass);
-                measured += 1;
-            }
-            Err(e) => eprintln!("REPORT {name}: not yet measurable ({e})"),
-        }
+        let props = ogeom::algo::volume_properties(import.document.model(), &healed, fine, T)
+            .unwrap_or_else(|e| panic!("{name}: does not measure: {e}"));
+        eprintln!("REPORT {name}: volume {:.3} mm^3", props.mass);
+        assert!(
+            (props.mass - expected).abs() <= expected * 1e-2,
+            "{name}: volume {:.3} strays from its pinned {expected:.1}",
+            props.mass
+        );
     }
-    assert!(
-        measured >= 1,
-        "at least the all-analytic parts measure after healing"
-    );
-    eprintln!("REPORT measured {measured}/11");
 }
 
 /// A boolean over imported geometry, history checked: the milestone's
