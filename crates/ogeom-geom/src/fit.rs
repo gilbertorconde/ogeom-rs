@@ -87,6 +87,138 @@ pub fn fit_points(
     Ok(Fitted { curve, error, met })
 }
 
+/// Fit a *fair* curve: least squares over the points, pulled toward
+/// minimum bending energy by a smoothing weight.
+///
+/// The energy is the squared second difference of the control polygon — the
+/// discrete bending of the curve's own skeleton — added to the normal
+/// equations as `λ·DᵀD`. At `λ = 0` this is plain least squares; as `λ`
+/// grows the curve trades closeness for straightness, which is the batten
+/// a drafter flexes through points. Both ends interpolate their points
+/// exactly, whatever the weight. The reported error is the honest maximum
+/// distance from the inputs, which *rises* with `λ` — fairness is spent
+/// closeness, and the number says how much was spent.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// fewer than two distinct points arrive, the control budget cannot carry
+/// the degree, or the weight is not finite and non-negative.
+pub fn fit_points_faired(
+    points: &[Point],
+    degree: usize,
+    controls: usize,
+    smoothing: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<BSplineCurve>> {
+    if !smoothing.is_finite() || smoothing < 0.0 {
+        ogeom_bail!(
+            Construction,
+            "a smoothing weight of {smoothing} is not a weight"
+        );
+    }
+    if controls < degree + 1 {
+        ogeom_bail!(
+            Construction,
+            "{controls} control points cannot carry degree {degree}"
+        );
+    }
+    let m = points.len();
+    if m < 2 {
+        ogeom_bail!(Construction, "a fair curve needs at least two points");
+    }
+
+    // Chord-length parameters over the clamped knot domain.
+    let knots = KnotVector::clamped_uniform(degree, controls)?;
+    let (lo, hi) = (knots.domain_start(), knots.domain_end());
+    let mut cumulative = vec![0.0f64; m];
+    for i in 1..m {
+        cumulative[i] = cumulative[i - 1] + points[i].distance(points[i - 1]);
+    }
+    let total = cumulative[m - 1];
+    if total <= tol.confusion() {
+        ogeom_bail!(
+            Construction,
+            "the points coincide; there is no curve to fair"
+        );
+    }
+    let parameters: Vec<f64> = cumulative
+        .iter()
+        .map(|c| lo + (hi - lo) * (c / total))
+        .collect();
+
+    // The full stiffness K = AᵀA + λ·DᵀD over every control point, then the
+    // end points pinned by moving their columns to the right-hand side.
+    let n = controls;
+    let mut a = nalgebra::DMatrix::<f64>::zeros(m, n);
+    for (k, &u) in parameters.iter().enumerate() {
+        let span = knots.span_unchecked(u);
+        let basis = knots.basis(span, u);
+        let first = span - degree;
+        for (j, b) in basis.iter().enumerate() {
+            a[(k, first + j)] = *b;
+        }
+    }
+    let mut d = nalgebra::DMatrix::<f64>::zeros(n.saturating_sub(2), n);
+    for r in 0..n.saturating_sub(2) {
+        d[(r, r)] = 1.0;
+        d[(r, r + 1)] = -2.0;
+        d[(r, r + 2)] = 1.0;
+    }
+    let k_full = a.transpose() * &a + d.transpose() * &d * smoothing;
+
+    let free: Vec<usize> = (1..n - 1).collect();
+    let mut reduced = nalgebra::DMatrix::<f64>::zeros(free.len(), free.len());
+    for (ri, &i) in free.iter().enumerate() {
+        for (rj, &j) in free.iter().enumerate() {
+            reduced[(ri, rj)] = k_full[(i, j)];
+        }
+    }
+    let decomposition = reduced.lu();
+
+    let mut control = vec![Point::ORIGIN; n];
+    control[0] = points[0];
+    control[n - 1] = points[m - 1];
+    for axis in 0..3 {
+        let b_data =
+            nalgebra::DVector::from_iterator(m, points.iter().map(|p| [p.x, p.y, p.z][axis]));
+        let full_rhs = a.transpose() * &b_data;
+        let mut rhs = nalgebra::DVector::<f64>::zeros(free.len());
+        for (ri, &i) in free.iter().enumerate() {
+            rhs[ri] = full_rhs[i]
+                - k_full[(i, 0)] * [points[0].x, points[0].y, points[0].z][axis]
+                - k_full[(i, n - 1)] * [points[m - 1].x, points[m - 1].y, points[m - 1].z][axis];
+        }
+        let Some(solved) = decomposition.solve(&rhs) else {
+            ogeom_bail!(
+                Numeric,
+                "the faired system is singular; fewer controls or more points"
+            );
+        };
+        for (ri, &i) in free.iter().enumerate() {
+            match axis {
+                0 => control[i].x = solved[ri],
+                1 => control[i].y = solved[ri],
+                _ => control[i].z = solved[ri],
+            }
+        }
+    }
+
+    let curve = BSplineCurve::new(knots, control, tol)?;
+    let mut error = 0.0f64;
+    {
+        use crate::traits::Curve3d as _;
+        for (point, &u) in points.iter().zip(&parameters) {
+            error = error.max(curve.point_at(u, tol)?.distance(*point));
+        }
+    }
+    Ok(Fitted {
+        curve,
+        error,
+        met: true,
+    })
+}
+
 /// Fit a smoothly closed loop: as [`fit_points`], with the join C1.
 ///
 /// The input must be a loop — the first point repeated at the end — and the
@@ -1034,6 +1166,58 @@ mod tests {
     use super::*;
     use crate::traits::{Curve2d as _, Curve3d as _};
     use core::f64::consts::TAU;
+
+    #[test]
+    fn fairing_trades_closeness_for_straightness_and_says_the_price() {
+        // Points on a line, kicked alternately off it: the pure fit chases
+        // the noise, the faired one lays a batten through it.
+        let points: Vec<Point> = (0..15)
+            .map(|i| {
+                let t = f64::from(i);
+                let kick = if i % 2 == 0 { 0.1 } else { -0.1 };
+                Point::new(t, t + kick, 0.0)
+            })
+            .collect();
+        let chased = fit_points_faired(&points, 3, 10, 0.0, T).unwrap();
+        let faired = fit_points_faired(&points, 3, 10, 50.0, T).unwrap();
+
+        // Bending energy of the control polygon: fairing must lower it.
+        let bend = |c: &BSplineCurve| -> f64 {
+            let pts = c.control_points();
+            (1..pts.len() - 1)
+                .map(|i| {
+                    let p0 = pts[i - 1].point();
+                    let p1 = pts[i].point();
+                    let p2 = pts[i + 1].point();
+                    ((p2 - p1) - (p1 - p0)).magnitude().powi(2)
+                })
+                .sum()
+        };
+        assert!(
+            bend(&faired.curve) < bend(&chased.curve) / 4.0,
+            "fairing must straighten: {} vs {}",
+            bend(&faired.curve),
+            bend(&chased.curve)
+        );
+        // The price is stated: the faired error is larger — it includes the
+        // tangential slip a strong weight causes — while the *geometric*
+        // deviation from the underlying line stays inside the noise band.
+        assert!(faired.error >= chased.error);
+        use crate::traits::Curve3d as _;
+        let (lo, hi) = faired.curve.domain();
+        for i in 0..=32 {
+            let u = lo + (hi - lo) * f64::from(i) / 32.0;
+            let p = faired.curve.point_at(u, T).unwrap();
+            let off_line = (p.y - p.x).abs() / core::f64::consts::SQRT_2;
+            assert!(
+                off_line < 0.12,
+                "the batten stays in the noise band: {off_line}"
+            );
+        }
+        // Ends interpolate exactly.
+        assert!(faired.curve.point_at(lo, T).unwrap().distance(points[0]) < 1e-9);
+        assert!(faired.curve.point_at(hi, T).unwrap().distance(points[14]) < 1e-9);
+    }
 
     const T: Tolerances = Tolerances::millimetres();
 

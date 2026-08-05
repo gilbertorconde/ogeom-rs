@@ -10,6 +10,7 @@
 
 pub mod attach;
 pub mod discretize;
+pub mod hatch;
 pub mod simplify;
 pub mod triangulate;
 
@@ -18,6 +19,7 @@ pub use discretize::{
     Deflection, Polyline, discretize, discretize_on_surface, discretize_planar, is_straight,
     is_straight_planar,
 };
+pub use hatch::hatch_face;
 pub use simplify::{Simplified, Target, simplify};
 pub use triangulate::{
     face_boundary, inside_boundary, inside_boundary_with, polyline_of_edge, triangulate,
