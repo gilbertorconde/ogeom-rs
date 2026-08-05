@@ -499,7 +499,7 @@ fn attach_face_pcurves(
         if already {
             continue;
         }
-        let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&curve, surface, tol) else {
+        let Some(pcurve) = ogeom_intersect::exact_pcurve_over(&curve, range, surface, tol) else {
             continue;
         };
         // A line pcurve's stated domain must cover the edge's range, which

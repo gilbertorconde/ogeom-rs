@@ -500,12 +500,26 @@ fn boundary_ring(
         {
             use ogeom_geom::Surface as _;
             let ((ua, ub), (va, vb)) = geometry.domain();
+            // Nearest whole period, ties broken toward *not moving*: a jump
+            // of exactly half a period is what a boundary crossing a
+            // degenerate row looks like — two rulings into an apex stand
+            // half a turn apart, and the connecting run along the apex row
+            // lifts to nothing — and folding it would drag the edge a full
+            // period from the column its own projection put it on.
+            let whole_periods = |gap: f64, span: f64| -> f64 {
+                let r = gap / span;
+                if (r.fract().abs() - 0.5).abs() <= 1e-9 {
+                    r.trunc() * span
+                } else {
+                    r.round() * span
+                }
+            };
             let mut shift = Point2::new(0.0, 0.0);
             if geometry.is_periodic_u() && (ub - ua) > 0.0 {
-                shift.x = ((last.x - first.x) / (ub - ua)).round() * (ub - ua);
+                shift.x = whole_periods(last.x - first.x, ub - ua);
             }
             if geometry.is_periodic_v() && (vb - va) > 0.0 {
-                shift.y = ((last.y - first.y) / (vb - va)).round() * (vb - va);
+                shift.y = whole_periods(last.y - first.y, vb - va);
             }
             if shift.x != 0.0 || shift.y != 0.0 {
                 for p in &mut points {
@@ -514,8 +528,23 @@ fn boundary_ring(
                 }
             }
         }
-        // The previous edge already contributed the shared vertex.
-        if !ring.is_empty() && !points.is_empty() {
+        // The previous edge already contributed the shared vertex — but only
+        // where the chart agrees it is shared. Two rulings meeting at an
+        // apex share the *vertex* while standing half a period apart in the
+        // chart, and the run between them along the degenerate row is
+        // boundary the ring needs: dropping its start would cut the corner
+        // straight through the face's interior.
+        let keep_gap = if let (Some(last), Some(first)) = (ring.last(), points.first()) {
+            model.geometry().surface(surface).is_some_and(|geometry| {
+                use ogeom_geom::Surface as _;
+                let ((ua, ub), (va, vb)) = geometry.domain();
+                (geometry.is_periodic_u() && (last.x - first.x).abs() > (ub - ua) * 0.25)
+                    || (geometry.is_periodic_v() && (last.y - first.y).abs() > (vb - va) * 0.25)
+            })
+        } else {
+            false
+        };
+        if !ring.is_empty() && !points.is_empty() && !keep_gap {
             points.remove(0);
             edge_anchors.remove(0);
         }

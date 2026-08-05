@@ -1067,46 +1067,47 @@ impl Reader<'_> {
             }
             p
         };
-        let pcurve = match ogeom_intersect::exact_pcurve_of(curve, surface, self.tol).map(widen) {
-            Some(exact) => exact,
-            None => {
-                // No closed form — a spline surface, or a combination the
-                // projection table lacks. The pcurve is *fitted at the
-                // curve's own parameters*: sample the edge, project each
-                // sample into the chart, fit the trace with the parameters
-                // held fixed, so same-parameter is preserved by construction
-                // and the reported error is the true chart deviation.
-                match self.fit_projected_pcurve(curve, range, surface) {
-                    Ok((fitted, error, met, worst_off)) => {
-                        if !met {
-                            self.report.warnings.push(format!(
-                                "face #{face_id}: a projected pcurve fit \
+        let pcurve =
+            match ogeom_intersect::exact_pcurve_over(curve, range, surface, self.tol).map(widen) {
+                Some(exact) => exact,
+                None => {
+                    // No closed form — a spline surface, or a combination the
+                    // projection table lacks. The pcurve is *fitted at the
+                    // curve's own parameters*: sample the edge, project each
+                    // sample into the chart, fit the trace with the parameters
+                    // held fixed, so same-parameter is preserved by construction
+                    // and the reported error is the true chart deviation.
+                    match self.fit_projected_pcurve(curve, range, surface) {
+                        Ok((fitted, error, met, worst_off)) => {
+                            if !met {
+                                self.report.warnings.push(format!(
+                                    "face #{face_id}: a projected pcurve fit \
                                  stopped at {error:.2e}; the face's mesh may \
                                  sit that far off along this edge"
-                            ));
+                                ));
+                            }
+                            // The edge provably sits `worst_off` from the surface
+                            // it bounds; its tolerance grows to cover that, the
+                            // same honesty the vertex ends get.
+                            if worst_off > self.tol.confusion()
+                                && let Some(node) = self.model.node_mut(edge)
+                                && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+                            {
+                                data.tolerance =
+                                    data.tolerance.widen_to(worst_off + self.tol.confusion());
+                            }
+                            fitted
                         }
-                        // The edge provably sits `worst_off` from the surface
-                        // it bounds; its tolerance grows to cover that, the
-                        // same honesty the vertex ends get.
-                        if worst_off > self.tol.confusion()
-                            && let Some(node) = self.model.node_mut(edge)
-                            && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
-                        {
-                            data.tolerance =
-                                data.tolerance.widen_to(worst_off + self.tol.confusion());
-                        }
-                        fitted
-                    }
-                    Err(e) => {
-                        self.report.warnings.push(format!(
-                            "face #{face_id}: no pcurve for an edge on this \
+                        Err(e) => {
+                            self.report.warnings.push(format!(
+                                "face #{face_id}: no pcurve for an edge on this \
                              surface ({e}); the face may not triangulate"
-                        ));
-                        return Ok(());
+                            ));
+                            return Ok(());
+                        }
                     }
                 }
-            }
-        };
+            };
         if seam {
             let ((ua, ub), _) = surface.domain();
             let span = ub - ua;

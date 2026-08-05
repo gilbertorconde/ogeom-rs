@@ -63,6 +63,7 @@ pub use extrema::{
 };
 pub use march::{Contact, Marching, Stopped, Traced, branches, seeds, trace};
 pub use section::{
-    IntersectOptions, SectionCurve, SurfaceIntersection, exact_pcurve_of, intersect_surfaces,
+    IntersectOptions, SectionCurve, SurfaceIntersection, exact_pcurve_of, exact_pcurve_over,
+    intersect_surfaces,
 };
 pub use surface::{Meeting, surface_surface};

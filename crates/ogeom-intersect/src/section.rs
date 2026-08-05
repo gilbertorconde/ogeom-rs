@@ -167,8 +167,9 @@ fn exact_section(
         Curve::Circle(_) | Curve::Ellipse(_) => true,
         _ => curve.is_closed(tol),
     };
-    let on_a = exact_pcurve(&curve, a, tol);
-    let on_b = exact_pcurve(&curve, b, tol);
+    let range = curve.domain();
+    let on_a = exact_pcurve(&curve, range, a, tol);
+    let on_b = exact_pcurve(&curve, range, b, tol);
 
     if let Curve::Line(_) = &curve {
         // Clip through whichever pcurves exist; a missing pcurve leaves that
@@ -367,7 +368,25 @@ pub fn exact_pcurve_of(
     surface: &SurfaceGeometry,
     tol: Tolerances,
 ) -> Option<PlanarCurve> {
-    exact_pcurve(curve, surface, tol)
+    exact_pcurve(curve, curve.domain(), surface, tol)
+}
+
+/// As [`exact_pcurve_of`], with the parameter range the caller actually
+/// uses.
+///
+/// A curve's chart image can depend on *which part* of the curve is meant: a
+/// ruling on a cone crosses the apex, and its angle on the far nappe is half
+/// a turn from its angle on the near one. The curve's own domain may span
+/// both — an imported line's usually does — so a caller that knows its edge's
+/// range must say so, or the exact projection may answer for the wrong side.
+#[must_use]
+pub fn exact_pcurve_over(
+    curve: &Curve,
+    range: (f64, f64),
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> Option<PlanarCurve> {
+    exact_pcurve(curve, range, surface, tol)
 }
 
 /// The exact pcurve of an analytic curve on an analytic surface, where the
@@ -379,13 +398,18 @@ pub fn exact_pcurve_of(
 /// anything else returns `None` rather than a fit, because an *exact* result
 /// with a fitted pcurve would be a curve whose descriptions disagree by an
 /// amount nothing on it records.
-fn exact_pcurve(curve: &Curve, surface: &SurfaceGeometry, tol: Tolerances) -> Option<PlanarCurve> {
+fn exact_pcurve(
+    curve: &Curve,
+    range: (f64, f64),
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> Option<PlanarCurve> {
     match surface {
         SurfaceGeometry::Plane(p) => on_plane(curve, p.plane(), tol),
         SurfaceGeometry::Cylinder(c) => on_cylinder(curve, c.cylinder(), tol),
         SurfaceGeometry::Sphere(s) => on_sphere(curve, s.sphere(), tol),
         SurfaceGeometry::Torus(t) => on_torus(curve, t.torus(), tol),
-        SurfaceGeometry::Cone(c) => on_cone(curve, c.cone(), tol),
+        SurfaceGeometry::Cone(c) => on_cone(curve, range, c.cone(), tol),
         _ => None,
     }
 }
@@ -396,7 +420,14 @@ fn exact_pcurve(curve: &Curve, surface: &SurfaceGeometry, tol: Tolerances) -> Op
 /// circle perpendicular to the axis, centred on it, with the radius the cone
 /// has at that height, runs at constant `v`. Both inherit the 3D curve's own
 /// parameter, the circle with phase and winding exactly as the cylinder case.
-fn on_cone(curve: &Curve, cone: ogeom_math::Cone, tol: Tolerances) -> Option<PlanarCurve> {
+/// The ruling's angle is measured over `range`, because the same line has
+/// the opposite angle on the other side of the apex.
+fn on_cone(
+    curve: &Curve,
+    range: (f64, f64),
+    cone: ogeom_math::Cone,
+    tol: Tolerances,
+) -> Option<PlanarCurve> {
     let frame = cone.frame();
     let axis_z = frame.z().vector();
     let tau = core::f64::consts::TAU;
@@ -445,12 +476,34 @@ fn on_cone(curve: &Curve, cone: ogeom_math::Cone, tol: Tolerances) -> Option<Pla
             if !on(0.0) || !on(1.0) || !on(-1.0) {
                 return None;
             }
-            let local = frame.to_local(axis.location);
+            // A ruling reaching the tip may be *stated* from the apex
+            // itself — where the angle is atan2(0, 0), garbage — and its
+            // own domain usually spans both nappes, where the angles differ
+            // by half a turn. Measure the angle at whichever end of the
+            // *used* range stands farthest from the axis: that is the side
+            // the caller means.
+            let (lo, hi) = if range.0.is_finite() && range.1.is_finite() && range.0 != range.1 {
+                range
+            } else {
+                line.domain()
+            };
+            let mut local = frame.to_local(axis.location);
+            for t in [lo, hi] {
+                if !t.is_finite() {
+                    continue;
+                }
+                let candidate = frame.to_local(axis.location + axis.direction.vector() * t);
+                if candidate.x.hypot(candidate.y) > local.x.hypot(local.y) {
+                    local = candidate;
+                }
+            }
+            if local.x.hypot(local.y) <= tol.confusion() {
+                return None;
+            }
             let u = local.y.atan2(local.x).rem_euclid(tau);
-            // Same-parameter exactly: a degree-one spline over the line's
-            // own domain maps t linearly onto the chart column, whatever
-            // rate the slant climbs at.
-            let (lo, hi) = line.domain();
+            // Same-parameter exactly: a degree-one spline over the used
+            // range maps t linearly onto the chart column, whatever rate
+            // the slant climbs at.
             let v_at = |t: f64| {
                 frame
                     .to_local(axis.location + axis.direction.vector() * t)
