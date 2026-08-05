@@ -12,3 +12,7 @@
 //!
 //! Deliberately not a label-and-attribute tree. The capability is required; that
 //! particular design, and compatibility with anyone's file format, are not.
+
+pub mod structure;
+
+pub use structure::{Colour, Document, Instance, Occurrence, Product, ProductId, ProductKind};
