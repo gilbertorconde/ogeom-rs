@@ -1,4 +1,4 @@
-# The openGeometry data model
+# The ogeom data model
 
 **Status: normative.** Everything in `crates/` implements this document. A change
 here is a design change and needs to be argued as one — see `CONTRIBUTING.md`.
@@ -28,7 +28,7 @@ where the conventional design is wrong and we deliberately diverge.
 
 Correspondence notes marked *Elsewhere* give the conventional name for a concept,
 because that vocabulary is how the field talks about itself. They are a glossary,
-not a dependency: openGeometry links against no existing CAD kernel. Where a note
+not a dependency: ogeom links against no existing CAD kernel. Where a note
 cites usage counts, they come from `api_surface.json` — a profile of one large
 application, included as evidence that a requirement is real and not as a
 specification of scope. See `SCOPE.md`.

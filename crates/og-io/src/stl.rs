@@ -41,7 +41,7 @@ pub enum Encoding {
 }
 
 /// The header a binary STL carries, and the name an ASCII one does.
-const HEADER: &str = "openGeometry";
+const HEADER: &str = "ogeom";
 
 /// Write a triangulation as STL.
 ///
@@ -458,7 +458,7 @@ endsolid q
         let mesh = tetrahedron();
         let bytes = write(&mesh, Encoding::Binary).unwrap();
         assert_eq!(bytes.len(), 84 + 4 * 50);
-        assert_eq!(&bytes[..12], b"openGeometry");
+        assert_eq!(&bytes[..5], b"ogeom");
         assert_eq!(u32::from_le_bytes(bytes[80..84].try_into().unwrap()), 4);
     }
 

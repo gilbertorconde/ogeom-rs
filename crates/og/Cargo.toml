@@ -1,6 +1,6 @@
 [package]
 name = "og"
-description = "openGeometry — a B-rep CAD kernel in Rust"
+description = "ogeom — a B-rep CAD kernel in Rust"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

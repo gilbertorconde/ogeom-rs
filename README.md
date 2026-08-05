@@ -1,10 +1,11 @@
-# openGeometry
+# ogeom
 
 A boundary-representation CAD kernel, written from scratch in Rust.
 
-**Status: the foundation, the geometry, the B-rep model, construction and
-tessellation are built and tested. Intersection, booleans and everything that
-depends on them are not started.** See
+**Status: geometry, topology, construction, tessellation, intersection,
+booleans, STEP import with healing, blends and chamfers, offsets, shells,
+sweeps and lofts are built and tested — milestones M1 through M4. Drawings,
+sketching, assemblies and the application-facing layers are not started.** See
 [Milestones](docs/SCOPE.md#milestones) for what each of those means and how it
 is decided.
 
@@ -58,12 +59,12 @@ and holds nothing yet.
 • crates/og-algo        construction, primitives, measurement, classification
 • crates/og-mesh        tessellation, and mesh → B-rep
 • crates/og-io          native format, STEP, IGES, glTF, STL, DXF, and the rest
+• crates/og-intersect   curve/curve, curve/surface, surface/surface
+• crates/og-bool        general fuse and the boolean filters
+• crates/og-heal        healing, simplification, canonical recognition
+• crates/og-fillet      blends and chamfers
+• crates/og-offset      offset, shell, sweep, loft, form features
 • crates/og             the public umbrella API
-· crates/og-intersect   curve/curve, curve/surface, surface/surface
-· crates/og-bool        general fuse and the boolean filters
-· crates/og-heal        healing, simplification, canonical recognition
-· crates/og-fillet      blends and chamfers
-· crates/og-offset      offset, shell, sweep, loft, form features
 · crates/og-hlr         hidden line removal for drawings
 · crates/og-sketch      2D geometric constraint solver
 · crates/og-doc         assemblies, appearance, PMI, undo/redo, persistence
@@ -73,7 +74,7 @@ and holds nothing yet.
 • tools/apisurf         API-usage profiler (analysis only; see docs/SCOPE.md)
 ```
 
-None of the eight with code is *finished* — each implements the part of
+None of the crates with code is *finished* — each implements the part of
 [`docs/SCOPE.md`](docs/SCOPE.md) its milestone called for and no more. What is
 owed and where it lands is in that document's deferred table, so a gap is a
 scheduled debt rather than a surprise found by whoever hits it.
@@ -98,10 +99,12 @@ is export-only. The one demonstrably successful greenfield Rust kernel is
 closed-source and venture-funded.
 
 Surface/surface intersection, and the tolerance-managed topology rebuild that
-follows it, are where these efforts die. This project is staged so every milestone
-is independently useful, and so the intersection work is gated on a measured
-benchmark before the boolean pipeline is committed to. If it does not clear the
-bar, this ships as a geometry library instead of consuming years.
+follows it, are where these efforts die. This project staged that work behind a
+measured benchmark before committing to the boolean pipeline, and the bar was
+cleared: booleans run on native and imported geometry, with history, and every
+result either measures or refuses with the reason. The staging discipline stays —
+each milestone is independently useful, and every known gap is a written entry in
+the deferred table rather than a silent wrong answer.
 
 ## License
 

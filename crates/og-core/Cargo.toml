@@ -1,6 +1,6 @@
 [package]
 name = "og-core"
-description = "Arenas, entity identity, errors, tolerances and geometric predicates for openGeometry"
+description = "Arenas, entity identity, errors, tolerances and geometric predicates for ogeom"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

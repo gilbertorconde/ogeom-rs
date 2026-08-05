@@ -61,7 +61,7 @@ use og_topo::{
 pub const VERSION: u32 = 1;
 
 /// The word every file starts with.
-const MAGIC: &str = "openGeometry";
+const MAGIC: &str = "ogeom";
 
 /// What to include when writing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,7 +204,7 @@ pub fn read(text: &str) -> OgResult<(Model, Vec<Shape>)> {
     let mut cursor = Cursor::new(text);
 
     if cursor.word()? != MAGIC {
-        og_bail!(Construction, "not an openGeometry document");
+        og_bail!(Construction, "not an ogeom document");
     }
     let version = cursor.count()?;
     if version != VERSION as usize {

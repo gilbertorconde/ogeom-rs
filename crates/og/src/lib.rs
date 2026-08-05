@@ -1,4 +1,4 @@
-//! openGeometry: a boundary-representation CAD kernel.
+//! ogeom: a boundary-representation CAD kernel.
 //!
 //! This umbrella crate is the public API. Depend on this, not on the `og-*` crates
 //! individually — their boundaries are an implementation detail and will move.

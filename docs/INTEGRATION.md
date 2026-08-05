@@ -1,6 +1,6 @@
 # Integration
 
-**openGeometry's product is its own API.** Integration layers for other
+**ogeom's product is its own API.** Integration layers for other
 languages and host applications are downstream, optional, and none of them
 constrains the kernel's design.
 

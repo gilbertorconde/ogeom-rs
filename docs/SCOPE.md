@@ -9,7 +9,7 @@ application exercised each area. That was the wrong criterion and it produced
 wrong answers: it marked hidden-line removal "deferrable" because only two of
 that application's modules called it, and product structure "probably never"
 because that application has its own document model. Both are things a CAD
-kernel is expected to have. openGeometry is meant to be a complete, independent
+kernel is expected to have. ogeom is meant to be a complete, independent
 kernel that any application can build on, so the target is functional
 completeness.
 

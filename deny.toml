@@ -5,7 +5,7 @@ all-features = true
 yanked = "deny"
 
 [licenses]
-# openGeometry ships as MIT OR Apache-2.0. Copyleft dependencies would defeat the
+# ogeom ships as MIT OR Apache-2.0. Copyleft dependencies would defeat the
 # point: the licensing of existing kernels is one of the reasons an alternative is
 # wanted at all.
 allow = [

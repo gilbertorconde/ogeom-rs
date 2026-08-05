@@ -1,6 +1,6 @@
 [package]
 name = "ogcli"
-description = "Command-line front end for the openGeometry kernel"
+description = "Command-line front end for the ogeom kernel"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

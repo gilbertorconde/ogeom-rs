@@ -1,14 +1,14 @@
-# Contributing to openGeometry
+# Contributing to ogeom
 
 ## Independence
 
-openGeometry is an independent implementation. It does not depend on, vendor,
+ogeom is an independent implementation. It does not depend on, vendor,
 link against, bundle, or commit any existing CAD kernel, and nothing in this
 repository will pull one in. `cargo build` needs a Rust toolchain and nothing
 else — no C compiler, no system libraries, no submodules. Keep it that way.
 
 **Do not copy, translate, or transliterate another kernel's source into
-`crates/`.** Most existing kernels are copyleft; openGeometry is MIT OR
+`crates/`.** Most existing kernels are copyleft; ogeom is MIT OR
 Apache-2.0, and those licenses are not compatible in the direction of copying.
 
 Implement from:

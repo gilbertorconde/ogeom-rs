@@ -55,7 +55,7 @@ fn main() -> ExitCode {
 
     let outcome = match args.first().map(String::as_str) {
         Some("version") | None => {
-            println!("openGeometry {}", og::VERSION);
+            println!("ogeom {}", og::VERSION);
             return ExitCode::SUCCESS;
         }
         Some("help" | "--help" | "-h") => {
