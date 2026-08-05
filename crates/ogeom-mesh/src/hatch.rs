@@ -1,7 +1,7 @@
 //! Hatching in parametric space: parallel lines clipped to a face's trim.
 //!
 //! The rings are the same chart boundary every other consumer walks —
-//! [`face_boundary`](crate::triangulate::face_boundary) — so the hatch and
+//! [`face_boundary`] — so the hatch and
 //! the triangulation cannot disagree about where the face is. The lines run
 //! at an angle in the chart, spaced evenly, and each is cut to the inside
 //! intervals by even-odd crossing counting; holes split segments the same
