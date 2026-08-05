@@ -53,7 +53,10 @@ fn the_smallest_nist_part_reads_into_a_closed_solid() {
             meshed += 1;
         }
     }
-    assert_eq!(meshed, 4, "planes and seamed cylinder bands mesh");
+    // Four planes and seamed cylinder bands, plus the two torus fillets
+    // whose wound rings now close against their own translates — every face
+    // of the raw import meshes.
+    assert_eq!(meshed, 6, "every face meshes, wound torus rings included");
     assert_eq!(
         import.report.warnings.len(),
         2,

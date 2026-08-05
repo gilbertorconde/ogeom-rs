@@ -27,6 +27,12 @@ use ogeom_topo::{
 };
 use std::collections::HashMap;
 
+/// One converted edge: the shape, its curve and the curve's own range.
+type ConvertedEdge = (Shape, Curve, (f64, f64));
+
+/// A surface's chart window: the `u` then `v` interval.
+type ChartWindow = ((f64, f64), (f64, f64));
+
 /// Rebuild a solid with every surface and curve in B-spline form.
 ///
 /// The result is a new solid in world coordinates — every occurrence
@@ -84,7 +90,7 @@ fn rebuild(
 
     let mut history = History::new();
     let mut new_vertices: HashMap<(TShapeId, [u64; 3]), Shape> = HashMap::new();
-    let mut new_edges: HashMap<(TShapeId, [u64; 3]), (Shape, Curve, (f64, f64))> = HashMap::new();
+    let mut new_edges: HashMap<(TShapeId, [u64; 3]), ConvertedEdge> = HashMap::new();
     let mut shells = Vec::new();
 
     for shell in explore_unique(model, shape, ShapeType::Shell)? {
@@ -164,7 +170,7 @@ fn rebuild(
                         attach_pcurve(
                             model,
                             &new_edge,
-                            row.clone().into(),
+                            row.into(),
                             surface_id,
                             Location::identity(),
                             row.domain(),
@@ -462,7 +468,7 @@ fn fit_pcurve(
 fn exact_iso_pcurve(
     model: &Model,
     old_repr: Option<&EdgeRepr>,
-    _old_window: ((f64, f64), (f64, f64)),
+    _old_window: ChartWindow,
     curve: &Curve,
     range: (f64, f64),
     surface: &SurfaceGeometry,
@@ -603,7 +609,7 @@ fn bounded_to_face(
     surface_id: ogeom_topo::SurfaceId,
     placed: &SurfaceGeometry,
     tol: Tolerances,
-) -> OgeomResult<(SurfaceGeometry, ((f64, f64), (f64, f64)))> {
+) -> OgeomResult<(SurfaceGeometry, ChartWindow)> {
     let (mut u0, mut u1) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut v0, mut v1) = (f64::INFINITY, f64::NEG_INFINITY);
     for edge in explore(model, face, Filter::OfType(ShapeType::Edge))? {

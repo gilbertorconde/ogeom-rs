@@ -360,13 +360,13 @@ fn expect_datum(key: (u32, u32), next: usize) -> OgeomResult<()> {
 /// Write a document: the model, then the product structure, appearance,
 /// names and PMI over it.
 ///
-/// The model section is exactly what [`write`] emits, so a model-only reader
+/// The model section is exactly what [`write()`] emits, so a model-only reader
 /// stops cleanly at the document records; writing what [`read_document`]
 /// read reproduces the bytes, the same contract the model layer keeps.
 ///
 /// # Errors
 ///
-/// As [`write`].
+/// As [`write()`].
 pub fn write_document(
     document: &ogeom_doc::Document,
     options: WriteOptions,
@@ -501,16 +501,13 @@ pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
     let mut instances: Vec<(usize, usize, Location, Option<String>)> = Vec::new();
     let mut order = 0_usize;
 
-    loop {
-        let Some(tag) = pending.take().or_else(|| {
-            if cursor.done() {
-                None
-            } else {
-                cursor.word().ok().map(ToString::to_string)
-            }
-        }) else {
-            break;
-        };
+    while let Some(tag) = pending.take().or_else(|| {
+        if cursor.done() {
+            None
+        } else {
+            cursor.word().ok().map(ToString::to_string)
+        }
+    }) {
         match tag.as_str() {
             "product" => {
                 let name = read_text(&mut cursor)?;

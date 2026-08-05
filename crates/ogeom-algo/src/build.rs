@@ -570,15 +570,6 @@ pub fn make_natural_face(model: &mut Model, surface: SurfaceGeometry) -> OgeomRe
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a child is not
 /// a face, or the list is empty.
-/// Build a compound from any shapes, with history.
-///
-/// The grouping container: a compound holds anything, orders nothing, and
-/// claims nothing about closure. What this adds over the raw model call is
-/// the same thing every builder adds — a history that says what went in.
-///
-/// # Errors
-///
-/// As [`Model::add_compound`].
 /// Build a compsolid: solids gluing along shared faces.
 ///
 /// A compsolid is more than a bag of solids — its members must actually
@@ -642,6 +633,15 @@ pub fn make_compsolid(model: &mut Model, solids: &[Shape]) -> OgeomResult<Built>
     Ok(Built::new(compsolid, history))
 }
 
+/// Build a compound from any shapes, with history.
+///
+/// The grouping container: a compound holds anything, orders nothing, and
+/// claims nothing about closure. What this adds over the raw model call is
+/// the same thing every builder adds — a history that says what went in.
+///
+/// # Errors
+///
+/// As [`Model::add_compound`].
 pub fn make_compound(model: &mut Model, shapes: &[Shape]) -> OgeomResult<Built> {
     let compound = model.add_compound(shapes)?;
     let mut history = History::new();

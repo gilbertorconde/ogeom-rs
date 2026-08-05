@@ -219,8 +219,39 @@ fn trimming_rings(
     let mut ring_anchors = Vec::new();
     let mut met = true;
     for wire in model.ordered_children_of(face)? {
-        let (ring, anchors, ring_met) = boundary_ring(model, &wire, id, deflection, tol)?;
+        let (mut ring, mut anchors, ring_met) = boundary_ring(model, &wire, id, deflection, tol)?;
         met &= ring_met;
+        // Points closer than the triangulator's own resolution make it
+        // refuse the constraint; a real file's chart can carry them. The
+        // consecutive near-duplicates collapse, anchors staying aligned.
+        if ring.len() >= 3 {
+            let mut extent = 0.0_f64;
+            for pair in ring.windows(2) {
+                extent = extent.max(pair[0].distance(pair[1]));
+            }
+            let eps = extent.mul_add(1e-9, 1e-12);
+            let mut kept_ring = Vec::with_capacity(ring.len());
+            let mut kept_anchors = Vec::with_capacity(anchors.len());
+            for (p, a) in ring.iter().zip(&anchors) {
+                if kept_ring
+                    .last()
+                    .is_some_and(|held: &Point2| held.distance(*p) <= eps)
+                {
+                    continue;
+                }
+                kept_ring.push(*p);
+                kept_anchors.push(*a);
+            }
+            if kept_ring.len() > 2
+                && let (Some(first), Some(last)) = (kept_ring.first(), kept_ring.last())
+                && first.distance(*last) <= eps
+            {
+                kept_ring.pop();
+                kept_anchors.pop();
+            }
+            ring = kept_ring;
+            anchors = kept_anchors;
+        }
         if ring.len() >= 3 {
             rings.push(ring);
             ring_anchors.push(anchors);
@@ -496,10 +527,110 @@ fn boundary_ring(
     // it named once.
     if ring.len() > 2
         && let (Some(first), Some(last)) = (ring.first().copied(), ring.last().copied())
-        && first.is_equal(last, tol)
     {
-        ring.pop();
-        anchors.pop();
+        if first.is_equal(last, tol) {
+            ring.pop();
+            anchors.pop();
+        } else if let Some(geometry) = model.geometry().surface(surface) {
+            // A ring that winds one periodic direction of a doubly-periodic
+            // surface — a diagonal loop on a torus. The folded walk ends a
+            // whole period from where it began, and the face is the band
+            // between the chain and its own translate one period over in the
+            // *other* periodic direction, joined at the ends by columns that
+            // lift to one 3D circle. The translate's anchors are the same 3D
+            // points, and the joining columns' two copies lift identically,
+            // so the weld closes them exactly as it closes a seam.
+            use ogeom_geom::Surface as _;
+            let ((ua, ub), (va, vb)) = geometry.domain();
+            let du = last.x - first.x;
+            let dv = last.y - first.y;
+            let winds_u = geometry.is_periodic_u()
+                && (du.abs() - (ub - ua)).abs() <= (ub - ua) * 1e-3
+                && dv.abs() <= (vb - va).max(1.0) * 1e-3;
+            let winds_v = geometry.is_periodic_u()
+                && geometry.is_periodic_v()
+                && (dv.abs() - (vb - va)).abs() <= (vb - va) * 1e-3
+                && du.abs() <= (ub - ua).max(1.0) * 1e-3;
+            // Where does a u-winding ring close against? On a doubly
+            // periodic surface, its own translate one v-period over. On a
+            // cone or sphere, the row where the surface collapses to a point
+            // — the apex or the pole — which every u reaches: the closure
+            // costs no area error because the row has none.
+            let degenerate_row = |v: f64| -> bool {
+                let (Ok(p), Ok(q), Ok(r)) = (
+                    geometry.point_at(ua, v, tol),
+                    geometry.point_at(f64::midpoint(ua, ub), v, tol),
+                    geometry.point_at(ub, v, tol),
+                ) else {
+                    return false;
+                };
+                p.distance(q) <= tol.confusion() * 10.0 && p.distance(r) <= tol.confusion() * 10.0
+            };
+            let target_v = if winds_u && !geometry.is_periodic_v() {
+                // The nearer degenerate row, if either end has one.
+                let mid_v = f64::midpoint(first.y, last.y);
+                if degenerate_row(va) && (mid_v - va).abs() <= (mid_v - vb).abs() {
+                    Some(va)
+                } else if degenerate_row(vb) {
+                    Some(vb)
+                } else if degenerate_row(va) {
+                    Some(va)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let column_steps = 8;
+            if let Some(v_apex) = target_v {
+                // Down the seam column to the apex row, across it, and back
+                // up: the row has no length in space, so the closure adds no
+                // area and its lifted points weld to the one apex.
+                let row_steps = ring.len().max(8);
+                for k in 1..=column_steps {
+                    let f = f64::from(k) / f64::from(column_steps);
+                    ring.push(Point2::new(last.x, last.y + (v_apex - last.y) * f));
+                    anchors.push(None);
+                }
+                for k in 1..row_steps {
+                    #[allow(clippy::cast_precision_loss)]
+                    let f = k as f64 / row_steps as f64;
+                    ring.push(Point2::new(last.x + (first.x - last.x) * f, v_apex));
+                    anchors.push(None);
+                }
+                for k in 0..column_steps {
+                    let f = f64::from(column_steps - k) / f64::from(column_steps);
+                    ring.push(Point2::new(first.x, first.y + (v_apex - first.y) * f));
+                    anchors.push(None);
+                }
+            } else if (winds_u && geometry.is_periodic_v()) || winds_v {
+                let shift = if winds_u {
+                    Point2::new(0.0, -(vb - va))
+                } else {
+                    Point2::new(-(ub - ua), 0.0)
+                };
+                let chain: Vec<Point2> = ring.clone();
+                let chain_anchors = anchors.clone();
+                // Down from the chain's end to its translate's end.
+                for k in 1..=column_steps {
+                    let f = f64::from(k) / f64::from(column_steps);
+                    ring.push(Point2::new(last.x + shift.x * f, last.y + shift.y * f));
+                    anchors.push(None);
+                }
+                // The translate, walked back.
+                for (p, a) in chain.iter().rev().zip(chain_anchors.iter().rev()).skip(1) {
+                    ring.push(Point2::new(p.x + shift.x, p.y + shift.y));
+                    anchors.push(*a);
+                }
+                // Up from the translate's start back to the chain's start,
+                // stopping one step short of closing.
+                for k in 1..column_steps {
+                    let f = f64::from(column_steps - k) / f64::from(column_steps);
+                    ring.push(Point2::new(first.x + shift.x * f, first.y + shift.y * f));
+                    anchors.push(None);
+                }
+            }
+        }
     }
     Ok((ring, anchors, met))
 }

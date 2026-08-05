@@ -503,7 +503,7 @@ fn integrate_face(
             radius,
             sign,
         } => {
-            let mut failure: Option<ogeom_core::OgeomError> = None;
+            let failure: Option<ogeom_core::OgeomError> = None;
             let turns = 4;
             for k in 0..turns {
                 #[allow(clippy::cast_precision_loss)]
@@ -545,8 +545,7 @@ fn gauss2(a: f64, b: f64, c: f64, d: f64, f: &mut dyn FnMut(f64, f64, f64)) {
     // Weight of node i: integrate a basis that is 1 at that sample order.
     // Simpler: the rule is linear, so the weight is the integral of the
     // indicator sequence — recovered by a second pass per node.
-    let n = us.len();
-    for i in 0..n {
+    for (i, entry) in us.iter_mut().enumerate() {
         let mut k = 0;
         let w = ogeom_math::gauss_legendre(
             |_| {
@@ -557,7 +556,7 @@ fn gauss2(a: f64, b: f64, c: f64, d: f64, f: &mut dyn FnMut(f64, f64, f64)) {
             a,
             b,
         );
-        us[i].1 = w;
+        entry.1 = w;
     }
     let mut vs: Vec<(f64, f64)> = Vec::with_capacity(10);
     ogeom_math::gauss_legendre(
@@ -568,8 +567,7 @@ fn gauss2(a: f64, b: f64, c: f64, d: f64, f: &mut dyn FnMut(f64, f64, f64)) {
         c,
         d,
     );
-    let m = vs.len();
-    for j in 0..m {
+    for (j, entry) in vs.iter_mut().enumerate() {
         let mut k = 0;
         let w = ogeom_math::gauss_legendre(
             |_| {
@@ -580,7 +578,7 @@ fn gauss2(a: f64, b: f64, c: f64, d: f64, f: &mut dyn FnMut(f64, f64, f64)) {
             c,
             d,
         );
-        vs[j].1 = w;
+        entry.1 = w;
     }
     for &(u, wu) in &us {
         for &(v, wv) in &vs {
@@ -666,7 +664,7 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
                         if (range.1 - range.0 - core::f64::consts::TAU).abs() > 1e-9 {
                             return Ok(None);
                         }
-                        circle = Some(arc.clone());
+                        circle = Some(*arc);
                     }
                     _ => return Ok(None),
                 }

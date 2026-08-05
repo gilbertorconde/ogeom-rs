@@ -326,18 +326,6 @@ fn needs_split(
     Ok(start.angle(end) > deflection.angular)
 }
 
-/// Approximate a planar curve in a surface's parameter space.
-///
-/// The deflection is measured in parameter units here, not in space, so a caller
-/// wanting a spatial tolerance has to convert through the surface's own scale —
-/// the two differ by orders of magnitude near a pole. This exists for boundary
-/// work in parameter space; for a face's actual boundary, discretize the edge's
-/// 3D curve and evaluate the pcurve at those parameters instead, which is what
-/// keeps adjacent faces watertight.
-///
-/// # Errors
-///
-/// As [`discretize`].
 /// Discretize a pcurve with its chord tolerance measured *in space*,
 /// through the surface that gives its chart a metric.
 ///
@@ -422,6 +410,19 @@ pub fn discretize_on_surface(
     Ok((points, parameters))
 }
 
+/// Approximate a planar curve in a surface's parameter space.
+///
+/// The deflection is measured in parameter units here, not in space, so a caller
+/// wanting a spatial tolerance has to convert through the surface's own scale —
+/// the two differ by orders of magnitude near a pole; [`discretize_on_surface`]
+/// is the version that measures through the surface. This exists for boundary
+/// work in parameter space; for a face's actual boundary, discretize the edge's
+/// 3D curve and evaluate the pcurve at those parameters instead, which is what
+/// keeps adjacent faces watertight.
+///
+/// # Errors
+///
+/// As [`discretize`].
 pub fn discretize_planar(
     curve: &ogeom_geom::PlanarCurve,
     range: (f64, f64),
