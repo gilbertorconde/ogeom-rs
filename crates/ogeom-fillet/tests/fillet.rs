@@ -306,3 +306,68 @@ fn a_concave_edge_gains_an_additive_fillet() {
     );
     assert!(result.history.is_deleted(&edge));
 }
+
+/// Two blends on one body: a chamfer and then a fillet on far-apart edges.
+/// The second blend's tools march against the first blend's faces, find no
+/// crossing, and that is the answer — apart — rather than a refusal.
+#[test]
+fn a_second_blend_lands_beside_the_first() {
+    let mut model = ogeom_topo::Model::new();
+    let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (40.0, 30.0, 12.0), T)
+        .unwrap()
+        .shape;
+    let bevel_edge = edge_with_midpoint(&model, &block, Point::new(20.0, 30.0, 12.0));
+    let bevelled = ogeom_fillet::chamfer_edge(&mut model, &block, &bevel_edge, 1.5, T)
+        .unwrap()
+        .shape;
+    let round_edge = edge_with_midpoint(&model, &bevelled, Point::new(20.0, 0.0, 12.0));
+    let blended = ogeom_fillet::fillet_edge(&mut model, &bevelled, &round_edge, 2.0, T)
+        .unwrap()
+        .shape;
+
+    let diagnosis = ogeom_algo::check(&model, &blended, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // The volume lost is the chamfer wedge plus the fillet's corner ring:
+    // (1.5^2 / 2) * 40 and (4 - pi) * 40 for r = 2.
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-2,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let props = ogeom_algo::volume_properties(&model, &blended, fine, T).unwrap();
+    let expected =
+        40.0 * 30.0 * 12.0 - 1.5 * 1.5 / 2.0 * 40.0 - (4.0 - core::f64::consts::PI) * 40.0;
+    assert!(
+        (props.mass - expected).abs() < expected * 1e-3,
+        "volume {} vs expected {expected}",
+        props.mass
+    );
+}
+
+/// The edge whose curve midpoint lies nearest `at`.
+fn edge_with_midpoint(
+    model: &ogeom_topo::Model,
+    solid: &ogeom_topo::Shape,
+    at: Point,
+) -> ogeom_topo::Shape {
+    use ogeom_geom::Curve3d as _;
+    let mut best: Option<(f64, ogeom_topo::Shape)> = None;
+    for edge in ogeom_topo::explore_unique(model, solid, ShapeType::Edge).unwrap() {
+        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            continue;
+        };
+        let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            continue;
+        };
+        let Some(geometry) = model.geometry().curve(*curve) else {
+            continue;
+        };
+        let p = geometry
+            .point_at(f64::midpoint(range.0, range.1), T)
+            .unwrap();
+        let d = p.distance(at);
+        if best.as_ref().is_none_or(|(held, _)| d < *held) {
+            best = Some((d, edge));
+        }
+    }
+    best.unwrap().1
+}

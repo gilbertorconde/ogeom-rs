@@ -927,6 +927,15 @@ fn march_pair(
         out.push(approximate_branch(a, b, branch, options.tolerance, tol)?);
     }
     if out.is_empty() {
+        // No branch found is two different stories. Surfaces that measurably
+        // stand apart over their stated extents — a blend's cylinder and a
+        // far-off bevel plane whose ellipse of intersection lies beyond
+        // both — simply do not interact, and an empty section is the true
+        // answer. Only a pair that comes close and still resolves nothing
+        // is beyond the intersector.
+        if surfaces_stand_apart(a, b, tol) {
+            return Ok(out);
+        }
         ogeom_bail!(
             NotDone,
             "an exact section has no closed-form pcurve and marching resolved \
@@ -935,6 +944,53 @@ fn march_pair(
         );
     }
     Ok(out)
+}
+
+/// Whether two surfaces measurably keep their distance over their stated
+/// extents.
+///
+/// A conservative grid measurement: sample the smaller-extent surface and
+/// project each sample onto the other; apart means every sample clears a
+/// margin scaled to the extents. Surfaces with unbounded or enormous stated
+/// domains — an imported plane's billion units — are never called apart this
+/// way, because a grid over them samples nothing.
+fn surfaces_stand_apart(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerances) -> bool {
+    use ogeom_geom::Surface as _;
+    let extent_of = |s: &SurfaceGeometry| -> f64 {
+        let ((ua, ub), (va, vb)) = s.domain();
+        (ub - ua).abs().max((vb - va).abs())
+    };
+    let (sample, against) = if extent_of(a) <= extent_of(b) {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    let span = extent_of(sample);
+    if !span.is_finite() || span > 1e4 {
+        return false;
+    }
+    let ((ua, ub), (va, vb)) = sample.domain();
+    const GRID: usize = 9;
+    let mut clearance = f64::INFINITY;
+    for i in 0..=GRID {
+        for j in 0..=GRID {
+            #[allow(clippy::cast_precision_loss)]
+            let u = ua + (ub - ua) * i as f64 / GRID as f64;
+            #[allow(clippy::cast_precision_loss)]
+            let v = va + (vb - va) * j as f64 / GRID as f64;
+            let Ok(p) = sample.point_at(u, v, tol) else {
+                return false;
+            };
+            let Ok(projection) = ogeom_algo::project_on_surface(against, p, 16, tol) else {
+                return false;
+            };
+            clearance = clearance.min(projection.distance);
+            if clearance <= tol.confusion() * 1e3 {
+                return false;
+            }
+        }
+    }
+    clearance > tol.confusion() * 1e3
 }
 
 // --- the general fuse --------------------------------------------------------
