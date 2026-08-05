@@ -27,9 +27,9 @@ pub mod sweep;
 
 pub use build::{
     attach_pcurve, attach_seam, edge_vertices, find_plane, is_shell_closed, is_wire_closed,
-    make_compsolid, make_edge, make_edge_between, make_face, make_face_on, make_face_with_pcurves,
-    make_natural_face, make_polygon, make_revolution_band, make_shell, make_solid, make_vertex,
-    make_wire, surface_iso_u_curve,
+    make_apex_band, make_compsolid, make_edge, make_edge_between, make_face, make_face_on,
+    make_face_with_pcurves, make_natural_face, make_polygon, make_revolution_band, make_shell,
+    make_solid, make_vertex, make_wire, surface_iso_u_curve,
 };
 pub use check::{Diagnosis, Problem, Severity, check, check_tessellation};
 pub use classify::{

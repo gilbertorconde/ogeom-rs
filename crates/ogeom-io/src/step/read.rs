@@ -992,6 +992,34 @@ impl Reader<'_> {
             }
         }
 
+        // A cone face bounded by a *single* closed ring: the apex is the
+        // other boundary, and some files simply never write it — no vertex
+        // loop, nothing. The geometry leaves one choice of what the face
+        // means, so the apex is synthesised and the band built as if the
+        // file had said so.
+        if wires.len() == 1
+            && matches!(surface, SurfaceGeometry::Cone(_))
+            && let [(ring, _)] = closed_ring_edges(&self.model, &wires)?.as_slice()
+        {
+            match ogeom_algo::make_apex_band(&mut self.model, &surface, ring, self.tol) {
+                Ok(built) => {
+                    let shape = if face_forward {
+                        built
+                    } else {
+                        built.reversed()
+                    };
+                    self.faces.insert(id, shape.clone());
+                    return Ok(Some(shape));
+                }
+                Err(e) => {
+                    self.report.warnings.push(format!(
+                        "#{id}: no apex could be synthesised ({e}); the face \
+                         may not triangulate"
+                    ));
+                }
+            }
+        }
+
         let built = make_face_on(&mut self.model, surface_id, &wires, self.tol)?.shape;
         let shape = if face_forward {
             built

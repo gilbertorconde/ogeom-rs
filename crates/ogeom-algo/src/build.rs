@@ -797,7 +797,7 @@ pub fn attach_seam(
     Ok(())
 }
 
-/// Build the face of a revolution band: two closed circle rings joined by a
+/// Build the face of a revolution band: two closed rings joined by a
 /// synthesised seam, pcurves attached window-coherently.
 ///
 /// The one authority for a job three call sites got subtly wrong three
@@ -810,11 +810,17 @@ pub fn attach_seam(
 /// built on a fresh copy of the surface, so no stale annotation from another
 /// phase of the same rings can apply.
 ///
+/// One ring may be *degenerate* — an edge with no curve, both ends the same
+/// vertex, flagged as such — standing for an apex or a pole: a rim of no
+/// length that still bounds the face in parameter space. It takes the row
+/// the collapsed point sits on and traverses the chart opposite the real
+/// ring, exactly as native cones and spheres bound their tips.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a ring is
-/// not a circle, the rings are not rings of this surface, or the surface's
-/// iso-curve has no closed form.
+/// neither a circle nor degenerate, both rings are degenerate, the rings are
+/// not rings of this surface, or the surface's iso-curve has no closed form.
 pub fn make_revolution_band(
     model: &mut Model,
     surface: &ogeom_geom::SurfaceGeometry,
@@ -838,6 +844,7 @@ pub fn make_revolution_band(
         crange: (f64, f64),
         winding: f64,
         row: f64,
+        degenerate: bool,
     }
     let mut rings = Vec::new();
     for used in [ring_lo, ring_hi] {
@@ -854,6 +861,45 @@ pub fn make_revolution_band(
         };
         if !vertex.is_same(&other) {
             ogeom_bail!(Construction, "a band ring is not closed");
+        }
+        let at = {
+            let Some(node) = model.node(&vertex) else {
+                ogeom_bail!(Dangling, "vertex is not in this model");
+            };
+            let Some(data) = node.data().as_vertex() else {
+                ogeom_bail!(Construction, "vertex node holds no vertex data");
+            };
+            data.point
+        };
+        let degenerate = {
+            let Some(node) = model.node(edge) else {
+                ogeom_bail!(Dangling, "edge is not in this model");
+            };
+            let Some(data) = node.data().as_edge() else {
+                ogeom_bail!(Construction, "edge node holds no edge data");
+            };
+            data.degenerate
+        };
+        if degenerate {
+            // An apex or a pole: no curve to read, no winding of its own.
+            // Its row comes from the collapsed point — which sits on the
+            // axis, where iterative projection has no nearest angle, so only
+            // the closed-form inversion can place it.
+            let Some(uv) = analytic_chart_of(surface, at) else {
+                ogeom_bail!(
+                    Construction,
+                    "a degenerate ring's row cannot be found on this surface"
+                );
+            };
+            rings.push(Ring {
+                edge: edge.clone(),
+                vertex,
+                crange: (0.0, span),
+                winding: 0.0,
+                row: uv.y,
+                degenerate: true,
+            });
+            continue;
         }
         let (curve, crange) = {
             let Some(node) = model.node(edge) else {
@@ -874,15 +920,6 @@ pub fn make_revolution_band(
             ogeom_bail!(Construction, "a band ring is not a circle");
         };
         let winding = c.circle().frame().z().vector().dot(axis_z).signum();
-        let at = {
-            let Some(node) = model.node(&vertex) else {
-                ogeom_bail!(Dangling, "vertex is not in this model");
-            };
-            let Some(data) = node.data().as_vertex() else {
-                ogeom_bail!(Construction, "vertex node holds no vertex data");
-            };
-            data.point
-        };
         let row = match analytic_chart_of(surface, at) {
             Some(uv) => uv.y,
             None => {
@@ -897,7 +934,20 @@ pub fn make_revolution_band(
             crange,
             winding,
             row,
+            degenerate: false,
         });
+    }
+    // A degenerate ring bounds nothing by itself, and the chart anchor must
+    // come from a rim that has an angle: the real ring goes first, and the
+    // degenerate one traverses opposite it.
+    if rings[0].degenerate && rings[1].degenerate {
+        ogeom_bail!(Construction, "both band rings are degenerate");
+    }
+    if rings[0].degenerate {
+        rings.swap(0, 1);
+    }
+    if rings[1].degenerate {
+        rings[1].winding = -rings[0].winding;
     }
     let anchor = {
         let Some(node) = model.node(&rings[0].vertex) else {
@@ -1029,6 +1079,38 @@ pub fn make_revolution_band(
     let ring = vec![rings[0].edge.clone(), up.clone(), top, up.reversed()];
     let wire = make_wire(model, &ring, tol)?.shape;
     Ok(make_face_on(model, surface_id, &[wire], tol)?.shape)
+}
+
+/// Build the face of a revolution cap: one closed ring belting a cone, with
+/// the apex the file never wrote synthesised as the degenerate ring the band
+/// needs.
+///
+/// A cone face bounded by a single circle has exactly one other boundary the
+/// geometry permits — the apex — because the region away from the apex is
+/// unbounded. The apex becomes a vertex and a degenerate edge, and the rest
+/// is [`make_revolution_band`], one authority for the seam either way.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the surface
+/// is not a cone, or the ring resists the band construction.
+pub fn make_apex_band(
+    model: &mut Model,
+    surface: &SurfaceGeometry,
+    ring: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let SurfaceGeometry::Cone(c) = surface else {
+        ogeom_bail!(
+            Construction,
+            "only a cone has the single apex a one-ring cap implies"
+        );
+    };
+    let apex = model.add_vertex(VertexData::new(c.cone().apex()));
+    let mut data = EdgeData::new();
+    data.degenerate = true;
+    let edge = model.add_edge(data, &[apex.clone(), apex])?;
+    make_revolution_band(model, surface, ring, &edge, tol)
 }
 
 /// The chart coordinates of a point on a periodic analytic surface, by
@@ -1833,5 +1915,134 @@ mod compsolid_tests {
             .shape;
         assert!(make_compsolid(&mut model, &[a.clone(), b]).is_err());
         assert!(make_compsolid(&mut model, std::slice::from_ref(&a)).is_err());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod band_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+    use ogeom_core::Tolerances;
+    use ogeom_geom::CircleCurve;
+    use ogeom_math::{Circle, Cone, Frame, Sphere};
+
+    const T: Tolerances = Tolerances::millimetres();
+    const TAU: f64 = core::f64::consts::TAU;
+
+    fn mesh_area(model: &Model, face: &Shape) -> f64 {
+        let fine = ogeom_mesh::Deflection {
+            chord: 1e-3,
+            ..ogeom_mesh::Deflection::default()
+        };
+        let mesh = ogeom_mesh::triangulate(model, face, fine, T).unwrap();
+        mesh.triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+                (b - a).cross(c - a).magnitude() / 2.0
+            })
+            .sum()
+    }
+
+    /// A full circle edge at `frame`'s origin, radius `r`, single vertex.
+    fn ring(model: &mut Model, frame: Frame, r: f64) -> Shape {
+        let circle = Circle::new(frame, r, T).unwrap();
+        let vertex = make_vertex(model, frame.origin() + frame.x() * r).shape;
+        make_edge_between(
+            model,
+            CircleCurve::new(circle).into(),
+            (0.0, TAU),
+            &vertex,
+            &vertex,
+            T,
+        )
+        .unwrap()
+        .shape
+    }
+
+    #[test]
+    fn a_cone_cap_takes_its_apex_as_a_degenerate_ring() {
+        // Half angle 45 degrees, reference radius 2: apex at z = -2, slant
+        // length 2*sqrt(2), lateral area pi * r * slant.
+        let mut model = Model::new();
+        let cone = Cone::new(Frame::WORLD, 2.0, core::f64::consts::FRAC_PI_4, T).unwrap();
+        let surface: SurfaceGeometry = ogeom_geom::ConeSurface::new(cone, (-3.0, 3.0))
+            .unwrap()
+            .into();
+        let rim = ring(&mut model, Frame::WORLD, 2.0);
+        let face = crate::make_apex_band(&mut model, &surface, &rim, T).unwrap();
+        assert_relative_eq!(
+            mesh_area(&model, &face),
+            core::f64::consts::PI * 2.0 * 2.0 * core::f64::consts::SQRT_2,
+            max_relative = 1e-2
+        );
+    }
+
+    #[test]
+    fn a_degenerate_ring_is_accepted_whichever_side_it_is_passed_on() {
+        let mut model = Model::new();
+        let cone = Cone::new(Frame::WORLD, 2.0, core::f64::consts::FRAC_PI_4, T).unwrap();
+        let surface: SurfaceGeometry = ogeom_geom::ConeSurface::new(cone, (-3.0, 3.0))
+            .unwrap()
+            .into();
+        let rim = ring(&mut model, Frame::WORLD, 2.0);
+        let apex = make_vertex(&mut model, cone.apex()).shape;
+        let mut data = EdgeData::new();
+        data.degenerate = true;
+        let degenerate = model.add_edge(data, &[apex.clone(), apex]).unwrap();
+        // Degenerate first: the band swaps it into place rather than asking
+        // the caller to know which ring is real.
+        let face = make_revolution_band(&mut model, &surface, &degenerate, &rim, T).unwrap();
+        assert_relative_eq!(
+            mesh_area(&model, &face),
+            core::f64::consts::PI * 2.0 * 2.0 * core::f64::consts::SQRT_2,
+            max_relative = 1e-2
+        );
+    }
+
+    #[test]
+    fn a_sphere_cap_closes_against_its_pole() {
+        // The equator ring and the north pole: a hemisphere, area 2 pi r^2.
+        let mut model = Model::new();
+        let sphere = Sphere::new(Frame::WORLD, 3.0, T).unwrap();
+        let surface: SurfaceGeometry = ogeom_geom::SphereSurface::new(sphere).into();
+        let rim = ring(&mut model, Frame::WORLD, 3.0);
+        let pole = make_vertex(&mut model, Point::new(0.0, 0.0, 3.0)).shape;
+        let mut data = EdgeData::new();
+        data.degenerate = true;
+        let degenerate = model.add_edge(data, &[pole.clone(), pole]).unwrap();
+        let face = make_revolution_band(&mut model, &surface, &rim, &degenerate, T).unwrap();
+        assert_relative_eq!(
+            mesh_area(&model, &face),
+            2.0 * core::f64::consts::PI * 9.0,
+            max_relative = 1e-2
+        );
+    }
+
+    #[test]
+    fn two_degenerate_rings_bound_nothing_and_are_refused() {
+        let mut model = Model::new();
+        let cone = Cone::new(Frame::WORLD, 2.0, core::f64::consts::FRAC_PI_4, T).unwrap();
+        let surface: SurfaceGeometry = ogeom_geom::ConeSurface::new(cone, (-3.0, 3.0))
+            .unwrap()
+            .into();
+        let apex = make_vertex(&mut model, cone.apex()).shape;
+        let mut data = EdgeData::new();
+        data.degenerate = true;
+        let a = model
+            .add_edge(data.clone(), &[apex.clone(), apex.clone()])
+            .unwrap();
+        let b = model.add_edge(data, &[apex.clone(), apex]).unwrap();
+        assert!(make_revolution_band(&mut model, &surface, &a, &b, T).is_err());
+    }
+
+    #[test]
+    fn an_apex_band_needs_a_cone() {
+        let mut model = Model::new();
+        let sphere = Sphere::new(Frame::WORLD, 3.0, T).unwrap();
+        let surface: SurfaceGeometry = ogeom_geom::SphereSurface::new(sphere).into();
+        let rim = ring(&mut model, Frame::WORLD, 3.0);
+        assert!(crate::make_apex_band(&mut model, &surface, &rim, T).is_err());
     }
 }
