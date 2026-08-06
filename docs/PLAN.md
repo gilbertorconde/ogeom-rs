@@ -33,88 +33,181 @@ of them has rejected a patch.
 
 ## The remaining work
 
-### A. Degenerate configurations in the boolean
+### A. The boolean's interference table
 
-One family, and the highest-leverage item in this document: several
-otherwise-unrelated gaps are all the arrangement failing where two shapes
-touch instead of crossing. Fixing the family closes five entries.
+One family, and the highest-leverage item in this document: five otherwise
+unrelated gaps are all the same thing, and studying how the problem is
+usually structured says the fix is not five patches but one change of shape.
 
-**A1 — a tool flush with the part.** Refill a bore with the cylinder it was
-cut by, ends flush with the faces it broke, and the kept pieces do not close
-into a shell. That is the reproduction; it is exact and it is fast to run.
+**The gaps.** *A1, a tool flush with the part*: refill a bore with the
+cylinder it was cut by, ends flush with the faces it broke, and the kept
+pieces do not close into a shell. *A2, a section through a chart pole*: a
+plane cutting a ball on its own axis ends its section exactly at both poles,
+where the sphere's derivatives degenerate. *A3, a ball on a box's corner
+vertex*: fails in the rebuild with a geometry error rather than by name.
+*A4, sections through tangential contact*: a plane through a bore's axis
+meets the wall along its rulings — the textbook half-section, so this one
+buys a drawing feature too (D2). *A5, a shell around a three-cylinder tip*:
+blocks the vertex blend (B2); the tool is known, the removal fails.
 
-Standing the tool a little past those faces works, and *how far* matters in a
-way worth keeping written down. The sliver band an overshoot leaves has its
-own interior probes, and if those sit inside the band the exact classifier
-reads as on-the-boundary (`confusion * 1e4`), every ray from them grazes the
-face beneath, the classifier exhausts its whole fan of directions, and one
-fuse takes fifty seconds where it should take a fifth of one. Ten microns of
-overshoot is decisively outside that band and costs nothing. `remove_feature`
-overshoots by `confusion * 1e5` for exactly this reason.
+**Why they are one gap.** Our boolean computes face-against-face sections
+and then decides where each resulting piece stands by *asking* — probing an
+interior point and casting rays. Every failure above is that question being
+put somewhere it cannot be answered: on a coincidence, at a degeneracy, in a
+cusp, on a tangency. The multi-probe retry and the widened bands are
+workarounds for asking a question that should never have been asked.
 
-**A2 — a section running through a chart pole.** A plane cutting a ball on
-its own axis ends its section curve exactly at both poles, where the sphere's
-derivatives degenerate. The pole strands are paved where sections land on
-them; the pieces still do not close.
+The established shape for this is an **interference table**: a pass that
+computes, once and up front, every way the two shapes meet — and a build
+phase that only *reads* it. Four properties of that shape matter here.
 
-**A3 — a ball seated on a box's corner vertex.** Fails in the rebuild with a
-geometry error rather than by name, which is the worse of the two failures.
+*Interferences are computed in dimension order.* Vertex against vertex,
+then vertex against edge, edge against edge, vertex against face, edge
+against face, and only then face against face — each stage consuming what
+the earlier ones established. A3 is a vertex-against-face interference, a
+first-class thing computed early; today it has nowhere to be recorded and
+surfaces as an anomaly during face splitting.
 
-**A4 — sections through tangential contact.** A section plane exactly through
-a bore's axis meets the wall along its rulings. The textbook half-section is
-this cut, so this one buys a drawing feature too (see D2).
+*Coincidence is identified, not rediscovered.* Where two edges lie on each
+other, or an edge lies in a face, they are recorded as one shared piece
+carrying the set of faces it lies on, and a substitution map says which
+entity stands in for which. A1 is exactly this: the flush tool's faces
+coincide with the part's, and today nothing says so until the classifier
+trips over it.
 
-**A5 — a shell around a three-cylinder tip.** Blocks the vertex blend (B2).
-The tool is known and simple; it is the removal that fails.
+*An edge's interference range excludes its own ends.* A piece of an edge is
+bounded by two vertices, each with a tolerance; the part of it that can
+genuinely interfere with anything is the stretch *outside* both tolerance
+spheres. Testing on that stretch rather than the nominal one is the
+systematic version of what our probe-ranking does by luck.
 
-*Construction.* These want one campaign, not five patches: a pass over the
-arrangement's handling of coincident and tangential strands, with each
-reproduction above as a test written first. The classifier's on-boundary band
-and its direction fan are the two mechanisms implicated in all of them.
+*Each face carries a state cache.* During the interference pass, every face
+accumulates which boundary pieces and vertices are inside it, which are on
+it, and which came from section curves. The build phase reads that cache
+instead of probing: a piece bounded by pieces known to be *on* the other
+face is on it, and no ray is cast at all.
 
-*Verification.* Each reproduction becomes a test asserting the measured
-result — volume, face count, shell closure — not merely that no error was
-returned.
+*Degenerate edges get their own late pass.* After pcurves exist, each
+degenerate edge is split by finding the boundary pieces that run through its
+vertex and pairing against them **in the chart**, where the pole is a line
+rather than a point. That is what we already do for pole strands; what we
+lack is the state cache that would let the pieces either side be classified
+without a probe. A2 is that.
+
+**The construction.** An `Interference` table built before any splitting,
+holding: vertex identifications, edge pieces with their interference ranges,
+shared pieces with their substitution map, the per-face state cache, and the
+section curves. Then a build phase with no classifier in it. This is a
+larger change than "fix the arrangement", and it is worth it: it removes an
+entire class of failure rather than another instance of it.
+
+**A caution worth recording.** Mature implementations of this design still
+state that a face's classification can depend on which point of the face is
+chosen, and still keep an open-ended list of configurations that defeat
+them. The table does not make the problem disappear; it makes most of the
+cases stop needing the fragile question. Expect the campaign to close A1–A5
+and to leave a shorter, better-named list behind.
+
+**Verification.** Each of A1–A5 becomes a test written before the change,
+asserting the measured result — volume, face count, shell closure — not
+merely that no error came back.
 
 ### B. Blending
 
-**B1 — the marching blend.** Edges whose rolling-ball envelope has no closed
-form. The spine is the intersection of the two supports' offset surfaces,
-which the intersector already computes; the sections are circular arcs
-between the two tangency points, which are the spine point's projections onto
-each support; the blend face is those arcs skinned, which the grid fit
-already does. The legs must be built on the *supports' own surfaces* with
-fitted pcurves, or the boolean sees two coincident-but-distinct surfaces
-rather than a same-domain pair.
+**B1 — the marching blend.** *The plan here has changed.* The previous
+entry proposed intersecting the two supports' offset surfaces to get a
+spine, projecting back onto each support for the tangency points, and
+skinning the arcs between them. That works on paper and is the wrong shape:
+the tangency curves arrive by projection, so the legs' pcurves are *fitted*,
+and fitted pcurves on a support are what the boolean cannot treat as
+same-domain.
 
-This is the largest single item in this document. For scale: a mature
-implementation of this family runs to tens of thousands of lines. It is a
-milestone, not a stone, and it should be approached one seat at a time — a
-cylinder meeting a plane at an angle is the first, since one leg is planar
-and the other's tangency curve projects onto a cylinder, both of which the
-pcurve machinery already handles.
+The formulation that avoids this solves for the section's two endpoints
+directly. **Unknowns: four** — `(u₁, v₁)` on the first support and
+`(u₂, v₂)` on the second, the two points where the rolling ball touches.
+**Equations: four.** Three say the ball's centre is the same point computed
+from either side,
 
-**B2 — the setback vertex blend.** The corner patch where three fillets meet.
-The tool is known: after the three edge fillets, the corner block running
-from the ball's centre out past the corner, *minus the ball*, is exactly the
-leftover spike — anything in that block further from the centre than the ball
-lies outside one of the three fillet cylinders and was already cut away when
-that edge was rounded. What fails is the removal (A5). Blocked, not unknown.
+> `P₁ + r·n₁ = P₂ + r·n₂`
+
+where `Pᵢ` and `nᵢ` are the point and unit normal of support *i* at its
+parameters. The fourth ties the section to a guide — the edge being blended,
+or any curve running along the seat — by requiring the section to lie in the
+plane through the guide point normal to the guide's tangent.
+
+March the guide parameter, solving the four-by-four system at each step.
+What comes out is worth the change: the tangency curves emerge **in the
+supports' own parameters**, so the legs' pcurves are exact by construction
+rather than fitted, and the blend's own surface is the skinned sections as
+before. This is why the reformulation is not a detail — it is what makes the
+result something the boolean can consume.
+
+*A second solver, for the boundaries.* When a section endpoint runs off the
+edge of its support, the answer is not to clip afterwards but to switch to an
+inverted system: unknowns `(t, w, u, v)` where `t` runs along the support's
+own boundary curve, `w` along the guide, and `(u, v)` are the partner's
+parameters. Solving that finds exactly where the blend crosses the support's
+boundary, so the blend is trimmed on the boundary rather than near it.
+
+*The states to implement,* which are a case checklist obtained for free:
+step too large, step too small, the march reversed, the two section
+endpoints collapsed onto each other (the radius is too large for the local
+geometry), the section reached the boundary of the first support, of the
+second, or of both — and *unhooked*, where the blend leaves a support's
+boundary and must continue onto the adjacent face.
+
+*Where to start:* a cylinder meeting a plane at an angle. One leg is planar
+and the other's tangency curve lies on a cylinder, both of which our pcurve
+machinery already handles exactly, so the first seat exercises the solver
+without also exercising the fitting.
+
+**B2 — corners where blends meet.** *Reframed.* This is not one construction
+but a family, classified by **how many blends meet at the corner**: one, two,
+three, or more. Our owed "setback vertex blend" is the three-blend case; the
+one- and two-blend cases are separate constructions we had not enumerated at
+all — a blend running out at a face boundary, and two blends meeting, which
+is resolved either by intersecting them with each other or by extending both
+to a shared end.
+
+For the three-blend equal-radius corner the tool is already known: after the
+three edge fillets, the corner block running from the ball's centre out past
+the corner, *minus the ball*, is exactly the leftover spike — anything in
+that block further from the centre than the ball lies outside one of the
+three fillet cylinders and was cut away when that edge was rounded. What
+fails is the removal (A5), so this is blocked rather than unknown.
 
 ### C. Sweeping
 
-**C1 — evolved shapes.** A planar spine's straight edges sweep the profile as
-prisms, its arcs sweep it as revolutions about their own axes, and the convex
-corners between them are the profile revolved about the corner — the same
-join the 2D offset already decides. The pieces exist; the assembly and the
-corner bookkeeping do not.
+**C1 — evolved shapes.** A profile wire swept along a spine that may be a
+wire *or a planar face* — the face case is the one we had not accounted for,
+and it is what makes the operation a volume rather than a shell. The
+construction is a composition of what §11 already has: the spine's straight
+edges sweep the profile as prisms, its arcs sweep it as revolutions about
+their own axes, and the convex corners between them take the profile
+revolved about the corner — the same join the 2D offset already decides. The
+pieces exist; the assembly and the corner bookkeeping do not.
 
 ### D. Drawings
 
 **D1 — marched silhouettes.** A torus or a spline silhouette has no closed
-form and needs the same marching the intersector does. The exact path refuses
-these by name today and the polygonal path draws them, which is a working
-answer at the mesh's accuracy rather than a missing one.
+form. The useful observation is that it needs no new machinery either: the
+silhouette is the zero set of
+
+> `n(u, v) · d = 0`
+
+for view or light direction `d`, which is an implicit condition on the
+surface's own chart — exactly the kind of thing our marcher already follows.
+And where the contour meets the face's trim, the boundary crossing is found
+by a separate solve against the boundary curve, the same shape as the
+blend's inverted system in B1.
+
+That is a cross-cutting note worth stating once: **one walker, several
+conditions.** Surface intersection tracks "on both surfaces"; a silhouette
+tracks "normal perpendicular to the view"; a blend tracks the four-equation
+contact system. If the marcher is abstracted over the condition it follows —
+value, derivatives, and a boundary-crossing solve — then B1 and D1 share it
+and the intersector's hard-won step control, stall detection and branch
+handling are inherited rather than rewritten twice.
 
 **D2 — the on-axis half-section.** Blocked on A4.
 
@@ -208,15 +301,22 @@ These are settled. They are here so nobody reopens them by accident.
 
 ## Order
 
-1. **A** — the degenerate-configuration campaign. It unblocks B2 and D2, and
-   it is the difference between a boolean that is usually right and one that
-   is dependably right.
+1. **A** — the interference table. It unblocks B2 and D2, closes five named
+   failures, and is the difference between a boolean that is usually right
+   and one that is dependably right. It is also the largest structural
+   change left, so it goes first while there is appetite for it.
 2. **C**, **E1**, **E2**, **F3** — contained pieces, any order, each a stone.
+   Good work to interleave when the appetite for A runs out.
 3. **G1** — the tessellation instrument, which unblocks measuring a class of
    rebuilt shape.
-4. **F2** — IGES.
-5. **B1** — the marching blend, then **B2** on top of A5.
-6. **D1** — marched silhouettes, which share machinery with B1.
+4. **The walker abstraction** — generalize the marcher over the condition it
+   follows. Small on its own, and it is the shared foundation of B1 and D1,
+   so it comes before either.
+5. **B1** — the marching blend, one seat at a time, starting with a cylinder
+   meeting a plane at an angle. Then **B2**'s corner family, on top of A5.
+6. **D1** — marched silhouettes, which by then are a second condition for a
+   walker that already exists.
+7. **F2** — IGES.
 
 **G2** and **F4** have no scheduled slot: the first needs an idea nobody has
 had yet, the second needs a document nobody has published.
