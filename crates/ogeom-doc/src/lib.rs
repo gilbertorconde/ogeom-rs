@@ -21,5 +21,8 @@ pub use attributes::{
     Layer, LayerId, Material, MaterialId, Property, PropertyValue, Texture, TextureId,
     TextureMapping, ValidationProperties,
 };
-pub use pmi::{Datum, Dimension, GeometricTolerance, MeasureKind, Pmi};
+pub use pmi::{
+    Annotated, Callout, Datum, DatumTarget, DatumTargetKind, Dimension, GeometricTolerance,
+    MeasureKind, Pmi,
+};
 pub use structure::{Colour, Document, Instance, Occurrence, Product, ProductId, ProductKind};

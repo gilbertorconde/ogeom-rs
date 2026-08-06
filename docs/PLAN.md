@@ -247,10 +247,25 @@ hits equal the finest level's own, sub-shape, kind, depth and refined
 position. What is measured about the *performance* is a count, not a timing:
 the coarse level admits well under half the scene.
 
-**E2 — datum targets and presentation PMI.** The annotation polylines and
-planes, and the targets a datum feature carries. Data plus their STEP
-carriage; the semantic PMI core they attach to is already read and written
-both ways.
+**E2 — datum targets and presentation PMI.** **Done.** `DatumTarget` with its
+four kinds — point, line, rectangle, circle — placed and sized, tied to the
+datum it establishes; and `Callout`, which is the drawing: the plane an
+annotation is drawn in, the polylines that make its frame, leader and text,
+and which semantic annotation it is a picture of.
+
+Both directions in STEP, and the presentation half is read from NIST's own
+annotated part rather than only from what this writer emits — which is what
+found the shape of it: a callout's geometry is a *set* of tessellated curve
+sets, nested and repositioned by a placement of its own, over one-based
+indices into a coordinates list, and the link to the semantic annotation is
+made by instance identity rather than by matching a name two annotations may
+share. Twenty-three callouts come back with their planes and their 800-odd
+drawn points; fourteen link to an annotation, and the ones that do not are
+the file's own — a text note has nothing semantic behind it.
+
+No style is written, which is a statement and not an omission: a style is
+about rendering, and this kernel keeps no draughting style model to have one
+from.
 
 ### F. Exchange
 

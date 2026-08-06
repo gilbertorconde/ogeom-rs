@@ -650,6 +650,9 @@ impl Writer<'_> {
             aspect
         };
 
+        // Which STEP id each annotation was written as, so the presentation
+        // below can point a callout at the annotation it draws.
+        let mut annotation_ids: HashMap<ogeom_doc::Annotated, u64> = HashMap::new();
         let mut datum_ids: HashMap<&str, u64> = HashMap::new();
         for datum in &pmi.datums {
             let label = escape(&datum.label);
@@ -662,9 +665,10 @@ impl Writer<'_> {
                 }
             }
             datum_ids.insert(datum.label.as_str(), id);
+            annotation_ids.insert(ogeom_doc::Annotated::Datum(datum_ids.len() - 1), id);
         }
 
-        for dimension in &pmi.dimensions {
+        for (at, dimension) in pmi.dimensions.iter().enumerate() {
             let name = escape(&dimension.name);
             let angular = dimension.kind == ogeom_doc::MeasureKind::Angle;
             let dim = if dimension.location {
@@ -696,6 +700,7 @@ impl Writer<'_> {
                 .map(|&v| format!("#{}", self.measure(v, dimension.kind, lu, au)))
                 .collect();
             let list = measures.join(",");
+            annotation_ids.insert(ogeom_doc::Annotated::Dimension(at), dim);
             let sdr = self.entity(format!(
                 "SHAPE_DIMENSION_REPRESENTATION('',({list}),#{gctx})"
             ));
@@ -710,7 +715,7 @@ impl Writer<'_> {
             }
         }
 
-        for tolerance in &pmi.tolerances {
+        for (at, tolerance) in pmi.tolerances.iter().enumerate() {
             let aspect = aspect_for(self, &tolerance.items);
             let name = escape(&tolerance.name);
             let magnitude =
@@ -742,13 +747,13 @@ impl Writer<'_> {
                 })
                 .collect();
             let refs = refs.join(",");
-            if tolerance.modifiers.is_empty() {
+            let written = if tolerance.modifiers.is_empty() {
                 if refs.is_empty() {
-                    self.entity(format!("{keyword}('{name}','',#{magnitude},#{aspect})"));
+                    self.entity(format!("{keyword}('{name}','',#{magnitude},#{aspect})"))
                 } else {
                     self.entity(format!(
                         "{keyword}('{name}','',#{magnitude},#{aspect},({refs}))"
-                    ));
+                    ))
                 }
             } else {
                 // Modifiers force the complex form: the shared attributes
@@ -771,7 +776,123 @@ impl Writer<'_> {
                     ));
                 }
                 parts.sort();
-                self.entity(format!("({})", parts.concat()));
+                self.entity(format!("({})", parts.concat()))
+            };
+            annotation_ids.insert(ogeom_doc::Annotated::Tolerance(at), written);
+        }
+
+        // Datum targets: the pads a datum is established at. The identifier
+        // is the letter and the number the drawing shows — `A1` — and the
+        // placement and sizes go in a shape representation the target's own
+        // property definition names, which is where the reader looks for them.
+        for target in &pmi.targets {
+            let identifier = escape(&target.identifier());
+            let description = match target.kind {
+                ogeom_doc::DatumTargetKind::Point => "point",
+                ogeom_doc::DatumTargetKind::Line { .. } => "line",
+                ogeom_doc::DatumTargetKind::Rectangle { .. } => "rectangle",
+                ogeom_doc::DatumTargetKind::Circle { .. } => "circle",
+            };
+            let id = self.entity(format!(
+                "PLACED_DATUM_TARGET_FEATURE('','{description}',#{pds},.F.,'{identifier}')"
+            ));
+            for item in &target.items {
+                if let Some(&step_id) = by_node.get(item) {
+                    self.entity(format!(
+                        "GEOMETRIC_ITEM_SPECIFIC_USAGE('','',#{id},#{absr},#{step_id})"
+                    ));
+                }
+            }
+            // Tie the target to its own datum, so a reader that meets the
+            // target first can still say which datum it establishes.
+            if let Some(&datum_id) = datum_ids.get(target.datum.as_str()) {
+                self.entity(format!(
+                    "SHAPE_ASPECT_RELATIONSHIP('','',#{datum_id},#{id})"
+                ));
+            }
+            let frame = target
+                .frame
+                .unwrap_or_else(|| Frame::about(target.at, ogeom_math::Direction::Z));
+            let placement = self.frame(&frame);
+            let sizes: Vec<f64> = match target.kind {
+                ogeom_doc::DatumTargetKind::Point => Vec::new(),
+                ogeom_doc::DatumTargetKind::Line { length } => vec![length],
+                ogeom_doc::DatumTargetKind::Rectangle { length, width } => vec![length, width],
+                ogeom_doc::DatumTargetKind::Circle { diameter } => vec![diameter],
+            };
+            let mut items = vec![format!("#{placement}")];
+            for size in sizes {
+                let measure = self.measure(size, ogeom_doc::MeasureKind::Length, lu, au);
+                items.push(format!("#{measure}"));
+            }
+            let list = items.join(",");
+            let rep = self.entity(format!(
+                "SHAPE_REPRESENTATION('{identifier}',({list}),#{gctx})"
+            ));
+            let property = self.entity(format!("PROPERTY_DEFINITION('','',#{id})"));
+            self.entity(format!(
+                "SHAPE_DEFINITION_REPRESENTATION(#{property},#{rep})"
+            ));
+        }
+
+        // Presentation: the drawn annotations. One curve set per callout over
+        // one coordinates list, held by an occurrence, held by the callout;
+        // the plane it is drawn in; and the association that says which
+        // semantic annotation it is a picture of.
+        if !pmi.callouts.is_empty() {
+            let mut drawn: Vec<(u64, ogeom_doc::Annotated)> = Vec::new();
+            let mut planes: Vec<String> = Vec::new();
+            for callout in &pmi.callouts {
+                let name = escape(&callout.name);
+                let mut coordinates: Vec<String> = Vec::new();
+                let mut lines: Vec<String> = Vec::new();
+                let mut next = 1_usize;
+                for polyline in &callout.polylines {
+                    let mut indices: Vec<String> = Vec::with_capacity(polyline.len());
+                    for p in polyline {
+                        coordinates.push(format!("({},{},{})", real(p.x), real(p.y), real(p.z)));
+                        indices.push(next.to_string());
+                        next += 1;
+                    }
+                    lines.push(format!("({})", indices.join(",")));
+                }
+                let count = coordinates.len();
+                let coordinates = coordinates.join(",");
+                let list = self.entity(format!(
+                    "COORDINATES_LIST('{name}',{count},({coordinates}))"
+                ));
+                let lines = lines.join(",");
+                let set = self.entity(format!("TESSELLATED_CURVE_SET('{name}',#{list},({lines}))"));
+                // No style is written, and that is a statement rather than an
+                // omission: a style is about rendering, and this kernel keeps
+                // no draughting style model to have one from.
+                let occurrence = self.entity(format!(
+                    "TESSELLATED_ANNOTATION_OCCURRENCE('{name}',(),#{set})"
+                ));
+                let id = self.entity(format!("DRAUGHTING_CALLOUT('{name}',(#{occurrence}))"));
+                if let Some(frame) = callout.plane {
+                    let placement = self.frame(&frame);
+                    let plane = self.entity(format!("PLANE('{name}',#{placement})"));
+                    planes.push(
+                        self.entity(format!("ANNOTATION_PLANE('{name}',(),#{plane},(#{id}))"))
+                            .to_string(),
+                    );
+                }
+                if let Some(annotates) = callout.annotates {
+                    drawn.push((id, annotates));
+                }
+            }
+            let list: Vec<String> = planes.iter().map(|p| format!("#{p}")).collect();
+            let list = list.join(",");
+            let model = self.entity(format!("DRAUGHTING_MODEL('',({list}),#{gctx})"));
+            for (callout, annotates) in drawn {
+                let Some(&annotation) = annotation_ids.get(&annotates) else {
+                    continue;
+                };
+                self.entity(format!(
+                    "DRAUGHTING_MODEL_ITEM_ASSOCIATION('PMI representation to presentation \
+                     link','',#{annotation},#{model},#{callout})"
+                ));
             }
         }
         Ok(())

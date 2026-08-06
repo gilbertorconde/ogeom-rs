@@ -1804,6 +1804,10 @@ impl Reader<'_> {
     /// geometry down.
     fn pmi_of(&mut self) -> ogeom_doc::Pmi {
         let mut pmi = ogeom_doc::Pmi::new();
+        // Which STEP instance each annotation came from, so the presentation
+        // pass can name the annotation a callout draws exactly rather than by
+        // matching a string two annotations may share.
+        let mut annotation_ids: HashMap<u64, ogeom_doc::Annotated> = HashMap::new();
 
         // Which topology each shape aspect describes: directly through
         // GEOMETRIC_ITEM_SPECIFIC_USAGE, and one relationship step outward,
@@ -1923,6 +1927,7 @@ impl Reader<'_> {
             let features: Vec<Vec<ogeom_topo::TShapeId>> =
                 aspects.into_iter().map(&items_for).collect();
             let (minus, plus) = plus_minus.get(&dim).copied().unwrap_or((None, None));
+            annotation_ids.insert(dim, ogeom_doc::Annotated::Dimension(pmi.dimensions.len()));
             pmi.dimensions.push(ogeom_doc::Dimension {
                 name,
                 values,
@@ -2019,6 +2024,7 @@ impl Reader<'_> {
                 .filter_map(|&r| self.datum_letter(r, 0))
                 .collect();
             let items = aspect.map(items_for).unwrap_or_default();
+            annotation_ids.insert(id, ogeom_doc::Annotated::Tolerance(pmi.tolerances.len()));
             pmi.tolerances.push(ogeom_doc::GeometricTolerance {
                 kind,
                 name,
@@ -2053,12 +2059,327 @@ impl Reader<'_> {
                     _ => continue,
                 }
             };
+            annotation_ids.insert(id, ogeom_doc::Annotated::Datum(pmi.datums.len()));
             pmi.datums.push(ogeom_doc::Datum {
                 label: letter,
                 items: items_for(id),
             });
         }
+
+        // Datum targets: the pads a datum is actually established at. The
+        // target's identifier is the letter's number — `A1` is target 1 of
+        // datum A — and its placement and size come through the shape
+        // representation the feature is associated with.
+        let mut targets = self.ids_with("PLACED_DATUM_TARGET_FEATURE");
+        targets.sort_unstable();
+        for id in targets {
+            if let Some(target) = self.datum_target(id, &items_for) {
+                pmi.targets.push(target);
+            }
+        }
+
+        // Presentation: what a viewer draws. A callout holds tessellated
+        // annotation occurrences, each an indexed set of polylines over a
+        // coordinates list; an annotation plane says which plane they are
+        // drawn in and which callouts it holds; and a model item association
+        // says which semantic annotation a callout is the picture of.
+        pmi.callouts = self.callouts(&annotation_ids);
         pmi
+    }
+
+    /// One placed datum target: which datum, which number, where and how big.
+    fn datum_target(
+        &mut self,
+        id: u64,
+        items_for: &dyn Fn(u64) -> Vec<ogeom_topo::TShapeId>,
+    ) -> Option<ogeom_doc::DatumTarget> {
+        let (target_id, description) = {
+            let instance = self.instance(id).ok()?;
+            let args = instance.part("PLACED_DATUM_TARGET_FEATURE")?;
+            let target = match args.get(4) {
+                Some(Arg::Str(s)) if !s.is_empty() => s.clone(),
+                _ => return None,
+            };
+            let description = match args.get(1) {
+                Some(Arg::Str(s)) => s.to_ascii_lowercase(),
+                _ => String::new(),
+            };
+            (target, description)
+        };
+        // `A1`: the letter is the datum, the digits its number.
+        let split = target_id
+            .find(|c: char| c.is_ascii_digit())
+            .unwrap_or(target_id.len());
+        let (letter, number) = target_id.split_at(split);
+        let index = number.parse::<u32>().unwrap_or(1);
+        let datum = if letter.is_empty() {
+            self.datum_letter(id, 0).unwrap_or_default()
+        } else {
+            letter.to_owned()
+        };
+
+        // The target's placement and size live in a shape representation the
+        // target's own property definition names. The lengths come in the
+        // file's own unit, as every length does.
+        let mut frame = None;
+        let mut lengths: Vec<f64> = Vec::new();
+        for property in self.ids_with("PROPERTY_DEFINITION") {
+            let Ok(args) = self.args(property, "PROPERTY_DEFINITION") else {
+                continue;
+            };
+            if args.get(2).and_then(Arg::reference) != Some(id) {
+                continue;
+            }
+            for sdr in self.ids_with("SHAPE_DEFINITION_REPRESENTATION") {
+                let Ok(args) = self.args(sdr, "SHAPE_DEFINITION_REPRESENTATION") else {
+                    continue;
+                };
+                if args.first().and_then(Arg::reference) != Some(property) {
+                    continue;
+                }
+                let Some(rep) = args.get(1).and_then(Arg::reference) else {
+                    continue;
+                };
+                for item in self.representation_items(rep).unwrap_or_default() {
+                    let keyword = self
+                        .instance(item)
+                        .map(|i| i.keyword().to_owned())
+                        .unwrap_or_default();
+                    match keyword.as_str() {
+                        "AXIS2_PLACEMENT_3D" => frame = self.frame(item).ok(),
+                        "LENGTH_MEASURE_WITH_UNIT" | "MEASURE_REPRESENTATION_ITEM" => {
+                            if let Some((value, _)) = self.measure_value(item) {
+                                lengths.push(value);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // What the target *is* follows from the description the file gives
+        // and how many sizes it carries: an area needs two, a circle one, a
+        // line one, a point none.
+        let kind = if description.contains("circle") || description.contains("circular") {
+            ogeom_doc::DatumTargetKind::Circle {
+                diameter: lengths.first().copied().unwrap_or(0.0),
+            }
+        } else if description.contains("rectangle") || lengths.len() >= 2 {
+            ogeom_doc::DatumTargetKind::Rectangle {
+                length: lengths.first().copied().unwrap_or(0.0),
+                width: lengths.get(1).copied().unwrap_or(0.0),
+            }
+        } else if description.contains("line") || lengths.len() == 1 {
+            ogeom_doc::DatumTargetKind::Line {
+                length: lengths.first().copied().unwrap_or(0.0),
+            }
+        } else {
+            ogeom_doc::DatumTargetKind::Point
+        };
+        Some(ogeom_doc::DatumTarget {
+            datum,
+            index,
+            kind,
+            at: frame.map_or(Point::ORIGIN, |f: Frame| f.origin()),
+            frame,
+            items: items_for(id),
+        })
+    }
+
+    /// The drawn annotations: callouts, their polylines, their planes, and
+    /// which semantic annotation each one draws.
+    fn callouts(
+        &mut self,
+        annotation_ids: &HashMap<u64, ogeom_doc::Annotated>,
+    ) -> Vec<ogeom_doc::Callout> {
+        // Which callout each annotation plane holds, and the plane's frame.
+        let mut plane_of: HashMap<u64, Frame> = HashMap::new();
+        for id in self.ids_with("ANNOTATION_PLANE") {
+            let Ok(args) = self.args(id, "ANNOTATION_PLANE") else {
+                continue;
+            };
+            let frame = args
+                .get(2)
+                .and_then(Arg::reference)
+                .and_then(|plane| {
+                    let inner = self.args(plane, "PLANE").ok()?;
+                    inner.get(1).and_then(Arg::reference)
+                })
+                .and_then(|placement| self.frame(placement).ok());
+            let Some(frame) = frame else { continue };
+            for element in args.get(3).and_then(Arg::list).unwrap_or(&[]) {
+                if let Some(callout) = element.reference() {
+                    plane_of.insert(callout, frame);
+                }
+            }
+        }
+
+        // Which semantic annotation each callout draws. The association names
+        // the annotation's own STEP id, so the link is made by matching that
+        // against the ids the semantic pass already resolved.
+        // A callout may be associated more than once — once with the shape
+        // aspect the annotation is *about*, once with the annotation itself —
+        // so every association is kept and the first that resolves to a
+        // semantic annotation is the answer.
+        let mut draws: HashMap<u64, Vec<u64>> = HashMap::new();
+        let mut associations = self.ids_with("DRAUGHTING_MODEL_ITEM_ASSOCIATION");
+        associations.sort_unstable();
+        for id in associations {
+            let Ok(args) = self.args(id, "DRAUGHTING_MODEL_ITEM_ASSOCIATION") else {
+                continue;
+            };
+            if let (Some(definition), Some(item)) = (
+                args.get(2).and_then(Arg::reference),
+                args.get(4).and_then(Arg::reference),
+            ) {
+                draws.entry(item).or_default().push(definition);
+            }
+        }
+
+        let mut out = Vec::new();
+        let mut callouts = self.ids_with("DRAUGHTING_CALLOUT");
+        callouts.sort_unstable();
+        for id in callouts {
+            let Ok(args) = self.args(id, "DRAUGHTING_CALLOUT") else {
+                continue;
+            };
+            let name = match args.first() {
+                Some(Arg::Str(s)) => s.clone(),
+                _ => String::new(),
+            };
+            let mut polylines = Vec::new();
+            for element in args.get(1).and_then(Arg::list).unwrap_or(&[]).to_vec() {
+                let Some(occurrence) = element.reference() else {
+                    continue;
+                };
+                polylines.extend(self.annotation_polylines(occurrence));
+            }
+            if polylines.is_empty() && !plane_of.contains_key(&id) {
+                continue;
+            }
+            out.push(ogeom_doc::Callout {
+                name,
+                plane: plane_of.get(&id).copied(),
+                polylines,
+                annotates: draws
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find_map(|d| annotation_ids.get(&d).copied()),
+            });
+        }
+        out
+    }
+
+    /// The polylines one annotation occurrence draws.
+    ///
+    /// A tessellated occurrence names a curve set, which names a coordinates
+    /// list and gives each polyline as *one-based* indices into it. That is
+    /// the whole of the drawn geometry, and it is read as it is written
+    /// rather than resampled.
+    fn annotation_polylines(&mut self, occurrence: u64) -> Vec<Vec<Point>> {
+        let item = {
+            let Ok(instance) = self.instance(occurrence) else {
+                return Vec::new();
+            };
+            let args = instance
+                .part("TESSELLATED_ANNOTATION_OCCURRENCE")
+                .or_else(|| instance.part("ANNOTATION_OCCURRENCE"))
+                .or_else(|| instance.part("STYLED_ITEM"));
+            match args.and_then(|a| a.get(2).and_then(Arg::reference)) {
+                Some(item) => item,
+                None => return Vec::new(),
+            }
+        };
+        self.tessellated_polylines(item, 0)
+    }
+
+    /// The polylines a tessellated item holds, however deep it nests them.
+    ///
+    /// The drawn geometry of one annotation is a *set*: a frame's box, its
+    /// leader, its text strokes, each its own curve set over its own
+    /// coordinates list, gathered under one item — which may itself be
+    /// repositioned by a placement, and that placement is applied here rather
+    /// than left for a consumer to discover.
+    fn tessellated_polylines(&mut self, item: u64, depth: usize) -> Vec<Vec<Point>> {
+        if depth > 4 {
+            return Vec::new();
+        }
+        let (children, curve_set, placement) = {
+            let Ok(instance) = self.instance(item) else {
+                return Vec::new();
+            };
+            let children: Vec<u64> = instance
+                .part("TESSELLATED_GEOMETRIC_SET")
+                .and_then(|args| args.first().and_then(Arg::list))
+                .map(|list| list.iter().filter_map(Arg::reference).collect())
+                .unwrap_or_default();
+            let curve_set = instance.part("TESSELLATED_CURVE_SET").map(<[Arg]>::to_vec);
+            let placement = instance
+                .part("REPOSITIONED_TESSELLATED_ITEM")
+                .and_then(|args| args.first().and_then(Arg::reference));
+            (children, curve_set, placement)
+        };
+
+        let mut out = Vec::new();
+        for child in children {
+            out.extend(self.tessellated_polylines(child, depth + 1));
+        }
+        if let Some(args) = curve_set
+            && let Some(list) = args.get(1).and_then(Arg::reference)
+        {
+            let points = self.coordinates_list(list);
+            for line in args.get(2).and_then(Arg::list).unwrap_or(&[]) {
+                let Some(indices) = line.list() else { continue };
+                let mut polyline = Vec::with_capacity(indices.len());
+                for index in indices {
+                    // One-based, as the format states them.
+                    let Some(k) = index.number() else { continue };
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "an index into a list the file itself sized"
+                    )]
+                    let k = k as usize;
+                    if k >= 1 && k <= points.len() {
+                        polyline.push(points[k - 1]);
+                    }
+                }
+                if polyline.len() >= 2 {
+                    out.push(polyline);
+                }
+            }
+        }
+        if let Some(placement) = placement
+            && let Ok(frame) = self.frame(placement)
+        {
+            for polyline in &mut out {
+                for p in polyline.iter_mut() {
+                    *p = frame.to_world(*p);
+                }
+            }
+        }
+        out
+    }
+
+    /// A `COORDINATES_LIST`'s points, in the document's own length unit.
+    fn coordinates_list(&mut self, id: u64) -> Vec<Point> {
+        let Ok(args) = self.args(id, "COORDINATES_LIST") else {
+            return Vec::new();
+        };
+        let scale = self.report.scale_mm;
+        args.get(2)
+            .and_then(Arg::list)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|entry| {
+                let coords = entry.list()?;
+                let value = |i: usize| coords.get(i).and_then(Arg::number).unwrap_or(0.0) * scale;
+                Some(Point::new(value(0), value(1), value(2)))
+            })
+            .collect()
     }
 
     /// Every instance id carrying a part with this keyword.
