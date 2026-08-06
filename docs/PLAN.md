@@ -184,14 +184,24 @@ blocked.
 
 ### C. Sweeping
 
-**C1 — evolved shapes.** A profile wire swept along a spine that may be a
-wire *or a planar face* — the face case is the one we had not accounted for,
-and it is what makes the operation a volume rather than a shell. The
-construction is a composition of what §11 already has: the spine's straight
-edges sweep the profile as prisms, its arcs sweep it as revolutions about
-their own axes, and the convex corners between them take the profile
-revolved about the corner — the same join the 2D offset already decides. The
-pieces exist; the assembly and the corner bookkeeping do not.
+**C1 — evolved shapes.** **Done.** `make_evolved` sweeps a profile along a
+planar spine given as a wire or as a face: straight spine edges extrude the
+profile as prisms, arcs turn it about their own axes as revolutions, and each
+corner turns it about the corner through exactly the angle the spine turns
+there — the join the 2D offset makes, for the same reason. Every piece is
+exact; nothing is fitted.
+
+Two things the entry did not say. The assembly is a *union*, not a sew:
+consecutive pieces meet on the same placed profile, which is a coincident
+face, and identifying that is the boolean's own work rather than something to
+re-do here. And the face spine buys a volume by closing the *profile*, not by
+capping the sweep afterwards — an open profile whose two ends reach the spine
+face's plane is closed against it and swept as a section, so what comes back
+is a solid by construction. An open profile along a wire spine has no plane to
+close against, and is refused with the spine that would.
+
+Measured against closed forms: a square spine is four runs and four
+quarter-annulus wedges, and a bend is Pappus on its own annulus.
 
 ### D. Drawings
 

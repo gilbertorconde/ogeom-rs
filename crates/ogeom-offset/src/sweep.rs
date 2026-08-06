@@ -11,15 +11,16 @@
 //! the deferred table, not approximated here.
 
 use ogeom_algo::{
-    Built, edge_vertices, make_cone, make_cylinder, make_edge, make_edge_between,
+    Built, History, edge_vertices, make_cone, make_cylinder, make_edge, make_edge_between,
     make_face_with_pcurves, make_solid, make_torus, make_vertex, sew,
 };
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
+use ogeom_geom::Transformable as _;
 use ogeom_geom::{
     CircleCurve, Curve, Line2d, LineCurve, PlaneSurface, SurfaceGeometry, TorusSurface,
 };
-use ogeom_math::{Circle, Direction, Frame, Plane, Point, Point2, Torus, Vector};
+use ogeom_math::{Circle, Direction, Frame, Plane, Point, Point2, Torus, Transform, Vector};
 use ogeom_topo::{EdgeRepr, Filter, Model, Shape, ShapeType, explore};
 
 /// Sweep a circular profile of `radius` along a spine edge.
@@ -920,4 +921,523 @@ pub fn make_pipe_skinned(
     )?;
     built.history.generate(spine, built.shape.clone());
     Ok(built)
+}
+
+// --- the evolved shape -------------------------------------------------------
+
+/// One station of the spine: where it is, which way it runs, and how it gets
+/// there.
+struct Station {
+    /// Where the traversal enters and leaves this edge.
+    from: Point,
+    to: Point,
+    /// The unit tangent at each end, in the direction of travel.
+    tangent_in: Vector,
+    tangent_out: Vector,
+    /// A straight run, or a turn about an axis through an angle.
+    turn: Option<(ogeom_math::Axis, f64)>,
+}
+
+/// Sweep a profile along a spine, the way a moulding runs round a frame.
+///
+/// The spine is a **planar** wire, or a planar face whose outer wire is taken.
+/// The profile is a wire standing in a plane that contains the spine's own
+/// normal, positioned where the spine starts. What comes back is what the
+/// profile sweeps out as it travels the spine, always square to it:
+///
+/// - a straight spine edge extrudes the profile — a prism;
+/// - a circular one turns it about that arc's own axis — a revolution;
+/// - and each corner between them turns it about the corner, through exactly
+///   the angle the spine turns there, which is the join the 2D offset makes
+///   for the same reason.
+///
+/// Every piece is exact: the surfaces are the ones a prism and a revolution
+/// give for the profile's own curves, and nothing is fitted. The pieces are
+/// then unioned, which is the assembly's real name — consecutive pieces meet
+/// on the *same* placed profile, and a coincident face is what the boolean
+/// identifies rather than probes across.
+///
+/// # Volume or shell
+///
+/// The result is always a volume, and which spine is given is what says
+/// whether there is one to have. A **closed** profile bounds its own section
+/// and sweeps a solid along either kind of spine. An **open** one does not,
+/// and there is exactly one honest way to close it: against the plane a
+/// **face** spine was drawn in, whose own plane the profile's two ends must
+/// reach. An open profile along a wire spine is refused, and the refusal says
+/// which spine would close it.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the spine is
+/// not a planar wire or face, if it carries an edge that is neither straight
+/// nor circular, if the profile is not planar, if the profile's plane does not
+/// contain the spine's normal or does not cut across it — a profile that leans
+/// or lies along is not square to the spine — or if an open profile has no
+/// spine plane to close against.
+/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where a corner's turn
+/// would sweep the profile across the corner itself, which no revolution can
+/// express.
+pub fn make_evolved(
+    model: &mut Model,
+    spine: &Shape,
+    profile: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    use ogeom_algo::{make_prism, make_revolution, transformed};
+
+    let (wire, capped_by_spine_plane) = match model.kind_of(spine)? {
+        ShapeType::Face => {
+            let wires = explore(model, spine, Filter::OfType(ShapeType::Wire))?;
+            let Some(outer) = wires.first().cloned() else {
+                ogeom_bail!(Construction, "a face with no wire has no spine to run");
+            };
+            (outer, true)
+        }
+        ShapeType::Wire => (spine.clone(), false),
+        other => ogeom_bail!(
+            Construction,
+            "a {other:?} is not a spine; sweep along a wire or a planar face"
+        ),
+    };
+
+    let stations = spine_stations(model, &wire, tol)?;
+    if stations.is_empty() {
+        ogeom_bail!(Construction, "a spine with no edges goes nowhere");
+    }
+    let normal = spine_normal(&stations, tol)?;
+    let (profile_origin, profile_normal) = profile_plane(model, profile, tol)?;
+    if profile_normal.dot(normal.vector()).abs() > tol.angular() {
+        ogeom_bail!(
+            Construction,
+            "the profile's plane must contain the spine's normal, or the \
+             profile is not square to the spine it travels"
+        );
+    }
+    let start = &stations[0];
+    if profile_normal.cross(start.tangent_in).magnitude() > tol.angular() {
+        ogeom_bail!(
+            Construction,
+            "the profile's plane must cut the spine across, not run along it: \
+             the profile is not square to the spine it travels"
+        );
+    }
+    let _ = profile_origin;
+    let reference = (start.from, start.tangent_in);
+
+    // The profile as a face, which is what makes each swept piece a *solid*
+    // and the assembly a union rather than a hopeful sew. An open profile is
+    // closed against the spine's own plane — which is exactly what a face
+    // spine offers and a wire spine does not.
+    let section = profile_face(
+        model,
+        profile,
+        profile_normal,
+        capped_by_spine_plane.then(|| Plane::through(start.from, normal)),
+        tol,
+    )?;
+
+    let mut pieces: Vec<Shape> = Vec::new();
+    for (index, station) in stations.iter().enumerate() {
+        // The corner *before* this station, so the pieces come out in the
+        // order the spine runs them.
+        if index > 0 {
+            let previous = &stations[index - 1];
+            if let Some(piece) = corner_piece(
+                model,
+                &section,
+                reference,
+                previous.to,
+                previous.tangent_out,
+                station.tangent_in,
+                normal,
+                tol,
+            )? {
+                pieces.push(piece);
+            }
+        }
+        let placed = transformed(
+            model,
+            &section,
+            station_transform(reference, station.from, station.tangent_in, normal, tol)?,
+        )?
+        .shape;
+        pieces.push(match station.turn {
+            None => make_prism(model, &placed, station.to - station.from, tol)?.shape,
+            Some((axis, angle)) => make_revolution(model, &placed, axis, angle, tol)?.shape,
+        });
+    }
+    // A closed spine turns at the join between its last edge and its first
+    // just as it does anywhere else.
+    let last = &stations[stations.len() - 1];
+    if last.to.distance(start.from) <= tol.confusion()
+        && let Some(piece) = corner_piece(
+            model,
+            &section,
+            reference,
+            last.to,
+            last.tangent_out,
+            start.tangent_in,
+            normal,
+            tol,
+        )?
+    {
+        pieces.push(piece);
+    }
+
+    // The union, in the order the spine runs: consecutive pieces meet on the
+    // *same* placed profile, which is the coincident-face case the boolean
+    // resolves by identifying it rather than by probing across it.
+    let mut history = History::new();
+    let mut shape = pieces[0].clone();
+    for piece in &pieces[1..] {
+        shape = ogeom_bool::fuse(model, &shape, piece, tol)?.shape;
+    }
+    history.generate(spine, shape.clone());
+    history.generate(profile, shape.clone());
+    Ok(Built::new(shape, history))
+}
+
+/// The profile as a face.
+///
+/// A closed profile bounds its own area. An open one does not, and there is
+/// exactly one honest way to close it: against the plane the spine was given
+/// as a face *in*, which is what a face spine says to do and a wire spine has
+/// no answer for. The closing segment runs between the profile's two ends, and
+/// both have to be on that plane or the profile does not reach it.
+fn profile_face(
+    model: &mut Model,
+    profile: &Shape,
+    profile_normal: Vector,
+    against: Option<Plane>,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    if model.kind_of(profile)? == ShapeType::Face {
+        return Ok(profile.clone());
+    }
+    if model.kind_of(profile)? != ShapeType::Wire {
+        ogeom_bail!(Construction, "a profile is a wire or a face");
+    }
+    let mut edges = ogeom_topo::explore(model, profile, Filter::OfType(ShapeType::Edge))?;
+    let closed = ogeom_algo::is_wire_closed(model, profile, tol)?;
+    if !closed {
+        let Some(plane) = against else {
+            ogeom_bail!(
+                Construction,
+                "an open profile sweeps a shell, not a volume; give the spine \
+                 as a planar face for its plane to close the profile against, \
+                 or close the profile itself"
+            );
+        };
+        let [(from, v0), (to, v1)] = wire_ends(model, profile, tol)?;
+        for end in [from, to] {
+            if plane.signed_distance_to(end).abs() > tol.confusion() * 1e2 {
+                ogeom_bail!(
+                    Construction,
+                    "an open profile is closed against the spine face's own \
+                     plane, and this one does not reach it"
+                );
+            }
+        }
+        // Built on the profile's *own* end vertices, so the closed ring is a
+        // wire rather than edges that merely touch.
+        let line = LineCurve::new(ogeom_math::Axis {
+            location: from,
+            direction: Direction::new(to - from, tol)?,
+        });
+        edges.push(
+            make_edge_between(model, line.into(), (0.0, from.distance(to)), &v0, &v1, tol)?.shape,
+        );
+    }
+    let ordered = ogeom_algo::order_edges(model, &edges, tol)?;
+    let mut bound = ogeom_math::Aabb::EMPTY;
+    for edge in &ordered {
+        bound = bound.union(&ogeom_algo::shape_bounds(model, edge, tol)?);
+    }
+    let Some(centre) = bound.centre() else {
+        ogeom_bail!(Construction, "a profile with no extent sweeps nothing");
+    };
+    let reach = bound.diagonal().mul_add(2.0, 1.0);
+    let plane = Plane::through(centre, Direction::new(profile_normal, tol)?);
+    let surface = PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?;
+    Ok(make_face_with_pcurves(model, surface.into(), &[ordered], tol)?.shape)
+}
+
+/// Where an open wire begins and ends: the point, and the vertex there.
+fn wire_ends(model: &Model, wire: &Shape, tol: Tolerances) -> OgeomResult<[(Point, Shape); 2]> {
+    let mut counts: Vec<(Point, Shape, usize)> = Vec::new();
+    for edge in explore(model, wire, Filter::OfType(ShapeType::Edge))? {
+        for v in explore(model, &edge, Filter::OfType(ShapeType::Vertex))? {
+            let Some(data) = model.node(&v).and_then(|n| n.data().as_vertex()) else {
+                continue;
+            };
+            let at = v.transform(model.datums())?.apply(data.point);
+            match counts
+                .iter_mut()
+                .find(|(p, _, _)| p.distance(at) <= tol.confusion() * 10.0)
+            {
+                Some((_, _, n)) => *n += 1,
+                None => counts.push((at, v.clone(), 1)),
+            }
+        }
+    }
+    let free: Vec<(Point, Shape)> = counts
+        .into_iter()
+        .filter(|(_, _, n)| *n == 1)
+        .map(|(p, v, _)| (p, v))
+        .collect();
+    if free.len() != 2 {
+        ogeom_bail!(
+            Construction,
+            "an open profile has exactly two ends; this one has {}",
+            free.len()
+        );
+    }
+    let mut ends = free.into_iter();
+    let (Some(a), Some(b)) = (ends.next(), ends.next()) else {
+        ogeom_bail!(Construction, "the profile lost an end between checks");
+    };
+    Ok([a, b])
+}
+
+/// The spine, edge by edge, in the order the wire runs it.
+fn spine_stations(model: &Model, wire: &Shape, tol: Tolerances) -> OgeomResult<Vec<Station>> {
+    let mut out = Vec::new();
+    for edge in explore(model, wire, Filter::OfType(ShapeType::Edge))? {
+        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            ogeom_bail!(Construction, "a spine edge is not in this model");
+        };
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            ogeom_bail!(Construction, "a spine edge with no curve runs nowhere");
+        };
+        let Some(geometry) = model.geometry().curve(*curve) else {
+            ogeom_bail!(Dangling, "curve is not in this model");
+        };
+        let placed = geometry.transformed(&edge.transform(model.datums())?, tol)?;
+        let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+        let (t0, t1) = if reversed {
+            (range.1, range.0)
+        } else {
+            (range.0, range.1)
+        };
+        let sign = if reversed { -1.0 } else { 1.0 };
+        let unit = |t: f64| -> OgeomResult<Vector> {
+            let d = placed.d1_at(t, tol)? * sign;
+            if d.magnitude() <= tol.confusion() {
+                ogeom_bail!(Construction, "a spine edge has no direction at {t}");
+            }
+            Ok(d / d.magnitude())
+        };
+        let station = match &placed {
+            Curve::Line(_) => Station {
+                from: placed.point_at(t0, tol)?,
+                to: placed.point_at(t1, tol)?,
+                tangent_in: unit(t0)?,
+                tangent_out: unit(t1)?,
+                turn: None,
+            },
+            Curve::Circle(c) => {
+                let circle = c.circle();
+                let swept = (range.1 - range.0).abs();
+                let axis = ogeom_math::Axis {
+                    location: circle.centre(),
+                    direction: if reversed {
+                        -circle.frame().z()
+                    } else {
+                        circle.frame().z()
+                    },
+                };
+                Station {
+                    from: placed.point_at(t0, tol)?,
+                    to: placed.point_at(t1, tol)?,
+                    tangent_in: unit(t0)?,
+                    tangent_out: unit(t1)?,
+                    turn: Some((axis, swept)),
+                }
+            }
+            other => ogeom_bail!(
+                Construction,
+                "a spine runs on straight and circular edges; a {:?} sweeps a \
+                 surface this construction does not have",
+                other.kind()
+            ),
+        };
+        out.push(station);
+    }
+    Ok(out)
+}
+
+/// The spine's own normal, and the check that it has one.
+///
+/// Taken from the first turn the spine makes — a corner or an arc — because
+/// that is exact, and then measured against every station: a spine that
+/// leaves its own plane has no square profile to carry, and says so here
+/// rather than by producing a shape nobody asked for.
+fn spine_normal(stations: &[Station], tol: Tolerances) -> OgeomResult<Direction> {
+    let mut best: Option<(f64, Vector)> = None;
+    let mut consider = |a: Vector, b: Vector| {
+        let cross = a.cross(b);
+        let magnitude = cross.magnitude();
+        if magnitude > best.map_or(tol.angular(), |(m, _)| m) {
+            best = Some((magnitude, cross / magnitude));
+        }
+    };
+    for (index, station) in stations.iter().enumerate() {
+        consider(station.tangent_in, station.tangent_out);
+        if index + 1 < stations.len() {
+            consider(station.tangent_out, stations[index + 1].tangent_in);
+        }
+    }
+    if stations.len() > 1 {
+        consider(
+            stations[stations.len() - 1].tangent_out,
+            stations[0].tangent_in,
+        );
+    }
+    let Some((_, normal)) = best else {
+        ogeom_bail!(
+            Construction,
+            "a spine that never turns has no plane of its own; give the \
+             profile's own orientation a spine with at least one corner or arc"
+        );
+    };
+    for station in stations {
+        for tangent in [station.tangent_in, station.tangent_out] {
+            if tangent.dot(normal).abs() > tol.angular() {
+                ogeom_bail!(
+                    Construction,
+                    "the spine leaves its own plane; an evolved sweep runs a \
+                     planar spine"
+                );
+            }
+        }
+        if let Some((axis, _)) = &station.turn
+            && axis.direction.vector().cross(normal).magnitude() > tol.angular()
+        {
+            ogeom_bail!(
+                Construction,
+                "a spine arc turns about an axis off the spine's own normal"
+            );
+        }
+    }
+    Direction::new(normal, tol)
+}
+
+/// The profile's plane: a point on it and its normal.
+fn profile_plane(model: &Model, profile: &Shape, tol: Tolerances) -> OgeomResult<(Point, Vector)> {
+    let mut points: Vec<Point> = Vec::new();
+    for edge in explore(model, profile, Filter::OfType(ShapeType::Edge))? {
+        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            continue;
+        };
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            continue;
+        };
+        let Some(geometry) = model.geometry().curve(*curve) else {
+            ogeom_bail!(Dangling, "curve is not in this model");
+        };
+        let placed = geometry.transformed(&edge.transform(model.datums())?, tol)?;
+        for i in 0..=8 {
+            let t = range.0 + (range.1 - range.0) * f64::from(i) / 8.0;
+            points.push(placed.point_at(t, tol)?);
+        }
+    }
+    if points.len() < 3 {
+        ogeom_bail!(Construction, "a profile needs an extent to sweep");
+    }
+    let origin = points[0];
+    // The widest cross product among the sampled offsets: the plane's normal,
+    // taken where it is best conditioned rather than from the first three
+    // points that happen to be there.
+    let mut best: Option<(f64, Vector)> = None;
+    for (i, a) in points.iter().enumerate() {
+        for b in points.iter().skip(i + 1) {
+            let cross = (*a - origin).cross(*b - origin);
+            let magnitude = cross.magnitude();
+            if magnitude > best.map_or(tol.confusion(), |(m, _)| m) {
+                best = Some((magnitude, cross / magnitude));
+            }
+        }
+    }
+    let Some((_, normal)) = best else {
+        ogeom_bail!(Construction, "a profile with no area has no plane");
+    };
+    for p in &points {
+        if (*p - origin).dot(normal).abs() > tol.confusion() * 1e2 {
+            ogeom_bail!(Construction, "the profile is not planar");
+        }
+    }
+    Ok((origin, normal))
+}
+
+/// The rigid motion that carries the profile from the spine's start to a
+/// station: a turn about the spine's normal, then a translation.
+fn station_transform(
+    reference: (Point, Vector),
+    at: Point,
+    tangent: Vector,
+    normal: Direction,
+    tol: Tolerances,
+) -> OgeomResult<Transform> {
+    let (origin, from) = reference;
+    let n = normal.vector();
+    let angle = from.cross(tangent).dot(n).atan2(from.dot(tangent));
+    let turn = if angle.abs() <= tol.angular() {
+        Transform::IDENTITY
+    } else {
+        Transform::rotation(
+            ogeom_math::Axis {
+                location: origin,
+                direction: normal,
+            },
+            angle,
+        )
+    };
+    Ok(Transform::translation(at - origin) * turn)
+}
+
+/// The wedge a corner adds: the profile turned about the corner, through
+/// exactly the angle the spine turns there.
+///
+/// `None` where the spine does not turn — two edges meeting smoothly leave no
+/// wedge to fill.
+#[allow(clippy::too_many_arguments)]
+fn corner_piece(
+    model: &mut Model,
+    profile: &Shape,
+    reference: (Point, Vector),
+    corner: Point,
+    incoming: Vector,
+    outgoing: Vector,
+    normal: Direction,
+    tol: Tolerances,
+) -> OgeomResult<Option<Shape>> {
+    let n = normal.vector();
+    let angle = incoming
+        .cross(outgoing)
+        .dot(n)
+        .atan2(incoming.dot(outgoing));
+    if angle.abs() <= tol.angular() {
+        return Ok(None);
+    }
+    let placed = ogeom_algo::transformed(
+        model,
+        profile,
+        station_transform(reference, corner, incoming, normal, tol)?,
+    )?
+    .shape;
+    let axis = ogeom_math::Axis {
+        location: corner,
+        direction: if angle > 0.0 { normal } else { -normal },
+    };
+    let turned = ogeom_algo::make_revolution(model, &placed, axis, angle.abs(), tol);
+    match turned {
+        Ok(built) => Ok(Some(built.shape)),
+        Err(_) => ogeom_bail!(
+            NotDone,
+            "the profile straddles the spine at a corner, so turning it about \
+             that corner sweeps it through itself; there is no revolution for \
+             that wedge"
+        ),
+    }
 }
