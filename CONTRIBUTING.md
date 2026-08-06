@@ -55,14 +55,25 @@ request so we can be careful about which areas you touch.
 
 ## Scope
 
-Scope is set by what a CAD kernel has to do, not by what any particular
-application asks for. "Application X implements this itself" and "application X
-rarely calls this" are not arguments for leaving something out — see
-`docs/PLAN.md`, which explains why an earlier draft of that document got this
-wrong and what it cost.
+**Parity with the reference kernel's modelling modules — FoundationClasses,
+ModelingData, ModelingAlgorithms, DataExchange — and nothing else.**
+Visualization, the application framework and the test harness are out.
+`docs/SCOPE.md` is normative: it states the rule, how a case is decided
+mechanically from the reference tree's own module and toolkit files, and what
+the rule is not.
 
-Usage data is a **sequencing** input: it tells us what to make fast and get right
-first. It is not a scope input.
+Two things follow that are worth stating here, because both have been got wrong:
+
+Parity is a claim about **capability, not structure**. It is not a licence to
+mirror another kernel's class hierarchy or decomposition — see *Independence*
+above, which still holds in full. Where we do a job differently on purpose, the
+parity record says `divergent` and gives the reasoning; that is an answer, not a
+gap.
+
+Usage data is a **sequencing** input, never a scope input. `docs/api_surface.json`
+profiles how one application exercises the reference; it says what to get right
+first. A capability inside the four modules is in scope whether or not that
+application ever calls it.
 
 ## Invariants are not negotiable in a pull request
 

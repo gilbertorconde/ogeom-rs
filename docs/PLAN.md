@@ -25,7 +25,10 @@ of them has rejected a patch.
   something, it says which thing and why, in the error text, and a test
   holds it to that. A silent wrong answer is the only unacceptable outcome.
 - **No stubs.** Either it is implemented, or it is in this document.
-- **Scope is set by the capability, not by any application's demand for it.**
+- **Scope is parity with the reference kernel's modelling modules, and nothing
+  else.** `docs/SCOPE.md` is normative and says how a case is decided. Parity is
+  a claim about capability rather than structure; usage data sequences the work
+  and never sets its bounds.
 - **Independence.** See `CONTRIBUTING.md`. Nothing here links against,
   bundles or imports another kernel, and the design is arrived at here rather
   than mirrored from one. The field's vocabulary is used throughout, because
