@@ -47,6 +47,7 @@ pub mod extrema;
 pub mod march;
 pub mod section;
 pub mod surface;
+pub mod walk;
 
 pub use approx::{IntersectionCurve, approximate_branch};
 pub use benchmark::{Measured, Report, measure, measure_all};
@@ -67,3 +68,4 @@ pub use section::{
     intersect_surfaces,
 };
 pub use surface::{Meeting, surface_surface};
+pub use walk::{Condition, Walked, follow, walk_one_way};

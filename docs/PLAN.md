@@ -361,9 +361,24 @@ These are settled. They are here so nobody reopens them by accident.
 2. **C**, **E1**, **E2**, **F3** — contained pieces, any order, each a stone.
 3. **G1** — the tessellation instrument, which unblocks measuring a class of
    rebuilt shape.
-4. **The walker abstraction** — generalize the marcher over the condition it
-   follows. Small on its own, and it is the shared foundation of B1 and D1,
-   so it comes before either.
+4. ~~**The walker abstraction.**~~ **Done.** `ogeom_intersect::walk`: a
+   `Condition` in `n` unknowns and `n − 1` equations, and one walk over it.
+   The shortfall is the point — the solution set of `n − 1` equations in `n`
+   unknowns *is* a curve — and the walker supplies the missing equation
+   itself, a plane across the direction of travel. The direction comes free
+   as the Jacobian's null vector, so a condition need not know its own
+   tangent formula. Step control, stall reporting and closure are written
+   once. The intersector's own walk now goes through it, which is what says
+   it is general rather than merely present.
+
+   One thing the abstraction had to be taught. A null vector's sign is
+   whatever the arithmetic gave it, so the walker keeps its own heading — but
+   the intersector's tangent is the cross product of two normals, whose sign
+   is the surfaces' own, and whose *flip* at a tangency is what stops the
+   march. Turned quietly back round, two thin curves through two touching
+   points came back as one confident loop lying on neither. So a condition
+   declares whether its tangent's sign is its own, and that declaration is
+   load-bearing.
 5. **B1** — the marching blend, one seat at a time, starting with a cylinder
    meeting a plane at an angle. Then **B2**'s corner family, on top of A5.
 6. **D1** — marched silhouettes, which by then are a second condition for a

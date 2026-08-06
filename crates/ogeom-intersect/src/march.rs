@@ -382,6 +382,92 @@ pub fn trace(
     })
 }
 
+/// Two surfaces, as a condition for the walker: four unknowns and three
+/// equations saying the two points coincide.
+///
+/// The intersector's own walk goes through [`crate::walk`] like everything
+/// else, and what is *not* generic lives here — the domain clamps a surface
+/// pair needs, and the tangent, which the intersector computes from the two
+/// normals rather than from the null space so that it can refuse a crossing
+/// too shallow to be more than the correction's own noise.
+struct SurfacePair<'s> {
+    a: &'s SurfaceGeometry,
+    b: &'s SurfaceGeometry,
+}
+
+impl crate::walk::Condition for SurfacePair<'_> {
+    fn unknowns(&self) -> usize {
+        4
+    }
+
+    fn position(&self, x: &[f64], tol: Tolerances) -> Option<Point> {
+        self.a.point_at(x[0], x[1], tol).ok()
+    }
+
+    fn position_gradient(&self, x: &[f64], tol: Tolerances) -> Option<Vec<Vector>> {
+        let (au, av) = self.a.d1_at(x[0], x[1], tol).ok()?;
+        // The point is taken from the first surface, so it does not move with
+        // the second's parameters at all.
+        Some(vec![au, av, Vector::ZERO, Vector::ZERO])
+    }
+
+    fn system(&self, x: &[f64], tol: Tolerances) -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+        let pa = self.a.point_at(x[0], x[1], tol).ok()?;
+        let pb = self.b.point_at(x[2], x[3], tol).ok()?;
+        let (au, av) = self.a.d1_at(x[0], x[1], tol).ok()?;
+        let (bu, bv) = self.b.d1_at(x[2], x[3], tol).ok()?;
+        let gap = pa - pb;
+        Some((
+            vec![gap.x, gap.y, gap.z],
+            vec![
+                vec![au.x, av.x, -bu.x, -bv.x],
+                vec![au.y, av.y, -bu.y, -bv.y],
+                vec![au.z, av.z, -bu.z, -bv.z],
+            ],
+        ))
+    }
+
+    fn clamp(&self, x: &mut [f64]) {
+        let (ua, va) = clamp(self.a, x[0], x[1]);
+        let (ub, vb) = clamp(self.b, x[2], x[3]);
+        x[0] = ua;
+        x[1] = va;
+        x[2] = ub;
+        x[3] = vb;
+    }
+
+    fn outside(&self, x: &[f64], tol: Tolerances) -> bool {
+        outside(self.a, (x[0], x[1]), tol) || outside(self.b, (x[2], x[3]), tol)
+    }
+
+    fn near_edge(&self, x: &[f64]) -> bool {
+        near_edge(self.a, (x[0], x[1])) || near_edge(self.b, (x[2], x[3]))
+    }
+
+    fn extent(&self) -> f64 {
+        span(self.a).max(span(self.b))
+    }
+
+    fn tangent_is_oriented(&self) -> bool {
+        // The cross product of the two normals, whose sign is the surfaces'
+        // own and whose flip at a tangency is what stops the march.
+        true
+    }
+
+    fn tangent(&self, x: &[f64], tol: Tolerances) -> Option<Vector> {
+        tangent_at(
+            self.a,
+            self.b,
+            Contact {
+                on_a: (x[0], x[1]),
+                on_b: (x[2], x[3]),
+                point: Point::ORIGIN,
+            },
+            tol,
+        )
+    }
+}
+
 /// Walk one way from a seed.
 fn walk(
     a: &SurfaceGeometry,
@@ -391,104 +477,14 @@ fn walk(
     options: Marching,
     tol: Tolerances,
 ) -> OgeomResult<Traced> {
-    let mut points = vec![from.point];
-    let mut on_a = vec![from.on_a];
-    let mut on_b = vec![from.on_b];
-    let mut at = from;
-    let mut stopped = Stopped::RanOut;
-
-    // The step is set by how far the chord may sag from the arc, and the sag is
-    // measured rather than assumed: it is about `h * turn / 8`, where `turn` is
-    // the angle between successive tangents. So the step that just meets the
-    // tolerance is found by control rather than by a constant — an earlier
-    // version capped it at a multiple of the chord, which made a circle of
-    // radius three need three hundred thousand points to get round.
-    let reach = span(a).max(span(b));
-    let ceiling = reach / 8.0;
-    let mut step = (options.chord * reach)
-        .sqrt()
-        .clamp(tol.confusion(), ceiling);
-
-    while points.len() < options.max_points {
-        ogeom_core::progress::checkpoint()?;
-        let Some(direction) = tangent_at(a, b, at, tol) else {
-            stopped = Stopped::Stalled;
-            break;
-        };
-        let along = direction * sense;
-
-        let mut taken = None;
-        for _ in 0..40 {
-            let guess = at.point + along * step;
-            let start = [at.on_a.0, at.on_a.1, at.on_b.0, at.on_b.1];
-            let Some(next) = correct(a, b, start, guess, Some((at.point, along, step)), tol) else {
-                step *= 0.5;
-                if step <= tol.confusion() {
-                    break;
-                }
-                continue;
-            };
-            // How far the curve turned over the step, and therefore how far the
-            // straight chord sits from it.
-            let turn = tangent_at(a, b, next, tol)
-                .map_or(0.0, |t| direction.dot(t).clamp(-1.0, 1.0).acos());
-            let sag = step * turn / 8.0;
-            if sag <= options.chord || step <= tol.confusion() * 8.0 {
-                // Aim the next step at exactly the tolerance. Sag grows with
-                // the square of the step, so the correction is a square root,
-                // and it is damped so one tight corner does not make the whole
-                // rest of the curve expensive or one straight stretch overshoot.
-                let scale = if sag > 0.0 {
-                    (options.chord / sag).sqrt().clamp(0.5, 2.0)
-                } else {
-                    2.0
-                };
-                taken = Some((next, (step * scale).clamp(tol.confusion(), ceiling)));
-                break;
-            }
-            step *= (options.chord / sag).sqrt().clamp(0.25, 0.9);
-        }
-        let Some((next, following)) = taken else {
-            // A stall right at a domain edge is the edge, not a singularity.
-            // The walk converges on the boundary from inside and the correction
-            // starts failing when the step would cross it, so the last accepted
-            // point sits a fraction of a step short — inside the strict
-            // parametric band `outside` uses, but unmistakably at the edge at
-            // the scale the walk works at.
-            stopped = if near_edge(a, at.on_a) || near_edge(b, at.on_b) {
-                Stopped::LeftTheDomain
-            } else {
-                Stopped::Stalled
-            };
-            break;
-        };
-
-        // Back where we started: a closed loop. Only checked once the walk has
-        // gone far enough to have left, or every branch would close at once.
-        if points.len() > 3 && next.point.distance(from.point) <= step {
-            points.push(from.point);
-            on_a.push(from.on_a);
-            on_b.push(from.on_b);
-            stopped = Stopped::Closed;
-            break;
-        }
-        if outside(a, next.on_a, tol) || outside(b, next.on_b, tol) {
-            stopped = Stopped::LeftTheDomain;
-            break;
-        }
-
-        points.push(next.point);
-        on_a.push(next.on_a);
-        on_b.push(next.on_b);
-        at = next;
-        step = following;
-    }
-
+    let pair = SurfacePair { a, b };
+    let start = [from.on_a.0, from.on_a.1, from.on_b.0, from.on_b.1];
+    let walked = crate::walk::walk_one_way(&pair, &start, sense, options, tol)?;
     Ok(Traced {
-        points,
-        on_a,
-        on_b,
-        stopped,
+        on_a: walked.states.iter().map(|x| (x[0], x[1])).collect(),
+        on_b: walked.states.iter().map(|x| (x[2], x[3])).collect(),
+        points: walked.points,
+        stopped: walked.stopped,
     })
 }
 
