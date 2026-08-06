@@ -105,3 +105,60 @@ impl ValidationProperties {
             && close(self.centroid.z, other.centroid.z, size)
     }
 }
+
+/// How a texture's image is laid onto a shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextureMapping {
+    /// By the surfaces' own parameters: `(u, v)` straight from the chart.
+    Parametric,
+    /// By a box around the shape, each face taking the projection of the
+    /// side it faces most.
+    Box,
+    /// By a cylinder about the shape's own longest axis.
+    Cylindrical,
+    /// By a sphere about the shape's centre.
+    Spherical,
+}
+
+/// A texture: an image and how it lands on the geometry.
+///
+/// The image itself is *named*, not carried. A kernel that read image files
+/// would have opinions about formats, colour spaces and decoding that
+/// belong to a renderer; what a document needs to persist and exchange is
+/// which image, laid on how, at what scale — which is what this is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Texture {
+    /// Where the image is: a path or a URI, as the file said it.
+    pub image: String,
+    /// How it is laid on.
+    pub mapping: TextureMapping,
+    /// Repeats across the mapping's own unit span.
+    pub repeat: (f64, f64),
+    /// Where the mapping starts, in the same units as `repeat`.
+    pub offset: (f64, f64),
+}
+
+impl Texture {
+    /// A texture laid on by the surfaces' own parameters, once across.
+    #[must_use]
+    pub fn image(image: impl Into<String>) -> Self {
+        Self {
+            image: image.into(),
+            mapping: TextureMapping::Parametric,
+            repeat: (1.0, 1.0),
+            offset: (0.0, 0.0),
+        }
+    }
+}
+
+/// A texture's place in the document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TextureId(pub(crate) usize);
+
+impl TextureId {
+    /// Its position in the document's texture list.
+    #[must_use]
+    pub const fn index(&self) -> usize {
+        self.0
+    }
+}

@@ -18,7 +18,8 @@ pub mod pmi;
 pub mod structure;
 
 pub use attributes::{
-    Layer, LayerId, Material, MaterialId, Property, PropertyValue, ValidationProperties,
+    Layer, LayerId, Material, MaterialId, Property, PropertyValue, Texture, TextureId,
+    TextureMapping, ValidationProperties,
 };
 pub use pmi::{Datum, Dimension, GeometricTolerance, MeasureKind, Pmi};
 pub use structure::{Colour, Document, Instance, Occurrence, Product, ProductId, ProductKind};

@@ -120,6 +120,38 @@ pub struct Document {
     layers: Vec<crate::attributes::Layer>,
     on_layer: HashMap<TShapeId, Vec<crate::attributes::LayerId>>,
     validation: HashMap<TShapeId, crate::attributes::ValidationProperties>,
+    textures: Vec<crate::attributes::Texture>,
+    texture_of: HashMap<TShapeId, crate::attributes::TextureId>,
+    /// Document states an undo can return to, oldest first, and how far
+    /// back through them the caller currently stands.
+    history: Vec<State>,
+    /// How many of `history`'s tail have been undone: the redo depth.
+    undone: usize,
+}
+
+/// Everything a document holds *about* a model, which is everything an undo
+/// can restore.
+///
+/// The model itself is not in here, and that is the design rather than an
+/// omission. Geometry arenas are append-only — a boolean's result does not
+/// erase its inputs, it stands beside them — so undoing an operation means
+/// putting back what the document *said*, not unmaking what the model
+/// holds. The nodes the undone operation built stay where they are,
+/// unreferenced, which is what a garbage-collected arena is for.
+#[derive(Debug, Clone, Default)]
+struct State {
+    products: Vec<Product>,
+    colours: HashMap<TShapeId, Colour>,
+    names: HashMap<TShapeId, String>,
+    pmi: crate::pmi::Pmi,
+    properties: HashMap<TShapeId, Vec<crate::attributes::Property>>,
+    materials: Vec<crate::attributes::Material>,
+    material_of: HashMap<TShapeId, crate::attributes::MaterialId>,
+    layers: Vec<crate::attributes::Layer>,
+    on_layer: HashMap<TShapeId, Vec<crate::attributes::LayerId>>,
+    validation: HashMap<TShapeId, crate::attributes::ValidationProperties>,
+    textures: Vec<crate::attributes::Texture>,
+    texture_of: HashMap<TShapeId, crate::attributes::TextureId>,
 }
 
 impl Document {
@@ -373,6 +405,116 @@ impl Document {
         };
         entry.colour = Some(colour);
         Ok(())
+    }
+
+    /// Add a texture the document can lay on shapes.
+    pub fn add_texture(
+        &mut self,
+        texture: crate::attributes::Texture,
+    ) -> crate::attributes::TextureId {
+        self.textures.push(texture);
+        crate::attributes::TextureId(self.textures.len() - 1)
+    }
+
+    /// Lay a texture on a shape, replacing whatever was on it.
+    pub fn set_texture(&mut self, shape: &Shape, texture: crate::attributes::TextureId) {
+        self.texture_of.insert(shape.node(), texture);
+    }
+
+    /// The texture on a shape, if it has one.
+    #[must_use]
+    pub fn texture_of(&self, shape: &Shape) -> Option<&crate::attributes::Texture> {
+        let id = self.texture_of.get(&shape.node())?;
+        self.textures.get(id.0)
+    }
+
+    /// Every texture the document holds, in the order they were added.
+    #[must_use]
+    pub fn textures(&self) -> &[crate::attributes::Texture] {
+        &self.textures
+    }
+
+    /// Mark the document's current state as one an undo can return to.
+    ///
+    /// Call it *before* the change a caller might want back. Anything
+    /// undone and not redone is dropped at the next checkpoint, which is
+    /// the usual rule: a new branch replaces the abandoned one.
+    pub fn checkpoint(&mut self) {
+        if self.undone > 0 {
+            let keep = self.history.len() - self.undone;
+            self.history.truncate(keep);
+            self.undone = 0;
+        }
+        let state = self.state();
+        self.history.push(state);
+    }
+
+    /// Step back to the last checkpoint. `false` when there is none.
+    pub fn undo(&mut self) -> bool {
+        if self.history.len() <= self.undone {
+            return false;
+        }
+        // The state being left is kept in its place, so redo has somewhere
+        // to go.
+        let index = self.history.len() - self.undone - 1;
+        let current = self.state();
+        let restored = core::mem::replace(&mut self.history[index], current);
+        self.apply(restored);
+        self.undone += 1;
+        true
+    }
+
+    /// Step forward again. `false` when nothing was undone.
+    pub fn redo(&mut self) -> bool {
+        if self.undone == 0 {
+            return false;
+        }
+        let index = self.history.len() - self.undone;
+        let current = self.state();
+        let restored = core::mem::replace(&mut self.history[index], current);
+        self.apply(restored);
+        self.undone -= 1;
+        true
+    }
+
+    /// How many steps back are available, and how many forward.
+    #[must_use]
+    pub fn undo_depth(&self) -> (usize, usize) {
+        (self.history.len() - self.undone, self.undone)
+    }
+
+    /// Everything the document says about its model, copied out.
+    fn state(&self) -> State {
+        State {
+            products: self.products.clone(),
+            colours: self.colours.clone(),
+            names: self.names.clone(),
+            pmi: self.pmi.clone(),
+            properties: self.properties.clone(),
+            materials: self.materials.clone(),
+            material_of: self.material_of.clone(),
+            layers: self.layers.clone(),
+            on_layer: self.on_layer.clone(),
+            validation: self.validation.clone(),
+            textures: self.textures.clone(),
+            texture_of: self.texture_of.clone(),
+        }
+    }
+
+    /// Put a state back.
+    fn apply(&mut self, state: State) {
+        self.products = state.products;
+        self.colours = state.colours;
+        self.names = state.names;
+        self.pmi = state.pmi;
+        self.properties = state.properties;
+        self.materials = state.materials;
+        self.material_of = state.material_of;
+        self.layers = state.layers;
+        self.on_layer = state.on_layer;
+        self.validation = state.validation;
+        self.textures = state.textures;
+        self.texture_of = state.texture_of;
     }
 
     /// Colour a shape — a whole part's shape or one sub-shape of it.
