@@ -133,9 +133,9 @@ checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
 
 [[package]]
 name = "glam"
-version = "0.33.2"
+version = "0.33.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f22fb22f065b308be0d8724e3706c7fa3fc2a6c7d6899df4cad7860e7a75436"
+checksum = "7360bd2cd76e0cd9032d42cf2922155cecea2685b0cfa4630c3246df030bcfd6"
 
 [[package]]
 name = "hashbrown"
@@ -196,7 +196,7 @@ dependencies = [
  "glam 0.30.10",
  "glam 0.31.1",
  "glam 0.32.1",
- "glam 0.33.2",
+ "glam 0.33.3",
  "matrixmultiply",
  "nalgebra-macros",
  "num-complex",
@@ -266,34 +266,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "ogeom"
-version = "0.0.0"
-dependencies = [
- "approx",
- "ogeom-algo",
- "ogeom-bool",
- "ogeom-core",
- "ogeom-doc",
- "ogeom-fillet",
- "ogeom-geom",
- "ogeom-heal",
- "ogeom-hlr",
- "ogeom-intersect",
- "ogeom-io",
- "ogeom-math",
- "ogeom-mesh",
- "ogeom-offset",
- "ogeom-select",
- "ogeom-sketch",
- "ogeom-topo",
- "proptest",
-]
-
-[[package]]
 name = "ogeom-algo"
 version = "0.0.0"
 dependencies = [
- "approx",
  "nalgebra",
  "ogeom-core",
  "ogeom-geom",
@@ -301,22 +276,13 @@ dependencies = [
  "ogeom-math",
  "ogeom-mesh",
  "ogeom-topo",
- "proptest",
  "smallvec",
-]
-
-[[package]]
-name = "ogeom-bench"
-version = "0.0.0"
-dependencies = [
- "ogeom",
 ]
 
 [[package]]
 name = "ogeom-bool"
 version = "0.0.0"
 dependencies = [
- "approx",
  "hashbrown 0.16.1",
  "indexmap",
  "ogeom-algo",
@@ -326,24 +292,13 @@ dependencies = [
  "ogeom-math",
  "ogeom-mesh",
  "ogeom-topo",
- "proptest",
  "smallvec",
-]
-
-[[package]]
-name = "ogeom-cli"
-version = "0.0.0"
-dependencies = [
- "ogeom",
- "ogeom-view",
 ]
 
 [[package]]
 name = "ogeom-core"
 version = "0.0.0"
 dependencies = [
- "approx",
- "proptest",
  "robust",
  "smallvec",
  "thiserror",
@@ -353,20 +308,16 @@ dependencies = [
 name = "ogeom-doc"
 version = "0.0.0"
 dependencies = [
- "approx",
- "ogeom-algo",
  "ogeom-core",
  "ogeom-geom",
  "ogeom-math",
  "ogeom-topo",
- "proptest",
 ]
 
 [[package]]
 name = "ogeom-fillet"
 version = "0.0.0"
 dependencies = [
- "approx",
  "ogeom-algo",
  "ogeom-bool",
  "ogeom-core",
@@ -375,89 +326,59 @@ dependencies = [
  "ogeom-math",
  "ogeom-mesh",
  "ogeom-topo",
- "proptest",
 ]
 
 [[package]]
 name = "ogeom-geom"
 version = "0.0.0"
 dependencies = [
- "approx",
  "nalgebra",
  "ogeom-core",
  "ogeom-math",
- "proptest",
 ]
 
 [[package]]
 name = "ogeom-heal"
 version = "0.0.0"
 dependencies = [
- "approx",
  "nalgebra",
  "ogeom-algo",
  "ogeom-core",
  "ogeom-geom",
  "ogeom-intersect",
- "ogeom-io",
  "ogeom-math",
- "ogeom-mesh",
  "ogeom-topo",
- "proptest",
-]
-
-[[package]]
-name = "ogeom-hlr"
-version = "0.0.0"
-dependencies = [
- "approx",
- "ogeom-algo",
- "ogeom-bool",
- "ogeom-core",
- "ogeom-geom",
- "ogeom-intersect",
- "ogeom-math",
- "ogeom-mesh",
- "ogeom-topo",
- "proptest",
 ]
 
 [[package]]
 name = "ogeom-intersect"
 version = "0.0.0"
 dependencies = [
- "approx",
  "nalgebra",
  "ogeom-core",
  "ogeom-geom",
  "ogeom-math",
- "proptest",
 ]
 
 [[package]]
 name = "ogeom-io"
 version = "0.0.0"
 dependencies = [
- "approx",
  "ogeom-algo",
  "ogeom-core",
  "ogeom-doc",
  "ogeom-geom",
  "ogeom-intersect",
  "ogeom-math",
- "ogeom-mesh",
  "ogeom-topo",
- "proptest",
 ]
 
 [[package]]
 name = "ogeom-math"
 version = "0.0.0"
 dependencies = [
- "approx",
  "nalgebra",
  "ogeom-core",
- "proptest",
  "smallvec",
 ]
 
@@ -465,18 +386,15 @@ dependencies = [
 name = "ogeom-mesh"
 version = "0.0.0"
 dependencies = [
- "approx",
- "ogeom-algo",
  "ogeom-core",
  "ogeom-geom",
  "ogeom-math",
  "ogeom-topo",
- "proptest",
  "spade",
 ]
 
 [[package]]
-name = "ogeom-offset"
+name = "ogeom-recognize"
 version = "0.0.0"
 dependencies = [
  "approx",
@@ -485,38 +403,11 @@ dependencies = [
  "ogeom-core",
  "ogeom-fillet",
  "ogeom-geom",
- "ogeom-intersect",
+ "ogeom-heal",
+ "ogeom-io",
  "ogeom-math",
  "ogeom-mesh",
  "ogeom-topo",
- "proptest",
-]
-
-[[package]]
-name = "ogeom-select"
-version = "0.0.0"
-dependencies = [
- "approx",
- "ogeom-algo",
- "ogeom-bool",
- "ogeom-core",
- "ogeom-geom",
- "ogeom-intersect",
- "ogeom-math",
- "ogeom-mesh",
- "ogeom-topo",
- "proptest",
-]
-
-[[package]]
-name = "ogeom-sketch"
-version = "0.0.0"
-dependencies = [
- "approx",
- "nalgebra",
- "ogeom-core",
- "ogeom-geom",
- "ogeom-math",
  "proptest",
 ]
 
@@ -524,26 +415,12 @@ dependencies = [
 name = "ogeom-topo"
 version = "0.0.0"
 dependencies = [
- "approx",
  "hashbrown 0.16.1",
  "indexmap",
  "ogeom-core",
  "ogeom-geom",
  "ogeom-math",
- "proptest",
  "smallvec",
-]
-
-[[package]]
-name = "ogeom-view"
-version = "0.0.0"
-dependencies = [
- "approx",
- "ogeom-algo",
- "ogeom-core",
- "ogeom-math",
- "ogeom-mesh",
- "ogeom-topo",
 ]
 
 [[package]]
@@ -708,9 +585,9 @@ dependencies = [
 
 [[package]]
 name = "simba"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f45c644a9f3a386f9288625d9f0c1e999e1acf07a37df35d0516c7f199d9cb2"
+checksum = "834a9952211d4a60ff10ac1d20cc01640a75bdc0a0c688d62f359ea7d17459f3"
 dependencies = [
  "approx",
  "num-complex",
@@ -860,18 +737,18 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "zerocopy"
-version = "0.8.55"
+version = "0.8.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5a105cd7b140f6eeec8acff2ea38135d3cab283ada58540f629fe51e46696eb"
+checksum = "556764e583adb45a9f8d413c2a147fa7e8d821e48e12b14fd560b607998b75eb"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.55"
+version = "0.8.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fe976fb70c78cd64cccfe3a6fc142244e8a77b70959b30faf9d0ac37ee228eb"
+checksum = "f2ab42fc20575779bd240faa45f94a74256f755c0fa9e89f0ede20d91d0cdfc1"
 dependencies = [
  "proc-macro2",
  "quote",

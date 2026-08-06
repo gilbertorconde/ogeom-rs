@@ -369,6 +369,41 @@ meets its wall the two share a tolerance-ambiguous strip, and the
 recognition-driven segmentation cannot place the boundary from curvature
 alone.
 
+### H. Defeaturing
+
+**H1 — removing a set of faces.** Absent. The operation is
+`remove_faces(model, solid, &[Shape], tol)` in **`ogeom-bool`**: given faces to
+delete, extend the neighbours that surrounded them, re-intersect the extensions
+against each other, and sew the result back into the shell. Face extension plus
+re-intersection is the fuse machinery already there; what is missing is the
+driver that decides which neighbours to extend and how far.
+
+It belongs to the boolean and not to a recognizer. A caller hands over faces —
+what those faces *mean* is the caller's business, and the operation must work on
+a solid whose history is gone. There was a `remove_feature(model, solid,
+&Feature, tol)` here that dispatched on a recognized feature and rebuilt the
+volume that feature described. That is a different operation with a different
+input, and it left with the recognizer; salvaging its code would have preserved
+the half that does not generalise.
+
+One finding from it is worth keeping, because a face-set implementation will hit
+it again the moment it builds a tool that meets the solid at an opening:
+
+> A filling tool flush with the faces it meets is a coincidence at every opening
+> at once, and the boolean does not assemble it. So the tool overshoots. But the
+> overshoot cannot be small, and this is the part that is not obvious: a margin
+> leaves a sliver band standing past the opening, and that band's interior probes
+> must be *decisively* outside the part, or the exact classifier finds every ray
+> from them grazing the face they sit against, exhausts its whole fan of
+> directions and answers `On` the slow way. A micron of overshoot is inside the
+> band the classifier reads as "on the boundary" and costs fifty seconds on a
+> part that takes a fifth of one otherwise; ten microns is outside it and costs
+> nothing. A hundred thousand confusion tolerances — ten microns at millimetre
+> tolerances — was the working figure, and the restored solid is larger than the
+> original by that times the openings' area.
+
+Any caller whose tolerance is tighter than the overshoot is the case to watch.
+
 ## Decisions, not gaps
 
 These are settled. They are here so nobody reopens them by accident.

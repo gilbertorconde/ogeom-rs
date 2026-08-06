@@ -1,0 +1,51 @@
+[workspace]
+resolver = "3"
+members = ["crates/ogeom-recognize"]
+
+# The kernel's own settings, copied rather than inherited: this is a separate
+# workspace on purpose, and code that has left the kernel should still be held
+# to the standards it was written under.
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/gilbertorconde/ogeom-rs"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+cast_possible_truncation = "warn"
+cast_precision_loss = "warn"
+undocumented_unsafe_blocks = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+
+[workspace.dependencies]
+# --- the kernel, from outside it ---
+ogeom-core = { path = "../crates/ogeom-core", version = "0.0.0" }
+ogeom-math = { path = "../crates/ogeom-math", version = "0.0.0" }
+ogeom-geom = { path = "../crates/ogeom-geom", version = "0.0.0" }
+ogeom-topo = { path = "../crates/ogeom-topo", version = "0.0.0" }
+ogeom-algo = { path = "../crates/ogeom-algo", version = "0.0.0" }
+ogeom-mesh = { path = "../crates/ogeom-mesh", version = "0.0.0" }
+ogeom-intersect = { path = "../crates/ogeom-intersect", version = "0.0.0" }
+ogeom-bool = { path = "../crates/ogeom-bool", version = "0.0.0" }
+ogeom-heal = { path = "../crates/ogeom-heal", version = "0.0.0" }
+ogeom-fillet = { path = "../crates/ogeom-fillet", version = "0.0.0" }
+ogeom-offset = { path = "../crates/ogeom-offset", version = "0.0.0" }
+ogeom-io = { path = "../crates/ogeom-io", version = "0.0.0" }
+ogeom-hlr = { path = "../crates/ogeom-hlr", version = "0.0.0" }
+ogeom-doc = { path = "../crates/ogeom-doc", version = "0.0.0" }
+ogeom = { path = "../crates/ogeom", version = "0.0.0" }
+
+# --- what lives here ---
+ogeom-recognize = { path = "crates/ogeom-recognize", version = "0.0.0" }
+
+# --- external, same versions the kernel pins ---
+nalgebra = "0.35"
+approx = "0.5"
+proptest = "1"

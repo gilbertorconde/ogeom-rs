@@ -2,42 +2,42 @@
 //! features undone by the volumes they are.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
-use ogeom::core::Tolerances;
-use ogeom::math::{Direction, Frame, Point};
-use ogeom::mesh::Deflection;
-use ogeom::topo::Model;
+use ogeom_core::Tolerances;
+use ogeom_math::{Direction, Frame, Point};
+use ogeom_mesh::Deflection;
+use ogeom_topo::Model;
 
 const T: Tolerances = Tolerances::millimetres();
 
 #[test]
 fn a_drilled_pocketed_block_reads_as_a_drill_and_a_mill_and_undoes_to_a_block() {
     let mut model = Model::new();
-    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (40.0, 30.0, 12.0), T)
+    let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (40.0, 30.0, 12.0), T)
         .unwrap()
         .shape;
 
     // A through bore of diameter eight, down the block.
     let drill_frame =
         Frame::new(Point::new(30.0, 15.0, -1.0), Direction::Z, Direction::X, T).unwrap();
-    let drill = ogeom::algo::make_cylinder(&mut model, drill_frame, 4.0, 14.0, T)
+    let drill = ogeom_algo::make_cylinder(&mut model, drill_frame, 4.0, 14.0, T)
         .unwrap()
         .shape;
-    let drilled = ogeom::boolean::cut(&mut model, &block, &drill, T)
+    let drilled = ogeom_bool::cut(&mut model, &block, &drill, T)
         .unwrap()
         .shape;
 
     // And a pocket milled into the lid.
     let mill_frame = Frame::new(Point::new(5.0, 5.0, 7.0), Direction::Z, Direction::X, T).unwrap();
-    let mill = ogeom::algo::make_box(&mut model, mill_frame, (12.0, 10.0, 6.0), T)
+    let mill = ogeom_algo::make_box(&mut model, mill_frame, (12.0, 10.0, 6.0), T)
         .unwrap()
         .shape;
-    let part = ogeom::boolean::cut(&mut model, &drilled, &mill, T)
+    let part = ogeom_bool::cut(&mut model, &drilled, &mill, T)
         .unwrap()
         .shape;
 
-    let features = ogeom::recognize::recognize(&model, &part, T).unwrap();
-    let tree = ogeom::recognize::feature_tree(&model, &part, T).unwrap();
-    let plan = ogeom::recognize::manufacturing_plan(&model, &tree, T).unwrap();
+    let features = ogeom_recognize::recognize(&model, &part, T).unwrap();
+    let tree = ogeom_recognize::feature_tree(&model, &part, T).unwrap();
+    let plan = ogeom_recognize::manufacturing_plan(&model, &tree, T).unwrap();
     assert_eq!(plan.len(), features.len(), "one step per feature");
 
     // The bore is a drill of diameter eight, entering along the axis and
@@ -45,7 +45,7 @@ fn a_drilled_pocketed_block_reads_as_a_drill_and_a_mill_and_undoes_to_a_block() 
     let drill_step = plan
         .iter()
         .find_map(|step| match &step.operation {
-            ogeom::recognize::Operation::Drill {
+            ogeom_recognize::Operation::Drill {
                 diameter,
                 through,
                 depth,
@@ -70,7 +70,7 @@ fn a_drilled_pocketed_block_reads_as_a_drill_and_a_mill_and_undoes_to_a_block() 
     let mill_step = plan
         .iter()
         .find_map(|step| match &step.operation {
-            ogeom::recognize::Operation::Mill {
+            ogeom_recognize::Operation::Mill {
                 depth, approach, ..
             } => Some((*depth, *approach)),
             _ => None,
@@ -82,7 +82,7 @@ fn a_drilled_pocketed_block_reads_as_a_drill_and_a_mill_and_undoes_to_a_block() 
         mill_step.0
     );
     assert!(
-        mill_step.1.vector().dot(ogeom::math::Vector::Z) < -0.999,
+        mill_step.1.vector().dot(ogeom_math::Vector::Z) < -0.999,
         "the cutter comes down: {:?}",
         mill_step.1
     );
@@ -93,14 +93,14 @@ fn a_drilled_pocketed_block_reads_as_a_drill_and_a_mill_and_undoes_to_a_block() 
     for feature in &features {
         if matches!(
             feature,
-            ogeom::recognize::Feature::Hole(_) | ogeom::recognize::Feature::Pocket(_)
+            ogeom_recognize::Feature::Hole(_) | ogeom_recognize::Feature::Pocket(_)
         ) {
-            solid = ogeom::recognize::remove_feature(&mut model, &solid, feature, T)
+            solid = ogeom_recognize::remove_feature(&mut model, &solid, feature, T)
                 .unwrap()
                 .shape;
         }
     }
-    let volume = ogeom::algo::volume_properties(&model, &solid, Deflection::default(), T)
+    let volume = ogeom_algo::volume_properties(&model, &solid, Deflection::default(), T)
         .unwrap()
         .mass;
     // Whole again, up to the ten microns each filling tool stands past its

@@ -1473,7 +1473,7 @@ mod boss_tests {
     #[test]
     fn a_bull_nose_is_a_partial_round_not_a_fillet() {
         let path = format!(
-            "{}/../../tests/corpus/nist_ftc_11_asme1_rb.stp",
+            "{}/../../../tests/corpus/nist_ftc_11_asme1_rb.stp",
             env!("CARGO_MANIFEST_DIR")
         );
         let text = std::fs::read_to_string(path).unwrap();

@@ -6,6 +6,9 @@ Cargo.lock.orig
 /tools/difftest/target
 /tools/ogeom-view/target
 
+# `outside/` is its own workspace and so builds into its own target directory.
+/outside/target
+
 # Reference material a developer may keep locally. Never committed: the kernel
 # has no dependency on any existing CAD kernel, and nothing in this repo pulls
 # one in. See CONTRIBUTING.md.

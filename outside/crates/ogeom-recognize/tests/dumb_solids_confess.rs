@@ -114,7 +114,7 @@ fn a_rim_fillet_is_a_toroidal_fillet() {
 #[test]
 fn an_imported_part_confesses_its_pocket_and_nothing_false() {
     let path = format!(
-        "{}/../../tests/corpus/nist_ftc_11_asme1_rb.stp",
+        "{}/../../../tests/corpus/nist_ftc_11_asme1_rb.stp",
         env!("CARGO_MANIFEST_DIR")
     );
     let text = std::fs::read_to_string(path).unwrap();

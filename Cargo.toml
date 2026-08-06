@@ -21,7 +21,6 @@ members = [
     "crates/ogeom-hlr",
     "crates/ogeom-sketch",
     "crates/ogeom-doc",
-    "crates/ogeom-recognize",
     "crates/ogeom-select",
     "crates/ogeom",
     "tools/ogeom-bench",
@@ -67,7 +66,6 @@ ogeom-io = { path = "crates/ogeom-io", version = "0.0.0" }
 ogeom-hlr = { path = "crates/ogeom-hlr", version = "0.0.0" }
 ogeom-sketch = { path = "crates/ogeom-sketch", version = "0.0.0" }
 ogeom-doc = { path = "crates/ogeom-doc", version = "0.0.0" }
-ogeom-recognize = { path = "crates/ogeom-recognize", version = "0.0.0" }
 ogeom-select = { path = "crates/ogeom-select", version = "0.0.0" }
 ogeom-view = { path = "tools/ogeom-view", version = "0.0.0" }
 

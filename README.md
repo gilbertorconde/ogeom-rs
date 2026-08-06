@@ -67,10 +67,17 @@ and holds nothing yet.
 • crates/ogeom             the public umbrella API
 • crates/ogeom-sketch      2D geometric constraint solver
 • crates/ogeom-select      BVH picking and selection
-• crates/ogeom-recognize   feature recognition from raw topology
 • tools/ogeom-cli          command-line front end
 • tools/ogeom-view         software renderer, so a wrong result is visible
 • tools/apisurf            API-usage profiler (analysis only)
+```
+
+Working code that is not kernel lives in `outside/`, which is a separate
+workspace the kernel excludes. `docs/SCOPE.md` says what the boundary is and
+`outside/README.md` says why each crate is on the far side of it.
+
+```
+• outside/crates/ogeom-recognize   feature recognition and process planning
 ```
 
 ## Building
