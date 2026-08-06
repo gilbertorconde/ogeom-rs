@@ -150,11 +150,10 @@ pub fn silhouettes(
                         .collect::<OgeomResult<Vec<Curve>>>()?
                 }
             }
-            _ => ogeom_bail!(
-                Construction,
-                "the silhouette of this surface has no closed form; the \
-                 polygonal drawing path draws it, and says so"
-            ),
+            // No closed form — a torus, a spline. The silhouette is still
+            // one equation on the surface's own chart, and one equation in
+            // two unknowns is a curve, so it is *walked* rather than refused.
+            other => marched_silhouettes(other, along, tol)?,
         };
 
         for curve in candidates {
@@ -563,4 +562,243 @@ fn perpendicular(v: Vector, tol: Tolerances) -> OgeomResult<Direction> {
         Vector::Y
     };
     Direction::new(v.cross(seed), tol)
+}
+
+// --- the marched silhouette --------------------------------------------------
+
+/// A surface's silhouette, as a condition the shared walker can follow.
+///
+/// The whole content of a silhouette is one equation on the surface's own
+/// chart — the normal is square to the view,
+///
+/// > `n(u, v) · d = 0`
+///
+/// — which is one equation in two unknowns, and one equation in two unknowns
+/// is a curve. So a torus's silhouette needs no machinery a surface
+/// intersection did not already need: it is the same walk, following a
+/// different condition.
+///
+/// Stated with the **unit** normal, and that is not a detail. The
+/// unnormalized `Sᵤ × Sᵥ` has the same zero set and a simpler derivative, but
+/// its residual carries the surface's own scale — on a torus of radius eight
+/// the correction had to drive `|Sᵤ × Sᵥ| · d` below a *length* tolerance,
+/// which is a demand on the angle some eight times tighter than anything
+/// asked for, and the walk answered by halving its step until it crawled.
+/// A dimensionless residual is a dimensionless tolerance.
+struct SilhouetteOn<'s> {
+    surface: &'s SurfaceGeometry,
+    along: Vector,
+    /// A length scale, for the walker's step control.
+    reach: f64,
+}
+
+impl ogeom_intersect::walk::Condition for SilhouetteOn<'_> {
+    fn unknowns(&self) -> usize {
+        2
+    }
+
+    fn position(&self, x: &[f64], tol: Tolerances) -> Option<Point> {
+        self.surface.point_at(x[0], x[1], tol).ok()
+    }
+
+    fn position_gradient(&self, x: &[f64], tol: Tolerances) -> Option<Vec<Vector>> {
+        let (du, dv) = self.surface.d1_at(x[0], x[1], tol).ok()?;
+        Some(vec![du, dv])
+    }
+
+    fn system(&self, x: &[f64], tol: Tolerances) -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+        let (su, sv) = self.surface.d1_at(x[0], x[1], tol).ok()?;
+        let (suu, suv, svv) = self.surface.d2_at(x[0], x[1], tol).ok()?;
+        let cross = su.cross(sv);
+        let length = cross.magnitude();
+        if length <= tol.confusion() {
+            return None;
+        }
+        let normal = cross / length;
+        // The unit normal's own derivative: the part of the unnormalized
+        // one's across the normal, over the length — the projection is what
+        // keeps a unit vector unit.
+        let across = |d: Vector| (d - normal * d.dot(normal)) / length;
+        let du = across(suu.cross(sv) + su.cross(suv));
+        let dv = across(suv.cross(sv) + su.cross(svv));
+        Some((
+            vec![normal.dot(self.along)],
+            vec![vec![du.dot(self.along), dv.dot(self.along)]],
+        ))
+    }
+
+    fn clamp(&self, x: &mut [f64]) {
+        let ((ua, ub), (va, vb)) = self.surface.domain();
+        let hold = |value: f64, lo: f64, hi: f64, periodic: bool| {
+            if periodic && hi > lo {
+                lo + (value - lo).rem_euclid(hi - lo)
+            } else {
+                value.clamp(lo, hi)
+            }
+        };
+        x[0] = hold(x[0], ua, ub, self.surface.is_periodic_u());
+        x[1] = hold(x[1], va, vb, self.surface.is_periodic_v());
+    }
+
+    fn outside(&self, x: &[f64], tol: Tolerances) -> bool {
+        let ((ua, ub), (va, vb)) = self.surface.domain();
+        let band = tol.parametric();
+        (!self.surface.is_periodic_u() && (x[0] < ua - band || x[0] > ub + band))
+            || (!self.surface.is_periodic_v() && (x[1] < va - band || x[1] > vb + band))
+    }
+
+    fn near_edge(&self, x: &[f64]) -> bool {
+        let ((ua, ub), (va, vb)) = self.surface.domain();
+        let near = |value: f64, lo: f64, hi: f64| {
+            let reach = (hi - lo) * 1e-6;
+            value <= lo + reach || value >= hi - reach
+        };
+        (!self.surface.is_periodic_u() && near(x[0], ua, ub))
+            || (!self.surface.is_periodic_v() && near(x[1], va, vb))
+    }
+
+    fn extent(&self) -> f64 {
+        self.reach
+    }
+}
+
+/// How far a point stands from a polyline, segment by segment.
+fn on_polyline(line: &[Point], p: Point) -> f64 {
+    let mut best = f64::INFINITY;
+    for pair in line.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let d = b - a;
+        let len2 = d.dot(d);
+        let t = if len2 > 0.0 {
+            ((p - a).dot(d) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        best = best.min(p.distance(a + d * t));
+    }
+    best
+}
+
+/// Silhouettes of a surface with no closed form, marched.
+///
+/// Seeded the way the intersector seeds: the chart is sampled on a grid and
+/// every sign change of `n · d` between neighbours is a starting point,
+/// refined onto the condition before the walk begins. That is the same
+/// limitation with the same knob on it — a silhouette loop smaller than one
+/// cell is stepped over — and it is stated rather than discovered.
+///
+/// The walked polylines are fitted to curves at `chord`, and the fit's own
+/// error is added to it, so what comes back carries a budget rather than a
+/// claim of exactness.
+fn marched_silhouettes(
+    surface: &SurfaceGeometry,
+    along: Vector,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Curve>> {
+    use ogeom_intersect::walk::Condition as _;
+    let options = ogeom_intersect::Marching {
+        chord: tol.confusion() * 1e2,
+        ..ogeom_intersect::Marching::default()
+    };
+    let ((ua, ub), (va, vb)) = surface.domain();
+    // The step control wants a *length*, and the surface's own is the only
+    // honest one: a torus's face is bounded by a seam and one vertex, so its
+    // vertices' bounding box is a point and a step control fed that walks the
+    // whole ring in steps of a ten-thousandth.
+    let reach = {
+        let mut bound = ogeom_math::Aabb::EMPTY;
+        for i in 0..=8 {
+            for j in 0..=8 {
+                let u = (ub - ua).mul_add(f64::from(i) / 8.0, ua);
+                let v = (vb - va).mul_add(f64::from(j) / 8.0, va);
+                if let Ok(p) = surface.point_at(u, v, tol) {
+                    bound = bound.with_point(p);
+                }
+            }
+        }
+        bound.diagonal().max(tol.confusion() * 1e3)
+    };
+    let condition = SilhouetteOn {
+        surface,
+        along,
+        reach,
+    };
+    let value = |u: f64, v: f64| -> Option<f64> {
+        let (su, sv) = surface.d1_at(u, v, tol).ok()?;
+        Some(su.cross(sv).dot(along))
+    };
+
+    // Seeds: a sign change between grid neighbours, bisected to the crossing
+    // and then corrected onto the condition by the walker's own solve.
+    let mut seeds: Vec<[f64; 2]> = Vec::new();
+    let steps = options.grid;
+    #[expect(clippy::cast_precision_loss, reason = "a grid index")]
+    let at = |i: usize, n: usize, lo: f64, hi: f64| lo + (hi - lo) * (i as f64) / (n as f64);
+    for i in 0..=steps {
+        for j in 0..=steps {
+            let (u, v) = (at(i, steps, ua, ub), at(j, steps, va, vb));
+            let Some(here) = value(u, v) else { continue };
+            for (du, dv) in [(1_usize, 0_usize), (0, 1)] {
+                if i + du > steps || j + dv > steps {
+                    continue;
+                }
+                let (u2, v2) = (at(i + du, steps, ua, ub), at(j + dv, steps, va, vb));
+                let Some(there) = value(u2, v2) else { continue };
+                if here.signum() == there.signum() || here == 0.0 {
+                    continue;
+                }
+                // Bisect to the crossing along the cell edge.
+                let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+                for _ in 0..40 {
+                    let mid = f64::midpoint(lo, hi);
+                    let (um, vm) = (u + (u2 - u) * mid, v + (v2 - v) * mid);
+                    let Some(m) = value(um, vm) else { break };
+                    if m.signum() == here.signum() {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                let mid = f64::midpoint(lo, hi);
+                seeds.push([u + (u2 - u) * mid, v + (v2 - v) * mid]);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut walked_points: Vec<Vec<Point>> = Vec::new();
+    for seed in seeds {
+        let mut start = seed;
+        condition.clamp(&mut start);
+        // A seed already covered by a curve found earlier is the same branch
+        // met in another cell, not a new one.
+        let Some(here) = condition.position(&start, tol) else {
+            continue;
+        };
+        // Against the polyline, not its vertices: the walk's own step is
+        // hundreds of times the chord, so a seed landing between two points
+        // of a curve already found is the same branch met in another cell and
+        // would otherwise be walked all over again. A torus seen down its
+        // axis has a seed in every grid column of both equators.
+        if walked_points
+            .iter()
+            .any(|line| on_polyline(line, here) <= options.chord * 32.0)
+        {
+            continue;
+        }
+        let Ok(walked) = ogeom_intersect::walk::follow(&condition, &start, options, tol) else {
+            continue;
+        };
+        if walked.points.len() < 4 {
+            continue;
+        }
+        // Fitted, with the fit's own error added to the walk's chord — the
+        // curve says what it is worth.
+        let Ok(fitted) = ogeom_geom::fit::fit_points(&walked.points, 3, options.chord, tol) else {
+            continue;
+        };
+        walked_points.push(walked.points);
+        out.push(Curve::BSpline(fitted.curve));
+    }
+    Ok(out)
 }

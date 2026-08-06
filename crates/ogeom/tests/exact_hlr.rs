@@ -131,3 +131,86 @@ fn iso_lines_stay_on_their_face_and_reflect_lines_follow_the_light() {
         );
     }
 }
+
+/// §D1: a torus has no closed-form silhouette, and it is *walked* rather
+/// than refused — the same walk a surface intersection uses, following a
+/// different condition.
+///
+/// Seen along its own axis a torus's outline is two circles, the outer and
+/// the inner equators, and those are arithmetic — so the marched answer is
+/// held to them rather than to its own consistency.
+#[test]
+fn a_torus_silhouette_is_marched_and_lands_on_its_own_equators() {
+    let mut model = Model::new();
+    let (major, minor) = (6.0, 2.0);
+    let ring = ogeom::algo::make_torus(&mut model, Frame::WORLD, major, minor, T)
+        .unwrap()
+        .shape;
+
+    // Down the axis: the normal is square to the view exactly on the two
+    // equators, at radii `major ± minor`, both in the plane `z = 0`.
+    let found = ogeom::hlr::exact::silhouettes(&model, &ring, Vector::Z, T).unwrap();
+    assert!(
+        !found.is_empty(),
+        "a torus seen down its axis has an outline"
+    );
+    // The claim is about the geometry, not about how many pieces the face's
+    // trim cuts a closed curve into: every point of every piece is on one of
+    // the two equators, and both are drawn.
+    let (mut inner, mut outer) = (false, false);
+    for silhouette in &found {
+        for k in 0..=64 {
+            let t = silhouette.range.0
+                + (silhouette.range.1 - silhouette.range.0) * f64::from(k) / 64.0;
+            let p = ogeom::geom::Curve3d::point_at(&silhouette.curve, t, T).unwrap();
+            // The walk is fitted, so the claim is the chord it was walked to
+            // and not exactness — which is what a marched curve is worth.
+            assert!(p.z.abs() < 1e-4, "in the torus's own plane: {p:?}");
+            let r = p.x.hypot(p.y);
+            if (r - (major - minor)).abs() < 1e-4 {
+                inner = true;
+            } else if (r - (major + minor)).abs() < 1e-4 {
+                outer = true;
+            } else {
+                panic!("on neither equator: radius {r}");
+            }
+        }
+    }
+    assert!(inner && outer, "both equators are drawn");
+
+    // And the defining property itself, seen from a direction with no closed
+    // form at all: the surface's own normal is square to the view at every
+    // point of what comes back.
+    let oblique = Vector::new(0.3, 0.5, 1.0);
+    let found = ogeom::hlr::exact::silhouettes(&model, &ring, oblique, T).unwrap();
+    assert!(!found.is_empty(), "an oblique view still has an outline");
+    let along = oblique / oblique.magnitude();
+    for silhouette in &found {
+        for k in 0..=32 {
+            let t = silhouette.range.0
+                + (silhouette.range.1 - silhouette.range.0) * f64::from(k) / 32.0;
+            let p = ogeom::geom::Curve3d::point_at(&silhouette.curve, t, T).unwrap();
+            // The point is on the torus, and the torus's normal there is
+            // square to the view. Both measured against the surface itself.
+            let (centre, radial) = {
+                let flat = Point::new(p.x, p.y, 0.0);
+                let r = flat.distance(Point::ORIGIN);
+                assert!(r > 1e-9, "not on the axis");
+                let towards = (flat - Point::ORIGIN) / r;
+                (Point::ORIGIN + towards * major, towards)
+            };
+            assert!(
+                (p.distance(centre) - minor).abs() < 1e-3,
+                "on the tube: {} against {minor}",
+                p.distance(centre)
+            );
+            let normal = (p - centre) / minor;
+            let _ = radial;
+            assert!(
+                normal.dot(along).abs() < 1e-3,
+                "the normal is square to the view: {}",
+                normal.dot(along)
+            );
+        }
+    }
+}

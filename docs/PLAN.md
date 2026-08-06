@@ -195,25 +195,35 @@ quarter-annulus wedges, and a bend is Pappus on its own annulus.
 
 ### D. Drawings
 
-**D1 — marched silhouettes.** A torus or a spline silhouette has no closed
-form. The useful observation is that it needs no new machinery either: the
-silhouette is the zero set of
+**D1 — marched silhouettes.** **Done.** A surface with no closed-form
+silhouette — a torus, a spline — is *walked* rather than refused: the whole
+content of a silhouette is one equation on the surface's own chart,
 
 > `n(u, v) · d = 0`
 
-for view or light direction `d`, which is an implicit condition on the
-surface's own chart — exactly the kind of thing our marcher already follows.
-And where the contour meets the face's trim, the boundary crossing is found
-by a separate solve against the boundary curve, the same shape as the
-blend's inverted system in B1.
+and one equation in two unknowns is a curve, which is what the shared walker
+follows. So it needed no new machinery, exactly as this entry said; the
+condition is thirty lines and everything else is inherited.
 
-That is a cross-cutting note worth stating once: **one walker, several
-conditions.** Surface intersection tracks "on both surfaces"; a silhouette
-tracks "normal perpendicular to the view"; a blend tracks the four-equation
-contact system. If the marcher is abstracted over the condition it follows —
-value, derivatives, and a boundary-crossing solve — then B1 and D1 share it
-and the intersector's hard-won step control, stall detection and branch
-handling are inherited rather than rewritten twice.
+Two things it did need, both found by measuring rather than by reading.
+
+*The residual must be dimensionless.* Stated with the unnormalized `Sᵤ × Sᵥ`,
+the condition's residual carries the surface's own scale, so on a torus of
+radius eight the correction had to drive it below a *length* tolerance —
+a demand on the angle eight times tighter than anything asked for — and the
+walk answered by halving its step until it crawled. The unit normal, with its
+own exact derivative, fixes it.
+
+*The step control wants a length, and the face cannot supply one.* A full
+torus's face is bounded by a seam and a single vertex, so its vertices'
+bounding box is a point; fed that as a scale, the walk stepped round the whole
+ring a ten-thousandth at a time and ran out. The extent now comes from the
+surface itself, sampled over its own chart.
+
+Measured against the torus's own equators seen down its axis — radii
+`major ± minor`, which is arithmetic — and, from an oblique direction that has
+no closed form at all, against the defining property itself: the surface's
+normal is square to the view at every point of what comes back.
 
 **D2 — the on-axis half-section.** Unblocked: A4 is closed, and the boolean
 now cuts a bore on its own axis and reports the two rulings. What is left is
