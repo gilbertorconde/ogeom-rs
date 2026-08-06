@@ -522,6 +522,21 @@ fn exact_pcurve(
     surface: &SurfaceGeometry,
     tol: Tolerances,
 ) -> Option<PlanarCurve> {
+    // A trim is a statement about *where* on a curve, not about what it is:
+    // the basis carries the shape and the trim shares its parameter, so the
+    // pcurve is the basis's own pcurve trimmed the same way. Answered here
+    // rather than in every surface's own case, because the answer does not
+    // depend on the surface at all. A *reversed* trim renumbers, and is left
+    // alone rather than mis-read.
+    if let Curve::Trimmed(trimmed) = curve
+        && !trimmed.is_reversed()
+    {
+        let window = ogeom_geom::Curve3d::domain(&**trimmed);
+        let basis = exact_pcurve(trimmed.basis(), range, surface, tol)?;
+        return ogeom_geom::Trimmed2d::new(basis, window.0, window.1, tol)
+            .ok()
+            .map(Into::into);
+    }
     match surface {
         SurfaceGeometry::Plane(p) => on_plane(curve, p.plane(), tol),
         SurfaceGeometry::Cylinder(c) => on_cylinder(curve, range, c.cylinder(), tol),
@@ -1634,6 +1649,58 @@ mod tests {
                     "a range across a pole has no one line"
                 );
                 let _ = s;
+            }
+        }
+    }
+
+    /// A trim says *where* on a curve, not what it is. The basis carries the
+    /// shape and the trim shares its parameter, so a trimmed curve's pcurve is
+    /// the basis's own pcurve trimmed the same way — on every surface, since
+    /// the answer does not depend on the surface at all.
+    ///
+    /// Found by a corner blend: a fillet's own end cap is a plane, the edges
+    /// bounding it are trimmed curves, and the boolean refused the coincidence
+    /// because it could not put a trimmed curve into a chart it plainly lies in.
+    #[test]
+    fn a_trimmed_curve_carries_its_basis_pcurve_trimmed_the_same_way() {
+        use ogeom_geom::TrimmedCurve;
+        let drum = cylinder(Vector::Z, 2.0);
+        let ground = plane(Point::new(0.0, 0.0, 1.0), Vector::Z);
+        // The circle where they meet, and a quarter of it.
+        let SurfaceIntersection::Along(curves) =
+            intersect_surfaces(&drum, &ground, IntersectOptions::default(), T).unwrap()
+        else {
+            panic!("a plane across a cylinder meets it in a circle");
+        };
+        let whole = curves[0].curve.clone();
+        let (lo, hi) = whole.domain();
+        let quarter: Curve = TrimmedCurve::new(whole.clone(), lo + 0.3, lo + (hi - lo) / 4.0, T)
+            .unwrap()
+            .into();
+
+        for surface in [&drum, &ground] {
+            let full = exact_pcurve_of(&whole, surface, T).expect("the whole circle has one");
+            let part = exact_pcurve_of(&quarter, surface, T).expect("and so does a quarter of it");
+            // Same parameter, same point: the trim changed the range and
+            // nothing else.
+            let (a, b) = quarter.domain();
+            for i in 0..=8 {
+                let t = (b - a).mul_add(f64::from(i) / 8.0, a);
+                let (whole_at, part_at) =
+                    (full.point_at(t, T).unwrap(), part.point_at(t, T).unwrap());
+                assert!(
+                    whole_at.distance(part_at) < 1e-12,
+                    "the trim carries the basis: {whole_at:?} against {part_at:?}"
+                );
+                // And it lifts back onto the curve it came from.
+                let lifted = surface
+                    .point_at(part_at.x.rem_euclid(core::f64::consts::TAU), part_at.y, T)
+                    .or_else(|_| surface.point_at(part_at.x, part_at.y, T))
+                    .unwrap();
+                assert!(
+                    lifted.distance(quarter.point_at(t, T).unwrap()) < 1e-9,
+                    "same-parameter, still"
+                );
             }
         }
     }

@@ -156,21 +156,46 @@ Measured on a cylinder square on a plane against the torus's own arithmetic,
 and on one meeting a plane at twenty degrees — which has no closed form, which
 is why it needs marching — against the ball's own definition at every station.
 
-**B2 — corners where blends meet.** *Reframed.* This is not one construction
-but a family, classified by **how many blends meet at the corner**: one, two,
-three, or more. Our owed "setback vertex blend" is the three-blend case; the
-one- and two-blend cases are separate constructions we had not enumerated at
-all — a blend running out at a face boundary, and two blends meeting, which
-is resolved either by intersecting them with each other or by extending both
-to a shared end.
+**B2 — corners where blends meet.** *Still owed, and now for a different
+reason than this entry gave.* The family is right: one blend running out at a
+face's boundary, two meeting — resolved by intersecting them or by extending
+both to a shared end — three, which is the setback vertex blend, and more,
+which no single construction covers.
 
-For the three-blend equal-radius corner the tool is already known: after the
-three edge fillets, the corner block running from the ball's centre out past
-the corner, *minus the ball*, is exactly the leftover spike — anything in
-that block further from the centre than the ball lies outside one of the
-three fillet cylinders and was cut away when that edge was rounded. The
-removal now works (A5 is closed), so this is ordinary work rather than
-blocked.
+The three-blend equal-radius tool is right too, and A5 measures it: the corner
+block running from the ball's centre out past the corner, *minus the ball*, is
+exactly the leftover spike, because anything in that block further from the
+centre than the ball lies outside one of the three fillet cylinders and was cut
+away when that edge was rounded.
+
+What blocks it is **not** A5, which is closed. It is that **a corner blend is
+tangent to everything it rounds, by construction.** The ball sits at the
+radius from each of the three faces, so it touches each of them — and it is
+inscribed in each of the three fillet cylinders, so it touches those along
+whole circles. Applying the tool therefore asks the boolean for tangential
+contact in its hardest position: not a tangency in the interior of a face,
+which the boolean carries today and a ball seated in a bore pins, but one at a
+*vertex* of the tool's own spherical patch, where the octant's three corners
+are exactly the three points at which it touches the three planes. That
+surfaces as a dangling boundary strand rather than as a refusal by name, which
+is worse than either answering or refusing.
+
+So the remaining work is one named thing, and it belongs to the boolean rather
+than to blending:
+
+> **A6 — tangency at a face's own corner.** A face touching another at a point
+> that is a *vertex* of its own boundary. The interior cases are handled: a
+> tangential curve is carried without parity, a point touch bounds nothing.
+> This one is neither, and it is what every corner blend asks for.
+
+Two things were built on the way and stand on their own. `march_blend` (B1)
+is above. And `exact_pcurve` now sees through a **trim**: a trim says *where*
+on a curve, not what it is, and since it shares its basis's parameter, its
+pcurve is the basis's own pcurve trimmed the same way — on every surface, since
+the answer does not depend on the surface. A fillet's end cap is a plane whose
+bounding edges are trimmed curves, and the boolean had been refusing that
+coincidence for want of putting a trimmed curve into a chart it plainly lies
+in.
 
 ### C. Sweeping
 
@@ -379,10 +404,10 @@ These are settled. They are here so nobody reopens them by accident.
    points came back as one confident loop lying on neither. So a condition
    declares whether its tangent's sign is its own, and that declaration is
    load-bearing.
-5. **B1** — the marching blend, one seat at a time, starting with a cylinder
-   meeting a plane at an angle. Then **B2**'s corner family, on top of A5.
-6. **D1** — marched silhouettes, which by then are a second condition for a
-   walker that already exists.
+5. ~~**B1** — the marching blend.~~ **Done.** **B2**'s corner family is owed
+   still, and on **A6** — tangency at a face's own corner — rather than on A5.
+6. ~~**D1** — marched silhouettes.~~ **Done**, and they were indeed a second
+   condition for a walker that already existed.
 7. **F2** — IGES.
 
 **G2** and **F4** have no scheduled slot: the first needs an idea nobody has
