@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/ogeom-recognize",
     "crates/ogeom-select",
+    "crates/ogeom-reverse",
     "crates/ogeom-sketch",
 ]
 
@@ -48,6 +49,7 @@ ogeom = { path = "../crates/ogeom", version = "0.0.0" }
 
 # --- what lives here ---
 ogeom-recognize = { path = "crates/ogeom-recognize", version = "0.0.0" }
+ogeom-reverse = { path = "crates/ogeom-reverse", version = "0.0.0" }
 ogeom-select = { path = "crates/ogeom-select", version = "0.0.0" }
 ogeom-sketch = { path = "crates/ogeom-sketch", version = "0.0.0" }
 

@@ -419,7 +419,7 @@ fn fit_torus(points: &[Point], normals: &[Vector], tol: Tolerances) -> Option<Ca
 ///
 /// # Errors
 ///
-/// As [`ogeom_algo::to_brep`].
+/// As [`crate::reconstruct::to_brep`].
 pub fn mesh_to_brep(
     model: &mut ogeom_topo::Model,
     mesh: &ogeom_topo::Triangulation,
@@ -427,7 +427,7 @@ pub fn mesh_to_brep(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<ogeom_algo::Built> {
-    ogeom_algo::to_brep_with(model, mesh, crease, tolerance, tol, &|points, normals| {
+    crate::reconstruct::to_brep_with(model, mesh, crease, tolerance, tol, &|points, normals| {
         let Some(found) = recognize_points(points, normals, tolerance, tol)? else {
             return Ok(None);
         };

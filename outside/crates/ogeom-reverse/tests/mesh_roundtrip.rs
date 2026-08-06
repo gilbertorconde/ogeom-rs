@@ -3,26 +3,26 @@
 //! mesh still refuses by name.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
-use ogeom::core::Tolerances;
-use ogeom::geom::SurfaceGeometry;
-use ogeom::math::Frame;
-use ogeom::mesh::Deflection;
-use ogeom::topo::{Model, NodeData, ShapeType, explore_unique};
+use ogeom_core::Tolerances;
+use ogeom_geom::SurfaceGeometry;
+use ogeom_math::Frame;
+use ogeom_mesh::Deflection;
+use ogeom_topo::{Model, NodeData, ShapeType, explore_unique};
 
 const T: Tolerances = Tolerances::millimetres();
 
 #[test]
 fn a_drum_survives_the_round_trip() {
     let mut model = Model::new();
-    let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 12.0, T)
+    let drum = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 12.0, T)
         .unwrap()
         .shape;
     let true_volume = core::f64::consts::PI * 25.0 * 12.0;
 
     let mesh =
-        ogeom::mesh::triangulate(&model, &drum, Deflection::with_chord(0.01).unwrap(), T).unwrap();
+        ogeom_mesh::triangulate(&model, &drum, Deflection::with_chord(0.01).unwrap(), T).unwrap();
     let mut fresh = Model::new();
-    let rebuilt = ogeom::heal::mesh_to_brep(&mut fresh, &mesh, ogeom::algo::CREASE, 0.02, T)
+    let rebuilt = ogeom_reverse::mesh_to_brep(&mut fresh, &mesh, ogeom_reverse::CREASE, 0.02, T)
         .unwrap()
         .shape;
 
@@ -48,7 +48,7 @@ fn a_drum_survives_the_round_trip() {
     let faces = explore_unique(&fresh, &rebuilt, ShapeType::Face).unwrap();
     assert_eq!(faces.len(), 3, "two caps and one wall");
     let shell = explore_unique(&fresh, &rebuilt, ShapeType::Shell).unwrap();
-    assert!(ogeom::algo::is_shell_closed(&fresh, &shell[0]).unwrap());
+    assert!(ogeom_algo::is_shell_closed(&fresh, &shell[0]).unwrap());
 
     // And it can be *measured*, which is the thing a shape has to be for any
     // claim about it to mean anything. The wall wraps its surface's whole
@@ -56,7 +56,7 @@ fn a_drum_survives_the_round_trip() {
     // — without one the boundary encloses no area and the face does not
     // tessellate at all.
     let measured =
-        ogeom::algo::volume_properties(&fresh, &rebuilt, Deflection::with_chord(0.01).unwrap(), T)
+        ogeom_algo::volume_properties(&fresh, &rebuilt, Deflection::with_chord(0.01).unwrap(), T)
             .expect("a rebuilt drum has a volume")
             .mass;
     // The rims came back as the polygons the mesh had, so the recovered solid

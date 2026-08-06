@@ -1,11 +1,12 @@
 [package]
-name = "ogeom-heal"
-description = "Shape healing: analysis, fixing and upgrading of imperfect geometry"
+name = "ogeom-reverse"
+description = "Reverse engineering: mesh to B-rep, with canonical surface recognition"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false
 
 [dependencies]
 ogeom-core.workspace = true
@@ -13,11 +14,10 @@ ogeom-math.workspace = true
 ogeom-geom.workspace = true
 ogeom-topo.workspace = true
 ogeom-algo.workspace = true
-ogeom-intersect.workspace = true
+ogeom-mesh.workspace = true
+nalgebra.workspace = true
 
 [dev-dependencies]
-ogeom-io.workspace = true
-ogeom-mesh.workspace = true
 approx.workspace = true
 proptest.workspace = true
 

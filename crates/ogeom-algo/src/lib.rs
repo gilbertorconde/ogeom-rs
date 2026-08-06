@@ -21,7 +21,6 @@ pub mod measure;
 pub mod place;
 pub mod primitive;
 pub mod proximity;
-pub mod reconstruct;
 pub mod sew;
 pub mod sweep;
 pub mod text;
@@ -45,14 +44,13 @@ pub use mass::{MassProperties, linear_properties, surface_properties, volume_pro
 pub use measure::{
     Obb, Projection, SurfaceProjection, curve_bounds, face_normal, oriented_bounds,
     project_on_curve, project_on_planar_curve, project_on_surface, relative_deflection,
-    shape_bounds, surface_bounds, vertex_bounds,
+    shape_bounds, surface_bounds, vertex_bounds, widened_to_hold,
 };
 pub use place::{copied, transformed};
 pub use primitive::{
     make_box, make_cone, make_cylinder, make_half_space, make_sphere, make_torus, make_wedge,
 };
 pub use proximity::{ClosestPair, ShapeDistance, distance_between_shapes};
-pub use reconstruct::{CREASE, Region, SurfaceRecognizer, planar_regions, to_brep, to_brep_with};
 pub use sew::{Sewn, make_wire_unordered, order_edges, sew};
 pub use sweep::{make_prism, make_revolution};
 pub use text::make_text;

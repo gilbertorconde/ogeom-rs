@@ -329,37 +329,6 @@ would mean reverse-engineering files rather than reading a standard. If a
 specification becomes available the refusal lifts, and until then the honest
 answer is this row.
 
-### G. Healing residuals
-
-**G1 — tessellating a rebuilt full-period face.** **Done**, and it was not the
-instrument. Two things were wrong with the *shape*.
-
-The recognizer sizes its chart window from the samples it recognized on, and a
-sample is a triangle's centroid — half a chord inside the region's own rim. The
-face is trimmed to that rim, so its chart reached past the window by about a
-part in ten million, and evaluating it there was a domain error. The window is
-now widened to hold the boundary before anything is built on it, which changes
-nothing about the face: a surface's extent is a parameterization window and not
-a trim.
-
-And then the real one. Two rings that each wrap the whole chart do not bound a
-region between them — in the chart they are two horizontal runs enclosing no
-area at all, which is why the face refused to triangulate. What closes them is
-a **seam**: the walk runs the lower rim for a turn, up a seam, back along the
-upper rim for a turn, and down the same seam again, one edge occurring twice
-and carrying the two chart columns a turn apart. That is what a cylinder built
-from first principles has and what one recovered from a mesh was missing.
-
-The drum's volume is now measured, and against the right thing: its rims came
-back as the polygons the mesh had, so the recovered solid is the drum's
-*inscribed prism* and reads low by the `π²/3n²` an inscribed n-gon loses. The
-test holds it to that rather than to the circle it approximates.
-
-**G2 — segmentation across tangent-smooth junctions.** Where a fillet band
-meets its wall the two share a tolerance-ambiguous strip, and the
-recognition-driven segmentation cannot place the boundary from curvature
-alone.
-
 ### H. Defeaturing
 
 **H1 — removing a set of faces.** Absent. The operation is
@@ -423,9 +392,7 @@ These are settled. They are here so nobody reopens them by accident.
 1. ~~**A** — the interference table.~~ **Done.** Five named failures closed,
    B2 and D2 unblocked.
 2. **C**, **E2**, **F3** — contained pieces, any order, each a stone.
-3. ~~**G1** — the tessellation instrument.~~ **Done**, and it was the shape
-   rather than the instrument.
-4. ~~**The walker abstraction.**~~ **Done.** `ogeom_intersect::walk`: a
+3. ~~**The walker abstraction.**~~ **Done.** `ogeom_intersect::walk`: a
    `Condition` in `n` unknowns and `n − 1` equations, and one walk over it.
    The shortfall is the point — the solution set of `n − 1` equations in `n`
    unknowns *is* a curve — and the walker supplies the missing equation
@@ -443,11 +410,11 @@ These are settled. They are here so nobody reopens them by accident.
    points came back as one confident loop lying on neither. So a condition
    declares whether its tangent's sign is its own, and that declaration is
    load-bearing.
-5. ~~**B1** — the marching blend.~~ **Done.** **B2**'s corner family is owed
+4. ~~**B1** — the marching blend.~~ **Done.** **B2**'s corner family is owed
    still, and on **A6** — tangency at a face's own corner — rather than on A5.
-6. ~~**D1** — marched silhouettes.~~ **Done**, and they were indeed a second
+5. ~~**D1** — marched silhouettes.~~ **Done**, and they were indeed a second
    condition for a walker that already existed.
-7. **F2** — IGES.
+6. **F2** — IGES.
+7. **H1** — removing a set of faces.
 
-**G2** and **F4** have no scheduled slot: the first needs an idea nobody has
-had yet, the second needs a document nobody has published.
+**F4** has no scheduled slot: it needs a document nobody has published.

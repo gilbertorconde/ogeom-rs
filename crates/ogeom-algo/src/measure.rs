@@ -885,6 +885,80 @@ pub fn project_on_planar_curve(
     Ok((parameter, point, point.distance(target)))
 }
 
+/// A surface's parameterization window widened until it holds every one of
+/// `points`.
+///
+/// A surface's extent is a *window*, not a trim. Anything built on the surface
+/// — a face, a pcurve, a projection — has to evaluate inside it, and a window
+/// clamped tight around whatever was measured last will refuse the boundary of
+/// the very region it was measured from. That failure is unhelpfully quiet: it
+/// arrives as a domain error from an evaluation deep inside triangulation,
+/// having overshot by a part in ten million.
+///
+/// Widening is therefore a step to take *before* building on a surface whose
+/// window came from samples, and it changes nothing about the geometry: the
+/// carrier is untouched and only the window moves. The margin is proportional
+/// to the span measured, plus a floor in confusion tolerances, so widening is
+/// not itself a tolerance question.
+///
+/// Only the *bounded* directions can be widened, and only they need to be: a
+/// periodic direction already covers its whole turn. A surface with no bounded
+/// direction — a sphere, a torus — comes back as it went in, and so does one
+/// given no points.
+///
+/// # Errors
+///
+/// [`OgeomError::Domain`](ogeom_core::OgeomError::Domain) if a point cannot be
+/// projected onto the surface, or the widened window is not a valid range.
+pub fn widened_to_hold(
+    surface: &SurfaceGeometry,
+    points: &[Point],
+    tol: Tolerances,
+) -> OgeomResult<SurfaceGeometry> {
+    use ogeom_geom::SurfaceGeometry as S;
+    use ogeom_geom::{ConeSurface, CylinderSurface, PlaneSurface};
+    if points.is_empty() {
+        return Ok(surface.clone());
+    }
+    let (mut u0, mut u1) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut v0, mut v1) = (f64::INFINITY, f64::NEG_INFINITY);
+    for p in points {
+        let projected = project_on_surface(surface, *p, 16, tol)?;
+        let (u, v) = projected.parameters;
+        u0 = u0.min(u);
+        u1 = u1.max(u);
+        v0 = v0.min(v);
+        v1 = v1.max(v);
+    }
+    if !u0.is_finite() || !v0.is_finite() {
+        return Ok(surface.clone());
+    }
+    // A margin proportional to what was measured, so widening is not itself
+    // a tolerance question.
+    let margin = |lo: f64, hi: f64| (hi - lo).mul_add(0.05, tol.confusion() * 1e3);
+    let ((du0, du1), (dv0, dv1)) = surface.domain();
+    Ok(match surface {
+        S::Plane(p) => {
+            let (mu, mv) = (margin(u0, u1), margin(v0, v1));
+            PlaneSurface::over(
+                p.plane(),
+                (du0.min(u0 - mu), du1.max(u1 + mu)),
+                (dv0.min(v0 - mv), dv1.max(v1 + mv)),
+            )?
+            .into()
+        }
+        S::Cylinder(c) => {
+            let m = margin(v0, v1);
+            CylinderSurface::new(c.cylinder(), (dv0.min(v0 - m), dv1.max(v1 + m)))?.into()
+        }
+        S::Cone(c) => {
+            let m = margin(v0, v1);
+            ConeSurface::new(c.cone(), (dv0.min(v0 - m), dv1.max(v1 + m)))?.into()
+        }
+        other => other.clone(),
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -1151,6 +1225,67 @@ mod tests {
         assert_relative_eq!(p.parameter, 3.0, epsilon = 1e-6);
         assert!(p.point.is_equal(Point::new(3.0, 0.0, 0.0), T));
         assert_relative_eq!(p.distance, 4.0, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn a_window_widened_to_hold_a_point_holds_it_with_room_to_spare() {
+        // The failure this exists to stop: a window clamped exactly to what was
+        // measured refuses the boundary of the region it was measured from,
+        // by a part in ten million, as a domain error from deep inside
+        // whatever was being built on it.
+        let cylinder = Cylinder::new(Frame::WORLD, 5.0, T).unwrap();
+        let tight: SurfaceGeometry = CylinderSurface::new(cylinder, (0.0, 10.0)).unwrap().into();
+        let just_past = Point::new(5.0, 0.0, 10.0 + 1e-6);
+        assert!(
+            tight.domain().1.1 < just_past.z,
+            "the point is outside the tight window, which is the premise"
+        );
+
+        let wide = widened_to_hold(&tight, &[just_past], T).unwrap();
+        let (_, (v0, v1)) = wide.domain();
+        assert!(
+            v1 > just_past.z && v0 <= 0.0,
+            "the window holds the point and gives nothing back: ({v0}, {v1})"
+        );
+        // The window grows by the floor — a thousand confusions — and this is
+        // the case that says why there is a floor at all. Projection clamps to
+        // the window it is measuring, so a point that overshoots by 1e-6 comes
+        // back at the old edge and the proportional term sees a span of zero.
+        // Only the floor stands between the overshoot and another domain
+        // error, which is why it is a thousand confusions and not one.
+        assert_relative_eq!(v1 - 10.0, T.confusion() * 1e3, epsilon = 1e-12);
+        assert!(
+            v1 - just_past.z > 0.0,
+            "and it clears the point: {}",
+            v1 - just_past.z
+        );
+
+        // The carrier is untouched. Widening a window is not a change of shape.
+        let SurfaceGeometry::Cylinder(c) = &wide else {
+            panic!("still a cylinder");
+        };
+        assert_relative_eq!(c.cylinder().radius(), 5.0, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn a_surface_with_no_bounded_direction_comes_back_unchanged() {
+        // A sphere is periodic one way and bounded by its own poles the other:
+        // there is no window to widen, and inventing one would put chart space
+        // past the pole where the parameterization means nothing.
+        let sphere: SurfaceGeometry =
+            SphereSurface::new(Sphere::new(Frame::WORLD, 4.0, T).unwrap()).into();
+        let widened = widened_to_hold(&sphere, &[Point::new(4.0, 0.0, 0.0)], T).unwrap();
+        assert_eq!(sphere.domain(), widened.domain());
+
+        // And no points is no information, so nothing moves either.
+        let cylinder: SurfaceGeometry =
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, 2.0, T).unwrap(), (1.0, 3.0))
+                .unwrap()
+                .into();
+        assert_eq!(
+            cylinder.domain(),
+            widened_to_hold(&cylinder, &[], T).unwrap().domain()
+        );
     }
 
     #[test]

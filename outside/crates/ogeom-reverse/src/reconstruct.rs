@@ -21,8 +21,8 @@
 //! cylinder rather than a smooth patch that resembles one is the whole problem,
 //! and getting it wrong produces a solid that looks right, measures nearly
 //! right, and has the wrong surface underneath every operation that follows.
-//! `docs/PLAN.md` carries canonical recognition where the tolerance
-//! machinery to decide it honestly will exist.
+//! [`crate::canonical`] is where that decision is made, when the caller
+//! states a tolerance to make it at.
 //!
 //! So: planes are recovered exactly, because a plane through a set of coplanar
 //! triangles is the plane they are in and there is nothing to decide. Anything
@@ -35,8 +35,7 @@ use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Direction, Frame, Plane, Point, Point2, Vector};
 use ogeom_topo::{Location, Model, Shape, Triangulation};
 
-use crate::build::{make_face_on, make_shell, make_solid, make_wire};
-use crate::history::{Built, History};
+use ogeom_algo::{Built, History, make_face_on, make_shell, make_solid, make_wire};
 
 /// Roles reconstruction assigns.
 pub mod roles {
@@ -234,7 +233,7 @@ fn chart_edge(
     let edge = match shared.get(&key) {
         Some(existing) => existing.reversed(),
         None => {
-            let fresh = crate::build::make_edge_between(
+            let fresh = ogeom_algo::make_edge_between(
                 model,
                 ogeom_geom::LineCurve::segment(a, b, tol)?.into(),
                 (0.0, a.distance(b)),
@@ -268,7 +267,7 @@ fn chart_edge(
             "a curved boundary chord has no chart direction"
         )
     })?;
-    crate::build::attach_pcurve(
+    ogeom_algo::attach_pcurve(
         model,
         &edge,
         ogeom_geom::Line2d::over(ogeom_math::Axis2::new(pa2, towards), 0.0, length)?.into(),
@@ -420,7 +419,7 @@ fn seamed_band(
     if length <= tol.confusion() {
         ogeom_bail!(Construction, "the band's two rims meet, so it has no seam");
     }
-    let seam = crate::build::make_edge_between(
+    let seam = ogeom_algo::make_edge_between(
         model,
         ogeom_geom::LineCurve::segment(a, b, tol)?.into(),
         (0.0, length),
@@ -439,7 +438,7 @@ fn seamed_band(
     // both are stated in the edge's own direction.
     let far = column(low_chart[low_chart.len() - 1], high_chart[0])?;
     let near = column(low_chart[0], high_chart[high_chart.len() - 1])?;
-    crate::build::attach_seam(
+    ogeom_algo::attach_seam(
         model,
         &seam,
         far,
@@ -465,60 +464,6 @@ fn seamed_band(
     }
     edges.push(seam.reversed());
     Ok(make_wire(model, &edges, tol)?.shape)
-}
-
-/// A surface's window widened until it holds every one of `points`.
-///
-/// Only the *bounded* directions can be widened, and only they need to be: a
-/// periodic direction already covers its whole turn. A surface with no
-/// bounded direction — a sphere, a torus — comes back as it went in.
-fn widened_to_hold(
-    surface: &ogeom_geom::SurfaceGeometry,
-    points: &[Point],
-    tol: Tolerances,
-) -> OgeomResult<ogeom_geom::SurfaceGeometry> {
-    use ogeom_geom::SurfaceGeometry as S;
-    use ogeom_geom::{ConeSurface, CylinderSurface, PlaneSurface, Surface as _};
-    if points.is_empty() {
-        return Ok(surface.clone());
-    }
-    let (mut u0, mut u1) = (f64::INFINITY, f64::NEG_INFINITY);
-    let (mut v0, mut v1) = (f64::INFINITY, f64::NEG_INFINITY);
-    for p in points {
-        let projected = crate::measure::project_on_surface(surface, *p, 16, tol)?;
-        let (u, v) = projected.parameters;
-        u0 = u0.min(u);
-        u1 = u1.max(u);
-        v0 = v0.min(v);
-        v1 = v1.max(v);
-    }
-    if !u0.is_finite() || !v0.is_finite() {
-        return Ok(surface.clone());
-    }
-    // A margin proportional to what was measured, so widening is not itself
-    // a tolerance question.
-    let margin = |lo: f64, hi: f64| (hi - lo).mul_add(0.05, tol.confusion() * 1e3);
-    let ((du0, du1), (dv0, dv1)) = surface.domain();
-    Ok(match surface {
-        S::Plane(p) => {
-            let (mu, mv) = (margin(u0, u1), margin(v0, v1));
-            PlaneSurface::over(
-                p.plane(),
-                (du0.min(u0 - mu), du1.max(u1 + mu)),
-                (dv0.min(v0 - mv), dv1.max(v1 + mv)),
-            )?
-            .into()
-        }
-        S::Cylinder(c) => {
-            let m = margin(v0, v1);
-            CylinderSurface::new(c.cylinder(), (dv0.min(v0 - m), dv1.max(v1 + m)))?.into()
-        }
-        S::Cone(c) => {
-            let m = margin(v0, v1);
-            ConeSurface::new(c.cone(), (dv0.min(v0 - m), dv1.max(v1 + m)))?.into()
-        }
-        other => other.clone(),
-    })
 }
 
 /// Distance to a surface's *unbounded* carrier, where it has one — the
@@ -809,7 +754,7 @@ fn segmented_regions(
                 if members.iter().any(touches) {
                     let d = carrier_distance(surface, centroid)
                         .or_else(|| {
-                            crate::measure::project_on_surface(surface, centroid, 12, tol)
+                            ogeom_algo::project_on_surface(surface, centroid, 12, tol)
                                 .ok()
                                 .map(|projection| projection.point.distance(centroid))
                         })
@@ -969,7 +914,7 @@ pub fn to_brep_with(
                     // The occurrence turns round; the edge does not.
                     Some(existing) => existing.reversed(),
                     None => {
-                        let fresh = crate::build::make_edge_between(
+                        let fresh = ogeom_algo::make_edge_between(
                             model,
                             ogeom_geom::LineCurve::segment(a, b, tol)?.into(),
                             (0.0, a.distance(b)),
@@ -1016,7 +961,7 @@ pub fn to_brep_with(
             .flatten()
             .map(|index| mesh.positions[*index as usize])
             .collect();
-        let curved_surface = &widened_to_hold(curved_surface, &boundary, tol)?;
+        let curved_surface = &ogeom_algo::widened_to_hold(curved_surface, &boundary, tol)?;
         let surface_id = model.geometry_mut().add_surface(curved_surface.clone());
         let periodic_u = curved_surface.is_periodic_u();
         let u_period = {
@@ -1030,7 +975,7 @@ pub fn to_brep_with(
             let mut params: Vec<Point2> = Vec::with_capacity(ring.len());
             for (k, index) in ring.iter().enumerate() {
                 let p = mesh.positions[*index as usize];
-                let projected = crate::measure::project_on_surface(curved_surface, p, 16, tol)?;
+                let projected = ogeom_algo::project_on_surface(curved_surface, p, 16, tol)?;
                 let (mut u, v) = projected.parameters;
                 if periodic_u && k > 0 {
                     let prev = params[k - 1].x;
@@ -1119,7 +1064,7 @@ pub fn to_brep_with(
         history.generate(face, shell.clone());
     }
     // Closed shells bound solids; open ones are sheets and stay sheets.
-    if crate::build::is_shell_closed(model, &shell)? {
+    if ogeom_algo::is_shell_closed(model, &shell)? {
         let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
         history.generate(&shell, solid.clone());
         return Ok(Built::new(solid, history));
@@ -1142,7 +1087,7 @@ fn attach(
         Point2::new(local.x, local.y)
     };
     let (a, b) = (flat(from), flat(to));
-    crate::build::attach_pcurve(
+    ogeom_algo::attach_pcurve(
         model,
         edge,
         ogeom_geom::Line2d::segment(a, b, tol)?.into(),
@@ -1316,8 +1261,8 @@ fn enclosed(mesh: &Triangulation, ring: &[u32]) -> f64 {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::{make_box, make_cylinder, make_wedge, shape_bounds};
     use approx::assert_relative_eq;
+    use ogeom_algo::{make_box, make_cylinder, make_wedge, shape_bounds};
     use ogeom_mesh::{Deflection, triangulate};
 
     const T: Tolerances = Tolerances::millimetres();
@@ -1380,11 +1325,11 @@ mod tests {
         assert_eq!(counts(ogeom_topo::ShapeType::Vertex), 8);
 
         assert!(
-            crate::check(&model, &recovered.shape, T)
+            ogeom_algo::check(&model, &recovered.shape, T)
                 .unwrap()
                 .is_valid(),
             "{}",
-            crate::check(&model, &recovered.shape, T).unwrap()
+            ogeom_algo::check(&model, &recovered.shape, T).unwrap()
         );
         let again = triangulate(&model, &recovered.shape, fine(), T).unwrap();
         assert!(again.is_closed());
@@ -1436,7 +1381,7 @@ mod tests {
         // boundary in two pieces, which is a face nothing can triangulate.
         let mut model = Model::new();
         let here = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T).unwrap();
-        let there = crate::transformed(
+        let there = ogeom_algo::transformed(
             &mut model,
             &here.shape,
             ogeom_math::Transform::translation(Vector::new(5.0, 0.0, 0.0)),

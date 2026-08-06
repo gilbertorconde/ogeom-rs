@@ -55,11 +55,11 @@ and holds nothing yet.
 • crates/ogeom-geom        curves and surfaces behind adaptor traits
 • crates/ogeom-topo        the B-rep data model
 • crates/ogeom-algo        construction, primitives, measurement, classification
-• crates/ogeom-mesh        tessellation, and mesh → B-rep
+• crates/ogeom-mesh        tessellation
 • crates/ogeom-io          native format, STEP, IGES, glTF, STL, DXF, and the rest
 • crates/ogeom-intersect   curve/curve, curve/surface, surface/surface
 • crates/ogeom-bool        general fuse and the boolean filters
-• crates/ogeom-heal        healing, simplification, canonical recognition
+• crates/ogeom-heal        healing, simplification, upgrading
 • crates/ogeom-fillet      blends and chamfers
 • crates/ogeom-offset      offset, shell, sweep, loft, form features
 • crates/ogeom-hlr         hidden line removal, sections, 2D drawings
@@ -76,6 +76,7 @@ workspace the kernel excludes. `docs/SCOPE.md` says what the boundary is and
 
 ```
 • outside/crates/ogeom-recognize   feature recognition and process planning
+• outside/crates/ogeom-reverse     mesh → B-rep, canonical surface recognition
 • outside/crates/ogeom-select      BVH picking, selection, draft and thickness
 • outside/crates/ogeom-sketch      2D geometric constraint solver
 ```

@@ -11,11 +11,9 @@
 pub mod reanchor;
 pub mod same_parameter;
 
-pub mod canonical;
 pub mod reshape;
 pub mod upgrade;
 
-pub use canonical::{Canonical, Recognized, mesh_to_brep, recognize_points, recognize_surface};
 pub use reanchor::reanchor_periodic_rings;
 pub use reshape::Reshape;
 pub use same_parameter::{SameParameterReport, repair_same_parameter};

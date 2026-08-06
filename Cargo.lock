@@ -392,7 +392,6 @@ name = "ogeom-heal"
 version = "0.0.0"
 dependencies = [
  "approx",
- "nalgebra",
  "ogeom-algo",
  "ogeom-core",
  "ogeom-geom",
