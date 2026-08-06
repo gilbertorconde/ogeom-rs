@@ -21,7 +21,7 @@
 //! cylinder rather than a smooth patch that resembles one is the whole problem,
 //! and getting it wrong produces a solid that looks right, measures nearly
 //! right, and has the wrong surface underneath every operation that follows.
-//! `docs/SCOPE.md` schedules canonical recognition where the tolerance
+//! `docs/PLAN.md` carries canonical recognition where the tolerance
 //! machinery to decide it honestly will exist.
 //!
 //! So: planes are recovered exactly, because a plane through a set of coplanar
@@ -93,7 +93,7 @@ pub const CREASE: f64 = core::f64::consts::FRAC_PI_6;
 /// every mesh: a coarse tessellation of a large cylinder turns by more than a
 /// fine one of a small one, so a threshold that rejects the first accepts the
 /// second. Deciding it from the mesh's own deflection is what canonical
-/// recognition does, and `docs/SCOPE.md` schedules it. Until then the number is
+/// recognition does, and `docs/PLAN.md` carries it. Until then the number is
 /// a parameter with a stated default, so a caller can see it and choose.
 ///
 /// Returns the regions found and the triangles that joined none. A caller that

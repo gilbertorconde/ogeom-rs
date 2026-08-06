@@ -30,7 +30,7 @@ use crate::support::Seat;
 ///
 /// Planar supports only. A curved face-face blend needs the marching seat
 /// — the spine that is the two offset surfaces' own intersection — which is
-/// recorded as owed in `docs/SCOPE.md` rather than guessed at here.
+/// recorded as owed in `docs/PLAN.md` rather than guessed at here.
 ///
 /// # Errors
 ///

@@ -20,7 +20,7 @@
 //! And they are *ground truth*. Every result here can be checked without
 //! reference to anything but the two surfaces themselves: sample the curve, ask
 //! each surface how far away it is, and the answer should be zero. That check is
-//! the instrument the intersection gate is measured with (`docs/SCOPE.md` §7),
+//! the instrument the intersection gate is measured with (`docs/PLAN.md`),
 //! and it only exists because these cases are exact. A benchmark whose reference
 //! answers came from the thing being benchmarked would measure nothing.
 //!

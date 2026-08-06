@@ -177,7 +177,7 @@ fn tangency_along_a_circle_produces_fragments_not_a_curve() {
     //
     // Pinned as the documented limit it is. The honest answer needs
     // tangential contact traced as its own kind of curve, which is recorded
-    // in SCOPE's deferred table.
+    // in the remaining work in docs/PLAN.md.
     let torus: SurfaceGeometry =
         TorusSurface::new(Torus::new(Frame::WORLD, 3.0, 1.0, T).unwrap()).into();
     let resting = pln(Point::new(0.0, 0.0, 1.0), Vector::Z);

@@ -101,7 +101,7 @@ pub fn remove_feature(
             Construction,
             "undoing a blend or a bevel means restoring the corner it eased, \
              which is the wedge construction run backwards and belongs with \
-             the blends — see docs/SCOPE.md"
+             the blends — see docs/PLAN.md"
         ),
     }
 }

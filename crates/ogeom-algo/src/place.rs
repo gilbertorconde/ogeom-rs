@@ -17,7 +17,7 @@
 //! so — [`transformed`] takes a [`Transform`], which is a similarity by
 //! construction, and a general affine transform is a different type it will not
 //! accept. Applying one means rebuilding the geometry, which is not written
-//! yet; see the deferred list in `docs/SCOPE.md`.
+//! yet; see the deferred list in `docs/PLAN.md`.
 //!
 //! # A copy is for editing, not for moving
 //!

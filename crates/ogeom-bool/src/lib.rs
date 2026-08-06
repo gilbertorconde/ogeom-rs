@@ -636,7 +636,7 @@ fn fill(
                                     "same-domain contact whose edges have no \
                                      closed-form projection into the shared \
                                      surface's chart is refused — see the \
-                                     deferred table in docs/SCOPE.md"
+                                     remaining work in docs/PLAN.md"
                                 );
                             };
                             contacts.push(ContactRec {
@@ -1689,7 +1689,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                                  with no coincident partner face to compare \
                                  sides against — edge or vertex contact is \
                                  refused rather than resolved — see the \
-                                 deferred table in docs/SCOPE.md"
+                                 remaining work in docs/PLAN.md"
                             );
                         };
                         state

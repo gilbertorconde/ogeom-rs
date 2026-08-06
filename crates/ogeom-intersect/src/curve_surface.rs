@@ -3,7 +3,7 @@
 //! *Elsewhere* this is `GeomAPI_IntCS` and the line/quadric half of `IntAna`.
 //! Two consumers drive it: edge/face interference in the boolean's pave
 //! filler, and the exact point-in-solid classifier, which is a ray/surface
-//! query per face — the very use `docs/SCOPE.md` schedules "exact after §7".
+//! query per face — the very use `docs/PLAN.md` carries what remains exact.
 //!
 //! # Well-posed, for once
 //!

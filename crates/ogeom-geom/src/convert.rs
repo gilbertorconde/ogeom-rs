@@ -3,7 +3,7 @@
 //! Every curve here has a *rational* B-spline form that is exact — not a fit, not
 //! an approximation to a tolerance. A circle is a piecewise rational quadratic
 //! and lands on the circle at every parameter, which is the whole reason
-//! rational weights exist and why `docs/SCOPE.md` calls them load-bearing rather
+//! rational weights exist and why `docs/PLAN.md` calls them load-bearing rather
 //! than an optional extra.
 //!
 //! # What conversion is for
@@ -25,7 +25,7 @@
 //! That is why this is a geometry operation rather than a topology one. An edge
 //! converted this way needs its range restated and each of its pcurves re-derived
 //! against a surface whose parameterization has also moved, and re-deriving a
-//! pcurve is a fit rather than a construction. See `docs/SCOPE.md`.
+//! pcurve is a fit rather than a construction. See `docs/PLAN.md`.
 //!
 //! Because the parameterization moves, an *arc* is built as an arc rather than
 //! built whole and trimmed: the span is what is converted, so the result covers

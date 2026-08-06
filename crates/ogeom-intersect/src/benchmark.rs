@@ -1,6 +1,6 @@
 //! Measuring an intersection against ground truth.
 //!
-//! `docs/SCOPE.md` §7 gates the boolean pipeline on this: surface/surface
+//! `docs/PLAN.md` gates the boolean pipeline on this: surface/surface
 //! quality is *measured* before anything is built on top of it, and if it does
 //! not clear the bar the project ships as a geometry library rather than
 //! spending years on a boolean over an intersector that cannot carry one.

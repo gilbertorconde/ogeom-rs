@@ -7,11 +7,30 @@ link against, bundle, or commit any existing CAD kernel, and nothing in this
 repository will pull one in. `cargo build` needs a Rust toolchain and nothing
 else — no C compiler, no system libraries, no submodules. Keep it that way.
 
-**Do not copy, translate, or transliterate another kernel's source into
-`crates/`.** Most existing kernels are copyleft; ogeom is MIT OR
-Apache-2.0, and those licenses are not compatible in the direction of copying.
+**Never take another kernel's code into this one.** Not as a dependency, not
+as a vendored subtree, not as a file, not as a fragment pasted into a
+function. Nothing in `crates/` may be a piece of somebody else's build.
 
-Implement from:
+**Never name another kernel in this repository's source or documentation.**
+Not in a comment, not in an error message, not in a commit message, not in a
+design note. Concepts get our own names throughout; where a format or an
+algorithm has a conventional name, use the neutral one — a file format is
+named by its own extension, an algorithm by what it does.
+
+Where a reference implementation informs the work, what crosses over is
+*understanding*: what an algorithm must handle, what cases exist, what a
+format's records mean. What is written here is written here, in our own
+structure and our own vocabulary.
+
+Be aware of what that means legally. Most existing kernels are copyleft;
+ogeom is MIT OR Apache-2.0. Renaming identifiers does not change whether a
+work is derived from another — copyright follows the expression, not the
+names — so the further an implementation stays from somebody else's
+structure, the sounder its footing. Formats are the safe case: a file format
+is not copyrightable, and implementing one from its published description is
+interoperation, which is exactly how the STEP support was built.
+
+Prefer, in order:
 
 - published algorithm specifications and papers — Shewchuk on robust predicates,
   Piegl & Tiller on NURBS, the marching-intersection and surface-surface
@@ -19,12 +38,11 @@ Implement from:
 - format standards — ISO 10303 for STEP, and the rest;
 - first principles, and your own tests.
 
-If you keep another kernel's source checked out locally as reference — for
-understanding *what* an algorithm has to handle — that is your business. It goes
-under `vendor/` or `reference/`, both of which are gitignored, and it never
-becomes a build or test dependency of this repository.
+A reference checkout kept locally goes under `vendor/` or `reference/`, both
+of which are gitignored. It never becomes a build or test dependency, and it
+never appears by name in anything committed.
 
-Naming and vocabulary are a different matter. `docs/SCOPE.md` and
+Naming and vocabulary are a different matter. `docs/PLAN.md` and
 `docs/DATA_MODEL.md` cite conventional names for concepts, because that is how
 the field talks about itself and inventing private jargon would help nobody.
 That is a glossary, not a dependency.
@@ -37,7 +55,7 @@ request so we can be careful about which areas you touch.
 Scope is set by what a CAD kernel has to do, not by what any particular
 application asks for. "Application X implements this itself" and "application X
 rarely calls this" are not arguments for leaving something out — see
-`docs/SCOPE.md`, which explains why an earlier draft of that document got this
+`docs/PLAN.md`, which explains why an earlier draft of that document got this
 wrong and what it cost.
 
 Usage data is a **sequencing** input: it tells us what to make fast and get right
@@ -67,8 +85,8 @@ wrong solid does not throw; it corrupts a document six operations later. So:
   results for analytic inputs; closed-form volumes and areas; known benchmark
   datasets. Not "it looks right in the viewer".
 - **There is no external oracle**, and comparing against another kernel is not
-  available to us — it would mean vendoring one. `docs/SCOPE.md`'s
-  [Verification](docs/SCOPE.md#verification) section sets out the five
+  available to us — it would mean vendoring one. `docs/PLAN.md`'s
+  [Verification](docs/PLAN.md#verification) section sets out the five
   directions that stand in for one, and which kinds of defect each is there to
   catch. Reach for the one that fits what you are adding; the cheapest useful
   one is usually asking whether the same result built two ways agrees.
@@ -91,7 +109,7 @@ wrong solid does not throw; it corrupts a document six operations later. So:
 - New dependencies need a permissive license (`deny.toml` enforces this), and must
   not introduce a C toolchain requirement or break WASM. Raise it explicitly if
   you think an exception is warranted. Check
-  [Dependencies considered](docs/SCOPE.md#appendix-dependencies-considered)
+  [Dependencies considered](docs/PLAN.md#appendix-dependencies-considered)
   first — several plausible-looking crates have already been turned down for
   reasons that have not changed, and one is scheduled to be re-examined at a
   specific point rather than whenever it next comes up. Add your decision there
