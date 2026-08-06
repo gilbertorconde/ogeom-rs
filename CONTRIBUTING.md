@@ -11,24 +11,32 @@ else — no C compiler, no system libraries, no submodules. Keep it that way.
 as a vendored subtree, not as a file, not as a fragment pasted into a
 function. Nothing in `crates/` may be a piece of somebody else's build.
 
-**Never name another kernel in this repository's source or documentation.**
-Not in a comment, not in an error message, not in a commit message, not in a
-design note. Concepts get our own names throughout; where a format or an
-algorithm has a conventional name, use the neutral one — a file format is
-named by its own extension, an algorithm by what it does.
+**Do not build a carbon copy of one.** This is the rule the others serve. A
+kernel that mirrors another's class hierarchy, its decomposition, its call
+graph and its file layout is a translation wearing different identifiers, and
+that is what is being avoided — not the words the field uses. What crosses
+over from a reference implementation is *understanding*: what an algorithm
+must handle, which cases exist, what a format's records mean. The design here
+is arrived at here.
 
-Where a reference implementation informs the work, what crosses over is
-*understanding*: what an algorithm must handle, what cases exist, what a
-format's records mean. What is written here is written here, in our own
-structure and our own vocabulary.
+**Use the field's vocabulary.** A boundary representation is a b-rep, a point
+in the plane is a `Point2`, a curve in a surface's parameters is a pcurve, a
+blend is a fillet. That is what the field calls these things, and inventing
+private jargon would make this kernel harder to read for no gain at all.
+`docs/PLAN.md` and `docs/DATA_MODEL.md` use conventional names deliberately.
+Naming a *concept* is not naming a dependency.
 
-Be aware of what that means legally. Most existing kernels are copyleft;
+**Do not name another kernel in anything committed.** The vocabulary is the
+field's; the product names are not ours to carry. Where a format needs its own
+magic bytes to be readable at all, those bytes are data and go in as data.
+
+Be aware of what all this means legally. Most existing kernels are copyleft;
 ogeom is MIT OR Apache-2.0. Renaming identifiers does not change whether a
-work is derived from another — copyright follows the expression, not the
-names — so the further an implementation stays from somebody else's
-structure, the sounder its footing. Formats are the safe case: a file format
-is not copyrightable, and implementing one from its published description is
-interoperation, which is exactly how the STEP support was built.
+work is derived from another — copyright follows the expression, not the names
+— which is exactly why the rule above is about *structure* and not about
+words. Formats are the safe case: a file format is not copyrightable, and
+implementing one from its published description is interoperation, which is
+how both the STEP and the `.brep` support were built.
 
 Prefer, in order:
 
@@ -41,11 +49,6 @@ Prefer, in order:
 A reference checkout kept locally goes under `vendor/` or `reference/`, both
 of which are gitignored. It never becomes a build or test dependency, and it
 never appears by name in anything committed.
-
-Naming and vocabulary are a different matter. `docs/PLAN.md` and
-`docs/DATA_MODEL.md` cite conventional names for concepts, because that is how
-the field talks about itself and inventing private jargon would help nobody.
-That is a glossary, not a dependency.
 
 If you have contributed to another CAD kernel's source, say so in your pull
 request so we can be careful about which areas you touch.

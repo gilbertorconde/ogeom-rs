@@ -27,8 +27,9 @@ of them has rejected a patch.
 - **No stubs.** Either it is implemented, or it is in this document.
 - **Scope is set by the capability, not by any application's demand for it.**
 - **Independence.** See `CONTRIBUTING.md`. Nothing here links against,
-  bundles, or imports another kernel, and no other kernel is named in the
-  source or the documentation.
+  bundles or imports another kernel, and the design is arrived at here rather
+  than mirrored from one. The field's vocabulary is used throughout, because
+  that is how the field talks about itself.
 
 ## The remaining work
 
