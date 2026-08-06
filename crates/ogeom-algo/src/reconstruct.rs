@@ -206,6 +206,321 @@ pub struct CurvedRegion {
     pub samples: Vec<(Point, Vector)>,
 }
 
+/// One chord of a recovered boundary: the edge, its chart line, and the sag
+/// its own tolerance records.
+///
+/// Shared by index pair, so two regions meeting along a chord meet along one
+/// edge — which is what makes the recovered shell close.
+#[allow(clippy::too_many_arguments)]
+fn chart_edge(
+    model: &mut Model,
+    mesh: &ogeom_topo::Triangulation,
+    (from, to): (u32, u32),
+    (pa2, pb2): (Point2, Point2),
+    surface: &ogeom_geom::SurfaceGeometry,
+    surface_id: ogeom_topo::SurfaceId,
+    vertices: &mut HashMap<u32, Shape>,
+    shared: &mut HashMap<(u32, u32), Shape>,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    use ogeom_geom::Surface as _;
+    let (a, b) = (mesh.positions[from as usize], mesh.positions[to as usize]);
+    for (index, at) in [(from, a), (to, b)] {
+        vertices
+            .entry(index)
+            .or_insert_with(|| model.add_vertex(ogeom_topo::VertexData::new(at)));
+    }
+    let key = (from.min(to), from.max(to));
+    let edge = match shared.get(&key) {
+        Some(existing) => existing.reversed(),
+        None => {
+            let fresh = crate::build::make_edge_between(
+                model,
+                ogeom_geom::LineCurve::segment(a, b, tol)?.into(),
+                (0.0, a.distance(b)),
+                &vertices[&from].clone(),
+                &vertices[&to].clone(),
+                tol,
+            )?
+            .shape;
+            shared.insert(key, fresh.clone());
+            fresh
+        }
+    };
+    // The pcurve is stated in the *edge's* own direction, which a reversed
+    // occurrence traverses backwards.
+    let (pa2, pb2) = if edge.orientation() == ogeom_topo::Orientation::Reversed {
+        (pb2, pa2)
+    } else {
+        (pa2, pb2)
+    };
+    let length = a.distance(b);
+    let span = pb2 - pa2;
+    if span.magnitude() <= f64::MIN_POSITIVE || length <= tol.confusion() {
+        ogeom_bail!(
+            Construction,
+            "a curved boundary chord collapsed in the chart"
+        );
+    }
+    let towards = ogeom_math::Direction2::new(span / length, tol).map_err(|_| {
+        ogeom_core::ogeom_err!(
+            Construction,
+            "a curved boundary chord has no chart direction"
+        )
+    })?;
+    crate::build::attach_pcurve(
+        model,
+        &edge,
+        ogeom_geom::Line2d::over(ogeom_math::Axis2::new(pa2, towards), 0.0, length)?.into(),
+        surface_id,
+        Location::identity(),
+        (0.0, length),
+    )?;
+    // The chord stands off the recognized surface by its sag; the edge's own
+    // tolerance records it.
+    let mid2 = pa2 + span * 0.5;
+    if let Ok(on_surface) = surface.point_at(mid2.x, mid2.y, tol) {
+        let chord_mid = a + (b - a) * 0.5;
+        let sag = on_surface.distance(chord_mid);
+        if let Some(node) = model.node_mut(&edge)
+            && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+        {
+            data.tolerance = data.tolerance.widen_to(sag + tol.confusion());
+        }
+    }
+    Ok(edge)
+}
+
+/// The one wire two full-period rings bound, closed by a seam.
+///
+/// Two rings that each wrap the whole chart bound a band, and in the chart a
+/// band is not closed by its rims alone: the walk goes along the lower rim
+/// for a turn, *up a seam*, back along the upper rim for a turn, and down the
+/// seam again. The seam is one edge occurring twice, carrying the two chart
+/// columns a turn apart, which is exactly what a cylinder built from first
+/// principles has and what a face recovered from a mesh was missing.
+#[allow(clippy::too_many_arguments)]
+fn seamed_band(
+    model: &mut Model,
+    mesh: &ogeom_topo::Triangulation,
+    first: (&[u32], &[Point2]),
+    second: (&[u32], &[Point2]),
+    advances: (f64, f64),
+    period: f64,
+    surface: &ogeom_geom::SurfaceGeometry,
+    surface_id: ogeom_topo::SurfaceId,
+    vertices: &mut HashMap<u32, Shape>,
+    shared: &mut HashMap<(u32, u32), Shape>,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    // The lower rim is the one at the smaller chart height; the walk runs it
+    // with `u` increasing and the upper one with `u` decreasing, which is the
+    // sense that encloses the band rather than its complement.
+    let height = |params: &[Point2]| -> f64 {
+        #[expect(clippy::cast_precision_loss, reason = "a vertex count")]
+        let count = params.len().max(1) as f64;
+        params.iter().map(|p| p.y).sum::<f64>() / count
+    };
+    let (low, low_advance, high, high_advance) = if height(first.1) <= height(second.1) {
+        (first, advances.0, second, advances.1)
+    } else {
+        (second, advances.1, first, advances.0)
+    };
+    let ordered = |ring: &[u32], params: &[Point2], forward: bool| -> (Vec<u32>, Vec<Point2>) {
+        if forward {
+            (ring.to_vec(), params.to_vec())
+        } else {
+            let mut r: Vec<u32> = ring.to_vec();
+            let mut p: Vec<Point2> = params.to_vec();
+            r.reverse();
+            p.reverse();
+            (r, p)
+        }
+    };
+    let (low_ring, low_params) = ordered(low.0, low.1, low_advance > 0.0);
+    let (high_ring, high_params) = ordered(high.0, high.1, high_advance < 0.0);
+    if low_ring.len() < 3 || high_ring.len() < 3 {
+        ogeom_bail!(
+            Construction,
+            "a rim of fewer than three chords bounds nothing"
+        );
+    }
+
+    // Where the seam stands: at the lower rim's own start, and at whichever
+    // vertex of the upper rim is nearest it round the chart — the most nearly
+    // vertical seam there is, which is the one least likely to cross a rim.
+    let start = low_params[0].x;
+    let mut at = 0;
+    let mut best = f64::INFINITY;
+    for (k, p) in high_params.iter().enumerate() {
+        let mut gap = (p.x - start).rem_euclid(period);
+        if gap > period / 2.0 {
+            gap -= period;
+        }
+        if gap.abs() < best {
+            best = gap.abs();
+            at = k;
+        }
+    }
+    // The upper rim, rotated to start at the seam and shifted so its walk
+    // begins a whole turn along and ends where the seam comes back down.
+    let mut high_walk: Vec<u32> = high_ring[at..].to_vec();
+    high_walk.extend_from_slice(&high_ring[..at]);
+    let mut high_chart: Vec<Point2> = Vec::with_capacity(high_params.len() + 1);
+    {
+        let base = high_params[at].x;
+        let mut previous = base;
+        for k in 0..high_params.len() {
+            let mut u = high_params[(at + k) % high_params.len()].x;
+            while u - previous > period / 2.0 {
+                u -= period;
+            }
+            while previous - u > period / 2.0 {
+                u += period;
+            }
+            previous = u;
+            high_chart.push(Point2::new(
+                u + period,
+                high_params[(at + k) % high_params.len()].y,
+            ));
+        }
+        // Closing back onto the seam, a turn lower than it started.
+        high_chart.push(Point2::new(base, high_params[at].y));
+    }
+
+    // The lower rim's walk: a whole turn, closing a period along.
+    let mut low_chart: Vec<Point2> = low_params.clone();
+    low_chart.push(Point2::new(low_params[0].x + period, low_params[0].y));
+
+    let mut edges = Vec::with_capacity(low_ring.len() + high_ring.len() + 2);
+    for i in 0..low_ring.len() {
+        edges.push(chart_edge(
+            model,
+            mesh,
+            (low_ring[i], low_ring[(i + 1) % low_ring.len()]),
+            (low_chart[i], low_chart[i + 1]),
+            surface,
+            surface_id,
+            vertices,
+            shared,
+            tol,
+        )?);
+    }
+
+    // The seam itself: one edge from the lower rim's start to the upper rim's,
+    // carrying both chart columns.
+    let (from, to) = (low_ring[0], high_walk[0]);
+    let (a, b) = (mesh.positions[from as usize], mesh.positions[to as usize]);
+    for (index, point) in [(from, a), (to, b)] {
+        vertices
+            .entry(index)
+            .or_insert_with(|| model.add_vertex(ogeom_topo::VertexData::new(point)));
+    }
+    let length = a.distance(b);
+    if length <= tol.confusion() {
+        ogeom_bail!(Construction, "the band's two rims meet, so it has no seam");
+    }
+    let seam = crate::build::make_edge_between(
+        model,
+        ogeom_geom::LineCurve::segment(a, b, tol)?.into(),
+        (0.0, length),
+        &vertices[&from].clone(),
+        &vertices[&to].clone(),
+        tol,
+    )?
+    .shape;
+    let column = |from2: Point2, to2: Point2| -> OgeomResult<ogeom_geom::PlanarCurve> {
+        let span = to2 - from2;
+        let towards = ogeom_math::Direction2::new(span / length, tol)
+            .map_err(|_| ogeom_core::ogeom_err!(Construction, "the seam has no chart direction"))?;
+        Ok(ogeom_geom::Line2d::over(ogeom_math::Axis2::new(from2, towards), 0.0, length)?.into())
+    };
+    // Forward is the walk *up* the far column; reversed is the near one, and
+    // both are stated in the edge's own direction.
+    let far = column(low_chart[low_chart.len() - 1], high_chart[0])?;
+    let near = column(low_chart[0], high_chart[high_chart.len() - 1])?;
+    crate::build::attach_seam(
+        model,
+        &seam,
+        far,
+        near,
+        surface_id,
+        Location::identity(),
+        (0.0, length),
+    )?;
+    edges.push(seam.clone());
+
+    for i in 0..high_walk.len() {
+        edges.push(chart_edge(
+            model,
+            mesh,
+            (high_walk[i], high_walk[(i + 1) % high_walk.len()]),
+            (high_chart[i], high_chart[i + 1]),
+            surface,
+            surface_id,
+            vertices,
+            shared,
+            tol,
+        )?);
+    }
+    edges.push(seam.reversed());
+    Ok(make_wire(model, &edges, tol)?.shape)
+}
+
+/// A surface's window widened until it holds every one of `points`.
+///
+/// Only the *bounded* directions can be widened, and only they need to be: a
+/// periodic direction already covers its whole turn. A surface with no
+/// bounded direction — a sphere, a torus — comes back as it went in.
+fn widened_to_hold(
+    surface: &ogeom_geom::SurfaceGeometry,
+    points: &[Point],
+    tol: Tolerances,
+) -> OgeomResult<ogeom_geom::SurfaceGeometry> {
+    use ogeom_geom::SurfaceGeometry as S;
+    use ogeom_geom::{ConeSurface, CylinderSurface, PlaneSurface, Surface as _};
+    if points.is_empty() {
+        return Ok(surface.clone());
+    }
+    let (mut u0, mut u1) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut v0, mut v1) = (f64::INFINITY, f64::NEG_INFINITY);
+    for p in points {
+        let projected = crate::measure::project_on_surface(surface, *p, 16, tol)?;
+        let (u, v) = projected.parameters;
+        u0 = u0.min(u);
+        u1 = u1.max(u);
+        v0 = v0.min(v);
+        v1 = v1.max(v);
+    }
+    if !u0.is_finite() || !v0.is_finite() {
+        return Ok(surface.clone());
+    }
+    // A margin proportional to what was measured, so widening is not itself
+    // a tolerance question.
+    let margin = |lo: f64, hi: f64| (hi - lo).mul_add(0.05, tol.confusion() * 1e3);
+    let ((du0, du1), (dv0, dv1)) = surface.domain();
+    Ok(match surface {
+        S::Plane(p) => {
+            let (mu, mv) = (margin(u0, u1), margin(v0, v1));
+            PlaneSurface::over(
+                p.plane(),
+                (du0.min(u0 - mu), du1.max(u1 + mu)),
+                (dv0.min(v0 - mv), dv1.max(v1 + mv)),
+            )?
+            .into()
+        }
+        S::Cylinder(c) => {
+            let m = margin(v0, v1);
+            CylinderSurface::new(c.cylinder(), (dv0.min(v0 - m), dv1.max(v1 + m)))?.into()
+        }
+        S::Cone(c) => {
+            let m = margin(v0, v1);
+            ConeSurface::new(c.cone(), (dv0.min(v0 - m), dv1.max(v1 + m)))?.into()
+        }
+        other => other.clone(),
+    })
+}
+
 /// Distance to a surface's *unbounded* carrier, where it has one — the
 /// adoption test must not be defeated by a window clamped tight around a
 /// half-grown region.
@@ -687,16 +1002,31 @@ pub fn to_brep_with(
 
     for (region, curved_surface) in &recognized {
         use ogeom_geom::Surface as _;
+        // The recognizer sizes its window from the samples it recognized on,
+        // and a sample is a triangle's *centroid* — half a chord inside the
+        // region's own rim. The face is trimmed to that rim, so its chart
+        // reaches past the window the surface was given, and evaluating it
+        // there is a domain error rather than a wrong answer. Widen the
+        // window to hold the boundary before anything is built on it: the
+        // extent of a surface is a parameterization window and not a trim,
+        // so making it larger changes nothing about the face.
+        let boundary: Vec<Point> = region
+            .loops
+            .iter()
+            .flatten()
+            .map(|index| mesh.positions[*index as usize])
+            .collect();
+        let curved_surface = &widened_to_hold(curved_surface, &boundary, tol)?;
         let surface_id = model.geometry_mut().add_surface(curved_surface.clone());
         let periodic_u = curved_surface.is_periodic_u();
         let u_period = {
             let ((ua, ub), _) = curved_surface.domain();
             ub - ua
         };
-        let mut wires = Vec::with_capacity(region.loops.len());
+        // Chart parameters per ring vertex, the angle unwrapped so a ring
+        // that crosses the chart's period stays continuous.
+        let mut charts: Vec<Vec<Point2>> = Vec::with_capacity(region.loops.len());
         for ring in &region.loops {
-            // Chart parameters per ring vertex, the angle unwrapped so a
-            // ring that crosses the chart's period stays continuous.
             let mut params: Vec<Point2> = Vec::with_capacity(ring.len());
             for (k, index) in ring.iter().enumerate() {
                 let p = mesh.positions[*index as usize];
@@ -713,73 +1043,69 @@ pub fn to_brep_with(
                 }
                 params.push(Point2::new(u, v));
             }
+            charts.push(params);
+        }
+
+        // How far round the chart each ring travels. A ring that comes back
+        // where it started travels nothing; one that wraps the whole period
+        // travels a turn — and that is a face with no boundary in `u` at
+        // all, whose chart region two such rings bound only once a *seam*
+        // closes them. A drum recovered from its own mesh is exactly this.
+        let wrap = |params: &[Point2]| -> f64 {
+            if !periodic_u || params.len() < 2 {
+                return 0.0;
+            }
+            let mut advance = params[params.len() - 1].x - params[0].x;
+            // The closing step, unwrapped like the rest.
+            let mut last = params[0].x - params[params.len() - 1].x;
+            while last > u_period / 2.0 {
+                last -= u_period;
+            }
+            while last < -u_period / 2.0 {
+                last += u_period;
+            }
+            advance += last;
+            advance
+        };
+        let wrapping: Vec<usize> = (0..charts.len())
+            .filter(|&i| (wrap(&charts[i]).abs() - u_period).abs() < u_period * 1e-3)
+            .collect();
+
+        let mut wires = Vec::with_capacity(region.loops.len());
+        if wrapping.len() == 2 {
+            wires.push(seamed_band(
+                model,
+                mesh,
+                (&region.loops[wrapping[0]], &charts[wrapping[0]]),
+                (&region.loops[wrapping[1]], &charts[wrapping[1]]),
+                (wrap(&charts[wrapping[0]]), wrap(&charts[wrapping[1]])),
+                u_period,
+                curved_surface,
+                surface_id,
+                &mut vertices,
+                &mut shared,
+                tol,
+            )?);
+        }
+        for (index, ring) in region.loops.iter().enumerate() {
+            if wrapping.len() == 2 && wrapping.contains(&index) {
+                continue;
+            }
+            let params = &charts[index];
             let mut edges = Vec::with_capacity(ring.len());
             for i in 0..ring.len() {
                 let (from, to) = (ring[i], ring[(i + 1) % ring.len()]);
-                let (a, b) = (mesh.positions[from as usize], mesh.positions[to as usize]);
-                for (index, at) in [(from, a), (to, b)] {
-                    vertices
-                        .entry(index)
-                        .or_insert_with(|| model.add_vertex(ogeom_topo::VertexData::new(at)));
-                }
-                let key = (from.min(to), from.max(to));
-                let edge = match shared.get(&key) {
-                    Some(existing) => existing.reversed(),
-                    None => {
-                        let fresh = crate::build::make_edge_between(
-                            model,
-                            ogeom_geom::LineCurve::segment(a, b, tol)?.into(),
-                            (0.0, a.distance(b)),
-                            &vertices[&from].clone(),
-                            &vertices[&to].clone(),
-                            tol,
-                        )?
-                        .shape;
-                        shared.insert(key, fresh.clone());
-                        fresh
-                    }
-                };
-                let (pa2, pb2) = if edge.orientation() == ogeom_topo::Orientation::Reversed {
-                    (params[(i + 1) % ring.len()], params[i])
-                } else {
-                    (params[i], params[(i + 1) % ring.len()])
-                };
-                let length = a.distance(b);
-                let span = pb2 - pa2;
-                if span.magnitude() <= f64::MIN_POSITIVE || length <= tol.confusion() {
-                    ogeom_bail!(
-                        Construction,
-                        "a curved boundary chord collapsed in the chart"
-                    );
-                }
-                let towards = ogeom_math::Direction2::new(span / length, tol).map_err(|_| {
-                    ogeom_core::ogeom_err!(
-                        Construction,
-                        "a curved boundary chord has no chart direction"
-                    )
-                })?;
-                crate::build::attach_pcurve(
+                edges.push(chart_edge(
                     model,
-                    &edge,
-                    ogeom_geom::Line2d::over(ogeom_math::Axis2::new(pa2, towards), 0.0, length)?
-                        .into(),
+                    mesh,
+                    (from, to),
+                    (params[i], params[(i + 1) % ring.len()]),
+                    curved_surface,
                     surface_id,
-                    Location::identity(),
-                    (0.0, length),
-                )?;
-                // The chord stands off the recognized surface by its sag;
-                // the edge's own tolerance records it.
-                let mid2 = pa2 + span * 0.5;
-                if let Ok(on_surface) = curved_surface.point_at(mid2.x, mid2.y, tol) {
-                    let chord_mid = a + (b - a) * 0.5;
-                    let sag = on_surface.distance(chord_mid);
-                    if let Some(node) = model.node_mut(&edge)
-                        && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
-                    {
-                        data.tolerance = data.tolerance.widen_to(sag + tol.confusion());
-                    }
-                }
-                edges.push(edge);
+                    &mut vertices,
+                    &mut shared,
+                    tol,
+                )?);
             }
             wires.push(make_wire(model, &edges, tol)?.shape);
         }

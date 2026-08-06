@@ -45,9 +45,34 @@ fn a_drum_survives_the_round_trip() {
     assert_eq!(cylinders, 1, "one recognized wall");
 
     // The B-rep is whole: three faces, every edge used twice.
-    let _ = true_volume;
     let faces = explore_unique(&fresh, &rebuilt, ShapeType::Face).unwrap();
     assert_eq!(faces.len(), 3, "two caps and one wall");
     let shell = explore_unique(&fresh, &rebuilt, ShapeType::Shell).unwrap();
     assert!(ogeom::algo::is_shell_closed(&fresh, &shell[0]).unwrap());
+
+    // And it can be *measured*, which is the thing a shape has to be for any
+    // claim about it to mean anything. The wall wraps its surface's whole
+    // period, so its chart region is closed by a seam rather than by its rims
+    // — without one the boundary encloses no area and the face does not
+    // tessellate at all.
+    let measured =
+        ogeom::algo::volume_properties(&fresh, &rebuilt, Deflection::with_chord(0.01).unwrap(), T)
+            .expect("a rebuilt drum has a volume")
+            .mass;
+    // The rims came back as the polygons the mesh had, so the recovered solid
+    // is the drum's inscribed prism and reads a little under. The mesh was
+    // built at a chord of 0.01 on a radius of five, which is about a
+    // hundred-and-ten-gon; an inscribed n-gon loses about `π²/(3n²)` of the
+    // circle's area, and the measurement is held to that rather than to the
+    // circle it approximates.
+    let sides = explore_unique(&fresh, &rebuilt, ShapeType::Edge)
+        .unwrap()
+        .len()
+        .max(3);
+    #[allow(clippy::cast_precision_loss, reason = "an edge count")]
+    let deficit = core::f64::consts::PI.powi(2) / (3.0 * (sides as f64).powi(2));
+    assert!(
+        measured <= true_volume && measured > true_volume * (1.0 - 20.0 * deficit),
+        "the inscribed drum: {measured} against {true_volume}, deficit {deficit}"
+    );
 }
