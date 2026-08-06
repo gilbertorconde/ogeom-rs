@@ -1592,10 +1592,29 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 // needed; the rest are for the piece that merely *touches*
                 // the other solid, whose roomiest probe can land on the
                 // contact and read neither in nor out.
+                //
+                // A partner face is asked before the classifier, not after.
+                // Where a piece sits on a surface the other solid also
+                // carries, the partner *is* the answer — and getting there
+                // through the classifier means every ray grazing the shared
+                // face, its whole fan of directions exhausted, before it
+                // reports the On the partner list already knew. On a part
+                // whose bore is refilled by its own cylinder that is the
+                // difference between a tenth of a second and a minute.
+                let partners = if from_a { &same_a[fi] } else { &same_b[fi] };
                 let mut chosen = None;
                 for candidate in &piece.interiors {
                     let at = face.surface.point_at(candidate.x, candidate.y, tol)?;
-                    let says = classify_in_solid_exact(model, other, at, tol)?;
+                    let shared = !partners.is_empty()
+                        && partners.iter().any(|&pi| {
+                            let partner = if from_a { &gb.faces[pi] } else { &ga.faces[pi] };
+                            chart_point_of(partner, at, tol).is_some()
+                        });
+                    let says = if shared {
+                        Containment::On
+                    } else {
+                        classify_in_solid_exact(model, other, at, tol)?
+                    };
                     if chosen.is_none() || !matches!(says, Containment::On) {
                         chosen = Some((*candidate, at, says));
                     }
@@ -1616,7 +1635,6 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                         // On the other boundary: same-domain contact. The
                         // partner face on the shared surface decides whether
                         // the two materials lie on the same side or oppose.
-                        let partners = if from_a { &same_a[fi] } else { &same_b[fi] };
                         let own_normal = outward_normal(face, interior, tol)?;
                         let mut resolved = None;
                         for &pi in partners {
@@ -1686,6 +1704,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             }
         }
     }
+    ogeom_core::progress::stage("boolean: classified");
     Ok(GeneralFused {
         a: ga,
         b: gb,
@@ -1962,6 +1981,7 @@ fn assemble_result(
     b: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    ogeom_core::progress::stage("boolean: assemble");
     let mut history = History::new();
     let source_face = |piece: &FacePiece| -> Shape {
         if piece.from_a {

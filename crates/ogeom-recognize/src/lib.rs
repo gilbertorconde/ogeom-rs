@@ -14,8 +14,12 @@
 //! face traverses it — says whether the surface turns outward or folds in,
 //! and parallel normals are a smooth join with no fold to name.
 
+mod defeature;
+mod machining;
 mod recognize;
 
+pub use defeature::remove_feature;
+pub use machining::{Operation, Step, manufacturing_plan};
 pub use recognize::{
     Boss, Chamfer, Feature, FeatureNode, Fillet, Hole, HoleKind, PartialRound, Pocket,
     feature_tree, recognize,
