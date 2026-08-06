@@ -274,9 +274,20 @@ hand against the specification reads as the square it describes.
 the entity-to-topology mapping is documented. A week-scale job, staged the
 way STEP was: geometry first, then trimmed surfaces, then assemblies.
 
-**F3 — reading glTF.** Written as GLB already. Reading means the accessor and
-buffer-view indirection, every component type and stride a writer might have
-chosen, and the sparse-accessor form. Ordinary work, not yet done.
+**F3 — reading glTF.** **Done.** `read_glb` and `read_gltf`, with the whole
+indirection honoured because a writer chooses it and a reader does not get to
+assume: accessors over buffer views over buffers, byte strides, byte offsets
+at both levels, all six component types, `normalized` integers scaled into
+fractions, and the sparse block applied over the base it sits on. The scene's
+node hierarchy is walked and composed, stated as a matrix or as
+translation–rotation–scale, and normals come through the inverse transpose so
+an uneven scale leaves them normal. A `.gltf` document's data uris are decoded;
+an external file reference is refused, as are a non-triangle primitive mode,
+a Draco payload and a node that is its own descendant, each by name.
+
+It needed a JSON parser, which is now `ogeom_io::json` — the grammar and
+nothing else, no dependency, written because glTF's structure is JSON and
+`cargo build` still needs a Rust toolchain and nothing more.
 
 **F4 — SAT, X\_T, JT.** Refused for want of public documentation. These are
 proprietary formats whose specifications are not published; implementing them

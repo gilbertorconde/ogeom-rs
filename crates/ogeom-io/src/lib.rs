@@ -25,12 +25,15 @@
 
 pub mod brep;
 pub mod dxf;
+pub mod json;
 pub mod mesh_formats;
 pub mod native;
 pub mod step;
 pub mod stl;
 pub mod threemf;
 
-pub use mesh_formats::{ExportMesh, write_glb, write_obj, write_ply};
+pub use mesh_formats::{
+    ExportMesh, ImportedMesh, read_glb, read_gltf, write_glb, write_obj, write_ply,
+};
 pub use step::{StepImport, StepReport, read_step, write_step};
 pub use stl::{Encoding, read, write};
