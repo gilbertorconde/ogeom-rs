@@ -17,6 +17,7 @@ ogeom-intersect.workspace = true
 
 [dev-dependencies]
 ogeom-algo.workspace = true
+ogeom-bool.workspace = true
 approx.workspace = true
 proptest.workspace = true
 
