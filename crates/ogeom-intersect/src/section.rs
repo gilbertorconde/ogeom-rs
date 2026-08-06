@@ -525,7 +525,7 @@ fn exact_pcurve(
     match surface {
         SurfaceGeometry::Plane(p) => on_plane(curve, p.plane(), tol),
         SurfaceGeometry::Cylinder(c) => on_cylinder(curve, range, c.cylinder(), tol),
-        SurfaceGeometry::Sphere(s) => on_sphere(curve, s.sphere(), tol),
+        SurfaceGeometry::Sphere(s) => on_sphere(curve, range, s.sphere(), tol),
         SurfaceGeometry::Torus(t) => on_torus(curve, t.torus(), tol),
         SurfaceGeometry::Cone(c) => on_cone(curve, range, c.cone(), tol),
         _ => None,
@@ -945,8 +945,129 @@ fn on_cylinder(
     }
 }
 
-/// The pcurve of a circle of latitude on a sphere.
-fn on_sphere(curve: &Curve, sphere: ogeom_math::Sphere, tol: Tolerances) -> Option<PlanarCurve> {
+/// The pcurve of half a meridian: a great circle through both poles,
+/// restricted to one side of them.
+///
+/// The whole circle has no chart image a single curve can carry — its
+/// longitude jumps by half a turn at each pole — but each *half* does, and it
+/// is a straight line. Writing the circle's own parameter as `t` and the
+/// sphere's axis as `Z = cos α·X + sin α·Y` in the circle's own frame, the
+/// point's height above the equator is `r·cos(t − α)`, so the latitude is
+/// `asin(cos(t − α))`, which on `t − α ∈ [0, π]` is exactly `π/2 − (t − α)` —
+/// affine in `t`, with slope one. The longitude is constant on that half and
+/// half a turn away on the other. So the pcurve is a vertical line in the
+/// chart, sharing the circle's parameter exactly, and the caller's `range` is
+/// what says which half is meant.
+///
+/// The half is not assumed: the returned line is lifted back through the
+/// sphere at stations along the range and compared against the circle, so a
+/// misread orientation is caught here rather than downstream.
+fn on_meridian(
+    curve: &ogeom_geom::CircleCurve,
+    range: (f64, f64),
+    sphere: ogeom_math::Sphere,
+    tol: Tolerances,
+) -> Option<PlanarCurve> {
+    let circle = curve.circle();
+    // A reversed circle runs its own angle backwards, and the shifted angle
+    // below is measured in the *curve's* parameter, so the sign travels with
+    // it: the sweep flips and so do both the latitude's slope and which half
+    // of the circle a range names.
+    let sweep = if curve.is_reversed() { -1.0 } else { 1.0 };
+    let frame = sphere.frame();
+    let z = frame.z().vector();
+    // A great circle: the sphere's own centre and radius, in a plane holding
+    // the axis. Anything else is not a meridian.
+    if circle.centre().distance(sphere.centre()) > tol.confusion() {
+        return None;
+    }
+    if (circle.radius() - sphere.radius()).abs() > tol.confusion() {
+        return None;
+    }
+    let (cx, cy) = (circle.frame().x().vector(), circle.frame().y().vector());
+    let (xz, yz) = (cx.dot(z), cy.dot(z));
+    // The axis must lie *in* the circle's plane, or the circle is neither a
+    // parallel nor a meridian and has no closed-form chart image at all.
+    if xz.hypot(yz) < 1.0 - tol.angular() {
+        return None;
+    }
+    let raw_alpha = yz.atan2(xz);
+    // `w` is the circle's own horizontal direction: the axis turned a quarter
+    // turn within the circle's plane.
+    let w = cx * -raw_alpha.sin() + cy * raw_alpha.cos();
+    let local = frame.to_local(sphere.centre() + w);
+    let longitude = local.y.atan2(local.x);
+
+    let half = core::f64::consts::PI;
+    let mid = f64::midpoint(range.0, range.1);
+    // Where the range sits relative to the poles, in the shifted angle
+    // `x = sweep·t − α` that measures the descent from the north pole.
+    let x_mid = (sweep * mid - raw_alpha).rem_euclid(core::f64::consts::TAU);
+    let x_mid = if x_mid > half {
+        x_mid - core::f64::consts::TAU
+    } else {
+        x_mid
+    };
+    let span = sweep * (range.1 - range.0);
+    let (mut x0, mut x1) = (x_mid - span / 2.0, x_mid + span / 2.0);
+    if x0 > x1 {
+        core::mem::swap(&mut x0, &mut x1);
+    }
+    // The turn count `α` was written with is what decides whether the
+    // latitude comes out inside the chart or a whole turn away from it, so
+    // the branch the range actually sits on is the one the line is built
+    // from.
+    let alpha = sweep.mul_add(mid, -x_mid);
+    let slack = tol.parametric().max(1e-9);
+    let (axis_point, towards) = if x0 >= -slack && x1 <= half + slack {
+        // The descending half: latitude π/2 − (sweep·t − α), longitude
+        // constant.
+        (
+            Point2::new(longitude, half.mul_add(0.5, alpha)),
+            ogeom_math::Vector2::new(0.0, -sweep),
+        )
+    } else if x0 >= -half - slack && x1 <= slack {
+        // The ascending half, half a turn round the chart.
+        (
+            Point2::new(longitude + half, half.mul_add(0.5, -alpha)),
+            ogeom_math::Vector2::new(0.0, sweep),
+        )
+    } else {
+        // The range straddles a pole: no one line covers it.
+        return None;
+    };
+    let towards = ogeom_math::Direction2::new(towards, tol).ok()?;
+    let margin = (range.1 - range.0) * 0.25;
+    let line: PlanarCurve = Line2d::over(
+        ogeom_math::Axis2::new(axis_point, towards),
+        range.0 - margin,
+        range.1 + margin,
+    )
+    .ok()?
+    .into();
+
+    // Measured, not assumed: the chart line lifted back through the sphere is
+    // the circle it claims to be.
+    for k in 0..=4 {
+        let t = (range.1 - range.0).mul_add(f64::from(k) / 4.0, range.0);
+        let uv = line.point_at(t, tol).ok()?;
+        let lifted = ogeom_math::elementary::sphere_at(&sphere, uv.x, uv.y).point;
+        let want = curve.point_at(t, tol).ok()?;
+        if lifted.distance(want) > tol.confusion() {
+            return None;
+        }
+    }
+    Some(line)
+}
+
+/// The pcurve of a circle on a sphere: a parallel of latitude, or one half of
+/// a meridian.
+fn on_sphere(
+    curve: &Curve,
+    range: (f64, f64),
+    sphere: ogeom_math::Sphere,
+    tol: Tolerances,
+) -> Option<PlanarCurve> {
     let Curve::Circle(c) = curve else {
         return None;
     };
@@ -961,7 +1082,7 @@ fn on_sphere(curve: &Curve, sphere: ogeom_math::Sphere, tol: Tolerances) -> Opti
         .magnitude()
         > tol.angular()
     {
-        return None;
+        return on_meridian(c, range, sphere, tol);
     }
     let local = frame.to_local(circle.centre());
     if local.x.abs() > tol.confusion() || local.y.abs() > tol.confusion() {
@@ -1445,6 +1566,74 @@ mod tests {
                         "normal {normal:?}, t {t}: pcurve lifts {lifted:?} against {p3:?}"
                     );
                 }
+            }
+        }
+    }
+
+    /// A plane through a ball's own axis cuts a meridian. The whole circle has
+    /// no chart image — its longitude jumps half a turn at each pole — but
+    /// each half is a straight line in the chart, exactly, at the circle's own
+    /// parameter. Pinned by lifting the line back through the sphere and
+    /// demanding the circle's point, on every half of every orientation.
+    #[test]
+    fn a_meridian_half_has_an_exact_line_for_a_pcurve() {
+        use ogeom_geom::Surface as _;
+        let half = core::f64::consts::PI;
+        for (centre, radius) in [(Point::ORIGIN, 4.0), (Point::new(1.0, -2.0, 0.5), 1.25)] {
+            let ball = sphere(centre, radius);
+            let SurfaceGeometry::Sphere(s) = &ball else {
+                panic!("a sphere surface");
+            };
+            // Three planes through the axis, at different azimuths, so the
+            // constant longitude is not accidentally zero.
+            for azimuth in [0.0_f64, 0.7, 2.4] {
+                let normal = Vector::new(-azimuth.sin(), azimuth.cos(), 0.0);
+                let cut = plane(centre, normal);
+                let SurfaceIntersection::Along(curves) =
+                    intersect_surfaces(&ball, &cut, IntersectOptions::default(), T).unwrap()
+                else {
+                    panic!("a plane through the centre meets the ball along a circle");
+                };
+                assert_eq!(curves.len(), 1, "one great circle");
+                let circle = &curves[0].curve;
+                assert!(curves[0].exact);
+                // The whole circle has no chart image; each half does.
+                assert!(
+                    exact_pcurve_over(circle, circle.domain(), &ball, T).is_none(),
+                    "the whole meridian has no single chart image"
+                );
+                for (lo, hi) in [(0.0, half), (half, 2.0 * half), (0.3, half - 0.1)] {
+                    let pcurve = exact_pcurve_over(circle, (lo, hi), &ball, T)
+                        .expect("half a meridian has an exact pcurve");
+                    assert!(
+                        matches!(pcurve, PlanarCurve::Line(_)),
+                        "and it is a straight line in the chart"
+                    );
+                    for i in 0..=16 {
+                        let t = (hi - lo).mul_add(f64::from(i) / 16.0, lo);
+                        let want = circle.point_at(t, T).unwrap();
+                        let uv = pcurve.point_at(t, T).unwrap();
+                        assert!(
+                            uv.y >= -half.mul_add(0.5, 1e-12) && uv.y <= half.mul_add(0.5, 1e-12),
+                            "the latitude stays inside the chart: {}",
+                            uv.y
+                        );
+                        let lifted = ball
+                            .point_at(uv.x.rem_euclid(core::f64::consts::TAU), uv.y, T)
+                            .unwrap();
+                        assert!(
+                            want.distance(lifted) < 1e-9,
+                            "azimuth {azimuth}, t {t}: {lifted:?} against {want:?}"
+                        );
+                    }
+                }
+                // A range straddling a pole has none, and says so rather than
+                // answering for one side.
+                assert!(
+                    exact_pcurve_over(circle, (half - 0.2, half + 0.2), &ball, T).is_none(),
+                    "a range across a pole has no one line"
+                );
+                let _ = s;
             }
         }
     }

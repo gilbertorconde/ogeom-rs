@@ -152,15 +152,158 @@ pub fn intersect_curves(
     tol: Tolerances,
 ) -> OgeomResult<CurveIntersection<Point>> {
     check(options)?;
-    if let (Curve::Line(x), Curve::Line(y)) = (a, b) {
-        return Ok(line_line_3d(x, y, options, tol));
-    }
-    if let (Curve::Circle(x), Curve::Circle(y)) = (a, b)
-        && let Some(found) = same_circle_3d(x, y, tol)
-    {
-        return Ok(found);
+    let (basis_a, window_a) = through_trim(a);
+    let (basis_b, window_b) = through_trim(b);
+    if let Some(found) = analytic_3d(basis_a, basis_b, options, tol) {
+        return Ok(clipped_to_windows(
+            found,
+            (basis_a, window_a),
+            (basis_b, window_b),
+            tol,
+        ));
     }
     general_3d(a, b, options, tol)
+}
+
+/// A curve seen through a trim: the curve the analytic path can answer for,
+/// and the window it is restricted to.
+///
+/// The trim shares its basis's parameterization, so the window is stated in
+/// the same numbers the analytic answer comes back in and clipping is an
+/// interval intersection rather than a change of variable. A *reversed* trim
+/// does renumber, so it is left to the sampling path rather than mis-read.
+fn through_trim(curve: &Curve) -> (&Curve, Option<(f64, f64)>) {
+    match curve {
+        Curve::Trimmed(t) if !t.is_reversed() => (t.basis(), Some(Curve3d::domain(&**t))),
+        other => (other, None),
+    }
+}
+
+/// The closed-form answers for a pair of space curves, or `None` where there
+/// is none and the sampling path is the honest route.
+fn analytic_3d(
+    a: &Curve,
+    b: &Curve,
+    options: CurveCurveOptions,
+    tol: Tolerances,
+) -> Option<CurveIntersection<Point>> {
+    match (a, b) {
+        (Curve::Line(x), Curve::Line(y)) => Some(line_line_3d(x, y, options, tol)),
+        (Curve::Circle(x), Curve::Circle(y)) => same_circle_3d(x, y, tol),
+        _ => None,
+    }
+}
+
+/// Restrict an answer about two whole curves to the windows their trims
+/// actually cover.
+///
+/// Both parts matter. A crossing is kept only where *both* parameters fall
+/// inside their window — on a periodic basis after whichever whole turn
+/// brings them there. An overlap is an interval on each side tied by an
+/// affine correspondence, so it is clipped on one side, carried across, and
+/// clipped again, and what comes back is the stretch both trims really share.
+fn clipped_to_windows(
+    found: CurveIntersection<Point>,
+    a: (&Curve, Option<(f64, f64)>),
+    b: (&Curve, Option<(f64, f64)>),
+    tol: Tolerances,
+) -> CurveIntersection<Point> {
+    let (basis_a, window_a) = a;
+    let (basis_b, window_b) = b;
+    if window_a.is_none() && window_b.is_none() {
+        return found;
+    }
+    let period = |curve: &Curve| -> Option<f64> {
+        if curve.is_periodic() {
+            let (lo, hi) = curve.domain();
+            (hi > lo).then_some(hi - lo)
+        } else {
+            None
+        }
+    };
+    let (pa, pb) = (period(basis_a), period(basis_b));
+    let slack = tol.parametric();
+    let placed = |t: f64, window: Option<(f64, f64)>, period: Option<f64>| -> Option<f64> {
+        let Some((lo, hi)) = window else {
+            return Some(t);
+        };
+        for k in [0.0, 1.0, -1.0, 2.0, -2.0] {
+            let shifted = period.map_or(t, |p| p.mul_add(k, t));
+            if shifted >= lo - slack && shifted <= hi + slack {
+                return Some(shifted);
+            }
+            if period.is_none() {
+                break;
+            }
+        }
+        None
+    };
+
+    let mut crossings = Vec::with_capacity(found.crossings.len());
+    for crossing in found.crossings {
+        let (Some(on_a), Some(on_b)) = (
+            placed(crossing.on_a, window_a, pa),
+            placed(crossing.on_b, window_b, pb),
+        ) else {
+            continue;
+        };
+        crossings.push(Crossing {
+            on_a,
+            on_b,
+            ..crossing
+        });
+    }
+
+    let mut overlaps = Vec::with_capacity(found.overlaps.len());
+    for overlap in found.overlaps {
+        let span_a = overlap.on_a.1 - overlap.on_a.0;
+        let span_b = overlap.on_b.1 - overlap.on_b.0;
+        if span_a.abs() <= f64::MIN_POSITIVE || span_b.abs() <= f64::MIN_POSITIVE {
+            continue;
+        }
+        let to_b = |t: f64| overlap.on_b.0 + span_b * (t - overlap.on_a.0) / span_a;
+        let to_a = |t: f64| overlap.on_a.0 + span_a * (t - overlap.on_b.0) / span_b;
+        let ordered = |r: (f64, f64)| if r.0 <= r.1 { r } else { (r.1, r.0) };
+        let mut kept = ordered(overlap.on_a);
+        // The other side's window, spoken in this side's parameter, and
+        // shifted by whole turns until it meets what is left.
+        if let Some(w) = window_b {
+            let (wlo, whi) = ordered((to_a(w.0), to_a(w.1)));
+            let shift = pa.unwrap_or(0.0);
+            let mut best: Option<(f64, f64)> = None;
+            for k in [0.0, 1.0, -1.0, 2.0, -2.0] {
+                let candidate = (
+                    kept.0.max(shift.mul_add(k, wlo)),
+                    kept.1.min(shift.mul_add(k, whi)),
+                );
+                if candidate.1 - candidate.0 > best.map_or(0.0, |(lo, hi)| hi - lo) {
+                    best = Some(candidate);
+                }
+                if shift == 0.0 {
+                    break;
+                }
+            }
+            let Some(candidate) = best else { continue };
+            kept = candidate;
+        }
+        if let Some(w) = window_a {
+            let (wlo, whi) = ordered(w);
+            kept = (kept.0.max(wlo), kept.1.min(whi));
+        }
+        if kept.1 - kept.0 <= slack {
+            continue;
+        }
+        let (on_a, on_b) = if span_a >= 0.0 {
+            (kept, (to_b(kept.0), to_b(kept.1)))
+        } else {
+            ((kept.1, kept.0), (to_b(kept.1), to_b(kept.0)))
+        };
+        overlaps.push(Overlap { on_a, on_b });
+    }
+    CurveIntersection {
+        crossings,
+        overlaps,
+    }
 }
 
 /// Two circles tracing the same point set in space: the circle counterpart of
@@ -180,17 +323,35 @@ fn same_circle_3d(
     if (ca.radius() - cb.radius()).abs() > tol.confusion() {
         return None;
     }
-    // Parallel or antiparallel axes both trace the same set; the windings
-    // differ, which the parameter ranges do not need to express.
+    // Parallel or antiparallel axes both trace the same set, at whatever
+    // phase and winding each was written with.
     let (za, zb) = (ca.frame().z().vector(), cb.frame().z().vector());
     if za.cross(zb).magnitude() > tol.angular() {
         return None;
     }
+    // The ranges are a *correspondence*, which is what an overlap means and
+    // what a caller carrying a split across the pair relies on: `on_b`'s ends
+    // are the parameters at which `b` stands where `a`'s own ends do. Phase
+    // comes from where `a` starts on `b`, winding from whether the two run
+    // the same way there — and a pair written with opposite windings runs
+    // `on_b` backwards, which is exactly the truth about them.
+    let (lo, hi) = Curve3d::domain(a);
+    let start = a.point_at(lo, tol).ok()?;
+    let local = cb.frame().to_local(start);
+    let angle = local.y.atan2(local.x);
+    let phase = if b.is_reversed() { -angle } else { angle }.rem_euclid(core::f64::consts::TAU);
+    let along_a = a.d1_at(lo, tol).ok()?;
+    let along_b = b.d1_at(phase, tol).ok()?;
+    let winding: f64 = if along_a.dot(along_b) >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
     Some(CurveIntersection {
         crossings: Vec::new(),
         overlaps: vec![Overlap {
-            on_a: Curve3d::domain(a),
-            on_b: Curve3d::domain(b),
+            on_a: (lo, hi),
+            on_b: (phase, winding.mul_add(hi - lo, phase)),
         }],
     })
 }
@@ -958,6 +1119,55 @@ mod tests {
             assert!(hit.point.y.abs() < 1e-9);
             let on_wave = wave.point_at(hit.on_a, T).unwrap();
             assert!(on_wave.is_equal(hit.point, T));
+        }
+    }
+
+    /// Two descriptions of one circle overlap over the whole turn, and the
+    /// overlap's two ranges *correspond*: `on_b`'s ends are where `b` stands
+    /// at `a`'s own ends. A caller carrying a split from one to the other —
+    /// the boolean, pairing a hole's arcs against the disc that fills them —
+    /// reads that correspondence and gets the same point back, whatever phase
+    /// and winding the two were written with.
+    #[test]
+    fn one_circle_written_twice_states_the_correspondence_between_them() {
+        use ogeom_math::{Direction, Vector};
+        let a: Curve = CircleCurve::new(Circle::new(Frame::WORLD, 3.0, T).unwrap()).into();
+        // The same circle seen from underneath, started a third of a turn
+        // round: opposite winding, arbitrary phase.
+        let third = 2.0 * core::f64::consts::PI / 3.0;
+        let flipped = Frame::new(
+            Point::ORIGIN,
+            -Direction::Z,
+            Direction::new(Vector::new(third.cos(), third.sin(), 0.0), T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let b: Curve = CircleCurve::new(Circle::new(flipped, 3.0, T).unwrap()).into();
+        for pair in [(&a, &b), (&b, &a)] {
+            let found = intersect_curves(pair.0, pair.1, CurveCurveOptions::default(), T).unwrap();
+            assert!(
+                found.crossings.is_empty(),
+                "every point is a hit, so none is"
+            );
+            assert_eq!(found.overlaps.len(), 1);
+            let overlap = &found.overlaps[0];
+            let span = overlap.on_a.1 - overlap.on_a.0;
+            for i in 0..=8 {
+                let t = f64::from(i) / 8.0;
+                let ta = span.mul_add(t, overlap.on_a.0);
+                let tb = (overlap.on_b.1 - overlap.on_b.0).mul_add(t, overlap.on_b.0);
+                let pa = pair.0.point_at(ta, T).unwrap();
+                let pb = pair
+                    .1
+                    .point_at(tb.rem_euclid(core::f64::consts::TAU), T)
+                    .unwrap();
+                assert!(
+                    pa.distance(pb) < 1e-9,
+                    "at {t}: {pa:?} against {pb:?} (on_a {:?} on_b {:?})",
+                    overlap.on_a,
+                    overlap.on_b
+                );
+            }
         }
     }
 

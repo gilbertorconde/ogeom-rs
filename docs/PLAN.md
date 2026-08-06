@@ -33,84 +33,89 @@ of them has rejected a patch.
 
 ## The remaining work
 
-### A. The boolean's interference table
+### A. The boolean's interference table — **A1–A5 closed**
 
-One family, and the highest-leverage item in this document: five otherwise
-unrelated gaps are all the same thing, and studying how the problem is
-usually structured says the fix is not five patches but one change of shape.
+Five otherwise unrelated gaps, held to be one family. Each is pinned by a
+measured test in `crates/ogeom/tests/boolean_interference.rs`, written before
+the change and asserting volumes against closed forms, not merely that no
+error came back. All five pass.
 
-**The gaps.** *A1, a tool flush with the part*: refill a bore with the
-cylinder it was cut by, ends flush with the faces it broke, and the kept
-pieces do not close into a shell. *A2, a section through a chart pole*: a
-plane cutting a ball on its own axis ends its section exactly at both poles,
-where the sphere's derivatives degenerate. *A3, a ball on a box's corner
-vertex*: fails in the rebuild with a geometry error rather than by name.
-*A4, sections through tangential contact*: a plane through a bore's axis
-meets the wall along its rulings — the textbook half-section, so this one
-buys a drawing feature too (D2). *A5, a shell around a three-cylinder tip*:
-blocks the vertex blend (B2); the tool is known, the removal fails.
+**The gaps, and what each turned out to be.**
 
-**Why they are one gap.** Our boolean computes face-against-face sections
-and then decides where each resulting piece stands by *asking* — probing an
-interior point and casting rays. Every failure above is that question being
-put somewhere it cannot be answered: on a coincidence, at a degeneracy, in a
-cusp, on a tangency. The multi-probe retry and the widened bands are
-workarounds for asking a question that should never have been asked.
+*A1, a tool flush with the part* — refill a bore with the cylinder that cut
+it, ends flush with the faces it broke. Two things: an overlap between two
+*curves* was being read as an overlap between the two *edges*, so a hole's
+arc and the disc filling it paved each other at the turn's ends rather than
+the arc's and the two sides sewed against different subdivisions; and the
+rule for which copy of a coincident pair to keep was stated by argument
+identity rather than by region, so the tool's cap — filling a hole the part
+has no face for at all — was dropped and the result had a hole in it. The
+substitution is now by containment: a piece is dropped only where a piece of
+the other argument genuinely stands where it does.
 
-The established shape for this is an **interference table**: a pass that
-computes, once and up front, every way the two shapes meet — and a build
-phase that only *reads* it. Four properties of that shape matter here.
+*A2, a section through a chart pole* — a plane cutting a ball on its own
+axis. Two things again. The section's ends land exactly on the poles, and an
+*open* section's own end is its domain end, which the rebuild was folding
+round to the domain start — the far pole, eight radii away. And the section
+itself was being marched, because a meridian's chart image has no closed
+form: its longitude jumps half a turn at each pole. Each *half* does have
+one, and it is a straight line — writing the sphere's axis as
+`Z = cos α·X + sin α·Y` in the circle's own frame, the latitude is
+`asin(cos(t − α))`, which on `t − α ∈ [0, π]` is exactly `π/2 − (t − α)`,
+affine in the circle's own parameter. So the section is cut at the poles the
+face's own degenerate edges name, and each half comes back exact rather than
+fitted. The plane's half ball is now measured against `2πr³/3`, not against
+a marched approximation of it.
 
-*Interferences are computed in dimension order.* Vertex against vertex,
-then vertex against edge, edge against edge, vertex against face, edge
-against face, and only then face against face — each stage consuming what
-the earlier ones established. A3 is a vertex-against-face interference, a
-first-class thing computed early; today it has nowhere to be recorded and
-surfaces as an anomaly during face splitting.
+*A3, a ball on a box's corner vertex* — three placements: tangent at the
+vertex from outside, centred on it (where the closed form is an octant), and
+with the vertex exactly on the sphere so that all three of the box's faces
+cut the ball through one point. The last is a triple point, and what it
+needed was the seam: a crossing found on a periodic curve comes back in
+`[0, 2π)` while the seam edge covers `[-π/2, π/2]`, so every crossing on it
+was outside its range, discarded, and the seam never split where the chain
+of section arcs actually met it.
 
-*Coincidence is identified, not rediscovered.* Where two edges lie on each
-other, or an edge lies in a face, they are recorded as one shared piece
-carrying the set of faces it lies on, and a substitution map says which
-entity stands in for which. A1 is exactly this: the flush tool's faces
-coincide with the part's, and today nothing says so until the classifier
-trips over it.
+*A4, a section through tangential contact* — a plane through a bore's axis
+meets the wall along its rulings, and one of those rulings *is* the wall's
+own seam. The exclusion for "this section is already boundary" was global,
+so the ruling vanished from the plane too — where it is not boundary at all
+but the curve separating the two halves the section leaves. It is now
+recorded per face, and a section is dropped only from the face that already
+carries it, either as a boundary edge or as a contact strand. This buys the
+drawing feature D2 as well.
 
-*An edge's interference range excludes its own ends.* A piece of an edge is
-bounded by two vertices, each with a tolerance; the part of it that can
-genuinely interfere with anything is the stretch *outside* both tolerance
-spheres. Testing on that stretch rather than the nominal one is the
-systematic version of what our probe-ranking does by luck.
+*A5, a shell around a three-cylinder tip* — the corner block less the ball,
+which is the tool the three-blend corner needs. The block's three far planes
+are *tangent* to the ball, at exactly the three vertices adjacent to the
+corner; the near three cut it in a meridian, a meridian along the seam, and
+the equator. What it needed was the same lesson as A1 one level up: an
+overlap between a section and a boundary edge must be clipped to the range
+the *edge* covers. A sphere's seam and the far half of the same great circle
+lie on one curve, and reading the whole curve as boundary made the meridian
+opposite the seam disappear — which is the octant's own edge.
 
-*Each face carries a state cache.* During the interference pass, every face
-accumulates which boundary pieces and vertices are inside it, which are on
-it, and which came from section curves. The build phase reads that cache
-instead of probing: a piece bounded by pieces known to be *on* the other
-face is on it, and no ray is cast at all.
+**What this says about the shape.** The plan proposed an `Interference`
+table built before any splitting and a build phase with no classifier in it.
+That structure was *not* built, and it is worth being exact about why. Four
+of the table's five stated properties turned out to be the load-bearing
+ones, and each is now enforced where the question is actually asked:
+coincidence identified rather than rediscovered (the overlap correspondence
+between two descriptions of one circle is now stated, and clipped to the
+ranges the edges cover); an interference range that excludes what its edge
+does not reach; degeneracies consumed before the stage that cannot handle
+them, rather than after; and substitution by region rather than by name. The
+fifth — a per-face state cache that lets the build phase read a
+classification instead of probing for it — is not built, and the ray
+classifier is still there. It was not what any of A1–A5 needed. It remains
+the right thing to do for *speed*, and the case that would force it for
+correctness has not been produced.
 
-*Degenerate edges get their own late pass.* After pcurves exist, each
-degenerate edge is split by finding the boundary pieces that run through its
-vertex and pairing against them **in the chart**, where the pole is a line
-rather than a point. That is what we already do for pole strands; what we
-lack is the state cache that would let the pieces either side be classified
-without a probe. A2 is that.
-
-**The construction.** An `Interference` table built before any splitting,
-holding: vertex identifications, edge pieces with their interference ranges,
-shared pieces with their substitution map, the per-face state cache, and the
-section curves. Then a build phase with no classifier in it. This is a
-larger change than "fix the arrangement", and it is worth it: it removes an
-entire class of failure rather than another instance of it.
-
-**A caution worth recording.** Mature implementations of this design still
+**A caution worth keeping.** Mature implementations of this design still
 state that a face's classification can depend on which point of the face is
 chosen, and still keep an open-ended list of configurations that defeat
-them. The table does not make the problem disappear; it makes most of the
-cases stop needing the fragile question. Expect the campaign to close A1–A5
-and to leave a shorter, better-named list behind.
-
-**Verification.** Each of A1–A5 becomes a test written before the change,
-asserting the measured result — volume, face count, shell closure — not
-merely that no error came back.
+them. Nothing here changes that. What closed is five named configurations,
+each with a test that will say so if it reopens.
 
 ### B. Blending
 
@@ -173,8 +178,9 @@ For the three-blend equal-radius corner the tool is already known: after the
 three edge fillets, the corner block running from the ball's centre out past
 the corner, *minus the ball*, is exactly the leftover spike — anything in
 that block further from the centre than the ball lies outside one of the
-three fillet cylinders and was cut away when that edge was rounded. What
-fails is the removal (A5), so this is blocked rather than unknown.
+three fillet cylinders and was cut away when that edge was rounded. The
+removal now works (A5 is closed), so this is ordinary work rather than
+blocked.
 
 ### C. Sweeping
 
@@ -209,7 +215,10 @@ value, derivatives, and a boundary-crossing solve — then B1 and D1 share it
 and the intersector's hard-won step control, stall detection and branch
 handling are inherited rather than rewritten twice.
 
-**D2 — the on-axis half-section.** Blocked on A4.
+**D2 — the on-axis half-section.** Unblocked: A4 is closed, and the boolean
+now cuts a bore on its own axis and reports the two rulings. What is left is
+the drawing side — the half-section as a view, with its own hatching
+convention.
 
 ### E. Interaction and documents
 
@@ -301,12 +310,9 @@ These are settled. They are here so nobody reopens them by accident.
 
 ## Order
 
-1. **A** — the interference table. It unblocks B2 and D2, closes five named
-   failures, and is the difference between a boolean that is usually right
-   and one that is dependably right. It is also the largest structural
-   change left, so it goes first while there is appetite for it.
+1. ~~**A** — the interference table.~~ **Done.** Five named failures closed,
+   B2 and D2 unblocked.
 2. **C**, **E1**, **E2**, **F3** — contained pieces, any order, each a stone.
-   Good work to interleave when the appetite for A runs out.
 3. **G1** — the tessellation instrument, which unblocks measuring a class of
    rebuilt shape.
 4. **The walker abstraction** — generalize the marcher over the condition it

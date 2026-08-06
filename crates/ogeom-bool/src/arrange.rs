@@ -45,6 +45,13 @@ pub(crate) struct Piece<T> {
     /// contour, counter-clockwise in parameter space; further rings are
     /// holes, clockwise.
     pub rings: Vec<Vec<Traversal<T>>>,
+    /// The same rings as parameter-space polylines, in the same order.
+    ///
+    /// The caller needs the region itself, not only its name: deciding
+    /// whether two coincident faces' pieces stand for the *same* patch of one
+    /// surface is a containment question, and containment is asked of an
+    /// outline.
+    pub outlines: Vec<Vec<Point2>>,
     /// Points strictly inside the piece, best first.
     ///
     /// More than one, because a single probe can be unlucky: a piece that
@@ -273,7 +280,11 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
             .into_iter()
             .filter(|p| inside_many(&material, *p))
             .collect();
-        pieces.push(Piece { rings, interiors });
+        pieces.push(Piece {
+            rings,
+            outlines: rings_outline,
+            interiors,
+        });
     }
     if pieces.is_empty() {
         ogeom_bail!(Construction, "arrangement left no piece of the face");
