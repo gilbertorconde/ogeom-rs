@@ -119,52 +119,42 @@ each with a test that will say so if it reopens.
 
 ### B. Blending
 
-**B1 — the marching blend.** *The plan here has changed.* The previous
-entry proposed intersecting the two supports' offset surfaces to get a
-spine, projecting back onto each support for the tangency points, and
-skinning the arcs between them. That works on paper and is the wrong shape:
-the tangency curves arrive by projection, so the legs' pcurves are *fitted*,
-and fitted pcurves on a support are what the boolean cannot treat as
-same-domain.
+**B1 — the marching blend.** **Done.** `march_blend` solves the section's two
+endpoints directly, as the entry called for: unknowns `(u₁, v₁)` and
+`(u₂, v₂)`, three equations saying the ball's centre is the same point from
+either side, and a fourth tying the section to a guide. The tangency curves
+come back **in the supports' own parameters**, which is the whole point — a
+pcurve fitted through them is a pcurve of the curve rather than of a
+projection of it, and the test holds that to `1e-12` rather than to a
+projection tolerance.
 
-The formulation that avoids this solves for the section's two endpoints
-directly. **Unknowns: four** — `(u₁, v₁)` on the first support and
-`(u₂, v₂)` on the second, the two points where the rolling ball touches.
-**Equations: four.** Three say the ball's centre is the same point computed
-from either side,
+Two things the entry did not say, both from building it.
 
-> `P₁ + r·n₁ = P₂ + r·n₂`
+*The guide's parameter is a fifth unknown, not a loop counter.* Four equations
+in five unknowns is a curve, which is exactly what the shared walker follows —
+so the step control, the stall reporting and the closure test are the
+intersector's own, and the step is set by the sag of the tangency curve being
+walked rather than by a guess at how finely to sample the guide. A guide that
+closes on itself has its parameter wrapped and the *geometry* decides when the
+march is back where it started.
 
-where `Pᵢ` and `nᵢ` are the point and unit normal of support *i* at its
-parameters. The fourth ties the section to a guide — the edge being blended,
-or any curve running along the seat — by requiring the section to lie in the
-plane through the guide point normal to the guide's tangent.
+*The seat is tried, not assumed.* Which side of each support the ball rolls on
+is one sign apiece, and normals cannot tell a step from a slot; all four
+combinations are solved and the one seating a ball that touches two distinct
+points wins. A radius the corner cannot hold seats none of them, and that is
+what the refusal says.
 
-March the guide parameter, solving the four-by-four system at each step.
-What comes out is worth the change: the tangency curves emerge **in the
-supports' own parameters**, so the legs' pcurves are exact by construction
-rather than fitted, and the blend's own surface is the skinned sections as
-before. This is why the reformulation is not a detail — it is what makes the
-result something the boolean can consume.
+*The states,* which the formulation gives for free and which are now the stop
+reasons a caller acts on: closed, left the first support, the second, both at
+once — a corner rather than a run-out — ran past the guide, the section
+collapsed because the radius is too large for the local geometry, stalled, and
+ran out of steps. What remains is *unhooked*: carrying a blend that leaves one
+support's boundary onto the face next door, which is a topological continuation
+rather than a state of the solver, and is B2's business.
 
-*A second solver, for the boundaries.* When a section endpoint runs off the
-edge of its support, the answer is not to clip afterwards but to switch to an
-inverted system: unknowns `(t, w, u, v)` where `t` runs along the support's
-own boundary curve, `w` along the guide, and `(u, v)` are the partner's
-parameters. Solving that finds exactly where the blend crosses the support's
-boundary, so the blend is trimmed on the boundary rather than near it.
-
-*The states to implement,* which are a case checklist obtained for free:
-step too large, step too small, the march reversed, the two section
-endpoints collapsed onto each other (the radius is too large for the local
-geometry), the section reached the boundary of the first support, of the
-second, or of both — and *unhooked*, where the blend leaves a support's
-boundary and must continue onto the adjacent face.
-
-*Where to start:* a cylinder meeting a plane at an angle. One leg is planar
-and the other's tangency curve lies on a cylinder, both of which our pcurve
-machinery already handles exactly, so the first seat exercises the solver
-without also exercising the fitting.
+Measured on a cylinder square on a plane against the torus's own arithmetic,
+and on one meeting a plane at twenty degrees — which has no closed form, which
+is why it needs marching — against the ball's own definition at every station.
 
 **B2 — corners where blends meet.** *Reframed.* This is not one construction
 but a family, classified by **how many blends meet at the corner**: one, two,
