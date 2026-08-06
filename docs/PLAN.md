@@ -4,11 +4,17 @@ What is left to build, why each piece is not built yet, and how each one gets
 done. This replaces the scope map, which had become a record of finished work
 with the unfinished part scattered through it.
 
-The kernel is substantially complete: topology and the geometry vocabulary,
-the intersector, the boolean, healing, blending, offsets and sweeps,
-tessellation, drawings, sketching, selection, recognition, the document
-layer, and STEP, STL, DXF, glTF, OBJ, PLY, VRML and 3MF exchange. What
-follows is the remainder, and it is small enough to enumerate exactly.
+What is built: topology and the geometry vocabulary, the intersector, the
+boolean, healing, blending, offsets and sweeps, tessellation, drawings, the
+document layer, and STEP, STL, DXF, glTF, OBJ, PLY, VRML and 3MF exchange.
+
+What follows is the remainder *as this document knows it* — which is a claim
+made from the inside, and that is its limitation. Nothing here has been
+checked against the reference kernel's modelling modules, which is what
+`docs/SCOPE.md` sets as the target. Until that audit exists, an item's
+absence from this list means only that nobody writing here noticed it
+missing. `docs/PARITY.md` will replace this section with a remainder that is
+derived rather than remembered.
 
 ## How this project works
 
@@ -393,14 +399,6 @@ Any caller whose tolerance is tighter than the overshoot is the case to watch.
 
 These are settled. They are here so nobody reopens them by accident.
 
-- **Analytic per-constraint Jacobians in the sketch — declined.** Central
-  differences over the parameters each constraint names already agree with
-  the analytic value to a part in ten billion, at one extra residual
-  evaluation apiece. Taking them exactly means rewriting every residual over
-  a scalar trait: one more place for a residual and its derivative to drift
-  apart, bought for speed the solver does not need at sketch scale. If
-  profiling ever says otherwise, the change is mechanical and this is where
-  to start.
 - **A pcurve with no closed form is `None`, not a fit.** An exact curve
   carrying a fitted pcurve would be a curve whose two descriptions disagree
   by an amount nothing on it records. The consumer that needs one marches the

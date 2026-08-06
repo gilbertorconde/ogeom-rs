@@ -283,7 +283,6 @@ dependencies = [
  "ogeom-math",
  "ogeom-mesh",
  "ogeom-offset",
- "ogeom-sketch",
  "ogeom-topo",
  "proptest",
 ]
@@ -488,18 +487,6 @@ dependencies = [
  "ogeom-math",
  "ogeom-mesh",
  "ogeom-topo",
- "proptest",
-]
-
-[[package]]
-name = "ogeom-sketch"
-version = "0.0.0"
-dependencies = [
- "approx",
- "nalgebra",
- "ogeom-core",
- "ogeom-geom",
- "ogeom-math",
  "proptest",
 ]
 

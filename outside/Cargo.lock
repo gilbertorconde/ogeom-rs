@@ -428,6 +428,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ogeom-sketch"
+version = "0.0.0"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "ogeom-core",
+ "ogeom-geom",
+ "ogeom-math",
+ "proptest",
+]
+
+[[package]]
 name = "ogeom-topo"
 version = "0.0.0"
 dependencies = [

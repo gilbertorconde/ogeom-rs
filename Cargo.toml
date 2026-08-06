@@ -19,7 +19,6 @@ members = [
     "crates/ogeom-offset",
     "crates/ogeom-io",
     "crates/ogeom-hlr",
-    "crates/ogeom-sketch",
     "crates/ogeom-doc",
     "crates/ogeom",
     "tools/ogeom-bench",
@@ -63,7 +62,6 @@ ogeom-fillet = { path = "crates/ogeom-fillet", version = "0.0.0" }
 ogeom-offset = { path = "crates/ogeom-offset", version = "0.0.0" }
 ogeom-io = { path = "crates/ogeom-io", version = "0.0.0" }
 ogeom-hlr = { path = "crates/ogeom-hlr", version = "0.0.0" }
-ogeom-sketch = { path = "crates/ogeom-sketch", version = "0.0.0" }
 ogeom-doc = { path = "crates/ogeom-doc", version = "0.0.0" }
 ogeom-view = { path = "tools/ogeom-view", version = "0.0.0" }
 

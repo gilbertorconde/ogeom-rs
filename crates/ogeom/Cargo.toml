@@ -21,7 +21,6 @@ ogeom-fillet.workspace = true
 ogeom-offset.workspace = true
 ogeom-io.workspace = true
 ogeom-hlr.workspace = true
-ogeom-sketch.workspace = true
 ogeom-doc.workspace = true
 
 [dev-dependencies]

@@ -12,6 +12,15 @@
 //! space names the dependent constraint groups, and the residuals at the
 //! optimum split those into the redundant — dependent but satisfied — and
 //! the conflicting, which no parameter vector can satisfy together.
+//!
+//! **Analytic per-constraint Jacobians are declined**, and the decision is
+//! settled rather than pending. Central differences over the parameters each
+//! constraint names already agree with the analytic value to a part in ten
+//! billion, at one extra residual evaluation apiece. Taking them exactly
+//! means rewriting every residual over a scalar trait: one more place for a
+//! residual and its derivative to drift apart, bought for speed the solver
+//! does not need at sketch scale. If profiling ever says otherwise, the
+//! change is mechanical and this is where to start.
 
 use nalgebra::DMatrix;
 use ogeom_core::OgeomResult;
