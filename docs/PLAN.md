@@ -337,11 +337,29 @@ answer is this row.
 
 ### G. Healing residuals
 
-**G1 — tessellating a rebuilt full-period face.** A mesh-to-B-rep drum comes
-back as two caps and one recognized cylinder wall at its exact radius, closed
-as a shell — but the wall spans a full period, and a full-period face does
-not tessellate closed, so the result's volume cannot be measured. The
-topology is right; the instrument is what fails.
+**G1 — tessellating a rebuilt full-period face.** **Done**, and it was not the
+instrument. Two things were wrong with the *shape*.
+
+The recognizer sizes its chart window from the samples it recognized on, and a
+sample is a triangle's centroid — half a chord inside the region's own rim. The
+face is trimmed to that rim, so its chart reached past the window by about a
+part in ten million, and evaluating it there was a domain error. The window is
+now widened to hold the boundary before anything is built on it, which changes
+nothing about the face: a surface's extent is a parameterization window and not
+a trim.
+
+And then the real one. Two rings that each wrap the whole chart do not bound a
+region between them — in the chart they are two horizontal runs enclosing no
+area at all, which is why the face refused to triangulate. What closes them is
+a **seam**: the walk runs the lower rim for a turn, up a seam, back along the
+upper rim for a turn, and down the same seam again, one edge occurring twice
+and carrying the two chart columns a turn apart. That is what a cylinder built
+from first principles has and what one recovered from a mesh was missing.
+
+The drum's volume is now measured, and against the right thing: its rims came
+back as the polygons the mesh had, so the recovered solid is the drum's
+*inscribed prism* and reads low by the `π²/3n²` an inscribed n-gon loses. The
+test holds it to that rather than to the circle it approximates.
 
 **G2 — segmentation across tangent-smooth junctions.** Where a fillet band
 meets its wall the two share a tolerance-ambiguous strip, and the
@@ -384,8 +402,8 @@ These are settled. They are here so nobody reopens them by accident.
 1. ~~**A** — the interference table.~~ **Done.** Five named failures closed,
    B2 and D2 unblocked.
 2. **C**, **E1**, **E2**, **F3** — contained pieces, any order, each a stone.
-3. **G1** — the tessellation instrument, which unblocks measuring a class of
-   rebuilt shape.
+3. ~~**G1** — the tessellation instrument.~~ **Done**, and it was the shape
+   rather than the instrument.
 4. ~~**The walker abstraction.**~~ **Done.** `ogeom_intersect::walk`: a
    `Condition` in `n` unknowns and `n − 1` equations, and one walk over it.
    The shortfall is the point — the solution set of `n − 1` equations in `n`
