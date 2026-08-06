@@ -696,11 +696,11 @@ Not a renderer. `tools/ogeom-view` consumes this; it is not part of it.
 | Conventional kernel's native B-rep text format | r/w | Its own serialization, implemented from the published format description. Interoperation, on the same footing as STEP — it is what lets a corpus written by an existing application be read here, and it is the cheapest possible bridge for an application mid-migration |
 | **STEP** AP203 / AP214 / AP242 | r/w | Assemblies, colours, names, AP242 PMI. The most valuable target — no production-grade Rust implementation exists |
 | IGES | r/w | Legacy, still shipped by industry |
-| glTF 2.0 | r/w | Tessellated, with materials |
+| glTF 2.0 | w · r owed | Written as GLB, tessellated, with materials. Reading a GLB means the accessor/bufferView indirection and every component type a writer might have chosen, which is a day's work nobody has spent yet |
 | STL | r/w | ASCII and binary |
-| OBJ, PLY, 3MF | r/w | |
-| VRML | w | |
-| DXF | r/w | 2D interchange |
+| OBJ, PLY, 3MF | OBJ r/w · PLY r/w (text) · 3MF w + its own archive | OBJ reads vertices, normals and faces, fanning polygons and honouring negative and `v/vt/vn` indices; PLY reads its text dialect by the header's own property order and refuses the binary one by name. 3MF is written whole — content types, relationships, model — through a ZIP writer of *stored* entries written here rather than depended on: what a kernel needs from ZIP is the container, not the codec, and the package it makes reads back through the same two hundred lines |
+| VRML | w | An `IndexedFaceSet` per mesh with its material. Written, not read: VRML is a scene language with a great deal in it that is not geometry, and a reader taking only the geometry would claim more than it did |
+| DXF | r/w | R12 ASCII out; in, the polylines by their layer — `POLYLINE`/`VERTEX`, `LWPOLYLINE` and `LINE`, with `HIDDEN` separated from the rest. Blocks, text, dimensions, splines and hatches are skipped: this reads drawings as curves, which is what a kernel has use for, and does not pretend to be a DXF application |
 | Parasolid X_T, ACIS SAT, JT | r | Later, where the formats are documented |
 
 Parsing is the easy fifth. The rest is semantic mapping onto our topology, unit

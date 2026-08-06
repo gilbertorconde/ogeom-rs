@@ -305,6 +305,350 @@ pub fn write_ply(export: &ExportMesh<'_>) -> String {
     out
 }
 
+// --- reading -----------------------------------------------------------------
+
+/// Read an OBJ into a triangulation.
+///
+/// Vertices, faces and vertex normals; everything else — materials, groups,
+/// texture coordinates, smoothing — is a statement about *rendering* a mesh
+/// rather than about the mesh, and is skipped rather than half-honoured. A
+/// face of more than three vertices is fanned from its first, which is what
+/// a convex polygon means and what OBJ writers emit.
+///
+/// Indices may be negative, which in OBJ counts back from the end, and may
+/// carry the `v/vt/vn` triple, of which the first field is the position.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if an
+/// index names a vertex that is not there, or a coordinate does not parse.
+pub fn read_obj(text: &str) -> ogeom_core::OgeomResult<Triangulation> {
+    let mut positions: Vec<ogeom_math::Point> = Vec::new();
+    let mut normals: Vec<ogeom_math::Vector> = Vec::new();
+    let mut triangles: Vec<[u32; 3]> = Vec::new();
+    let mut normal_of: Vec<Option<usize>> = Vec::new();
+
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        let mut fields = line.split_whitespace();
+        match fields.next() {
+            Some("v") => {
+                let coords = triple(&mut fields, "a vertex")?;
+                positions.push(ogeom_math::Point::new(coords[0], coords[1], coords[2]));
+                normal_of.push(None);
+            }
+            Some("vn") => {
+                let coords = triple(&mut fields, "a normal")?;
+                normals.push(ogeom_math::Vector::new(coords[0], coords[1], coords[2]));
+            }
+            Some("f") => {
+                let mut corners: Vec<(usize, Option<usize>)> = Vec::new();
+                for field in fields {
+                    corners.push(corner(field, positions.len(), normals.len())?);
+                }
+                if corners.len() < 3 {
+                    ogeom_core::ogeom_bail!(
+                        Construction,
+                        "a face of {} corners is not a face",
+                        corners.len()
+                    );
+                }
+                for i in 1..corners.len() - 1 {
+                    let fan = [corners[0], corners[i], corners[i + 1]];
+                    let mut indices = [0_u32; 3];
+                    for (k, (vertex, normal)) in fan.iter().enumerate() {
+                        if let Some(n) = normal {
+                            normal_of[*vertex] = Some(*n);
+                        }
+                        indices[k] = u32::try_from(*vertex).unwrap_or(u32::MAX);
+                    }
+                    triangles.push(indices);
+                }
+            }
+            _ => {}
+        }
+    }
+    if positions.is_empty() {
+        ogeom_core::ogeom_bail!(Construction, "the file carries no vertices");
+    }
+    // A vertex whose normal the file did not give takes the average of the
+    // triangles it belongs to — the same answer the writer would have had.
+    let mut resolved = vec![ogeom_math::Vector::ZERO; positions.len()];
+    for (i, held) in normal_of.iter().enumerate() {
+        if let Some(n) = held.and_then(|n| normals.get(n)) {
+            resolved[i] = *n;
+        }
+    }
+    for triangle in &triangles {
+        let [a, b, c] = triangle.map(|i| positions[i as usize]);
+        let face = (b - a).cross(c - a);
+        for index in triangle {
+            let slot = &mut resolved[*index as usize];
+            if held_is_unset(slot) {
+                *slot += face;
+            }
+        }
+    }
+    let normals = resolved
+        .into_iter()
+        .map(|n| {
+            let m = n.magnitude();
+            if m > 0.0 {
+                n / m
+            } else {
+                ogeom_math::Vector::Z
+            }
+        })
+        .collect::<Vec<_>>();
+    let parameters = vec![(0.0, 0.0); positions.len()];
+    Ok(Triangulation {
+        positions,
+        normals,
+        parameters,
+        triangles,
+        deflection_met: true,
+    })
+}
+
+/// Whether a normal slot is still waiting to be accumulated into.
+///
+/// A normal the file gave is a unit vector; a slot nobody has filled starts
+/// at zero and grows by the faces around it. Telling them apart by length is
+/// enough, and it means a file that gives *some* normals keeps them while
+/// the rest are worked out.
+fn held_is_unset(slot: &ogeom_math::Vector) -> bool {
+    !(0.999..=1.001).contains(&slot.magnitude())
+}
+
+/// Three floats off an iterator.
+fn triple<'a>(
+    fields: &mut impl Iterator<Item = &'a str>,
+    what: &str,
+) -> ogeom_core::OgeomResult<[f64; 3]> {
+    let mut out = [0.0; 3];
+    for slot in &mut out {
+        let Some(field) = fields.next() else {
+            ogeom_core::ogeom_bail!(Construction, "{what} needs three coordinates");
+        };
+        let Ok(value) = field.parse::<f64>() else {
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "{what} carries {field}, which is not a number"
+            );
+        };
+        *slot = value;
+    }
+    Ok(out)
+}
+
+/// One OBJ face corner: `v`, `v/vt`, `v//vn` or `v/vt/vn`, one-based, and
+/// negative counting back from the end.
+fn corner(
+    field: &str,
+    vertices: usize,
+    normals: usize,
+) -> ogeom_core::OgeomResult<(usize, Option<usize>)> {
+    let mut parts = field.split('/');
+    let resolve = |text: &str, count: usize| -> Option<usize> {
+        let index = text.parse::<isize>().ok()?;
+        let zero = if index > 0 {
+            usize::try_from(index).ok()?.checked_sub(1)?
+        } else if index < 0 {
+            count.checked_sub(usize::try_from(-index).ok()?)?
+        } else {
+            return None;
+        };
+        (zero < count).then_some(zero)
+    };
+    let Some(vertex) = parts.next().and_then(|t| resolve(t, vertices)) else {
+        ogeom_core::ogeom_bail!(
+            Construction,
+            "a face names vertex {field}, which is not there"
+        );
+    };
+    let _texture = parts.next();
+    let normal = parts.next().and_then(|t| resolve(t, normals));
+    Ok((vertex, normal))
+}
+
+/// Read an ASCII PLY into a triangulation.
+///
+/// The element order the header declares, the properties it names, and the
+/// faces' own vertex lists. Binary PLY is refused by name: its header says
+/// `format binary_little_endian` and this reads `format ascii`, which is
+/// what every writer here emits and what the format's own text dialect is.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// header is not a PLY header, the format is binary, or the body does not
+/// match what the header promised.
+pub fn read_ply(text: &str) -> ogeom_core::OgeomResult<Triangulation> {
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some("ply") {
+        ogeom_core::ogeom_bail!(Construction, "this is not a PLY file");
+    }
+    // The header: element counts and, per element, its properties in order.
+    let mut counts: Vec<(String, usize, Vec<String>)> = Vec::new();
+    for line in lines.by_ref() {
+        let line = line.trim();
+        let mut fields = line.split_whitespace();
+        match fields.next() {
+            Some("format") => {
+                let kind = fields.next().unwrap_or("");
+                if kind != "ascii" {
+                    ogeom_core::ogeom_bail!(
+                        Construction,
+                        "this PLY is {kind}; the text dialect is what is read here"
+                    );
+                }
+            }
+            Some("element") => {
+                let name = fields.next().unwrap_or("").to_string();
+                let count = fields
+                    .next()
+                    .and_then(|t| t.parse::<usize>().ok())
+                    .unwrap_or(0);
+                counts.push((name, count, Vec::new()));
+            }
+            Some("property") => {
+                if let Some((_, _, properties)) = counts.last_mut() {
+                    let last = line.split_whitespace().last().unwrap_or("");
+                    properties.push(last.to_string());
+                }
+            }
+            Some("end_header") => break,
+            _ => {}
+        }
+    }
+
+    let mut positions: Vec<ogeom_math::Point> = Vec::new();
+    let mut normals: Vec<ogeom_math::Vector> = Vec::new();
+    let mut triangles: Vec<[u32; 3]> = Vec::new();
+    let mut body = lines.filter(|l| !l.trim().is_empty());
+    for (name, count, properties) in &counts {
+        for _ in 0..*count {
+            let Some(line) = body.next() else {
+                ogeom_core::ogeom_bail!(
+                    Construction,
+                    "the header promised {count} of {name} and the body ran out"
+                );
+            };
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if name == "vertex" {
+                let read = |what: &str| -> Option<f64> {
+                    let at = properties.iter().position(|p| p == what)?;
+                    fields.get(at)?.parse::<f64>().ok()
+                };
+                let (Some(x), Some(y), Some(z)) = (read("x"), read("y"), read("z")) else {
+                    ogeom_core::ogeom_bail!(Construction, "a vertex is missing a coordinate");
+                };
+                positions.push(ogeom_math::Point::new(x, y, z));
+                normals.push(match (read("nx"), read("ny"), read("nz")) {
+                    (Some(a), Some(b), Some(c)) => ogeom_math::Vector::new(a, b, c),
+                    _ => ogeom_math::Vector::ZERO,
+                });
+            } else if name == "face" {
+                let Some(count) = fields.first().and_then(|t| t.parse::<usize>().ok()) else {
+                    ogeom_core::ogeom_bail!(Construction, "a face does not say how many corners");
+                };
+                let corners: Vec<u32> = fields
+                    .iter()
+                    .skip(1)
+                    .take(count)
+                    .filter_map(|t| t.parse::<u32>().ok())
+                    .collect();
+                if corners.len() != count {
+                    ogeom_core::ogeom_bail!(
+                        Construction,
+                        "a face of {count} corners lists {} of them",
+                        corners.len()
+                    );
+                }
+                for i in 1..corners.len().saturating_sub(1) {
+                    triangles.push([corners[0], corners[i], corners[i + 1]]);
+                }
+            }
+        }
+    }
+    if positions.is_empty() {
+        ogeom_core::ogeom_bail!(Construction, "the file carries no vertices");
+    }
+    // Normals the file did not give come from the triangles, as in OBJ.
+    let mut resolved = normals;
+    resolved.resize(positions.len(), ogeom_math::Vector::ZERO);
+    for triangle in &triangles {
+        let [a, b, c] = triangle.map(|i| positions[i as usize]);
+        let face = (b - a).cross(c - a);
+        for index in triangle {
+            let slot = &mut resolved[*index as usize];
+            if held_is_unset(slot) {
+                *slot += face;
+            }
+        }
+    }
+    let normals = resolved
+        .into_iter()
+        .map(|n| {
+            let m = n.magnitude();
+            if m > 0.0 {
+                n / m
+            } else {
+                ogeom_math::Vector::Z
+            }
+        })
+        .collect::<Vec<_>>();
+    let parameters = vec![(0.0, 0.0); positions.len()];
+    Ok(Triangulation {
+        positions,
+        normals,
+        parameters,
+        triangles,
+        deflection_met: true,
+    })
+}
+
+// --- VRML --------------------------------------------------------------------
+
+/// Write meshes as VRML 97.
+///
+/// One `Shape` per mesh, each an `IndexedFaceSet` over its own coordinates,
+/// with a material where a colour was given. Written rather than read: VRML
+/// is a scene-description language with a great deal in it that is not
+/// geometry, and a reader that took only the geometry would be claiming
+/// more than it did.
+#[must_use]
+pub fn write_vrml(meshes: &[ExportMesh<'_>]) -> String {
+    let mut out = String::from("#VRML V2.0 utf8\n\n");
+    for export in meshes {
+        if export.mesh.triangles.is_empty() {
+            continue;
+        }
+        if let Some(name) = &export.name {
+            let _ = writeln!(out, "# {name}");
+        }
+        out.push_str("Shape {\n");
+        if let Some([r, g, b, a]) = export.colour {
+            out.push_str("  appearance Appearance {\n    material Material {\n");
+            let _ = writeln!(out, "      diffuseColor {r} {g} {b}");
+            if a < 1.0 {
+                let _ = writeln!(out, "      transparency {}", 1.0 - a);
+            }
+            out.push_str("    }\n  }\n");
+        }
+        out.push_str("  geometry IndexedFaceSet {\n    coord Coordinate {\n      point [\n");
+        for p in &export.mesh.positions {
+            let _ = writeln!(out, "        {} {} {},", p.x, p.y, p.z);
+        }
+        out.push_str("      ]\n    }\n    coordIndex [\n");
+        for [a, b, c] in &export.mesh.triangles {
+            let _ = writeln!(out, "      {a} {b} {c} -1,");
+        }
+        out.push_str("    ]\n    solid TRUE\n  }\n}\n\n");
+    }
+    out
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
