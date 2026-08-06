@@ -28,9 +28,9 @@ use crate::support::Seat;
 /// dihedral between them — which is asked of the solid rather than assumed
 /// from the normals, because normals cannot tell a step from a slot.
 ///
-/// Planar supports only. A curved face-face blend needs the marching seat,
-/// which is [`crate::fillet::fillet_edge_marched`]'s territory and is
-/// reached through an edge.
+/// Planar supports only. A curved face-face blend needs the marching seat
+/// — the spine that is the two offset surfaces' own intersection — which is
+/// recorded as owed in `docs/SCOPE.md` rather than guessed at here.
 ///
 /// # Errors
 ///

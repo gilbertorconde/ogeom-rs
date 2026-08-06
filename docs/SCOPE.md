@@ -271,41 +271,61 @@ a three-cylinder tip, and scaled placements.
   same-domain face unification, edge-chain merging and tolerance
   reduction as standalone upgrades; the reshape substitution framework.
 
-### M9 — blend and feature completeness · §10, §11
+### M9 — blend and feature completeness · §10, §11 · **partly closed**
 
-- The restored blend vocabulary: face-face blends, marching blends over
-  offset-surface spines, the setback vertex blend, and blend analysis
-  that reports tangency error instead of asserting it.
-- Draft angle about a neutral plane; the form-feature vocabulary (prism,
-  revol, rib, slot, pocket, glue) as history-carrying compositions;
-  normal projection of wires onto shapes; evolved shapes over planar
-  spines; bi-tangent construction where those need it.
+- The restored blend vocabulary: face-face blends ✓ and blend analysis ✓
+  — the first seated on the two planes' own intersection rather than on
+  an edge, the second reporting the tangency error and the curve-to-
+  surface gap per shared edge instead of asserting either. Marching
+  blends and the setback vertex blend are *not* closed and are in the
+  deferred table with their constructions written down: the vertex
+  blend's tool is known and the boolean cannot yet assemble what it
+  removes.
+- Draft angle about a neutral plane ✓; the form features ✓ (prism, revol,
+  rib, slot; glue is the boolean's own same-domain unification); normal
+  projection ✓, trim-tested and fitted with its pcurve. Bi-tangent is
+  subsumed — construct2d in 2D, the blend family in 3D. Evolved shapes
+  are owed, with the composition that builds them recorded.
 
-### M10 — exact drawings · §13
+### M10 — exact drawings · §13 · **closed for the elementary surfaces**
 
-- Exact silhouettes on the analytic surfaces, projected edges and
-  silhouettes split at their exact 2D crossings, visibility decided by
-  the exact classifier — the polygonal pipeline kept as the measured
-  fallback. Isoparametric extraction and reflect lines. Broken sections;
-  the on-axis half-section once M8's contact handling lands.
+Closed at gate 1118 for what has a closed form: silhouettes as exact
+curves on spheres, cylinders and cones, trimmed to their faces by
+bisection rather than by sampling alone; visibility decided by exact
+ray/surface interference against each face's own trim; reflect lines as
+the same locus asked of a light; isoparametric extraction. The polygonal
+pipeline stays as the measured fallback and is what draws a torus or a
+spline silhouette — the marched case, refused by name in the exact path
+and named in the deferred table.
 
-### M11 — interaction and document completeness · §14, §15, §16, §18
+### M11 — interaction and document completeness · §14, §15, §16, §18 · **partly closed**
 
-- Sketch: analytic Jacobians pinned against the numeric oracle,
-  construction geometry, driven dimensions, snapping.
-- Selection: one pick structure serving several deflections.
-- Documents: undo/redo over transactions, textures, datum targets,
-  presentation PMI polylines both directions.
-- Recognition: the feature tree mapped to manufacturing operations.
+- Sketch: construction geometry and driven dimensions were already in;
+  snapping ✓, ranked by how much the sketch knows about what it snapped
+  to. Analytic Jacobians are *decided against* rather than owed, with the
+  reasoning in the deferred table.
+- Selection: one pick structure serving several deflections is owed — a
+  performance shape, since every answer picking gives is already exact.
+- Documents: undo/redo ✓ over the document's own tables, textures ✓.
+  Datum targets and presentation PMI remain.
+- Recognition: the feature tree mapped to machining operations ✓, and
+  `remove_feature` undoing the features that are volumes.
 
-### M12 — exchange completeness · §17
+### M12 — exchange completeness · §17 · **the mesh and drawing half closed**
 
-- The conventional kernel's B-rep text format, both directions, from the
-  published description. IGES both directions, staged like STEP was.
-  Readers for the mesh formats already written (glTF, OBJ, PLY), VRML
-  and 3MF writing and reading, DXF reading. The documented proprietary
-  tail — SAT, X_T, JT — read exactly as far as public documentation
-  carries, refusals named past that line.
+- Closed: OBJ and PLY read as well as written, DXF read by layer, VRML
+  written, 3MF written and its package read — through a ZIP writer of
+  stored entries written in this crate, because what a kernel needs from
+  ZIP is the container and not the codec.
+- Not closed, and blocked on their own documentation rather than on
+  effort: the conventional kernel's B-rep text format, IGES both
+  directions, and the proprietary tail (SAT, X_T, JT). Each is a format
+  whose *published description* is the input the work needs, and this
+  repository's independence rule sets how that description may be had —
+  the published document, never another kernel's source. Until one is in
+  hand the honest state is this row. glTF reading is owed for an ordinary
+  reason: the accessor indirection and every component type a writer
+  might have chosen.
 
 ---
 
@@ -878,6 +898,8 @@ input it cannot handle. Nothing here answers confidently and wrongly.
 | A shared multi-resolution pick hierarchy | §16 · owed | Exact picking landed: `pick_refined` lets the tessellation find and order the hits, then intersects the ray with the struck face's *exact* surface over a segment bracketing the mesh answer — a coarsely meshed drum's half-millimetre sag refines onto the true radius within a nanometre — and `Hit::refined` says which kind of number the caller is holding when refinement resolves nothing. What remains is level of detail as a structure: one hierarchy serving several deflections, instead of independent scenes each built at one. It is a performance shape, not a capability: every answer picking gives today is already exact. |
 | A boolean whose tool is *flush* with the part | §8 | Defeaturing found it and its reproduction is exact: refill a bore with the cylinder it was cut by, ends flush with the faces it broke, and the pieces do not close into a shell. Standing the tool a *little* past those faces works — and how little matters, in a way worth writing down. The sliver band the overshoot leaves has its own interior probes, and if those sit within the band the exact classifier reads as "on the boundary" (`confusion * 1e4`), every ray from them grazes the face they sit against, the whole fan of directions is exhausted, and one fuse takes fifty seconds where it should take a fifth of one. Ten microns of overshoot is decisively outside that band and costs nothing. `remove_feature` therefore overshoots by `confusion * 1e5` and says so; the flush case is the one owed. |
 | ~~Sketch conveniences: snapping~~ **done**, analytic derivatives *decided against* | §14 | Interactive scale landed in two moves. Differencing exploits structural sparsity — each constraint's rows are formed over only the parameters of the entities it names, a fact the model knows exactly, pinned entry-for-entry against the dense reference — so the Jacobian's cost scales with the constraint count. And `drag()` is the per-frame primitive: the pointer enters as a soft objective every real constraint outweighs, the solve runs warm-started, and a release polish re-solves without the pull so even the whisper leaves no residue. Snapping is now the crate's own: `snap()` answers what the pointer *meant* — a point, a midpoint, a centre, a place on a line or a rim, a grid crossing — ranked by how much the sketch knows about each before by distance, because the caller's next move is to constrain against what it names. Analytic per-constraint derivatives are deliberately not taken: central differences over the named parameters already agree with the analytic value to a part in 10^10 at a cost of one extra residual evaluation each, and the alternative is rewriting every residual over a scalar trait — one more place for the residual and its derivative to disagree, bought for speed the solver does not need at sketch scale. If profiling ever says otherwise, the change is mechanical and this row is where to start. |
+| The exchange tail: a conventional B-rep text format, IGES, SAT/X_T/JT | §17 | Not a matter of effort but of *input*. Each is a format whose published description is what the work is written from, and this repository's independence rule sets how that description may be had: the published document, never another kernel's source. STEP was done exactly that way and is the proof the approach works. Until a description is in hand, writing a parser would mean guessing at a format, and a guessed parser that reads one file and corrupts the next is worse than an honest gap. |
+| Reading glTF | §17 | Written as GLB already. Reading one means the accessor and buffer-view indirection, every component type and stride a writer might have chosen, and the sparse-accessor form — ordinary work, not yet done. |
 | Exact HLR | §13 · narrowed | The exact half is in beside the polygonal one, as `hlr::exact`. A silhouette is where the surface's own normal turns perpendicular to the view, and for the elementary surfaces that is a curve with a closed form: the great circle on a sphere whose plane the view is normal to, the two rulings at a cylinder's sides, the two rulings of a cone where the tilted radial normal turns — or none, when the eye sits inside the cone's own angle. Each is trimmed to its face by sampling and then *bisecting* the change, so an end lands within the confusion tolerance of the face rather than a station past it. Visibility asks the faces, not a mesh: a ray from the point to the eye, intersected exactly with each surface and tested against that face's trim. Reflect lines are the same locus asked of a light instead of an eye, which is what they are; isoparametrics come off the chart trimmed the same way. Still owed: silhouettes of surfaces with no closed form — a torus, a spline — which need the same marching the intersector does and are refused by name here, with the polygonal path drawing them and saying so. |
 | Sections through tangential contact | §13/§8 | A section plane exactly through a bore's axis meets the cylinder wall along its rulings, and the boolean refuses the configuration ("kept pieces did not close") — the same tangential-contact class already recorded for §7. The textbook half-section is exactly this cut, so resolving that class buys the drawing too. Off-axis sections through the same bore measure to arithmetic today. |
 | ~~Documents: textures, undo/redo~~ **done** | §15 | The document holds products, instances, colours, names and semantic PMI, round-trips through STEP, and persists natively byte-stable. The attribute layer landed: user-defined properties, materials with density and colour, layers with visibility, and validation properties whose `agrees_with()` lets a receiver verify a translation lost nothing. Textures are now in it — the image *named* rather than carried, with how it is laid on (parametric, box, cylindrical, spherical), its repeats and its offset, because a kernel that decoded images would have opinions about formats and colour spaces that belong to a renderer. And undo/redo: `checkpoint()` marks a state, `undo()`/`redo()` walk them, and a new checkpoint drops what was undone and not redone. What a checkpoint copies is everything the document *says* about its model and not the model itself — geometry arenas are append-only, so undoing an operation puts back what was said, and the nodes the undone operation built stand unreferenced, which is what a collected arena is for. |
