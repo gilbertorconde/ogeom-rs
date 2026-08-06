@@ -232,10 +232,20 @@ convention.
 
 ### E. Interaction and documents
 
-**E1 — a multi-resolution pick hierarchy.** One structure serving several
-deflections instead of independent scenes each built at one. A performance
-shape: every answer picking gives today is already exact, including the
-refinement onto the true surface.
+**E1 — a multi-resolution pick hierarchy.** **Done.** `PickHierarchy` builds
+one scene per deflection over one shape, coarsest first, and answers a pick by
+descending: each coarse level rules faces out, and only what survives is put
+to the finest one. Face indices are the same at every level by construction,
+which is what lets an answer travel between them.
+
+The property that matters is that *nothing changes*. Each level's mesh stands
+within its own stated chord of the true surface, so widening the coarse
+level's boxes by the two chords cannot rule out a face the fine level would
+hit — and the test does not argue this, it checks it: every face the fine
+level strikes is admitted by the coarse one, ray by ray, and the descent's
+hits equal the finest level's own, sub-shape, kind, depth and refined
+position. What is measured about the *performance* is a count, not a timing:
+the coarse level admits well under half the scene.
 
 **E2 — datum targets and presentation PMI.** The annotation polylines and
 planes, and the targets a datum feature carries. Data plus their STEP

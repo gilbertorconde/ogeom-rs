@@ -340,6 +340,74 @@ impl Pickable {
             .collect()
     }
 
+    /// How many faces the scene holds.
+    ///
+    /// Faces are numbered in traversal order at build time, so the same index
+    /// names the same face in every scene built over one shape — which is what
+    /// lets a [`PickHierarchy`] carry an answer from one level to another.
+    #[must_use]
+    pub fn face_count(&self) -> usize {
+        self.faces.len()
+    }
+
+    /// The index of the face a triangle came from.
+    #[must_use]
+    pub fn face_index(&self, triangle: usize) -> Option<usize> {
+        self.owner.get(triangle).map(|&f| f as usize)
+    }
+
+    /// Which faces this scene's tessellation brings within `slack` of the
+    /// ray — a *conservative* answer, by which nothing that could be hit is
+    /// left out.
+    ///
+    /// Conservative is the whole point. A coarse tessellation stands within
+    /// its own chord of the true surface, so a ray that strikes the surface
+    /// passes within that chord of the coarse mesh; testing the mesh's boxes
+    /// widened by the chord therefore cannot miss a face a finer scene would
+    /// find. The reverse is not true, and does not need to be: a face this
+    /// returns and a finer level rejects simply costs one more test.
+    #[must_use]
+    pub fn faces_near(&self, ray: Ray, slack: f64) -> Vec<bool> {
+        let mut near = vec![false; self.faces.len()];
+        let length = ray.direction.magnitude();
+        if !length.is_finite() || length <= 0.0 || self.nodes.is_empty() {
+            return near;
+        }
+        let direction = ray.direction / length;
+        let mut stack = vec![0_usize];
+        while let Some(at) = stack.pop() {
+            let node = &self.nodes[at];
+            if !ray_touches_box(&ray.origin, &direction, &node.bounds.expanded(slack)) {
+                continue;
+            }
+            match node.content {
+                BvhContent::Split(left, right) => {
+                    stack.push(left);
+                    stack.push(right);
+                }
+                BvhContent::Leaf(start, end) => {
+                    for &index in &self.order[start..end] {
+                        let triangle = index as usize;
+                        let owner = self.owner[triangle] as usize;
+                        if near[owner] {
+                            continue;
+                        }
+                        let bounds = self.triangles[triangle]
+                            .iter()
+                            .fold(Aabb::EMPTY, |acc, &k| {
+                                acc.with_point(self.positions[k as usize])
+                            })
+                            .expanded(slack);
+                        if ray_touches_box(&ray.origin, &direction, &bounds) {
+                            near[owner] = true;
+                        }
+                    }
+                }
+            }
+        }
+        near
+    }
+
     /// Every hit along a ray, nearest first.
     ///
     /// `aperture` is the pick radius in world units — how close the ray
@@ -347,6 +415,15 @@ impl Pickable {
     /// instead of the face. Zero apertures pick faces only.
     #[must_use]
     pub fn pick(&self, ray: Ray, aperture: f64) -> Vec<Hit> {
+        self.pick_within(ray, aperture, None)
+    }
+
+    /// As [`Pickable::pick`], considering only the faces `allowed` marks.
+    ///
+    /// The mask is indexed by face, in the order [`Pickable::face_count`]
+    /// counts them.
+    #[must_use]
+    pub fn pick_within(&self, ray: Ray, aperture: f64, allowed: Option<&[bool]>) -> Vec<Hit> {
         let length = ray.direction.magnitude();
         if !(length.is_finite()) || length <= 0.0 {
             return Vec::new();
@@ -369,6 +446,14 @@ impl Pickable {
                     BvhContent::Leaf(start, end) => {
                         for &index in &self.order[start..end] {
                             let triangle = index as usize;
+                            if let Some(mask) = allowed
+                                && !mask
+                                    .get(self.owner[triangle] as usize)
+                                    .copied()
+                                    .unwrap_or(false)
+                            {
+                                continue;
+                            }
                             let [a, b, c] =
                                 self.triangles[triangle].map(|k| self.positions[k as usize]);
                             if let Some(t) = ray_triangle(&ray.origin, &direction, a, b, c) {
@@ -420,7 +505,18 @@ impl Pickable {
     /// the tessellated answer and says so through [`Hit::refined`].
     #[must_use]
     pub fn pick_refined(&self, ray: Ray, aperture: f64, tol: Tolerances) -> Vec<Hit> {
-        let mut hits = self.pick(ray, aperture);
+        let hits = self.pick(ray, aperture);
+        self.refine(hits, ray, tol)
+    }
+
+    /// Put already-found hits onto their faces' exact surfaces.
+    ///
+    /// Separated from [`Pickable::pick_refined`] because refining is per hit
+    /// and knows nothing about how the hits were found — which is what lets a
+    /// [`PickHierarchy`] narrow the search and refine the same way.
+    #[must_use]
+    pub fn refine(&self, hits: Vec<Hit>, ray: Ray, tol: Tolerances) -> Vec<Hit> {
+        let mut hits = hits;
         let length = ray.direction.magnitude();
         if length <= 0.0 || !length.is_finite() {
             return hits;
@@ -616,6 +712,148 @@ impl Pickable {
             }
         }
         selected
+    }
+}
+
+/// One structure over several deflections, and a pick that descends it.
+///
+/// A scene built fine answers precisely and costs what fine costs; a scene
+/// built coarse costs little and answers coarsely. Held separately, an
+/// application picking against both pays for both and has to reconcile two
+/// numberings. Held here they are one thing: built in one call over one
+/// shape, so face index `i` names the same face at every level, and queried
+/// coarse to fine, so the fine level is asked only about the faces the coarse
+/// one could not rule out.
+///
+/// **The answer does not change.** Descending is a way of *not asking* the
+/// fine level about most of the scene; what it is asked, it answers exactly as
+/// it would alone. That holds because each level's mesh stands within its own
+/// stated chord of the true surface, so widening the coarse level's boxes by
+/// the two chords cannot rule out a face the fine level would hit. The
+/// equality is pinned by test, not asserted here.
+#[derive(Debug, Clone)]
+pub struct PickHierarchy {
+    /// Coarsest first, finest last.
+    levels: Vec<Pickable>,
+    /// Each level's chord, in the same order.
+    chords: Vec<f64>,
+}
+
+impl PickHierarchy {
+    /// Build one scene per deflection, over one shape.
+    ///
+    /// The deflections are sorted coarsest first; duplicates are kept, since
+    /// a caller that asked for two identical levels asked for two.
+    ///
+    /// # Errors
+    ///
+    /// As [`Pickable::build`], plus
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if no
+    /// deflection is given — a hierarchy of no levels answers nothing.
+    pub fn build(
+        model: &Model,
+        shape: &Shape,
+        deflections: &[Deflection],
+        tol: Tolerances,
+    ) -> OgeomResult<Self> {
+        if deflections.is_empty() {
+            ogeom_bail!(Construction, "a pick hierarchy needs at least one level");
+        }
+        let mut ordered: Vec<Deflection> = deflections.to_vec();
+        ordered.sort_by(|a, b| b.chord.total_cmp(&a.chord));
+        let mut levels = Vec::with_capacity(ordered.len());
+        let mut chords = Vec::with_capacity(ordered.len());
+        for deflection in ordered {
+            levels.push(Pickable::build(model, shape, deflection, tol)?);
+            chords.push(deflection.chord);
+        }
+        Ok(Self { levels, chords })
+    }
+
+    /// How many levels the hierarchy holds.
+    #[must_use]
+    pub fn level_count(&self) -> usize {
+        self.levels.len()
+    }
+
+    /// One level, coarsest first.
+    #[must_use]
+    pub fn level(&self, index: usize) -> Option<&Pickable> {
+        self.levels.get(index)
+    }
+
+    /// The chord a level was built at.
+    #[must_use]
+    pub fn chord(&self, index: usize) -> Option<f64> {
+        self.chords.get(index).copied()
+    }
+
+    /// The finest level: the one every descent ends at.
+    #[must_use]
+    pub fn finest(&self) -> &Pickable {
+        &self.levels[self.levels.len() - 1]
+    }
+
+    /// The coarsest level.
+    #[must_use]
+    pub fn coarsest(&self) -> &Pickable {
+        &self.levels[0]
+    }
+
+    /// The coarsest level no coarser than `chord` — what a view at that
+    /// detail should be asked, without building anything new.
+    #[must_use]
+    pub fn for_chord(&self, chord: f64) -> &Pickable {
+        for (index, held) in self.chords.iter().enumerate() {
+            if *held <= chord {
+                return &self.levels[index];
+            }
+        }
+        self.finest()
+    }
+
+    /// Every hit along a ray, nearest first — the finest level's answer,
+    /// reached by ruling faces out on the coarser ones first.
+    #[must_use]
+    pub fn pick(&self, ray: Ray, aperture: f64) -> Vec<Hit> {
+        match self.narrowed(ray) {
+            None => self.finest().pick(ray, aperture),
+            Some(mask) => self.finest().pick_within(ray, aperture, Some(&mask)),
+        }
+    }
+
+    /// The nearest hit along a ray, if any.
+    #[must_use]
+    pub fn pick_first(&self, ray: Ray, aperture: f64) -> Option<Hit> {
+        self.pick(ray, aperture).into_iter().next()
+    }
+
+    /// As [`PickHierarchy::pick`], refined onto the exact surfaces.
+    #[must_use]
+    pub fn pick_refined(&self, ray: Ray, aperture: f64, tol: Tolerances) -> Vec<Hit> {
+        // The refinement is the finest level's own, over the hits the descent
+        // left: refining is per hit, so narrowing changes what is refined and
+        // never how.
+        let hits = self.pick(ray, aperture);
+        self.finest().refine(hits, ray, tol)
+    }
+
+    /// The faces the coarse levels could not rule out, or `None` where there
+    /// is nothing to rule out with.
+    fn narrowed(&self, ray: Ray) -> Option<Vec<bool>> {
+        if self.levels.len() < 2 {
+            return None;
+        }
+        let fine = self.chords[self.chords.len() - 1];
+        let mut mask: Option<Vec<bool>> = None;
+        for (index, level) in self.levels[..self.levels.len() - 1].iter().enumerate() {
+            let near = level.faces_near(ray, self.chords[index] + fine);
+            mask = Some(match mask {
+                None => near,
+                Some(held) => held.into_iter().zip(near).map(|(a, b)| a && b).collect(),
+            });
+        }
+        mask
     }
 }
 
