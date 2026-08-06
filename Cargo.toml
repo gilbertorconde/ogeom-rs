@@ -1,5 +1,10 @@
 [workspace]
 resolver = "3"
+# Code that is not the kernel lives in `outside/`, which has its own workspace.
+# The exclusion is load-bearing rather than tidy: without it, a path dependency
+# pointing back into `outside/` would be absorbed into this workspace silently.
+# See `docs/SCOPE.md` and `outside/README.md`.
+exclude = ["outside"]
 members = [
     "crates/ogeom-core",
     "crates/ogeom-math",
