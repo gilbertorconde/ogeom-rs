@@ -1,4 +1,4 @@
-//! §E1 of `docs/PLAN.md`: one pick structure over several deflections.
+//! One pick structure over several deflections.
 //!
 //! The claim under test is not that the hierarchy is faster — that is what it
 //! is *for*, and a timing is not a proof of anything. The claim is that it
@@ -7,11 +7,11 @@
 //! different answer would be worse than useless.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
-use ogeom::core::Tolerances;
-use ogeom::math::{Direction, Frame, Point, Vector};
-use ogeom::mesh::Deflection;
-use ogeom::select::{PickHierarchy, Pickable, Ray};
-use ogeom::topo::{Model, Shape};
+use ogeom_core::Tolerances;
+use ogeom_math::{Direction, Frame, Point, Vector};
+use ogeom_mesh::Deflection;
+use ogeom_select::{PickHierarchy, Pickable, Ray};
+use ogeom_topo::{Model, Shape};
 
 const T: Tolerances = Tolerances::millimetres();
 
@@ -22,19 +22,17 @@ fn at(p: Point) -> Frame {
 /// A part with curvature in it, so the deflections genuinely differ: a block
 /// with a bore, a boss on top and a ball taken out of one corner.
 fn part(model: &mut Model) -> Shape {
-    let block = ogeom::algo::make_box(model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+    let block = ogeom_algo::make_box(model, Frame::WORLD, (20.0, 20.0, 10.0), T)
         .unwrap()
         .shape;
-    let bore = ogeom::algo::make_cylinder(model, at(Point::new(6.0, 6.0, -5.0)), 2.5, 20.0, T)
+    let bore = ogeom_algo::make_cylinder(model, at(Point::new(6.0, 6.0, -5.0)), 2.5, 20.0, T)
         .unwrap()
         .shape;
-    let drilled = ogeom::boolean::cut(model, &block, &bore, T).unwrap().shape;
-    let boss = ogeom::algo::make_cylinder(model, at(Point::new(14.0, 14.0, 10.0)), 3.0, 4.0, T)
+    let drilled = ogeom_bool::cut(model, &block, &bore, T).unwrap().shape;
+    let boss = ogeom_algo::make_cylinder(model, at(Point::new(14.0, 14.0, 10.0)), 3.0, 4.0, T)
         .unwrap()
         .shape;
-    ogeom::boolean::fuse(model, &drilled, &boss, T)
-        .unwrap()
-        .shape
+    ogeom_bool::fuse(model, &drilled, &boss, T).unwrap().shape
 }
 
 /// A fan of rays that samples the part from several directions, including

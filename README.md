@@ -66,7 +66,6 @@ and holds nothing yet.
 • crates/ogeom-doc         product structure, appearance, semantic PMI
 • crates/ogeom             the public umbrella API
 • crates/ogeom-sketch      2D geometric constraint solver
-• crates/ogeom-select      BVH picking and selection
 • tools/ogeom-cli          command-line front end
 • tools/ogeom-view         software renderer, so a wrong result is visible
 • tools/apisurf            API-usage profiler (analysis only)
@@ -78,6 +77,7 @@ workspace the kernel excludes. `docs/SCOPE.md` says what the boundary is and
 
 ```
 • outside/crates/ogeom-recognize   feature recognition and process planning
+• outside/crates/ogeom-select      BVH picking, selection, draft and thickness
 ```
 
 ## Building

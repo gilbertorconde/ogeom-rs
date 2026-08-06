@@ -23,7 +23,6 @@ ogeom-io.workspace = true
 ogeom-hlr.workspace = true
 ogeom-sketch.workspace = true
 ogeom-doc.workspace = true
-ogeom-select.workspace = true
 
 [dev-dependencies]
 approx.workspace = true

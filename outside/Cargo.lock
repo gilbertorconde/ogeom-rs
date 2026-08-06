@@ -412,6 +412,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ogeom-select"
+version = "0.0.0"
+dependencies = [
+ "approx",
+ "ogeom-algo",
+ "ogeom-bool",
+ "ogeom-core",
+ "ogeom-geom",
+ "ogeom-intersect",
+ "ogeom-math",
+ "ogeom-mesh",
+ "ogeom-topo",
+ "proptest",
+]
+
+[[package]]
 name = "ogeom-topo"
 version = "0.0.0"
 dependencies = [

@@ -23,7 +23,6 @@ pub use ogeom_io as io;
 pub use ogeom_math as math;
 pub use ogeom_mesh as mesh;
 pub use ogeom_offset as offset;
-pub use ogeom_select as select;
 pub use ogeom_sketch as sketch;
 pub use ogeom_topo as topo;
 

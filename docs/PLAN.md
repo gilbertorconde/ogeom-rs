@@ -258,22 +258,7 @@ now cuts a bore on its own axis and reports the two rulings. What is left is
 the drawing side — the half-section as a view, with its own hatching
 convention.
 
-### E. Interaction and documents
-
-**E1 — a multi-resolution pick hierarchy.** **Done.** `PickHierarchy` builds
-one scene per deflection over one shape, coarsest first, and answers a pick by
-descending: each coarse level rules faces out, and only what survives is put
-to the finest one. Face indices are the same at every level by construction,
-which is what lets an answer travel between them.
-
-The property that matters is that *nothing changes*. Each level's mesh stands
-within its own stated chord of the true surface, so widening the coarse
-level's boxes by the two chords cannot rule out a face the fine level would
-hit — and the test does not argue this, it checks it: every face the fine
-level strikes is admitted by the coarse one, ray by ray, and the descent's
-hits equal the finest level's own, sub-shape, kind, depth and refined
-position. What is measured about the *performance* is a count, not a timing:
-the coarse level admits well under half the scene.
+### E. Documents
 
 **E2 — datum targets and presentation PMI.** **Done.** `DatumTarget` with its
 four kinds — point, line, rectangle, circle — placed and sized, tied to the
@@ -439,7 +424,7 @@ These are settled. They are here so nobody reopens them by accident.
 
 1. ~~**A** — the interference table.~~ **Done.** Five named failures closed,
    B2 and D2 unblocked.
-2. **C**, **E1**, **E2**, **F3** — contained pieces, any order, each a stone.
+2. **C**, **E2**, **F3** — contained pieces, any order, each a stone.
 3. ~~**G1** — the tessellation instrument.~~ **Done**, and it was the shape
    rather than the instrument.
 4. ~~**The walker abstraction.**~~ **Done.** `ogeom_intersect::walk`: a

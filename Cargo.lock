@@ -283,7 +283,6 @@ dependencies = [
  "ogeom-math",
  "ogeom-mesh",
  "ogeom-offset",
- "ogeom-select",
  "ogeom-sketch",
  "ogeom-topo",
  "proptest",
@@ -484,22 +483,6 @@ dependencies = [
  "ogeom-bool",
  "ogeom-core",
  "ogeom-fillet",
- "ogeom-geom",
- "ogeom-intersect",
- "ogeom-math",
- "ogeom-mesh",
- "ogeom-topo",
- "proptest",
-]
-
-[[package]]
-name = "ogeom-select"
-version = "0.0.0"
-dependencies = [
- "approx",
- "ogeom-algo",
- "ogeom-bool",
- "ogeom-core",
  "ogeom-geom",
  "ogeom-intersect",
  "ogeom-math",
