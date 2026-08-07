@@ -1,223 +1,27 @@
-//! Measuring an intersection against ground truth.
+//! The instruments held to their own claims.
 //!
-//! `docs/PLAN.md` gates the boolean pipeline on this: surface/surface
-//! quality is *measured* before anything is built on top of it, and if it does
-//! not clear the bar the project ships as a geometry library rather than
-//! spending years on a boolean over an intersector that cannot carry one.
-//!
-//! This is the instrument. It is not a test — it is the thing a test asserts
-//! about, and the thing a report quotes.
-//!
-//! # What ground truth is here
-//!
-//! Not another kernel's answer. The two surfaces themselves.
-//!
-//! An intersection curve has exactly one defining property: every point of it
-//! lies on **both** surfaces. That is checkable without reference to anything
-//! else, it is checkable to machine precision, and it does not care how the
-//! curve was arrived at. So the measure is the largest distance from any sampled
-//! point of the reported curve to either surface — which is zero for a correct
-//! result and says how wrong an incorrect one is.
-//!
-//! # What it deliberately does not measure
-//!
-//! *Completeness.* Every point being on both surfaces says the answer is not
-//! wrong; it does not say the answer is all of it. An intersector that returned
-//! one of two circles would score perfectly here. Completeness needs a second
-//! instrument — sampling one surface and asking whether points near the other
-//! are covered — and the general intersector is where that starts to matter,
-//! since these closed forms return the whole answer by construction.
-//!
-//! Saying so is the point. A benchmark that quietly measured one thing while
-//! being read as measuring another would be worse than none, because the number
-//! would be trusted.
+//! An instrument nobody checks is a number nobody should trust. Each of these
+//! is a negative control: the accuracy measure is shown to report a real
+//! deviation rather than zero, and the completeness measure is shown to fail
+//! on an answer that is genuinely half missing. Without them the two
+//! instruments would agree with the intersector by construction, which is no
+//! agreement at all.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::print_stdout,
+    reason = "test code"
+)]
 
-use ogeom_core::{OgeomResult, Tolerances};
-use ogeom_geom::{Curve, Curve3d, Surface, SurfaceGeometry};
-use ogeom_math::Point;
+mod support;
 
-use crate::surface::{Meeting, surface_surface};
-
-/// How well one intersection was solved.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Measured {
-    /// What the intersector said.
-    pub meeting: Meeting,
-    /// The largest distance from any sampled point to the surfaces it should
-    /// lie on.
-    ///
-    /// `None` when there was nothing to sample — the surfaces are apart, or the
-    /// same — because a deviation of zero and no measurement at all are
-    /// different things and averaging them together would flatter the result.
-    pub deviation: Option<f64>,
-    /// How many points were sampled.
-    pub samples: usize,
-}
-
-/// A summary over many cases.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Report {
-    /// Cases attempted.
-    pub cases: usize,
-    /// Cases the closed forms answered.
-    pub solved: usize,
-    /// Cases reported as needing the general intersector.
-    pub deferred: usize,
-    /// The worst deviation seen across every case that produced a curve.
-    pub worst: f64,
-    /// Which case that was.
-    pub worst_case: Option<String>,
-}
-
-impl Report {
-    /// Whether every solved case met a bar.
-    ///
-    /// Deliberately not a stored field: the bar belongs to whoever is asking,
-    /// and burying one in the report would make every reader inherit a
-    /// threshold they did not choose.
-    #[must_use]
-    pub fn within(&self, bar: f64) -> bool {
-        self.worst <= bar
-    }
-}
-
-/// Measure one pair.
-///
-/// # Errors
-///
-/// As [`surface_surface`] — a pair with no closed form is reported rather than
-/// measured, and the caller decides whether that counts against it.
-pub fn measure(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerances) -> OgeomResult<Measured> {
-    /// Enough to catch a curve that is right at its ends and wrong in the
-    /// middle, which is the shape of a wrong answer that endpoints miss.
-    const SAMPLES: usize = 64;
-
-    let meeting = surface_surface(a, b, tol)?;
-    let mut worst: Option<f64> = None;
-    let mut samples = 0;
-
-    let mut check = |p: Point| {
-        let off = distance_to(a, p, tol).max(distance_to(b, p, tol));
-        worst = Some(worst.map_or(off, |w: f64| w.max(off)));
-        samples += 1;
-    };
-
-    match &meeting {
-        Meeting::Along(curves) => {
-            for curve in curves {
-                let (lo, hi) = sampling_range(curve);
-                for i in 0..=SAMPLES {
-                    #[allow(clippy::cast_precision_loss)]
-                    let u = lo + (hi - lo) * i as f64 / SAMPLES as f64;
-                    if let Ok(p) = curve.point_at(u, tol) {
-                        check(p);
-                    }
-                }
-            }
-        }
-        Meeting::Touching(points) => {
-            for p in points {
-                check(*p);
-            }
-        }
-        // Nothing to sample: see `Measured::deviation`.
-        Meeting::Apart | Meeting::Same => {}
-    }
-
-    Ok(Measured {
-        meeting,
-        deviation: worst,
-        samples,
-    })
-}
-
-/// Measure a whole set of named cases.
-///
-/// # Errors
-///
-/// Never for a case with no closed form — those are counted as deferred, which
-/// is the honest reading: the closed forms are not claiming to answer them.
-pub fn measure_all(
-    cases: &[(String, SurfaceGeometry, SurfaceGeometry)],
-    tol: Tolerances,
-) -> Report {
-    let mut report = Report {
-        cases: cases.len(),
-        ..Report::default()
-    };
-    for (name, a, b) in cases {
-        match measure(a, b, tol) {
-            Ok(found) => {
-                report.solved += 1;
-                if let Some(off) = found.deviation
-                    && off > report.worst
-                {
-                    report.worst = off;
-                    report.worst_case = Some(name.clone());
-                }
-            }
-            Err(_) => report.deferred += 1,
-        }
-    }
-    report
-}
-
-/// The range to sample a curve over.
-///
-/// An unbounded line's own domain reaches a billion units either way, and
-/// sampling that says nothing useful about an intersection near the origin — the
-/// interesting part is where the surfaces actually are. A bounded curve is
-/// sampled over all of itself.
-fn sampling_range(curve: &Curve) -> (f64, f64) {
-    let (lo, hi) = curve.domain();
-    if matches!(curve, Curve::Line(_)) {
-        return (-100.0, 100.0);
-    }
-    (lo, hi)
-}
-
-/// How far a point is from a surface.
-///
-/// Uses each quadric's own closed-form distance where it has one, which is what
-/// makes this an independent check rather than a restatement of the
-/// intersector's arithmetic.
-fn distance_to(surface: &SurfaceGeometry, p: Point, tol: Tolerances) -> f64 {
-    use SurfaceGeometry as S;
-    match surface {
-        S::Plane(x) => x.plane().distance_to(p),
-        S::Sphere(x) => x.sphere().distance_to(p),
-        S::Cylinder(x) => x.cylinder().distance_to(p),
-        S::Cone(x) => x.cone().distance_to(p),
-        S::Torus(x) => x.torus().distance_to(p),
-        // No closed form: fall back to the nearest sampled point, which is a
-        // weaker check and is only reached for surfaces the closed forms do not
-        // handle anyway.
-        other => nearest_on(other, p, tol),
-    }
-}
-
-/// The distance to the nearest sampled point of a surface.
-fn nearest_on(surface: &SurfaceGeometry, p: Point, tol: Tolerances) -> f64 {
-    const STEPS: usize = 128;
-    let ((ua, ub), (va, vb)) = surface.domain();
-    let mut best = f64::MAX;
-    for i in 0..=STEPS {
-        for j in 0..=STEPS {
-            #[allow(clippy::cast_precision_loss)]
-            let (s, t) = (i as f64 / STEPS as f64, j as f64 / STEPS as f64);
-            if let Ok(q) = surface.point_at(ua + (ub - ua) * s, va + (vb - va) * t, tol) {
-                best = best.min(p.distance(q));
-            }
-        }
-    }
-    best
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::print_stdout)]
-mod tests {
-    use super::*;
+/// Every point of every reported curve lies on both surfaces.
+mod accuracy {
+    use crate::support::benchmark::*;
+    use ogeom_core::Tolerances;
+    use ogeom_geom::{Curve, SurfaceGeometry};
     use ogeom_geom::{CylinderSurface, PlaneSurface, SphereSurface};
+    use ogeom_intersect::{Meeting, surface_surface};
     use ogeom_math::{Cylinder, Direction, Frame, Plane, Point, Sphere, Vector};
 
     const T: Tolerances = Tolerances::millimetres();
@@ -459,5 +263,171 @@ mod tests {
         assert_eq!(found.meeting, Meeting::Apart);
         assert_eq!(found.deviation, None);
         assert_eq!(found.samples, 0);
+    }
+}
+
+/// And the reported curves are all of the intersection.
+mod completeness {
+    use crate::support::coverage::*;
+    use ogeom_core::Tolerances;
+    use ogeom_geom::SurfaceGeometry;
+    use ogeom_geom::{CylinderSurface, PlaneSurface, SphereSurface};
+    use ogeom_intersect::{Marching, branches};
+    use ogeom_math::Point;
+    use ogeom_math::{Cylinder, Direction, Frame, Plane, Sphere, Vector};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn sphere(centre: Point, radius: f64) -> SurfaceGeometry {
+        SphereSurface::new(Sphere::centred(centre, radius, T).unwrap()).into()
+    }
+
+    fn cylinder(axis: Vector, radius: f64) -> SurfaceGeometry {
+        let frame = Frame::new(
+            Point::ORIGIN,
+            Direction::new(axis, T).unwrap(),
+            Direction::from_cross(axis, Vector::new(0.3, 0.5, 0.9), T).unwrap(),
+            T,
+        )
+        .unwrap();
+        CylinderSurface::new(Cylinder::new(frame, radius, T).unwrap(), (-4.0, 4.0))
+            .unwrap()
+            .into()
+    }
+
+    fn plane(origin: Point, normal: Vector) -> SurfaceGeometry {
+        PlaneSurface::over(
+            Plane::through(origin, Direction::new(normal, T).unwrap()),
+            (-6.0, 6.0),
+            (-6.0, 6.0),
+        )
+        .unwrap()
+        .into()
+    }
+
+    fn options() -> Marching {
+        Marching {
+            chord: 1e-4,
+            ..Marching::default()
+        }
+    }
+
+    #[test]
+    fn dropping_a_branch_is_caught() {
+        // The test that makes the instrument worth having. A completeness
+        // measure that always says "complete" looks exactly like a correct one
+        // until something is actually missing, so the negative control is not
+        // optional — it is the only evidence the thing works.
+        let a = sphere(Point::ORIGIN, 3.0);
+        let b = cylinder(Vector::Z, 1.5);
+
+        let found = branches(&a, &b, options(), T).unwrap();
+        assert_eq!(found.len(), 2, "a coaxial cylinder cuts a sphere twice");
+
+        let whole = coverage(&a, &b, &found, 40, T).unwrap();
+        assert!(
+            whole.complete(),
+            "{} of {} crossings covered, first miss at {:?}",
+            whole.covered,
+            whole.crossings,
+            whole.missed.first()
+        );
+
+        // Now hide one, exactly as an intersector that never seeded it would.
+        let half = coverage(&a, &b, &found[..1], 40, T).unwrap();
+        assert!(
+            !half.complete(),
+            "dropping a whole branch went unnoticed, which means this measures \
+             nothing"
+        );
+        println!(
+            "coverage with one branch of two: {:.1}% ({} missed)",
+            half.fraction() * 100.0,
+            half.missed.len()
+        );
+        assert!(half.fraction() < 0.75, "got {}", half.fraction());
+
+        // And reporting nothing at all is caught most of all.
+        let none = coverage(&a, &b, &[], 40, T).unwrap();
+        assert_eq!(none.covered, 0);
+        assert!(none.crossings > 0);
+    }
+
+    #[test]
+    fn the_marching_intersector_finds_all_of_what_it_is_asked_for() {
+        // The measurement the gate wants, on the cases that have no closed
+        // form. Accuracy was already established; this is the other half.
+        let cases: Vec<(&str, SurfaceGeometry, SurfaceGeometry)> = vec![
+            (
+                "sphere/plane",
+                sphere(Point::ORIGIN, 3.0),
+                plane(Point::new(0.0, 0.0, 1.0), Vector::Z),
+            ),
+            (
+                "sphere/cylinder coaxial",
+                sphere(Point::ORIGIN, 3.0),
+                cylinder(Vector::Z, 1.5),
+            ),
+            (
+                "sphere/cylinder offset",
+                sphere(Point::new(0.6, 0.0, 0.0), 3.0),
+                cylinder(Vector::Z, 1.5),
+            ),
+            (
+                "crossed cylinders",
+                cylinder(Vector::Z, 1.0),
+                cylinder(Vector::X, 1.6),
+            ),
+        ];
+        for (name, a, b) in cases {
+            let found = branches(&a, &b, options(), T).unwrap();
+            let score = coverage(&a, &b, &found, 40, T).unwrap();
+            println!(
+                "coverage {name}: {}/{} cells, {} branches",
+                score.covered,
+                score.crossings,
+                found.len()
+            );
+            assert!(score.crossings > 0, "{name}: nothing to cover");
+            assert!(
+                score.complete(),
+                "{name}: missed {} of {} crossings, first at {:?}",
+                score.crossings - score.covered,
+                score.crossings,
+                score.missed.first()
+            );
+        }
+    }
+
+    #[test]
+    fn a_pair_it_cannot_measure_says_so_rather_than_scoring_full_marks() {
+        // A cone has no consistent inside, so there is no sign to change. The
+        // dangerous answer would be "complete", since a caller reading a
+        // hundred percent has no way to tell it apart from a real result.
+        let cone: SurfaceGeometry = ogeom_geom::ConeSurface::new(
+            ogeom_math::Cone::new(Frame::WORLD, 1.0, 0.4_f64.atan(), T).unwrap(),
+            (0.0, 3.0),
+        )
+        .unwrap()
+        .into();
+        let err = coverage(&sphere(Point::ORIGIN, 2.0), &cone, &[], 20, T).unwrap_err();
+        assert!(err.to_string().contains("signed distance"), "got {err}");
+    }
+
+    #[test]
+    fn nothing_crossed_is_complete_rather_than_a_division_by_zero() {
+        let far = sphere(Point::new(100.0, 0.0, 0.0), 1.0);
+        let score = coverage(&sphere(Point::ORIGIN, 1.0), &far, &[], 16, T).unwrap();
+        assert_eq!(score.crossings, 0);
+        assert!(score.complete());
+        assert!((score.fraction() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_grid_too_coarse_to_have_cells_is_refused() {
+        let a = sphere(Point::ORIGIN, 1.0);
+        let b = plane(Point::ORIGIN, Vector::Z);
+        assert!(coverage(&a, &b, &[], 1, T).is_err());
+        assert!(coverage(&a, &b, &[], 0, T).is_err());
     }
 }

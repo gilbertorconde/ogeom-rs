@@ -34,3 +34,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # Code the kernel disowned, built so breakage is visible without holding the
+  # kernel hostage to it. `continue-on-error` is the whole point: `outside/` is
+  # a snapshot of working code, not a maintained product, and the kernel is
+  # free to move underneath it. A red run here is information; it is not a
+  # reason to block a kernel change. See `outside/README.md`.
+  outside:
+    name: outside (non-gating)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: outside
+      - name: Check
+        working-directory: outside
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace --no-fail-fast

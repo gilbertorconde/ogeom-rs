@@ -63,7 +63,6 @@ ogeom-offset = { path = "crates/ogeom-offset", version = "0.0.0" }
 ogeom-io = { path = "crates/ogeom-io", version = "0.0.0" }
 ogeom-hlr = { path = "crates/ogeom-hlr", version = "0.0.0" }
 ogeom-doc = { path = "crates/ogeom-doc", version = "0.0.0" }
-ogeom-view = { path = "tools/ogeom-view", version = "0.0.0" }
 
 # --- arithmetic substrate ---
 # Generic over RealField so extended-precision / interval scalars can be swapped
@@ -94,7 +93,6 @@ thiserror = "2"
 # --- dev ---
 approx = "0.5"
 proptest = "1"
-criterion = "0.7"
 
 [profile.release]
 opt-level = 3

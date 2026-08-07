@@ -2,18 +2,25 @@
 
 A boundary-representation CAD kernel, written from scratch in Rust.
 
-**Status: geometry, topology, construction, tessellation, intersection,
-booleans, blends and chamfers, offsets, shells, sweeps and lofts, STEP in both
-directions with assemblies, colours and semantic PMI, healing, product
-structure, and 2D drawings with hidden line removal and sections are built and
-tested. Sketching, selection and the remaining exchange formats are not
-started.**
+**Status:** geometry, topology, construction, tessellation, intersection,
+booleans, blends and chamfers, offsets, shells, sweeps and lofts, healing,
+product structure, 2D drawings with hidden line removal and sections, and
+exchange — STEP in both directions with assemblies, colours and semantic PMI,
+plus the native format, STL, DXF, glTF, OBJ, PLY, VRML and 3MF — are built and
+tested. IGES is not.
+
+**How complete that is against a real kernel has not been measured.** The
+target is stated in `docs/SCOPE.md`: parity with the reference kernel's
+modelling modules, and nothing else. The audit that checks this against that
+target does not exist yet, so treat the list above as what has been built, not
+as what is required.
 
 ## What this is
 
-A complete, independent solid modeling kernel: parametric curves and surfaces,
-shared B-rep topology, booleans, blending, offsetting, tessellation, sketching,
-assemblies, drawing generation and data exchange.
+An independent solid modeling kernel: parametric curves and surfaces, shared
+B-rep topology, booleans, blending, offsetting, tessellation, assemblies,
+drawing generation and data exchange. A kernel and nothing else — what that
+excludes, and why, is `docs/SCOPE.md`.
 
 It is not a binding, a wrapper, or a port. It depends on no existing CAD kernel,
 vendors none, and links against none.
@@ -46,8 +53,7 @@ Two places where the conventional design is wrong and this one diverges:
 
 ## Layout
 
-`•` has working code; `·` is a crate that exists so its dependents can name it,
-and holds nothing yet.
+Every crate listed has working code in it.
 
 ```
 • crates/ogeom-core        arenas, identity, errors, tolerances, predicates
@@ -56,7 +62,7 @@ and holds nothing yet.
 • crates/ogeom-topo        the B-rep data model
 • crates/ogeom-algo        construction, primitives, measurement, classification
 • crates/ogeom-mesh        tessellation
-• crates/ogeom-io          native format, STEP, IGES, glTF, STL, DXF, and the rest
+• crates/ogeom-io          native format, STEP, glTF, STL, DXF, OBJ, PLY, VRML, 3MF
 • crates/ogeom-intersect   curve/curve, curve/surface, surface/surface
 • crates/ogeom-bool        general fuse and the boolean filters
 • crates/ogeom-heal        healing, simplification, upgrading
@@ -86,6 +92,12 @@ workspace the kernel excludes. `docs/SCOPE.md` says what the boundary is and
 ```sh
 cargo build --workspace
 cargo test  --workspace
+```
+
+`outside/` is excluded from that workspace and builds on its own:
+
+```sh
+cd outside && cargo test --workspace
 ```
 
 ## License

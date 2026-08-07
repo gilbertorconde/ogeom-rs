@@ -1,5 +1,10 @@
 //! Document and product structure.
 //!
+//! *Elsewhere:* `XCAFDoc`, `XCAFPrs` and `XCAFDimTolObjects` — the exchange
+//! document, which is part of DataExchange and in scope. The application
+//! framework those sit on top of is not, which is what the last paragraph here
+//! is about.
+//!
 //! Parts, assemblies and instances with placements; colours and materials per shape
 //! and per sub-shape; layers; names and user properties; PMI and GD&T — dimensions,
 //! tolerances, datums, annotations; validation properties; transactional undo and

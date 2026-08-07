@@ -23,24 +23,27 @@
 //! # The instruments
 //!
 //! **This crate was the project's single largest risk** — no Rust equivalent
-//! existed, and it is where prior open-source B-rep efforts failed — so it
-//! carries its own instruments rather than trusting itself. [`measure_all`]
-//! scores accuracy: every point of every reported curve against both surfaces,
-//! with ground truth being the surfaces themselves. [`coverage()`] scores
-//! completeness: the surfaces are asked, by signed distance and the
-//! intermediate value theorem, where the intersection *must* be, and every
-//! such cell had better be reached by some branch — because an intersector
-//! that finds one circle of two scores perfectly on accuracy alone. Both
-//! instruments have negative controls in the test suite: they demonstrably
-//! fail when something is genuinely missing.
+//! existed, and it is where prior open-source B-rep efforts failed — so it is
+//! held to instruments rather than trusted. They live in `tests/support/`,
+//! because measuring an intersector is not something a caller of one wants to
+//! do; what a caller wants is an intersector that has been measured.
 //!
-//! What the gate still lacks is an input no one here generated: a published
+//! One scores accuracy: every point of every reported curve against both
+//! surfaces, with ground truth being the surfaces themselves rather than
+//! anyone else's answer. The other scores completeness — the surfaces are
+//! asked, by signed distance and the intermediate value theorem, where the
+//! intersection *must* be, and every such cell had better be reached by some
+//! branch. The second exists because the first cannot catch a missing answer:
+//! an intersector that finds one circle of two and traces it perfectly scores
+//! perfectly on accuracy alone. Both have negative controls in
+//! `tests/instruments.rs`; they demonstrably fail when something is genuinely
+//! missing.
+//!
+//! What this still lacks is an input no one here generated: a published
 //! corpus. Until that lands, the numbers say the machinery is sound on what it
-//! has seen, and the deferred table says so in as many words.
+//! has seen, and they say nothing more than that.
 
 pub mod approx;
-pub mod benchmark;
-pub mod coverage;
 pub mod curve_surface;
 pub mod curves;
 pub mod extrema;
@@ -50,8 +53,6 @@ pub mod surface;
 pub mod walk;
 
 pub use approx::{IntersectionCurve, approximate_branch};
-pub use benchmark::{Measured, Report, measure, measure_all};
-pub use coverage::{Coverage, coverage};
 pub use curve_surface::{
     CurveSurfaceIntersection, CurveSurfaceOptions, Piercing, intersect_curve_surface,
 };

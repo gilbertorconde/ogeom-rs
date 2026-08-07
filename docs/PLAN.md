@@ -418,3 +418,13 @@ These are settled. They are here so nobody reopens them by accident.
 7. **H1** — removing a set of faces.
 
 **F4** has no scheduled slot: it needs a document nobody has published.
+
+**A debt this document owes.** Fifteen places in `crates/` refer the reader to
+"the deferred table", and there is no such table — it went with the scope map
+`3a89711` deleted. Six of the fifteen are inside error strings, so a caller who
+hits one of those refusals is told to consult something that does not exist,
+which is the *refusals are by name* rule kept only halfway. The replacement is
+`docs/PARITY.md`: a capability we deliberately do differently is a `divergent`
+verdict with its reasoning, and one we simply do not have is `absent` with a
+plan anchor — which is what the deferred table was for. The references get
+repointed when that file exists, in one pass, so they all say the same thing.

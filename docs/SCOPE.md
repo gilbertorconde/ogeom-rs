@@ -26,6 +26,13 @@ Anything the reference does not do at all is out of scope by default. Reverse
 engineering from meshes, constraint solving, feature recognition and process
 planning are all real disciplines and none of them is this.
 
+Each of those was built here before this rule was written, and each of them
+works. Rather than delete working code to make a point, it lives in `outside/`,
+which is a separate workspace the kernel's `Cargo.toml` excludes by name. The
+exclusion is what makes the rule structural instead of aspirational: nothing
+there can be pulled back in by a path dependency without someone deleting that
+line on purpose. `outside/README.md` says why each crate is on the far side.
+
 ## How to decide a case
 
 The question "is this in scope?" is answered mechanically, not by taste:

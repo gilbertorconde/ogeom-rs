@@ -21,8 +21,11 @@
 
 use ogeom_core::Tolerances;
 use ogeom_geom::{CylinderSurface, PlaneSurface, SphereSurface, SurfaceGeometry};
-use ogeom_intersect::{Marching, Meeting, Stopped, branches, coverage, surface_surface};
+mod support;
+
+use ogeom_intersect::{Marching, Meeting, Stopped, branches, surface_surface};
 use ogeom_math::{Cylinder, Direction, Frame, Plane, Point, Sphere, Vector};
+use support::coverage::coverage;
 
 const T: Tolerances = Tolerances::millimetres();
 

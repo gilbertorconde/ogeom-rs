@@ -18,8 +18,11 @@ use ogeom_geom::{
     ConeSurface, Curve3d as _, CylinderSurface, PlaneSurface, SphereSurface, SurfaceGeometry,
     TorusSurface,
 };
-use ogeom_intersect::{Marching, Meeting, Stopped, branches, coverage, surface_surface};
+mod support;
+
+use ogeom_intersect::{Marching, Meeting, Stopped, branches, surface_surface};
 use ogeom_math::{Cone, Cylinder, Direction, Frame, Plane, Point, Sphere, Torus, Vector};
+use support::coverage::coverage;
 
 const T: Tolerances = Tolerances::millimetres();
 
