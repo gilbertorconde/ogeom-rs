@@ -20,6 +20,7 @@ pub mod history;
 pub mod length;
 pub mod mass;
 pub mod measure;
+pub mod medial;
 pub mod place;
 pub mod primitive;
 pub mod proximity;
@@ -48,6 +49,7 @@ pub use measure::{
     project_on_curve, project_on_planar_curve, project_on_surface, relative_deflection,
     shape_bounds, surface_bounds, vertex_bounds, widened_to_hold,
 };
+pub use medial::{MedialAxis, medial_axis};
 pub use place::{copied, transformed};
 pub use primitive::{
     make_box, make_cone, make_cylinder, make_half_space, make_sphere, make_torus, make_wedge,

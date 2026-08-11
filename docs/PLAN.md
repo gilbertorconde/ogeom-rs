@@ -482,15 +482,16 @@ out on both sides.
 
 ### J. The medial axis
 
-**J1 — the medial axis of a planar region.** Absent, found by the audit. The
-skeleton of a face — the locus of centres of maximal inscribed circles — is
-what tool-path generation, midline extraction and some wire-offset modes are
-built on. The reference computes it from the boundary's bisector curves; the
-bisector mathematics is already in `ogeom-math` (`bisector`, `Bisector2`),
-so what is missing is the sweep that assembles bisectors into the axis with
-its branch points. Zero usage in the profiled consumer; unscheduled until a
-caller shows up, but recorded because "we could not do this" and "we chose
-not to yet" are different sentences.
+**J1 — the medial axis of a planar region.** **Built for the convex
+polygonal case**, exactly: the shrinking-polygon construction — every edge
+inward at unit speed, every vertex riding its angular bisector, each event
+retiring an edge and starting a branch — with convexity as the honesty
+condition, because it is what excludes the split events the construction
+does not have. Held to closed forms: a rectangle's four diagonals and roof
+line to 1e-9, and a 3–4–5 triangle's branches meeting at the incenter with
+the inradius (a+b−c)/2 = 1 as the deepest clearance. Holes, reflex corners
+and arcs are refused by name; the parity row's restriction is the live
+worklist should a caller ever need the general region.
 
 ## Decisions, not gaps
 

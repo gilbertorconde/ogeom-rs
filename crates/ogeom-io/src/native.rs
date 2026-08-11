@@ -884,10 +884,10 @@ pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
                 } else {
                     None
                 };
-                let lines = cursor.count()? as usize;
+                let lines = cursor.count()?;
                 let mut polylines = Vec::with_capacity(lines);
                 for _ in 0..lines {
-                    let count = cursor.count()? as usize;
+                    let count = cursor.count()?;
                     let mut line = Vec::with_capacity(count);
                     for _ in 0..count {
                         line.push(cursor.point()?);
@@ -895,9 +895,9 @@ pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
                     polylines.push(line);
                 }
                 let annotates = match cursor.word()? {
-                    "D" => Some(ogeom_doc::Annotated::Dimension(cursor.count()? as usize)),
-                    "T" => Some(ogeom_doc::Annotated::Tolerance(cursor.count()? as usize)),
-                    "M" => Some(ogeom_doc::Annotated::Datum(cursor.count()? as usize)),
+                    "D" => Some(ogeom_doc::Annotated::Dimension(cursor.count()?)),
+                    "T" => Some(ogeom_doc::Annotated::Tolerance(cursor.count()?)),
+                    "M" => Some(ogeom_doc::Annotated::Datum(cursor.count()?)),
                     _ => None,
                 };
                 document.pmi_mut().callouts.push(ogeom_doc::Callout {
@@ -917,10 +917,10 @@ pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
                 } else {
                     None
                 };
-                let count = cursor.count()? as usize;
+                let count = cursor.count()?;
                 let mut callouts = Vec::with_capacity(count);
                 for _ in 0..count {
-                    callouts.push(cursor.count()? as usize);
+                    callouts.push(cursor.count()?);
                 }
                 document.add_view(ogeom_doc::View {
                     name,
@@ -933,7 +933,7 @@ pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
                 let author = read_text(&mut cursor)?;
                 let text_body = read_text(&mut cursor)?;
                 let product = if cursor.flag()? {
-                    let index = cursor.count()? as usize;
+                    let index = cursor.count()?;
                     ids.get(index).copied()
                 } else {
                     None

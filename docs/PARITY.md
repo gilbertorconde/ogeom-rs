@@ -16,8 +16,7 @@ per package.
 | verdict | capabilities |
 |---|---|
 | `covered` | 69 |
-| `partial` | 12 |
-| `absent` | 1 |
+| `partial` | 13 |
 | `divergent` | 9 |
 | `n/a` | 5 |
 | `unreviewed` | 1 |
@@ -35,8 +34,13 @@ per package.
 - **algo.fitting** — Interpolating and approximating points with B-splines, curves and surfaces · `covered` · 82 headers claimed
 - **algo.global-properties** — Volume, area, mass, centroid and principal moments of shapes · `covered` · 24 headers claimed
 - **algo.history** — Every operation emits history: what was generated, modified, deleted · `covered` · 1 header claimed
-- **algo.medial-axis** — The medial axis of a planar region · `absent` · 18 headers claimed
-  - *owned by:* docs/PLAN.md §J (J1)
+- **algo.medial-axis** — The medial axis of a planar region · `partial` · 18 headers claimed
+  - *restriction:* Convex polygonal faces, exactly: the shrinking-polygon
+construction, held to the rectangle's roof line and the 3–4–5 triangle's
+incenter and inradius. Holes, reflex corners and curved boundaries are
+refused by name — each changes the mathematics (split events, parabolic
+bisectors), and a wrong axis gouges tool paths quietly. The refusals are
+the worklist if a caller ever needs the general region.
 - **algo.nurbs-conversion** — Converting a shape's geometry to NURBS form · `partial` · 2 headers claimed
   - *restriction:* `to_nurbs` converts what has a closed NURBS form and refuses by name what does not — a helix has no exact NURBS representation, and the refusal is pinned so it cannot reach an exchange writer as a silent approximation (docs/PLAN.md, Decisions).
 - **algo.place-copy** — Copying and transforming shapes, rigidly or generally, sharing what can be shared · `covered` · 10 headers claimed

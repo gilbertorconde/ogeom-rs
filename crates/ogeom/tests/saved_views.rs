@@ -23,20 +23,11 @@ fn annotated_document() -> ogeom::doc::Document {
         document.pmi_mut().callouts.push(ogeom::doc::Callout {
             name: name.into(),
             plane: Some(Frame::WORLD),
-            polylines: vec![vec![
-                Point::new(0.0, y, 6.0),
-                Point::new(20.0, y, 6.0),
-            ]],
+            polylines: vec![vec![Point::new(0.0, y, 6.0), Point::new(20.0, y, 6.0)]],
             annotates: None,
         });
     }
-    let front = Frame::new(
-        Point::new(10.0, -30.0, 2.5),
-        Direction::Y,
-        Direction::X,
-        T,
-    )
-    .unwrap();
+    let front = Frame::new(Point::new(10.0, -30.0, 2.5), Direction::Y, Direction::X, T).unwrap();
     let top = Frame::new(Point::new(10.0, 5.0, 40.0), Direction::Z, Direction::X, T).unwrap();
     document.add_view(ogeom::doc::View {
         name: "front".into(),
@@ -63,8 +54,9 @@ fn annotated_document() -> ogeom::doc::Document {
 #[test]
 fn views_and_notes_survive_the_native_document() {
     let document = annotated_document();
-    let text = ogeom::io::native::write_document(&document, ogeom::io::native::WriteOptions::default())
-        .unwrap();
+    let text =
+        ogeom::io::native::write_document(&document, ogeom::io::native::WriteOptions::default())
+            .unwrap();
     let back = ogeom::io::native::read_document(&text).unwrap();
 
     assert_eq!(back.pmi().callouts.len(), 2);

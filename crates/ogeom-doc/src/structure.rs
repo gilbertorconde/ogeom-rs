@@ -487,8 +487,6 @@ impl Document {
         (self.history.len() - self.undone, self.undone)
     }
 
-    /// Everything the document says about its model, copied out.
-
     /// The position of a product in write order — how the native format
     /// refers to one across a save.
     #[must_use]

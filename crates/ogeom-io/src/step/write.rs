@@ -632,6 +632,10 @@ impl Writer<'_> {
 
     /// The document's PMI, written over the aspects of the anchor part.
     #[allow(clippy::many_single_char_names)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "five STEP context ids that travel together"
+    )]
     fn pmi(
         &mut self,
         pmi: &ogeom_doc::Pmi,
