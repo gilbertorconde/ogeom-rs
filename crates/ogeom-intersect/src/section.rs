@@ -256,23 +256,64 @@ fn touching_along(
     b: &SurfaceGeometry,
     tol: Tolerances,
 ) -> bool {
-    let (Some(pa), Some(pb)) = (on_a, on_b) else {
-        return false;
+    // The chart position of a sample: through the pcurve where one exists,
+    // through the surface's own closed-form inversion where not. A meridian
+    // through a sphere's poles has no pcurve — its longitude jumps half a
+    // turn at each pole — but every *point* of it inverts fine, and a
+    // tangency that would be missed for want of a pcurve becomes a crossing
+    // section lying along a face's own boundary, which is the worst thing a
+    // section can be.
+    let sample_uv = |pc: Option<&PlanarCurve>,
+                     surface: &SurfaceGeometry,
+                     t: f64|
+     -> Option<ogeom_math::Point2> {
+        if let Some(pc) = pc {
+            return pc.point_at(t, tol).ok();
+        }
+        let p = curve.point_at(t, tol).ok()?;
+        chart_inversion(surface, p, tol)
     };
     let (lo, hi) = curve.domain();
-    for k in 0..5 {
-        let t = (hi - lo).mul_add(f64::from(k) / 4.0, lo);
-        let (Ok(ua), Ok(ub)) = (pa.point_at(t, tol), pb.point_at(t, tol)) else {
-            return false;
+    // Offsets chosen off the round fractions, so a curve through a chart
+    // degeneracy — a meridian's poles sit at quarters of its turn — is
+    // sampled beside the degenerate points rather than on them. A sample
+    // whose inversion still fails is skipped: the point tells us nothing,
+    // not that the surfaces cross.
+    let mut judged = 0_usize;
+    for f in [0.07, 0.19, 0.37, 0.53, 0.71, 0.89] {
+        let t = (hi - lo).mul_add(f, lo);
+        let (Some(ua), Some(ub)) = (sample_uv(on_a, a, t), sample_uv(on_b, b, t)) else {
+            continue;
         };
         let (Ok(na), Ok(nb)) = (a.normal_at(ua.x, ua.y, tol), b.normal_at(ub.x, ub.y, tol)) else {
-            return false;
+            continue;
         };
         if na.vector().cross(nb.vector()).magnitude() > 1e-6 {
             return false;
         }
+        judged += 1;
     }
-    true
+    judged >= 3
+}
+
+/// A point's chart position on an analytic surface, by closed form.
+fn chart_inversion(
+    surface: &SurfaceGeometry,
+    p: ogeom_math::Point,
+    tol: Tolerances,
+) -> Option<ogeom_math::Point2> {
+    use ogeom_math::elementary;
+    let (u, v) = match surface {
+        SurfaceGeometry::Plane(s) => elementary::plane_parameters(&s.plane(), p),
+        SurfaceGeometry::Cylinder(s) => {
+            elementary::cylinder_parameters(&s.cylinder(), p, tol).ok()?
+        }
+        SurfaceGeometry::Cone(s) => elementary::cone_parameters(&s.cone(), p, tol).ok()?,
+        SurfaceGeometry::Sphere(s) => elementary::sphere_parameters(&s.sphere(), p, tol).ok()?,
+        SurfaceGeometry::Torus(s) => elementary::torus_parameters(&s.torus(), p, tol).ok()?,
+        _ => return None,
+    };
+    Some(ogeom_math::Point2::new(u, v))
 }
 
 /// The parameter interval over which a 2D line stays inside a surface's

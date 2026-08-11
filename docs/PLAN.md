@@ -193,10 +193,33 @@ is worse than either answering or refusing.
 So the remaining work is one named thing, and it belongs to the boolean rather
 than to blending:
 
-> **A6 — tangency at a face's own corner.** A face touching another at a point
-> that is a *vertex* of its own boundary. The interior cases are handled: a
-> tangential curve is carried without parity, a point touch bounds nothing.
-> This one is neither, and it is what every corner blend asks for.
+> **A6 — tangency at a face's own corner.** **Closed.** A face touching
+> another at a point that is a *vertex* of its own boundary — what every
+> corner blend asks for — now cuts, and
+> `a6_the_corner_tool_cuts_through_its_own_tangencies` measures the rounded
+> corner against its closed form. Three defects stacked under the one
+> symptom, and each fix is a rule rather than a patch. A seam edge bounds a
+> chart twice *only when the face wraps*: a sphere octant whose boundary is
+> the seam meridian uses one column, and the far copy — fed in
+> unconditionally before — dangled by construction; the decision is now
+> made once at gather, by chart connectivity, and the arrangement, the trim
+> tests and the rebuild all inherit it. A tangency was missed for want of a
+> pcurve: the tangent circle between the corner ball and a fillet cylinder
+> is a meridian through the sphere's poles, whose chart image has no closed
+> form — so `touching_along` now inverts sample points through the
+> surface's own closed forms when a pcurve is missing, sampling beside the
+> degeneracies rather than on them. And the degeneracy splitter stopped
+> only at the *face's* pole edges: a meridian section runs through both of
+> a sphere's poles, and a face owning only the north one still cannot
+> chart an arc that wraps through the south — the split points are now the
+> *surfaces'* chart degeneracies, wherever the trim reaches.
+
+What remains of B2 after A6: the three-fillet corner accepts the tool
+through arrangement and classification, and now fails in the *rebuild* — a
+face's wire chains its pieces with one gap, "edge 2 ends where edge 3 does
+not begin". One defect, in the piece-to-wire assembly, with the corner
+configuration as its reproduction; the next session starts there rather
+than at a symptom.
 
 Two things were built on the way and stand on their own. `march_blend` (B1)
 is above. And `exact_pcurve` now sees through a **trim**: a trim says *where*

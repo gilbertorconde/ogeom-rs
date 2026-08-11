@@ -365,3 +365,71 @@ fn a5_a_corner_block_less_a_ball_clears_the_spike() {
         "and the spike is a valid solid"
     );
 }
+
+/// A6 — tangency at a face's own corner. The three-blend corner tool — the
+/// corner block less the ball, which A5 measures — is tangent to everything
+/// it rounds *by construction*: its spherical patch touches each of the
+/// box's three faces at a point that is a vertex of the patch's own
+/// boundary. This used to surface as a dangling boundary strand, because
+/// the octant's seam-meridian boundary fed both chart columns into the
+/// arrangement and the far one connected to nothing. Now the cut answers,
+/// and the answer is measured against the closed form: the box less the
+/// corner block plus the ball's octant.
+#[test]
+fn a6_the_corner_tool_cuts_through_its_own_tangencies() {
+    let mut model = Model::new();
+    let r = 3.0;
+    let big = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let block = ogeom::algo::make_box(
+        &mut model,
+        at(Point::new(10.0 - r, 10.0 - r, 10.0 - r)),
+        (r, r, r),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let ball = ogeom::algo::make_sphere(
+        &mut model,
+        at(Point::new(10.0 - r, 10.0 - r, 10.0 - r)),
+        r,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let tool = ogeom::boolean::cut(&mut model, &block, &ball, T)
+        .unwrap()
+        .shape;
+    let rounded = ogeom::boolean::cut(&mut model, &big, &tool, T)
+        .unwrap()
+        .shape;
+
+    assert!(
+        ogeom::algo::check(&model, &rounded, T).unwrap().is_valid(),
+        "the rounded corner is a valid solid"
+    );
+    let pi = core::f64::consts::PI;
+    let octant = 4.0 / 3.0 * pi * r * r * r / 8.0;
+    let want = 1000.0 - (r * r * r - octant);
+    // The concave spherical patch meshes to the chord like any other; two
+    // deflections a decade apart say the residual is the mesh, not the cut.
+    let mut previous = f64::INFINITY;
+    for chord in [1e-3, 1e-4] {
+        let fine = Deflection::with_chord(chord).unwrap();
+        let measured = ogeom::algo::volume_properties(&model, &rounded, fine, T)
+            .unwrap()
+            .mass;
+        let error = (measured - want).abs() / want;
+        assert!(
+            error < previous,
+            "refining the mesh brings the measurement closer: {measured} vs {want}"
+        );
+        assert!(
+            error < chord * 4.0 / r,
+            "the corner, rounded, within the mesh's own deficit at chord \
+             {chord}: {measured} vs {want}"
+        );
+        previous = error;
+    }
+}

@@ -232,6 +232,74 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
         if edges.is_empty() {
             ogeom_bail!(Construction, "a face with no boundary bounds nothing");
         }
+
+        // A seam edge bounds the chart twice *only when this face wraps* —
+        // when its other boundary reaches both columns, as a full drum's
+        // rims do. A face that merely sits against the meridian — a sphere
+        // octant whose boundary happens to be the seam — uses one column,
+        // and feeding the far copy into the arrangement leaves a strand
+        // nothing connects to. The decision is made here, once, by chart
+        // connectivity, and everything downstream — the arrangement, the
+        // trim tests, the rebuild — inherits it.
+        let seam_indices: Vec<usize> = edges
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.other_side.is_some())
+            .map(|(i, _)| i)
+            .collect();
+        for i in seam_indices {
+            let mut pool: Vec<Point2> = Vec::new();
+            for (j, e) in edges.iter().enumerate() {
+                if j == i {
+                    continue;
+                }
+                for t in [e.prange.0, e.prange.1] {
+                    pool.push(e.pcurve.point_at(t, tol)?);
+                }
+                if let Some((other, orange)) = &e.other_side {
+                    for t in [orange.0, orange.1] {
+                        pool.push(other.point_at(t, tol)?);
+                    }
+                }
+            }
+            for p in &poles {
+                for t in [p.prange.0, p.prange.1] {
+                    pool.push(p.pcurve.point_at(t, tol)?);
+                }
+            }
+            let connected = |pc: &PlanarCurve, range: (f64, f64)| -> OgeomResult<bool> {
+                for t in [range.0, range.1] {
+                    let at = pc.point_at(t, tol)?;
+                    if !pool.iter().any(|q| q.distance(at) <= PARAM_SNAP) {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            };
+            let e = &edges[i];
+            let primary_connects = connected(&e.pcurve, e.prange)?;
+            let (other_pc, orange) = e
+                .other_side
+                .clone()
+                .unwrap_or_else(|| (e.pcurve.clone(), e.prange));
+            let other_connects = connected(&other_pc, orange)?;
+            match (primary_connects, other_connects) {
+                // Both columns meet the rest of the boundary: the face
+                // wraps, and both belong.
+                (true, true) => {}
+                // One column is this face's; the far copy would dangle.
+                (true, false) => edges[i].other_side = None,
+                (false, true) => {
+                    let e = &mut edges[i];
+                    e.pcurve = other_pc;
+                    e.prange = orange;
+                    e.other_side = None;
+                }
+                // Neither connects — leave both, and the arrangement's own
+                // refusal names the failure as it always did.
+                (false, false) => {}
+            }
+        }
         let mut bound = ogeom_math::Aabb::EMPTY;
         for e in &edges {
             for i in 0..=16 {
@@ -1264,12 +1332,33 @@ fn split_at_degeneracies(
 ) -> OgeomResult<Option<Vec<(Curve, PlanarCurve, PlanarCurve)>>> {
     let mut stops: Vec<f64> = Vec::new();
     let domain = curve.domain();
+    // The split points are the *surfaces'* chart degeneracies, not merely the
+    // faces' pole edges: a meridian section runs through both of a sphere's
+    // poles, and a face that owns only the north one still cannot chart an
+    // arc that wraps through the south. The surface knows where its chart
+    // collapses whether or not the face's trim reaches there.
+    let mut candidates: Vec<Point> = Vec::new();
     for face in [fa, fb] {
         for pole in &face.poles {
-            let found = ogeom_algo::project_on_curve(curve, pole.point, 256, tol)?;
-            if found.distance <= tol.confusion() {
-                stops.push(found.parameter);
+            candidates.push(pole.point);
+        }
+        match &face.surface {
+            SurfaceGeometry::Sphere(s) => {
+                let sphere = s.sphere();
+                let axis = sphere.frame().z().vector();
+                candidates.push(sphere.centre() + axis * sphere.radius());
+                candidates.push(sphere.centre() - axis * sphere.radius());
             }
+            SurfaceGeometry::Cone(c) => {
+                candidates.push(c.cone().apex());
+            }
+            _ => {}
+        }
+    }
+    for point in candidates {
+        let found = ogeom_algo::project_on_curve(curve, point, 256, tol)?;
+        if found.distance <= tol.confusion() {
+            stops.push(found.parameter);
         }
     }
     if stops.is_empty() {
