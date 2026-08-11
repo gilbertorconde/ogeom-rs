@@ -865,7 +865,7 @@ fn interior_is_transversal(
 }
 
 /// Join stalled fragments that meet at branch points into the curves they
-/// belong to — the stitching the deferred table owed.
+/// belong to — the stitching an earlier plan owed, now delivered.
 ///
 /// Where the two normals become parallel the intersection has no single
 /// direction: the walk stalls there, wanders in place while the correction
@@ -1144,7 +1144,7 @@ fn nearest_on(
     Some(((u, v), surface.point_at(u, v, tol).ok()?))
 }
 
-/// Trace tangential contact along a curve — the walker the deferred table
+/// Trace tangential contact along a curve — the walker an earlier plan
 /// owed, following the valley of the gap function rather than a crossing.
 ///
 /// Where two surfaces touch along a whole curve there is no transversal

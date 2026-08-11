@@ -74,7 +74,7 @@ pub(crate) fn edge_curve(model: &Model, edge: &Shape) -> OgeomResult<(Curve, (f6
 ///
 /// Refuses concave and tangent edges: the wedge these blends subtract lies in
 /// the material only when the edge is convex. A concave blend *adds* material
-/// and is a different construction, recorded in the deferred table.
+/// and is a different construction — docs/PARITY.md, fillet.edge-blends.
 ///
 /// # Errors
 ///

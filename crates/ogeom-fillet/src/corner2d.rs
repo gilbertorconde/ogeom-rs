@@ -6,7 +6,7 @@
 //! back on their own curves, and the wire is rebuilt with the connector in
 //! the corner's place. The tangent construction for corners with curved
 //! sides — a line meeting an arc, two arcs — is the 2D tangency problem
-//! proper, recorded in the deferred table rather than approximated here.
+//! proper — docs/PARITY.md, fillet.corners-2d — rather than approximated here.
 
 use crate::support::edge_curve;
 use ogeom_algo::{Built, History, edge_vertices, make_edge_between, make_vertex, make_wire};

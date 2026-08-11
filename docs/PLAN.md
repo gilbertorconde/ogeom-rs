@@ -8,13 +8,14 @@ What is built: topology and the geometry vocabulary, the intersector, the
 boolean, healing, blending, offsets and sweeps, tessellation, drawings, the
 document layer, and STEP, STL, DXF, glTF, OBJ, PLY, VRML and 3MF exchange.
 
-What follows is the remainder *as this document knows it* — which is a claim
-made from the inside, and that is its limitation. Nothing here has been
-checked against the reference kernel's modelling modules, which is what
-`docs/SCOPE.md` sets as the target. Until that audit exists, an item's
-absence from this list means only that nobody writing here noticed it
-missing. `docs/PARITY.md` will replace this section with a remainder that is
-derived rather than remembered.
+What follows is the remainder, and it is now *derived rather than
+remembered*: `docs/PARITY.md` audits every public header of the reference's
+modelling modules against 97 named capabilities, the gate in
+`tools/check.sh` holds the audit to its evidence, and every `absent` and
+`partial` row there anchors back into a section here. This document keeps
+the *how* — what each gap needs and why it is not built yet; the ledger
+keeps the *what*. An item missing from both is a gate failure, not an
+oversight.
 
 ## How this project works
 
@@ -459,12 +460,8 @@ These are settled. They are here so nobody reopens them by accident.
 
 **F4** has no scheduled slot: it needs a document nobody has published.
 
-**A debt this document owes.** Fifteen places in `crates/` refer the reader to
-"the deferred table", and there is no such table — it went with the scope map
-`3a89711` deleted. Six of the fifteen are inside error strings, so a caller who
-hits one of those refusals is told to consult something that does not exist,
-which is the *refusals are by name* rule kept only halfway. The replacement is
-`docs/PARITY.md`: a capability we deliberately do differently is a `divergent`
-verdict with its reasoning, and one we simply do not have is `absent` with a
-plan anchor — which is what the deferred table was for. The references get
-repointed when that file exists, in one pass, so they all say the same thing.
+**A debt paid.** Fifteen places in `crates/` used to refer the reader to
+"the deferred table", which no longer existed. All fifteen now point at
+`docs/PARITY.md` rows by id, or state plainly that an earlier plan owed the
+thing and it was delivered. Six of them are inside error strings, so a
+refusal now names a row a reader can actually open.

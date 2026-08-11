@@ -13,7 +13,7 @@
 //! Polygonal, not exact: the classification is as fine as the tessellation
 //! and the sampling. That is the honest half of `HLRBRep`; the exact half —
 //! curve/surface interference resolved analytically — is deferred and the
-//! deferred table says so.
+//! parity ledger says so — docs/PARITY.md, hlr.projection.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Direction, Frame, Point, Point2, Vector};

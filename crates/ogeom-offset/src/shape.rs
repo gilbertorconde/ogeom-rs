@@ -261,7 +261,7 @@ pub(crate) fn rebuilt(
                 _ => ogeom_bail!(
                     Construction,
                     "offsetting a face on this surface needs a construction \
-                     the rebuild does not yet speak — see the deferred table"
+                     the rebuild does not yet speak — docs/PARITY.md, offset.shell-thicken"
                 ),
             }
         };
@@ -551,7 +551,7 @@ pub(crate) fn rebuilt(
             _ => ogeom_bail!(
                 Construction,
                 "offsetting an edge that is neither straight nor circular \
-                 needs the general rebuild — see the deferred table"
+                 needs the general rebuild — docs/PARITY.md, offset.shell-thicken"
             ),
         };
         history.modify(&edge, built.clone());

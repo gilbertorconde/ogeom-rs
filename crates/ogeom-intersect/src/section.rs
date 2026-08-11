@@ -1215,7 +1215,7 @@ mod tests {
 
     #[test]
     fn an_oblique_cut_gives_the_ellipse_a_trig_pcurve_on_the_drum() {
-        // The pcurve the deferred table owed: the oblique ellipse runs
+        // The pcurve an earlier plan owed: the oblique ellipse runs
         // linearly in the chart angle and sinusoidally in height — the
         // trig-affine family — exactly, same-parameter, both sides.
         let drum = cylinder(Vector::Z, 2.0);

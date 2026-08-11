@@ -1,4 +1,4 @@
-//! The contact configurations the deferred table still called refusals,
+//! The contact configurations an earlier plan still called refusals,
 //! pinned as the working behaviour they have become: curved same-domain
 //! pairs unify, and contact confined to an edge or a vertex passes through
 //! the boolean without harm.

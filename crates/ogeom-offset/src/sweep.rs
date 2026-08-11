@@ -8,7 +8,7 @@
 //! coaxial circle to circle gives the frustum the cone primitive already
 //! builds. The sweeps that need *new* surfaces — free-form spines, skew
 //! ruled walls, smoothed skinning through many sections — are recorded in
-//! the deferred table, not approximated here.
+//! docs/PARITY.md (offset.sweeps), not approximated here.
 
 use ogeom_algo::{
     Built, History, edge_vertices, make_cone, make_cylinder, make_edge, make_edge_between,
@@ -83,7 +83,7 @@ pub fn make_pipe(
         _ => ogeom_bail!(
             Construction,
             "a pipe along a free-form spine needs the sweep-surface \
-             machinery — see the deferred table"
+             machinery — docs/PARITY.md, offset.sweeps"
         ),
     };
     built.history.generate(spine, built.shape.clone());
@@ -382,7 +382,7 @@ pub fn make_loft(
                 ogeom_bail!(
                     Construction,
                     "a mixed or curved section needs the skinning machinery — \
-                     see the deferred table"
+                     docs/PARITY.md, offset.sweeps"
                 );
             };
             let Some((sv, _)) = edge_vertices(model, &edge)? else {
@@ -456,7 +456,7 @@ pub fn make_loft(
                 ogeom_bail!(
                     Construction,
                     "a skew ruled wall is not a plane; it needs the \
-                     extrusion-surface loft — see the deferred table"
+                     extrusion-surface loft — docs/PARITY.md, offset.loft"
                 );
             }
         }

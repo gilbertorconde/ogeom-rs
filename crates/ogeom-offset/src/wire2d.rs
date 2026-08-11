@@ -14,7 +14,7 @@
 //! neither straight nor circular, offsets that consume an edge whole, arcs
 //! whose concentric offset would have no radius left, and results that
 //! self-intersect — the global arrangement that trims a collapsed offset into
-//! its valid loops is recorded in the deferred table.
+//! its valid loops is recorded in docs/PARITY.md (offset.wire-offset).
 
 use ogeom_algo::{
     Built, History, edge_vertices, find_plane, make_edge_between, make_vertex, make_wire,
@@ -236,7 +236,7 @@ pub fn offset_wire(
             _ => ogeom_bail!(
                 Construction,
                 "offsetting an edge that is neither straight nor circular \
-                 needs the offset-curve machinery — see the deferred table"
+                 needs the offset-curve machinery — docs/PARITY.md, offset.wire-offset"
             ),
         }
     }
