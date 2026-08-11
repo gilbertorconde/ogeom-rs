@@ -51,7 +51,10 @@ id = "topo.location-chain"
 title = "Placement as a chain of transforms, so instancing shares geometry"
 crate = "ogeom-topo"
 verdict = "covered"
-claims = ["TopLoc_Location", "TopLoc_ItemLocation", "TopLoc_Datum3D"]
+claims = [
+    "TopLoc_Location", "TopLoc_ItemLocation", "TopLoc_Datum3D",
+    "BRepTools_PurgeLocations",
+]
 symbols = ["ogeom_topo::Location", "ogeom_topo::Datum"]
 tests = ["crates/ogeom-topo/src/location.rs"]
 
@@ -110,7 +113,7 @@ crate = "ogeom-io"
 verdict = "covered"
 claims = [
     "TopTools_ShapeSet", "TopTools_LocationSet", "TopTools_LocationSetPtr",
-    "TopTools_FormatVersion",
+    "TopTools_FormatVersion", "BRepTools_ShapeSet",
 ]
 symbols = ["ogeom_io::read", "ogeom_io::write", "ogeom_io::VERSION"]
 tests = ["crates/ogeom/tests/brep_format.rs"]
@@ -391,6 +394,7 @@ claims = [
     "Extrema_POnCurv", "Extrema_POnCurv2d", "Extrema_POnSurf",
     "Extrema_POnSurfParams", "Extrema_CurveTool", "Extrema_Curve2dTool",
     "Extrema_ElementType", "Extrema_ExtAlgo", "Extrema_ExtFlag",
+    "GeomAPI_ProjectPointOnCurve", "GeomAPI_ProjectPointOnSurf",
 ]
 symbols = [
     "ogeom_algo::project_on_curve", "ogeom_algo::project_on_surface",
@@ -415,6 +419,8 @@ claims = [
     "Extrema_GlobOptFuncCC", "Extrema_GlobOptFuncCQuadric",
     "Extrema_GlobOptFuncCS", "Extrema_GlobOptFuncConicS", "Extrema_LocECC",
     "Extrema_LocECC2d", "Extrema_LocateExtCC", "Extrema_LocateExtCC2d",
+    "GeomAPI", "GeomAPI_ExtremaCurveCurve", "GeomAPI_ExtremaCurveSurface",
+    "GeomAPI_ExtremaSurfaceSurface",
 ]
 symbols = [
     "ogeom_intersect::extrema_curve_curve",
@@ -448,7 +454,7 @@ verdict = "covered"
 claims = [
     "IntCurveSurface_HInter", "IntCurveSurface_Intersection",
     "IntCurveSurface_IntersectionPoint", "IntCurveSurface_IntersectionSegment",
-    "IntCurveSurface_TransitionOnCurve",
+    "IntCurveSurface_TransitionOnCurve", "GeomAPI_IntCS",
 ]
 symbols = [
     "ogeom_intersect::intersect_curve_surface", "ogeom_intersect::Piercing",
@@ -485,7 +491,7 @@ claims = [
     "IntWalk_StatusDeflection", "GeomInt", "GeomInt_IntSS",
     "GeomInt_LineConstructor", "GeomInt_LineTool",
     "GeomInt_ParameterAndOrientation", "GeomInt_WLApprox",
-    "ApproxInt_KnotTools", "ApproxInt_SvSurfaces",
+    "ApproxInt_KnotTools", "ApproxInt_SvSurfaces", "GeomAPI_IntSS",
 ]
 symbols = [
     "ogeom_intersect::intersect_surfaces", "ogeom_intersect::seeds",
@@ -507,7 +513,10 @@ id = "heal.substitution"
 title = "Recording shape substitutions and applying them across a model"
 crate = "ogeom-heal"
 verdict = "covered"
-claims = ["ShapeBuild", "ShapeBuild_ReShape", "ShapeBuild_Edge", "ShapeBuild_Vertex"]
+claims = [
+    "ShapeBuild", "ShapeBuild_ReShape", "ShapeBuild_Edge", "ShapeBuild_Vertex",
+    "BRepTools_ReShape", "BRepTools_Substitution",
+]
 symbols = ["ogeom_heal::Reshape"]
 tests = ["crates/ogeom-heal/src/reshape.rs"]
 
@@ -539,7 +548,7 @@ and whole-shape Bézier conversion are not. A downstream consumer that needs \
 C1 pieces gets the C0 shape and must split it itself. The need arrives with \
 exchange writers targeting formats that cap continuity or degree, which is \
 where this row will be reopened."""
-claims = ["ShapeUpgrade", "ShapeUpgrade_*"]
+claims = ["ShapeUpgrade", "ShapeUpgrade_*", "BRepLib_FuseEdges"]
 symbols = ["ogeom_heal::unify_same_domain", "ogeom_heal::merge_edges"]
 tests = ["crates/ogeom/tests/upgrade.rs"]
 
@@ -648,7 +657,7 @@ id = "mesh.tessellation"
 title = "Triangulating shapes to a stated deflection, deterministically, in parallel"
 crate = "ogeom-mesh"
 verdict = "covered"
-claims = ["BRepMesh_*"]
+claims = ["BRepMesh_*", "BRepLib_ToolTriangulatedShape"]
 symbols = [
     "ogeom_mesh::triangulate", "ogeom_mesh::triangulate_face",
     "ogeom_mesh::Deflection", "ogeom_mesh::tessellate",
@@ -700,3 +709,464 @@ symbols = [
     "ogeom_hlr::silhouettes", "ogeom_hlr::reflect_lines", "ogeom_hlr::Drawing",
 ]
 tests = ["crates/ogeom/tests/exact_hlr.rs"]
+
+# --- ogeom-algo, construction and measurement ------------------------------
+
+[[capability]]
+id = "algo.builders"
+title = "Building topology by hand: vertices, edges, wires, faces, shells, solids"
+crate = "ogeom-algo"
+verdict = "covered"
+claims = [
+    "BRepBuilderAPI", "BRepBuilderAPI_Command", "BRepBuilderAPI_MakeShape",
+    "BRepBuilderAPI_MakeVertex", "BRepBuilderAPI_MakeEdge",
+    "BRepBuilderAPI_MakeEdge2d", "BRepBuilderAPI_MakePolygon",
+    "BRepBuilderAPI_MakeWire", "BRepBuilderAPI_MakeFace",
+    "BRepBuilderAPI_MakeShell", "BRepBuilderAPI_MakeSolid",
+    "BRepBuilderAPI_FindPlane", "BRepBuilderAPI_EdgeError",
+    "BRepBuilderAPI_FaceError", "BRepBuilderAPI_PipeError",
+    "BRepBuilderAPI_ShellError", "BRepBuilderAPI_WireError",
+    "BRepLib", "BRepLib_Command", "BRepLib_MakeShape", "BRepLib_MakeVertex",
+    "BRepLib_MakeEdge", "BRepLib_MakeEdge2d", "BRepLib_MakePolygon",
+    "BRepLib_MakeWire", "BRepLib_MakeFace", "BRepLib_MakeShell",
+    "BRepLib_MakeSolid", "BRepLib_FindSurface", "BRepLib_EdgeError",
+    "BRepLib_FaceError", "BRepLib_ShellError", "BRepLib_WireError",
+    "BRepLib_ShapeModification", "BRepTools",
+]
+symbols = [
+    "ogeom_algo::make_vertex", "ogeom_algo::make_edge_between",
+    "ogeom_algo::make_wire", "ogeom_algo::make_face_with_pcurves",
+    "ogeom_algo::make_shell", "ogeom_algo::make_solid",
+    "ogeom_algo::make_polygon", "ogeom_algo::make_compound",
+    "ogeom_algo::find_plane", "ogeom_algo::attach_pcurve",
+]
+tests = ["crates/ogeom/tests/built_by_hand.rs"]
+
+[[capability]]
+id = "algo.primitives"
+title = "The primitive solids: box, wedge, cylinder, cone, sphere, torus, half-space, prism, revolution"
+crate = "ogeom-algo"
+verdict = "covered"
+claims = ["BRepPrimAPI_*"]
+symbols = [
+    "ogeom_algo::make_box", "ogeom_algo::make_wedge", "ogeom_algo::make_cylinder",
+    "ogeom_algo::make_cone", "ogeom_algo::make_sphere", "ogeom_algo::make_torus",
+    "ogeom_algo::make_half_space", "ogeom_algo::make_prism",
+    "ogeom_algo::make_revolution",
+]
+tests = ["crates/ogeom-algo/src/primitive.rs", "crates/ogeom/tests/built_by_hand.rs"]
+
+[[capability]]
+id = "geom.adaptors"
+title = "Evaluating topology as geometry: an edge's curve and a face's surface, placed"
+crate = "ogeom-geom"
+verdict = "covered"
+claims = ["BRepAdaptor_CompCurve", "BRepAdaptor_Curve", "BRepAdaptor_Curve2d", "BRepAdaptor_Surface"]
+symbols = ["ogeom_geom::Curve3d", "ogeom_geom::Surface", "ogeom_geom::CurveOnSurface"]
+tests = ["crates/ogeom-geom/src/traits.rs"]
+
+[[capability]]
+id = "algo.validity"
+title = "Diagnosing a shape's validity, by entity, with named problems"
+crate = "ogeom-algo"
+verdict = "covered"
+claims = ["BRepCheck", "BRepCheck_*", "BRepLib_CheckCurveOnSurface", "BRepLib_ValidateEdge"]
+symbols = [
+    "ogeom_algo::check", "ogeom_algo::Diagnosis", "ogeom_algo::Problem",
+    "ogeom_algo::Severity",
+]
+tests = ["crates/ogeom-algo/src/check.rs", "crates/ogeom/tests/built_by_hand.rs"]
+
+[[capability]]
+id = "algo.classification"
+title = "Classifying a point against a solid or a face: in, out, or on, exactly"
+crate = "ogeom-algo"
+verdict = "covered"
+claims = ["BRepClass3d", "BRepClass3d_*", "BRepClass_*"]
+symbols = [
+    "ogeom_algo::classify_in_solid", "ogeom_algo::classify_in_solid_exact",
+    "ogeom_algo::classify_on_face", "ogeom_algo::Containment",
+]
+tests = ["crates/ogeom-algo/src/classify.rs"]
+
+[[capability]]
+id = "algo.shape-distance"
+title = "Distance, proximity and overlap between whole shapes, and self-intersection"
+crate = "ogeom-algo"
+verdict = "covered"
+claims = ["BRepExtrema_*"]
+symbols = [
+    "ogeom_algo::distance_between_shapes", "ogeom_algo::ShapeDistance",
+    "ogeom_algo::ClosestPair", "ogeom_algo::check_self_intersection",
+]
+tests = [
+    "crates/ogeom-algo/src/proximity.rs",
+    "crates/ogeom/tests/analysis.rs::crossing_sheets_confess_and_a_box_does_not",
+]
+
+[[capability]]
+id = "algo.curve-sampling"
+title = "Sampling curves: by count, by spacing, by deflection, by abscissa"
+crate = "ogeom-algo"
+verdict = "covered"
+claims = ["GCPnts_*"]
+symbols = [
+    "ogeom_algo::points_by_count", "ogeom_algo::points_by_spacing",
+    "ogeom_algo::parameter_at_length", "ogeom_algo::curve_length",
+    "ogeom_mesh::discretize",
+]
+tests = ["crates/ogeom-algo/src/length.rs"]
+
+[[capability]]
+id = "algo.fitting"
+title = "Interpolating and approximating points with B-splines, curves and surfaces"
+crate = "ogeom-algo"
+verdict = "covered"
+claims = ["GeomAPI_Interpolate", "GeomAPI_PointsToBSpline", "GeomAPI_PointsToBSplineSurface"]
+symbols = [
+    "ogeom_algo::interpolate", "ogeom_algo::approximate",
+    "ogeom_geom::fit_points", "ogeom_geom::fit_surface_grid",
+    "ogeom_geom::fit_surface_scattered",
+]
+tests = ["crates/ogeom-geom/src/fit.rs", "crates/ogeom-algo/src/fit.rs"]
+
+[[capability]]
+id = "algo.place-copy"
+title = "Copying and transforming shapes, rigidly or generally, sharing what can be shared"
+crate = "ogeom-algo"
+verdict = "covered"
+claims = [
+    "BRepBuilderAPI_Copy", "BRepBuilderAPI_Transform",
+    "BRepBuilderAPI_GTransform", "BRepBuilderAPI_ModifyShape",
+    "BRepBuilderAPI_ShapeModification", "BRepTools_Modification",
+    "BRepTools_Modifier", "BRepTools_CopyModification",
+    "BRepTools_TrsfModification", "BRepTools_GTrsfModification",
+]
+symbols = [
+    "ogeom_algo::copied", "ogeom_algo::transformed",
+    "ogeom_algo::general_transformed_shape",
+]
+tests = ["crates/ogeom-algo/src/place.rs"]
+
+[[capability]]
+id = "algo.nurbs-conversion"
+title = "Converting a shape's geometry to NURBS form"
+crate = "ogeom-algo"
+verdict = "partial"
+restriction = """`to_nurbs` converts what has a closed NURBS form and refuses \
+by name what does not — a helix has no exact NURBS representation, and the \
+refusal is pinned so it cannot reach an exchange writer as a silent \
+approximation (docs/PLAN.md, Decisions)."""
+claims = ["BRepBuilderAPI_NurbsConvert", "BRepTools_NurbsConvertModification"]
+symbols = ["ogeom_algo::to_nurbs"]
+tests = ["crates/ogeom-algo/src/convert.rs"]
+
+[[capability]]
+id = "algo.sewing"
+title = "Sewing faces into shells along coincident edges, with spatial acceleration"
+crate = "ogeom-algo"
+verdict = "covered"
+claims = [
+    "BRepBuilderAPI_Sewing", "BRepBuilderAPI_FastSewing",
+    "BRepBuilderAPI_Collect", "BRepBuilderAPI_CellFilter",
+    "BRepBuilderAPI_BndBoxTreeSelector", "BRepBuilderAPI_VertexInspector",
+    "BRepBuilderAPI_TransitionMode", "BRepTools_Quilt",
+    "BRepTools_WireExplorer",
+]
+symbols = [
+    "ogeom_algo::sew", "ogeom_algo::Sewn", "ogeom_algo::order_edges",
+    "ogeom_algo::make_wire_unordered",
+]
+tests = ["crates/ogeom-algo/src/sew.rs"]
+
+[[capability]]
+id = "algo.history"
+title = "Every operation emits history: what was generated, modified, deleted"
+crate = "ogeom-algo"
+verdict = "covered"
+claims = ["BRepTools_History"]
+symbols = ["ogeom_algo::History", "ogeom_algo::Built"]
+tests = ["crates/ogeom-algo/tests/history_properties.rs"]
+
+# --- ogeom-bool -----------------------------------------------------------
+
+[[capability]]
+id = "bool.booleans"
+title = "The boolean operations: cut, fuse, common, section and split, exact and fuzzy, with argument checking"
+crate = "ogeom-bool"
+verdict = "covered"
+claims = [
+    "BRepAlgoAPI_Algo", "BRepAlgoAPI_BooleanOperation",
+    "BRepAlgoAPI_BuilderAlgo", "BRepAlgoAPI_Check", "BRepAlgoAPI_Common",
+    "BRepAlgoAPI_Cut", "BRepAlgoAPI_Fuse", "BRepAlgoAPI_Section",
+    "BRepAlgoAPI_Splitter",
+    "BOPAlgo_Algo", "BOPAlgo_Alerts", "BOPAlgo_ArgumentAnalyzer",
+    "BOPAlgo_BOP", "BOPAlgo_Builder", "BOPAlgo_BuilderArea",
+    "BOPAlgo_BuilderFace", "BOPAlgo_BuilderShape", "BOPAlgo_BuilderSolid",
+    "BOPAlgo_CheckResult", "BOPAlgo_CheckStatus", "BOPAlgo_CheckerSI",
+    "BOPAlgo_GlueEnum", "BOPAlgo_Operation", "BOPAlgo_Options",
+    "BOPAlgo_PArgumentAnalyzer", "BOPAlgo_PBOP", "BOPAlgo_PBuilder",
+    "BOPAlgo_PPaveFiller", "BOPAlgo_PSection", "BOPAlgo_PWireEdgeSet",
+    "BOPAlgo_PaveFiller", "BOPAlgo_Section", "BOPAlgo_SectionAttribute",
+    "BOPAlgo_ShellSplitter", "BOPAlgo_Tools", "BOPAlgo_ToolsProvider",
+    "BOPAlgo_WireEdgeSet", "BOPAlgo_WireSplitter",
+    "BOPDS_*", "BOPTools_*", "IntTools", "IntTools_*",
+]
+symbols = [
+    "ogeom_bool::cut", "ogeom_bool::fuse", "ogeom_bool::common",
+    "ogeom_bool::section", "ogeom_bool::cut_fuzzy", "ogeom_bool::fuse_fuzzy",
+]
+tests = [
+    "crates/ogeom/tests/boolean_interference.rs",
+    "crates/ogeom/tests/boolean_contact.rs",
+    "crates/ogeom/tests/boolean_options.rs",
+]
+
+[[capability]]
+id = "bool.cells"
+title = "The cells builder: arbitrary take/remove over the fused arrangement"
+crate = "ogeom-bool"
+verdict = "covered"
+claims = ["BOPAlgo_CellsBuilder"]
+symbols = ["ogeom_bool::cells", "ogeom_bool::Cells"]
+tests = ["crates/ogeom/tests/boolean_options.rs"]
+
+[[capability]]
+id = "bool.make-volume"
+title = "Making volumes from a soup of faces: the arrangement's closed cells"
+crate = "ogeom-bool"
+verdict = "covered"
+claims = ["BOPAlgo_MakerVolume"]
+symbols = ["ogeom_bool::make_volume"]
+tests = ["crates/ogeom/tests/boolean_options.rs"]
+
+[[capability]]
+id = "bool.make-periodic"
+title = "Making a shape periodic so instances tile without seam duplication"
+crate = "ogeom-bool"
+verdict = "covered"
+claims = ["BOPAlgo_MakePeriodic"]
+symbols = ["ogeom_bool::make_periodic"]
+tests = ["crates/ogeom/tests/boolean_options.rs"]
+
+[[capability]]
+id = "bool.glue"
+title = "Gluing shapes along known-coincident boundaries"
+crate = "ogeom-bool"
+verdict = "divergent"
+reasoning = """Subsumed, and recorded as a settled decision in docs/PLAN.md: \
+the boolean's same-domain unification already skips nothing it needs and \
+unifies what glue would, so a separate glue mode would be a second spelling \
+of the fuse with a faster wrong answer available. MakeConnected's job — \
+conformal multi-body assembly — falls out of the fuse plus history."""
+claims = ["BOPAlgo_MakeConnected"]
+
+# --- ogeom-fillet ---------------------------------------------------------
+
+[[capability]]
+id = "fillet.edge-blends"
+title = "Blending edges: constant and variable radius fillets, rolling-ball, marched where no closed form exists"
+crate = "ogeom-fillet"
+verdict = "partial"
+restriction = """Single edges, tangent chains and full rims blend, constant \
+and variable radius, with the marching blend solving the ball's two contact \
+points directly where no closed form exists. What is owed is the corner \
+where three blends meet: docs/PLAN.md §B (B2), blocked on §A (A6) — the \
+boolean's handling of tangency at a vertex of the tool's own patch. The \
+blend of the corner is constructible; its trim against the part is not yet."""
+claims = [
+    "BRepFilletAPI_MakeFillet", "BRepFilletAPI_LocalOperation",
+    "ChFi3d", "ChFi3d_*", "ChFiDS_*",
+    "Blend_*", "BlendFunc_*", "BRepBlend_*",
+]
+symbols = [
+    "ogeom_fillet::fillet_edge", "ogeom_fillet::fillet_edge_variable",
+    "ogeom_fillet::march_blend", "ogeom_fillet::blend_faces",
+    "ogeom_fillet::MarchedBlend",
+]
+tests = [
+    "crates/ogeom/tests/blends.rs",
+    "crates/ogeom-fillet/tests/marched_blend.rs",
+    "crates/ogeom-fillet/tests/fillet.rs",
+]
+
+[[capability]]
+id = "fillet.chamfers"
+title = "Chamfering edges: symmetric, two-distance, distance-and-angle"
+crate = "ogeom-fillet"
+verdict = "covered"
+claims = ["BRepFilletAPI_MakeChamfer"]
+symbols = [
+    "ogeom_fillet::chamfer_edge", "ogeom_fillet::chamfer_edge_distances",
+    "ogeom_fillet::chamfer_edge_angle",
+]
+tests = ["crates/ogeom/tests/blends.rs"]
+
+[[capability]]
+id = "fillet.corners-2d"
+title = "Filleting and chamfering the corners of planar wires"
+crate = "ogeom-fillet"
+verdict = "covered"
+claims = ["BRepFilletAPI_MakeFillet2d", "ChFi2d", "ChFi2d_*"]
+symbols = ["ogeom_fillet::fillet_corner_2d", "ogeom_fillet::chamfer_corner_2d"]
+tests = ["crates/ogeom-fillet/tests/variants.rs"]
+
+# --- ogeom-offset ---------------------------------------------------------
+
+[[capability]]
+id = "offset.shell-thicken"
+title = "Offsetting shapes and thickening shells into solids"
+crate = "ogeom-offset"
+verdict = "covered"
+claims = ["BRepOffset", "BRepOffset_*", "BRepOffsetAPI_MakeOffsetShape", "BRepOffsetAPI_MakeThickSolid"]
+symbols = ["ogeom_offset::offset_shape", "ogeom_offset::make_thick_solid"]
+tests = ["crates/ogeom-offset/tests/shape.rs"]
+
+[[capability]]
+id = "offset.wire-offset"
+title = "Offsetting planar wires, with the join styles"
+crate = "ogeom-offset"
+verdict = "covered"
+claims = ["BRepOffsetAPI_MakeOffset"]
+symbols = ["ogeom_offset::offset_wire", "ogeom_offset::Join"]
+tests = ["crates/ogeom-offset/tests/wire2d.rs"]
+
+[[capability]]
+id = "offset.sweeps"
+title = "Sweeping profiles along spines: pipes, pipe shells, evolved shapes, the frame laws"
+crate = "ogeom-offset"
+verdict = "covered"
+claims = [
+    "BRepOffsetAPI_MakePipe", "BRepOffsetAPI_MakePipeShell",
+    "BRepOffsetAPI_MakeEvolved", "BRepSweep_*", "BRepFill", "BRepFill_*",
+    "GeomFill", "GeomFill_*",
+]
+symbols = [
+    "ogeom_offset::make_pipe", "ogeom_offset::make_pipe_skinned",
+    "ogeom_offset::make_evolved",
+]
+tests = ["crates/ogeom-offset/tests/sweep.rs", "crates/ogeom/tests/evolved.rs"]
+
+[[capability]]
+id = "offset.loft"
+title = "Lofting through sections, ruled or smoothed"
+crate = "ogeom-offset"
+verdict = "covered"
+claims = ["BRepOffsetAPI_ThruSections"]
+symbols = ["ogeom_offset::make_loft", "ogeom_offset::make_loft_skinned"]
+tests = ["crates/ogeom/tests/mechanical_part.rs"]
+
+[[capability]]
+id = "offset.filling"
+title = "Filling a boundary with a face: the plate surface"
+crate = "ogeom-offset"
+verdict = "covered"
+claims = ["BRepOffsetAPI_MakeFilling", "GeomPlate_*"]
+symbols = ["ogeom_offset::make_filling"]
+tests = ["crates/ogeom/tests/filling.rs"]
+
+[[capability]]
+id = "offset.draft"
+title = "Drafting faces about a neutral plane for mould release"
+crate = "ogeom-offset"
+verdict = "covered"
+claims = ["BRepOffsetAPI_DraftAngle", "BRepOffsetAPI_MakeDraft"]
+symbols = ["ogeom_offset::apply_draft"]
+tests = ["crates/ogeom/tests/features.rs::four_walls_drafted_about_the_base_make_a_frustum"]
+
+[[capability]]
+id = "offset.form-features"
+title = "The form features: prism, revolution, rib and slot against a base"
+crate = "ogeom-offset"
+verdict = "covered"
+claims = ["BRepFeat", "BRepFeat_*"]
+symbols = [
+    "ogeom_offset::feature_prism", "ogeom_offset::feature_revol",
+    "ogeom_offset::feature_rib", "ogeom_offset::feature_slot",
+]
+tests = ["crates/ogeom/tests/features.rs::the_form_features_are_the_compositions_they_say_they_are"]
+
+[[capability]]
+id = "offset.projection"
+title = "Projecting wires normally onto faces, pcurves riding along"
+crate = "ogeom-offset"
+verdict = "covered"
+claims = ["BRepProj_Projection", "BRepOffsetAPI_NormalProjection"]
+symbols = ["ogeom_offset::normal_projection", "ogeom_offset::Projected"]
+tests = ["crates/ogeom/tests/features.rs::a_wire_projects_onto_the_faces_it_lands_on"]
+
+# --- ogeom-doc ------------------------------------------------------------
+
+[[capability]]
+id = "doc.product-structure"
+title = "Products, occurrences and instances with placements: the assembly tree"
+crate = "ogeom-doc"
+verdict = "covered"
+claims = [
+    "XCAFDoc", "XCAFDoc_AssemblyItemId", "XCAFDoc_AssemblyItemRef",
+    "XCAFDoc_AssemblyIterator", "XCAFDoc_AssemblyTool",
+    "XCAFDoc_AssemblyGraph", "XCAFDoc_DocumentTool", "XCAFDoc_Editor",
+    "XCAFDoc_GraphNode", "XCAFDoc_Location", "XCAFDoc_ShapeMapTool",
+    "XCAFDoc_ShapeTool",
+]
+symbols = [
+    "ogeom_doc::Document", "ogeom_doc::Product", "ogeom_doc::Occurrence",
+    "ogeom_doc::Instance",
+]
+tests = [
+    "crates/ogeom/tests/document.rs",
+    "crates/ogeom/tests/assembly_corpus.rs",
+]
+
+[[capability]]
+id = "doc.appearance"
+title = "Colours, layers, materials and textures, per shape and per sub-shape, with inheritance resolved"
+crate = "ogeom-doc"
+verdict = "covered"
+claims = [
+    "XCAFDoc_Color", "XCAFDoc_ColorTool", "XCAFDoc_ColorType",
+    "XCAFDoc_LayerTool", "XCAFDoc_Material", "XCAFDoc_MaterialTool",
+    "XCAFDoc_VisMaterial", "XCAFDoc_VisMaterialCommon",
+    "XCAFDoc_VisMaterialPBR", "XCAFDoc_VisMaterialTool",
+    "XCAFPrs", "XCAFPrs_*",
+]
+symbols = [
+    "ogeom_doc::Colour", "ogeom_doc::Layer", "ogeom_doc::Material",
+    "ogeom_doc::Texture",
+]
+tests = ["crates/ogeom/tests/document.rs", "crates/ogeom/tests/exchange.rs"]
+
+[[capability]]
+id = "doc.pmi"
+title = "Semantic PMI: dimensions, tolerances, datums, datum targets — and their presentation"
+crate = "ogeom-doc"
+verdict = "covered"
+claims = [
+    "XCAFDimTolObjects_*", "XCAFDoc_Dimension", "XCAFDoc_DimTol",
+    "XCAFDoc_DimTolTool", "XCAFDoc_Datum", "XCAFDoc_GeomTolerance",
+]
+symbols = [
+    "ogeom_doc::Dimension", "ogeom_doc::GeometricTolerance", "ogeom_doc::Datum",
+    "ogeom_doc::DatumTarget", "ogeom_doc::Callout", "ogeom_doc::Pmi",
+]
+tests = ["crates/ogeom/tests/pmi_corpus.rs"]
+
+[[capability]]
+id = "doc.properties"
+title = "Names, user properties, validation properties, lengths and centroids to check a transfer by"
+crate = "ogeom-doc"
+verdict = "covered"
+claims = ["XCAFDoc_LengthUnit", "XCAFDoc_Volume", "XCAFDoc_Area", "XCAFDoc_Centroid", "XCAFDoc_Note"]
+symbols = [
+    "ogeom_doc::Property", "ogeom_doc::PropertyValue",
+    "ogeom_doc::ValidationProperties",
+]
+tests = ["crates/ogeom/tests/exchange.rs"]
+
+[[capability]]
+id = "doc.saved-views"
+title = "Saved views and standalone note objects in the exchange document"
+crate = "ogeom-doc"
+verdict = "absent"
+claims = ["XCAFView_*", "XCAFNoteObjects_NoteObject", "XCAFDoc_View", "XCAFDoc_NoteComment", "XCAFDoc_NoteBinData", "XCAFDoc_NotesTool"]
+plan = "docs/PLAN.md §E (E3)"

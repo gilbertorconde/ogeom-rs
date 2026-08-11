@@ -286,6 +286,16 @@ No style is written, which is a statement and not an omission: a style is
 about rendering, and this kernel keeps no draughting style model to have one
 from.
 
+**E3 — saved views and standalone notes.** Absent, found by the audit. The
+exchange document can carry named views — a camera, a clipping state, and the
+set of PMI visible in each — and free-standing notes attached to labels
+rather than to geometry. Real STEP AP242 files use views to organise PMI
+presentation by sheet, so reading them without views flattens a structure the
+author meant. The document model here has products, occurrences, PMI and
+callouts; a view object naming a camera and a PMI subset is a small addition
+to `ogeom-doc` and a read/write pair in the STEP layer. Notes are smaller
+still. Neither blocks anything else.
+
 ### F. Exchange
 
 **F1 — the `.brep` interchange text format.** **Done.** Read and written from

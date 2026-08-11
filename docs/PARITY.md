@@ -15,25 +15,43 @@ per package.
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 28 |
-| `partial` | 5 |
-| `absent` | 2 |
-| `divergent` | 5 |
+| `covered` | 57 |
+| `partial` | 7 |
+| `absent` | 3 |
+| `divergent` | 6 |
 | `n/a` | 2 |
 
-2704 reference headers in the reviewable pool; 611 claimed by 42 capabilities, 2093 awaiting a claim. Ratchet: `unreviewed_max = 5`.
+2704 reference headers in the reviewable pool; 1188 claimed by 75 capabilities, 1516 awaiting a claim. Ratchet: `unreviewed_max = 5`.
 
 ## Capabilities
 
 ### ogeom-algo
 
+- **algo.builders** — Building topology by hand: vertices, edges, wires, faces, shells, solids · `covered` · 35 headers claimed
+- **algo.classification** — Classifying a point against a solid or a face: in, out, or on, exactly · `covered` · 13 headers claimed
+- **algo.curve-sampling** — Sampling curves: by count, by spacing, by deflection, by abscissa · `covered` · 11 headers claimed
+- **algo.fitting** — Interpolating and approximating points with B-splines, curves and surfaces · `covered` · 3 headers claimed
 - **algo.global-properties** — Volume, area, mass, centroid and principal moments of shapes · `covered` · 11 headers claimed
-- **algo.point-projection** — Projecting a point onto a curve or a surface, nearest first, all minima found · `covered` · 23 headers claimed
+- **algo.history** — Every operation emits history: what was generated, modified, deleted · `covered` · 1 header claimed
+- **algo.nurbs-conversion** — Converting a shape's geometry to NURBS form · `partial` · 2 headers claimed
+  - *restriction:* `to_nurbs` converts what has a closed NURBS form and refuses by name what does not — a helix has no exact NURBS representation, and the refusal is pinned so it cannot reach an exchange writer as a silent approximation (docs/PLAN.md, Decisions).
+- **algo.place-copy** — Copying and transforming shapes, rigidly or generally, sharing what can be shared · `covered` · 10 headers claimed
+- **algo.point-projection** — Projecting a point onto a curve or a surface, nearest first, all minima found · `covered` · 25 headers claimed
+- **algo.primitives** — The primitive solids: box, wedge, cylinder, cone, sphere, torus, half-space, prism, revolution · `covered` · 12 headers claimed
+- **algo.sewing** — Sewing faces into shells along coincident edges, with spatial acceleration · `covered` · 9 headers claimed
+- **algo.shape-distance** — Distance, proximity and overlap between whole shapes, and self-intersection · `covered` · 18 headers claimed
+- **algo.validity** — Diagnosing a shape's validity, by entity, with named problems · `covered` · 12 headers claimed
 
 ### ogeom-bool
 
+- **bool.booleans** — The boolean operations: cut, fuse, common, section and split, exact and fuzzy, with argument checking · `covered` · 90 headers claimed
+- **bool.cells** — The cells builder: arbitrary take/remove over the fused arrangement · `covered` · 1 header claimed
 - **bool.defeaturing** — Removing a set of faces from a solid by extending and re-intersecting its neighbours · `absent` · 1 header claimed
   - *owned by:* docs/PLAN.md §H (H1)
+- **bool.glue** — Gluing shapes along known-coincident boundaries · `divergent` · 1 header claimed
+  - *reasoning:* Subsumed, and recorded as a settled decision in docs/PLAN.md: the boolean's same-domain unification already skips nothing it needs and unifies what glue would, so a separate glue mode would be a second spelling of the fuse with a faster wrong answer available. MakeConnected's job — conformal multi-body assembly — falls out of the fuse plus history.
+- **bool.make-periodic** — Making a shape periodic so instances tile without seam duplication · `covered` · 1 header claimed
+- **bool.make-volume** — Making volumes from a soup of faces: the arrangement's closed cells · `covered` · 1 header claimed
 
 ### ogeom-core
 
@@ -42,16 +60,27 @@ per package.
 
 ### ogeom-doc
 
+- **doc.appearance** — Colours, layers, materials and textures, per shape and per sub-shape, with inheritance resolved · `covered` · 18 headers claimed
 - **doc.application-bootstrap** — The OCAF application object the exchange document hangs from · `n/a` · 1 header claimed
   - *reasoning:* ogeom-doc is deliberately not a label-and-attribute tree, so there is no framework application to bootstrap; a Document is constructed like any other value. The exchange-document capability itself (XCAFDoc) is in scope and audited separately.
+- **doc.pmi** — Semantic PMI: dimensions, tolerances, datums, datum targets — and their presentation · `covered` · 30 headers claimed
+- **doc.product-structure** — Products, occurrences and instances with placements: the assembly tree · `covered` · 12 headers claimed
+- **doc.properties** — Names, user properties, validation properties, lengths and centroids to check a transfer by · `covered` · 5 headers claimed
+- **doc.saved-views** — Saved views and standalone note objects in the exchange document · `absent` · 7 headers claimed
+  - *owned by:* docs/PLAN.md §E (E3)
 
 ### ogeom-fillet
 
+- **fillet.chamfers** — Chamfering edges: symmetric, two-distance, distance-and-angle · `covered` · 1 header claimed
+- **fillet.corners-2d** — Filleting and chamfering the corners of planar wires · `covered` · 8 headers claimed
+- **fillet.edge-blends** — Blending edges: constant and variable radius fillets, rolling-ball, marched where no closed form exists · `partial` · 105 headers claimed
+  - *restriction:* Single edges, tangent chains and full rims blend, constant and variable radius, with the marching blend solving the ball's two contact points directly where no closed form exists. What is owed is the corner where three blends meet: docs/PLAN.md §B (B2), blocked on §A (A6) — the boolean's handling of tangency at a vertex of the tool's own patch. The blend of the corner is constructible; its trim against the part is not yet.
 - **fillet.osculating-cache** — Cached osculating surfaces along a blend's tangency curves · `divergent` · 1 header claimed
   - *reasoning:* An implementation detail of the reference's blend pipeline: it caches osculating approximations to march against. The marching blend here solves the ball's two contact points directly at each section (ogeom-fillet's march module), so there is no cache to keep coherent.
 
 ### ogeom-geom
 
+- **geom.adaptors** — Evaluating topology as geometry: an edge's curve and a face's surface, placed · `covered` · 4 headers claimed
 - **geom.curves-2d** — Parametric plane curves, the pcurve vocabulary · `covered` · 15 headers claimed
 - **geom.curves-3d** — Parametric space curves: lines, conics, Bézier, B-spline, trimmed, offset · `covered` · 15 headers claimed
 - **geom.handle-wrappers** — Geometry-layer wrappers for points, vectors, placements and transforms · `divergent` · 16 headers claimed
@@ -71,9 +100,9 @@ per package.
   - *reasoning:* The job — run a heal sequence on import — exists and is done with a fixed inline sequence in the exchange readers, measured by the corpus. A pipeline scripted from resource files is configuration the applications that need it can build from the same functions; the kernel keeping a config-file interpreter would be an application affordance.
 - **heal.status-reporting** — Statuses, messages and traversal support for the healing pipeline · `divergent` · 7 headers claimed
   - *reasoning:* Healing outcomes here are values: `SameParameterReport`, `StepReport`, counts from `reduce_tolerances` — Rust Results rather than status bitfields read back through a registrator. A message-registration framework would add a second channel for what the return values already say.
-- **heal.substitution** — Recording shape substitutions and applying them across a model · `covered` · 4 headers claimed
+- **heal.substitution** — Recording shape substitutions and applying them across a model · `covered` · 6 headers claimed
 - **heal.tolerances** — Reading and tightening the tolerances a shape actually needs · `covered` · 2 headers claimed
-- **heal.upgrade** — Upgrading shapes in place: same-domain unification, edge merging, subdivision · `partial` · 33 headers claimed
+- **heal.upgrade** — Upgrading shapes in place: same-domain unification, edge merging, subdivision · `partial` · 34 headers claimed
   - *restriction:* Unification (`unify_same_domain`) and edge merging are here; the divide family — splitting faces and edges by continuity, angle or area — and whole-shape Bézier conversion are not. A downstream consumer that needs C1 pieces gets the C0 shape and must split it itself. The need arrives with exchange writers targeting formats that cap continuity or degree, which is where this row will be reopened.
 
 ### ogeom-hlr
@@ -84,13 +113,13 @@ per package.
 
 - **intersect.analytic-sections** — Closed-form intersections of planes and quadrics · `covered` · 8 headers claimed
 - **intersect.curve-curve** — Intersecting two curves, in the plane and in space: crossings, tangencies, overlaps · `covered` · 7 headers claimed
-- **intersect.curve-surface** — Intersecting a curve with a surface: piercings and lying segments, with transitions · `covered` · 5 headers claimed
-- **intersect.extrema** — Extrema between two curves, a curve and a surface, or two surfaces · `covered` · 24 headers claimed
-- **intersect.surface-surface-march** — The general surface/surface intersection: seeding, marching, branch assembly, approximation · `covered` · 55 headers claimed
+- **intersect.curve-surface** — Intersecting a curve with a surface: piercings and lying segments, with transitions · `covered` · 6 headers claimed
+- **intersect.extrema** — Extrema between two curves, a curve and a surface, or two surfaces · `covered` · 28 headers claimed
+- **intersect.surface-surface-march** — The general surface/surface intersection: seeding, marching, branch assembly, approximation · `covered` · 56 headers claimed
 
 ### ogeom-io
 
-- **io.native-format** — The native shape interchange format, versioned, with location and triangulation sets · `covered` · 4 headers claimed
+- **io.native-format** — The native shape interchange format, versioned, with location and triangulation sets · `covered` · 5 headers claimed
 
 ### ogeom-math
 
@@ -107,13 +136,24 @@ per package.
 ### ogeom-mesh
 
 - **mesh.editing** — Editing triangulations: connectivity, welding, decimation, boundary loops · `covered` · 8 headers claimed
-- **mesh.tessellation** — Triangulating shapes to a stated deflection, deterministically, in parallel · `covered` · 59 headers claimed
+- **mesh.tessellation** — Triangulating shapes to a stated deflection, deterministically, in parallel · `covered` · 60 headers claimed
+
+### ogeom-offset
+
+- **offset.draft** — Drafting faces about a neutral plane for mould release · `covered` · 2 headers claimed
+- **offset.filling** — Filling a boundary with a face: the plate surface · `covered` · 10 headers claimed
+- **offset.form-features** — The form features: prism, revolution, rib and slot against a base · `covered` · 16 headers claimed
+- **offset.loft** — Lofting through sections, ruled or smoothed · `covered` · 1 header claimed
+- **offset.projection** — Projecting wires normally onto faces, pcurves riding along · `covered` · 2 headers claimed
+- **offset.shell-thicken** — Offsetting shapes and thickening shells into solids · `covered` · 16 headers claimed
+- **offset.sweeps** — Sweeping profiles along spines: pipes, pipe shells, evolved shapes, the frame laws · `covered` · 105 headers claimed
+- **offset.wire-offset** — Offsetting planar wires, with the join styles · `covered` · 1 header claimed
 
 ### ogeom-topo
 
 - **topo.data-model** — The B-rep data model: shapes as (node, location, orientation) handles into shared arenas · `covered` · 36 headers claimed
 - **topo.identity** — The same / equal / partner identity trichotomy, each with a matching hasher · `covered` · 2 headers claimed
-- **topo.location-chain** — Placement as a chain of transforms, so instancing shares geometry · `covered` · 3 headers claimed
+- **topo.location-chain** — Placement as a chain of transforms, so instancing shares geometry · `covered` · 4 headers claimed
 - **topo.multi-representation-edges** — Edges and vertices carrying several representations: space curve, pcurves per face, polygons on triangulations · `covered` · 16 headers claimed
 - **topo.shared-state-locking** — Mutex provision for shapes shared across threads · `n/a` · 1 header claimed
   - *reasoning:* Exclusive access is the borrow checker's job: mutation needs `&mut Model`, which *is* the lock, held at compile time. A class that hands out mutexes per shape has no counterpart because the failure it guards against does not compile here.
