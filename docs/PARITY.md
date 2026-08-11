@@ -15,12 +15,14 @@ per package.
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 2 |
+| `covered` | 15 |
+| `partial` | 2 |
 | `absent` | 1 |
-| `n/a` | 1 |
+| `divergent` | 3 |
+| `n/a` | 2 |
 | `unreviewed` | 1 |
 
-2704 reference headers in the reviewable pool; 87 claimed by 5 capabilities, 2617 awaiting a claim. Ratchet: `unreviewed_max = 5`.
+2704 reference headers in the reviewable pool; 287 claimed by 24 capabilities, 2417 awaiting a claim. Ratchet: `unreviewed_max = 5`.
 
 ## Capabilities
 
@@ -33,18 +35,58 @@ per package.
 - **bool.defeaturing** — Removing a set of faces from a solid by extending and re-intersecting its neighbours · `absent` · 1 header claimed
   - *owned by:* docs/PLAN.md §H (H1)
 
+### ogeom-core
+
+- **core.progress** — Cancellable, staged progress through long operations · `covered` · 4 headers claimed
+- **core.tolerances** — The tolerance vocabulary: confusion, angular, intersection, and per-entity widening · `covered` · 1 header claimed
+
 ### ogeom-doc
 
 - **doc.application-bootstrap** — The OCAF application object the exchange document hangs from · `n/a` · 1 header claimed
   - *reasoning:* ogeom-doc is deliberately not a label-and-attribute tree, so there is no framework application to bootstrap; a Document is constructed like any other value. The exchange-document capability itself (XCAFDoc) is in scope and audited separately.
 
+### ogeom-fillet
+
+- **fillet.osculating-cache** — Cached osculating surfaces along a blend's tangency curves · `divergent` · 1 header claimed
+  - *reasoning:* An implementation detail of the reference's blend pipeline: it caches osculating approximations to march against. The marching blend here solves the ball's two contact points directly at each section (ogeom-fillet's march module), so there is no cache to keep coherent.
+
+### ogeom-geom
+
+- **geom.curves-2d** — Parametric plane curves, the pcurve vocabulary · `covered` · 15 headers claimed
+- **geom.curves-3d** — Parametric space curves: lines, conics, Bézier, B-spline, trimmed, offset · `covered` · 15 headers claimed
+- **geom.handle-wrappers** — Geometry-layer wrappers for points, vectors, placements and transforms · `divergent` · 16 headers claimed
+  - *reasoning:* The reference wraps every gp value in a reference-counted handle class so geometry can sit in documents. Here geometry lives in shared arenas keyed by id (docs/DATA_MODEL.md), and points, vectors and placements are plain values — a second, handle-shaped copy of the gp vocabulary would exist only to be a different allocation discipline. The capability those wrappers deliver is the arena's.
+- **geom.surfaces** — Parametric surfaces: planes, quadrics, swept, Bézier, B-spline, trimmed, offset · `covered` · 15 headers claimed
+
 ### ogeom-intersect
 
 - **intersect.extrema** — Extrema: nearest and farthest points between curves and surfaces · `unreviewed` · 47 headers claimed
 
+### ogeom-io
+
+- **io.native-format** — The native shape interchange format, versioned, with location and triangulation sets · `covered` · 4 headers claimed
+
+### ogeom-math
+
+- **math.analytic-carriers** — The analytic curve and surface carriers: lines, conics, quadrics · `covered` · 15 headers claimed
+- **math.equation-solving** — Roots and minima of functions and systems: Newton, Brent, bisection, polynomial roots · `partial` · 28 headers claimed
+  - *restriction:* Local methods only. The reference also ships global optimisers (math_GlobOptMin, math_PSO); consumers here seed local solves from coarse parameter scans instead, which the extrema and projection pipelines do explicitly. A case needing a true global optimum with no seedable structure has not arisen; if one does, this is the row to reopen.
+- **math.linear-algebra** — Dense and sparse linear systems, least squares, eigenvalues · `divergent` · 16 headers claimed
+  - *reasoning:* Dense linear algebra is nalgebra's, on purpose: the workspace is generic over RealField so extended-precision scalars can be swapped in (docs/DATA_MODEL.md), and reimplementing SVD/LU under that constraint buys nothing but bugs. What is ours is what the reference lacks a direct twin for: the sparse matrix and conjugate-gradient path the fitting pipeline uses (ogeom_math::SparseMatrix, ogeom_math::least_squares_cgnr).
+- **math.primitives** — Points, vectors, directions and frames, in the plane and in space · `covered` · 17 headers claimed
+- **math.quadrature** — Numerical integration · `partial` · 7 headers claimed
+  - *restriction:* Fixed-order Gauss–Legendre only. No Gauss–Kronrod pairs, so integration error is controlled by choosing the order from the integrand's degree (exact for the polynomial cases mass properties meet) rather than estimated adaptively. An integrand that needs adaptive subdivision has no entry point yet.
+- **math.transforms** — Rigid and general transforms, quaternions, and their interpolation · `covered` · 12 headers claimed
+
 ### ogeom-topo
 
-- **topo.data-model** — The B-rep data model: shapes as (node, location, orientation) handles into shared arenas · `covered` · 27 headers claimed
+- **topo.data-model** — The B-rep data model: shapes as (node, location, orientation) handles into shared arenas · `covered` · 36 headers claimed
+- **topo.identity** — The same / equal / partner identity trichotomy, each with a matching hasher · `covered` · 2 headers claimed
+- **topo.location-chain** — Placement as a chain of transforms, so instancing shares geometry · `covered` · 3 headers claimed
+- **topo.multi-representation-edges** — Edges and vertices carrying several representations: space curve, pcurves per face, polygons on triangulations · `covered` · 16 headers claimed
+- **topo.shared-state-locking** — Mutex provision for shapes shared across threads · `n/a` · 1 header claimed
+  - *reasoning:* Exclusive access is the borrow checker's job: mutation needs `&mut Model`, which *is* the lock, held at compile time. A class that hands out mutexes per shape has no counterpart because the failure it guards against does not compile here.
+- **topo.traversal** — Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered` · 3 headers claimed
 
 ## Exchange entities (collapsed)
 

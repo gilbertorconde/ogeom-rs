@@ -30,16 +30,323 @@ id = "topo.data-model"
 title = "The B-rep data model: shapes as (node, location, orientation) handles into shared arenas"
 crate = "ogeom-topo"
 verdict = "covered"
-claims = ["TopoDS", "TopoDS_*"]
+claims = [
+    "TopoDS", "TopoDS_*", "TopAbs", "TopAbs_*",
+    "BRep_Builder", "BRep_TEdge", "BRep_TFace", "BRep_TVertex", "BRep_Tool",
+]
 symbols = [
     "ogeom_topo::Model",
     "ogeom_topo::Shape",
+    "ogeom_topo::NodeData",
+    "ogeom_topo::Orientation",
     "ogeom_topo::Model::node",
 ]
 tests = [
     "crates/ogeom-algo/tests/history_properties.rs",
     "crates/ogeom/tests/built_by_hand.rs::a_hand_built_prism_closes_and_measures_its_closed_form",
 ]
+
+[[capability]]
+id = "topo.location-chain"
+title = "Placement as a chain of transforms, so instancing shares geometry"
+crate = "ogeom-topo"
+verdict = "covered"
+claims = ["TopLoc_Location", "TopLoc_ItemLocation", "TopLoc_Datum3D"]
+symbols = ["ogeom_topo::Location", "ogeom_topo::Datum"]
+tests = ["crates/ogeom-topo/src/location.rs"]
+
+[[capability]]
+id = "topo.multi-representation-edges"
+title = "Edges and vertices carrying several representations: space curve, pcurves per face, polygons on triangulations"
+crate = "ogeom-topo"
+verdict = "covered"
+claims = [
+    "BRep_CurveRepresentation", "BRep_GCurve", "BRep_Curve3D",
+    "BRep_CurveOnSurface", "BRep_CurveOnClosedSurface", "BRep_CurveOn2Surfaces",
+    "BRep_Polygon3D", "BRep_PolygonOnSurface", "BRep_PolygonOnClosedSurface",
+    "BRep_PolygonOnTriangulation", "BRep_PolygonOnClosedTriangulation",
+    "BRep_PointRepresentation", "BRep_PointOnCurve",
+    "BRep_PointOnCurveOnSurface", "BRep_PointOnSurface", "BRep_PointsOnSurface",
+]
+symbols = ["ogeom_topo::EdgeRepr", "ogeom_topo::EdgeData", "ogeom_topo::VertexData"]
+tests = [
+    "crates/ogeom-topo/src/entity.rs",
+    "crates/ogeom/tests/built_by_hand.rs",
+]
+
+[[capability]]
+id = "topo.traversal"
+title = "Exploring a shape: filtered descent, unique enumeration, ancestry maps"
+crate = "ogeom-topo"
+verdict = "covered"
+claims = ["TopExp", "TopExp_Explorer", "TopExp_Stack"]
+symbols = ["ogeom_topo::explore", "ogeom_topo::explore_unique", "ogeom_topo::ancestors_of", "ogeom_topo::Filter"]
+tests = ["crates/ogeom-topo/src/model.rs"]
+
+[[capability]]
+id = "topo.identity"
+title = "The same / equal / partner identity trichotomy, each with a matching hasher"
+crate = "ogeom-topo"
+verdict = "covered"
+claims = ["TopTools", "TopTools_ShapeMapHasher"]
+symbols = ["ogeom_topo::SameKey", "ogeom_topo::PartnerKey"]
+tests = ["crates/ogeom-topo/src/shape.rs"]
+
+[[capability]]
+id = "topo.shared-state-locking"
+title = "Mutex provision for shapes shared across threads"
+crate = "ogeom-topo"
+verdict = "n/a"
+claims = ["TopTools_MutexForShapeProvider"]
+reasoning = """Exclusive access is the borrow checker's job: mutation needs \
+`&mut Model`, which *is* the lock, held at compile time. A class that hands \
+out mutexes per shape has no counterpart because the failure it guards \
+against does not compile here."""
+
+[[capability]]
+id = "io.native-format"
+title = "The native shape interchange format, versioned, with location and triangulation sets"
+crate = "ogeom-io"
+verdict = "covered"
+claims = [
+    "TopTools_ShapeSet", "TopTools_LocationSet", "TopTools_LocationSetPtr",
+    "TopTools_FormatVersion",
+]
+symbols = ["ogeom_io::read", "ogeom_io::write", "ogeom_io::VERSION"]
+tests = ["crates/ogeom/tests/brep_format.rs"]
+
+# --- ogeom-core -----------------------------------------------------------
+
+[[capability]]
+id = "core.tolerances"
+title = "The tolerance vocabulary: confusion, angular, intersection, and per-entity widening"
+crate = "ogeom-core"
+verdict = "covered"
+claims = ["Precision"]
+symbols = ["ogeom_core::Tolerances", "ogeom_core::Tolerance"]
+tests = ["crates/ogeom-core/tests/properties.rs"]
+
+[[capability]]
+id = "core.progress"
+title = "Cancellable, staged progress through long operations"
+crate = "ogeom-core"
+verdict = "covered"
+claims = [
+    "Message_ProgressIndicator", "Message_ProgressRange",
+    "Message_ProgressScope", "Message_ProgressSentry",
+]
+symbols = ["ogeom_core::Watch", "ogeom_core::Canceller"]
+tests = [
+    "crates/ogeom/tests/foundations.rs::a_cancelled_watch_stops_tessellation",
+]
+
+# --- ogeom-math -----------------------------------------------------------
+
+[[capability]]
+id = "math.primitives"
+title = "Points, vectors, directions and frames, in the plane and in space"
+crate = "ogeom-math"
+verdict = "covered"
+claims = [
+    "gp", "gp_Pnt", "gp_Pnt2d", "gp_Vec", "gp_Vec2d", "gp_Vec2f", "gp_Vec3f",
+    "gp_XYZ", "gp_XY", "gp_Dir", "gp_Dir2d",
+    "gp_Ax1", "gp_Ax2", "gp_Ax22d", "gp_Ax2d", "gp_Ax3",
+    "gp_VectorWithNullMagnitude",
+]
+symbols = [
+    "ogeom_math::Point", "ogeom_math::Vector", "ogeom_math::Direction",
+    "ogeom_math::Frame", "ogeom_math::Point2", "ogeom_math::Axis",
+]
+tests = ["crates/ogeom-math/tests/primitive_properties.rs"]
+
+[[capability]]
+id = "math.transforms"
+title = "Rigid and general transforms, quaternions, and their interpolation"
+crate = "ogeom-math"
+verdict = "covered"
+claims = [
+    "gp_Trsf", "gp_Trsf2d", "gp_GTrsf", "gp_GTrsf2d", "gp_Mat", "gp_Mat2d",
+    "gp_Quaternion", "gp_QuaternionNLerp", "gp_QuaternionSLerp",
+    "gp_TrsfForm", "gp_TrsfNLerp", "gp_EulerSequence",
+]
+symbols = [
+    "ogeom_math::Transform", "ogeom_math::Transform2",
+    "ogeom_math::GeneralTransform", "ogeom_math::Quaternion",
+]
+tests = ["crates/ogeom-math/tests/transform_properties.rs"]
+
+[[capability]]
+id = "math.analytic-carriers"
+title = "The analytic curve and surface carriers: lines, conics, quadrics"
+crate = "ogeom-math"
+verdict = "covered"
+claims = [
+    "gp_Lin", "gp_Lin2d", "gp_Circ", "gp_Circ2d", "gp_Elips", "gp_Elips2d",
+    "gp_Hypr", "gp_Hypr2d", "gp_Parab", "gp_Parab2d", "gp_Pln",
+    "gp_Cylinder", "gp_Cone", "gp_Sphere", "gp_Torus",
+]
+symbols = [
+    "ogeom_math::Circle", "ogeom_math::Plane", "ogeom_math::Cylinder",
+    "ogeom_math::Cone", "ogeom_math::Sphere", "ogeom_math::Torus",
+]
+tests = ["crates/ogeom-math/tests/primitive_properties.rs"]
+
+[[capability]]
+id = "math.equation-solving"
+title = "Roots and minima of functions and systems: Newton, Brent, bisection, polynomial roots"
+crate = "ogeom-math"
+verdict = "partial"
+restriction = """Local methods only. The reference also ships global \
+optimisers (math_GlobOptMin, math_PSO); consumers here seed local solves \
+from coarse parameter scans instead, which the extrema and projection \
+pipelines do explicitly. A case needing a true global optimum with no \
+seedable structure has not arisen; if one does, this is the row to reopen."""
+claims = [
+    "math", "math_BFGS", "math_BissecNewton", "math_BracketMinimum",
+    "math_BracketedRoot", "math_BrentMinimum", "math_BullardGenerator",
+    "math_DirectPolynomialRoots", "math_FRPR", "math_Function",
+    "math_FunctionAllRoots", "math_FunctionSet", "math_FunctionSetRoot",
+    "math_FunctionSetWithDerivatives", "math_FunctionWithDerivative",
+    "math_GlobOptMin", "math_MultipleVarFunction",
+    "math_MultipleVarFunctionWithGradient",
+    "math_MultipleVarFunctionWithHessian", "math_NewtonFunctionRoot",
+    "math_NewtonFunctionSetRoot", "math_NewtonMinimum", "math_PSO",
+    "math_PSOParticlesPool", "math_Powell", "math_Status",
+    "math_TrigonometricEquationFunction", "math_TrigonometricFunctionRoots",
+]
+symbols = [
+    "ogeom_math::newton", "ogeom_math::newton_system", "ogeom_math::brent",
+    "ogeom_math::roots", "ogeom_math::quadratic_roots", "ogeom_math::cubic_roots",
+]
+tests = ["crates/ogeom-math/tests/algebra_properties.rs"]
+
+[[capability]]
+id = "math.linear-algebra"
+title = "Dense and sparse linear systems, least squares, eigenvalues"
+crate = "ogeom-math"
+verdict = "divergent"
+reasoning = """Dense linear algebra is nalgebra's, on purpose: the workspace \
+is generic over RealField so extended-precision scalars can be swapped in \
+(docs/DATA_MODEL.md), and reimplementing SVD/LU under that constraint buys \
+nothing but bugs. What is ours is what the reference lacks a direct twin \
+for: the sparse matrix and conjugate-gradient path the fitting pipeline \
+uses (ogeom_math::SparseMatrix, ogeom_math::least_squares_cgnr)."""
+claims = [
+    "math_Crout", "math_DoubleTab", "math_EigenValuesSearcher", "math_Gauss",
+    "math_GaussLeastSquare", "math_Householder", "math_IntegerVector",
+    "math_Jacobi", "math_Matrix", "math_NotSquare", "math_Recipes",
+    "math_SVD", "math_SingularMatrix", "math_Uzawa", "math_Vector",
+    "math_VectorBase",
+]
+
+[[capability]]
+id = "math.quadrature"
+title = "Numerical integration"
+crate = "ogeom-math"
+verdict = "partial"
+restriction = """Fixed-order Gauss–Legendre only. No Gauss–Kronrod pairs, so \
+integration error is controlled by choosing the order from the integrand's \
+degree (exact for the polynomial cases mass properties meet) rather than \
+estimated adaptively. An integrand that needs adaptive subdivision has no \
+entry point yet."""
+claims = [
+    "math_ComputeGaussPointsAndWeights", "math_ComputeKronrodPointsAndWeights",
+    "math_GaussMultipleIntegration", "math_GaussSetIntegration",
+    "math_GaussSingleIntegration", "math_KronrodSingleIntegration",
+    "math_ValueAndWeight",
+]
+symbols = ["ogeom_math::gauss_legendre", "ogeom_math::integrate"]
+tests = ["crates/ogeom-math/tests/algebra_properties.rs"]
+
+# --- ogeom-geom -----------------------------------------------------------
+
+[[capability]]
+id = "geom.curves-3d"
+title = "Parametric space curves: lines, conics, Bézier, B-spline, trimmed, offset"
+crate = "ogeom-geom"
+verdict = "covered"
+claims = [
+    "Geom_Geometry", "Geom_Curve", "Geom_Line", "Geom_Circle", "Geom_Ellipse",
+    "Geom_Hyperbola", "Geom_Parabola", "Geom_Conic", "Geom_BezierCurve",
+    "Geom_BSplineCurve", "Geom_BoundedCurve", "Geom_TrimmedCurve",
+    "Geom_OffsetCurve", "Geom_UndefinedDerivative", "Geom_UndefinedValue",
+]
+symbols = [
+    "ogeom_geom::Curve", "ogeom_geom::LineCurve", "ogeom_geom::CircleCurve",
+    "ogeom_geom::BSplineCurve", "ogeom_geom::TrimmedCurve",
+    "ogeom_geom::OffsetCurve", "ogeom_geom::Curve3d",
+]
+tests = ["crates/ogeom-geom/src/curve.rs"]
+
+[[capability]]
+id = "geom.surfaces"
+title = "Parametric surfaces: planes, quadrics, swept, Bézier, B-spline, trimmed, offset"
+crate = "ogeom-geom"
+verdict = "covered"
+claims = [
+    "Geom_Surface", "Geom_Plane", "Geom_CylindricalSurface",
+    "Geom_ConicalSurface", "Geom_SphericalSurface", "Geom_ToroidalSurface",
+    "Geom_ElementarySurface", "Geom_BezierSurface", "Geom_BSplineSurface",
+    "Geom_BoundedSurface", "Geom_RectangularTrimmedSurface",
+    "Geom_OffsetSurface", "Geom_SurfaceOfLinearExtrusion",
+    "Geom_SurfaceOfRevolution", "Geom_SweptSurface",
+]
+symbols = [
+    "ogeom_geom::SurfaceGeometry", "ogeom_geom::PlaneSurface",
+    "ogeom_geom::BSplineSurface", "ogeom_geom::RevolutionSurface",
+    "ogeom_geom::ExtrusionSurface", "ogeom_geom::OffsetSurface",
+    "ogeom_geom::TrimmedSurface", "ogeom_geom::Surface",
+]
+tests = ["crates/ogeom-geom/src/surface.rs"]
+
+[[capability]]
+id = "geom.curves-2d"
+title = "Parametric plane curves, the pcurve vocabulary"
+crate = "ogeom-geom"
+verdict = "covered"
+claims = [
+    "Geom2d_Geometry", "Geom2d_Curve", "Geom2d_Line", "Geom2d_Circle",
+    "Geom2d_Ellipse", "Geom2d_Hyperbola", "Geom2d_Parabola", "Geom2d_Conic",
+    "Geom2d_BezierCurve", "Geom2d_BSplineCurve", "Geom2d_BoundedCurve",
+    "Geom2d_TrimmedCurve", "Geom2d_OffsetCurve",
+    "Geom2d_UndefinedDerivative", "Geom2d_UndefinedValue",
+]
+symbols = [
+    "ogeom_geom::Curve2d", "ogeom_geom::Line2d", "ogeom_geom::Circle2d",
+    "ogeom_geom::BSpline2d", "ogeom_geom::Trimmed2d", "ogeom_geom::Offset2d",
+]
+tests = ["crates/ogeom-geom/src/curve2d.rs"]
+
+[[capability]]
+id = "geom.handle-wrappers"
+title = "Geometry-layer wrappers for points, vectors, placements and transforms"
+crate = "ogeom-geom"
+verdict = "divergent"
+reasoning = """The reference wraps every gp value in a reference-counted \
+handle class so geometry can sit in documents. Here geometry lives in shared \
+arenas keyed by id (docs/DATA_MODEL.md), and points, vectors and placements \
+are plain values — a second, handle-shaped copy of the gp vocabulary would \
+exist only to be a different allocation discipline. The capability those \
+wrappers deliver is the arena's."""
+claims = [
+    "Geom_CartesianPoint", "Geom_Point", "Geom_Direction", "Geom_Vector",
+    "Geom_VectorWithMagnitude", "Geom_Axis1Placement", "Geom_Axis2Placement",
+    "Geom_AxisPlacement", "Geom_Transformation",
+    "Geom2d_CartesianPoint", "Geom2d_Point", "Geom2d_Direction",
+    "Geom2d_Vector", "Geom2d_VectorWithMagnitude", "Geom2d_AxisPlacement",
+    "Geom2d_Transformation",
+]
+
+[[capability]]
+id = "fillet.osculating-cache"
+title = "Cached osculating surfaces along a blend's tangency curves"
+crate = "ogeom-fillet"
+verdict = "divergent"
+reasoning = """An implementation detail of the reference's blend pipeline: \
+it caches osculating approximations to march against. The marching blend \
+here solves the ball's two contact points directly at each section \
+(ogeom-fillet's march module), so there is no cache to keep coherent."""
+claims = ["Geom_OsculatingSurface"]
 
 [[capability]]
 id = "algo.global-properties"
