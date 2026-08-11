@@ -37,6 +37,9 @@
 //! error naming the deferred entry, never silently mishandled.
 
 mod arrange;
+mod defeature;
+
+pub use defeature::remove_faces;
 
 use ogeom_algo::{
     Built, Containment, History, classify_in_solid_exact, is_shell_closed, make_edge_between,

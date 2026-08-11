@@ -368,7 +368,31 @@ answer is this row.
 
 ### H. Defeaturing
 
-**H1 — removing a set of faces.** Absent. The operation is
+**H1 — removing a set of faces.** **Built**, as
+`ogeom_bool::remove_faces(model, solid, &[Shape], tol)`, and the two wounds
+close differently. A feature whose rim is an inner loop of a surviving face —
+a bore, a boss, a mid-face pocket — is wire surgery: the survivor is rebuilt
+without the rim wire, nothing re-intersected, and the drilled block comes
+back to its exact volume with **no overshoot at all**, because the face-set
+approach fills nothing — the boundary is resewn, and the sliver-band problem
+the tool-based approach paid ten microns to avoid never arises. A band
+feature — a fillet or chamfer along an edge — is the re-intersection case:
+the two side surfaces recover the edge the blend replaced, the end faces'
+own edges extend along their own curves to the corners the recovered edge
+pierces, and both the chamfered and the filleted box come back to the sharp
+box *exactly*, six faces, twelve edges, eight vertices.
+
+One ordering lesson worth keeping: the ends rebuild before the sides,
+because extending a cap's dangling edge decides that edge for the side that
+shares it, and sewing rejoins them on the one node. Multiple simultaneous
+bands, bands meeting at corners (the B2/A6 family), and spline-surfaced
+neighbours are refused by name — the parity ledger's `bool.defeaturing`
+restriction is the live list.
+
+What follows is the original entry, kept because the overshoot finding is a
+real measurement about the tool-based road not taken.
+
+The operation was to be
 `remove_faces(model, solid, &[Shape], tol)` in **`ogeom-bool`**: given faces to
 delete, extend the neighbours that surrounded them, re-intersect the extensions
 against each other, and sew the result back into the shell. Face extension plus

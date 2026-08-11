@@ -16,8 +16,8 @@ per package.
 | verdict | capabilities |
 |---|---|
 | `covered` | 67 |
-| `partial` | 11 |
-| `absent` | 4 |
+| `partial` | 12 |
+| `absent` | 3 |
 | `divergent` | 9 |
 | `n/a` | 5 |
 | `unreviewed` | 1 |
@@ -52,8 +52,15 @@ per package.
 
 - **bool.booleans** — The boolean operations: cut, fuse, common, section and split, exact and fuzzy, with argument checking · `covered` · 99 headers claimed
 - **bool.cells** — The cells builder: arbitrary take/remove over the fused arrangement · `covered` · 1 header claimed
-- **bool.defeaturing** — Removing a set of faces from a solid by extending and re-intersecting its neighbours · `absent` · 2 headers claimed
-  - *owned by:* docs/PLAN.md §H (H1)
+- **bool.defeaturing** — Removing a set of faces from a solid by extending and re-intersecting its neighbours · `partial` · 2 headers claimed
+  - *restriction:* Inner-loop features — bores, bosses, pockets whose rim is a
+surviving face's inner wire — remove in full generality: wire surgery, no
+re-intersection, the block back to the last bit. Band features — fillets and
+chamfers along an edge — close for a single band that either runs straight
+through with two end faces or wraps with none, on surfaces whose pcurves
+have closed forms. Multiple simultaneous bands, bands meeting at corners,
+and spline-surfaced neighbours are refused by name, and each refusal says
+which case it is.
 - **bool.glue** — Gluing shapes along known-coincident boundaries · `divergent` · 1 header claimed
   - *reasoning:* Subsumed, and recorded as a settled decision in docs/PLAN.md: the boolean's same-domain unification already skips nothing it needs and unifies what glue would, so a separate glue mode would be a second spelling of the fuse with a faster wrong answer available. MakeConnected's job — conformal multi-body assembly — falls out of the fuse plus history.
 - **bool.make-periodic** — Making a shape periodic so instances tile without seam duplication · `covered` · 1 header claimed

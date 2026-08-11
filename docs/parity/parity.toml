@@ -372,9 +372,18 @@ tests = [
 id = "bool.defeaturing"
 title = "Removing a set of faces from a solid by extending and re-intersecting its neighbours"
 crate = "ogeom-bool"
-verdict = "absent"
+verdict = "partial"
+restriction = """Inner-loop features — bores, bosses, pockets whose rim is a
+surviving face's inner wire — remove in full generality: wire surgery, no
+re-intersection, the block back to the last bit. Band features — fillets and
+chamfers along an edge — close for a single band that either runs straight
+through with two end faces or wraps with none, on surfaces whose pcurves
+have closed forms. Multiple simultaneous bands, bands meeting at corners,
+and spline-surfaced neighbours are refused by name, and each refusal says
+which case it is."""
 claims = ["BRepAlgoAPI_Defeaturing", "BOPAlgo_RemoveFeatures"]
-plan = "docs/PLAN.md §H (H1)"
+symbols = ["ogeom_bool::remove_faces"]
+tests = ["crates/ogeom/tests/defeature.rs"]
 
 [[capability]]
 id = "doc.application-bootstrap"
