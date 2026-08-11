@@ -623,9 +623,10 @@ tests = [
 id = "heal.canonical-simplification"
 title = "Recognizing that exact geometry is secretly analytic: a B-spline that is a cylinder"
 crate = "ogeom-heal"
-verdict = "absent"
+verdict = "covered"
 claims = ["ShapeAnalysis_CanonicalRecognition"]
-plan = "docs/PLAN.md §I (I1)"
+symbols = ["ogeom_heal::canonical_simplify", "ogeom_heal::recognize_surface", "ogeom_heal::Simplified"]
+tests = ["crates/ogeom/tests/canonical.rs"]
 
 [[capability]]
 id = "heal.custom-remodelling"
@@ -1213,13 +1214,14 @@ tests = ["crates/ogeom/tests/exchange.rs"]
 id = "doc.saved-views"
 title = "Saved views and standalone note objects in the exchange document"
 crate = "ogeom-doc"
-verdict = "absent"
+verdict = "covered"
 claims = [
     "XCAFView_*", "XCAFNoteObjects_NoteObject", "XCAFDoc_View",
     "XCAFDoc_ViewTool", "XCAFDoc_NoteComment", "XCAFDoc_NoteBinData",
     "XCAFDoc_NotesTool", "XCAFDoc_NoteBalloon", "XCAFDoc_ClippingPlaneTool",
 ]
-plan = "docs/PLAN.md §E (E3)"
+symbols = ["ogeom_doc::View", "ogeom_doc::Note"]
+tests = ["crates/ogeom/tests/saved_views.rs"]
 
 # --- tranche 2: the unmapped packages, usage-ordered ----------------------
 
@@ -1379,10 +1381,6 @@ claims = [
     "UnitsMethods", "UnitsMethods_*",
 ]
 symbols = ["ogeom_io::read_step", "ogeom_io::write_step", "ogeom_io::StepImport", "ogeom_io::StepReport"]
-# A capability-level caveat that belongs to the whole exchange layer: a wall
-# wrapping a closed spline surface does not survive either format today —
-# docs/PLAN.md F5. The verdict stays covered because the corpus the format
-# is measured by does not exhibit the case; the F5 row owns it.
 tests = [
     "crates/ogeom/tests/exchange.rs",
     "crates/ogeom/tests/imported_corpus.rs",
@@ -1402,9 +1400,7 @@ cylinder wall with its seam, a doubly periodic torus, a seam-only sphere, a
 boolean result, a spline-walled prism through 126/128, and inch-unit
 scaling. Not translated, refused by name: ruled surfaces (118), parametric
 spline surfaces (114), the hyperbola and parabola conic forms, offset
-entities, pcurve-only trimming, annotation and drafting. A face whose wall
-wraps a closed spline surface does not survive either exchange format —
-docs/PLAN.md F5 owns that jointly with STEP."""
+entities, pcurve-only trimming, annotation and drafting."""
 claims = [
     "IGESControl_*", "IGESCAFControl_*", "IGESToBRep_*", "IGESData_*",
     "IGESSelect", "IGESSelect_*", "IGESConvGeom", "IGESConvGeom_*",

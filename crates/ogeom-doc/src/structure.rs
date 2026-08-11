@@ -122,6 +122,8 @@ pub struct Document {
     validation: HashMap<TShapeId, crate::attributes::ValidationProperties>,
     textures: Vec<crate::attributes::Texture>,
     texture_of: HashMap<TShapeId, crate::attributes::TextureId>,
+    views: Vec<crate::view::View>,
+    notes: Vec<crate::view::Note>,
     /// Document states an undo can return to, oldest first, and how far
     /// back through them the caller currently stands.
     history: Vec<State>,
@@ -152,6 +154,8 @@ struct State {
     validation: HashMap<TShapeId, crate::attributes::ValidationProperties>,
     textures: Vec<crate::attributes::Texture>,
     texture_of: HashMap<TShapeId, crate::attributes::TextureId>,
+    views: Vec<crate::view::View>,
+    notes: Vec<crate::view::Note>,
 }
 
 impl Document {
@@ -484,6 +488,39 @@ impl Document {
     }
 
     /// Everything the document says about its model, copied out.
+
+    /// The position of a product in write order — how the native format
+    /// refers to one across a save.
+    #[must_use]
+    pub fn product_index(&self, id: ProductId) -> usize {
+        id.index() as usize
+    }
+
+    /// Add a saved view; its index is how STEP and the native format refer
+    /// to it.
+    pub fn add_view(&mut self, view: crate::view::View) -> usize {
+        self.views.push(view);
+        self.views.len() - 1
+    }
+
+    /// The saved views, in order.
+    #[must_use]
+    pub fn views(&self) -> &[crate::view::View] {
+        &self.views
+    }
+
+    /// Add a note.
+    pub fn add_note(&mut self, note: crate::view::Note) -> usize {
+        self.notes.push(note);
+        self.notes.len() - 1
+    }
+
+    /// The notes, in order.
+    #[must_use]
+    pub fn notes(&self) -> &[crate::view::Note] {
+        &self.notes
+    }
+
     fn state(&self) -> State {
         State {
             products: self.products.clone(),
@@ -498,6 +535,8 @@ impl Document {
             validation: self.validation.clone(),
             textures: self.textures.clone(),
             texture_of: self.texture_of.clone(),
+            views: self.views.clone(),
+            notes: self.notes.clone(),
         }
     }
 
@@ -515,6 +554,8 @@ impl Document {
         self.validation = state.validation;
         self.textures = state.textures;
         self.texture_of = state.texture_of;
+        self.views = state.views;
+        self.notes = state.notes;
     }
 
     /// Colour a shape — a whole part's shape or one sub-shape of it.

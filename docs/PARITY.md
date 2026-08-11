@@ -15,9 +15,9 @@ per package.
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 67 |
+| `covered` | 69 |
 | `partial` | 12 |
-| `absent` | 3 |
+| `absent` | 1 |
 | `divergent` | 9 |
 | `n/a` | 5 |
 | `unreviewed` | 1 |
@@ -80,8 +80,7 @@ which case it is.
 - **doc.pmi** — Semantic PMI: dimensions, tolerances, datums, datum targets — and their presentation · `covered` · 30 headers claimed
 - **doc.product-structure** — Products, occurrences and instances with placements: the assembly tree · `covered` · 14 headers claimed
 - **doc.properties** — Names, user properties, validation properties, lengths and centroids to check a transfer by · `covered` · 5 headers claimed
-- **doc.saved-views** — Saved views and standalone note objects in the exchange document · `absent` · 10 headers claimed
-  - *owned by:* docs/PLAN.md §E (E3)
+- **doc.saved-views** — Saved views and standalone note objects in the exchange document · `covered` · 10 headers claimed
 - **doc.time-types** — Dates and periods · `n/a` · 4 headers claimed
   - *reasoning:* Time types are the standard library's; the one place the exchange layer writes a timestamp it formats a string. A kernel-owned date class would duplicate std::time to no end.
 
@@ -112,8 +111,7 @@ which case it is.
 
 ### ogeom-heal
 
-- **heal.canonical-simplification** — Recognizing that exact geometry is secretly analytic: a B-spline that is a cylinder · `absent` · 1 header claimed
-  - *owned by:* docs/PLAN.md §I (I1)
+- **heal.canonical-simplification** — Recognizing that exact geometry is secretly analytic: a B-spline that is a cylinder · `covered` · 1 header claimed
 - **heal.custom-remodelling** — Rebuilding a shape's geometry wholesale: baking transforms, converting representations · `partial` · 12 headers claimed
   - *restriction:* Baking a transform into geometry is here (`baked_shape`, which the boolean requires before accepting a scaled placement). The rest of the family — swept-to-elementary, whole-shape B-spline conversion, and the degree/knot restriction an export format with limits demands — is not, and becomes necessary with the IGES writer (docs/PLAN.md F2).
 - **heal.fix-shape** — Fixing broken shapes: wires, faces, shells, solids, free bounds, small features · `partial` · 35 headers claimed
@@ -152,9 +150,7 @@ cylinder wall with its seam, a doubly periodic torus, a seam-only sphere, a
 boolean result, a spline-walled prism through 126/128, and inch-unit
 scaling. Not translated, refused by name: ruled surfaces (118), parametric
 spline surfaces (114), the hyperbola and parabola conic forms, offset
-entities, pcurve-only trimming, annotation and drafting. A face whose wall
-wraps a closed spline surface does not survive either exchange format —
-docs/PLAN.md F5 owns that jointly with STEP.
+entities, pcurve-only trimming, annotation and drafting.
 - **io.mesh-formats** — The mesh exchange formats: STL, OBJ, PLY, glTF/GLB, 3MF, with welding on import · `covered` · 69 headers claimed
 - **io.native-format** — The native shape interchange format, versioned, with location and triangulation sets · `covered` · 24 headers claimed
 - **io.step** — STEP, both directions: shapes, assemblies, colours, validation properties, semantic and presentation PMI · `covered` · 211 headers claimed

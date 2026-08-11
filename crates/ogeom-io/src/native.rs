@@ -487,6 +487,74 @@ pub fn write_document(
         emit(&mut out, &t);
     }
 
+    for callout in &document.pmi().callouts {
+        let mut t = Vec::new();
+        w(&mut t, "pmi-callout");
+        text(&mut t, &callout.name);
+        match &callout.plane {
+            Some(f) => {
+                flag(&mut t, true);
+                frame(&mut t, f);
+            }
+            None => flag(&mut t, false),
+        }
+        u(&mut t, callout.polylines.len() as u64);
+        for line in &callout.polylines {
+            u(&mut t, line.len() as u64);
+            for p in line {
+                point(&mut t, *p);
+            }
+        }
+        match callout.annotates {
+            Some(ogeom_doc::Annotated::Dimension(i)) => {
+                w(&mut t, "D");
+                u(&mut t, i as u64);
+            }
+            Some(ogeom_doc::Annotated::Tolerance(i)) => {
+                w(&mut t, "T");
+                u(&mut t, i as u64);
+            }
+            Some(ogeom_doc::Annotated::Datum(i)) => {
+                w(&mut t, "M");
+                u(&mut t, i as u64);
+            }
+            None => w(&mut t, "-"),
+        }
+        emit(&mut out, &t);
+    }
+    for view in document.views() {
+        let mut t = Vec::new();
+        w(&mut t, "doc-view");
+        text(&mut t, &view.name);
+        frame(&mut t, &view.frame);
+        match &view.clipping {
+            Some(plane) => {
+                flag(&mut t, true);
+                frame(&mut t, &plane.frame());
+            }
+            None => flag(&mut t, false),
+        }
+        u(&mut t, view.callouts.len() as u64);
+        for index in &view.callouts {
+            u(&mut t, *index as u64);
+        }
+        emit(&mut out, &t);
+    }
+    for note in document.notes() {
+        let mut t = Vec::new();
+        w(&mut t, "doc-note");
+        text(&mut t, &note.author);
+        text(&mut t, &note.text);
+        match note.product {
+            Some(id) => {
+                flag(&mut t, true);
+                u(&mut t, document.product_index(id) as u64);
+            }
+            None => flag(&mut t, false),
+        }
+        emit(&mut out, &t);
+    }
+
     // The attribute layer: properties, materials, layers, validation —
     // shape-keyed maps in key order, lists in id order, so writing what
     // was read gives the same bytes.
@@ -808,6 +876,73 @@ pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
                     .pmi_mut()
                     .datums
                     .push(ogeom_doc::Datum { label, items });
+            }
+            "pmi-callout" => {
+                let name = read_text(&mut cursor)?;
+                let plane = if cursor.flag()? {
+                    Some(cursor.frame(Tolerances::millimetres())?)
+                } else {
+                    None
+                };
+                let lines = cursor.count()? as usize;
+                let mut polylines = Vec::with_capacity(lines);
+                for _ in 0..lines {
+                    let count = cursor.count()? as usize;
+                    let mut line = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        line.push(cursor.point()?);
+                    }
+                    polylines.push(line);
+                }
+                let annotates = match cursor.word()? {
+                    "D" => Some(ogeom_doc::Annotated::Dimension(cursor.count()? as usize)),
+                    "T" => Some(ogeom_doc::Annotated::Tolerance(cursor.count()? as usize)),
+                    "M" => Some(ogeom_doc::Annotated::Datum(cursor.count()? as usize)),
+                    _ => None,
+                };
+                document.pmi_mut().callouts.push(ogeom_doc::Callout {
+                    name,
+                    plane,
+                    polylines,
+                    annotates,
+                });
+            }
+            "doc-view" => {
+                let name = read_text(&mut cursor)?;
+                let frame = cursor.frame(Tolerances::millimetres())?;
+                let clipping = if cursor.flag()? {
+                    Some(ogeom_math::Plane::new(
+                        cursor.frame(Tolerances::millimetres())?,
+                    ))
+                } else {
+                    None
+                };
+                let count = cursor.count()? as usize;
+                let mut callouts = Vec::with_capacity(count);
+                for _ in 0..count {
+                    callouts.push(cursor.count()? as usize);
+                }
+                document.add_view(ogeom_doc::View {
+                    name,
+                    frame,
+                    clipping,
+                    callouts,
+                });
+            }
+            "doc-note" => {
+                let author = read_text(&mut cursor)?;
+                let text_body = read_text(&mut cursor)?;
+                let product = if cursor.flag()? {
+                    let index = cursor.count()? as usize;
+                    ids.get(index).copied()
+                } else {
+                    None
+                };
+                document.add_note(ogeom_doc::Note {
+                    author,
+                    text: text_body,
+                    product,
+                });
             }
             other => ogeom_bail!(Construction, "unknown record `{other}`"),
         }

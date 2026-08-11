@@ -85,6 +85,7 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         vertices: HashMap::new(),
         edges: HashMap::new(),
         faces: HashMap::new(),
+        callout_index: HashMap::new(),
         tol,
     };
     reader.report.scale_mm = reader.unit_scale();
@@ -146,6 +147,8 @@ struct Reader<'a> {
     vertices: HashMap<u64, Shape>,
     edges: HashMap<u64, BuiltEdge>,
     faces: HashMap<u64, Shape>,
+    /// STEP id → index into the callouts just built, for the views pass.
+    callout_index: HashMap<u64, usize>,
     tol: Tolerances,
 }
 
@@ -1250,6 +1253,9 @@ impl Reader<'_> {
             document.set_colour(&shape, colour);
         }
         *document.pmi_mut() = pmi;
+        for view in self.views() {
+            document.add_view(view);
+        }
         Ok(document)
     }
 
@@ -1924,8 +1930,53 @@ impl Reader<'_> {
         // coordinates list; an annotation plane says which plane they are
         // drawn in and which callouts it holds; and a model item association
         // says which semantic annotation a callout is the picture of.
-        pmi.callouts = self.callouts(&annotation_ids);
+        let (callouts, callout_index) = self.callouts(&annotation_ids);
+        pmi.callouts = callouts;
+        self.callout_index = callout_index;
         pmi
+    }
+
+    /// Saved views: every *named* draughting model is one — the unnamed one
+    /// is the annotation-plane container this writer emits itself. The
+    /// camera item gives the frame; the callout items give the subset.
+    fn views(&mut self) -> Vec<ogeom_doc::View> {
+        let mut out = Vec::new();
+        for id in self.ids_with("DRAUGHTING_MODEL") {
+            let Ok(args) = self.args(id, "DRAUGHTING_MODEL") else {
+                continue;
+            };
+            let name = match args.first() {
+                Some(Arg::Str(text)) => text.clone(),
+                _ => String::new(),
+            };
+            if name.is_empty() {
+                continue;
+            }
+            let mut frame = None;
+            let mut callouts = Vec::new();
+            for item in args.get(1).and_then(Arg::list).unwrap_or(&[]) {
+                let Some(item) = item.reference() else {
+                    continue;
+                };
+                if let Ok(cam) = self.args(item, "CAMERA_MODEL_D3") {
+                    if let Some(placement) = cam.get(1).and_then(Arg::reference) {
+                        frame = self.frame(placement).ok();
+                    }
+                    continue;
+                }
+                if let Some(&index) = self.callout_index.get(&item) {
+                    callouts.push(index);
+                }
+            }
+            let Some(frame) = frame else { continue };
+            out.push(ogeom_doc::View {
+                name,
+                frame,
+                clipping: None,
+                callouts,
+            });
+        }
+        out
     }
 
     /// One placed datum target: which datum, which number, where and how big.
@@ -2033,7 +2084,7 @@ impl Reader<'_> {
     fn callouts(
         &mut self,
         annotation_ids: &HashMap<u64, ogeom_doc::Annotated>,
-    ) -> Vec<ogeom_doc::Callout> {
+    ) -> (Vec<ogeom_doc::Callout>, HashMap<u64, usize>) {
         // Which callout each annotation plane holds, and the plane's frame.
         let mut plane_of: HashMap<u64, Frame> = HashMap::new();
         for id in self.ids_with("ANNOTATION_PLANE") {
@@ -2079,6 +2130,7 @@ impl Reader<'_> {
         }
 
         let mut out = Vec::new();
+        let mut index_of: HashMap<u64, usize> = HashMap::new();
         let mut callouts = self.ids_with("DRAUGHTING_CALLOUT");
         callouts.sort_unstable();
         for id in callouts {
@@ -2099,6 +2151,7 @@ impl Reader<'_> {
             if polylines.is_empty() && !plane_of.contains_key(&id) {
                 continue;
             }
+            index_of.insert(id, out.len());
             out.push(ogeom_doc::Callout {
                 name,
                 plane: plane_of.get(&id).copied(),
@@ -2111,7 +2164,7 @@ impl Reader<'_> {
                     .find_map(|d| annotation_ids.get(&d).copied()),
             });
         }
-        out
+        (out, index_of)
     }
 
     /// The polylines one annotation occurrence draws.

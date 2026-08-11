@@ -110,10 +110,8 @@ fn a_spline_walled_prism_round_trips_through_126_and_128() {
     // writer spells as rational B-spline surfaces (128) bounded by rational
     // B-spline curves (126), and the fitted-pcurve path carries back in.
     //
-    // The walls are open on purpose. A wall that wraps a whole period — a
-    // closed skinned loft — does not survive *either* exchange format today,
-    // and docs/PLAN.md F5 owns that; a test here could only hold IGES to a
-    // standard STEP does not meet.
+    // The walls are open here; the closed-wall case has its own test below,
+    // which pins the F5 fix for both formats at once.
     let mut model = Model::new();
     let arc = |sign: f64| -> ogeom::geom::Curve {
         let pts: Vec<Point> = (0..=8)
@@ -233,5 +231,57 @@ fn an_empty_deck_is_refused_by_name() {
     assert!(
         err.to_string().contains("section letter"),
         "unexpected message: {err}"
+    );
+}
+
+/// F5 — a closed spline wall through exchange, both formats. The skinned
+/// loft's wall is a clamped B-spline that closes on itself without being
+/// periodic; projections near the joining column land in either copy, and
+/// only continuity chooses. The shared fitted-pcurve machinery unwraps by
+/// *closure*, so what one reader learns the other has too — and the pin is
+/// that both formats return the same solid, measured.
+#[test]
+fn f5_a_closed_spline_wall_survives_both_formats() {
+    let mut model = Model::new();
+    let profile = |model: &mut Model, z: f64, half: f64| -> Shape {
+        let corners = [
+            Point::new(-half, -half, z),
+            Point::new(half, -half, z),
+            Point::new(half, half, z),
+            Point::new(-half, half, z),
+        ];
+        ogeom::algo::make_polygon(model, &corners, true, T)
+            .unwrap()
+            .shape
+    };
+    let a = profile(&mut model, 0.0, 8.0);
+    let b = profile(&mut model, 5.0, 7.0);
+    let c = profile(&mut model, 10.0, 5.0);
+    let solid = ogeom::offset::make_loft_skinned(&mut model, &[a, b, c], 0.5, T)
+        .unwrap()
+        .shape;
+    let original = volume(&model, &solid);
+    let mut document = ogeom::doc::Document::over(std::mem::take(&mut model));
+    document.add_part("loft", solid);
+
+    let step = ogeom::io::read_step(&ogeom::io::write_step(&document, T).unwrap(), T).unwrap();
+    let iges = ogeom::io::read_iges(&ogeom::io::write_iges(&document, T).unwrap(), T).unwrap();
+    let via_step = volume(step.document.model(), &step.solids[0]);
+    let via_iges = volume(iges.document.model(), &iges.solids[0]);
+
+    // The fitted trims re-tessellate a hair differently from the native
+    // face; the bound is that hair, and the two formats must agree with
+    // each other far tighter than either must agree with the original.
+    assert!(
+        (via_step - original).abs() < original * 1e-3,
+        "{via_step} against {original}"
+    );
+    assert!(
+        (via_iges - original).abs() < original * 1e-3,
+        "{via_iges} against {original}"
+    );
+    assert!(
+        (via_step - via_iges).abs() < original * 1e-9,
+        "one fix, two readers: {via_step} vs {via_iges}"
     );
 }

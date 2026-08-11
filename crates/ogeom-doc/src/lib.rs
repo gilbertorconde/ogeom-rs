@@ -21,6 +21,7 @@
 pub mod attributes;
 pub mod pmi;
 pub mod structure;
+pub mod view;
 
 pub use attributes::{
     Layer, LayerId, Material, MaterialId, Property, PropertyValue, Texture, TextureId,
@@ -31,3 +32,4 @@ pub use pmi::{
     MeasureKind, Pmi,
 };
 pub use structure::{Colour, Document, Instance, Occurrence, Product, ProductId, ProductKind};
+pub use view::{Note, View};

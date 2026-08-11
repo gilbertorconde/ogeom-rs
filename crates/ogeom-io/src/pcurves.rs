@@ -119,15 +119,21 @@ pub(crate) fn fit_projected_pcurve(
         trace.push(uv);
     }
     // A trace on a periodic chart may cross the seam mid-edge; unwrap it
-    // pointwise so the fit sees a continuous curve.
+    // pointwise so the fit sees a continuous curve. Closure, not
+    // periodicity, is the right test: a skinned loft's wall is a clamped
+    // B-spline that closes on itself without being periodic, and its
+    // projections near the joining column land in either copy — both
+    // answers are right pointwise, and only continuity chooses. This is
+    // the docs/PLAN.md F5 case, and it is decided here for both exchange
+    // readers at once.
     let ((ua, ub), (va, vb)) = surface.domain();
     let spans = (
-        if surface.is_periodic_u() {
+        if surface.is_periodic_u() || surface.is_closed_u(tol) {
             ub - ua
         } else {
             0.0
         },
-        if surface.is_periodic_v() {
+        if surface.is_periodic_v() || surface.is_closed_v(tol) {
             vb - va
         } else {
             0.0

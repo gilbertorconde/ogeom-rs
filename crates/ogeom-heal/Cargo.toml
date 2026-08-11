@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+nalgebra.workspace = true
 ogeom-core.workspace = true
 ogeom-math.workspace = true
 ogeom-geom.workspace = true

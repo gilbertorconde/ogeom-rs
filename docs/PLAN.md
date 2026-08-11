@@ -325,15 +325,16 @@ No style is written, which is a statement and not an omission: a style is
 about rendering, and this kernel keeps no draughting style model to have one
 from.
 
-**E3 — saved views and standalone notes.** Absent, found by the audit. The
-exchange document can carry named views — a camera, a clipping state, and the
-set of PMI visible in each — and free-standing notes attached to labels
-rather than to geometry. Real STEP AP242 files use views to organise PMI
-presentation by sheet, so reading them without views flattens a structure the
-author meant. The document model here has products, occurrences, PMI and
-callouts; a view object naming a camera and a PMI subset is a small addition
-to `ogeom-doc` and a read/write pair in the STEP layer. Notes are smaller
-still. Neither blocks anything else.
+**E3 — saved views and standalone notes.** **Done.** `ogeom_doc::View` —
+a name, a camera frame, an optional clipping plane, and indices into the
+document's callouts, so restyling a callout restyles it in every view that
+shows it — and `ogeom_doc::Note`, text with an author attached to a product
+or the document. Both take part in undo like every other attribute, both
+persist in the native document format (callouts now persist there too,
+which the views made necessary), and views round-trip through STEP as the
+named draughting models they are there: camera placement in, callout
+membership by identity. A view without PMI is a camera bookmark and lives
+in the native format; STEP carries views alongside the PMI they present.
 
 ### F. Exchange
 
@@ -387,16 +388,15 @@ It needed a JSON parser, which is now `ogeom_io::json` — the grammar and
 nothing else, no dependency, written because glTF's structure is JSON and
 `cargo build` still needs a Rust toolchain and nothing more.
 
-**F5 — a closed spline wall through exchange.** Found by measurement while
-building F2, and it is not an IGES problem: a solid whose wall wraps a whole
-closed B-spline surface — a skinned loft around closed sections — does not
-survive *either* format. The wall reads back, the fitted pcurves attach, and
-the trim collapses to a sliver because the projection of the closed rim onto
-the closed chart lands in the wrong period near the seam, where both answers
-are right pointwise and only continuity chooses. The fix is seam-aware
-unwrapping in the shared fitted-pcurve module, seeded from the seam edge's own
-chart column. Until then both readers import such walls wrong-shaped, and the
-IGES row's restriction says so out loud.
+**F5 — a closed spline wall through exchange.** **Done**, and the fix was
+one distinction: the fitted-pcurve unwrap engaged on *periodicity*, and a
+skinned loft's wall is a clamped B-spline that closes on itself without
+being periodic — projections near the joining column land in either copy,
+both right pointwise, and only continuity chooses. Unwrapping now engages
+on *closure*, in the shared module, so both exchange readers learned it at
+once — which `f5_a_closed_spline_wall_survives_both_formats` pins by
+demanding the two formats agree with each other a million times tighter
+than either must agree with the original.
 
 **F4 — SAT, X\_T, JT.** Refused for want of public documentation. These are
 proprietary formats whose specifications are not published; implementing them
@@ -465,21 +465,20 @@ Any caller whose tolerance is tighter than the overshoot is the case to watch.
 
 ### I. Canonical simplification
 
-**I1 — recognizing that exact geometry is secretly analytic.** Absent, and
-found by the audit rather than remembered: the reference carries this in its
-*healing* layer, and it is not reverse engineering. A B-spline surface that is
-exactly a cylinder — because an exchange format spelt it out pointwise, or a
-construction produced the general form of a special case — should become the
-cylinder, so that downstream algorithms get the closed forms they are faster
-and exacter on. The input is exact geometry, not samples: the decision is made
-against the surface's own equation at the caller's tolerance, and the
-certificate is the worst deviation actually measured.
-
-The sample-based recognizer that left with the reverse-engineering slice
-(`outside/crates/ogeom-reverse`, `canonical.rs`) solves a different problem —
-deciding what a *mesh* is — but its estimator shapes (normal-covariance axes,
-the `|c|² − r²` sphere substitution, the radius-against-height taper) are the
-same mathematics and are worth reading before writing this one.
+**I1 — recognizing that exact geometry is secretly analytic.** **Done.**
+`ogeom_heal::canonical_simplify` samples each free-form surface on its own
+chart with its own normals, proposes plane, sphere, cylinder or cone from
+the classical estimators — the mean normal, the least-squares meeting of
+normal lines, the direction the normals avoid, the linear taper of radius
+against height — and accepts only when *every* sample verifies at the
+caller's tolerance, the certificate being the worst deviation actually
+measured. Free-form curves get the same treatment on the way, because a
+rim spelt as a B-spline that is exactly a circle must become the circle
+before the analytic surface has anything to project in closed form. A
+nurbsed drum comes back a cylinder at 1.8e-15 with its volume unchanged to
+the last bit; a skinned loft stays what it is. The reference's set —
+plane, cylinder, cone, sphere — is matched exactly; a torus candidate is
+out on both sides.
 
 ### J. The medial axis
 

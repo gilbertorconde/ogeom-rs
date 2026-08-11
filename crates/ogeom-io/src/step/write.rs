@@ -189,7 +189,7 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
                 "PMI needs at least one part to anchor its aspects to"
             );
         };
-        writer.pmi(pmi, pds, absr, lu, au, gctx)?;
+        writer.pmi(pmi, document.views(), pds, absr, lu, au, gctx)?;
     }
 
     let mut out = String::new();
@@ -635,6 +635,7 @@ impl Writer<'_> {
     fn pmi(
         &mut self,
         pmi: &ogeom_doc::Pmi,
+        views: &[ogeom_doc::View],
         pds: u64,
         absr: u64,
         lu: u64,
@@ -844,6 +845,7 @@ impl Writer<'_> {
         // one coordinates list, held by an occurrence, held by the callout;
         // the plane it is drawn in; and the association that says which
         // semantic annotation it is a picture of.
+        let mut callout_ids: Vec<u64> = Vec::new();
         if !pmi.callouts.is_empty() {
             let mut drawn: Vec<(u64, ogeom_doc::Annotated)> = Vec::new();
             let mut planes: Vec<String> = Vec::new();
@@ -875,6 +877,7 @@ impl Writer<'_> {
                     "TESSELLATED_ANNOTATION_OCCURRENCE('{name}',(),#{set})"
                 ));
                 let id = self.entity(format!("DRAUGHTING_CALLOUT('{name}',(#{occurrence}))"));
+                callout_ids.push(id);
                 if let Some(frame) = callout.plane {
                     let placement = self.frame(&frame);
                     let plane = self.entity(format!("PLANE('{name}',#{placement})"));
@@ -899,6 +902,25 @@ impl Writer<'_> {
                      link','',#{annotation},#{model},#{callout})"
                 ));
             }
+        }
+
+        // Saved views: a named draughting model per view, holding a camera
+        // and the callouts the view presents. The camera's view volume is
+        // written `$`: this writer keeps no viewing frustum to state, and
+        // the readers that matter — this one included — take the name and
+        // the placement and leave the rest.
+        for view in views {
+            let name = escape(&view.name);
+            let placement = self.frame(&view.frame);
+            let camera = self.entity(format!("CAMERA_MODEL_D3('{name}',#{placement},$)"));
+            let mut items = vec![format!("#{camera}")];
+            for &index in &view.callouts {
+                if let Some(id) = callout_ids.get(index) {
+                    items.push(format!("#{id}"));
+                }
+            }
+            let items = items.join(",");
+            self.entity(format!("DRAUGHTING_MODEL('{name}',({items}),#{gctx})"));
         }
         Ok(())
     }
