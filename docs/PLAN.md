@@ -364,6 +364,24 @@ it again the moment it builds a tool that meets the solid at an opening:
 
 Any caller whose tolerance is tighter than the overshoot is the case to watch.
 
+### I. Canonical simplification
+
+**I1 — recognizing that exact geometry is secretly analytic.** Absent, and
+found by the audit rather than remembered: the reference carries this in its
+*healing* layer, and it is not reverse engineering. A B-spline surface that is
+exactly a cylinder — because an exchange format spelt it out pointwise, or a
+construction produced the general form of a special case — should become the
+cylinder, so that downstream algorithms get the closed forms they are faster
+and exacter on. The input is exact geometry, not samples: the decision is made
+against the surface's own equation at the caller's tolerance, and the
+certificate is the worst deviation actually measured.
+
+The sample-based recognizer that left with the reverse-engineering slice
+(`outside/crates/ogeom-reverse`, `canonical.rs`) solves a different problem —
+deciding what a *mesh* is — but its estimator shapes (normal-covariance axes,
+the `|c|² − r²` sphere substitution, the radius-against-height taper) are the
+same mathematics and are worth reading before writing this one.
+
 ## Decisions, not gaps
 
 These are settled. They are here so nobody reopens them by accident.

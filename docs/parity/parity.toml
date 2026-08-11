@@ -379,8 +379,324 @@ like any other value. The exchange-document capability itself (XCAFDoc) is \
 in scope and audited separately."""
 
 [[capability]]
+id = "algo.point-projection"
+title = "Projecting a point onto a curve or a surface, nearest first, all minima found"
+crate = "ogeom-algo"
+verdict = "covered"
+claims = [
+    "Extrema_ExtPC", "Extrema_ExtPC2d", "Extrema_ExtPElC", "Extrema_ExtPElC2d",
+    "Extrema_ExtPElS", "Extrema_ExtPExtS", "Extrema_ExtPRevS", "Extrema_ExtPS",
+    "Extrema_GenExtPS", "Extrema_GenLocateExtPS", "Extrema_LocateExtPC",
+    "Extrema_LocateExtPC2d", "Extrema_FuncPSDist", "Extrema_FuncPSNorm",
+    "Extrema_POnCurv", "Extrema_POnCurv2d", "Extrema_POnSurf",
+    "Extrema_POnSurfParams", "Extrema_CurveTool", "Extrema_Curve2dTool",
+    "Extrema_ElementType", "Extrema_ExtAlgo", "Extrema_ExtFlag",
+]
+symbols = [
+    "ogeom_algo::project_on_curve", "ogeom_algo::project_on_surface",
+    "ogeom_algo::project_on_planar_curve", "ogeom_algo::Projection",
+    "ogeom_algo::SurfaceProjection",
+]
+tests = [
+    "crates/ogeom-algo/src/measure.rs::projecting_onto_a_circle_finds_the_nearest_of_many_minima",
+]
+
+[[capability]]
 id = "intersect.extrema"
-title = "Extrema: nearest and farthest points between curves and surfaces"
+title = "Extrema between two curves, a curve and a surface, or two surfaces"
 crate = "ogeom-intersect"
-verdict = "unreviewed"
-claims = ["Extrema_*"]
+verdict = "covered"
+claims = [
+    "Extrema_ECC", "Extrema_ECC2d", "Extrema_ExtCC", "Extrema_ExtCC2d",
+    "Extrema_ExtCS", "Extrema_ExtElC", "Extrema_ExtElC2d", "Extrema_ExtElCS",
+    "Extrema_ExtElSS", "Extrema_ExtSS", "Extrema_FuncExtCS",
+    "Extrema_FuncExtSS", "Extrema_GenExtCS", "Extrema_GenExtSS",
+    "Extrema_GenLocateExtCS", "Extrema_GenLocateExtSS",
+    "Extrema_GlobOptFuncCC", "Extrema_GlobOptFuncCQuadric",
+    "Extrema_GlobOptFuncCS", "Extrema_GlobOptFuncConicS", "Extrema_LocECC",
+    "Extrema_LocECC2d", "Extrema_LocateExtCC", "Extrema_LocateExtCC2d",
+]
+symbols = [
+    "ogeom_intersect::extrema_curve_curve",
+    "ogeom_intersect::extrema_curve_surface",
+    "ogeom_intersect::extrema_surface_surface",
+    "ogeom_intersect::Extrema",
+]
+tests = ["crates/ogeom-intersect/src/extrema.rs"]
+
+[[capability]]
+id = "intersect.curve-curve"
+title = "Intersecting two curves, in the plane and in space: crossings, tangencies, overlaps"
+crate = "ogeom-intersect"
+verdict = "covered"
+claims = [
+    "IntCurve_IConicTool", "IntCurve_IntConicConic",
+    "IntCurve_IntConicConic_Tool", "IntCurve_IntImpConicParConic",
+    "IntCurve_PConic", "IntCurve_PConicTool", "IntCurve_ProjectOnPConicTool",
+]
+symbols = [
+    "ogeom_intersect::intersect_curves", "ogeom_intersect::intersect_curves_2d",
+    "ogeom_intersect::Crossing", "ogeom_intersect::Overlap",
+]
+tests = ["crates/ogeom-intersect/src/curves.rs"]
+
+[[capability]]
+id = "intersect.curve-surface"
+title = "Intersecting a curve with a surface: piercings and lying segments, with transitions"
+crate = "ogeom-intersect"
+verdict = "covered"
+claims = [
+    "IntCurveSurface_HInter", "IntCurveSurface_Intersection",
+    "IntCurveSurface_IntersectionPoint", "IntCurveSurface_IntersectionSegment",
+    "IntCurveSurface_TransitionOnCurve",
+]
+symbols = [
+    "ogeom_intersect::intersect_curve_surface", "ogeom_intersect::Piercing",
+    "ogeom_intersect::CurveSurfaceIntersection",
+]
+tests = ["crates/ogeom-intersect/src/curve_surface.rs"]
+
+[[capability]]
+id = "intersect.analytic-sections"
+title = "Closed-form intersections of planes and quadrics"
+crate = "ogeom-intersect"
+verdict = "covered"
+claims = [
+    "IntAna_Curve", "IntAna_Int3Pln", "IntAna_IntConicQuad",
+    "IntAna_IntLinTorus", "IntAna_IntQuadQuad", "IntAna_QuadQuadGeo",
+    "IntAna_Quadric", "IntAna_ResultType",
+]
+symbols = [
+    "ogeom_intersect::surface_surface", "ogeom_intersect::Meeting",
+    "ogeom_intersect::SectionCurve",
+]
+tests = [
+    "crates/ogeom-intersect/tests/instruments.rs",
+    "crates/ogeom-intersect/src/surface.rs",
+]
+
+[[capability]]
+id = "intersect.surface-surface-march"
+title = "The general surface/surface intersection: seeding, marching, branch assembly, approximation"
+crate = "ogeom-intersect"
+verdict = "covered"
+claims = [
+    "IntPatch_*", "IntSurf", "IntSurf_*", "IntWalk_PWalking",
+    "IntWalk_StatusDeflection", "GeomInt", "GeomInt_IntSS",
+    "GeomInt_LineConstructor", "GeomInt_LineTool",
+    "GeomInt_ParameterAndOrientation", "GeomInt_WLApprox",
+    "ApproxInt_KnotTools", "ApproxInt_SvSurfaces",
+]
+symbols = [
+    "ogeom_intersect::intersect_surfaces", "ogeom_intersect::seeds",
+    "ogeom_intersect::trace", "ogeom_intersect::branches",
+    "ogeom_intersect::Marching", "ogeom_intersect::Condition",
+    "ogeom_intersect::follow", "ogeom_intersect::approximate_branch",
+    "ogeom_intersect::IntersectionCurve",
+]
+tests = [
+    "crates/ogeom-intersect/tests/stress.rs",
+    "crates/ogeom-intersect/tests/hard.rs",
+    "crates/ogeom-intersect/tests/branch_points.rs",
+]
+
+# --- ogeom-heal -----------------------------------------------------------
+
+[[capability]]
+id = "heal.substitution"
+title = "Recording shape substitutions and applying them across a model"
+crate = "ogeom-heal"
+verdict = "covered"
+claims = ["ShapeBuild", "ShapeBuild_ReShape", "ShapeBuild_Edge", "ShapeBuild_Vertex"]
+symbols = ["ogeom_heal::Reshape"]
+tests = ["crates/ogeom-heal/src/reshape.rs"]
+
+[[capability]]
+id = "heal.same-parameter"
+title = "Diagnosing and repairing the same-parameter law between a curve and its pcurves"
+crate = "ogeom-heal"
+verdict = "covered"
+claims = [
+    "ShapeFix_Edge", "ShapeFix_EdgeProjAux", "ShapeAnalysis_Edge",
+    "ShapeAnalysis_TransferParameters", "ShapeAnalysis_TransferParametersProj",
+    "ShapeConstruct", "ShapeConstruct_Curve",
+    "ShapeConstruct_ProjectCurveOnSurface",
+]
+symbols = [
+    "ogeom_heal::repair_same_parameter", "ogeom_heal::SameParameterReport",
+    "ogeom_intersect::exact_pcurve_of",
+]
+tests = ["crates/ogeom-heal/src/same_parameter.rs"]
+
+[[capability]]
+id = "heal.upgrade"
+title = "Upgrading shapes in place: same-domain unification, edge merging, subdivision"
+crate = "ogeom-heal"
+verdict = "partial"
+restriction = """Unification (`unify_same_domain`) and edge merging are here; \
+the divide family — splitting faces and edges by continuity, angle or area — \
+and whole-shape Bézier conversion are not. A downstream consumer that needs \
+C1 pieces gets the C0 shape and must split it itself. The need arrives with \
+exchange writers targeting formats that cap continuity or degree, which is \
+where this row will be reopened."""
+claims = ["ShapeUpgrade", "ShapeUpgrade_*"]
+symbols = ["ogeom_heal::unify_same_domain", "ogeom_heal::merge_edges"]
+tests = ["crates/ogeom/tests/upgrade.rs"]
+
+[[capability]]
+id = "heal.tolerances"
+title = "Reading and tightening the tolerances a shape actually needs"
+crate = "ogeom-heal"
+verdict = "covered"
+claims = ["ShapeFix_ShapeTolerance", "ShapeAnalysis_ShapeTolerance"]
+symbols = ["ogeom_heal::reduce_tolerances"]
+tests = ["crates/ogeom-heal/src/upgrade.rs"]
+
+[[capability]]
+id = "heal.fix-shape"
+title = "Fixing broken shapes: wires, faces, shells, solids, free bounds, small features"
+crate = "ogeom-heal"
+verdict = "partial"
+restriction = """What exists: reanchoring periodic rings, sewing, validity \
+diagnosis, and the fixed heal sequence the STEP reader applies inline for \
+what the corpus exhibits. What does not: a standalone fix-anything entry \
+point taking an arbitrary broken shape — wire reordering, small-face and \
+small-solid removal, ComposeShell's face-across-a-patch-grid rebuild. The \
+honest statement is that healing here is measured by the imported corpus \
+rather than claimed in general, and a file the corpus does not resemble \
+may need fixes with no entry point yet."""
+claims = [
+    "ShapeFix", "ShapeFix_Shape", "ShapeFix_Face", "ShapeFix_FaceConnect",
+    "ShapeFix_Wire", "ShapeFix_Wireframe", "ShapeFix_WireSegment",
+    "ShapeFix_WireVertex", "ShapeFix_Shell", "ShapeFix_Solid",
+    "ShapeFix_FixSmallFace", "ShapeFix_FixSmallSolid", "ShapeFix_FreeBounds",
+    "ShapeFix_EdgeConnect", "ShapeFix_SplitCommonVertex", "ShapeFix_SplitTool",
+    "ShapeFix_IntersectionTool", "ShapeFix_ComposeShell", "ShapeFix_Root",
+    "ShapeAnalysis", "ShapeAnalysis_Wire", "ShapeAnalysis_WireOrder",
+    "ShapeAnalysis_WireVertex", "ShapeAnalysis_Shell",
+    "ShapeAnalysis_CheckSmallFace", "ShapeAnalysis_FreeBounds",
+    "ShapeAnalysis_FreeBoundData", "ShapeAnalysis_FreeBoundsProperties",
+    "ShapeAnalysis_ShapeContents", "ShapeAnalysis_BoxBndTree",
+    "ShapeAnalysis_Geom", "ShapeAnalysis_Curve", "ShapeAnalysis_Surface",
+    "ShapeExtend_ComplexCurve", "ShapeExtend_CompositeSurface",
+]
+symbols = [
+    "ogeom_heal::reanchor_periodic_rings", "ogeom_algo::sew", "ogeom_algo::check",
+]
+tests = [
+    "crates/ogeom-heal/src/reanchor.rs",
+    "crates/ogeom/tests/imported_corpus.rs",
+]
+
+[[capability]]
+id = "heal.canonical-simplification"
+title = "Recognizing that exact geometry is secretly analytic: a B-spline that is a cylinder"
+crate = "ogeom-heal"
+verdict = "absent"
+claims = ["ShapeAnalysis_CanonicalRecognition"]
+plan = "docs/PLAN.md §I (I1)"
+
+[[capability]]
+id = "heal.custom-remodelling"
+title = "Rebuilding a shape's geometry wholesale: baking transforms, converting representations"
+crate = "ogeom-heal"
+verdict = "partial"
+restriction = """Baking a transform into geometry is here (`baked_shape`, \
+which the boolean requires before accepting a scaled placement). The rest of \
+the family — swept-to-elementary, whole-shape B-spline conversion, and the \
+degree/knot restriction an export format with limits demands — is not, and \
+becomes necessary with the IGES writer (docs/PLAN.md F2)."""
+claims = ["ShapeCustom", "ShapeCustom_*"]
+symbols = ["ogeom_algo::baked_shape"]
+tests = ["crates/ogeom/tests/boolean_options.rs"]
+
+[[capability]]
+id = "heal.status-reporting"
+title = "Statuses, messages and traversal support for the healing pipeline"
+crate = "ogeom-heal"
+verdict = "divergent"
+reasoning = """Healing outcomes here are values: `SameParameterReport`, \
+`StepReport`, counts from `reduce_tolerances` — Rust Results rather than \
+status bitfields read back through a registrator. A message-registration \
+framework would add a second channel for what the return values already \
+say."""
+claims = [
+    "ShapeExtend", "ShapeExtend_Status", "ShapeExtend_BasicMsgRegistrator",
+    "ShapeExtend_MsgRegistrator", "ShapeExtend_Explorer",
+    "ShapeExtend_WireData", "ShapeExtend_Parametrisation",
+]
+
+[[capability]]
+id = "heal.scripted-pipeline"
+title = "Resource-file-driven sequences of healing operators"
+crate = "ogeom-heal"
+verdict = "divergent"
+reasoning = """The job — run a heal sequence on import — exists and is done \
+with a fixed inline sequence in the exchange readers, measured by the \
+corpus. A pipeline scripted from resource files is configuration the \
+applications that need it can build from the same functions; the kernel \
+keeping a config-file interpreter would be an application affordance."""
+claims = [
+    "ShapeProcess", "ShapeProcess_*", "ShapeProcessAPI_ApplySequence",
+    "ShapeAlgo", "ShapeAlgo_AlgoContainer", "ShapeAlgo_ToolContainer",
+]
+
+# --- ogeom-mesh -----------------------------------------------------------
+
+[[capability]]
+id = "mesh.tessellation"
+title = "Triangulating shapes to a stated deflection, deterministically, in parallel"
+crate = "ogeom-mesh"
+verdict = "covered"
+claims = ["BRepMesh_*"]
+symbols = [
+    "ogeom_mesh::triangulate", "ogeom_mesh::triangulate_face",
+    "ogeom_mesh::Deflection", "ogeom_mesh::tessellate",
+]
+tests = [
+    "crates/ogeom-mesh/src/triangulate.rs",
+    "crates/ogeom/tests/foundations.rs::parallel_tessellation_is_bit_identical",
+]
+
+[[capability]]
+id = "topo.triangulation-store"
+title = "Triangulations as first-class model data: triangles, polygons on them, parameters"
+crate = "ogeom-topo"
+verdict = "covered"
+claims = [
+    "Poly", "Poly_Triangulation", "Poly_Triangle", "Poly_Polygon2D",
+    "Poly_Polygon3D", "Poly_PolygonOnTriangulation",
+    "Poly_TriangulationParameters", "Poly_MeshPurpose",
+]
+symbols = ["ogeom_topo::Triangulation", "ogeom_topo::TriangulationId"]
+tests = ["crates/ogeom-topo/src/tessellation.rs"]
+
+[[capability]]
+id = "mesh.editing"
+title = "Editing triangulations: connectivity, welding, decimation, boundary loops"
+crate = "ogeom-mesh"
+verdict = "covered"
+claims = [
+    "Poly_CoherentLink", "Poly_CoherentNode", "Poly_CoherentTriPtr",
+    "Poly_CoherentTriangle", "Poly_CoherentTriangulation", "Poly_Connect",
+    "Poly_MakeLoops", "Poly_MergeNodesTool",
+]
+symbols = [
+    "ogeom_mesh::simplify", "ogeom_mesh::Simplified", "ogeom_mesh::face_boundary",
+    "ogeom_io::ImportedMesh",
+]
+tests = ["crates/ogeom-mesh/src/simplify.rs"]
+
+# --- ogeom-hlr ------------------------------------------------------------
+
+[[capability]]
+id = "hlr.projection"
+title = "Projecting a model into a view with visibility classified: hidden line removal, exact and polygonal"
+crate = "ogeom-hlr"
+verdict = "covered"
+claims = ["HLRAlgo_*", "HLRBRep_*", "HLRTopoBRep_*", "HLRAppli_ReflectLines"]
+symbols = [
+    "ogeom_hlr::project", "ogeom_hlr::project_exact", "ogeom_hlr::Visibility",
+    "ogeom_hlr::silhouettes", "ogeom_hlr::reflect_lines", "ogeom_hlr::Drawing",
+]
+tests = ["crates/ogeom/tests/exact_hlr.rs"]

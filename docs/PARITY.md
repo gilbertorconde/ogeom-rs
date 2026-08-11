@@ -15,20 +15,20 @@ per package.
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 15 |
-| `partial` | 2 |
-| `absent` | 1 |
-| `divergent` | 3 |
+| `covered` | 28 |
+| `partial` | 5 |
+| `absent` | 2 |
+| `divergent` | 5 |
 | `n/a` | 2 |
-| `unreviewed` | 1 |
 
-2704 reference headers in the reviewable pool; 287 claimed by 24 capabilities, 2417 awaiting a claim. Ratchet: `unreviewed_max = 5`.
+2704 reference headers in the reviewable pool; 611 claimed by 42 capabilities, 2093 awaiting a claim. Ratchet: `unreviewed_max = 5`.
 
 ## Capabilities
 
 ### ogeom-algo
 
 - **algo.global-properties** — Volume, area, mass, centroid and principal moments of shapes · `covered` · 11 headers claimed
+- **algo.point-projection** — Projecting a point onto a curve or a surface, nearest first, all minima found · `covered` · 23 headers claimed
 
 ### ogeom-bool
 
@@ -58,9 +58,35 @@ per package.
   - *reasoning:* The reference wraps every gp value in a reference-counted handle class so geometry can sit in documents. Here geometry lives in shared arenas keyed by id (docs/DATA_MODEL.md), and points, vectors and placements are plain values — a second, handle-shaped copy of the gp vocabulary would exist only to be a different allocation discipline. The capability those wrappers deliver is the arena's.
 - **geom.surfaces** — Parametric surfaces: planes, quadrics, swept, Bézier, B-spline, trimmed, offset · `covered` · 15 headers claimed
 
+### ogeom-heal
+
+- **heal.canonical-simplification** — Recognizing that exact geometry is secretly analytic: a B-spline that is a cylinder · `absent` · 1 header claimed
+  - *owned by:* docs/PLAN.md §I (I1)
+- **heal.custom-remodelling** — Rebuilding a shape's geometry wholesale: baking transforms, converting representations · `partial` · 12 headers claimed
+  - *restriction:* Baking a transform into geometry is here (`baked_shape`, which the boolean requires before accepting a scaled placement). The rest of the family — swept-to-elementary, whole-shape B-spline conversion, and the degree/knot restriction an export format with limits demands — is not, and becomes necessary with the IGES writer (docs/PLAN.md F2).
+- **heal.fix-shape** — Fixing broken shapes: wires, faces, shells, solids, free bounds, small features · `partial` · 35 headers claimed
+  - *restriction:* What exists: reanchoring periodic rings, sewing, validity diagnosis, and the fixed heal sequence the STEP reader applies inline for what the corpus exhibits. What does not: a standalone fix-anything entry point taking an arbitrary broken shape — wire reordering, small-face and small-solid removal, ComposeShell's face-across-a-patch-grid rebuild. The honest statement is that healing here is measured by the imported corpus rather than claimed in general, and a file the corpus does not resemble may need fixes with no entry point yet.
+- **heal.same-parameter** — Diagnosing and repairing the same-parameter law between a curve and its pcurves · `covered` · 8 headers claimed
+- **heal.scripted-pipeline** — Resource-file-driven sequences of healing operators · `divergent` · 11 headers claimed
+  - *reasoning:* The job — run a heal sequence on import — exists and is done with a fixed inline sequence in the exchange readers, measured by the corpus. A pipeline scripted from resource files is configuration the applications that need it can build from the same functions; the kernel keeping a config-file interpreter would be an application affordance.
+- **heal.status-reporting** — Statuses, messages and traversal support for the healing pipeline · `divergent` · 7 headers claimed
+  - *reasoning:* Healing outcomes here are values: `SameParameterReport`, `StepReport`, counts from `reduce_tolerances` — Rust Results rather than status bitfields read back through a registrator. A message-registration framework would add a second channel for what the return values already say.
+- **heal.substitution** — Recording shape substitutions and applying them across a model · `covered` · 4 headers claimed
+- **heal.tolerances** — Reading and tightening the tolerances a shape actually needs · `covered` · 2 headers claimed
+- **heal.upgrade** — Upgrading shapes in place: same-domain unification, edge merging, subdivision · `partial` · 33 headers claimed
+  - *restriction:* Unification (`unify_same_domain`) and edge merging are here; the divide family — splitting faces and edges by continuity, angle or area — and whole-shape Bézier conversion are not. A downstream consumer that needs C1 pieces gets the C0 shape and must split it itself. The need arrives with exchange writers targeting formats that cap continuity or degree, which is where this row will be reopened.
+
+### ogeom-hlr
+
+- **hlr.projection** — Projecting a model into a view with visibility classified: hidden line removal, exact and polygonal · `covered` · 61 headers claimed
+
 ### ogeom-intersect
 
-- **intersect.extrema** — Extrema: nearest and farthest points between curves and surfaces · `unreviewed` · 47 headers claimed
+- **intersect.analytic-sections** — Closed-form intersections of planes and quadrics · `covered` · 8 headers claimed
+- **intersect.curve-curve** — Intersecting two curves, in the plane and in space: crossings, tangencies, overlaps · `covered` · 7 headers claimed
+- **intersect.curve-surface** — Intersecting a curve with a surface: piercings and lying segments, with transitions · `covered` · 5 headers claimed
+- **intersect.extrema** — Extrema between two curves, a curve and a surface, or two surfaces · `covered` · 24 headers claimed
+- **intersect.surface-surface-march** — The general surface/surface intersection: seeding, marching, branch assembly, approximation · `covered` · 55 headers claimed
 
 ### ogeom-io
 
@@ -78,6 +104,11 @@ per package.
   - *restriction:* Fixed-order Gauss–Legendre only. No Gauss–Kronrod pairs, so integration error is controlled by choosing the order from the integrand's degree (exact for the polynomial cases mass properties meet) rather than estimated adaptively. An integrand that needs adaptive subdivision has no entry point yet.
 - **math.transforms** — Rigid and general transforms, quaternions, and their interpolation · `covered` · 12 headers claimed
 
+### ogeom-mesh
+
+- **mesh.editing** — Editing triangulations: connectivity, welding, decimation, boundary loops · `covered` · 8 headers claimed
+- **mesh.tessellation** — Triangulating shapes to a stated deflection, deterministically, in parallel · `covered` · 59 headers claimed
+
 ### ogeom-topo
 
 - **topo.data-model** — The B-rep data model: shapes as (node, location, orientation) handles into shared arenas · `covered` · 36 headers claimed
@@ -87,6 +118,7 @@ per package.
 - **topo.shared-state-locking** — Mutex provision for shapes shared across threads · `n/a` · 1 header claimed
   - *reasoning:* Exclusive access is the borrow checker's job: mutation needs `&mut Model`, which *is* the lock, held at compile time. A class that hands out mutexes per shape has no counterpart because the failure it guards against does not compile here.
 - **topo.traversal** — Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered` · 3 headers claimed
+- **topo.triangulation-store** — Triangulations as first-class model data: triangles, polygons on them, parameters · `covered` · 8 headers claimed
 
 ## Exchange entities (collapsed)
 
