@@ -1,0 +1,79 @@
+# The parity ledger — the one hand-written file of the audit.
+#
+# One [[capability]] block per thing a caller would ask for. Each claims the
+# reference headers it answers for (exact stems or globs, matched against the
+# `keep` rows of reference-index.tsv). `tools/parity.py check` holds this file
+# to its own rules: every verdict cites its evidence, claims are disjoint,
+# cited symbols resolve against rustdoc, cited tests exist, and once
+# `unclaimed_ok` is retired every kept header must be claimed by exactly one
+# capability.
+#
+# Verdicts: covered | partial | absent | divergent | n/a | unreviewed.
+# See docs/PARITY.md (generated) for what each requires.
+
+[audit]
+# Ratchets downward, tranche by tranche. CI fails if the count of unreviewed
+# capabilities exceeds it.
+unreviewed_max = 5
+# The skeleton phase: claims are not yet total. Tranche 3 of the hand audit
+# retires this flag, after which an unclaimed kept header fails the gate.
+unclaimed_ok = true
+
+# --------------------------------------------------------------------------
+# Seed rows. One per verdict kind, so every gate path is exercised from the
+# first commit. The hand audit (docs/PLAN.md, Part 4) grows this file until
+# the claims are total.
+# --------------------------------------------------------------------------
+
+[[capability]]
+id = "topo.data-model"
+title = "The B-rep data model: shapes as (node, location, orientation) handles into shared arenas"
+crate = "ogeom-topo"
+verdict = "covered"
+claims = ["TopoDS", "TopoDS_*"]
+symbols = [
+    "ogeom_topo::Model",
+    "ogeom_topo::Shape",
+    "ogeom_topo::Model::node",
+]
+tests = [
+    "crates/ogeom-algo/tests/history_properties.rs",
+    "crates/ogeom/tests/built_by_hand.rs::a_hand_built_prism_closes_and_measures_its_closed_form",
+]
+
+[[capability]]
+id = "algo.global-properties"
+title = "Volume, area, mass, centroid and principal moments of shapes"
+crate = "ogeom-algo"
+verdict = "covered"
+claims = ["GProp", "GProp_*"]
+symbols = ["ogeom_algo::volume_properties"]
+tests = [
+    "crates/ogeom/tests/built_by_hand.rs::a_hand_built_prism_closes_and_measures_its_closed_form",
+]
+
+[[capability]]
+id = "bool.defeaturing"
+title = "Removing a set of faces from a solid by extending and re-intersecting its neighbours"
+crate = "ogeom-bool"
+verdict = "absent"
+claims = ["BRepAlgoAPI_Defeaturing"]
+plan = "docs/PLAN.md §H (H1)"
+
+[[capability]]
+id = "doc.application-bootstrap"
+title = "The OCAF application object the exchange document hangs from"
+crate = "ogeom-doc"
+verdict = "n/a"
+claims = ["XCAFApp_*"]
+reasoning = """ogeom-doc is deliberately not a label-and-attribute tree, so \
+there is no framework application to bootstrap; a Document is constructed \
+like any other value. The exchange-document capability itself (XCAFDoc) is \
+in scope and audited separately."""
+
+[[capability]]
+id = "intersect.extrema"
+title = "Extrema: nearest and farthest points between curves and surfaces"
+crate = "ogeom-intersect"
+verdict = "unreviewed"
+claims = ["Extrema_*"]

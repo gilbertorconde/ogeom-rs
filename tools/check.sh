@@ -44,6 +44,13 @@ cargo run --quiet --release -p ogeom-bench -- --check tools/ogeom-bench/baseline
 echo "== docs =="
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
 
+echo "== parity =="
+# The audit gate: every verdict in docs/parity/parity.toml cites evidence that
+# still exists — symbols against the rustdoc just built, tests against the
+# tree — and docs/PARITY.md matches the committed index. Runs entirely against
+# committed files; no reference checkout is consulted here or in CI.
+python3 tools/parity.py check
+
 passing=$(grep -E '^test result:' "$log" \
     | awk -F'ok\\. ' '{split($2,a," "); s+=a[1]} END {print s}')
 echo
