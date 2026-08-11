@@ -1,9 +1,11 @@
 //! Shape construction and query — everything that does not require surface/surface
 //! intersection.
 //!
-//! *Elsewhere:* the `BRepBuilderAPI`, `BRepPrimAPI`, `BRepAdaptor`, `BRepTools`,
+//! *Elsewhere:* the `BRepBuilderAPI`, `BRepPrimAPI`, `BRepTools`,
 //! `BRepLib`, `BRepGProp`, `BRepCheck`, `BRepClass3d`, `BRepExtrema`, `GeomAPI`,
 //! `GCPnts` and `GProp` families, plus the classical curve constructors.
+//! The adaptor layer is `ogeom-geom`'s: evaluating topology as geometry
+//! belongs with the geometry traits — `docs/PARITY.md`, geom.adaptors.
 //!
 //! Every operation in this crate emits history (`generated` / `modified` /
 //! `is_deleted`) from the start. That is not optional and cannot be retrofitted:

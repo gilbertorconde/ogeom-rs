@@ -392,6 +392,18 @@ deciding what a *mesh* is — but its estimator shapes (normal-covariance axes,
 the `|c|² − r²` sphere substitution, the radius-against-height taper) are the
 same mathematics and are worth reading before writing this one.
 
+### J. The medial axis
+
+**J1 — the medial axis of a planar region.** Absent, found by the audit. The
+skeleton of a face — the locus of centres of maximal inscribed circles — is
+what tool-path generation, midline extraction and some wire-offset modes are
+built on. The reference computes it from the boundary's bisector curves; the
+bisector mathematics is already in `ogeom-math` (`bisector`, `Bisector2`),
+so what is missing is the sweep that assembles bisectors into the axis with
+its branch points. Zero usage in the profiled consumer; unscheduled until a
+caller shows up, but recorded because "we could not do this" and "we chose
+not to yet" are different sentences.
+
 ## Decisions, not gaps
 
 These are settled. They are here so nobody reopens them by accident.

@@ -452,6 +452,7 @@ def cmd_check(args) -> int:
         for c in caps:
             for h in _claimed.get(c["id"], []):
                 pkg_by_cap_crate[c["crate"]].add(hdr_pkg[h])
+        kept_pkgs = {r["package"] for r in rows if r["bucket"] == "keep"}
         for lib in _g.glob("crates/*/src/lib.rs"):
             crate = lib.split(os.sep)[1]
             text = open(lib, errors="replace").read()
@@ -459,8 +460,10 @@ def cmd_check(args) -> int:
             if not m:
                 continue
             for pkg in re.findall(r"`([A-Za-z][A-Za-z0-9_]*)`", m.group(1)):
-                if pkg in {r["package"] for r in rows} and \
-                   pkg not in pkg_by_cap_crate.get(crate, set()):
+                # Only packages with kept rows create an obligation: naming a
+                # dropped package (Standard, say) locates a concept, and there
+                # is nothing there left to claim.
+                if pkg in kept_pkgs and pkg not in pkg_by_cap_crate.get(crate, set()):
                     errors.append(f"{crate}: Elsewhere names {pkg} but no "
                                   f"capability of {crate} claims it")
 

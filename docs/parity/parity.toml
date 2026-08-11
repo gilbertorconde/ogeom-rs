@@ -12,17 +12,15 @@
 # See docs/PARITY.md (generated) for what each requires.
 
 [audit]
-# Ratchets downward, tranche by tranche. CI fails if the count of unreviewed
-# capabilities exceeds it.
-unreviewed_max = 5
-# The skeleton phase: claims are not yet total. Tranche 3 of the hand audit
-# retires this flag, after which an unclaimed kept header fails the gate.
-unclaimed_ok = true
+# Ratchets downward. CI fails if the count of unreviewed capabilities
+# exceeds it. The one unreviewed row is offset.middle-path.
+unreviewed_max = 1
 
 # --------------------------------------------------------------------------
-# Seed rows. One per verdict kind, so every gate path is exercised from the
-# first commit. The hand audit (docs/PLAN.md, Part 4) grows this file until
-# the claims are total.
+# The claims are total: every kept header of the reference index is claimed
+# by exactly one capability, and the gate enforces it. A new reference
+# version regenerates the index; whatever it adds arrives unclaimed and
+# fails the gate until somebody answers for it.
 # --------------------------------------------------------------------------
 
 [[capability]]
@@ -113,7 +111,8 @@ crate = "ogeom-io"
 verdict = "covered"
 claims = [
     "TopTools_ShapeSet", "TopTools_LocationSet", "TopTools_LocationSetPtr",
-    "TopTools_FormatVersion", "BRepTools_ShapeSet",
+    "TopTools_FormatVersion", "BRepTools_ShapeSet", "BinTools", "BinTools_*",
+    "GeomTools", "GeomTools_*",
 ]
 symbols = ["ogeom_io::read", "ogeom_io::write", "ogeom_io::VERSION"]
 tests = ["crates/ogeom/tests/brep_format.rs"]
@@ -216,6 +215,7 @@ claims = [
     "math_NewtonFunctionSetRoot", "math_NewtonMinimum", "math_PSO",
     "math_PSOParticlesPool", "math_Powell", "math_Status",
     "math_TrigonometricEquationFunction", "math_TrigonometricFunctionRoots",
+    "math_FunctionRoot", "math_FunctionRoots", "math_FunctionSample",
 ]
 symbols = [
     "ogeom_math::newton", "ogeom_math::newton_system", "ogeom_math::brent",
@@ -273,6 +273,7 @@ claims = [
     "Geom_Hyperbola", "Geom_Parabola", "Geom_Conic", "Geom_BezierCurve",
     "Geom_BSplineCurve", "Geom_BoundedCurve", "Geom_TrimmedCurve",
     "Geom_OffsetCurve", "Geom_UndefinedDerivative", "Geom_UndefinedValue",
+    "GeomAbs_*",
 ]
 symbols = [
     "ogeom_geom::Curve", "ogeom_geom::LineCurve", "ogeom_geom::CircleCurve",
@@ -292,7 +293,8 @@ claims = [
     "Geom_ElementarySurface", "Geom_BezierSurface", "Geom_BSplineSurface",
     "Geom_BoundedSurface", "Geom_RectangularTrimmedSurface",
     "Geom_OffsetSurface", "Geom_SurfaceOfLinearExtrusion",
-    "Geom_SurfaceOfRevolution", "Geom_SweptSurface",
+    "Geom_SurfaceOfRevolution", "Geom_SweptSurface", "CSLib", "CSLib_*",
+    "GeomEvaluator_*",
 ]
 symbols = [
     "ogeom_geom::SurfaceGeometry", "ogeom_geom::PlaneSurface",
@@ -313,6 +315,7 @@ claims = [
     "Geom2d_BezierCurve", "Geom2d_BSplineCurve", "Geom2d_BoundedCurve",
     "Geom2d_TrimmedCurve", "Geom2d_OffsetCurve",
     "Geom2d_UndefinedDerivative", "Geom2d_UndefinedValue",
+    "Geom2dEvaluator", "Geom2dEvaluator_*",
 ]
 symbols = [
     "ogeom_geom::Curve2d", "ogeom_geom::Line2d", "ogeom_geom::Circle2d",
@@ -356,8 +359,11 @@ id = "algo.global-properties"
 title = "Volume, area, mass, centroid and principal moments of shapes"
 crate = "ogeom-algo"
 verdict = "covered"
-claims = ["GProp", "GProp_*"]
-symbols = ["ogeom_algo::volume_properties"]
+claims = ["GProp", "GProp_*", "BRepGProp", "BRepGProp_*"]
+symbols = [
+    "ogeom_algo::volume_properties", "ogeom_algo::surface_properties",
+    "ogeom_algo::linear_properties", "ogeom_algo::MassProperties",
+]
 tests = [
     "crates/ogeom/tests/built_by_hand.rs::a_hand_built_prism_closes_and_measures_its_closed_form",
 ]
@@ -367,7 +373,7 @@ id = "bool.defeaturing"
 title = "Removing a set of faces from a solid by extending and re-intersecting its neighbours"
 crate = "ogeom-bool"
 verdict = "absent"
-claims = ["BRepAlgoAPI_Defeaturing"]
+claims = ["BRepAlgoAPI_Defeaturing", "BOPAlgo_RemoveFeatures"]
 plan = "docs/PLAN.md §H (H1)"
 
 [[capability]]
@@ -395,6 +401,7 @@ claims = [
     "Extrema_POnSurfParams", "Extrema_CurveTool", "Extrema_Curve2dTool",
     "Extrema_ElementType", "Extrema_ExtAlgo", "Extrema_ExtFlag",
     "GeomAPI_ProjectPointOnCurve", "GeomAPI_ProjectPointOnSurf",
+    "Geom2dAPI_ProjectPointOnCurve",
 ]
 symbols = [
     "ogeom_algo::project_on_curve", "ogeom_algo::project_on_surface",
@@ -439,6 +446,8 @@ claims = [
     "IntCurve_IConicTool", "IntCurve_IntConicConic",
     "IntCurve_IntConicConic_Tool", "IntCurve_IntImpConicParConic",
     "IntCurve_PConic", "IntCurve_PConicTool", "IntCurve_ProjectOnPConicTool",
+    "Geom2dAPI_InterCurveCurve", "Geom2dAPI_ExtremaCurveCurve", "IntRes2d_*",
+    "Geom2dInt_*", "IntAna2d_*", "IntImpParGen", "IntImpParGen_*",
 ]
 symbols = [
     "ogeom_intersect::intersect_curves", "ogeom_intersect::intersect_curves_2d",
@@ -455,6 +464,7 @@ claims = [
     "IntCurveSurface_HInter", "IntCurveSurface_Intersection",
     "IntCurveSurface_IntersectionPoint", "IntCurveSurface_IntersectionSegment",
     "IntCurveSurface_TransitionOnCurve", "GeomAPI_IntCS",
+    "BRepIntCurveSurface_Inter",
 ]
 symbols = [
     "ogeom_intersect::intersect_curve_surface", "ogeom_intersect::Piercing",
@@ -492,6 +502,8 @@ claims = [
     "GeomInt_LineConstructor", "GeomInt_LineTool",
     "GeomInt_ParameterAndOrientation", "GeomInt_WLApprox",
     "ApproxInt_KnotTools", "ApproxInt_SvSurfaces", "GeomAPI_IntSS",
+    "IntImp_*", "IntStart_*", "IntPolyh_*", "Intf", "Intf_*",
+    "BRepApprox_Approx", "BRepApprox_ApproxLine", "BRepApprox_SurfaceTool",
 ]
 symbols = [
     "ogeom_intersect::intersect_surfaces", "ogeom_intersect::seeds",
@@ -529,7 +541,8 @@ claims = [
     "ShapeFix_Edge", "ShapeFix_EdgeProjAux", "ShapeAnalysis_Edge",
     "ShapeAnalysis_TransferParameters", "ShapeAnalysis_TransferParametersProj",
     "ShapeConstruct", "ShapeConstruct_Curve",
-    "ShapeConstruct_ProjectCurveOnSurface",
+    "ShapeConstruct_ProjectCurveOnSurface", "ProjLib", "ProjLib_*",
+    "GeomProjLib",
 ]
 symbols = [
     "ogeom_heal::repair_same_parameter", "ogeom_heal::SameParameterReport",
@@ -657,7 +670,10 @@ id = "mesh.tessellation"
 title = "Triangulating shapes to a stated deflection, deterministically, in parallel"
 crate = "ogeom-mesh"
 verdict = "covered"
-claims = ["BRepMesh_*", "BRepLib_ToolTriangulatedShape"]
+claims = [
+    "BRepMesh_*", "BRepLib_ToolTriangulatedShape", "IMeshData_*",
+    "IMeshTools_*", "BRepMeshData_*", "XBRepMesh",
+]
 symbols = [
     "ogeom_mesh::triangulate", "ogeom_mesh::triangulate_face",
     "ogeom_mesh::Deflection", "ogeom_mesh::tessellate",
@@ -703,7 +719,10 @@ id = "hlr.projection"
 title = "Projecting a model into a view with visibility classified: hidden line removal, exact and polygonal"
 crate = "ogeom-hlr"
 verdict = "covered"
-claims = ["HLRAlgo_*", "HLRBRep_*", "HLRTopoBRep_*", "HLRAppli_ReflectLines"]
+claims = [
+    "HLRAlgo", "HLRAlgo_*", "HLRBRep", "HLRBRep_*", "HLRTopoBRep_*",
+    "HLRAppli_ReflectLines", "Contap_*", "Intrv_*",
+]
 symbols = [
     "ogeom_hlr::project", "ogeom_hlr::project_exact", "ogeom_hlr::Visibility",
     "ogeom_hlr::silhouettes", "ogeom_hlr::reflect_lines", "ogeom_hlr::Drawing",
@@ -747,7 +766,7 @@ id = "algo.primitives"
 title = "The primitive solids: box, wedge, cylinder, cone, sphere, torus, half-space, prism, revolution"
 crate = "ogeom-algo"
 verdict = "covered"
-claims = ["BRepPrimAPI_*"]
+claims = ["BRepPrimAPI_*", "BRepPrim_*"]
 symbols = [
     "ogeom_algo::make_box", "ogeom_algo::make_wedge", "ogeom_algo::make_cylinder",
     "ogeom_algo::make_cone", "ogeom_algo::make_sphere", "ogeom_algo::make_torus",
@@ -761,7 +780,11 @@ id = "geom.adaptors"
 title = "Evaluating topology as geometry: an edge's curve and a face's surface, placed"
 crate = "ogeom-geom"
 verdict = "covered"
-claims = ["BRepAdaptor_CompCurve", "BRepAdaptor_Curve", "BRepAdaptor_Curve2d", "BRepAdaptor_Surface"]
+claims = [
+    "BRepAdaptor_CompCurve", "BRepAdaptor_Curve", "BRepAdaptor_Curve2d",
+    "BRepAdaptor_Surface", "GeomAdaptor", "GeomAdaptor_*", "Adaptor3d_*",
+    "Adaptor2d_*", "Geom2dAdaptor", "Geom2dAdaptor_*",
+]
 symbols = ["ogeom_geom::Curve3d", "ogeom_geom::Surface", "ogeom_geom::CurveOnSurface"]
 tests = ["crates/ogeom-geom/src/traits.rs"]
 
@@ -782,7 +805,11 @@ id = "algo.classification"
 title = "Classifying a point against a solid or a face: in, out, or on, exactly"
 crate = "ogeom-algo"
 verdict = "covered"
-claims = ["BRepClass3d", "BRepClass3d_*", "BRepClass_*"]
+claims = [
+    "BRepClass3d", "BRepClass3d_*", "BRepClass_*", "IntCurvesFace_*",
+    "BRepTopAdaptor_*", "TopBas_TestInterference", "TopClass_SolidExplorer",
+    "TopCnx_EdgeFaceTransition",
+]
 symbols = [
     "ogeom_algo::classify_in_solid", "ogeom_algo::classify_in_solid_exact",
     "ogeom_algo::classify_on_face", "ogeom_algo::Containment",
@@ -809,7 +836,7 @@ id = "algo.curve-sampling"
 title = "Sampling curves: by count, by spacing, by deflection, by abscissa"
 crate = "ogeom-algo"
 verdict = "covered"
-claims = ["GCPnts_*"]
+claims = ["GCPnts_*", "CPnts_*"]
 symbols = [
     "ogeom_algo::points_by_count", "ogeom_algo::points_by_spacing",
     "ogeom_algo::parameter_at_length", "ogeom_algo::curve_length",
@@ -822,7 +849,13 @@ id = "algo.fitting"
 title = "Interpolating and approximating points with B-splines, curves and surfaces"
 crate = "ogeom-algo"
 verdict = "covered"
-claims = ["GeomAPI_Interpolate", "GeomAPI_PointsToBSpline", "GeomAPI_PointsToBSplineSurface"]
+claims = [
+    "GeomAPI_Interpolate", "GeomAPI_PointsToBSpline",
+    "GeomAPI_PointsToBSplineSurface", "Approx_*", "AppDef_*",
+    "AppParCurves", "AppParCurves_*", "AppCont_*", "AdvApprox_*",
+    "AdvApp2Var_*", "FEmTool_*", "FairCurve_*", "Hermit",
+    "Geom2dAPI_Interpolate", "Geom2dAPI_PointsToBSpline",
+]
 symbols = [
     "ogeom_algo::interpolate", "ogeom_algo::approximate",
     "ogeom_geom::fit_points", "ogeom_geom::fit_surface_grid",
@@ -872,6 +905,7 @@ claims = [
     "BRepBuilderAPI_BndBoxTreeSelector", "BRepBuilderAPI_VertexInspector",
     "BRepBuilderAPI_TransitionMode", "BRepTools_Quilt",
     "BRepTools_WireExplorer",
+    "BRepOffsetAPI_Sewing", "BRepOffsetAPI_FindContigousEdges",
 ]
 symbols = [
     "ogeom_algo::sew", "ogeom_algo::Sewn", "ogeom_algo::order_edges",
@@ -908,9 +942,11 @@ claims = [
     "BOPAlgo_PArgumentAnalyzer", "BOPAlgo_PBOP", "BOPAlgo_PBuilder",
     "BOPAlgo_PPaveFiller", "BOPAlgo_PSection", "BOPAlgo_PWireEdgeSet",
     "BOPAlgo_PaveFiller", "BOPAlgo_Section", "BOPAlgo_SectionAttribute",
+    "BOPAlgo_Splitter",
     "BOPAlgo_ShellSplitter", "BOPAlgo_Tools", "BOPAlgo_ToolsProvider",
     "BOPAlgo_WireEdgeSet", "BOPAlgo_WireSplitter",
-    "BOPDS_*", "BOPTools_*", "IntTools", "IntTools_*",
+    "BOPDS_*", "BOPTools_*", "IntTools", "IntTools_*", "BRepAlgo",
+    "BRepAlgo_*", "TopTrans_*",
 ]
 symbols = [
     "ogeom_bool::cut", "ogeom_bool::fuse", "ogeom_bool::common",
@@ -976,8 +1012,9 @@ boolean's handling of tangency at a vertex of the tool's own patch. The \
 blend of the corner is constructible; its trim against the part is not yet."""
 claims = [
     "BRepFilletAPI_MakeFillet", "BRepFilletAPI_LocalOperation",
-    "ChFi3d", "ChFi3d_*", "ChFiDS_*",
-    "Blend_*", "BlendFunc_*", "BRepBlend_*",
+    "ChFi3d", "ChFi3d_*", "ChFiDS_*", "ChFiKPart_*",
+    "Blend_*", "BlendFunc", "BlendFunc_*", "BRepBlend_*",
+    "FilletSurf_*", "AppBlend_Approx",
 ]
 symbols = [
     "ogeom_fillet::fillet_edge", "ogeom_fillet::fillet_edge_variable",
@@ -1007,7 +1044,7 @@ id = "fillet.corners-2d"
 title = "Filleting and chamfering the corners of planar wires"
 crate = "ogeom-fillet"
 verdict = "covered"
-claims = ["BRepFilletAPI_MakeFillet2d", "ChFi2d", "ChFi2d_*"]
+claims = ["BRepFilletAPI_MakeFillet2d", "ChFi2d", "ChFi2d_*", "Bisector", "Bisector_*"]
 symbols = ["ogeom_fillet::fillet_corner_2d", "ogeom_fillet::chamfer_corner_2d"]
 tests = ["crates/ogeom-fillet/tests/variants.rs"]
 
@@ -1039,7 +1076,7 @@ verdict = "covered"
 claims = [
     "BRepOffsetAPI_MakePipe", "BRepOffsetAPI_MakePipeShell",
     "BRepOffsetAPI_MakeEvolved", "BRepSweep_*", "BRepFill", "BRepFill_*",
-    "GeomFill", "GeomFill_*",
+    "GeomFill", "GeomFill_*", "Sweep_*", "Law", "Law_*",
 ]
 symbols = [
     "ogeom_offset::make_pipe", "ogeom_offset::make_pipe_skinned",
@@ -1061,7 +1098,7 @@ id = "offset.filling"
 title = "Filling a boundary with a face: the plate surface"
 crate = "ogeom-offset"
 verdict = "covered"
-claims = ["BRepOffsetAPI_MakeFilling", "GeomPlate_*"]
+claims = ["BRepOffsetAPI_MakeFilling", "GeomPlate_*", "Plate_*", "NLPlate_*"]
 symbols = ["ogeom_offset::make_filling"]
 tests = ["crates/ogeom/tests/filling.rs"]
 
@@ -1070,7 +1107,7 @@ id = "offset.draft"
 title = "Drafting faces about a neutral plane for mould release"
 crate = "ogeom-offset"
 verdict = "covered"
-claims = ["BRepOffsetAPI_DraftAngle", "BRepOffsetAPI_MakeDraft"]
+claims = ["BRepOffsetAPI_DraftAngle", "BRepOffsetAPI_MakeDraft", "Draft", "Draft_*"]
 symbols = ["ogeom_offset::apply_draft"]
 tests = ["crates/ogeom/tests/features.rs::four_walls_drafted_about_the_base_make_a_frustum"]
 
@@ -1079,7 +1116,7 @@ id = "offset.form-features"
 title = "The form features: prism, revolution, rib and slot against a base"
 crate = "ogeom-offset"
 verdict = "covered"
-claims = ["BRepFeat", "BRepFeat_*"]
+claims = ["BRepFeat", "BRepFeat_*", "LocOpe", "LocOpe_*"]
 symbols = [
     "ogeom_offset::feature_prism", "ogeom_offset::feature_revol",
     "ogeom_offset::feature_rib", "ogeom_offset::feature_slot",
@@ -1106,8 +1143,8 @@ claims = [
     "XCAFDoc", "XCAFDoc_AssemblyItemId", "XCAFDoc_AssemblyItemRef",
     "XCAFDoc_AssemblyIterator", "XCAFDoc_AssemblyTool",
     "XCAFDoc_AssemblyGraph", "XCAFDoc_DocumentTool", "XCAFDoc_Editor",
-    "XCAFDoc_GraphNode", "XCAFDoc_Location", "XCAFDoc_ShapeMapTool",
-    "XCAFDoc_ShapeTool",
+    "XCAFDoc_GraphNode", "XCAFDoc_GraphNodeSequence", "XCAFDoc_Location",
+    "XCAFDoc_ShapeMapTool", "XCAFDoc_ShapeTool", "XCAFDoc_PartId",
 ]
 symbols = [
     "ogeom_doc::Document", "ogeom_doc::Product", "ogeom_doc::Occurrence",
@@ -1168,5 +1205,292 @@ id = "doc.saved-views"
 title = "Saved views and standalone note objects in the exchange document"
 crate = "ogeom-doc"
 verdict = "absent"
-claims = ["XCAFView_*", "XCAFNoteObjects_NoteObject", "XCAFDoc_View", "XCAFDoc_NoteComment", "XCAFDoc_NoteBinData", "XCAFDoc_NotesTool"]
+claims = [
+    "XCAFView_*", "XCAFNoteObjects_NoteObject", "XCAFDoc_View",
+    "XCAFDoc_ViewTool", "XCAFDoc_NoteComment", "XCAFDoc_NoteBinData",
+    "XCAFDoc_NotesTool", "XCAFDoc_NoteBalloon", "XCAFDoc_ClippingPlaneTool",
+]
 plan = "docs/PLAN.md §E (E3)"
+
+# --- tranche 2: the unmapped packages, usage-ordered ----------------------
+
+[[capability]]
+id = "math.curve-constructors"
+title = "Constructing curves from constraints: through points, from centre and radius, trimmed arcs"
+crate = "ogeom-math"
+verdict = "covered"
+claims = ["GC_*", "GCE2d_*", "gce_*"]
+symbols = [
+    "ogeom_math::Circle", "ogeom_math::TangentCircle",
+    "ogeom_geom::LineCurve", "ogeom_geom::CircleCurve", "ogeom_geom::TrimmedCurve",
+]
+tests = ["crates/ogeom-math/src/conic.rs::circle_through_three_points"]
+
+[[capability]]
+id = "algo.bounds"
+title = "Guaranteed bounding boxes, axis-aligned and oriented, for curves, surfaces and shapes"
+crate = "ogeom-algo"
+verdict = "covered"
+claims = ["Bnd_*", "BRepBndLib", "BndLib", "BndLib_*"]
+symbols = [
+    "ogeom_algo::shape_bounds", "ogeom_algo::curve_bounds",
+    "ogeom_algo::surface_bounds", "ogeom_algo::oriented_bounds",
+    "ogeom_algo::Obb", "ogeom_math::Aabb",
+]
+tests = ["crates/ogeom-algo/src/measure.rs::every_curves_bound_contains_the_curve"]
+
+[[capability]]
+id = "algo.spatial-acceleration"
+title = "Generic bounding-volume hierarchies"
+crate = "ogeom-algo"
+verdict = "divergent"
+reasoning = """Acceleration structures here are internal to the algorithms \
+that need them — sewing's cell filter, the classifier's bounds, the distance \
+walk's pruning — rather than a public generic BVH container library. The one \
+consumer that wants a standing BVH over triangles is picking, which is \
+outside the kernel (outside/crates/ogeom-select carries it). If a kernel \
+algorithm ever needs a shared BVH, promoting select's is the move."""
+claims = ["BVH_*"]
+
+[[capability]]
+id = "geom.local-properties"
+title = "Local properties along curves and across surfaces: tangent, normal, curvature"
+crate = "ogeom-geom"
+verdict = "partial"
+restriction = """Curve-side interrogation exists: point, derivatives, \
+tangent, curvature (`Curve3d::curvature_at`). Surface-side, first and second \
+derivatives and the normal exist, but principal curvatures and directions — \
+what curvature display, zebra analysis and the reference's SLProps answer — \
+are not exposed as an API; a caller gets the second fundamental form's \
+ingredients and assembles it alone. The gap is an interrogation surface, not \
+missing mathematics, and any viewer wanting a curvature comb will ask for it."""
+claims = [
+    "BRepLProp", "BRepLProp_*", "GeomLProp", "GeomLProp_*", "Geom2dLProp_*",
+    "LProp_*", "LProp3d_*", "LocalAnalysis", "LocalAnalysis_*",
+]
+symbols = ["ogeom_geom::Curve3d", "ogeom_geom::Continuity"]
+tests = ["crates/ogeom-math/src/elementary.rs::curvature_of_a_circle_is_the_reciprocal_of_its_radius"]
+
+[[capability]]
+id = "geom.conversion"
+title = "Converting between curve and surface forms: to B-spline, to Bézier segments, degree elevation"
+crate = "ogeom-geom"
+verdict = "covered"
+claims = ["GeomConvert", "GeomConvert_*", "Geom2dConvert", "Geom2dConvert_*", "Convert_*"]
+symbols = [
+    "ogeom_math::to_bezier_segments", "ogeom_math::elevate_degree",
+    "ogeom_math::insert_knot", "ogeom_algo::to_nurbs",
+]
+tests = ["crates/ogeom-geom/src/convert.rs"]
+
+[[capability]]
+id = "math.elementary-evaluation"
+title = "Evaluating and parameterizing the elementary curves and surfaces in closed form"
+crate = "ogeom-math"
+verdict = "covered"
+claims = ["ElCLib", "ElSLib"]
+symbols = [
+    "ogeom_math::circle_at", "ogeom_math::circle_parameter",
+    "ogeom_math::cylinder_at", "ogeom_math::sphere_at", "ogeom_math::torus_at",
+]
+tests = ["crates/ogeom-math/src/elementary.rs"]
+
+[[capability]]
+id = "math.bspline-basis"
+title = "The B-spline basis: knots, evaluation, derivatives, insertion, elevation, splitting"
+crate = "ogeom-math"
+verdict = "covered"
+claims = ["BSplCLib", "BSplCLib_*", "BSplSLib", "BSplSLib_*", "PLib", "PLib_*"]
+symbols = [
+    "ogeom_math::KnotVector", "ogeom_math::BasisValues", "ogeom_math::evaluate",
+    "ogeom_math::derivatives", "ogeom_math::evaluate_surface",
+    "ogeom_math::rational_derivatives",
+]
+tests = ["crates/ogeom-math/tests/bspline_properties.rs"]
+
+[[capability]]
+id = "geom.extension"
+title = "Extending curves and surfaces beyond their domains"
+crate = "ogeom-geom"
+verdict = "partial"
+restriction = """An analytic surface's window widens without changing the \
+carrier (`widened_to_hold`, which the reconstruction work proved out). A \
+B-spline's genuine extension — new geometry continuing the old, which the \
+reference's GeomLib_ExtendSurfByLength does — is absent, and it is exactly \
+what H1's neighbour-extension step (docs/PLAN.md §H) will need on spline \
+faces. The rest of GeomLib's grab bag — normal estimation, closure tests, \
+axis mirroring — lives on the Surface and Curve traits."""
+claims = ["GeomLib", "GeomLib_*"]
+symbols = ["ogeom_algo::widened_to_hold"]
+tests = ["crates/ogeom-algo/src/measure.rs::a_window_widened_to_hold_a_point_holds_it_with_room_to_spare"]
+
+[[capability]]
+id = "math.tangency-constructions"
+title = "2D tangency constructions: circles and lines tangent to points, lines and circles"
+crate = "ogeom-math"
+verdict = "covered"
+claims = ["GccAna_*", "GccEnt", "GccEnt_*", "GccInt_*", "Geom2dGcc", "Geom2dGcc_*"]
+symbols = [
+    "ogeom_math::circles_tangent_to_three",
+    "ogeom_math::circles_of_radius_tangent_to_two",
+    "ogeom_math::lines_tangent_to_two_circles", "ogeom_math::TangentCircle",
+]
+tests = ["crates/ogeom-math/src/conic.rs"]
+
+[[capability]]
+id = "algo.medial-axis"
+title = "The medial axis of a planar region"
+crate = "ogeom-algo"
+verdict = "absent"
+claims = ["MAT_*", "MAT2d_*", "BRepMAT2d_*"]
+plan = "docs/PLAN.md §J (J1)"
+
+[[capability]]
+id = "mesh.hatching"
+title = "Hatching faces: iso and free-direction line families clipped to the trim"
+crate = "ogeom-mesh"
+verdict = "covered"
+claims = ["Geom2dHatch_*", "HatchGen_*", "Hatch_*"]
+symbols = ["ogeom_mesh::hatch_face", "ogeom_hlr::iso_curves"]
+tests = ["crates/ogeom/tests/hatch.rs"]
+
+[[capability]]
+id = "io.step"
+title = "STEP, both directions: shapes, assemblies, colours, validation properties, semantic and presentation PMI"
+crate = "ogeom-io"
+verdict = "covered"
+claims = [
+    "STEPControl_*", "STEPCAFControl_*", "STEPConstruct_*", "STEPEdit",
+    "STEPEdit_*", "STEPSelections_*", "StepToTopoDS_*", "StepToGeom",
+    "GeomToStep_*", "TopoDSToStep", "TopoDSToStep_*", "StepData_*",
+    "StepFile_*", "StepSelect_*", "APIHeaderSection_*", "HeaderSection",
+    "HeaderSection_*", "RWHeaderSection", "RWHeaderSection_*",
+    "STEPConstruct", "StepData", "StepToTopoDS", "step.tab",
+    "Units", "Units_*", "UnitsAPI", "UnitsAPI_*",
+    "UnitsMethods", "UnitsMethods_*",
+]
+symbols = ["ogeom_io::read_step", "ogeom_io::write_step", "ogeom_io::StepImport", "ogeom_io::StepReport"]
+tests = [
+    "crates/ogeom/tests/exchange.rs",
+    "crates/ogeom/tests/imported_corpus.rs",
+    "crates/ogeom/tests/assembly_corpus.rs",
+    "crates/ogeom/tests/pmi_corpus.rs",
+]
+
+[[capability]]
+id = "io.iges"
+title = "IGES, both directions"
+crate = "ogeom-io"
+verdict = "absent"
+claims = [
+    "IGESControl_*", "IGESCAFControl_*", "IGESToBRep_*", "IGESData_*",
+    "IGESSelect", "IGESSelect_*", "IGESConvGeom", "IGESConvGeom_*",
+    "IGESFile_*", "IGESCAFControl", "IGESData", "IGESToBRep",
+    "BRepToIGES_*", "BRepToIGESBRep_*", "GeomToIGES_*", "Geom2dToIGES_*",
+]
+plan = "docs/PLAN.md §F (F2)"
+
+[[capability]]
+id = "io.exchange-framework"
+title = "The exchange session framework: interface models, transfer processes, selections, work sessions"
+crate = "ogeom-io"
+verdict = "divergent"
+reasoning = """The reference decouples file model from transfer through a \
+session framework — Interface models, Transfer processes and actors, \
+IFSelect work sessions — largely so many formats and an interactive shell \
+can share one machinery. Readers here parse the file model and build the \
+document directly; what a session would report lives in the returned \
+reports, and there is no interactive shell to serve. The capability the \
+framework delivers to an application — read the file, know what happened — \
+is the readers' contract."""
+claims = [
+    "Interface_*", "Transfer_*", "TransferBRep", "TransferBRep_*",
+    "XSControl", "XSControl_*", "XSAlgo", "XSAlgo_*", "IFGraph_*",
+    "IFSelect", "IFSelect_*", "MoniTool_*",
+]
+
+[[capability]]
+id = "io.vrml"
+title = "VRML scenes"
+crate = "ogeom-io"
+verdict = "partial"
+restriction = """Writing works and is round-trip-checked by parsing what was \
+written. Reading arbitrary VRML files — the reference's VrmlData, a legacy \
+viewer-format importer — is absent: files authored by other tools have no \
+entry point. It joins the queue behind IGES if legacy scene import ever \
+matters; nothing else depends on it."""
+claims = ["Vrml", "Vrml_*", "VrmlAPI", "VrmlAPI_*", "VrmlConverter_*", "VrmlData_*"]
+symbols = ["ogeom_io::write_vrml"]
+tests = ["crates/ogeom/tests/exchange.rs"]
+
+[[capability]]
+id = "io.mesh-formats"
+title = "The mesh exchange formats: STL, OBJ, PLY, glTF/GLB, 3MF, with welding on import"
+crate = "ogeom-io"
+verdict = "covered"
+claims = ["RWGltf_*", "RWObj_*", "RWPly_*", "RWStl", "RWStl_*", "RWMesh_*", "StlAPI", "StlAPI_*", "DE_*", "DEBRepCascade_*", "DEXCAFCascade_*", "RWMesh", "RWObj"]
+symbols = [
+    "ogeom_io::read_gltf", "ogeom_io::read_glb", "ogeom_io::read_obj",
+    "ogeom_io::read_ply", "ogeom_io::write_3mf", "ogeom_io::ImportedMesh",
+    "ogeom_io::ExportMesh",
+]
+tests = ["crates/ogeom/tests/gltf_reading.rs", "crates/ogeom/tests/exchange.rs"]
+
+[[capability]]
+id = "doc.colour-values"
+title = "Colour values and their names"
+crate = "ogeom-doc"
+verdict = "covered"
+claims = ["Quantity_Color", "Quantity_ColorRGBA", "Quantity_NameOfColor", "Quantity_TypeOfColor"]
+symbols = ["ogeom_doc::Colour"]
+tests = ["crates/ogeom/tests/exchange.rs"]
+
+[[capability]]
+id = "doc.time-types"
+title = "Dates and periods"
+crate = "ogeom-doc"
+verdict = "n/a"
+claims = ["Quantity_Date", "Quantity_Period", "Quantity_DateDefinitionError", "Quantity_PeriodDefinitionError"]
+reasoning = """Time types are the standard library's; the one place the \
+exchange layer writes a timestamp it formats a string. A kernel-owned date \
+class would duplicate std::time to no end."""
+
+[[capability]]
+id = "math.expressions"
+title = "A symbolic expression interpreter"
+crate = "ogeom-math"
+verdict = "n/a"
+claims = ["Expr", "Expr_*", "ExprIntrp", "ExprIntrp_*"]
+reasoning = """A symbolic algebra layer serves parametric applications — \
+dimension formulas, feature trees — not the geometry kernel; nothing in the \
+modelling pipeline evaluates an expression tree. An application wanting \
+formulas brings its own interpreter, as the consumers surveyed do."""
+
+[[capability]]
+id = "fillet.bitangent"
+title = "Bi-tangent blend construction"
+crate = "ogeom-fillet"
+verdict = "divergent"
+reasoning = """Subsumed, per the settled decision in docs/PLAN.md: the 2D \
+repertoire carries bi-tangency in the plane and the blend family's own \
+envelope carries it in space, so a separate bi-tangent constructor would \
+be a third spelling of two existing ones."""
+claims = ["BiTgte_*"]
+
+[[capability]]
+id = "mesh.shape-wrapping"
+title = "Wrapping triangulations and point clouds as shapes"
+crate = "ogeom-mesh"
+verdict = "n/a"
+claims = ["BRepBuilderAPI_MakeShapeOnMesh", "BRepLib_PointCloudShape", "ShapeConstruct_MakeTriangulation", "BRepPreviewAPI_MakeBox"]
+reasoning = """Faces whose geometry is a triangle set, point-cloud stand-ins \
+and preview boxes exist to feed viewers progressively; a viewer consumes the \
+triangulation directly here, and B-rep recovery from meshes is deliberately \
+out of scope (docs/SCOPE.md; outside/crates/ogeom-reverse)."""
+
+[[capability]]
+id = "offset.middle-path"
+title = "Extracting the middle path of a pipe-like solid"
+crate = "ogeom-offset"
+verdict = "unreviewed"
+claims = ["BRepOffsetAPI_MiddlePath"]

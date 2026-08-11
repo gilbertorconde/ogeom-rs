@@ -15,38 +15,44 @@ per package.
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 57 |
-| `partial` | 7 |
-| `absent` | 3 |
-| `divergent` | 6 |
-| `n/a` | 2 |
+| `covered` | 67 |
+| `partial` | 10 |
+| `absent` | 5 |
+| `divergent` | 9 |
+| `n/a` | 5 |
+| `unreviewed` | 1 |
 
-2704 reference headers in the reviewable pool; 1188 claimed by 75 capabilities, 1516 awaiting a claim. Ratchet: `unreviewed_max = 5`.
+2704 reference headers in the reviewable pool; 2704 claimed by 97 capabilities, 0 awaiting a claim. Ratchet: `unreviewed_max = 1`.
 
 ## Capabilities
 
 ### ogeom-algo
 
+- **algo.bounds** — Guaranteed bounding boxes, axis-aligned and oriented, for curves, surfaces and shapes · `covered` · 16 headers claimed
 - **algo.builders** — Building topology by hand: vertices, edges, wires, faces, shells, solids · `covered` · 35 headers claimed
-- **algo.classification** — Classifying a point against a solid or a face: in, out, or on, exactly · `covered` · 13 headers claimed
-- **algo.curve-sampling** — Sampling curves: by count, by spacing, by deflection, by abscissa · `covered` · 11 headers claimed
-- **algo.fitting** — Interpolating and approximating points with B-splines, curves and surfaces · `covered` · 3 headers claimed
-- **algo.global-properties** — Volume, area, mass, centroid and principal moments of shapes · `covered` · 11 headers claimed
+- **algo.classification** — Classifying a point against a solid or a face: in, out, or on, exactly · `covered` · 22 headers claimed
+- **algo.curve-sampling** — Sampling curves: by count, by spacing, by deflection, by abscissa · `covered` · 14 headers claimed
+- **algo.fitting** — Interpolating and approximating points with B-splines, curves and surfaces · `covered` · 82 headers claimed
+- **algo.global-properties** — Volume, area, mass, centroid and principal moments of shapes · `covered` · 24 headers claimed
 - **algo.history** — Every operation emits history: what was generated, modified, deleted · `covered` · 1 header claimed
+- **algo.medial-axis** — The medial axis of a planar region · `absent` · 18 headers claimed
+  - *owned by:* docs/PLAN.md §J (J1)
 - **algo.nurbs-conversion** — Converting a shape's geometry to NURBS form · `partial` · 2 headers claimed
   - *restriction:* `to_nurbs` converts what has a closed NURBS form and refuses by name what does not — a helix has no exact NURBS representation, and the refusal is pinned so it cannot reach an exchange writer as a silent approximation (docs/PLAN.md, Decisions).
 - **algo.place-copy** — Copying and transforming shapes, rigidly or generally, sharing what can be shared · `covered` · 10 headers claimed
-- **algo.point-projection** — Projecting a point onto a curve or a surface, nearest first, all minima found · `covered` · 25 headers claimed
-- **algo.primitives** — The primitive solids: box, wedge, cylinder, cone, sphere, torus, half-space, prism, revolution · `covered` · 12 headers claimed
-- **algo.sewing** — Sewing faces into shells along coincident edges, with spatial acceleration · `covered` · 9 headers claimed
+- **algo.point-projection** — Projecting a point onto a curve or a surface, nearest first, all minima found · `covered` · 26 headers claimed
+- **algo.primitives** — The primitive solids: box, wedge, cylinder, cone, sphere, torus, half-space, prism, revolution · `covered` · 23 headers claimed
+- **algo.sewing** — Sewing faces into shells along coincident edges, with spatial acceleration · `covered` · 11 headers claimed
 - **algo.shape-distance** — Distance, proximity and overlap between whole shapes, and self-intersection · `covered` · 18 headers claimed
+- **algo.spatial-acceleration** — Generic bounding-volume hierarchies · `divergent` · 33 headers claimed
+  - *reasoning:* Acceleration structures here are internal to the algorithms that need them — sewing's cell filter, the classifier's bounds, the distance walk's pruning — rather than a public generic BVH container library. The one consumer that wants a standing BVH over triangles is picking, which is outside the kernel (outside/crates/ogeom-select carries it). If a kernel algorithm ever needs a shared BVH, promoting select's is the move.
 - **algo.validity** — Diagnosing a shape's validity, by entity, with named problems · `covered` · 12 headers claimed
 
 ### ogeom-bool
 
-- **bool.booleans** — The boolean operations: cut, fuse, common, section and split, exact and fuzzy, with argument checking · `covered` · 90 headers claimed
+- **bool.booleans** — The boolean operations: cut, fuse, common, section and split, exact and fuzzy, with argument checking · `covered` · 99 headers claimed
 - **bool.cells** — The cells builder: arbitrary take/remove over the fused arrangement · `covered` · 1 header claimed
-- **bool.defeaturing** — Removing a set of faces from a solid by extending and re-intersecting its neighbours · `absent` · 1 header claimed
+- **bool.defeaturing** — Removing a set of faces from a solid by extending and re-intersecting its neighbours · `absent` · 2 headers claimed
   - *owned by:* docs/PLAN.md §H (H1)
 - **bool.glue** — Gluing shapes along known-coincident boundaries · `divergent` · 1 header claimed
   - *reasoning:* Subsumed, and recorded as a settled decision in docs/PLAN.md: the boolean's same-domain unification already skips nothing it needs and unifies what glue would, so a separate glue mode would be a second spelling of the fuse with a faster wrong answer available. MakeConnected's job — conformal multi-body assembly — falls out of the fuse plus history.
@@ -63,29 +69,39 @@ per package.
 - **doc.appearance** — Colours, layers, materials and textures, per shape and per sub-shape, with inheritance resolved · `covered` · 18 headers claimed
 - **doc.application-bootstrap** — The OCAF application object the exchange document hangs from · `n/a` · 1 header claimed
   - *reasoning:* ogeom-doc is deliberately not a label-and-attribute tree, so there is no framework application to bootstrap; a Document is constructed like any other value. The exchange-document capability itself (XCAFDoc) is in scope and audited separately.
+- **doc.colour-values** — Colour values and their names · `covered` · 4 headers claimed
 - **doc.pmi** — Semantic PMI: dimensions, tolerances, datums, datum targets — and their presentation · `covered` · 30 headers claimed
-- **doc.product-structure** — Products, occurrences and instances with placements: the assembly tree · `covered` · 12 headers claimed
+- **doc.product-structure** — Products, occurrences and instances with placements: the assembly tree · `covered` · 14 headers claimed
 - **doc.properties** — Names, user properties, validation properties, lengths and centroids to check a transfer by · `covered` · 5 headers claimed
-- **doc.saved-views** — Saved views and standalone note objects in the exchange document · `absent` · 7 headers claimed
+- **doc.saved-views** — Saved views and standalone note objects in the exchange document · `absent` · 10 headers claimed
   - *owned by:* docs/PLAN.md §E (E3)
+- **doc.time-types** — Dates and periods · `n/a` · 4 headers claimed
+  - *reasoning:* Time types are the standard library's; the one place the exchange layer writes a timestamp it formats a string. A kernel-owned date class would duplicate std::time to no end.
 
 ### ogeom-fillet
 
+- **fillet.bitangent** — Bi-tangent blend construction · `divergent` · 4 headers claimed
+  - *reasoning:* Subsumed, per the settled decision in docs/PLAN.md: the 2D repertoire carries bi-tangency in the plane and the blend family's own envelope carries it in space, so a separate bi-tangent constructor would be a third spelling of two existing ones.
 - **fillet.chamfers** — Chamfering edges: symmetric, two-distance, distance-and-angle · `covered` · 1 header claimed
-- **fillet.corners-2d** — Filleting and chamfering the corners of planar wires · `covered` · 8 headers claimed
-- **fillet.edge-blends** — Blending edges: constant and variable radius fillets, rolling-ball, marched where no closed form exists · `partial` · 105 headers claimed
+- **fillet.corners-2d** — Filleting and chamfering the corners of planar wires · `covered` · 19 headers claimed
+- **fillet.edge-blends** — Blending edges: constant and variable radius fillets, rolling-ball, marched where no closed form exists · `partial` · 127 headers claimed
   - *restriction:* Single edges, tangent chains and full rims blend, constant and variable radius, with the marching blend solving the ball's two contact points directly where no closed form exists. What is owed is the corner where three blends meet: docs/PLAN.md §B (B2), blocked on §A (A6) — the boolean's handling of tangency at a vertex of the tool's own patch. The blend of the corner is constructible; its trim against the part is not yet.
 - **fillet.osculating-cache** — Cached osculating surfaces along a blend's tangency curves · `divergent` · 1 header claimed
   - *reasoning:* An implementation detail of the reference's blend pipeline: it caches osculating approximations to march against. The marching blend here solves the ball's two contact points directly at each section (ogeom-fillet's march module), so there is no cache to keep coherent.
 
 ### ogeom-geom
 
-- **geom.adaptors** — Evaluating topology as geometry: an edge's curve and a face's surface, placed · `covered` · 4 headers claimed
-- **geom.curves-2d** — Parametric plane curves, the pcurve vocabulary · `covered` · 15 headers claimed
-- **geom.curves-3d** — Parametric space curves: lines, conics, Bézier, B-spline, trimmed, offset · `covered` · 15 headers claimed
+- **geom.adaptors** — Evaluating topology as geometry: an edge's curve and a face's surface, placed · `covered` · 22 headers claimed
+- **geom.conversion** — Converting between curve and surface forms: to B-spline, to Bézier segments, degree elevation · `covered` · 40 headers claimed
+- **geom.curves-2d** — Parametric plane curves, the pcurve vocabulary · `covered` · 18 headers claimed
+- **geom.curves-3d** — Parametric space curves: lines, conics, Bézier, B-spline, trimmed, offset · `covered` · 21 headers claimed
+- **geom.extension** — Extending curves and surfaces beyond their domains · `partial` · 13 headers claimed
+  - *restriction:* An analytic surface's window widens without changing the carrier (`widened_to_hold`, which the reconstruction work proved out). A B-spline's genuine extension — new geometry continuing the old, which the reference's GeomLib_ExtendSurfByLength does — is absent, and it is exactly what H1's neighbour-extension step (docs/PLAN.md §H) will need on spline faces. The rest of GeomLib's grab bag — normal estimation, closure tests, axis mirroring — lives on the Surface and Curve traits.
 - **geom.handle-wrappers** — Geometry-layer wrappers for points, vectors, placements and transforms · `divergent` · 16 headers claimed
   - *reasoning:* The reference wraps every gp value in a reference-counted handle class so geometry can sit in documents. Here geometry lives in shared arenas keyed by id (docs/DATA_MODEL.md), and points, vectors and placements are plain values — a second, handle-shaped copy of the gp vocabulary would exist only to be a different allocation discipline. The capability those wrappers deliver is the arena's.
-- **geom.surfaces** — Parametric surfaces: planes, quadrics, swept, Bézier, B-spline, trimmed, offset · `covered` · 15 headers claimed
+- **geom.local-properties** — Local properties along curves and across surfaces: tangent, normal, curvature · `partial` · 30 headers claimed
+  - *restriction:* Curve-side interrogation exists: point, derivatives, tangent, curvature (`Curve3d::curvature_at`). Surface-side, first and second derivatives and the normal exist, but principal curvatures and directions — what curvature display, zebra analysis and the reference's SLProps answer — are not exposed as an API; a caller gets the second fundamental form's ingredients and assembles it alone. The gap is an interrogation surface, not missing mathematics, and any viewer wanting a curvature comb will ask for it.
+- **geom.surfaces** — Parametric surfaces: planes, quadrics, swept, Bézier, B-spline, trimmed, offset · `covered` · 26 headers claimed
 
 ### ogeom-heal
 
@@ -95,7 +111,7 @@ per package.
   - *restriction:* Baking a transform into geometry is here (`baked_shape`, which the boolean requires before accepting a scaled placement). The rest of the family — swept-to-elementary, whole-shape B-spline conversion, and the degree/knot restriction an export format with limits demands — is not, and becomes necessary with the IGES writer (docs/PLAN.md F2).
 - **heal.fix-shape** — Fixing broken shapes: wires, faces, shells, solids, free bounds, small features · `partial` · 35 headers claimed
   - *restriction:* What exists: reanchoring periodic rings, sewing, validity diagnosis, and the fixed heal sequence the STEP reader applies inline for what the corpus exhibits. What does not: a standalone fix-anything entry point taking an arbitrary broken shape — wire reordering, small-face and small-solid removal, ComposeShell's face-across-a-patch-grid rebuild. The honest statement is that healing here is measured by the imported corpus rather than claimed in general, and a file the corpus does not resemble may need fixes with no entry point yet.
-- **heal.same-parameter** — Diagnosing and repairing the same-parameter law between a curve and its pcurves · `covered` · 8 headers claimed
+- **heal.same-parameter** — Diagnosing and repairing the same-parameter law between a curve and its pcurves · `covered` · 26 headers claimed
 - **heal.scripted-pipeline** — Resource-file-driven sequences of healing operators · `divergent` · 11 headers claimed
   - *reasoning:* The job — run a heal sequence on import — exists and is done with a fixed inline sequence in the exchange readers, measured by the corpus. A pipeline scripted from resource files is configuration the applications that need it can build from the same functions; the kernel keeping a config-file interpreter would be an application affordance.
 - **heal.status-reporting** — Statuses, messages and traversal support for the healing pipeline · `divergent` · 7 headers claimed
@@ -107,46 +123,64 @@ per package.
 
 ### ogeom-hlr
 
-- **hlr.projection** — Projecting a model into a view with visibility classified: hidden line removal, exact and polygonal · `covered` · 61 headers claimed
+- **hlr.projection** — Projecting a model into a view with visibility classified: hidden line removal, exact and polygonal · `covered` · 77 headers claimed
 
 ### ogeom-intersect
 
 - **intersect.analytic-sections** — Closed-form intersections of planes and quadrics · `covered` · 8 headers claimed
-- **intersect.curve-curve** — Intersecting two curves, in the plane and in space: crossings, tangencies, overlaps · `covered` · 7 headers claimed
-- **intersect.curve-surface** — Intersecting a curve with a surface: piercings and lying segments, with transitions · `covered` · 6 headers claimed
+- **intersect.curve-curve** — Intersecting two curves, in the plane and in space: crossings, tangencies, overlaps · `covered` · 26 headers claimed
+- **intersect.curve-surface** — Intersecting a curve with a surface: piercings and lying segments, with transitions · `covered` · 7 headers claimed
 - **intersect.extrema** — Extrema between two curves, a curve and a surface, or two surfaces · `covered` · 28 headers claimed
-- **intersect.surface-surface-march** — The general surface/surface intersection: seeding, marching, branch assembly, approximation · `covered` · 56 headers claimed
+- **intersect.surface-surface-march** — The general surface/surface intersection: seeding, marching, branch assembly, approximation · `covered` · 82 headers claimed
 
 ### ogeom-io
 
-- **io.native-format** — The native shape interchange format, versioned, with location and triangulation sets · `covered` · 5 headers claimed
+- **io.exchange-framework** — The exchange session framework: interface models, transfer processes, selections, work sessions · `divergent` · 215 headers claimed
+  - *reasoning:* The reference decouples file model from transfer through a session framework — Interface models, Transfer processes and actors, IFSelect work sessions — largely so many formats and an interactive shell can share one machinery. Readers here parse the file model and build the document directly; what a session would report lives in the returned reports, and there is no interactive shell to serve. The capability the framework delivers to an application — read the file, know what happened — is the readers' contract.
+- **io.iges** — IGES, both directions · `absent` · 128 headers claimed
+  - *owned by:* docs/PLAN.md §F (F2)
+- **io.mesh-formats** — The mesh exchange formats: STL, OBJ, PLY, glTF/GLB, 3MF, with welding on import · `covered` · 69 headers claimed
+- **io.native-format** — The native shape interchange format, versioned, with location and triangulation sets · `covered` · 24 headers claimed
+- **io.step** — STEP, both directions: shapes, assemblies, colours, validation properties, semantic and presentation PMI · `covered` · 211 headers claimed
+- **io.vrml** — VRML scenes · `partial` · 102 headers claimed
+  - *restriction:* Writing works and is round-trip-checked by parsing what was written. Reading arbitrary VRML files — the reference's VrmlData, a legacy viewer-format importer — is absent: files authored by other tools have no entry point. It joins the queue behind IGES if legacy scene import ever matters; nothing else depends on it.
 
 ### ogeom-math
 
 - **math.analytic-carriers** — The analytic curve and surface carriers: lines, conics, quadrics · `covered` · 15 headers claimed
-- **math.equation-solving** — Roots and minima of functions and systems: Newton, Brent, bisection, polynomial roots · `partial` · 28 headers claimed
+- **math.bspline-basis** — The B-spline basis: knots, evaluation, derivatives, insertion, elevation, splitting · `covered` · 14 headers claimed
+- **math.curve-constructors** — Constructing curves from constraints: through points, from centre and radius, trimmed arcs · `covered` · 59 headers claimed
+- **math.elementary-evaluation** — Evaluating and parameterizing the elementary curves and surfaces in closed form · `covered` · 2 headers claimed
+- **math.equation-solving** — Roots and minima of functions and systems: Newton, Brent, bisection, polynomial roots · `partial` · 31 headers claimed
   - *restriction:* Local methods only. The reference also ships global optimisers (math_GlobOptMin, math_PSO); consumers here seed local solves from coarse parameter scans instead, which the extrema and projection pipelines do explicitly. A case needing a true global optimum with no seedable structure has not arisen; if one does, this is the row to reopen.
+- **math.expressions** — A symbolic expression interpreter · `n/a` · 68 headers claimed
+  - *reasoning:* A symbolic algebra layer serves parametric applications — dimension formulas, feature trees — not the geometry kernel; nothing in the modelling pipeline evaluates an expression tree. An application wanting formulas brings its own interpreter, as the consumers surveyed do.
 - **math.linear-algebra** — Dense and sparse linear systems, least squares, eigenvalues · `divergent` · 16 headers claimed
   - *reasoning:* Dense linear algebra is nalgebra's, on purpose: the workspace is generic over RealField so extended-precision scalars can be swapped in (docs/DATA_MODEL.md), and reimplementing SVD/LU under that constraint buys nothing but bugs. What is ours is what the reference lacks a direct twin for: the sparse matrix and conjugate-gradient path the fitting pipeline uses (ogeom_math::SparseMatrix, ogeom_math::least_squares_cgnr).
 - **math.primitives** — Points, vectors, directions and frames, in the plane and in space · `covered` · 17 headers claimed
 - **math.quadrature** — Numerical integration · `partial` · 7 headers claimed
   - *restriction:* Fixed-order Gauss–Legendre only. No Gauss–Kronrod pairs, so integration error is controlled by choosing the order from the integrand's degree (exact for the polynomial cases mass properties meet) rather than estimated adaptively. An integrand that needs adaptive subdivision has no entry point yet.
+- **math.tangency-constructions** — 2D tangency constructions: circles and lines tangent to points, lines and circles · `covered` · 58 headers claimed
 - **math.transforms** — Rigid and general transforms, quaternions, and their interpolation · `covered` · 12 headers claimed
 
 ### ogeom-mesh
 
 - **mesh.editing** — Editing triangulations: connectivity, welding, decimation, boundary loops · `covered` · 8 headers claimed
-- **mesh.tessellation** — Triangulating shapes to a stated deflection, deterministically, in parallel · `covered` · 60 headers claimed
+- **mesh.hatching** — Hatching faces: iso and free-direction line families clipped to the trim · `covered` · 20 headers claimed
+- **mesh.shape-wrapping** — Wrapping triangulations and point clouds as shapes · `n/a` · 4 headers claimed
+  - *reasoning:* Faces whose geometry is a triangle set, point-cloud stand-ins and preview boxes exist to feed viewers progressively; a viewer consumes the triangulation directly here, and B-rep recovery from meshes is deliberately out of scope (docs/SCOPE.md; outside/crates/ogeom-reverse).
+- **mesh.tessellation** — Triangulating shapes to a stated deflection, deterministically, in parallel · `covered` · 91 headers claimed
 
 ### ogeom-offset
 
-- **offset.draft** — Drafting faces about a neutral plane for mould release · `covered` · 2 headers claimed
-- **offset.filling** — Filling a boundary with a face: the plate surface · `covered` · 10 headers claimed
-- **offset.form-features** — The form features: prism, revolution, rib and slot against a base · `covered` · 16 headers claimed
+- **offset.draft** — Drafting faces about a neutral plane for mould release · `covered` · 8 headers claimed
+- **offset.filling** — Filling a boundary with a face: the plate surface · `covered` · 32 headers claimed
+- **offset.form-features** — The form features: prism, revolution, rib and slot against a base · `covered` · 39 headers claimed
 - **offset.loft** — Lofting through sections, ruled or smoothed · `covered` · 1 header claimed
+- **offset.middle-path** — Extracting the middle path of a pipe-like solid · `unreviewed` · 1 header claimed
 - **offset.projection** — Projecting wires normally onto faces, pcurves riding along · `covered` · 2 headers claimed
 - **offset.shell-thicken** — Offsetting shapes and thickening shells into solids · `covered` · 16 headers claimed
-- **offset.sweeps** — Sweeping profiles along spines: pipes, pipe shells, evolved shapes, the frame laws · `covered` · 105 headers claimed
+- **offset.sweeps** — Sweeping profiles along spines: pipes, pipe shells, evolved shapes, the frame laws · `covered` · 120 headers claimed
 - **offset.wire-offset** — Offsetting planar wires, with the join styles · `covered` · 1 header claimed
 
 ### ogeom-topo
