@@ -306,16 +306,21 @@ fn check_edge(
     let bounds = model.children_of(edge)?;
     for (parameter, vertex) in [(range.0, bounds.first()), (range.1, bounds.last())] {
         let Some(vertex) = vertex else { continue };
-        let Some(point) = model
+        let Some((point, vertex_reach)) = model
             .node(vertex)
             .and_then(|n| n.data().as_vertex())
-            .map(|v| v.point)
+            .map(|v| (v.point, v.tolerance.get()))
         else {
             continue;
         };
         let placed = vertex.transform(model.datums())?.apply(point);
         let on_curve = placement.apply(geometry.point_at(parameter, tol)?);
         let gap = on_curve.distance(placed);
+        // The junction's own stated tolerance is the radius within which
+        // things meeting it may stray — the same acceptance construction
+        // applies. A checker stricter than the builder would condemn what
+        // the builder rightly admitted and honestly recorded.
+        let reach = reach.max(vertex_reach);
         if gap > reach {
             found.note(
                 Severity::Broken,

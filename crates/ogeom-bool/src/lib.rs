@@ -2487,6 +2487,37 @@ fn assemble_result(
     let sewn = sew(model, &faces, tol)?;
     for shell in &sewn.shells {
         if !is_shell_closed(model, shell)? {
+            if std::env::var_os("OGEOM_ARRANGE_DEBUG").is_some() {
+                use ogeom_geom::Curve3d as _;
+                eprintln!(
+                    "== open shell: {} faces, {} joins ==",
+                    faces.len(),
+                    sewn.joined
+                );
+                for edge in ogeom_topo::explore_unique(model, shell, ShapeType::Edge)? {
+                    let users = ogeom_topo::explore(model, shell, Filter::OfType(ShapeType::Face))?
+                        .iter()
+                        .filter(|f| {
+                            ogeom_topo::explore_unique(model, f, ShapeType::Edge)
+                                .map(|es| es.iter().any(|e2| e2.node() == edge.node()))
+                                .unwrap_or(false)
+                        })
+                        .count();
+                    if users == 1
+                        && let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge())
+                        && let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) =
+                            data.curve3d()
+                        && let Some(g) = model.geometry().curve(*curve)
+                    {
+                        let a = g.point_at(range.0, tol)?;
+                        let b = g.point_at(range.1, tol)?;
+                        eprintln!(
+                            "  free edge {:?}: {a:?} -> {b:?}",
+                            core::mem::discriminant(g)
+                        );
+                    }
+                }
+            }
             ogeom_bail!(
                 NotDone,
                 "the kept pieces did not close into a shell; the configuration \

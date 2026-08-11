@@ -166,8 +166,18 @@ Measured on a cylinder square on a plane against the torus's own arithmetic,
 and on one meeting a plane at twenty degrees — which has no closed form, which
 is why it needs marching — against the ball's own definition at every station.
 
-**B2 — corners where blends meet.** *Still owed, and now for a different
-reason than this entry gave.* The family is right: one blend running out at a
+**B2 — corners where blends meet.** **Done for the three-blend vertex**, the
+family's centre of gravity: three sequential fillets at a box corner —
+which chain cleanly, an assumed impossibility that wasn't — take the A5
+tool, and `b2_three_fillets_and_the_corner_tool_round_the_vertex` measures
+the rounded vertex against a closed form derived by inclusion–exclusion:
+within the corner cube every fillet prism's removal lies inside the
+spike's, so V = 10³ − 3(1−π/4)r²(10−r) − r³ + πr³/6. What remains of the
+family is the two-blend meeting and the N>3 setback vertex, neither of
+which the corner construction covers and neither of which is blocked by
+anything below it any more.
+
+*The original entry, kept for its analysis:* The family is right: one blend running out at a
 face's boundary, two meeting — resolved by intersecting them or by extending
 both to a shared end — three, which is the setback vertex blend, and more,
 which no single construction covers.
@@ -214,19 +224,17 @@ than to blending:
 > chart an arc that wraps through the south — the split points are now the
 > *surfaces'* chart degeneracies, wherever the trim reaches.
 
-What remains of B2 after A6: the three-fillet corner accepts the tool all
-the way through arrangement, classification and rebuild — two further
-welds made that true: a section stop landing at a boundary edge's own end
-snaps to the vertex's exact parameter on the section, and the rebuild's
-vertex pool welds within a hundred confusions, recording on the vertex
-every weld wider than one, because a boundary curve that is itself a
-fitted intersection from an earlier boolean honestly carries microns of
-slop. What is left is one closure: the kept pieces do not seam into a
-shell, and the boolean now says so *by name* — "beyond what the boolean
-currently resolves" — which is the rules' floor. The corner against a
-plain box answers and is measured; the corner against its own three
-fillets refuses honestly. Closing the refusal is the remaining B2 work,
-and the reproduction is three fillets on a box corner plus the A5 tool.
+The closure that finished it, after A6 and the two stop-welds: sewing and
+validation now honour stated tolerances end to end. Edge fingerprints
+carry the widest tolerance their edge and vertices state and compare
+within it; vertex merging welds within stated reach and the survivor
+widens to answer for what it absorbed; and the validity check accepts a
+curve end within its *vertex's* tolerance, because that is the same
+acceptance construction applies — a checker stricter than the builder
+condemns what the builder rightly admitted and honestly recorded. The
+principle underneath all three is the data model's: tolerances only
+widen, are recorded where the disagreement was measured, and are then
+*believed*.
 
 Two things were built on the way and stand on their own. `march_blend` (B1)
 is above. And `exact_pcurve` now sees through a **trim**: a trim says *where*

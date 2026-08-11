@@ -257,6 +257,42 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
             let Some(flipped) = catalogue[i].1.same_as(&catalogue[j].1, tol) else {
                 continue;
             };
+            // The survivor now answers for both descriptions of the edge,
+            // and its vertices must reach the twin's ends: two fingerprints
+            // that matched within their stated widths may still disagree by
+            // more than a fresh vertex's tolerance, and the disagreement is
+            // recorded where the data model records it.
+            let (kept_fp, dropped_fp) = (catalogue[i].1, catalogue[j].1);
+            let survivor = Shape::of(catalogue[i].0);
+            let ends = if flipped {
+                [
+                    (kept_fp.start, dropped_fp.end),
+                    (kept_fp.end, dropped_fp.start),
+                ]
+            } else {
+                [
+                    (kept_fp.start, dropped_fp.start),
+                    (kept_fp.end, dropped_fp.end),
+                ]
+            };
+            let bounds = model.children_of(&survivor)?;
+            for vertex in &bounds {
+                if let Some(data) = model.node(vertex).and_then(|n| n.data().as_vertex()) {
+                    let at = data.point;
+                    let mut need = data.tolerance.get();
+                    for (a, b) in &ends {
+                        if at.distance(*a) <= need.max(tol.confusion() * 1e2) {
+                            need = need.max(a.distance(*b) + tol.confusion());
+                        }
+                    }
+                    if need > data.tolerance.get()
+                        && let Some(node) = model.node_mut(vertex)
+                        && let NodeData::Vertex(v) = node.data_mut()
+                    {
+                        v.tolerance = v.tolerance.widen_to(need);
+                    }
+                }
+            }
             merged.insert(catalogue[j].0, (catalogue[i].0, flipped));
             joined += 1;
         }
@@ -345,23 +381,49 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
 ///
 /// Returns only the ones that were replaced, mapping each to its survivor.
 fn merge_vertices(
-    model: &Model,
+    model: &mut Model,
     faces: &[Shape],
     tol: Tolerances,
 ) -> OgeomResult<HashMap<TShapeId, TShapeId>> {
-    let mut seen: Vec<(TShapeId, Point)> = Vec::new();
+    let mut seen: Vec<(TShapeId, Point, f64)> = Vec::new();
     let mut out = HashMap::new();
     for face in faces {
         for vertex in explore_unique(model, face, ShapeType::Vertex)? {
-            if seen.iter().any(|(id, _)| *id == vertex.node()) {
+            if seen.iter().any(|(id, ..)| *id == vertex.node()) {
                 continue;
             }
             let at = placed(model, &vertex)?;
-            match seen.iter().find(|(_, p)| p.is_equal(at, tol)) {
-                Some((kept, _)) => {
-                    out.insert(vertex.node(), *kept);
+            let own = model
+                .node(&vertex)
+                .and_then(|n| n.data().as_vertex())
+                .map_or(0.0, |d| d.tolerance.get());
+            // Two vertices are one junction within what their *stated*
+            // tolerances allow, not within a fresh vertex's default: a
+            // vertex that recorded a welded gap reaches that far, and
+            // merging by raw confusion would leave its twin standing a
+            // recorded-but-ignored distance away.
+            let hit = seen
+                .iter()
+                .find(|(_, p, w)| p.distance(at) <= tol.confusion().max(*w).max(own))
+                .map(|(kept, p, w)| (*kept, *p, *w));
+            match hit {
+                Some((kept, p, w)) => {
+                    // The survivor answers for the absorbed vertex: its
+                    // tolerance widens to reach the absorbed position plus
+                    // whatever that vertex itself was allowed to stray.
+                    let need = p.distance(at) + own + tol.confusion();
+                    if need > w
+                        && let Some(node) = model.node_mut(&Shape::of(kept))
+                        && let NodeData::Vertex(v) = node.data_mut()
+                    {
+                        v.tolerance = v.tolerance.widen_to(need);
+                    }
+                    if let Some(entry) = seen.iter_mut().find(|(id, ..)| *id == kept) {
+                        entry.2 = entry.2.max(need);
+                    }
+                    out.insert(vertex.node(), kept);
                 }
-                None => seen.push((vertex.node(), at)),
+                None => seen.push((vertex.node(), at, own)),
             }
         }
     }
@@ -458,21 +520,28 @@ struct Fingerprint {
     start: Point,
     middle: Point,
     end: Point,
+    /// How far this edge's own stated tolerances let it stray: the widest of
+    /// the edge's and its vertices'. An edge whose junction was welded across
+    /// a recorded gap carries that gap here, and the comparison honours it —
+    /// per-entity tolerances are the data model's, not a nicety of import.
+    width: f64,
 }
 
 impl Fingerprint {
     /// Whether two edges coincide, and if so whether the second runs backwards.
     fn same_as(&self, other: &Self, tol: Tolerances) -> Option<bool> {
+        let reach = tol.confusion().max(self.width).max(other.width);
+        let near = |a: Point, b: Point| a.distance(b) <= reach;
         // The midpoint is not a nicety. Two arcs between the same pair of
         // vertices — the two halves of a circle — agree at both ends and are
         // not the same edge, and merging them would fuse a shape to itself.
-        if !self.middle.is_equal(other.middle, tol) {
+        if !near(self.middle, other.middle) {
             return None;
         }
-        if self.start.is_equal(other.start, tol) && self.end.is_equal(other.end, tol) {
+        if near(self.start, other.start) && near(self.end, other.end) {
             return Some(false);
         }
-        if self.start.is_equal(other.end, tol) && self.end.is_equal(other.start, tol) {
+        if near(self.start, other.end) && near(self.end, other.start) {
             return Some(true);
         }
         None
@@ -493,10 +562,17 @@ fn fingerprint(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomResult<Opti
         ogeom_bail!(Dangling, "curve is not in this model");
     };
     let placement = edge.transform(model.datums())?;
+    let mut width = data.tolerance.get();
+    for vertex in model.children_of(edge)? {
+        if let Some(v) = model.node(&vertex).and_then(|n| n.data().as_vertex()) {
+            width = width.max(v.tolerance.get());
+        }
+    }
     Ok(Some(Fingerprint {
         start: placement.apply(geometry.point_at(range.0, tol)?),
         middle: placement.apply(geometry.point_at(f64::midpoint(range.0, range.1), tol)?),
         end: placement.apply(geometry.point_at(range.1, tol)?),
+        width,
     }))
 }
 

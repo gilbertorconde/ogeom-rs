@@ -160,3 +160,81 @@ fn a_blend_bridges_two_faces_that_share_no_edge() {
         8000.0 + filled
     );
 }
+
+/// B2 — the corner where three blends meet. Three edges of a box are
+/// filleted in sequence at one vertex, and the leftover spike is rounded by
+/// the A5 tool: the corner block less the ball. The result is measured
+/// against a closed form derived independently, by inclusion–exclusion over
+/// the corner cube: within the cube every fillet prism's removal lies inside
+/// the spike's, so the removed volume is three prism runs *outside* the cube
+/// plus the spike itself —
+///
+///   V = 10³ − 3(1 − π/4) r² (10 − r) − r³ + πr³/6
+///
+/// which for r = 3 is 784 + 51.75π. The blend is tangent to everything it
+/// rounds by construction — each contact a chart-degenerate curve or a
+/// vertex of the tool's own patch — and this test is the corner family's
+/// pin: it exercises A6, the tangential set-aside, the degeneracy splits,
+/// and the tolerance-carrying welds at once.
+#[test]
+fn b2_three_fillets_and_the_corner_tool_round_the_vertex() {
+    let mut model = Model::new();
+    let r = 3.0;
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let mut solid = block;
+    for target in [
+        Point::new(10.0, 10.0, 5.0),
+        Point::new(10.0, 5.0, 10.0),
+        Point::new(5.0, 10.0, 10.0),
+    ] {
+        let edge = edge_near(&model, &solid, target);
+        solid = ogeom::fillet::fillet_edge(&mut model, &solid, &edge, r, T)
+            .unwrap()
+            .shape;
+    }
+
+    let at = |p: Point| Frame::new(p, Direction::Z, Direction::X, T).unwrap();
+    let corner = Point::new(10.0 - r, 10.0 - r, 10.0 - r);
+    let cblock = ogeom::algo::make_box(&mut model, at(corner), (r, r, r), T)
+        .unwrap()
+        .shape;
+    let ball = ogeom::algo::make_sphere(&mut model, at(corner), r, T)
+        .unwrap()
+        .shape;
+    let tool = ogeom::boolean::cut(&mut model, &cblock, &ball, T)
+        .unwrap()
+        .shape;
+    let rounded = ogeom::boolean::cut(&mut model, &solid, &tool, T)
+        .unwrap()
+        .shape;
+
+    assert!(
+        ogeom::algo::check(&model, &rounded, T).unwrap().is_valid(),
+        "the rounded corner is a valid solid"
+    );
+    let pi = core::f64::consts::PI;
+    let want =
+        1000.0 - 3.0 * (1.0 - pi / 4.0) * r * r * (10.0 - r) - r * r * r + pi * r * r * r / 6.0;
+    let mut previous = f64::INFINITY;
+    for chord in [1e-3, 1e-4] {
+        let fine = ogeom::mesh::Deflection::with_chord(chord).unwrap();
+        let measured = ogeom::algo::volume_properties(&model, &rounded, fine, T)
+            .unwrap()
+            .mass;
+        let error = (measured - want).abs() / want;
+        assert!(
+            error < previous,
+            "refining the mesh brings the measurement closer: {measured} vs {want}"
+        );
+        // The curved area is three band runs and the octant; the inscribed
+        // deficit at chord δ runs to a few δ/r of the curved volume share.
+        assert!(
+            error < chord * 2.0,
+            "the vertex blend against its closed form at chord {chord}: \
+             {measured} vs {want}"
+        );
+        previous = error;
+    }
+}
