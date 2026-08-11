@@ -6,14 +6,16 @@ A boundary-representation CAD kernel, written from scratch in Rust.
 booleans, blends and chamfers, offsets, shells, sweeps and lofts, healing,
 product structure, 2D drawings with hidden line removal and sections, and
 exchange — STEP in both directions with assemblies, colours and semantic PMI,
-plus the native format, STL, DXF, glTF, OBJ, PLY, VRML and 3MF — are built and
-tested. IGES is not.
+plus the native format, IGES, STL, DXF, glTF, OBJ, PLY, VRML and 3MF — are
+built and tested.
 
-**How complete that is against a real kernel has not been measured.** The
-target is stated in `docs/SCOPE.md`: parity with the reference kernel's
-modelling modules, and nothing else. The audit that checks this against that
-target does not exist yet, so treat the list above as what has been built, not
-as what is required.
+**How complete that is against a real kernel is measured, and gated.** The
+target is `docs/SCOPE.md`: parity with the reference kernel's modelling
+modules, and nothing else. `docs/PARITY.md` audits every public header of
+those modules against 97 named capabilities — every verdict citing symbols
+and tests the build verifies — and `tools/check.sh` fails if the audit and
+the code drift apart. The absences are five, each with a plan entry, and the
+`partial` rows say exactly what is missing.
 
 ## What this is
 
@@ -62,7 +64,7 @@ Every crate listed has working code in it.
 • crates/ogeom-topo        the B-rep data model
 • crates/ogeom-algo        construction, primitives, measurement, classification
 • crates/ogeom-mesh        tessellation
-• crates/ogeom-io          native format, STEP, glTF, STL, DXF, OBJ, PLY, VRML, 3MF
+• crates/ogeom-io          native format, STEP, IGES, glTF, STL, DXF, OBJ, PLY, …
 • crates/ogeom-intersect   curve/curve, curve/surface, surface/surface
 • crates/ogeom-bool        general fuse and the boolean filters
 • crates/ogeom-heal        healing, simplification, upgrading

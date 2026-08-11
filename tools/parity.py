@@ -244,10 +244,11 @@ def cmd_generate(args) -> int:
 # --------------------------------------------------------------------------
 
 def camel_to_express(stem: str) -> str | None:
-    """StepGeom_CartesianPoint -> CARTESIAN_POINT; RWStep* are readers/writers
-    of the same entities and carry no entity of their own."""
+    """StepGeom_CartesianPoint -> CARTESIAN_POINT. RWStep* packages and the
+    IGES Tool* twins are readers/writers of the same entities and carry no
+    entity of their own."""
     pkg, _, name = stem.partition("_")
-    if not name or pkg.startswith("RW"):
+    if not name or pkg.startswith("RW") or name.startswith("Tool"):
         return None
     return re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", name).upper()
 
@@ -269,11 +270,7 @@ def cmd_exchange(args) -> int:
     sources = {
         "C-STEP": ("crates/ogeom-io/src/step/read.rs",
                    "crates/ogeom-io/src/step/write.rs"),
-        "C-IGES": tuple(sorted(
-            os.path.join("crates/ogeom-io/src/iges", f)
-            for f in (os.listdir("crates/ogeom-io/src/iges")
-                      if os.path.isdir("crates/ogeom-io/src/iges") else [])
-            if f.endswith(".rs"))),
+        "C-IGES": ("crates/ogeom-io/src/iges/mod.rs",),
     }
 
     for rule in ("C-STEP", "C-IGES"):

@@ -16,8 +16,8 @@ per package.
 | verdict | capabilities |
 |---|---|
 | `covered` | 67 |
-| `partial` | 10 |
-| `absent` | 5 |
+| `partial` | 11 |
+| `absent` | 4 |
 | `divergent` | 9 |
 | `n/a` | 5 |
 | `unreviewed` | 1 |
@@ -137,8 +137,17 @@ per package.
 
 - **io.exchange-framework** — The exchange session framework: interface models, transfer processes, selections, work sessions · `divergent` · 215 headers claimed
   - *reasoning:* The reference decouples file model from transfer through a session framework — Interface models, Transfer processes and actors, IFSelect work sessions — largely so many formats and an interactive shell can share one machinery. Readers here parse the file model and build the document directly; what a session would report lives in the returned reports, and there is no interactive shell to serve. The capability the framework delivers to an application — read the file, know what happened — is the readers' contract.
-- **io.iges** — IGES, both directions · `absent` · 128 headers claimed
-  - *owned by:* docs/PLAN.md §F (F2)
+- **io.iges** — IGES, both directions: solids as manifold B-rep, surface files sewn, units converted · `partial` · 128 headers claimed
+  - *restriction:* The core entity set reads and writes — 29 entity types, the
+figure `tools/parity.py exchange` regenerates from the module's own table —
+and eight round-trip cases hold it to measured volumes: planes, a periodic
+cylinder wall with its seam, a doubly periodic torus, a seam-only sphere, a
+boolean result, a spline-walled prism through 126/128, and inch-unit
+scaling. Not translated, refused by name: ruled surfaces (118), parametric
+spline surfaces (114), the hyperbola and parabola conic forms, offset
+entities, pcurve-only trimming, annotation and drafting. A face whose wall
+wraps a closed spline surface does not survive either exchange format —
+docs/PLAN.md F5 owns that jointly with STEP.
 - **io.mesh-formats** — The mesh exchange formats: STL, OBJ, PLY, glTF/GLB, 3MF, with welding on import · `covered` · 69 headers claimed
 - **io.native-format** — The native shape interchange format, versioned, with location and triangulation sets · `covered` · 24 headers claimed
 - **io.step** — STEP, both directions: shapes, assemblies, colours, validation properties, semantic and presentation PMI · `covered` · 211 headers claimed

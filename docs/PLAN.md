@@ -315,9 +315,24 @@ block round-trips to a fixed point, byte for byte; a drum and a ball come
 back as a cylinder, a sphere and two degenerate poles; and a file written by
 hand against the specification reads as the square it describes.
 
-**F2 — IGES, both directions.** The record layout is a published standard and
-the entity-to-topology mapping is documented. A week-scale job, staged the
-way STEP was: geometry first, then trimmed surfaces, then assemblies.
+**F2 — IGES, both directions.** **Built**, from the published record layout,
+and held to eight measured round trips: planes, a periodic cylinder wall with
+its seam, a doubly periodic torus, a seam-only sphere whose poles the format
+cannot spell, a boolean result, a spline-walled prism through the rational
+B-spline entities, inch-unit scaling, and a refusal by name. The reader takes
+both kinds of file — manifold solid B-rep objects bottom-up, and the older
+surface files as trimmed faces sewn into shells, solids where they close —
+re-deriving edge ranges on this kernel's own parameterizations exactly as the
+STEP reader does. Twenty-nine entity types translate; the live figure and the
+refused remainder are the parity ledger's `io.iges` row.
+
+Two findings came out of building it that reach past IGES. The exchange
+writers paired both of an edge's vertices with the edge's own placement,
+which quietly welds an instanced vertex — a prism's top corner is its bottom
+corner, moved — to its other placement; both writers now resolve each
+vertex's composed placement. And the fitted-pcurve machinery the STEP reader
+grew is now `ogeom-io`'s shared `pcurves` module, because the second reader
+needed exactly the first one's policy.
 
 **F3 — reading glTF.** **Done.** `read_glb` and `read_gltf`, with the whole
 indirection honoured because a writer chooses it and a reader does not get to
@@ -333,6 +348,17 @@ a Draco payload and a node that is its own descendant, each by name.
 It needed a JSON parser, which is now `ogeom_io::json` — the grammar and
 nothing else, no dependency, written because glTF's structure is JSON and
 `cargo build` still needs a Rust toolchain and nothing more.
+
+**F5 — a closed spline wall through exchange.** Found by measurement while
+building F2, and it is not an IGES problem: a solid whose wall wraps a whole
+closed B-spline surface — a skinned loft around closed sections — does not
+survive *either* format. The wall reads back, the fitted pcurves attach, and
+the trim collapses to a sliver because the projection of the closed rim onto
+the closed chart lands in the wrong period near the seam, where both answers
+are right pointwise and only continuity chooses. The fix is seam-aware
+unwrapping in the shared fitted-pcurve module, seeded from the seam edge's own
+chart column. Until then both readers import such walls wrong-shaped, and the
+IGES row's restriction says so out loud.
 
 **F4 — SAT, X\_T, JT.** Refused for want of public documentation. These are
 proprietary formats whose specifications are not published; implementing them

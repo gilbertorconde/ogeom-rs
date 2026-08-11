@@ -25,13 +25,16 @@
 
 pub mod brep;
 pub mod dxf;
+pub mod iges;
 pub mod json;
 pub mod mesh_formats;
 pub mod native;
+pub(crate) mod pcurves;
 pub mod step;
 pub mod stl;
 pub mod threemf;
 
+pub use iges::{IgesImport, IgesReport, read_iges, write_iges};
 pub use mesh_formats::{
     ExportMesh, ImportedMesh, read_glb, read_gltf, write_glb, write_obj, write_ply,
 };

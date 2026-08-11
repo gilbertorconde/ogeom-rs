@@ -425,8 +425,13 @@ impl Writer<'_> {
             1 => (vertices[0].clone(), vertices[0].clone()),
             _ => (vertices[0].clone(), vertices[vertices.len() - 1].clone()),
         };
-        let from_id = self.vertex(&from, &placement)?;
-        let to_id = self.vertex(&to, &placement)?;
+        // Each vertex's own composed placement, not the edge's: children_of
+        // already folds the edge's chain in, and an instanced vertex adds a
+        // hop of its own that the edge's placement alone would drop.
+        let from_placement = from.transform(self.model.datums())?;
+        let to_placement = to.transform(self.model.datums())?;
+        let from_id = self.vertex(&from, &from_placement)?;
+        let to_id = self.vertex(&to, &to_placement)?;
         let id = self.entity(format!(
             "EDGE_CURVE('',#{from_id},#{to_id},#{curve_id},.T.)"
         ));

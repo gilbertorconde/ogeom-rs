@@ -1370,6 +1370,10 @@ claims = [
     "UnitsMethods", "UnitsMethods_*",
 ]
 symbols = ["ogeom_io::read_step", "ogeom_io::write_step", "ogeom_io::StepImport", "ogeom_io::StepReport"]
+# A capability-level caveat that belongs to the whole exchange layer: a wall
+# wrapping a closed spline surface does not survive either format today —
+# docs/PLAN.md F5. The verdict stays covered because the corpus the format
+# is measured by does not exhibit the case; the F5 row owns it.
 tests = [
     "crates/ogeom/tests/exchange.rs",
     "crates/ogeom/tests/imported_corpus.rs",
@@ -1379,16 +1383,27 @@ tests = [
 
 [[capability]]
 id = "io.iges"
-title = "IGES, both directions"
+title = "IGES, both directions: solids as manifold B-rep, surface files sewn, units converted"
 crate = "ogeom-io"
-verdict = "absent"
+verdict = "partial"
+restriction = """The core entity set reads and writes — 29 entity types, the
+figure `tools/parity.py exchange` regenerates from the module's own table —
+and eight round-trip cases hold it to measured volumes: planes, a periodic
+cylinder wall with its seam, a doubly periodic torus, a seam-only sphere, a
+boolean result, a spline-walled prism through 126/128, and inch-unit
+scaling. Not translated, refused by name: ruled surfaces (118), parametric
+spline surfaces (114), the hyperbola and parabola conic forms, offset
+entities, pcurve-only trimming, annotation and drafting. A face whose wall
+wraps a closed spline surface does not survive either exchange format —
+docs/PLAN.md F5 owns that jointly with STEP."""
 claims = [
     "IGESControl_*", "IGESCAFControl_*", "IGESToBRep_*", "IGESData_*",
     "IGESSelect", "IGESSelect_*", "IGESConvGeom", "IGESConvGeom_*",
     "IGESFile_*", "IGESCAFControl", "IGESData", "IGESToBRep",
     "BRepToIGES_*", "BRepToIGESBRep_*", "GeomToIGES_*", "Geom2dToIGES_*",
 ]
-plan = "docs/PLAN.md §F (F2)"
+symbols = ["ogeom_io::read_iges", "ogeom_io::write_iges", "ogeom_io::IgesImport", "ogeom_io::IgesReport"]
+tests = ["crates/ogeom/tests/iges_roundtrip.rs"]
 
 [[capability]]
 id = "io.exchange-framework"
