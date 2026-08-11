@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""apisurf — profile how an application exercises a CAD kernel's API.
+"""apisurf — read a reference CAD kernel's shape, and how applications use it.
 
-**Analysis tool. Not part of the build, and not a scope-setting instrument.**
+**Analysis tool. Not part of the build.** `scope` derives the parity index that
+`docs/SCOPE.md` defines; `profile` measures usage, which sequences work and
+never sets its bounds.
 
 Given a reference kernel's headers and an application that consumes them, this
 reports which types and members the application actually touches, how often, and
@@ -33,12 +35,23 @@ Two passes:
    and attributed to each candidate; the unambiguous counts are the ones to
    trust.
 
-Usage::
+Two subcommands:
 
-    python3 tools/apisurf/apisurf.py \\
+``profile`` (the original behaviour) — needs libclang and both checkouts::
+
+    python3 tools/apisurf/apisurf.py profile \\
         --reference /path/to/kernel/src \\
         --consumer  /path/to/application \\
         --out docs/api_surface.json
+
+``scope`` — needs only the reference checkout, no libclang. Walks the
+reference's own module and toolkit manifests, applies the triage rules from
+`docs/SCOPE.md`, and emits the parity index every audit row is checked
+against::
+
+    python3 tools/apisurf/apisurf.py scope \\
+        --reference vendor/OCCT \\
+        --out docs/parity/reference-index.tsv
 """
 from __future__ import annotations
 
@@ -51,10 +64,18 @@ import subprocess
 import sys
 import tempfile
 
-try:
-    import clang.cindex as ci
-except ImportError:
-    sys.exit("apisurf needs python-clang: pacman -S python-clang / pip install clang")
+# libclang is imported lazily inside cmd_profile: the scope subcommand is
+# deliberately runnable on a machine with nothing but Python and a checkout.
+ci = None
+
+
+def _need_libclang():
+    global ci
+    try:
+        import clang.cindex as _ci
+    except ImportError:
+        sys.exit("apisurf profile needs python-clang: pacman -S python-clang / pip install clang")
+    ci = _ci
 
 
 # Third-party headers vendored inside the consumer's own tree. Excluding them
@@ -93,6 +114,233 @@ def find_libclang() -> str | None:
             return hits[-1]
     return None
 
+
+# ==========================================================================
+# scope — derive the parity index from the reference tree's own manifests
+# ==========================================================================
+#
+# The primary key of the audit is OUR capabilities, not these headers; this
+# index is the completeness check those capabilities are balanced against.
+# Every rule here has a stable id, materialised on every row it touches, so a
+# rule change shows up in review as a diff naming exactly which headers moved.
+
+IN_SCOPE_MODULES = ("FoundationClasses", "ModelingData", "ModelingAlgorithms",
+                    "DataExchange")
+
+# --- package-level rules --------------------------------------------------
+
+# C-STEP / C-IGES: one class per EXPRESS entity (plus its RW twin). Auditing
+# them one by one is absurd and dropping them loses the coverage number the
+# exchange layer wants, so they collapse to per-package rows whose coverage
+# figure is regenerated from the entity tables in ogeom-io. The *translator*
+# packages (StepToGeom, GeomToStep, IGESToBRep, ...) and the file models
+# (StepData, StepFile, IGESData, IGESFile) are capabilities and stay in the
+# keep pool.
+COLLAPSE_STEP = re.compile(
+    r"^(RWStep[A-Z]\w*|Step(Basic|Geom|Shape|Repr|Visual|DimTol|Element|FEA|"
+    r"Kinematics|AP203|AP209|AP214|AP242))$")
+COLLAPSE_IGES = re.compile(
+    r"^IGES(Basic|Geom|Dimen|Draw|Appli|Defs|Graph|Solid)$")
+
+# R2: generic containers. Rust's generics provide every one of these for free;
+# there is no capability to audit, only monomorphization spelled out by hand.
+R2_CONTAINER_PKGS = frozenset({
+    "NCollection", "TColStd", "TColgp", "TColGeom", "TColGeom2d",
+    "TColQuantity", "TShort", "TCollection",
+})
+
+# R3: operating-system and infrastructure surface. Memory, threads, streams,
+# strings, resources, persistence plumbing — the standard library's job, not a
+# geometry kernel's. The carve-out is cancellable progress, which is a kernel
+# API shape (ogeom-core's Watch) and not an OS abstraction.
+R3_INFRA_PKGS = frozenset({
+    "Standard", "OSD", "Plugin", "Resource", "FSD", "Storage", "StdFail",
+    "Message", "FlexLexer",
+})
+R3_CARVE_OUT = re.compile(r"^Message_Progress")
+
+# R4: the TopOpeBRep* boolean family, superseded *inside the reference* by the
+# BOPAlgo pipeline. Parity with a kernel does not include parity with the
+# parts it keeps only for compatibility.
+R4_SUPERSEDED = re.compile(r"^TopOpeBRep")
+
+# R5: OCAF persistence drivers that ride along inside DataExchange. The
+# exchange *document* (XCAFDoc) is in scope; serializing it through the
+# application framework's Bin/Xml driver stack is the framework's concern.
+R5_OCAF_DRIVERS = frozenset({
+    "BinXCAFDrivers", "BinMXCAFDoc", "XmlXCAFDrivers", "XmlMXCAFDoc",
+})
+
+# --- header-level rule ----------------------------------------------------
+
+# R1: CDL generic instantiations. The reference predates C++ templates in its
+# own dialect; every instantiation got a header whose name chains the
+# arguments together with "Of". Three shapes give it away: a container word
+# before the Of, a The-/My- prefixed segment (the dialect's naming for an
+# algorithm's own internals), or two Ofs chained. What survives is protected
+# by SEMANTIC_OF: names where "...Of..." is English — a surface of revolution,
+# an arc of a circle, a degree of freedom — are capabilities, not
+# instantiations.
+R1_OF = re.compile(r"Of[A-Z]")
+R1_CONTAINER_WORD = re.compile(
+    r"(Array[12]?|List|Map|Sequence|Set|Queue|Stack|Iterator|Tree|Buffer|Row"
+    r"|Column|H?Seq|TSeq|Vector|GlobalNode|Node|Actor|Binder|Hasher)Of[A-Z]")
+R1_THE_MY = re.compile(r"(?:^|_)(?:The|My)[A-Z]|[a-z0-9](?:The|My)[A-Z]")
+SEMANTIC_OF = re.compile(
+    r"(Surface|Arc|Type|Name|Out|Degree|Pair|Couple|Distribution|Energy"
+    r"|Elements|Representation|Centre|Center|Week|Coefficient|Structure"
+    r"|Selector|Axis|Moment)Of[A-Z]")
+
+KIND_RES = (
+    ("enum", re.compile(r"\benum\s+(?:class\s+)?{}\b")),
+    ("class", re.compile(r"\b(?:class|struct)\s+{}\b")),
+    ("alias", re.compile(r"(?:\btypedef\b[^;]*\b{}\s*;|\busing\s+{}\s*=)")),
+)
+
+
+def scope_rows(reference: str) -> list[dict]:
+    """One row per public header of the four in-scope modules."""
+    modules = {}
+    with open(os.path.join(reference, "adm", "MODULES")) as fh:
+        for line in fh:
+            parts = line.split()
+            if parts:
+                modules[parts[0]] = parts[1:]
+    for m in IN_SCOPE_MODULES:
+        if m not in modules:
+            sys.exit(f"module {m} not in {reference}/adm/MODULES")
+
+    rows = []
+    for module in IN_SCOPE_MODULES:
+        for tk in modules[module]:
+            pkg_file = os.path.join(reference, "src", tk, "PACKAGES")
+            if not os.path.exists(pkg_file):
+                sys.exit(f"toolkit {tk} has no PACKAGES file")
+            for pkg in open(pkg_file).read().split():
+                pkgdir = os.path.join(reference, "src", pkg)
+                if not os.path.isdir(pkgdir):
+                    continue
+                for f in sorted(os.listdir(pkgdir)):
+                    if not f.endswith(".hxx"):
+                        continue
+                    stem = f[:-4]
+                    text = open(os.path.join(pkgdir, f), errors="replace").read()
+                    kind = "other"
+                    for k, pat in KIND_RES:
+                        if re.search(pat.pattern.format(stem, stem), text):
+                            kind = k
+                            break
+                    rows.append({
+                        "module": module, "toolkit": tk, "package": pkg,
+                        "header": stem, "kind": kind,
+                        "deprecated": int("Standard_DEPRECATED" in text),
+                    })
+    return rows
+
+
+def triage(rows: list[dict]) -> None:
+    """Assign bucket and rule in place. Order matters: package rules first, so
+    the exchange collapse removes its semantic-Of entity names (SurfaceOf
+    Revolution and friends) before R1 ever sees them."""
+    for r in rows:
+        pkg, stem = r["package"], r["header"]
+        classpart = stem.split("_", 1)[-1]
+        if COLLAPSE_STEP.match(pkg):
+            r["bucket"], r["rule"] = "collapse", "C-STEP"
+        elif COLLAPSE_IGES.match(pkg):
+            r["bucket"], r["rule"] = "collapse", "C-IGES"
+        elif pkg in R2_CONTAINER_PKGS:
+            r["bucket"], r["rule"] = "drop", "R2"
+        elif pkg in R3_INFRA_PKGS:
+            if R3_CARVE_OUT.match(stem):
+                r["bucket"], r["rule"] = "keep", "V-PROGRESS"
+            else:
+                r["bucket"], r["rule"] = "drop", "R3"
+        elif R4_SUPERSEDED.match(pkg):
+            r["bucket"], r["rule"] = "drop", "R4"
+        elif pkg in R5_OCAF_DRIVERS:
+            r["bucket"], r["rule"] = "drop", "R5"
+        elif R1_THE_MY.search(classpart) or (
+                R1_OF.search(classpart) and (
+                    R1_CONTAINER_WORD.search(stem)
+                    or len(R1_OF.findall(classpart)) > 1
+                    or not SEMANTIC_OF.search(stem))):
+            r["bucket"], r["rule"] = "drop", "R1"
+        else:
+            r["bucket"], r["rule"] = "keep", ""
+
+    # Safety valve: a package the rules emptied still gets one keep row — a
+    # package that is nothing but instantiations of one algorithm (AppDef,
+    # BRepApprox) is still a capability to audit, and silence here would hide
+    # it. The namesake header is re-kept where there is one, else the first.
+    by_pkg = collections.defaultdict(list)
+    for r in rows:
+        by_pkg[r["package"]].append(r)
+    for pkg, prs in by_pkg.items():
+        if any(x["bucket"] != "drop" for x in prs):
+            continue
+        if all(x["rule"] == "R1" for x in prs):
+            namesake = next((x for x in prs if x["header"] == pkg), prs[0])
+            namesake["bucket"], namesake["rule"] = "keep", "V-EMPTIED"
+
+
+def cmd_scope(args) -> int:
+    rows = scope_rows(args.reference)
+    triage(rows)
+
+    usage = {}
+    if os.path.exists(args.profile):
+        with open(args.profile) as fh:
+            usage = json.load(fh).get("include_counts", {})
+    elif args.profile != SCOPE_DEFAULT_PROFILE:
+        sys.exit(f"profile {args.profile} not found")
+    for r in rows:
+        r["usage"] = usage.get(r["header"], 0)
+
+    rows.sort(key=lambda r: (r["module"], r["package"], r["header"]))
+    cols = ("module", "toolkit", "package", "header", "kind", "deprecated",
+            "bucket", "rule", "usage")
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    with open(args.out, "w") as fh:
+        fh.write("\t".join(cols) + "\n")
+        for r in rows:
+            fh.write("\t".join(str(r[c]) for c in cols) + "\n")
+
+    buckets = collections.Counter(r["bucket"] for r in rows)
+    rules = collections.Counter(r["rule"] for r in rows if r["rule"])
+    packages = {r["package"] for r in rows}
+    print(f"wrote {args.out}")
+    print(f"  {len(packages)} packages, {len(rows)} headers")
+    print(f"  keep {buckets['keep']}  collapse {buckets['collapse']}  "
+          f"drop {buckets['drop']}")
+    for rule, n in sorted(rules.items()):
+        print(f"    {rule:<11} {n}")
+
+    if args.sample:
+        # Deterministic stratified sample of the drops, for the hand read that
+        # the rules must survive before they are trusted.
+        import random
+        rng = random.Random(0)
+        dropped = collections.defaultdict(list)
+        for r in rows:
+            if r["bucket"] == "drop":
+                dropped[r["rule"]].append(r)
+        total = sum(len(v) for v in dropped.values())
+        print(f"\nsample of {args.sample} dropped headers "
+              f"(deterministic, stratified over {total}):")
+        for rule in sorted(dropped):
+            share = max(1, round(args.sample * len(dropped[rule]) / total))
+            for r in rng.sample(dropped[rule], min(share, len(dropped[rule]))):
+                print(f"  {rule:<4} {r['package']:<20} {r['header']}")
+    return 0
+
+
+SCOPE_DEFAULT_PROFILE = "docs/api_surface.json"
+
+
+# ==========================================================================
+# profile — how one application exercises the reference (original behaviour)
+# ==========================================================================
 
 # --------------------------------------------------------------------------
 # Pass 1 — what the consumer includes
@@ -325,17 +573,8 @@ def scan_usage(consumer: str, index: dict) -> tuple[dict, dict, dict]:
                                      "owners": owners}
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--reference", required=True,
-                    help="root of a reference kernel's source tree (not vendored, not a build dep)")
-    ap.add_argument("--consumer", required=True,
-                    help="root of an application that consumes it")
-    ap.add_argument("--out", default="docs/api_surface.json")
-    ap.add_argument("--libclang", default=None)
-    args = ap.parse_args()
-
+def cmd_profile(args) -> int:
+    _need_libclang()
     lib = args.libclang or find_libclang()
     if lib:
         ci.Config.set_library_file(lib)
@@ -464,6 +703,43 @@ def main() -> int:
     for pkg, d in list(doc["packages"].items())[:20]:
         print(f"  {pkg:<20} refs={d['type_refs']:<6} classes={d['headers']}")
     return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="command")
+
+    prof = sub.add_parser("profile", help="profile how an application exercises the reference")
+    prof.add_argument("--reference", required=True,
+                      help="root of a reference kernel's source tree (not vendored, not a build dep)")
+    prof.add_argument("--consumer", required=True,
+                      help="root of an application that consumes it")
+    prof.add_argument("--out", default="docs/api_surface.json")
+    prof.add_argument("--libclang", default=None)
+    prof.set_defaults(func=cmd_profile)
+
+    scope = sub.add_parser("scope", help="derive the parity index from the reference tree")
+    scope.add_argument("--reference", required=True,
+                       help="root of a reference kernel's checkout (adm/MODULES must exist)")
+    scope.add_argument("--out", default="docs/parity/reference-index.tsv")
+    scope.add_argument("--profile", default=SCOPE_DEFAULT_PROFILE,
+                       help="api_surface.json for the usage column (0s if absent)")
+    scope.add_argument("--sample", type=int, default=0, metavar="N",
+                       help="print a deterministic stratified sample of N dropped headers")
+    scope.set_defaults(func=cmd_scope)
+
+    # Back-compat: the tool was a flat CLI before it had subcommands, and the
+    # docstring of every previously generated api_surface.json points at that
+    # invocation.
+    argv = sys.argv[1:]
+    if argv and argv[0].startswith("--") and argv[0] not in ("-h", "--help"):
+        argv = ["profile"] + argv
+    args = ap.parse_args(argv)
+    if not args.command:
+        ap.print_help()
+        return 2
+    return args.func(args)
 
 
 if __name__ == "__main__":
