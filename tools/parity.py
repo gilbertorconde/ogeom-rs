@@ -15,7 +15,8 @@ Three committed files carry the parity audit, with three different authors:
 ``generate`` renders PARITY.md from the first two. ``check`` is the gate
 `tools/check.sh` runs: it validates the ledger against the index and against
 the crate sources, and it never touches the reference tree — CI has no
-checkout and needs none.
+checkout and needs none. ``exchange`` computes the live coverage figure for
+the collapsed STEP/IGES entity rows, each format against its own sources.
 
 The claim model
 ===============
@@ -239,6 +240,67 @@ def cmd_generate(args) -> int:
 
 
 # --------------------------------------------------------------------------
+# exchange — the live coverage figure for the collapsed entity rows
+# --------------------------------------------------------------------------
+
+def camel_to_express(stem: str) -> str | None:
+    """StepGeom_CartesianPoint -> CARTESIAN_POINT; RWStep* are readers/writers
+    of the same entities and carry no entity of their own."""
+    pkg, _, name = stem.partition("_")
+    if not name or pkg.startswith("RW"):
+        return None
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", name).upper()
+
+
+def cmd_exchange(args) -> int:
+    """Compare the collapsed entity rows against what ogeom-io implements.
+
+    The measurement is textual on purpose: an EXPRESS name that appears in the
+    reader or writer is an entity the code at least knows by name, and the
+    figure is a ceiling, not a certificate — the per-entity fidelity question
+    belongs to the exchange tests, not to a grep. Tranche 3 of the audit
+    quotes this number with exactly that caveat.
+    """
+    rows = read_index(args.index)
+
+    # Each format's coverage is measured against its own sources only. STEP
+    # and IGES share entity names (GROUP, MANIFOLD_SOLID) and a shared grep
+    # would report IGES coverage out of code that cannot read one byte of it.
+    sources = {
+        "C-STEP": ("crates/ogeom-io/src/step/read.rs",
+                   "crates/ogeom-io/src/step/write.rs"),
+        "C-IGES": tuple(sorted(
+            os.path.join("crates/ogeom-io/src/iges", f)
+            for f in (os.listdir("crates/ogeom-io/src/iges")
+                      if os.path.isdir("crates/ogeom-io/src/iges") else [])
+            if f.endswith(".rs"))),
+    }
+
+    for rule in ("C-STEP", "C-IGES"):
+        impl = set()
+        for path in sources[rule]:
+            if os.path.exists(path):
+                impl.update(re.findall(r'"([A-Z][A-Z_0-9]{3,})"', open(path).read()))
+        entities = {}
+        for r in rows:
+            if r["bucket"] == "collapse" and r["rule"] == rule:
+                e = camel_to_express(r["header"])
+                if e:
+                    entities.setdefault(e, 0)
+                    entities[e] += r["usage"]
+        have = {e for e in entities if e in impl}
+        print(f"{rule}: {len(have)}/{len(entities)} entities named in ogeom-io")
+        missing_used = sorted(((n, e) for e, n in entities.items()
+                               if e not in impl and n > 0), reverse=True)
+        if missing_used:
+            print(f"  absent but used by the profiled consumer "
+                  f"({len(missing_used)}):")
+            for n, e in missing_used[:args.top]:
+                print(f"    {n:>4}  {e}")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # check — the gate
 # --------------------------------------------------------------------------
 
@@ -424,6 +486,11 @@ def main() -> int:
     sub = ap.add_subparsers(dest="command", required=True)
     sub.add_parser("generate", help="render docs/PARITY.md").set_defaults(func=cmd_generate)
     sub.add_parser("check", help="the gate check.sh runs").set_defaults(func=cmd_check)
+    exch = sub.add_parser("exchange",
+                          help="live entity coverage for the collapsed STEP/IGES rows")
+    exch.add_argument("--top", type=int, default=15,
+                      help="how many absent-but-used entities to list")
+    exch.set_defaults(func=cmd_exchange)
     args = ap.parse_args()
     args.out = args.rendered
     return args.func(args)
