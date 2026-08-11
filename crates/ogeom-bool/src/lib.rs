@@ -962,12 +962,33 @@ fn fill(
                     if crossing.gap > reach {
                         continue;
                     }
-                    trim_ts.push(crossing.on_a);
-                    edge_hits.push((
-                        e.node,
-                        onto_range(crossing.on_b, &e.curve, e.crange, tol),
-                        crossing.on_a,
-                    ));
+                    let on_b = onto_range(crossing.on_b, &e.curve, e.crange, tol);
+                    // A crossing at a boundary edge's own end *is* that end's
+                    // vertex, exactly. The stop the section keeps must be the
+                    // vertex's parameter on the section — the meet of two
+                    // curves a fit tolerance apart lands a couple of microns
+                    // off, the boundary side keeps its exact vertex, and the
+                    // rebuilt wire gapes by the difference.
+                    let mut on_a = crossing.on_a;
+                    // The window is the fit-slop scale, not the section's
+                    // own: the boundary curve may be a fitted intersection
+                    // from an earlier boolean carrying a couple of microns
+                    // of wobble, and a stop that misses the vertex by that
+                    // much gapes the rebuilt wire by the same.
+                    let weld = reach.max(tol.confusion() * 1e2);
+                    for end in [e.crange.0, e.crange.1] {
+                        let vertex = e.curve.point_at(end, tol)?;
+                        if vertex.distance(crossing.point) <= weld {
+                            let snapped =
+                                ogeom_algo::project_on_curve(&section.curve, vertex, 64, tol)?;
+                            if snapped.distance <= weld {
+                                on_a = snapped.parameter;
+                            }
+                            break;
+                        }
+                    }
+                    trim_ts.push(on_a);
+                    edge_hits.push((e.node, on_b, on_a));
                 }
                 for overlap in &found.overlaps {
                     // The curves overlap; what is *boundary* is the stretch
@@ -2159,10 +2180,17 @@ struct Rebuild<'m> {
 
 impl Rebuild<'_> {
     fn vertex(&mut self, p: Point, tol: Tolerances) -> Shape {
+        // The weld reach covers what the inputs may honestly disagree by: a
+        // boundary curve that is itself a fitted intersection from an
+        // earlier boolean carries a couple of microns of slop, and two
+        // descriptions of one junction arrive that far apart. A hundred
+        // confusions at millimetre tolerances is ten microns — below any
+        // feature this pipeline can resolve, and every weld wider than
+        // confusion is recorded on the vertex, not papered over.
         let found = self
             .vertices
             .iter()
-            .find(|(q, _)| q.distance(p) <= tol.confusion() * 10.0)
+            .find(|(q, _)| q.distance(p) <= tol.confusion() * 1e2)
             .map(|(q, shape)| (q.distance(p), shape.clone()));
         if let Some((gap, shape)) = found {
             // Two descriptions of one junction may disagree by a general

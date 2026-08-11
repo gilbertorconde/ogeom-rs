@@ -214,12 +214,19 @@ than to blending:
 > chart an arc that wraps through the south — the split points are now the
 > *surfaces'* chart degeneracies, wherever the trim reaches.
 
-What remains of B2 after A6: the three-fillet corner accepts the tool
-through arrangement and classification, and now fails in the *rebuild* — a
-face's wire chains its pieces with one gap, "edge 2 ends where edge 3 does
-not begin". One defect, in the piece-to-wire assembly, with the corner
-configuration as its reproduction; the next session starts there rather
-than at a symptom.
+What remains of B2 after A6: the three-fillet corner accepts the tool all
+the way through arrangement, classification and rebuild — two further
+welds made that true: a section stop landing at a boundary edge's own end
+snaps to the vertex's exact parameter on the section, and the rebuild's
+vertex pool welds within a hundred confusions, recording on the vertex
+every weld wider than one, because a boundary curve that is itself a
+fitted intersection from an earlier boolean honestly carries microns of
+slop. What is left is one closure: the kept pieces do not seam into a
+shell, and the boolean now says so *by name* — "beyond what the boolean
+currently resolves" — which is the rules' floor. The corner against a
+plain box answers and is measured; the corner against its own three
+fillets refuses honestly. Closing the refusal is the remaining B2 work,
+and the reproduction is three fillets on a box corner plus the A5 tool.
 
 Two things were built on the way and stand on their own. `march_blend` (B1)
 is above. And `exact_pcurve` now sees through a **trim**: a trim says *where*
