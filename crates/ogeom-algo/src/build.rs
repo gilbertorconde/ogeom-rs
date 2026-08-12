@@ -1164,7 +1164,10 @@ pub fn make_band_between(
     // cylinder, and refused by name elsewhere.
     let (start0, start1) = (prepared[0].start, prepared[1].start);
     let dcol = start1.x - start0.x;
-    let (seam, up_is_forward, chart_from, chart_to) = if dcol.abs() <= 1e-3 {
+    // The iso is for rings genuinely sharing a column; starts even a whisker
+    // apart take the chart segment, which meets both start vertices exactly
+    // where an off-column iso would miss one by the offset times the radius.
+    let (seam, up_is_forward, chart_from, chart_to) = if dcol.abs() <= 1e-12 {
         let column = start0.x;
         let (va, vb) = (start0.y, start1.y);
         let Some(seam_curve) = surface_iso_u_curve(surface, column, tol) else {
@@ -1279,6 +1282,9 @@ pub fn make_band_between(
     } else {
         (0.0, span)
     };
+    // The pcurves run over their own arc length, start-for-start with the
+    // seam's curve range, so that is the window the attachment states.
+    let seam_length = (chart_to.x - chart_from.x).hypot(chart_to.y - chart_from.y);
     attach_seam(
         model,
         &seam,
@@ -1286,7 +1292,7 @@ pub fn make_band_between(
         segment_line(reversed_shift)?,
         surface_id,
         Location::identity(),
-        (chart_from.y.min(chart_to.y), chart_from.y.max(chart_to.y)),
+        (0.0, seam_length),
     )?;
     for ring in &prepared {
         attach_pcurve(
