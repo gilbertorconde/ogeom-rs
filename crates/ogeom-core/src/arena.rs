@@ -383,6 +383,32 @@ impl<T> Arena<T> {
         self.iter().map(|(_, v)| v)
     }
 
+    /// Consume the arena, yielding its live values in index order.
+    ///
+    /// For appending one arena's contents onto another: the receiving arena
+    /// hands out its own keys, so the values travel bare.
+    pub fn into_values(self) -> impl Iterator<Item = T> {
+        self.slots.into_iter().filter_map(|slot| match slot {
+            Slot::Occupied { value, .. } => Some(value),
+            Slot::Vacant { .. } => None,
+        })
+    }
+
+    /// Whether the arena has only ever been appended to: every slot occupied,
+    /// every generation zero.
+    ///
+    /// When this holds, [`Arena::len`] is also the next index [`Arena::insert`]
+    /// will hand out — the precondition for extending the arena by offset,
+    /// where a caller predicts the keys of entries it is about to append.
+    #[must_use]
+    pub fn is_dense(&self) -> bool {
+        self.len == self.slots.len()
+            && self
+                .slots
+                .iter()
+                .all(|slot| matches!(slot, Slot::Occupied { generation: 0, .. }))
+    }
+
     /// Remove every entry, bumping all generations so existing keys go stale.
     pub fn clear(&mut self) {
         let keys: Vec<_> = self.iter().map(|(k, _)| k).collect();
@@ -467,6 +493,40 @@ mod tests {
         let live: Vec<_> = a.values().copied().collect();
         assert_eq!(live, vec![0, 2, 4]);
         assert_eq!(a.len(), 3);
+    }
+
+    #[test]
+    fn into_values_yields_values_in_index_order() {
+        let mut a = Arena::new();
+        for i in 0..5_u32 {
+            a.insert(i * 10);
+        }
+        let values: Vec<_> = a.into_values().collect();
+        assert_eq!(values, vec![0, 10, 20, 30, 40]);
+    }
+
+    #[test]
+    fn an_arena_that_never_removed_is_dense() {
+        let mut a = Arena::new();
+        assert!(a.is_dense(), "an empty arena has no holes");
+        for i in 0..4_u32 {
+            a.insert(i);
+        }
+        assert!(a.is_dense());
+    }
+
+    #[test]
+    fn a_removal_makes_an_arena_not_dense() {
+        let mut a = Arena::new();
+        let keys: Vec<_> = (0..3_u32).map(|i| a.insert(i)).collect();
+        a.remove(keys[1]);
+        assert!(!a.is_dense(), "a vacant slot is a hole");
+
+        // Refilling the slot does not restore density either: the recycled
+        // entry sits at a bumped generation, so `len` no longer predicts the
+        // keys of future appends alone.
+        a.insert(9);
+        assert!(!a.is_dense(), "a recycled slot is off generation zero");
     }
 
     #[test]
