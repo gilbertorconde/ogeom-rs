@@ -645,11 +645,29 @@ fn prism_over_edge(
                 .into())
             })
             .transpose()?
+    } else if let ogeom_geom::Curve::Circle(c) = &geometry
+        && !c.is_reversed()
+        && c.circle().frame().z().vector().dot(direction.vector()) >= 1.0 - tol.angular()
+    {
+        // A circular profile edge swept along its own axis is a cylinder,
+        // and on the circle's own frame the chart *is* the extrusion's —
+        // u the circle's angle, v the travel — so the pcurves below serve
+        // either surface unchanged, and the boolean's same-domain
+        // resolution meets a prism wall as the cylinder it is.
+        let circle = c.circle();
+        let margin = travel * 0.1 + 1.0;
+        Some(
+            ogeom_geom::CylinderSurface::new(
+                ogeom_math::Cylinder::new(circle.frame(), circle.radius(), tol)?,
+                (-margin, travel + margin),
+            )?
+            .into(),
+        )
     } else {
         None
     };
     let surface = model.geometry_mut().add_surface(match canonical {
-        Some(plane) => plane,
+        Some(exact) => exact,
         None => ExtrusionSurface::new(geometry, direction, travel)?.into(),
     });
 
