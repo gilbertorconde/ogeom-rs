@@ -125,6 +125,44 @@ impl GeometryStore {
         }
     }
 
+    /// Whether every arena has only ever been appended to.
+    ///
+    /// The precondition for extending the store by offset — see
+    /// [`Arena::is_dense`](ogeom_core::Arena::is_dense).
+    pub(crate) fn is_dense(&self) -> bool {
+        self.curves.is_dense()
+            && self.pcurves.is_dense()
+            && self.surfaces.is_dense()
+            && self.triangulations.is_dense()
+    }
+
+    /// Append another store's contents, returning where each kind landed.
+    ///
+    /// The returned offsets are this store's lengths before the append: an
+    /// entry that sat at index `i` in `other` now sits at `i + offset`. The
+    /// receiving arenas hand out the keys, so the values travel bare.
+    pub(crate) fn append(&mut self, other: Self) -> GeometryOffsets {
+        let offsets = GeometryOffsets {
+            curves: arena_len(&self.curves),
+            pcurves: arena_len(&self.pcurves),
+            surfaces: arena_len(&self.surfaces),
+            triangulations: arena_len(&self.triangulations),
+        };
+        for curve in other.curves.into_values() {
+            self.curves.insert(curve);
+        }
+        for pcurve in other.pcurves.into_values() {
+            self.pcurves.insert(pcurve);
+        }
+        for surface in other.surfaces.into_values() {
+            self.surfaces.insert(surface);
+        }
+        for mesh in other.triangulations.into_values() {
+            self.triangulations.insert(mesh);
+        }
+        offsets
+    }
+
     /// Whether every piece of geometry a representation names is held here.
     ///
     /// The check a restored model needs: a handle that does not resolve is not
@@ -188,6 +226,52 @@ pub(crate) struct GeometryScopes {
     pub pcurves: u32,
     pub surfaces: u32,
     pub triangulations: u32,
+}
+
+/// Where each kind of geometry landed in an append — the lengths of the
+/// receiving arenas before it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GeometryOffsets {
+    pub curves: u32,
+    pub pcurves: u32,
+    pub surfaces: u32,
+    pub triangulations: u32,
+}
+
+/// An arena's length as the index its next append will land at.
+///
+/// # Panics
+///
+/// If the arena exceeds `u32::MAX` slots, which [`Arena::insert`] already
+/// refuses to reach.
+#[allow(clippy::expect_used, reason = "documented panic; see # Panics")]
+pub(crate) fn arena_len<T>(arena: &ogeom_core::Arena<T>) -> u32 {
+    u32::try_from(arena.len()).expect("arena exceeded u32::MAX slots")
+}
+
+/// Whether a key is unscoped and at generation zero — the state a reader
+/// leaves handles in, and the only state an absorb accepts.
+pub(crate) fn key_is_unbound<T>(key: ogeom_core::Key<T>) -> bool {
+    key.scope() == ogeom_core::UNSCOPED && key.generation() == 0
+}
+
+/// A key shifted `offset` slots along, for landing parts in a live model.
+///
+/// The result stays unscoped: shifting says where an entry will sit, binding
+/// says which arena it sits in, and the two are separate steps on purpose.
+///
+/// # Panics
+///
+/// If the shifted index exceeds `u32::MAX`, which
+/// [`Arena::insert`](ogeom_core::Arena::insert) already refuses to reach.
+#[allow(clippy::expect_used, reason = "documented panic; see # Panics")]
+pub(crate) fn shifted_key<T>(key: ogeom_core::Key<T>, offset: u32) -> ogeom_core::Key<T> {
+    ogeom_core::Key::from_parts(
+        key.index()
+            .checked_add(offset)
+            .expect("arena exceeded u32::MAX slots"),
+        key.generation(),
+    )
 }
 
 /// One way of describing where an edge runs.
@@ -319,6 +403,95 @@ impl EdgeRepr {
                 *triangulation = triangulation.with_scope(geometry.triangulations);
                 *location = location.with_datum_scope(datums);
             }
+        }
+    }
+
+    /// Shift this representation's handles for landing in a live model.
+    ///
+    /// [`rebind`](Self::rebind)'s sibling for absorbing parts: indices move by
+    /// where the source document's geometry and datums land in the target,
+    /// and the handles stay unscoped for the binding pass that follows.
+    pub(crate) fn shift(&mut self, geometry: &GeometryOffsets, datums: u32) {
+        match self {
+            Self::Curve3d {
+                curve, location, ..
+            } => {
+                *curve = shifted_key(*curve, geometry.curves);
+                *location = location.with_datum_offset(datums);
+            }
+            Self::PCurve {
+                curve,
+                surface,
+                location,
+                ..
+            } => {
+                *curve = shifted_key(*curve, geometry.pcurves);
+                *surface = shifted_key(*surface, geometry.surfaces);
+                *location = location.with_datum_offset(datums);
+            }
+            Self::Seam {
+                forward,
+                reversed,
+                surface,
+                location,
+                ..
+            } => {
+                *forward = shifted_key(*forward, geometry.pcurves);
+                *reversed = shifted_key(*reversed, geometry.pcurves);
+                *surface = shifted_key(*surface, geometry.surfaces);
+                *location = location.with_datum_offset(datums);
+            }
+            Self::Polyline { location, .. } => {
+                *location = location.with_datum_offset(datums);
+            }
+            Self::PolygonOnTriangulation {
+                triangulation,
+                location,
+                ..
+            } => {
+                *triangulation = shifted_key(*triangulation, geometry.triangulations);
+                *location = location.with_datum_offset(datums);
+            }
+        }
+    }
+
+    /// Whether every handle here is unscoped and at generation zero — the
+    /// state a reader leaves them in, and the only state an absorb accepts.
+    pub(crate) fn is_unbound(&self) -> bool {
+        let local_location = |location: &Location| {
+            location
+                .chain()
+                .iter()
+                .all(|&(datum, _)| key_is_unbound(datum))
+        };
+        match self {
+            Self::Curve3d {
+                curve, location, ..
+            } => key_is_unbound(*curve) && local_location(location),
+            Self::PCurve {
+                curve,
+                surface,
+                location,
+                ..
+            } => key_is_unbound(*curve) && key_is_unbound(*surface) && local_location(location),
+            Self::Seam {
+                forward,
+                reversed,
+                surface,
+                location,
+                ..
+            } => {
+                key_is_unbound(*forward)
+                    && key_is_unbound(*reversed)
+                    && key_is_unbound(*surface)
+                    && local_location(location)
+            }
+            Self::Polyline { location, .. } => local_location(location),
+            Self::PolygonOnTriangulation {
+                triangulation,
+                location,
+                ..
+            } => key_is_unbound(*triangulation) && local_location(location),
         }
     }
 

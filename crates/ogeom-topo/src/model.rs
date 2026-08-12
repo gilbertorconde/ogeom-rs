@@ -22,7 +22,7 @@ use ogeom_core::{
 };
 use ogeom_math::{Point, Transform};
 
-use crate::entity::{EdgeData, FaceData, NodeData, VertexData};
+use crate::entity::{EdgeData, EdgeRepr, FaceData, NodeData, VertexData};
 use crate::location::{DatumId, DatumStore, Location};
 use crate::shape::{Orientation, Shape, ShapeType, TShape, TShapeId};
 
@@ -100,26 +100,127 @@ impl Model {
     /// data does not match its kind, or a child is of the wrong kind for its
     /// parent.
     pub fn from_parts(parts: ModelParts) -> OgeomResult<Self> {
+        let mut model = Self::with_tolerances(parts.tolerances);
+        model.current_op = parts.current_op;
+        // Absorbing into an empty model is exactly restoration: every offset
+        // is zero, so each handle keeps the index and generation the file
+        // recorded, which is what makes a document's handles survive a round
+        // trip.
+        model.absorb_core(parts)?;
+        Ok(model)
+    }
+
+    /// Absorb another document's parts into this model.
+    ///
+    /// [`Model::from_parts`] lands a document in a *fresh* model; this lands
+    /// one in a model that already has things in it — the operation behind
+    /// bringing a serialized tool body into a live document so a boolean can
+    /// use it. Everything the parts carry is appended: nodes, datums,
+    /// geometry, provenance and identities all keep their relative structure,
+    /// shifted past what the model already holds. The result behaves exactly
+    /// as if it had been built here, because after the shift it is
+    /// indistinguishable from having been.
+    ///
+    /// `roots` are the shapes the source document named, in the unbound state
+    /// a reader leaves them; they come back bound to this model. The returned
+    /// [`Absorbed::entities`] table says where every source identity landed,
+    /// which is what a caller holding references against the source document
+    /// resolves them through.
+    ///
+    /// Three deliberate refusals, each an error rather than a guess:
+    ///
+    /// - **Units.** A document authored at another scale is refused, not
+    ///   rescaled — rescaling is a real feature with real decisions in it,
+    ///   and silently absorbing metres into millimetres is a wrong model.
+    /// - **Bound handles.** Parts whose handles already name an arena did not
+    ///   come from a reader; absorbing them would alias whatever those
+    ///   handles meant elsewhere. Serialization is the one road in.
+    /// - **A model with holes.** Absorbing appends by offset, which is only
+    ///   sound while the target's arenas have only ever been appended to.
+    ///   Nothing in this crate removes, so this cannot trigger today; it is
+    ///   checked so a future that removes gets an error, not aliasing.
+    ///
+    /// The current operation is left alone: absorb mints no identities, it
+    /// transplants a table, and the absorbed provenance keeps its source
+    /// [`OpId`]s verbatim — meaningful in the source document's rebuild, kept
+    /// because renumbering them would orphan the source's own references.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) for
+    /// the three refusals above;
+    /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the parts
+    /// do not describe themselves — a handle that does not resolve, a
+    /// derivation from an identity no entry issued, a root naming a node that
+    /// is not there.
+    ///
+    /// On an error past the up-front gates, the model's prior contents are
+    /// untouched and still fully usable: an absorbed subgraph is
+    /// self-contained — its shifted handles cannot reach below the append
+    /// line — and no identity is committed until every check has passed. What
+    /// a failed absorb can leave behind is unreachable appended entries,
+    /// which cost memory and mean nothing.
+    pub fn absorb(&mut self, parts: ModelParts, roots: &[Shape]) -> OgeomResult<Absorbed> {
+        #[allow(clippy::float_cmp, reason = "scales are copied, never computed")]
+        if parts.tolerances.scale() != self.tolerances.scale() {
+            ogeom_bail!(
+                Construction,
+                "these parts were authored at {} mm per unit and this model at \
+                 {}; absorbing across scales needs a rescale, which is its own \
+                 operation",
+                parts.tolerances.scale(),
+                self.tolerances.scale()
+            );
+        }
+        if !self.nodes.is_dense() || !self.datums.is_dense() || !self.geometry.is_dense() {
+            ogeom_bail!(
+                Construction,
+                "absorb appends by offset, and this model's arenas have holes; \
+                 something removed entries, which nothing in this crate does"
+            );
+        }
+        Self::check_parts_unbound(&parts, roots)?;
+
+        let absorbed_entities = parts.provenance.len() as u64;
+        let (node_offset, datum_offset, entity_offset) = self.absorb_core(parts)?;
+
+        let shapes = roots
+            .iter()
+            .map(|root| self.bind(&root.shifted(node_offset, datum_offset)))
+            .collect::<OgeomResult<Vec<Shape>>>()?;
+        let entities = (1..=absorbed_entities)
+            .filter_map(|raw| {
+                Some((
+                    EntityId::from_raw(raw)?,
+                    EntityId::from_raw(raw + entity_offset)?,
+                ))
+            })
+            .collect();
+        Ok(Absorbed { shapes, entities })
+    }
+
+    /// Append parts onto this model's arenas, shifting every handle past what
+    /// is already here. The shared engine of [`Model::from_parts`] (offsets
+    /// all zero) and [`Model::absorb`].
+    ///
+    /// Returns `(node, datum, entity)` offsets — where the parts landed.
+    fn absorb_core(&mut self, parts: ModelParts) -> OgeomResult<(u32, u32, u64)> {
         let ModelParts {
-            nodes,
+            mut nodes,
             datums,
             geometry,
             provenance,
             identity,
-            current_op,
-            tolerances,
+            current_op: _,
+            tolerances: _,
         } = parts;
 
-        let mut store = DatumStore::new();
-        for datum in datums {
-            store.insert(datum);
-        }
-        let mut table = ProvenanceTable::new();
-        for entry in &provenance {
-            // Every id an entry names must already have been issued, which is
-            // what makes the derivation graph acyclic by construction.
+        // Every id an entry names must already have been issued, which is
+        // what makes the derivation graph acyclic by construction. Checked
+        // against the parts' own issue order, before any shift.
+        for (issued, entry) in provenance.iter().enumerate() {
             for source in entry.inputs() {
-                if source.get() > table.len() as u64 {
+                if source.get() > issued as u64 {
                     ogeom_bail!(
                         Dangling,
                         "an entity is derived from identity {}, which no entry \
@@ -128,39 +229,119 @@ impl Model {
                     );
                 }
             }
-            table.record(entry.clone());
         }
 
-        let mut arena: Arena<TShape> = Arena::new();
+        let node_offset = crate::entity::arena_len(&self.nodes);
+        let datum_offset = u32::try_from(self.datums.len()).unwrap_or(u32::MAX);
+        let entity_offset = self.provenance.len() as u64;
+        let geometry_offsets = self.geometry.append(geometry);
+
+        for node in &mut nodes {
+            for child in node.children_mut() {
+                *child = child.shifted(node_offset, datum_offset);
+            }
+            match node.data_mut() {
+                NodeData::Edge(edge) => {
+                    for repr in &mut edge.representations {
+                        repr.shift(&geometry_offsets, datum_offset);
+                    }
+                }
+                NodeData::Face(face) => {
+                    face.surface =
+                        crate::entity::shifted_key(face.surface, geometry_offsets.surfaces);
+                    face.triangulation = face.triangulation.map(|mesh| {
+                        crate::entity::shifted_key(mesh, geometry_offsets.triangulations)
+                    });
+                    face.location = face.location.with_datum_offset(datum_offset);
+                }
+                NodeData::Vertex(_) | NodeData::Container => {}
+            }
+        }
+
+        for datum in datums {
+            self.datums.insert(datum);
+        }
+        for mut entry in provenance {
+            if let Provenance::Derived { from, .. } = &mut entry {
+                for source in from.iter_mut() {
+                    let Some(shifted) = EntityId::from_raw(source.get() + entity_offset) else {
+                        ogeom_bail!(Construction, "an entity id overflowed in the shift");
+                    };
+                    *source = shifted;
+                }
+            }
+            self.provenance.record(entry);
+        }
         for node in nodes {
-            arena.insert(node);
+            self.nodes.insert(node);
         }
 
-        let mut model = Self {
-            nodes: arena,
-            datums: store,
-            geometry,
-            provenance: table,
-            identity: HashMap::new(),
-            current_op,
-            tolerances,
-        };
-        // Every handle in `parts` was rebuilt by a reader that had no arenas to
-        // bind them to, so they name no arena at all and resolve nowhere. Bind
-        // them now that the arenas exist. Only the scope changes — inserting in
-        // the order the file recorded reproduces the same index and generation,
-        // which is what makes a document's handles survive a round trip.
-        model.bind_handles();
+        // Every handle in `parts` was rebuilt by a reader that had no arenas
+        // to bind them to, so they name no arena at all and resolve nowhere.
+        // Bind the appended subrange now that the arenas exist; what was here
+        // before is already bound.
+        self.bind_handles(node_offset);
         let identity: Vec<(TShapeId, EntityId)> = identity
             .into_iter()
-            .map(|(node, entity)| (node.with_scope(model.nodes.scope()), entity))
-            .collect();
+            .map(|(node, entity)| {
+                let Some(shifted) = EntityId::from_raw(entity.get() + entity_offset) else {
+                    ogeom_bail!(Construction, "an entity id overflowed in the shift");
+                };
+                Ok((
+                    crate::entity::shifted_key(node, node_offset).with_scope(self.nodes.scope()),
+                    shifted,
+                ))
+            })
+            .collect::<OgeomResult<_>>()?;
 
-        model.check_restored(&identity)?;
+        self.check_restored(&identity, node_offset)?;
         for (node, entity) in identity {
-            model.identity.insert(node, entity);
+            self.identity.insert(node, entity);
         }
-        Ok(model)
+        Ok((node_offset, datum_offset, entity_offset))
+    }
+
+    /// Refuse parts whose handles are already bound to an arena or carry a
+    /// non-zero generation — the state no reader produces, and the state an
+    /// offset shift would silently mangle.
+    fn check_parts_unbound(parts: &ModelParts, roots: &[Shape]) -> OgeomResult<()> {
+        use crate::entity::key_is_unbound;
+
+        let local_location = |location: &Location| {
+            location
+                .chain()
+                .iter()
+                .all(|&(datum, _)| key_is_unbound(datum))
+        };
+        let local_shape =
+            |shape: &Shape| key_is_unbound(shape.node()) && local_location(shape.location());
+
+        let mut sound = parts.identity.iter().all(|&(node, _)| key_is_unbound(node))
+            && roots.iter().all(local_shape);
+        for node in &parts.nodes {
+            sound = sound && node.children().iter().all(local_shape);
+            match node.data() {
+                NodeData::Edge(edge) => {
+                    sound = sound && edge.representations.iter().all(EdgeRepr::is_unbound);
+                }
+                NodeData::Face(face) => {
+                    sound = sound
+                        && key_is_unbound(face.surface)
+                        && face.triangulation.is_none_or(key_is_unbound)
+                        && local_location(&face.location);
+                }
+                NodeData::Vertex(_) | NodeData::Container => {}
+            }
+        }
+        if !sound {
+            ogeom_bail!(
+                Construction,
+                "these parts carry handles already bound to an arena, or at a \
+                 recycled generation; absorb takes parts exactly as a reader \
+                 rebuilt them, and serialization is the one road in"
+            );
+        }
+        Ok(())
     }
 
     /// Bind an unscoped shape to this model.
@@ -218,13 +399,16 @@ impl Model {
         Ok(bound)
     }
 
-    /// Bind every handle in a freshly restored model to the arena that holds it.
-    fn bind_handles(&mut self) {
+    /// Bind every handle in freshly restored nodes to the arena that holds it.
+    ///
+    /// `from` bounds the pass to nodes at that index and past it: restoration
+    /// binds everything from zero, absorption only what it appended.
+    fn bind_handles(&mut self, from: u32) {
         let nodes = self.nodes.scope();
         let datums = self.datums.scope();
         let geometry = self.geometry.scopes();
 
-        for (_, node) in self.nodes.iter_mut() {
+        for (_, node) in self.nodes.iter_mut().filter(|(id, _)| id.index() >= from) {
             for child in node.children_mut() {
                 *child = child.rebound(nodes, datums);
             }
@@ -246,10 +430,14 @@ impl Model {
         }
     }
 
-    /// Verify that a restored model's handles all resolve and its children are
+    /// Verify that restored nodes' handles all resolve and their children are
     /// of the kinds their parents admit.
-    fn check_restored(&self, identity: &[(TShapeId, EntityId)]) -> OgeomResult<()> {
-        for (id, node) in self.nodes.iter() {
+    ///
+    /// `from` bounds the pass the way [`Model::bind_handles`]' does. Children
+    /// still resolve through the full arena, so nothing is under-checked — an
+    /// absorbed subgraph is self-contained and can only point at itself.
+    fn check_restored(&self, identity: &[(TShapeId, EntityId)], from: u32) -> OgeomResult<()> {
+        for (id, node) in self.nodes.iter().filter(|(id, _)| id.index() >= from) {
             let kind = node.kind();
             match (kind, node.data()) {
                 (ShapeType::Vertex, NodeData::Vertex(_))
@@ -878,6 +1066,18 @@ impl Model {
     }
 }
 
+/// What an absorb produced: the transplanted roots, bound to the model that
+/// absorbed them, and where every absorbed identity ended up.
+#[derive(Debug)]
+pub struct Absorbed {
+    /// The roots handed in, shifted and bound to the absorbing model.
+    pub shapes: Vec<Shape>,
+    /// Source-document identity → identity in the absorbing model, for every
+    /// entity the parts carried. A caller holding references recorded against
+    /// the source document resolves them through this.
+    pub entities: HashMap<EntityId, EntityId>,
+}
+
 /// A model's contents, laid out the way a file holds them.
 ///
 /// Handed to [`Model::from_parts`]. Every list is in arena order, and a node's
@@ -1023,6 +1223,231 @@ mod tests {
         model
             .add_face(FaceData::new(surface, Location::identity()), &[wire])
             .unwrap()
+    }
+
+    /// Parts describing a two-vertex edge on a line, placed by one datum,
+    /// with a primitive-and-derived provenance chain: every kind of handle a
+    /// shift must move, in miniature, exactly as a reader would rebuild them.
+    fn edge_parts() -> (ModelParts, Vec<Shape>) {
+        use ogeom_core::Role;
+
+        use crate::entity::CurveId;
+        use crate::location::DatumId;
+
+        let mut geometry = GeometryStore::new();
+        geometry.add_curve(
+            ogeom_geom::LineCurve::new(ogeom_math::Axis {
+                location: Point::new(0.0, 0.0, 0.0),
+                direction: Direction::X,
+            })
+            .into(),
+        );
+        let ends = [
+            Shape::of(TShapeId::from_parts(0, 0)),
+            Shape::of(TShapeId::from_parts(1, 0)).reversed(),
+        ];
+        let edge = TShape::new(
+            ShapeType::Edge,
+            NodeData::Edge(Box::new(EdgeData::on_curve(
+                CurveId::from_parts(0, 0),
+                Location::of(DatumId::from_parts(0, 0)),
+                (0.0, 2.0),
+            ))),
+            ends.to_vec(),
+        );
+        let one = EntityId::from_raw(1).unwrap();
+        let two = EntityId::from_raw(2).unwrap();
+        let parts = ModelParts {
+            nodes: vec![
+                TShape::leaf(
+                    ShapeType::Vertex,
+                    NodeData::Vertex(VertexData::new(Point::new(0.0, 0.0, 0.0))),
+                ),
+                TShape::leaf(
+                    ShapeType::Vertex,
+                    NodeData::Vertex(VertexData::new(Point::new(2.0, 0.0, 0.0))),
+                ),
+                edge,
+            ],
+            datums: vec![Transform::translation(Vector::new(0.0, 0.0, 1.0))],
+            geometry,
+            provenance: vec![
+                Provenance::Primitive {
+                    op: OpId(1),
+                    role: Role::SOLE,
+                },
+                Provenance::Derived {
+                    op: OpId(1),
+                    from: [one].into_iter().collect(),
+                    role: Role::SOLE,
+                },
+            ],
+            identity: vec![(TShapeId::from_parts(2, 0), two)],
+            current_op: OpId(1),
+            tolerances: T,
+        };
+        (parts, vec![Shape::of(TShapeId::from_parts(2, 0))])
+    }
+
+    #[test]
+    fn absorbing_parts_into_a_live_model_offsets_every_handle() {
+        let mut model = Model::new();
+        let face = square(&mut model);
+
+        let (parts, roots) = edge_parts();
+        let absorbed = model.absorb(parts, &roots).unwrap();
+        assert_eq!(absorbed.shapes.len(), 1);
+        let edge = &absorbed.shapes[0];
+
+        // The absorbed root resolves here and answers as an edge.
+        assert_eq!(model.kind_of(edge).unwrap(), ShapeType::Edge);
+        let vertices = explore(&model, edge, Filter::OfType(ShapeType::Vertex)).unwrap();
+        assert_eq!(vertices.len(), 2);
+        let points: Vec<Point> = vertices
+            .iter()
+            .map(|v| model.node(v).unwrap().data().as_vertex().unwrap().point)
+            .collect();
+        assert!(points.contains(&Point::new(2.0, 0.0, 0.0)), "{points:?}");
+
+        // Its curve and datum handles were shifted onto this model's arenas.
+        let node = model.node(edge).unwrap();
+        let repr = &node.data().as_edge().unwrap().representations[0];
+        assert!(
+            model.geometry().holds(repr),
+            "the absorbed edge's curve did not land"
+        );
+        let EdgeRepr::Curve3d { location, .. } = repr else {
+            panic!("the representation changed kind in the shift");
+        };
+        assert!(
+            location.composed(model.datums()).is_ok(),
+            "the absorbed edge's datum did not land"
+        );
+
+        // What was here before is untouched.
+        assert_eq!(model.kind_of(&face).unwrap(), ShapeType::Face);
+    }
+
+    #[test]
+    fn absorbed_identities_keep_their_provenance_under_new_ids() {
+        let mut model = Model::new();
+        square(&mut model);
+        let issued_before = model.provenance().len() as u64;
+        assert!(
+            issued_before > 0,
+            "the square should have minted identities"
+        );
+
+        let (parts, roots) = edge_parts();
+        let absorbed = model.absorb(parts, &roots).unwrap();
+
+        // The remap table is exactly old-plus-offset.
+        let old = EntityId::from_raw(2).unwrap();
+        let new = absorbed.entities[&old];
+        assert_eq!(new.get(), 2 + issued_before);
+        assert_eq!(model.identity_of(&absorbed.shapes[0]), Some(new));
+
+        // The derived entry still points at its shifted source, and walking
+        // back lands on the shifted primitive.
+        let entry = model.provenance().get(new).unwrap();
+        let source = EntityId::from_raw(1 + issued_before).unwrap();
+        assert_eq!(entry.inputs(), &[source]);
+        assert_eq!(model.provenance().roots(new), vec![source]);
+    }
+
+    #[test]
+    fn absorbing_into_an_empty_model_matches_from_parts() {
+        let (parts, roots) = edge_parts();
+        let restored = Model::from_parts(parts).unwrap();
+        let bound = restored.bind(&roots[0]).unwrap();
+
+        let (parts, roots) = edge_parts();
+        let mut empty = Model::new();
+        let absorbed = empty.absorb(parts, &roots).unwrap();
+        let shape = &absorbed.shapes[0];
+
+        // Zero offsets: the handles come out where the file put them, and the
+        // identities are the file's own.
+        assert_eq!(shape.node().index(), bound.node().index());
+        assert_eq!(shape.node().generation(), bound.node().generation());
+        assert_eq!(restored.identity_of(&bound), empty.identity_of(shape));
+        assert_eq!(restored.provenance().len(), empty.provenance().len());
+    }
+
+    #[test]
+    fn parts_with_scoped_or_generation_bearing_keys_are_refused() {
+        let mut model = Model::new();
+
+        let (mut parts, roots) = edge_parts();
+        let child = parts.nodes[2].children()[0].clone();
+        parts.nodes[2].children_mut()[0] = Shape::new(
+            child.node().with_scope(7),
+            Location::identity(),
+            Orientation::Forward,
+        );
+        assert!(
+            model.absorb(parts, &roots).is_err(),
+            "a scoped child key should be refused"
+        );
+
+        let (mut parts, roots) = edge_parts();
+        parts.identity[0].0 = TShapeId::from_parts(2, 1);
+        assert!(
+            model.absorb(parts, &roots).is_err(),
+            "a recycled-generation key should be refused"
+        );
+    }
+
+    #[test]
+    fn parts_in_other_units_are_refused() {
+        let mut model = Model::new();
+        square(&mut model);
+        let issued_before = model.provenance().len();
+
+        let (mut parts, roots) = edge_parts();
+        parts.tolerances = Tolerances::metres();
+        assert!(model.absorb(parts, &roots).is_err());
+        assert_eq!(
+            model.provenance().len(),
+            issued_before,
+            "a refused absorb should leave the model alone"
+        );
+    }
+
+    #[test]
+    fn absorb_leaves_the_current_operation_alone() {
+        let mut model = Model::new();
+        model.begin_operation();
+        model.begin_operation();
+        let op = model.begin_operation();
+
+        let (parts, roots) = edge_parts();
+        model.absorb(parts, &roots).unwrap();
+        assert_eq!(model.current_operation(), op);
+    }
+
+    #[test]
+    fn an_absorbed_root_that_names_a_missing_node_dangles() {
+        let mut model = Model::new();
+        let (parts, _) = edge_parts();
+        let stray = vec![Shape::of(TShapeId::from_parts(99, 0))];
+        assert!(model.absorb(parts, &stray).is_err());
+    }
+
+    #[test]
+    fn absorbing_empty_parts_is_a_no_op() {
+        let mut model = Model::new();
+        square(&mut model);
+        let issued_before = model.provenance().len();
+
+        let parts = ModelParts {
+            tolerances: T,
+            ..ModelParts::default()
+        };
+        let absorbed = model.absorb(parts, &[]).unwrap();
+        assert!(absorbed.shapes.is_empty());
+        assert!(absorbed.entities.is_empty());
+        assert_eq!(model.provenance().len(), issued_before);
     }
 
     #[test]

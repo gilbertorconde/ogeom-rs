@@ -293,6 +293,20 @@ impl Shape {
         }
     }
 
+    /// This shape with its handles shifted for landing in a live model.
+    ///
+    /// [`rebound`](Self::rebound)'s sibling for absorbing parts: the indices
+    /// were local to the source document, and its nodes and datums are about
+    /// to land `nodes` and `datums` slots into the target's arenas. The
+    /// handles stay unscoped — binding is a separate, later step.
+    pub(crate) fn shifted(&self, nodes: u32, datums: u32) -> Self {
+        Self {
+            node: crate::entity::shifted_key(self.node, nodes),
+            location: self.location.with_datum_offset(datums),
+            orientation: self.orientation,
+        }
+    }
+
     /// This shape moved by `outer`, applied before its own placement.
     ///
     /// The operation traversal uses on descent: a child's placement within the

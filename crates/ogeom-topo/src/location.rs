@@ -93,6 +93,14 @@ impl DatumStore {
         self.arena.scope()
     }
 
+    /// Whether the arena has only ever been appended to.
+    ///
+    /// The precondition for extending the store by offset — see
+    /// [`Arena::is_dense`].
+    pub(crate) fn is_dense(&self) -> bool {
+        self.arena.is_dense()
+    }
+
     /// Every datum, with its handle, in arena order.
     pub fn iter(&self) -> impl Iterator<Item = (DatumId, Datum)> {
         self.arena.iter().map(|(id, t)| (id, *t))
@@ -199,6 +207,22 @@ impl Location {
                 .chain
                 .iter()
                 .map(|(datum, power)| (datum.with_scope(scope), *power))
+                .collect(),
+        }
+    }
+
+    /// This placement with every datum handle shifted by `offset` slots.
+    ///
+    /// For absorbing one document's parts into another: the chain's indices
+    /// were local to the source document, and its datums are about to land
+    /// `offset` slots into the target's store. The handles stay unscoped —
+    /// binding is a separate, later step.
+    pub(crate) fn with_datum_offset(&self, offset: u32) -> Self {
+        Self {
+            chain: self
+                .chain
+                .iter()
+                .map(|(datum, power)| (crate::entity::shifted_key(*datum, offset), *power))
                 .collect(),
         }
     }
