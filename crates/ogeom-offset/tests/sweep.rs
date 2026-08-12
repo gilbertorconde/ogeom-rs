@@ -551,3 +551,184 @@ fn a_closed_loft_through_four_sections_is_a_watertight_ring() {
         assert!(!result.history.generated(section).is_empty());
     }
 }
+
+#[test]
+fn a_rectangle_lofted_to_a_point_is_the_pyramid_the_closed_form_names() {
+    let mut model = ogeom_topo::Model::new();
+    let corners = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(4.0, 0.0, 0.0),
+        Point::new(4.0, 3.0, 0.0),
+        Point::new(0.0, 3.0, 0.0),
+    ];
+    let base = ogeom_algo::make_polygon(&mut model, &corners, true, T)
+        .unwrap()
+        .shape;
+    // A skew apex on purpose: pyramid walls are triangles wherever it sits.
+    let apex = ogeom_algo::make_vertex(&mut model, Point::new(1.0, 1.0, 6.0)).shape;
+    let result = ogeom_offset::make_loft(&mut model, &base, &apex, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    let expected = 4.0 * 3.0 * 6.0 / 3.0;
+    let measured =
+        ogeom_algo::volume_properties(&model, &result.shape, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    assert!(
+        (measured - expected).abs() < 1e-6,
+        "pyramid volume {measured} against {expected}"
+    );
+    assert!(!result.history.generated(&base).is_empty());
+    assert!(!result.history.generated(&apex).is_empty());
+}
+
+#[test]
+fn a_circle_lofted_to_a_point_on_its_axis_is_a_cone() {
+    let mut model = ogeom_topo::Model::new();
+    let circle = Circle::new(Frame::WORLD, 2.0, T).unwrap();
+    let curve: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(circle).into();
+    let domain = curve.domain();
+    let ring = ogeom_algo::make_edge(&mut model, curve, domain, T)
+        .unwrap()
+        .shape;
+    let base = ogeom_algo::make_wire(&mut model, std::slice::from_ref(&ring), T)
+        .unwrap()
+        .shape;
+    let apex = ogeom_algo::make_vertex(&mut model, Point::new(0.0, 0.0, 5.0)).shape;
+    let result = ogeom_offset::make_loft(&mut model, &base, &apex, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    let pi = core::f64::consts::PI;
+    let expected = pi * 4.0 * 5.0 / 3.0;
+    let measured = ogeom_algo::volume_properties(
+        &model,
+        &result.shape,
+        ogeom_mesh::Deflection::with_chord(1e-4).unwrap(),
+        T,
+    )
+    .unwrap()
+    .mass;
+    assert!(
+        (measured - expected).abs() < 1e-3,
+        "cone volume {measured} against {expected}"
+    );
+
+    // Off the axis the cone is oblique, which is the skinned machinery's.
+    let mut second = ogeom_topo::Model::new();
+    let circle = Circle::new(Frame::WORLD, 2.0, T).unwrap();
+    let curve: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(circle).into();
+    let domain = curve.domain();
+    let ring = ogeom_algo::make_edge(&mut second, curve, domain, T)
+        .unwrap()
+        .shape;
+    let base = ogeom_algo::make_wire(&mut second, std::slice::from_ref(&ring), T)
+        .unwrap()
+        .shape;
+    let leaning = ogeom_algo::make_vertex(&mut second, Point::new(1.0, 0.0, 5.0)).shape;
+    assert!(ogeom_offset::make_loft(&mut second, &base, &leaning, T).is_err());
+}
+
+#[test]
+fn an_alignment_hint_untwists_a_loft() {
+    // Two squares whose traversals start a corner apart: left to their own
+    // starts the skin shears, with the hints it is the prism it should be.
+    let build = |model: &mut ogeom_topo::Model, rotate: usize, z: f64| -> ogeom_topo::Shape {
+        let corners = [
+            Point::new(0.0, 0.0, z),
+            Point::new(2.0, 0.0, z),
+            Point::new(2.0, 2.0, z),
+            Point::new(0.0, 2.0, z),
+        ];
+        let rotated: Vec<Point> = (0..4).map(|i| corners[(i + rotate) % 4]).collect();
+        ogeom_algo::make_polygon(model, &rotated, true, T)
+            .unwrap()
+            .shape
+    };
+    let mut model = ogeom_topo::Model::new();
+    let bottom = build(&mut model, 0, 0.0);
+    let top = build(&mut model, 1, 3.0);
+    let hints = [Point::new(0.0, 0.0, 0.0), Point::new(0.0, 0.0, 3.0)];
+    let aligned = ogeom_offset::make_loft_skinned_aligned(
+        &mut model,
+        &[bottom.clone(), top.clone()],
+        &hints,
+        5e-2,
+        T,
+    )
+    .unwrap();
+    let volume_of = |model: &ogeom_topo::Model, shape: &ogeom_topo::Shape| {
+        ogeom_algo::volume_properties(
+            model,
+            shape,
+            ogeom_mesh::Deflection::with_chord(1e-3).unwrap(),
+            T,
+        )
+        .unwrap()
+        .mass
+    };
+    let straight = volume_of(&model, &aligned.shape);
+    assert!(
+        (straight - 12.0).abs() / 12.0 < 0.05,
+        "aligned loft volume {straight} against 12"
+    );
+
+    // Without the hints the rows pair a corner apart and the skin twists —
+    // visibly less volume, which is the defect the hint exists to fix.
+    let twisted = ogeom_offset::make_loft_skinned(&mut model, &[bottom, top], 5e-2, T).unwrap();
+    let sheared = volume_of(&model, &twisted.shape);
+    assert!(
+        sheared < straight * 0.95,
+        "the twist should cost volume: {sheared} vs {straight}"
+    );
+}
+
+#[test]
+fn a_ruled_loft_between_tilted_polygons_still_builds() {
+    // Non-parallel sections were never the refusal — only skew walls are.
+    // A top square turned about the x axis keeps every wall planar.
+    let mut model = ogeom_topo::Model::new();
+    let bottom = ogeom_algo::make_polygon(
+        &mut model,
+        &[
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(2.0, 0.0, 0.0),
+            Point::new(2.0, 2.0, 0.0),
+            Point::new(0.0, 2.0, 0.0),
+        ],
+        true,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let angle = 25.0_f64.to_radians();
+    let turn = |y: f64, z: f64| -> (f64, f64) {
+        let (dy, dz) = (y - 1.0, z - 3.0);
+        (
+            angle.cos().mul_add(dy, -(angle.sin() * dz)) + 1.0,
+            angle.sin().mul_add(dy, angle.cos() * dz) + 3.0,
+        )
+    };
+    let corners: Vec<Point> = [(0.0_f64, 0.0_f64), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]
+        .iter()
+        .map(|(x, y)| {
+            let (ty, tz) = turn(*y, 3.0);
+            Point::new(*x, ty, tz)
+        })
+        .collect();
+    let top = ogeom_algo::make_polygon(&mut model, &corners, true, T)
+        .unwrap()
+        .shape;
+    let result = ogeom_offset::make_loft(&mut model, &bottom, &top, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let measured =
+        ogeom_algo::volume_properties(&model, &result.shape, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    assert!(
+        measured > 1.0,
+        "the tilted loft encloses volume: {measured}"
+    );
+}

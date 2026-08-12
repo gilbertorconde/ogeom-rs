@@ -302,6 +302,20 @@ pub fn make_loft(
     top: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    // A vertex for either section is the loft to a point: a cone over a
+    // circle, an exact pyramid over a polygon.
+    match (model.kind_of(bottom)?, model.kind_of(top)?) {
+        (ShapeType::Wire, ShapeType::Vertex) => {
+            return loft_to_point(model, bottom, top, tol);
+        }
+        (ShapeType::Vertex, ShapeType::Wire) => {
+            let mut built = loft_to_point(model, top, bottom, tol)?;
+            // The apex was named first: the same solid, the history the same.
+            built.history.generate(bottom, built.shape.clone());
+            return Ok(built);
+        }
+        _ => {}
+    }
     for wire in [bottom, top] {
         if model.kind_of(wire)? != ShapeType::Wire {
             ogeom_bail!(Construction, "a loft runs between wires");
@@ -455,8 +469,9 @@ pub fn make_loft(
             {
                 ogeom_bail!(
                     Construction,
-                    "a skew ruled wall is not a plane; it needs the \
-                     extrusion-surface loft — docs/PARITY.md, offset.loft"
+                    "a skew ruled wall is not a plane; loft skew sections \
+                     through make_loft_skinned, aligned with hints — \
+                     docs/PARITY.md, offset.loft"
                 );
             }
         }
@@ -868,6 +883,297 @@ fn closed_skinned_solid(
     make_solid(model, std::slice::from_ref(&sewn.shells[0]))
 }
 
+/// The loft to a point: a wire section closing onto a single apex vertex.
+///
+/// A circle takes the cone the revolved primitives already build, apex on
+/// its axis or refused; a polygon takes exact planar triangle walls, sound
+/// for *any* apex — a skew pyramid's walls are still triangles.
+fn loft_to_point(
+    model: &mut Model,
+    section: &Shape,
+    apex: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if !ogeom_algo::is_wire_closed(model, section, tol)? {
+        ogeom_bail!(Construction, "a loft section must be closed");
+    }
+    let apex_point = {
+        let Some(data) = model.node(apex).and_then(|n| n.data().as_vertex()) else {
+            ogeom_bail!(Construction, "the apex vertex holds no data");
+        };
+        data.point
+    };
+
+    // The circular case: a cone, apex on the axis.
+    let edges = explore(model, section, Filter::OfType(ShapeType::Edge))?;
+    if edges.len() == 1
+        && let Some(data) = model.node(&edges[0]).and_then(|n| n.data().as_edge())
+        && let Some(EdgeRepr::Curve3d { curve, .. }) = data.curve3d()
+        && let Some(Curve::Circle(c)) = model.geometry().curve(*curve)
+    {
+        let circle = c.circle();
+        let axis = circle.frame().z().vector();
+        let rise = apex_point - circle.centre();
+        let height = rise.dot(axis);
+        if rise.cross(axis).magnitude() > tol.confusion() * 10.0 {
+            ogeom_bail!(
+                Construction,
+                "a circle lofts to a point on its own axis; the oblique cone \
+                 needs the skinned machinery — docs/PARITY.md, offset.loft"
+            );
+        }
+        if height.abs() <= tol.confusion() {
+            ogeom_bail!(Construction, "the apex sits in the section's own plane");
+        }
+        let base = if height > 0.0 {
+            circle.frame()
+        } else {
+            Frame::new(
+                circle.centre(),
+                -circle.frame().z(),
+                circle.frame().x(),
+                tol,
+            )?
+        };
+        let mut built =
+            ogeom_algo::make_cone(model, base, circle.radius(), 0.0, height.abs(), tol)?;
+        built.history.generate(section, built.shape.clone());
+        built.history.generate(apex, built.shape.clone());
+        return Ok(built);
+    }
+
+    // The polygonal case: exact triangle walls to a shared apex.
+    let mut corners: Vec<Point> = Vec::new();
+    for edge in model.ordered_children_of(section)? {
+        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            ogeom_bail!(Construction, "a section edge holds no data");
+        };
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            ogeom_bail!(Construction, "a section edge has no curve");
+        };
+        let Some(Curve::Line(line)) = model.geometry().curve(*curve).cloned() else {
+            ogeom_bail!(
+                Construction,
+                "a mixed or curved section lofts to a point through the \
+                 skinned machinery — docs/PARITY.md, offset.loft"
+            );
+        };
+        let t = if edge.orientation() == ogeom_topo::Orientation::Reversed {
+            range.1
+        } else {
+            range.0
+        };
+        corners.push(ogeom_geom::Curve::Line(line).point_at(t, tol)?);
+    }
+    if corners.len() < 3 {
+        ogeom_bail!(Construction, "a pyramid needs at least three base corners");
+    }
+    let apex_vertex = ogeom_algo::make_vertex(model, apex_point).shape;
+    let base_vertices: Vec<Shape> = corners
+        .iter()
+        .map(|p| ogeom_algo::make_vertex(model, *p).shape)
+        .collect();
+    let segment =
+        |model: &mut Model, from: (&Shape, Point), to: (&Shape, Point)| -> OgeomResult<Shape> {
+            let line = ogeom_geom::LineCurve::segment(from.1, to.1, tol)?;
+            let curve: Curve = line.into();
+            let domain = curve.domain();
+            Ok(make_edge_between(model, curve, domain, from.0, to.0, tol)?.shape)
+        };
+    let count = corners.len();
+    let mut base_edges = Vec::with_capacity(count);
+    let mut rails = Vec::with_capacity(count);
+    for i in 0..count {
+        let next = (i + 1) % count;
+        base_edges.push(segment(
+            model,
+            (&base_vertices[i], corners[i]),
+            (&base_vertices[next], corners[next]),
+        )?);
+        rails.push(segment(
+            model,
+            (&base_vertices[i], corners[i]),
+            (&apex_vertex, apex_point),
+        )?);
+    }
+    let centroid = {
+        let mut c = Vector::new(0.0, 0.0, 0.0);
+        for p in &corners {
+            c += p.to_vector();
+        }
+        #[allow(clippy::cast_precision_loss)]
+        Point::from_vector(c / count as f64 / 4.0 * 3.0 + apex_point.to_vector() / 4.0)
+    };
+    let planar = |model: &mut Model, pts: [Point; 3], walk: Vec<Shape>| -> OgeomResult<Shape> {
+        let n = (pts[1] - pts[0]).cross(pts[2] - pts[0]);
+        let m = n.magnitude();
+        if m <= tol.confusion() {
+            ogeom_bail!(Construction, "a wall of the pyramid is degenerate");
+        }
+        let mut outward = n / m;
+        if outward.dot(pts[0] - centroid) < 0.0 {
+            outward = -outward;
+        }
+        let plane = ogeom_math::Plane::through(pts[0], Direction::new(outward, tol)?);
+        let mut reach = 1.0_f64;
+        for p in pts {
+            reach = reach.max(p.distance(pts[0]) * 2.0);
+        }
+        let surface: SurfaceGeometry =
+            PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
+        let id = model.geometry_mut().add_surface(surface.clone());
+        let signed = {
+            let (du, dv) = {
+                use ogeom_geom::Surface as _;
+                surface.d1_at(0.0, 0.0, tol)?
+            };
+            du.cross(dv).dot(outward) >= 0.0
+        };
+        let mut wired = Vec::with_capacity(walk.len());
+        for used in &walk {
+            let (curve, range) = spine_curve_of(model, used)?;
+            let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&curve, &surface, tol) else {
+                ogeom_bail!(Construction, "a wall edge has no closed-form pcurve");
+            };
+            ogeom_algo::attach_pcurve(
+                model,
+                used,
+                pcurve,
+                id,
+                ogeom_topo::Location::identity(),
+                range,
+            )?;
+            wired.push(used.clone());
+        }
+        let wire = ogeom_algo::make_wire(model, &wired, tol)?.shape;
+        let face = ogeom_algo::make_face_on(model, id, std::slice::from_ref(&wire), tol)?.shape;
+        Ok(if signed { face } else { face.reversed() })
+    };
+    let mut faces = Vec::with_capacity(count + 1);
+    for i in 0..count {
+        let next = (i + 1) % count;
+        faces.push(planar(
+            model,
+            [corners[i], corners[next], apex_point],
+            vec![
+                base_edges[i].clone(),
+                rails[next].clone(),
+                rails[i].reversed(),
+            ],
+        )?);
+    }
+    // The base cap: all corners, wound against the walls.
+    let base_walk: Vec<Shape> = (0..count).rev().map(|i| base_edges[i].reversed()).collect();
+    faces.push({
+        let n = (corners[1] - corners[0]).cross(corners[2] - corners[0]);
+        let mut outward = n / n.magnitude();
+        if outward.dot(corners[0] - centroid) < 0.0 {
+            outward = -outward;
+        }
+        let plane = ogeom_math::Plane::through(corners[0], Direction::new(outward, tol)?);
+        let mut reach = 1.0_f64;
+        for p in &corners {
+            reach = reach.max(p.distance(corners[0]) * 2.0);
+        }
+        let surface: SurfaceGeometry =
+            PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
+        let id = model.geometry_mut().add_surface(surface.clone());
+        for used in &base_walk {
+            let (curve, range) = spine_curve_of(model, used)?;
+            let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&curve, &surface, tol) else {
+                ogeom_bail!(Construction, "a base edge has no closed-form pcurve");
+            };
+            ogeom_algo::attach_pcurve(
+                model,
+                used,
+                pcurve,
+                id,
+                ogeom_topo::Location::identity(),
+                range,
+            )?;
+        }
+        let wire = ogeom_algo::make_wire(model, &base_walk, tol)?.shape;
+        let face = ogeom_algo::make_face_on(model, id, std::slice::from_ref(&wire), tol)?.shape;
+        let signed = {
+            use ogeom_geom::Surface as _;
+            let (du, dv) = surface.d1_at(0.0, 0.0, tol)?;
+            du.cross(dv).dot(outward) >= 0.0
+        };
+        if signed { face } else { face.reversed() }
+    });
+
+    let sewn = sew(model, &faces, tol)?;
+    if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
+        ogeom_bail!(Construction, "the pyramid did not close");
+    }
+    let mut built = make_solid(model, std::slice::from_ref(&sewn.shells[0]))?;
+    built.history.generate(section, built.shape.clone());
+    built.history.generate(apex, built.shape.clone());
+    Ok(built)
+}
+
+/// Loft through sections with the start of each row named by the caller.
+///
+/// [`make_loft_skinned`] leaves alignment to each section's own traversal
+/// start; this sibling takes one hint per section — a point near where its
+/// row should begin — and rotates each sampling there, which is how a
+/// caller untwists a loft whose wires happen to start in different places.
+///
+/// # Errors
+///
+/// As [`make_loft_skinned`], and additionally if the hints do not pair up
+/// with the sections.
+pub fn make_loft_skinned_aligned(
+    model: &mut Model,
+    sections: &[Shape],
+    hints: &[Point],
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if hints.len() != sections.len() {
+        ogeom_bail!(
+            Construction,
+            "{} hints against {} sections; each section names its own start",
+            hints.len(),
+            sections.len()
+        );
+    }
+    if sections.len() < 2 {
+        ogeom_bail!(Construction, "a loft needs at least two sections");
+    }
+    const AROUND: usize = 48;
+    let mut rows: Vec<Vec<Point>> = Vec::with_capacity(sections.len());
+    let mut planes: Vec<Plane> = Vec::with_capacity(sections.len());
+    for (wire, hint) in sections.iter().zip(hints) {
+        if model.kind_of(wire)? != ShapeType::Wire {
+            ogeom_bail!(Construction, "a loft section is a closed wire");
+        }
+        if !ogeom_algo::is_wire_closed(model, wire, tol)? {
+            ogeom_bail!(Construction, "a loft section must be closed");
+        }
+        let Some(plane) = ogeom_algo::find_plane(model, wire, tol)? else {
+            ogeom_bail!(Construction, "a loft section must be planar");
+        };
+        planes.push(plane);
+        rows.push(sample_wire_from(model, wire, AROUND, Some(*hint), tol)?);
+    }
+    let outward0 = {
+        let towards = rows[1][0] - rows[0][0];
+        let n = planes[0].normal().vector();
+        if n.dot(towards) > 0.0 { -n } else { n }
+    };
+    let outward1 = {
+        let towards = rows[rows.len() - 2][0] - rows[rows.len() - 1][0];
+        let n = planes[planes.len() - 1].normal().vector();
+        if n.dot(towards) > 0.0 { -n } else { n }
+    };
+    let mut built = skinned_solid(model, &rows, (outward0, outward1), tolerance, tol)?;
+    for section in sections {
+        built.history.generate(section, built.shape.clone());
+    }
+    Ok(built)
+}
+
 /// Loft a ring through closed planar sections that loop back to the first.
 ///
 /// [`make_loft_skinned`]'s closed sibling: the sections are sampled the same
@@ -1130,6 +1436,19 @@ fn sample_wire(
     count: usize,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Point>> {
+    sample_wire_from(model, wire, count, None, tol)
+}
+
+/// As [`sample_wire`], with the arc-length origin rotated to the dense
+/// sample nearest `start_hint` — how a caller says which point of each
+/// section rows up with which, instead of leaning on traversal starts.
+fn sample_wire_from(
+    model: &Model,
+    wire: &Shape,
+    count: usize,
+    start_hint: Option<Point>,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Point>> {
     // Dense polyline by traversal, then resample by cumulative length.
     let mut dense: Vec<Point> = Vec::new();
     for edge in explore(model, wire, Filter::OfType(ShapeType::Edge))? {
@@ -1152,6 +1471,18 @@ fn sample_wire(
             };
             dense.push(geometry.point_at(t, tol)?);
         }
+    }
+    if let Some(hint) = start_hint {
+        let mut best = 0usize;
+        let mut held = f64::INFINITY;
+        for (i, p) in dense.iter().enumerate() {
+            let d = p.distance(hint);
+            if d < held {
+                held = d;
+                best = i;
+            }
+        }
+        dense.rotate_left(best);
     }
     let mut lengths = vec![0.0];
     for w in dense.windows(2) {

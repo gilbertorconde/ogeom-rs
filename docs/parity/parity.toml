@@ -1111,15 +1111,19 @@ id = "offset.loft"
 title = "Lofting through sections, ruled or smoothed"
 crate = "ogeom-offset"
 verdict = "partial"
-restriction = """The ruled loft takes exactly two closed wire sections — \
-coaxial parallel circles, or polygons of the same corner count whose ruled \
-walls come out planar; a skew wall is refused by name. The skinned loft \
-takes N planar closed sections on a shared 48-sample resampling, with the \
-start alignment the caller's authorship. What is owed: loft to a point, the \
-closed loop-back, walls for skew ruled pairs, and an alignment hint. The \
-code's refusals point here."""
+restriction = """The ruled loft takes two closed wire sections — coaxial \
+parallel circles, or polygons of the same corner count whose ruled walls \
+come out planar — or a section and a point: a cone on a circle's own axis, \
+an exact pyramid over any straight loop. The skinned loft takes N planar \
+closed sections, loops back on itself on request, and takes per-section \
+alignment hints. Skew ruled walls stay refused by name and route through \
+the skinned form; mixed edge counts are authorship, not geometry, and stay \
+with the skinned resampling. The fitted loft-to-point is still owed."""
 claims = ["BRepOffsetAPI_ThruSections"]
-symbols = ["ogeom_offset::make_loft", "ogeom_offset::make_loft_skinned"]
+symbols = [
+    "ogeom_offset::make_loft", "ogeom_offset::make_loft_skinned",
+    "ogeom_offset::make_loft_skinned_closed", "ogeom_offset::make_loft_skinned_aligned",
+]
 tests = [
     "crates/ogeom/tests/mechanical_part.rs",
     "crates/ogeom-offset/tests/sweep.rs",
