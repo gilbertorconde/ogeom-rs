@@ -1,0 +1,61 @@
+name: Docs
+
+# The book (docs/book) at the site root, rustdoc under /api/. Deploys only
+# what CI already gates: the book's code blocks are included from
+# crates/ogeom/tests/book.rs, which the check workflow runs.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook
+
+      - name: Build the book
+        run: mdbook build docs/book
+
+      - name: Build the API reference
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      - name: Assemble the site
+        run: |
+          mv docs/book/book _site
+          mv target/doc _site/api
+          # /api/ lands on the umbrella crate.
+          printf '<meta http-equiv="refresh" content="0; url=ogeom/index.html">' > _site/api/index.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
