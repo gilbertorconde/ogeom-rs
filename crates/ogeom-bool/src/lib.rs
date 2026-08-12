@@ -80,6 +80,10 @@ struct BoundaryEdge {
     prange: (f64, f64),
     /// The other side of a seam, where this edge is one.
     other_side: Option<(PlanarCurve, (f64, f64))>,
+    /// The radius within which the edge honestly lies — a fitted rail can
+    /// carry a few dozen microns of construction slop, and every filter that
+    /// compares this edge's curve against exact geometry widens by it.
+    tolerance: f64,
 }
 
 /// A pole: an edge that bounds a face in parameter space and collapses to
@@ -227,6 +231,7 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
                 pcurve,
                 prange,
                 other_side,
+                tolerance: edge_data.tolerance.get(),
             });
         }
         if edges.is_empty() {
@@ -574,10 +579,17 @@ struct ContactRec {
     /// The owner's world curve and the sub-range its edge covers.
     curve: Curve,
     crange: (f64, f64),
-    /// The curve spoken in the *target* face's chart.
+    /// The curve spoken in the *target* face's chart, over its own window,
+    /// mapped proportionally from `crange` exactly as an edge's own stored
+    /// pcurve is.
     pcurve: PlanarCurve,
+    prange: (f64, f64),
     /// The owner edge's node, whose paves this record shares.
     node: ogeom_topo::TShapeId,
+    /// The owner edge's own tolerance: how far its curve may honestly sit
+    /// from the exact geometry it meets, which is how far a crossing filter
+    /// must reach to see a fitted rail cross an exact seam.
+    tolerance: f64,
     /// The target: which argument's face list, and which face.
     target_from_a: bool,
     target_face: usize,
@@ -669,12 +681,27 @@ enum PieceState {
 /// width and a single period shift per axis brings it home. The shift is
 /// chosen by the strand's midpoint, so endpoints sitting exactly on the
 /// chart's edge stay on whichever side the strand's body is.
+/// A point in a polyline's *interior*: its half-way member, except that a
+/// straight strand is two points and its half-way member is an endpoint —
+/// which may sit exactly on a seam or a trim. The chord midpoint is on the
+/// curve for a straight image and strictly inside either way.
+fn interior_of(line: &[Point2]) -> Point2 {
+    if line.len() == 2 {
+        Point2::new(
+            f64::midpoint(line[0].x, line[1].x),
+            f64::midpoint(line[0].y, line[1].y),
+        )
+    } else {
+        line[line.len() / 2]
+    }
+}
+
 fn fold_into_chart(line: &mut [Point2], surface: &SurfaceGeometry) {
     let ((ua, ub), (va, vb)) = surface.domain();
     if line.is_empty() {
         return;
     }
-    let mid = line[line.len() / 2];
+    let mid = interior_of(line);
     if surface.is_periodic_u() {
         let span = ub - ua;
         if span > 0.0 {
@@ -801,19 +828,25 @@ fn fill(
     // tolerance so a fitted curve meets edges, vertices and the mesh welder
     // on the same terms as an exact one. The budget each still carries is
     // recorded per section and widens the crossing filters.
-    let options = IntersectOptions {
-        tolerance: tol.confusion() * 0.5,
-        marching: ogeom_intersect::Marching {
-            chord: tol.confusion() * 0.5,
-            ..ogeom_intersect::Marching::default()
-        },
-    };
     for (ia, fa) in ga.faces.iter().enumerate() {
         for (ib, fb) in gb.faces.iter().enumerate() {
             if !fa.bound.intersects(&fb.bound) {
                 // The faces cannot meet, whatever their surfaces do.
                 continue;
             }
+            let scale = fa.bound.diagonal().min(fb.bound.diagonal());
+            let chord = (scale * 1e-7).max(tol.confusion() * 0.5);
+            let options = IntersectOptions {
+                // The fit budget scales with the chord: a section against a
+                // fitted surface cannot honestly land closer than the
+                // geometry it cuts, and whatever it carries is stated on
+                // the record and widens every filter downstream.
+                tolerance: chord,
+                marching: ogeom_intersect::Marching {
+                    chord,
+                    ..ogeom_intersect::Marching::default()
+                },
+            };
             let met = intersect_surfaces(&fa.surface, &fb.surface, options, tol)?;
             match met {
                 SurfaceIntersection::Apart => {}
@@ -829,26 +862,24 @@ fn fill(
                     {
                         let _ = owner_from_a;
                         for e in &owner.edges {
-                            let pcurve = match ogeom_intersect::exact_pcurve_of(
+                            let (pcurve, prange) = match ogeom_intersect::exact_pcurve_of(
                                 &e.curve,
                                 &target.surface,
                                 tol,
                             ) {
-                                Some(exact) => exact,
+                                Some(exact) => (exact, e.crange),
                                 // A fitted edge has no closed-form projection
                                 // — but when the two faces sit on the
                                 // *identical chart*, which is exactly the
                                 // situation `Same` names for the analytics,
                                 // the owner's own stored pcurve already is
-                                // the projection, attached at construction.
-                                // Usable when it speaks the curve's own
-                                // parameter; a chart that merely coincides
-                                // as a point set is still refused.
-                                None if same_chart(&owner.surface, &target.surface, tol)
-                                    && (e.prange.0 - e.crange.0).abs() <= PARAM_SNAP
-                                    && (e.prange.1 - e.crange.1).abs() <= PARAM_SNAP =>
-                                {
-                                    e.pcurve.clone()
+                                // the projection, attached at construction,
+                                // and it travels with its own window the way
+                                // every stored pcurve does. A chart that
+                                // merely coincides as a point set is still
+                                // refused.
+                                None if same_chart(&owner.surface, &target.surface, tol) => {
+                                    (e.pcurve.clone(), e.prange)
                                 }
                                 None => ogeom_bail!(
                                     NotDone,
@@ -862,7 +893,9 @@ fn fill(
                                 curve: e.curve.clone(),
                                 crange: e.crange,
                                 pcurve,
+                                prange,
                                 node: e.node,
+                                tolerance: e.tolerance,
                                 target_from_a,
                                 target_face,
                             });
@@ -1285,7 +1318,6 @@ fn fill(
     // A contact edge splits where it crosses the target face's boundary —
     // and that crossing is a pave on *both* edges, so the owner's own face
     // splits its boundary consistently and the pieces sew back shared.
-    let cc = CurveCurveOptions::default();
     let mut contact_along: Vec<Vec<(f64, f64)>> = vec![Vec::new(); contacts.len()];
     for (ci, contact) in contacts.iter().enumerate() {
         let target = if contact.target_from_a {
@@ -1293,10 +1325,19 @@ fn fill(
         } else {
             &gb.faces[contact.target_face]
         };
+        // A fitted contact sits off exact geometry by its own tolerance, and
+        // the crossings it genuinely makes gape by the same — the filter and
+        // the finder both widen, or a fitted rail never registers against
+        // the exact seam it crosses.
+        let reach = tol.confusion().max(contact.tolerance * 2.0);
+        let cc = CurveCurveOptions {
+            gap: reach.max(CurveCurveOptions::default().gap),
+            ..CurveCurveOptions::default()
+        };
         for e in &target.edges {
             let found = intersect_curves(&contact.curve, &e.curve, cc, tol)?;
             for crossing in &found.crossings {
-                if crossing.gap > tol.confusion() {
+                if crossing.gap > reach {
                     continue;
                 }
                 if crossing.on_a < contact.crange.0 + tol.parametric()
@@ -1762,10 +1803,24 @@ fn chart_point_of(face: &GFace, p: Point, tol: Tolerances) -> Option<Point2> {
         }
     }
     let borrowed: Vec<&[Point2]> = lines.iter().map(Vec::as_slice).collect();
-    if !inside_many(&borrowed, at) {
-        return None;
+    // The face's boundary polylines are unwrapped — a winding ring may span
+    // any one period's window, not necessarily the chart's canonical one —
+    // so the probe is asked at every period image that could land inside.
+    let mut shifts = vec![0.0];
+    if face.surface.is_periodic_u() {
+        let ((ua, ub), _) = face.surface.domain();
+        if ub > ua {
+            shifts.push(ub - ua);
+            shifts.push(ua - ub);
+        }
     }
-    Some(at)
+    for shift in shifts {
+        let shifted = Point2::new(at.x + shift, at.y);
+        if inside_many(&borrowed, shifted) {
+            return Some(shifted);
+        }
+    }
+    None
 }
 
 /// Whether two curves meet tangentially at a crossing: the parallel-noise
@@ -1789,23 +1844,40 @@ fn distance_to_edge_curve(
     p: Point,
     tol: Tolerances,
 ) -> OgeomResult<f64> {
-    let mut best = f64::INFINITY;
-    let mut previous: Option<Point> = None;
-    for i in 0..=48 {
-        let t = crange.0 + (crange.1 - crange.0) * f64::from(i) / 48.0;
-        let at = curve.point_at(t, tol)?;
-        if let Some(last) = previous {
-            let d = at - last;
-            let len2 = d.dot(d);
-            let s = if len2 > 0.0 {
-                ((p - last).dot(d) / len2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            best = best.min(p.distance(last + d * s));
+    // Coarse bracket, then two rounds of local refinement: the answer feeds
+    // the hug filters, whose widths are fractions of a millimetre, and a
+    // long arc's 48-segment polyline sags by more than that on its own.
+    let scan = |lo: f64, hi: f64, steps: u32| -> OgeomResult<(f64, f64)> {
+        let mut best = f64::INFINITY;
+        let mut best_t = lo;
+        let mut previous: Option<(f64, Point)> = None;
+        for i in 0..=steps {
+            let t = lo + (hi - lo) * f64::from(i) / f64::from(steps);
+            let at = curve.point_at(t, tol)?;
+            if let Some((t0, last)) = previous {
+                let d = at - last;
+                let len2 = d.dot(d);
+                let s = if len2 > 0.0 {
+                    ((p - last).dot(d) / len2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let dist = p.distance(last + d * s);
+                if dist < best {
+                    best = dist;
+                    best_t = (t - t0).mul_add(s, t0);
+                }
+            }
+            previous = Some((t, at));
         }
-        previous = Some(at);
-    }
+        Ok((best, best_t))
+    };
+    let span = crange.1 - crange.0;
+    let (_, t1) = scan(crange.0, crange.1, 48)?;
+    let step = span / 48.0;
+    let (_, t2) = scan((t1 - step).max(crange.0), (t1 + step).min(crange.1), 16)?;
+    let fine = span / (48.0 * 8.0);
+    let (best, _) = scan((t2 - fine).max(crange.0), (t2 + fine).min(crange.1), 16)?;
     Ok(best)
 }
 
@@ -2053,16 +2125,11 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     }
                     // Keep only what lies inside this face's trim; the rest
                     // of the owner's boundary splits nothing here.
-                    let count = 16;
-                    let mut line = Vec::with_capacity(count + 1);
-                    for i in 0..=count {
-                        #[allow(clippy::cast_precision_loss)]
-                        let t = sub.0 + (sub.1 - sub.0) * i as f64 / count as f64;
-                        line.push(contact.pcurve.point_at(t, tol)?);
-                    }
+                    let mut line =
+                        pcurve_polyline(&contact.pcurve, contact.prange, contact.crange, sub, tol)?;
                     unwrap_polyline(&mut line, &face.surface);
                     fold_into_chart(&mut line, &face.surface);
-                    let mid = line[line.len() / 2];
+                    let mid = interior_of(&line);
                     let boundary_lines: Vec<&[Point2]> = strands
                         .iter()
                         .filter(|st| st.boundary)
@@ -2082,7 +2149,15 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 }
             }
 
-            let split = arrange_pieces(&strands, PARAM_SNAP)?;
+            // A tolerant contact's chart image meets the boundary it paved
+            // only as closely as its own slop allows; the arrangement's node
+            // weld reaches that far on this face, or the strand dangles a
+            // few microns from the junction it belongs to.
+            let face_snap = contacts
+                .iter()
+                .filter(|c| c.target_from_a == from_a && c.target_face == fi)
+                .fold(PARAM_SNAP, |acc, c| acc.max(c.tolerance * 2.0));
+            let split = arrange_pieces(&strands, face_snap)?;
             for piece in split {
                 // Where a piece stands is asked at its interior probes in
                 // turn. The first is the roomiest, and usually the only one
@@ -2234,6 +2309,10 @@ struct Rebuild<'m> {
     /// identity, so two sub-edges meeting at a point must *name* the same
     /// vertex, not merely coincide there.
     vertices: Vec<(Point, Shape)>,
+    /// How far two honest descriptions of one junction may sit apart: a
+    /// hundred confusions as the floor, widened to twice the loosest contact
+    /// edge's own tolerance when a fitted rail took part in the melt.
+    weld: f64,
 }
 
 impl Rebuild<'_> {
@@ -2248,7 +2327,7 @@ impl Rebuild<'_> {
         let found = self
             .vertices
             .iter()
-            .find(|(q, _)| q.distance(p) <= tol.confusion() * 1e2)
+            .find(|(q, _)| q.distance(p) <= self.weld.max(tol.confusion() * 1e2))
             .map(|(q, shape)| (q.distance(p), shape.clone()));
         if let Some((gap, shape)) = found {
             // Two descriptions of one junction may disagree by a general
@@ -2437,7 +2516,13 @@ fn build_sub_edge(
             let v1 = rebuild.vertex(to, tol);
             let model = &mut *rebuild.model;
             let built = make_edge_between(model, c.curve.clone(), *range, &v0, &v1, tol)?.shape;
-            let mid = c.pcurve.point_at(f64::midpoint(range.0, range.1), tol)?;
+            // The stored image keeps its own window; the attached copy names
+            // the sub-window this piece covers under the proportional map.
+            let sub_p = (
+                rescale(range.0, c.crange, c.prange),
+                rescale(range.1, c.crange, c.prange),
+            );
+            let mid = c.pcurve.point_at(f64::midpoint(sub_p.0, sub_p.1), tol)?;
             let folded = fold_point_into_chart(mid, &face.surface);
             let shifted = c
                 .pcurve
@@ -2448,7 +2533,7 @@ fn build_sub_edge(
                 shifted,
                 surface_id,
                 Location::identity(),
-                *range,
+                sub_p,
             )?;
             Ok(built)
         }
@@ -2521,6 +2606,10 @@ fn assemble_result(
         surfaces_a: vec![None; fused.a.faces.len()],
         surfaces_b: vec![None; fused.b.faces.len()],
         vertices: Vec::new(),
+        weld: fused
+            .contacts
+            .iter()
+            .fold(0.0_f64, |acc, c| acc.max(c.tolerance * 2.0)),
     };
     let mut faces = Vec::new();
     let mut kept_sources: Vec<Shape> = Vec::new();
@@ -2545,37 +2634,6 @@ fn assemble_result(
     let sewn = sew(model, &faces, tol)?;
     for shell in &sewn.shells {
         if !is_shell_closed(model, shell)? {
-            if std::env::var_os("OGEOM_ARRANGE_DEBUG").is_some() {
-                use ogeom_geom::Curve3d as _;
-                eprintln!(
-                    "== open shell: {} faces, {} joins ==",
-                    faces.len(),
-                    sewn.joined
-                );
-                for edge in ogeom_topo::explore_unique(model, shell, ShapeType::Edge)? {
-                    let users = ogeom_topo::explore(model, shell, Filter::OfType(ShapeType::Face))?
-                        .iter()
-                        .filter(|f| {
-                            ogeom_topo::explore_unique(model, f, ShapeType::Edge)
-                                .map(|es| es.iter().any(|e2| e2.node() == edge.node()))
-                                .unwrap_or(false)
-                        })
-                        .count();
-                    if users == 1
-                        && let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge())
-                        && let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) =
-                            data.curve3d()
-                        && let Some(g) = model.geometry().curve(*curve)
-                    {
-                        let a = g.point_at(range.0, tol)?;
-                        let b = g.point_at(range.1, tol)?;
-                        eprintln!(
-                            "  free edge {:?}: {a:?} -> {b:?}",
-                            core::mem::discriminant(g)
-                        );
-                    }
-                }
-            }
             ogeom_bail!(
                 NotDone,
                 "the kept pieces did not close into a shell; the configuration \
