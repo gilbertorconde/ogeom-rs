@@ -176,17 +176,59 @@ pub fn march_blend(
     options: Marching,
     tol: Tolerances,
 ) -> OgeomResult<MarchedBlend> {
+    march_blend_on(first, second, radius, guide, &Sides::ALL, options, tol)
+}
+
+/// As [`march_blend`], with the ball's sides named by the caller.
+///
+/// The four seatings are four different balls — a fillet's rides the
+/// material's own side of each support, a carving ball the opposite — and a
+/// caller that knows its seat should say so rather than take whichever
+/// converges first.
+///
+/// # Errors
+///
+/// As [`march_blend`].
+pub fn march_blend_sided(
+    first: &SurfaceGeometry,
+    second: &SurfaceGeometry,
+    radius: f64,
+    guide: &Curve,
+    sides: Sides,
+    options: Marching,
+    tol: Tolerances,
+) -> OgeomResult<MarchedBlend> {
+    march_blend_on(first, second, radius, guide, &[sides], options, tol)
+}
+
+fn march_blend_on(
+    first: &SurfaceGeometry,
+    second: &SurfaceGeometry,
+    radius: f64,
+    guide: &Curve,
+    candidates: &[Sides],
+    options: Marching,
+    tol: Tolerances,
+) -> OgeomResult<MarchedBlend> {
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a blend of radius {radius} rounds nothing");
     }
     options.validate()?;
-    let (start, sides) = seat(first, second, radius, guide, tol)?;
+    let (start, sides) = seat(first, second, radius, guide, candidates, tol)?;
+    let guide_loops = guide.is_periodic() || {
+        let (lo, hi) = guide.domain();
+        guide
+            .point_at(lo, tol)
+            .and_then(|p| guide.point_at(hi, tol).map(|q| p.distance(q)))
+            .is_ok_and(|d| d <= tol.confusion() * 10.0)
+    };
     let contact = BallContact {
         first,
         second,
         radius,
         guide,
         sides,
+        guide_loops,
     };
     let walked = ogeom_intersect::walk::follow(&contact, &start, options, tol)?;
 
@@ -267,6 +309,7 @@ fn seat(
     second: &SurfaceGeometry,
     radius: f64,
     guide: &Curve,
+    candidates: &[Sides],
     tol: Tolerances,
 ) -> OgeomResult<([f64; 5], Sides)> {
     let (lo, hi) = guide.domain();
@@ -282,13 +325,16 @@ fn seat(
         at,
     ];
 
-    for sides in Sides::ALL {
+    for sides in candidates.iter().copied() {
         let contact = BallContact {
             first,
             second,
             radius,
             guide,
             sides,
+            // The seed holds its guide parameter; whether the guide loops
+            // never comes up here.
+            guide_loops: guide.is_periodic(),
         };
         // The guide parameter is held: at the seed there is nothing yet to
         // march along, only a section to find.
@@ -360,6 +406,11 @@ struct BallContact<'s> {
     radius: f64,
     guide: &'s Curve,
     sides: Sides,
+    /// Whether the guide comes back to its start — by parameterization or,
+    /// for a fitted seam whose curve is clamped, by geometry. A looping
+    /// guide has no end to stop at; the march wraps its parameter and lets
+    /// the points say when it is back.
+    guide_loops: bool,
 }
 
 impl BallContact<'_> {
@@ -443,7 +494,7 @@ impl Condition for BallContact<'_> {
         // A guide that closes on itself has no end to stop at: the march
         // wraps its parameter and lets the *geometry* say when it is back
         // where it started.
-        x[4] = if self.guide.is_periodic() && hi > lo {
+        x[4] = if self.guide_loops && hi > lo {
             lo + (x[4] - lo).rem_euclid(hi - lo)
         } else {
             x[4].clamp(lo, hi)
@@ -455,7 +506,7 @@ impl Condition for BallContact<'_> {
         let band = tol.parametric();
         beyond(self.first, (x[0], x[1]), tol)
             || beyond(self.second, (x[2], x[3]), tol)
-            || (!self.guide.is_periodic() && (x[4] < lo - band || x[4] > hi + band))
+            || (!self.guide_loops && (x[4] < lo - band || x[4] > hi + band))
     }
 
     fn near_edge(&self, x: &[f64]) -> bool {
@@ -463,7 +514,7 @@ impl Condition for BallContact<'_> {
         let reach = (hi - lo) * 1e-6;
         at_edge(self.first, (x[0], x[1]))
             || at_edge(self.second, (x[2], x[3]))
-            || (!self.guide.is_periodic() && (x[4] <= lo + reach || x[4] >= hi - reach))
+            || (!self.guide_loops && (x[4] <= lo + reach || x[4] >= hi - reach))
     }
 
     fn extent(&self) -> f64 {

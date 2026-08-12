@@ -1020,11 +1020,14 @@ crate = "ogeom-fillet"
 verdict = "partial"
 restriction = """Single edges, tangent chains and full rims blend, constant \
 and variable radius, and the corner where three blends meet is closed: \
-docs/PLAN.md §B (B2) with §A (A6) behind it. What is owed now: the marching \
-blend solves the ball's two contact points directly where no closed form \
-exists, but its contacts are not yet carried into topology, so an edge that \
-is neither straight nor circular is refused by name; and of the corner \
-family, the two-blend meeting and the N>3 setback vertex remain."""
+docs/PLAN.md §B (B2) with §A (A6) behind it. The marched fillet carries the \
+rolling ball to topology on seats no closed form speaks — a fitted seam \
+between two analytic walls, a conic seat re-opened to its full loop — with \
+the blend fitted through the ball's own arcs and the legs melting on the \
+hosts' exact surfaces. What is owed now: hosts beyond planes and cylinders \
+(cone, sphere, torus chart inversions), open seats and their run-outs, the \
+equal-radius crossing whose seam pinches at tangent poles; and of the \
+corner family, the two-blend meeting and the N>3 setback vertex remain."""
 claims = [
     "BRepFilletAPI_MakeFillet", "BRepFilletAPI_LocalOperation",
     "ChFi3d", "ChFi3d_*", "ChFiDS_*", "ChFiKPart_*",
@@ -1039,6 +1042,7 @@ symbols = [
 tests = [
     "crates/ogeom/tests/blends.rs",
     "crates/ogeom-fillet/tests/marched_blend.rs",
+    "crates/ogeom-fillet/tests/marched_fillet.rs",
     "crates/ogeom-fillet/tests/fillet.rs",
 ]
 

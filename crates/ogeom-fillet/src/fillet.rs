@@ -53,11 +53,7 @@ pub fn fillet_edge(
     match curve {
         Curve::Line(_) => planar_fillet(model, solid, edge, radius, tol),
         Curve::Circle(c) => revolved_fillet(model, solid, edge, &c, radius, tol),
-        _ => ogeom_bail!(
-            Construction,
-            "filleting an edge that is neither straight nor circular needs \
-             the marching blend machinery"
-        ),
+        _ => crate::marched::marched_fillet(model, solid, edge, radius, tol),
     }
 }
 

@@ -13,6 +13,7 @@ pub mod corner2d;
 pub mod facepair;
 pub mod fillet;
 pub mod march;
+mod marched;
 mod support;
 
 pub use analyse::{BlendContact, analyse_blend};
@@ -20,4 +21,4 @@ pub use chamfer::{chamfer_edge, chamfer_edge_angle, chamfer_edge_distances};
 pub use corner2d::{chamfer_corner_2d, fillet_corner_2d};
 pub use facepair::blend_faces;
 pub use fillet::{fillet_edge, fillet_edge_variable};
-pub use march::{BlendStop, MarchedBlend, Sides, march_blend};
+pub use march::{BlendStop, MarchedBlend, Sides, march_blend, march_blend_sided};
