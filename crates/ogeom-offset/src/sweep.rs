@@ -1669,12 +1669,7 @@ pub fn make_pipe_shell(
 
     let stations = shell_stations(model, spine, tol)?;
     if stations[0].at.distance(stations[stations.len() - 1].at) <= tol.confusion() * 10.0 {
-        ogeom_bail!(
-            Construction,
-            "a closed spine loops the shell back on itself; that \
-             construction is the closed-skin milestone — docs/PARITY.md, \
-             offset.sweeps"
-        );
+        return closed_pipe_shell(model, profile, spine, stations, frenet, tolerance, tol);
     }
     let normals = if frenet {
         frenet_normals(&stations, tol)?
@@ -1963,6 +1958,152 @@ fn spine_curve_of(model: &Model, edge: &Shape) -> OgeomResult<(ogeom_geom::Curve
         ogeom_bail!(Dangling, "curve is not in this model");
     };
     Ok((geometry.clone(), *range))
+}
+
+/// The pipe shell around a spine that loops back on itself: one wall,
+/// closed both ways round, no caps at all.
+///
+/// The frames are rotation-minimizing with the loop's holonomy paid off:
+/// transported round a closed spine, the frame comes home twisted by some
+/// angle, and that twist is spread back along the arc so the last station's
+/// frame *is* the first's — without it the closed fit fights a helical
+/// grid. The profile must be one smooth closed loop; a faceted profile's
+/// strips and a holed profile's nested shells are still owed, and the
+/// Frenet law on a closed loop is not carried yet.
+fn closed_pipe_shell(
+    model: &mut Model,
+    profile: &Shape,
+    spine: &Shape,
+    mut stations: Vec<SpineStation>,
+    frenet: bool,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    const AROUND: usize = 40;
+    if frenet {
+        ogeom_bail!(
+            Construction,
+            "the Frenet law on a closed spine is not carried yet; use the \
+             rotation-minimizing default"
+        );
+    }
+    // The walk visits the join twice; the loop owns it once.
+    stations.pop();
+    if stations.len() < 3 {
+        ogeom_bail!(Construction, "a closed spine needs room to turn");
+    }
+    // A sharp corner turns the section through a finite angle over no arc at
+    // all, which no skin can follow: the mitred ring is per-edge closed
+    // strips, still owed.
+    for i in 0..stations.len() {
+        let next = &stations[(i + 1) % stations.len()];
+        if stations[i].tangent.dot(next.tangent) < 0.9 {
+            ogeom_bail!(
+                Construction,
+                "a closed spine with a sharp corner needs the mitred strips, \
+                 which are still owed — docs/PARITY.md, offset.sweeps; round \
+                 the corner and the ring sweeps"
+            );
+        }
+    }
+
+    let loops: Vec<Shape> = match model.kind_of(profile)? {
+        ShapeType::Face => explore(model, profile, Filter::OfType(ShapeType::Wire))?,
+        ShapeType::Wire => vec![profile.clone()],
+        other => ogeom_bail!(
+            Construction,
+            "a pipe shell sweeps a planar wire or face, not a {other:?}"
+        ),
+    };
+    let [profile_loop] = loops.as_slice() else {
+        ogeom_bail!(
+            Construction,
+            "a holed profile on a closed spine needs nested shells, which \
+             are still owed — docs/PARITY.md, offset.sweeps"
+        );
+    };
+    let edges = model.ordered_children_of(profile_loop)?;
+    let smooth = edges.len() == 1
+        && ogeom_algo::edge_vertices(model, &edges[0])?.is_some_and(|(a, b)| a.is_same(&b));
+    if !smooth {
+        ogeom_bail!(
+            Construction,
+            "a faceted profile on a closed spine needs closed strips, which \
+             are still owed — docs/PARITY.md, offset.sweeps"
+        );
+    }
+    let Some(plane) = ogeom_algo::find_plane(model, profile, tol)? else {
+        ogeom_bail!(Construction, "a pipe shell sweeps a planar profile");
+    };
+    let t0 = stations[0].tangent;
+    if plane.normal().vector().cross(t0).magnitude() > 1e-9 {
+        ogeom_bail!(
+            Construction,
+            "the profile leans along its spine; a pipe shell runs square to \
+             the start"
+        );
+    }
+    if plane.distance_to(stations[0].at) > tol.confusion() * 100.0 {
+        ogeom_bail!(
+            Construction,
+            "the profile does not sit at the spine's start"
+        );
+    }
+
+    // Rotation-minimizing frames with the holonomy paid off: transport once
+    // more back to the start, read the twist, and spread it along the arc.
+    let mut normals: Vec<Vector> = {
+        let mut extended = stations.clone();
+        extended.push(stations[0]);
+        let carried = rmf_normals(&extended);
+        let (n0, n_home) = (carried[0], carried[carried.len() - 1]);
+        let twist = (n0.cross(n_home).dot(t0)).atan2(n0.dot(n_home));
+        let mut lengths = vec![0.0_f64];
+        for pair in extended.windows(2) {
+            let last = lengths[lengths.len() - 1];
+            lengths.push(last + pair[0].at.distance(pair[1].at));
+        }
+        let total = lengths[lengths.len() - 1];
+        carried
+            .iter()
+            .take(stations.len())
+            .enumerate()
+            .map(|(i, n)| {
+                let phi = -twist * lengths[i] / total;
+                let t = extended[i].tangent;
+                *n * phi.cos() + t.cross(*n) * phi.sin()
+            })
+            .collect()
+    };
+    for (n, station) in normals.iter_mut().zip(&stations) {
+        // Re-square each corrected normal against its own tangent.
+        let v = *n - station.tangent * n.dot(station.tangent);
+        *n = v / v.magnitude();
+    }
+
+    let x0 = normals[0];
+    let y0 = t0.cross(x0);
+    let origin = stations[0].at;
+    let samples = sample_wire(model, profile_loop, AROUND, tol)?;
+    let flat: Vec<(f64, f64)> = samples
+        .iter()
+        .map(|p| ((*p - origin).dot(x0), (*p - origin).dot(y0)))
+        .collect();
+    let rows: Vec<Vec<Point>> = stations
+        .iter()
+        .enumerate()
+        .map(|(i, station)| {
+            let x = normals[i];
+            let y = station.tangent.cross(x);
+            flat.iter()
+                .map(|(a, b)| station.at + x * *a + y * *b)
+                .collect()
+        })
+        .collect();
+    let mut built = closed_skinned_solid(model, &rows, tolerance, tol)?;
+    built.history.generate(profile, built.shape.clone());
+    built.history.generate(spine, built.shape.clone());
+    Ok(built)
 }
 
 /// Sample a spine — one edge or a wire of them — into stations, each edge

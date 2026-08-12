@@ -732,3 +732,208 @@ fn a_ruled_loft_between_tilted_polygons_still_builds() {
         "the tilted loft encloses volume: {measured}"
     );
 }
+
+#[test]
+fn a_pipe_shell_round_a_closed_circle_matches_the_torus() {
+    // The case with an exact answer, which is what pins the holonomy
+    // correction: a circular profile round a circular spine is a torus.
+    let mut model = ogeom_topo::Model::new();
+    let ring_r = 10.0;
+    let circle = Circle::new(Frame::WORLD, ring_r, T).unwrap();
+    let curve: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(circle).into();
+    let domain = curve.domain();
+    let spine = ogeom_algo::make_edge(&mut model, curve, domain, T)
+        .unwrap()
+        .shape;
+
+    let start = Point::new(ring_r, 0.0, 0.0);
+    let normal = ogeom_math::Direction::new(ogeom_math::Vector::Y, T).unwrap();
+    let section = Circle::new(
+        Frame::new(start, normal, ogeom_math::Direction::Z, T).unwrap(),
+        1.0,
+        T,
+    )
+    .unwrap();
+    let scurve: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(section).into();
+    let sdomain = scurve.domain();
+    let sedge = ogeom_algo::make_edge(&mut model, scurve, sdomain, T)
+        .unwrap()
+        .shape;
+    let profile = ogeom_algo::make_wire(&mut model, std::slice::from_ref(&sedge), T)
+        .unwrap()
+        .shape;
+
+    let result =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 5e-3, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    let expected = 2.0 * core::f64::consts::PI * core::f64::consts::PI * ring_r;
+    let measured = ogeom_algo::volume_properties(
+        &model,
+        &result.shape,
+        ogeom_mesh::Deflection::with_chord(1e-3).unwrap(),
+        T,
+    )
+    .unwrap()
+    .mass;
+    assert!(
+        (measured - expected).abs() / expected < 0.01,
+        "closed pipe shell volume {measured} against {expected}"
+    );
+    assert!(!result.history.generated(&spine).is_empty());
+}
+
+#[test]
+fn a_round_profile_along_a_closed_square_spine_is_a_ring() {
+    // The closed square spine, its corners rounded the way a real ring's
+    // are: four straights and four quarter arcs, one G1 loop. The sharp
+    // corner is refused by name — no skin can turn a section through a
+    // finite angle over no arc — and the refusal test below pins that.
+    let mut model = ogeom_topo::Model::new();
+    let (half, r) = (8.0, 2.0);
+    let flat = half - r;
+    // Tangent points and corner arcs, walked counter-clockwise from the
+    // middle of the +x side.
+    let mut edges: Vec<ogeom_topo::Shape> = Vec::new();
+    let mut vertices: Vec<(ogeom_topo::Shape, Point)> = Vec::new();
+    let corner_centres = [
+        Point::new(flat, flat, 0.0),
+        Point::new(-flat, flat, 0.0),
+        Point::new(-flat, -flat, 0.0),
+        Point::new(flat, -flat, 0.0),
+    ];
+    // Each side's straight run, then the arc at its far corner.
+    for (i, _) in corner_centres.iter().enumerate() {
+        let angle = core::f64::consts::FRAC_PI_2 * f64::from(u8::try_from(i).unwrap());
+        let (c, s_) = (angle.cos(), angle.sin());
+        // Outward side direction and travel direction for side i.
+        let out = ogeom_math::Vector::new(c, s_, 0.0);
+        let along = ogeom_math::Vector::new(-s_, c, 0.0);
+        let from = Point::new(0.0, 0.0, 0.0) + out * half - along * flat;
+        let to = Point::new(0.0, 0.0, 0.0) + out * half + along * flat;
+        vertices.push((ogeom_algo::make_vertex(&mut model, from).shape, from));
+        vertices.push((ogeom_algo::make_vertex(&mut model, to).shape, to));
+        let _ = &corner_centres[i];
+    }
+    for i in 0..4 {
+        let (vf, pf) = vertices[2 * i].clone();
+        let (vt, pt) = vertices[2 * i + 1].clone();
+        let line = ogeom_geom::LineCurve::segment(pf, pt, T).unwrap();
+        let curve: ogeom_geom::Curve = line.into();
+        let domain = curve.domain();
+        edges.push(
+            ogeom_algo::make_edge_between(&mut model, curve, domain, &vf, &vt, T)
+                .unwrap()
+                .shape,
+        );
+        // The arc from this side's end to the next side's start, about the
+        // shared corner centre.
+        let (vn, _) = vertices[(2 * i + 2) % 8].clone();
+        let centre = corner_centres[i];
+        let frame = Frame::new(
+            centre,
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::new(pt - centre, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let circle = Circle::new(frame, r, T).unwrap();
+        let curve: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(circle).into();
+        edges.push(
+            ogeom_algo::make_edge_between(
+                &mut model,
+                curve,
+                (0.0, core::f64::consts::FRAC_PI_2),
+                &vt,
+                &vn,
+                T,
+            )
+            .unwrap()
+            .shape,
+        );
+    }
+    let spine = ogeom_algo::make_wire(&mut model, &edges, T).unwrap().shape;
+
+    // The profile at the first edge's own start, square to it.
+    let start = vertices[0].1;
+    let tangent = vertices[1].1 - vertices[0].1;
+    let normal = ogeom_math::Direction::new(tangent, T).unwrap();
+    let section = Circle::new(
+        Frame::new(start, normal, ogeom_math::Direction::Z, T).unwrap(),
+        1.0,
+        T,
+    )
+    .unwrap();
+    let scurve: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(section).into();
+    let sdomain = scurve.domain();
+    let sedge = ogeom_algo::make_edge(&mut model, scurve, sdomain, T)
+        .unwrap()
+        .shape;
+    let profile = ogeom_algo::make_wire(&mut model, std::slice::from_ref(&sedge), T)
+        .unwrap()
+        .shape;
+
+    let result =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 5e-2, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // One face bounding itself both ways round, and a volume in a coarse
+    // band of Pappus: the corners are smoothed by the skin.
+    assert_eq!(
+        explore(&model, &result.shape, Filter::OfType(ShapeType::Face))
+            .unwrap()
+            .len(),
+        1
+    );
+    // Pappus round the rounded square: perimeter = four flats and a full
+    // circle of corner arcs.
+    let perimeter = (2.0 * flat).mul_add(4.0, core::f64::consts::TAU * r);
+    let expected = core::f64::consts::PI * perimeter;
+    let measured = ogeom_algo::volume_properties(
+        &model,
+        &result.shape,
+        ogeom_mesh::Deflection::with_chord(1e-3).unwrap(),
+        T,
+    )
+    .unwrap()
+    .mass;
+    assert!(
+        (measured - expected).abs() / expected < 0.02,
+        "square ring volume {measured} against {expected}"
+    );
+}
+
+#[test]
+fn a_sharp_cornered_closed_spine_is_refused_by_name() {
+    let mut model = ogeom_topo::Model::new();
+    let corners = [
+        Point::new(8.0, -8.0, 0.0),
+        Point::new(8.0, 8.0, 0.0),
+        Point::new(-8.0, 8.0, 0.0),
+        Point::new(-8.0, -8.0, 0.0),
+    ];
+    let spine = ogeom_algo::make_polygon(&mut model, &corners, true, T)
+        .unwrap()
+        .shape;
+    let start = corners[0];
+    let normal = ogeom_math::Direction::new(corners[1] - corners[0], T).unwrap();
+    let section = Circle::new(
+        Frame::new(start, normal, ogeom_math::Direction::Z, T).unwrap(),
+        1.0,
+        T,
+    )
+    .unwrap();
+    let scurve: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(section).into();
+    let sdomain = scurve.domain();
+    let sedge = ogeom_algo::make_edge(&mut model, scurve, sdomain, T)
+        .unwrap()
+        .shape;
+    let profile = ogeom_algo::make_wire(&mut model, std::slice::from_ref(&sedge), T)
+        .unwrap()
+        .shape;
+    let err =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 5e-2, T).unwrap_err();
+    assert!(err.to_string().contains("sharp corner"), "{err}");
+}

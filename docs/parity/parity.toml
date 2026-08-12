@@ -1093,8 +1093,10 @@ exactly for straight and circular spines, skinned for free-form and helical \
 ones — the evolved sweep runs a profile along a planar spine, exactly, by \
 composition, and the pipe shell sweeps an arbitrary planar profile, holes \
 and all, along an open spine wire under a rotation-minimizing or Frenet \
-frame law. What is owed is the closed spine: the loop-back needs the \
-v-periodic skin. The code's refusals point here."""
+frame law — and a smooth single-loop profile round a closed spine, the \
+loop's holonomy paid off. What is owed on the loop: faceted and holed \
+profiles, the Frenet law, and the mitred ring round a sharp corner. The \
+code's refusals point here."""
 claims = [
     "BRepOffsetAPI_MakePipe", "BRepOffsetAPI_MakePipeShell",
     "BRepOffsetAPI_MakeEvolved", "BRepSweep_*", "BRepFill", "BRepFill_*",
