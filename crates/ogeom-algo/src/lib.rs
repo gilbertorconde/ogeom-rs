@@ -56,5 +56,5 @@ pub use primitive::{
 };
 pub use proximity::{ClosestPair, ShapeDistance, distance_between_shapes};
 pub use sew::{Sewn, make_wire_unordered, order_edges, sew};
-pub use sweep::{make_prism, make_revolution};
+pub use sweep::{make_prism, make_prism_tapered, make_revolution};
 pub use text::make_text;

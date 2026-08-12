@@ -784,6 +784,7 @@ symbols = [
     "ogeom_algo::make_box", "ogeom_algo::make_wedge", "ogeom_algo::make_cylinder",
     "ogeom_algo::make_cone", "ogeom_algo::make_sphere", "ogeom_algo::make_torus",
     "ogeom_algo::make_half_space", "ogeom_algo::make_prism",
+    "ogeom_algo::make_prism_tapered",
     "ogeom_algo::make_revolution",
 ]
 tests = ["crates/ogeom-algo/src/primitive.rs", "crates/ogeom/tests/built_by_hand.rs"]

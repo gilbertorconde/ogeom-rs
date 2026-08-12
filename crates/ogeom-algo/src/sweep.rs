@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use core::f64::consts::TAU;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve3d, ExtrusionSurface, Line2d, PlanarCurve, Transformable};
-use ogeom_math::{Axis, Circle, Direction, Frame, Point2, Transform, Vector};
+use ogeom_math::{Axis, Circle, Direction, Frame, Point, Point2, Transform, Vector};
 use ogeom_topo::{EdgeRepr, Location, Model, NodeData, Orientation, Shape, ShapeType, TShapeId};
 
 use crate::build::{make_face_on, make_shell, make_solid, make_wire};
@@ -101,6 +101,386 @@ pub fn make_prism(
              a face"
         ),
     }
+}
+
+/// Sweep a planar face into a tapered prism: every wall leans by `taper`.
+///
+/// The draft-prism semantics: each section is the profile's own offset at
+/// the rate the taper names — the outer loop outward, holes inward — so a
+/// positive taper widens the far end and narrows every hole, and each wall
+/// makes exactly `taper` with the travel. The far ring is genuinely new
+/// topology: a taper breaks the plain prism's the-top-is-the-bottom-moved
+/// invariant, so corners re-solve where the offset lines meet, straight
+/// walls come out as exact tilted planes, and a full circular hole's wall
+/// is an exact cone.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// profile is not a planar face, the travel is not square to it, a profile
+/// edge is neither straight nor a full circle (the curved-wall taper needs a
+/// fitted ruling — docs/PARITY.md, offset.sweeps), or the taper collapses a
+/// loop over the height.
+pub fn make_prism_tapered(
+    model: &mut Model,
+    profile: &Shape,
+    vector: Vector,
+    taper: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    use ogeom_geom::Curve;
+
+    if !taper.is_finite() || taper.abs() <= tol.angular() {
+        return make_prism(model, profile, vector, tol);
+    }
+    if taper.abs() >= core::f64::consts::FRAC_PI_2 - tol.angular() {
+        ogeom_bail!(Construction, "a taper of {taper} flattens the prism");
+    }
+    let travel = vector.magnitude();
+    if !travel.is_finite() || travel <= tol.confusion() {
+        ogeom_bail!(Construction, "a sweep along {vector:?} goes nowhere");
+    }
+    if model.kind_of(profile)? != ShapeType::Face {
+        ogeom_bail!(
+            Construction,
+            "a tapered prism encloses volume; sweep a planar face"
+        );
+    }
+    let Some(plane) = crate::build::find_plane(model, profile, tol)? else {
+        ogeom_bail!(Construction, "a tapered prism sweeps a planar face");
+    };
+    let mut normal = plane.normal().vector();
+    if normal.cross(vector / travel).magnitude() > tol.angular().max(1e-9) {
+        ogeom_bail!(
+            Construction,
+            "an oblique tapered sweep is ambiguous about its own sections; \
+             the travel must run square to the profile"
+        );
+    }
+    // Everything below leans on the travel direction, not the face's own
+    // normal sign.
+    if normal.dot(vector) < 0.0 {
+        normal = -normal;
+    }
+    let up = Direction::new(normal, tol)?;
+    let spread = travel * taper.tan();
+
+    let mut history = History::new();
+    let mut faces: Vec<Shape> = Vec::new();
+    let mut near_wires: Vec<Shape> = Vec::new();
+    let mut far_wires: Vec<Shape> = Vec::new();
+    for wire in model.children_of(profile)? {
+        let edges = model.ordered_children_of(&wire)?;
+        // A loop of one closed circle tapers as a cone; a loop of straight
+        // edges tapers as tilted planes with re-mitred corners.
+        let lone_circle = edges.len() == 1 && {
+            let (curve, _) = edge_geometry(model, &edges[0])?;
+            matches!(curve, Curve::Circle(_))
+        };
+        if lone_circle {
+            let (curve, range) = edge_geometry(model, &edges[0])?;
+            let Curve::Circle(c) = curve else {
+                unreachable!("just matched")
+            };
+            let circle = c.circle();
+            // Which way is away from the material, by measurement: probe a
+            // little outside the ring and ask the face. Windings are not to
+            // be trusted — a hole's wire may come wound either way.
+            let start = c.point_at(range.0, tol)?;
+            let radial = (start - circle.centre()) / circle.radius();
+            let sigma = away_sign(model, profile, start, radial, circle.radius(), tol)?;
+            let far_radius = sigma.mul_add(spread, circle.radius());
+            if far_radius <= tol.confusion() {
+                ogeom_bail!(
+                    Construction,
+                    "the taper collapses a circular loop of radius {} over \
+                     this height",
+                    circle.radius()
+                );
+            }
+            let near_frame = Frame::new(circle.centre(), up, circle.frame().x(), tol)?;
+            let far_frame = Frame::new(circle.centre() + vector, up, circle.frame().x(), tol)?;
+            let near_curve: Curve =
+                ogeom_geom::CircleCurve::new(Circle::new(near_frame, circle.radius(), tol)?).into();
+            let near_domain = near_curve.domain();
+            let near = crate::build::make_edge(model, near_curve, near_domain, tol)?.shape;
+            let far_curve: Curve =
+                ogeom_geom::CircleCurve::new(Circle::new(far_frame, far_radius, tol)?).into();
+            let far_domain = far_curve.domain();
+            let far = crate::build::make_edge(model, far_curve, far_domain, tol)?.shape;
+            // The wall cone: reference radius at the near plane, the radius
+            // running to the far one; the surface's own normal points away
+            // from the axis, which is outward exactly when the material is
+            // inside the ring.
+            let slope = (far_radius - circle.radius()) / travel;
+            let cone = ogeom_math::Cone::new(near_frame, circle.radius(), slope.atan(), tol)?;
+            let pad = travel * 0.1;
+            let surface: ogeom_geom::SurfaceGeometry =
+                ogeom_geom::ConeSurface::new(cone, (-pad, travel + pad))?.into();
+            let band = crate::build::make_revolution_band(model, &surface, &near, &far, tol)?;
+            let wall = if sigma > 0.0 { band } else { band.reversed() };
+            model.set_derived(&wall, std::slice::from_ref(&edges[0]), roles::SWEEP_SIDE)?;
+            history.generate(&edges[0], wall.clone());
+            faces.push(wall);
+            near_wires.push(make_wire(model, std::slice::from_ref(&near), tol)?.shape);
+            far_wires.push(make_wire(model, std::slice::from_ref(&far), tol)?.shape);
+            continue;
+        }
+
+        // Straight loops: offset every line away from the material and
+        // re-mitre the corners in the far plane.
+        let mut corners_near: Vec<Point> = Vec::new();
+        let mut aways: Vec<Vector> = Vec::new();
+        let mut dirs: Vec<Vector> = Vec::new();
+        for edge in &edges {
+            let (curve, range) = edge_geometry(model, edge)?;
+            let Curve::Line(_) = curve else {
+                ogeom_bail!(
+                    Construction,
+                    "a tapered wall over an edge that is neither straight nor \
+                     a full circle needs a fitted ruling — docs/PARITY.md, \
+                     offset.sweeps"
+                );
+            };
+            let reversed = edge.orientation() == Orientation::Reversed;
+            let (t0, t1) = if reversed {
+                (range.1, range.0)
+            } else {
+                (range.0, range.1)
+            };
+            let from = curve.point_at(t0, tol)?;
+            let to = curve.point_at(t1, tol)?;
+            let dir = (to - from) / from.distance(to);
+            corners_near.push(from);
+            dirs.push(dir);
+            aways.push(dir.cross(up.vector()));
+        }
+        let count = corners_near.len();
+        if count < 3 {
+            ogeom_bail!(Construction, "a straight loop needs at least three edges");
+        }
+        // The loop's material side, measured once and applied to every edge:
+        // the wire's own winding is not to be trusted for holes.
+        let flip = {
+            let mid = corners_near[0] + dirs[0] * (corners_near[0].distance(corners_near[1]) / 2.0);
+            let scale = corners_near[0].distance(corners_near[1]);
+            away_sign(model, profile, mid, aways[0], scale, tol)?
+        };
+        if flip < 0.0 {
+            for a in &mut aways {
+                *a = -*a;
+            }
+        }
+        // Far corners: each is where the two neighbouring offset lines meet,
+        // in the far plane.
+        let mut corners_far: Vec<Point> = Vec::with_capacity(count);
+        for i in 0..count {
+            let prev = (i + count - 1) % count;
+            let (d0, d1) = (dirs[prev], dirs[i]);
+            let (a0, a1) = (aways[prev], aways[i]);
+            let p0 = corners_near[i] + a0 * spread + vector;
+            let p1 = corners_near[i] + a1 * spread + vector;
+            let cross = d0.cross(d1);
+            let m = cross.magnitude();
+            let far = if m <= tol.angular() {
+                // Collinear neighbours offset to the same line.
+                p1
+            } else {
+                // Solve p0 + s d0 = p1 + t d1 in the loop's own plane.
+                let w = p1 - p0;
+                let s = w.cross(d1).dot(cross) / (m * m);
+                p0 + d0 * s
+            };
+            corners_far.push(far);
+        }
+        for (i, far) in corners_far.iter().enumerate() {
+            let next = corners_far[(i + 1) % count];
+            let d = next - *far;
+            if d.magnitude() <= tol.confusion() || d.dot(dirs[i]) <= 0.0 {
+                ogeom_bail!(
+                    Construction,
+                    "the taper collapses the profile's loop over this height"
+                );
+            }
+        }
+
+        let near_vertices: Vec<Shape> = corners_near
+            .iter()
+            .map(|p| crate::build::make_vertex(model, *p).shape)
+            .collect();
+        let far_vertices: Vec<Shape> = corners_far
+            .iter()
+            .map(|p| crate::build::make_vertex(model, *p).shape)
+            .collect();
+        let segment =
+            |model: &mut Model, from: (&Shape, Point), to: (&Shape, Point)| -> OgeomResult<Shape> {
+                let line = ogeom_geom::LineCurve::segment(from.1, to.1, tol)?;
+                let curve: Curve = line.into();
+                let domain = curve.domain();
+                Ok(crate::build::make_edge_between(model, curve, domain, from.0, to.0, tol)?.shape)
+            };
+        let mut near_edges = Vec::with_capacity(count);
+        let mut far_edges = Vec::with_capacity(count);
+        let mut rails = Vec::with_capacity(count);
+        for i in 0..count {
+            let next = (i + 1) % count;
+            near_edges.push(segment(
+                model,
+                (&near_vertices[i], corners_near[i]),
+                (&near_vertices[next], corners_near[next]),
+            )?);
+            far_edges.push(segment(
+                model,
+                (&far_vertices[i], corners_far[i]),
+                (&far_vertices[next], corners_far[next]),
+            )?);
+            rails.push(segment(
+                model,
+                (&near_vertices[i], corners_near[i]),
+                (&far_vertices[i], corners_far[i]),
+            )?);
+        }
+        for (i, edge) in edges.iter().enumerate() {
+            let next = (i + 1) % count;
+            // The wall's own plane: through the near edge, leaning with the
+            // rails. Its normal is the in-plane away tilted by the taper,
+            // which faces off the material by construction.
+            let outward = {
+                let lean = aways[i] * taper.cos() - up.vector() * taper.sin();
+                Direction::new(lean, tol)?
+            };
+            let wall_plane = ogeom_math::Plane::through(corners_near[i], outward);
+            let mut reach = travel + 1.0_f64;
+            for p in [
+                corners_near[i],
+                corners_near[next],
+                corners_far[i],
+                corners_far[next],
+            ] {
+                reach = reach.max(p.distance(corners_near[i]) * 2.0);
+            }
+            let surface: ogeom_geom::SurfaceGeometry =
+                ogeom_geom::PlaneSurface::over(wall_plane, (-reach, reach), (-reach, reach))?
+                    .into();
+            let wall = crate::build::make_face_with_pcurves(
+                model,
+                surface,
+                &[vec![
+                    near_edges[i].clone(),
+                    rails[next].clone(),
+                    far_edges[i].reversed(),
+                    rails[i].reversed(),
+                ]],
+                tol,
+            )?
+            .shape;
+            model.set_derived(&wall, std::slice::from_ref(edge), roles::SWEEP_SIDE)?;
+            history.generate(edge, wall.clone());
+            faces.push(wall);
+        }
+        near_wires.push(make_wire(model, &near_edges, tol)?.shape);
+        far_wires.push(make_wire(model, &far_edges, tol)?.shape);
+    }
+
+    // Caps: the near one facing backwards, both rebuilt over the fresh rings
+    // so every wall shares its vertices.
+    let near_surface: ogeom_geom::SurfaceGeometry = {
+        let base = ogeom_math::Plane::through(plane.origin(), up);
+        ogeom_geom::PlaneSurface::over(base, (-1e6, 1e6), (-1e6, 1e6))?.into()
+    };
+    let far_surface: ogeom_geom::SurfaceGeometry = {
+        let lifted = ogeom_math::Plane::through(plane.origin() + vector, up);
+        ogeom_geom::PlaneSurface::over(lifted, (-1e6, 1e6), (-1e6, 1e6))?.into()
+    };
+    let bottom = crate::build::make_face(model, near_surface, &near_wires, tol)?
+        .shape
+        .reversed();
+    let top = crate::build::make_face(model, far_surface, &far_wires, tol)?.shape;
+    attach_cap_pcurves(model, &bottom, tol)?;
+    attach_cap_pcurves(model, &top, tol)?;
+    model.set_derived(&bottom, std::slice::from_ref(profile), roles::SWEEP_BOTTOM)?;
+    model.set_derived(&top, std::slice::from_ref(profile), roles::SWEEP_TOP)?;
+    history.generate(profile, top.clone());
+    faces.push(bottom);
+    faces.push(top);
+
+    let sewn = crate::sew(model, &faces, tol)?;
+    if sewn.shells.len() != 1 || !crate::build::is_shell_closed(model, &sewn.shells[0])? {
+        ogeom_bail!(Construction, "the tapered prism did not close");
+    }
+    let solid = make_solid(model, std::slice::from_ref(&sewn.shells[0]))?.shape;
+    history.generate(profile, solid.clone());
+    Ok(Built::new(solid, history))
+}
+
+/// The sign that points `candidate` away from the face's material at `at`,
+/// probed against the face's own trim at a few scales of `scale`.
+fn away_sign(
+    model: &Model,
+    face: &Shape,
+    at: Point,
+    candidate: Vector,
+    scale: f64,
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    for factor in [1e-3, 1e-2, 5e-2] {
+        let eps = scale * factor;
+        let deflection = ogeom_mesh::Deflection {
+            chord: eps * 0.1,
+            ..ogeom_mesh::Deflection::default()
+        };
+        for sign in [1.0_f64, -1.0] {
+            let probe = at + candidate * (sign * eps);
+            if crate::classify_on_face(model, face, probe, deflection, tol)?
+                == crate::Containment::In
+            {
+                // Material on this side: away is the other one.
+                return Ok(-sign);
+            }
+        }
+    }
+    ogeom_bail!(
+        Construction,
+        "cannot read which side of the profile the material is on"
+    )
+}
+
+/// An edge's 3D curve and range, cloned out of the model.
+fn edge_geometry(model: &Model, edge: &Shape) -> OgeomResult<(ogeom_geom::Curve, (f64, f64))> {
+    let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
+        ogeom_bail!(Construction, "an edge holds no data");
+    };
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        ogeom_bail!(Construction, "an edge has no curve");
+    };
+    let Some(geometry) = model.geometry().curve(*curve) else {
+        ogeom_bail!(Dangling, "curve is not in this model");
+    };
+    Ok((geometry.clone(), *range))
+}
+
+/// Attach exact pcurves to every edge of a planar cap that lacks one.
+fn attach_cap_pcurves(model: &mut Model, cap: &Shape, tol: Tolerances) -> OgeomResult<()> {
+    let cap_id = {
+        let Some(node) = model.node(cap) else {
+            ogeom_bail!(Dangling, "the cap just built is not in this model");
+        };
+        let NodeData::Face(data) = node.data() else {
+            ogeom_bail!(Construction, "the cap holds no face data");
+        };
+        data.surface
+    };
+    let Some(surface) = model.geometry().surface(cap_id).cloned() else {
+        ogeom_bail!(Dangling, "the cap's surface is not in this model");
+    };
+    for edge in ogeom_topo::explore(model, cap, ogeom_topo::Filter::OfType(ShapeType::Edge))? {
+        let (curve, range) = edge_geometry(model, &edge)?;
+        let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&curve, &surface, tol) else {
+            ogeom_bail!(Construction, "a cap edge has no closed-form pcurve");
+        };
+        crate::build::attach_pcurve(model, &edge, pcurve, cap_id, Location::identity(), range)?;
+    }
+    Ok(())
 }
 
 /// A face swept into a solid.
@@ -1207,6 +1587,228 @@ mod tests {
     /// A square face in the xy plane, one unit on a side from the origin.
     fn square(model: &mut Model, side: f64) -> Shape {
         box_face(model, side, crate::primitive::roles::FACE_MAX_Z)
+    }
+
+    #[test]
+    fn a_tapered_square_prism_is_the_frustum_the_closed_form_names() {
+        let mut model = Model::new();
+        let profile = square(&mut model, 10.0);
+        let taper = 5.0_f64.to_radians();
+        let built =
+            crate::make_prism_tapered(&mut model, &profile, Vector::new(0.0, 0.0, 10.0), taper, T)
+                .unwrap();
+        let diagnosis = crate::check(&model, &built.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+        // The far face measures 10 plus twice the height times the tangent
+        // per side: its corner vertex says so directly.
+        let d = 10.0 * taper.tan();
+        let has_far_corner = explore_unique(&model, &built.shape, ShapeType::Vertex)
+            .unwrap()
+            .into_iter()
+            .any(|v| {
+                model
+                    .node(&v)
+                    .and_then(|n| n.data().as_vertex().map(|data| data.point))
+                    .is_some_and(|p| {
+                        (p.z - 20.0).abs() < 1e-9
+                            && (p.x + d).abs() < 1e-9
+                            && (p.y + d).abs() < 1e-9
+                    })
+            });
+        assert!(has_far_corner, "the far ring widened by the taper");
+
+        // All-planar, so the mesh integrates the frustum exactly.
+        let (a0, a1) = (100.0, (10.0 + 2.0 * d) * (10.0 + 2.0 * d));
+        let expected = 10.0 / 3.0 * (a1.mul_add(1.0, a0) + (a0 * a1).sqrt());
+        let measured = volume_properties(&model, &built.shape, Deflection::default(), T)
+            .unwrap()
+            .mass;
+        assert!(
+            (measured - expected).abs() < 1e-6,
+            "tapered prism volume {measured} against {expected}"
+        );
+        assert!(!built.history.generated(&profile).is_empty());
+    }
+
+    #[test]
+    fn a_hole_tapers_with_its_profile_into_a_cone() {
+        let mut model = Model::new();
+        // A 10 mm square with an off-centre round hole.
+        let plane = ogeom_math::Plane::new(Frame::WORLD);
+        let corners = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(10.0, 10.0, 0.0),
+            Point::new(0.0, 10.0, 0.0),
+        ];
+        let outer = crate::build::make_polygon(&mut model, &corners, true, T)
+            .unwrap()
+            .shape;
+        let hole_centre = Point::new(3.5, 6.0, 0.0);
+        let hole_r = 2.0;
+        let circle = Circle::new(
+            Frame::new(
+                hole_centre,
+                ogeom_math::Direction::Z,
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap(),
+            hole_r,
+            T,
+        )
+        .unwrap();
+        let curve: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(circle).into();
+        let domain = curve.domain();
+        let ring = crate::build::make_edge(&mut model, curve, domain, T)
+            .unwrap()
+            .shape;
+        let hole = make_wire(&mut model, std::slice::from_ref(&ring), T)
+            .unwrap()
+            .shape;
+        let surface: ogeom_geom::SurfaceGeometry =
+            ogeom_geom::PlaneSurface::over(plane, (-20.0, 20.0), (-20.0, 20.0))
+                .unwrap()
+                .into();
+        let outer_edges = model.ordered_children_of(&outer).unwrap();
+        let profile = crate::build::make_face_with_pcurves(
+            &mut model,
+            surface,
+            &[outer_edges, vec![ring.clone()]],
+            T,
+        )
+        .unwrap()
+        .shape;
+        let _ = hole;
+
+        let taper = 5.0_f64.to_radians();
+        let built =
+            crate::make_prism_tapered(&mut model, &profile, Vector::new(0.0, 0.0, 10.0), taper, T)
+                .unwrap();
+        let diagnosis = crate::check(&model, &built.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+        // The hole's wall is a genuine cone, narrowing with height wherever
+        // the hole sits in the profile.
+        let cones = explore_unique(&model, &built.shape, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .filter(|f| {
+                model
+                    .node(f)
+                    .and_then(|n| n.data().as_face())
+                    .and_then(|d| model.geometry().surface(d.surface))
+                    .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::Cone(_)))
+            })
+            .count();
+        assert_eq!(cones, 1, "the hole wall is a cone");
+
+        let pi = core::f64::consts::PI;
+        let d = 10.0 * taper.tan();
+        let (a0, a1) = (100.0, (10.0 + 2.0 * d) * (10.0 + 2.0 * d));
+        let outer_frustum = 10.0 / 3.0 * (a1.mul_add(1.0, a0) + (a0 * a1).sqrt());
+        let r1 = hole_r - d;
+        let hole_frustum = pi * 10.0 / 3.0 * (hole_r.mul_add(hole_r, hole_r * r1) + r1 * r1);
+        let expected = outer_frustum - hole_frustum;
+        let measured = volume_properties(&model, &built.shape, deflection(1e-3), T)
+            .unwrap()
+            .mass;
+        assert!(
+            (measured - expected).abs() < 5e-2,
+            "holed tapered prism volume {measured} against {expected}"
+        );
+    }
+
+    #[test]
+    fn a_taper_that_collapses_a_hole_is_refused_by_name() {
+        let mut model = Model::new();
+        let plane = ogeom_math::Plane::new(Frame::WORLD);
+        let corners = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(10.0, 10.0, 0.0),
+            Point::new(0.0, 10.0, 0.0),
+        ];
+        let outer = crate::build::make_polygon(&mut model, &corners, true, T)
+            .unwrap()
+            .shape;
+        let circle = Circle::new(
+            Frame::new(
+                Point::new(5.0, 5.0, 0.0),
+                ogeom_math::Direction::Z,
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap(),
+            1.0,
+            T,
+        )
+        .unwrap();
+        let curve: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(circle).into();
+        let domain = curve.domain();
+        let ring = crate::build::make_edge(&mut model, curve, domain, T)
+            .unwrap()
+            .shape;
+        let hole = make_wire(&mut model, std::slice::from_ref(&ring), T)
+            .unwrap()
+            .shape;
+        let surface: ogeom_geom::SurfaceGeometry =
+            ogeom_geom::PlaneSurface::over(plane, (-20.0, 20.0), (-20.0, 20.0))
+                .unwrap()
+                .into();
+        let outer_edges = model.ordered_children_of(&outer).unwrap();
+        let profile = crate::build::make_face_with_pcurves(
+            &mut model,
+            surface,
+            &[outer_edges, vec![ring.clone()]],
+            T,
+        )
+        .unwrap()
+        .shape;
+        let _ = hole;
+        let err = crate::make_prism_tapered(
+            &mut model,
+            &profile,
+            Vector::new(0.0, 0.0, 10.0),
+            8.0_f64.to_radians(),
+            T,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("collapses"), "{err}");
+    }
+
+    #[test]
+    fn a_curved_profile_edge_is_refused_by_name() {
+        let mut model = Model::new();
+        let plane = ogeom_math::Plane::new(Frame::WORLD);
+        let ellipse = ogeom_math::Ellipse::new(Frame::WORLD, 4.0, 2.0, T).unwrap();
+        let curve: ogeom_geom::Curve = ogeom_geom::EllipseCurve::new(ellipse).into();
+        let domain = curve.domain();
+        let ring = crate::build::make_edge(&mut model, curve, domain, T)
+            .unwrap()
+            .shape;
+        let wire = make_wire(&mut model, std::slice::from_ref(&ring), T)
+            .unwrap()
+            .shape;
+        let surface: ogeom_geom::SurfaceGeometry =
+            ogeom_geom::PlaneSurface::over(plane, (-10.0, 10.0), (-10.0, 10.0))
+                .unwrap()
+                .into();
+        let profile =
+            crate::build::make_face_with_pcurves(&mut model, surface, &[vec![ring.clone()]], T)
+                .unwrap()
+                .shape;
+        let _ = wire;
+        let err = crate::make_prism_tapered(
+            &mut model,
+            &profile,
+            Vector::new(0.0, 0.0, 5.0),
+            5.0_f64.to_radians(),
+            T,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("fitted ruling"), "{err}");
     }
 
     #[test]
