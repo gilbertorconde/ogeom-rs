@@ -55,7 +55,7 @@ use ogeom_topo::{
     EdgeRepr, Filter, Location, Model, NodeData, Shape, ShapeType, explore, explore_unique,
 };
 
-use arrange::{Strand, Traversal, assemble as arrange_pieces, inside_many};
+use arrange::{Strand, Traversal, assemble as arrange_pieces, inside_many, inside_many_slanted};
 
 /// Parameter-space chord for the polyline scaffolding.
 const SCAFFOLD_CHORD: f64 = 1e-3;
@@ -2135,7 +2135,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                         .filter(|st| st.boundary)
                         .map(|st| st.polyline.as_slice())
                         .collect();
-                    if !inside_many(&boundary_lines, mid) {
+                    if !inside_many_slanted(&boundary_lines, mid) {
                         continue;
                     }
                     strands.push(Strand {

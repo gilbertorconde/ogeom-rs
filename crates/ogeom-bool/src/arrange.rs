@@ -342,6 +342,41 @@ fn ray_crosses_segment<P: Predicates>(a: Point2, b: Point2, p: Point2) -> bool {
     }
 }
 
+/// As [`ray_crosses_segment`], with the ray leaning off the axes.
+fn slanted_ray_crosses_segment<P: Predicates>(a: Point2, b: Point2, p: Point2) -> bool {
+    // A tangent chain puts whole strands exactly along an axis-aligned
+    // junction line, where a horizontal ray grazes corner after corner
+    // inside rounding noise and counts them at random. No real boundary
+    // runs along this slope.
+    const SLANT: f64 = 0.618_033_988_749_894_9;
+    let shifted = [p.x + 1.0, p.y + SLANT];
+    let above = |q: Point2| P::orient2d([p.x, p.y], shifted, [q.x, q.y]) == Sign::Positive;
+    if above(a) == above(b) {
+        return false;
+    }
+    let side = P::orient2d([a.x, a.y], [b.x, b.y], [p.x, p.y]);
+    if above(b) {
+        side == Sign::Positive
+    } else {
+        side == Sign::Negative
+    }
+}
+
+/// Even-odd containment with the leaning ray: the entry for probes that may
+/// legitimately sit along an axis-aligned line of the boundary — a contact
+/// strand down a tangent junction — where the horizontal ray is degenerate.
+pub(crate) fn inside_many_slanted(lines: &[&[Point2]], p: Point2) -> bool {
+    let mut inside = false;
+    for line in lines {
+        for w in line.windows(2) {
+            if slanted_ray_crosses_segment::<Exact>(w[0], w[1], p) {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
 /// Even-odd containment of a point in one closed polyline.
 fn inside(ring: &[Point2], p: Point2) -> bool {
     let mut inside = false;
