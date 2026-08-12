@@ -371,7 +371,7 @@ fn corner_of(model: &Model, wire: &Shape, vertex: &Shape, tol: Tolerances) -> Og
 
     let side = |model: &Model, index: usize, corner_at_end: bool| -> OgeomResult<Side> {
         let used = edges[index].clone();
-        let (curve, range) = edge_curve(model, &used)?;
+        let (curve, range) = edge_curve(model, &used, tol)?;
         if !matches!(curve, Curve::Line(_) | Curve::Circle(_)) {
             ogeom_bail!(
                 Construction,
@@ -441,7 +441,7 @@ fn rebuild(
                  past the corner's neighbours"
             );
         }
-        let (curve, range) = edge_curve(model, &side.used)?;
+        let (curve, range) = edge_curve(model, &side.used, tol)?;
         let contact = trim.mul_add(side.sense, side.at);
         let new_range = if side.sense > 0.0 {
             (contact, range.1)

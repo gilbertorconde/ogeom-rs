@@ -38,7 +38,7 @@ pub(crate) fn marched_fillet(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    let (stored_guide, edge_range) = edge_curve(model, edge)?;
+    let (stored_guide, edge_range) = edge_curve(model, edge, tol)?;
     // The seat is the whole loop even when the boolean split it into arcs:
     // the apex ring runs the curve's full turn, and every arc of the old
     // seat melts with the legs. A conic arc is re-opened to its full
@@ -65,7 +65,7 @@ pub(crate) fn marched_fillet(
     for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
         let touches = explore(model, &face, Filter::OfType(ShapeType::Edge))?
             .iter()
-            .any(|e| e.node() == edge.node());
+            .any(|e| crate::support::same_occurrence(model, e, edge, tol));
         if !touches {
             continue;
         }

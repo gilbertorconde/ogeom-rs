@@ -1035,7 +1035,8 @@ claims = [
     "FilletSurf_*", "AppBlend_Approx",
 ]
 symbols = [
-    "ogeom_fillet::fillet_edge", "ogeom_fillet::fillet_edge_variable",
+    "ogeom_fillet::fillet_edge", "ogeom_fillet::fillet_edges",
+    "ogeom_fillet::fillet_edge_variable",
     "ogeom_fillet::march_blend", "ogeom_fillet::blend_faces",
     "ogeom_fillet::MarchedBlend",
 ]
@@ -1043,6 +1044,7 @@ tests = [
     "crates/ogeom/tests/blends.rs",
     "crates/ogeom-fillet/tests/marched_blend.rs",
     "crates/ogeom-fillet/tests/marched_fillet.rs",
+    "crates/ogeom-fillet/tests/chain.rs",
     "crates/ogeom-fillet/tests/fillet.rs",
 ]
 

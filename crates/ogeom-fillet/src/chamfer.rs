@@ -49,7 +49,7 @@ pub fn chamfer_edge(
     distance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    match seat_kind(model, edge)? {
+    match seat_kind(model, edge, tol)? {
         SeatKind::Straight => {
             let seat = planar_seat(model, solid, edge, tol)?;
             bevel(model, solid, edge, &seat, [distance, distance], tol)
@@ -80,7 +80,7 @@ pub fn chamfer_edge_distances(
     on_other: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    match seat_kind(model, edge)? {
+    match seat_kind(model, edge, tol)? {
         SeatKind::Straight => {
             let seat = planar_seat(model, solid, edge, tol)?;
             let i = seat_side(&seat, face)?;
@@ -123,7 +123,7 @@ pub fn chamfer_edge_angle(
             "a chamfer at an angle of {angle} cuts nothing"
         );
     }
-    match seat_kind(model, edge)? {
+    match seat_kind(model, edge, tol)? {
         SeatKind::Straight => {
             let seat = planar_seat(model, solid, edge, tol)?;
             let i = seat_side(&seat, face)?;
@@ -176,8 +176,8 @@ enum SeatKind {
     Rim(ogeom_geom::CircleCurve),
 }
 
-fn seat_kind(model: &Model, edge: &Shape) -> OgeomResult<SeatKind> {
-    let (curve, _) = edge_curve(model, edge)?;
+fn seat_kind(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomResult<SeatKind> {
+    let (curve, _) = edge_curve(model, edge, tol)?;
     match curve {
         Curve::Line(_) => Ok(SeatKind::Straight),
         Curve::Circle(c) => Ok(SeatKind::Rim(c)),

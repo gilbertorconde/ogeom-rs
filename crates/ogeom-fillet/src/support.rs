@@ -53,7 +53,45 @@ impl Seat {
 }
 
 /// An edge's 3D curve and range, cloned out of the model.
-pub(crate) fn edge_curve(model: &Model, edge: &Shape) -> OgeomResult<(Curve, (f64, f64))> {
+/// Whether `candidate` is the same edge occurrence as `edge`: the same node,
+/// placed the same way in the world. Two references through different
+/// location paths that compose to one placement are the same occurrence; the
+/// same node re-instanced elsewhere — a prism's profile edge at both caps —
+/// is not.
+pub(crate) fn same_occurrence(
+    model: &Model,
+    candidate: &Shape,
+    edge: &Shape,
+    tol: Tolerances,
+) -> bool {
+    if candidate.node() != edge.node() {
+        return false;
+    }
+    if candidate.is_same(edge) {
+        return true;
+    }
+    let (Ok(a), Ok(b)) = (
+        candidate.transform(model.datums()),
+        edge.transform(model.datums()),
+    ) else {
+        return false;
+    };
+    use ogeom_math::Point;
+    [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(1.0, 0.0, 0.0),
+        Point::new(0.0, 1.0, 0.0),
+        Point::new(0.0, 0.0, 1.0),
+    ]
+    .into_iter()
+    .all(|p| a.apply(p).distance(b.apply(p)) <= tol.confusion())
+}
+
+pub(crate) fn edge_curve(
+    model: &Model,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<(Curve, (f64, f64))> {
     let Some(node) = model.node(edge) else {
         ogeom_bail!(Dangling, "edge is not in this model");
     };
@@ -66,7 +104,14 @@ pub(crate) fn edge_curve(model: &Model, edge: &Shape) -> OgeomResult<(Curve, (f6
     let Some(geometry) = model.geometry().curve(*curve) else {
         ogeom_bail!(Dangling, "curve is not in this model");
     };
-    Ok((geometry.clone(), *range))
+    // Baked into the world: the edge lives wherever its placement puts it,
+    // and every seat is measured there. A rigid placement preserves the
+    // parameterization, so the stored range carries over unchanged.
+    use ogeom_geom::Transformable as _;
+    let placed = geometry
+        .clone()
+        .transformed(&edge.transform(model.datums())?, tol)?;
+    Ok((placed, *range))
 }
 
 /// Find the seat of a blend: the straight edge's ends and direction, and the
@@ -87,7 +132,7 @@ pub(crate) fn planar_seat(
     edge: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<Seat> {
-    let (curve, range) = edge_curve(model, edge)?;
+    let (curve, range) = edge_curve(model, edge, tol)?;
     let Curve::Line(_) = &curve else {
         ogeom_bail!(
             Construction,
@@ -104,7 +149,7 @@ pub(crate) fn planar_seat(
     for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
         let touches = explore(model, &face, Filter::OfType(ShapeType::Edge))?
             .iter()
-            .any(|e| e.node() == edge.node());
+            .any(|e| same_occurrence(model, e, edge, tol));
         if !touches {
             continue;
         }
@@ -280,7 +325,7 @@ pub(crate) fn revolved_seat(
     for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
         let touches = explore(model, &face, Filter::OfType(ShapeType::Edge))?
             .iter()
-            .any(|e| e.node() == edge.node());
+            .any(|e| same_occurrence(model, e, edge, tol));
         if !touches {
             continue;
         }
@@ -355,13 +400,13 @@ pub(crate) fn revolved_seat(
     let tau = {
         let mut side = None;
         for e in explore(model, &wall_face, Filter::OfType(ShapeType::Edge))? {
-            if e.node() == edge.node() {
+            if same_occurrence(model, &e, edge, tol) {
                 continue;
             }
             // Any circular edge of the wall at another height says which
             // side the wall extends — whether the ring survives as one
             // closed edge or as the arcs a boolean rebuilt it into.
-            let Ok((curve, _)) = edge_curve(model, &e) else {
+            let Ok((curve, _)) = edge_curve(model, &e, tol) else {
                 continue;
             };
             let Curve::Circle(c) = curve else {
@@ -458,7 +503,7 @@ pub(crate) fn revolved_flanks(
             data.surface
         };
         for pedge in explore(model, &face, Filter::OfType(ShapeType::Edge))? {
-            let (curve, prange) = edge_curve(model, &pedge)?;
+            let (curve, prange) = edge_curve(model, &pedge, tol)?;
             let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&curve, &surface, tol) else {
                 ogeom_bail!(
                     Construction,
