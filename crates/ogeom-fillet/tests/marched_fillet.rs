@@ -206,3 +206,40 @@ fn the_seam_of_a_branch_cylinder_gains_a_marched_fillet() {
         });
     assert!(has_spline_face, "the blend face rides its fitted surface");
 }
+
+#[test]
+fn two_equal_drums_refuse_the_tangent_pole_by_name() {
+    // Equal radii pinch: the seam's ellipses pass through the two points
+    // where the drums are tangent, the ball's section collapses there, and
+    // the honest answer is a refusal that says so.
+    let mut model = ogeom_topo::Model::new();
+    let upright = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 20.0, T).unwrap();
+    let across_frame = Frame::new(
+        Point::new(-20.0, 0.0, 10.0),
+        ogeom_math::Direction::X,
+        ogeom_math::Direction::Y,
+        T,
+    )
+    .unwrap();
+    let across = ogeom_algo::make_cylinder(&mut model, across_frame, 5.0, 40.0, T).unwrap();
+    let joined = ogeom_bool::fuse(&mut model, &upright.shape, &across.shape, T).unwrap();
+    let edge = explore_unique(&model, &joined.shape, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            model
+                .node(e)
+                .and_then(|n| n.data().as_edge())
+                .and_then(|d| d.curve3d())
+                .and_then(|r| {
+                    let ogeom_topo::EdgeRepr::Curve3d { curve, .. } = r else {
+                        return None;
+                    };
+                    model.geometry().curve(*curve)
+                })
+                .is_some_and(|c| matches!(c, ogeom_geom::Curve::Ellipse(_)))
+        })
+        .expect("the crossing has its elliptical seam arcs");
+    let err = ogeom_fillet::fillet_edge(&mut model, &joined.shape, &edge, 1.0, T).unwrap_err();
+    assert!(err.to_string().contains("tangent"), "{err}");
+}

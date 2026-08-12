@@ -273,6 +273,45 @@ fn coaxial_cylinders(
     tol: Tolerances,
 ) -> OgeomResult<Meeting> {
     if !a.axis().is_coaxial(b.axis(), tol) {
+        // Equal radii with intersecting axes: the one crossing whose quartic
+        // factors — into the two ellipses in the axes' bisector planes, each
+        // an oblique plane section the plane machinery already speaks. The
+        // ellipses cross at the two points where the cylinders are tangent;
+        // that is the crossing's geometry, stated exactly rather than
+        // marched through.
+        if (a.radius() - b.radius()).abs() <= tol.confusion() {
+            let (da, db) = (a.axis().direction.vector(), b.axis().direction.vector());
+            let normal = da.cross(db);
+            if normal.magnitude() > tol.angular() {
+                let (pa, pb) = (a.axis().location, b.axis().location);
+                // Closest points of the two axis lines; coincident when the
+                // axes genuinely intersect.
+                let w = pb - pa;
+                let dd = da.dot(db);
+                let denom = dd.mul_add(-dd, 1.0);
+                let s = dd.mul_add(-db.dot(w), da.dot(w)) / denom;
+                let t = dd.mul_add(da.dot(w), -db.dot(w)) / denom;
+                let on_a = pa + da * s;
+                let on_b = pb + db * t;
+                if on_a.distance(on_b) <= tol.confusion() {
+                    let centre = on_a;
+                    let mut curves = Vec::new();
+                    for m in [da - db, da + db] {
+                        if m.magnitude() <= tol.angular() {
+                            continue;
+                        }
+                        let plane =
+                            ogeom_math::Plane::through(centre, ogeom_math::Direction::new(m, tol)?);
+                        if let Meeting::Along(mut found) = plane_cylinder(plane, a, tol)? {
+                            curves.append(&mut found);
+                        }
+                    }
+                    if !curves.is_empty() {
+                        return Ok(Meeting::Along(curves));
+                    }
+                }
+            }
+        }
         ogeom_bail!(
             NotDone,
             "two cylinders that do not share an axis meet in a quartic space \

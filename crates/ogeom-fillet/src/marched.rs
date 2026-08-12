@@ -122,6 +122,36 @@ pub(crate) fn marched_fillet(
     let (first, second) = (first.clone(), second.clone());
     let (sign_first, sign_second) = (*sign_first, *sign_second);
 
+    // A seat running through a point where its hosts are tangent — the
+    // crossing of two equal drums — has no section there: the ball's arc
+    // collapses at the pole, and the march can only stall on it. Refused by
+    // name up front, sampled along the whole reconstructed loop.
+    {
+        use ogeom_geom::Surface as _;
+        for i in 0..64 {
+            #[allow(clippy::cast_precision_loss)]
+            let t = guide_range.0 + (guide_range.1 - guide_range.0) * (i as f64) / 64.0;
+            let p = guide.point_at(t, tol)?;
+            let normal_of = |surface: &SurfaceGeometry| -> OgeomResult<Vector> {
+                let projection = ogeom_algo::project_on_surface(surface, p, 32, tol)?;
+                let (u, v) = projection.parameters;
+                let (du, dv) = surface.d1_at(u, v, tol)?;
+                let n = du.cross(dv);
+                Ok(n / n.magnitude())
+            };
+            let (n1, n2) = (normal_of(&first)?, normal_of(&second)?);
+            if n1.cross(n2).magnitude() <= 1e-2 {
+                ogeom_bail!(
+                    Construction,
+                    "the seat passes through a point where its two hosts are \
+                     tangent; the ball's section collapses at that pole and \
+                     the pinched seam is refused — docs/PARITY.md, \
+                     fillet.edge-blends"
+                );
+            }
+        }
+    }
+
     // Convexity, read from the solid itself the way the planar seat reads
     // it: which way the first face extends from the edge, leaned against
     // the second's outward normal. It decides everything downstream — which

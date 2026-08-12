@@ -381,8 +381,10 @@ mod accuracy {
         // The honest half. Two cylinders on skew axes meet in a quartic space
         // curve; returning something plausible would be the single worst thing
         // this module could do, because the boolean above it would trust it.
+        // Genuinely skew: equal radii on *crossing* axes factor into two
+        // ellipses and are answered exactly.
         let a = cylinder(Point::ORIGIN, Vector::Z, 1.0);
-        let b = cylinder(Point::ORIGIN, Vector::X, 1.0);
+        let b = cylinder(Point::new(0.0, 2.0, 0.0), Vector::X, 1.0);
         let err = surface_surface(&a, &b, T).unwrap_err();
         assert!(
             err.to_string().contains("marching"),
@@ -393,6 +395,26 @@ mod accuracy {
         assert_eq!(deferred.deferred, 1);
         assert_eq!(deferred.solved, 0);
         assert_eq!(deferred.worst, 0.0, "a deferred case scores nothing");
+    }
+
+    #[test]
+    fn equal_crossing_cylinders_factor_into_two_ellipses() {
+        // The one non-coaxial cylinder pair with a closed form: equal radii
+        // on intersecting axes, the quartic splitting into the two ellipses
+        // in the axes' bisector planes. Ground truth as everywhere here:
+        // sample the curves, ask both surfaces how far away they are.
+        let a = cylinder(Point::ORIGIN, Vector::Z, 1.0);
+        let b = cylinder(Point::ORIGIN, Vector::X, 1.0);
+        let Meeting::Along(curves) = surface_surface(&a, &b, T).unwrap() else {
+            panic!("expected curves");
+        };
+        assert_eq!(curves.len(), 2, "two ellipses");
+        for curve in &curves {
+            assert!(matches!(curve, ogeom_geom::Curve::Ellipse(_)), "{curve:?}");
+        }
+        let report = measure_all(&[("cylinder/cylinder equal crossing".to_string(), a, b)], T);
+        assert_eq!(report.solved, 1);
+        assert!(report.worst <= 1e-9, "worst deviation {}", report.worst);
     }
 
     #[test]
