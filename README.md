@@ -5,9 +5,9 @@ A boundary-representation CAD kernel, written from scratch in Rust.
 **Status:** geometry, topology, construction, tessellation, intersection,
 booleans, blends and chamfers, offsets, shells, sweeps and lofts, healing,
 product structure, 2D drawings with hidden line removal and sections, and
-exchange — STEP in both directions with assemblies, colours and semantic PMI,
-plus the native format, IGES, STL, DXF, glTF, OBJ, PLY, VRML and 3MF — are
-built and tested.
+exchange — STEP and IGES in both directions, STEP carrying assemblies,
+colours, semantic PMI and saved views, plus the native format, STL, DXF,
+glTF, OBJ, PLY, VRML and 3MF — are built and tested.
 
 **How complete that is against a real kernel is measured, and gated.** The
 target is `docs/SCOPE.md`: parity with the reference kernel's modelling
@@ -80,7 +80,9 @@ Every crate listed has working code in it.
 • crates/ogeom             the public umbrella API
 • tools/ogeom-cli          command-line front end
 • tools/ogeom-view         software renderer, so a wrong result is visible
-• tools/apisurf            API-usage profiler (analysis only)
+• tools/ogeom-bench        benchmarks, watched by the gate but not gating
+• tools/apisurf            reference-index and API-usage tooling (analysis only)
+• tools/parity.py          generates and checks the parity audit
 ```
 
 Working code that is not kernel lives in `outside/`, which is a separate
@@ -99,6 +101,13 @@ workspace the kernel excludes. `docs/SCOPE.md` says what the boundary is and
 ```sh
 cargo build --workspace
 cargo test  --workspace
+```
+
+The full gate — format, lints, repeated tests, docs, the book and the parity
+audit — is one script, and it is what CI runs:
+
+```sh
+bash tools/check.sh   # needs mdbook: cargo install mdbook --locked
 ```
 
 `outside/` is excluded from that workspace and builds on its own:
