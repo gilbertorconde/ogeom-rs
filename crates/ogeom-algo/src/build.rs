@@ -1081,6 +1081,177 @@ pub fn make_revolution_band(
     Ok(make_face_on(model, surface_id, &[wire], tol)?.shape)
 }
 
+/// Build the face of a band between two closed rings that need not be
+/// circles, each with a caller-supplied chart image.
+///
+/// [`make_revolution_band`]'s general sibling: where the band derives each
+/// circle's row and pcurve itself, this takes the rings as they come — a
+/// fitted tangency curve, a wavy trim — with the pcurve the caller already
+/// knows for each, same-parameter over the edge's own range. The seam stays
+/// an exact iso-column of the surface, which is what routes around the
+/// closed-form refusal in [`make_face_with_pcurves`].
+///
+/// The caller's contract: both rings are closed, both chart images run the
+/// full period *forward* in `u`, and both start on the same column — the
+/// seam runs there, between the two start vertices.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
+/// ring is not closed, the images disagree about the start column or do not
+/// run the period forward, or the surface's iso-curve has no closed form.
+pub fn make_band_between(
+    model: &mut Model,
+    surface: &SurfaceGeometry,
+    rings: [(&Shape, ogeom_geom::PlanarCurve); 2],
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    use ogeom_geom::Curve2d as _;
+    use ogeom_geom::Surface as _;
+
+    let surface_id = model.geometry_mut().add_surface(surface.clone());
+    let ((ua_dom, ub_dom), _) = surface.domain();
+    let span = ub_dom - ua_dom;
+
+    struct Ring {
+        edge: Shape,
+        vertex: Shape,
+        crange: (f64, f64),
+        pcurve: ogeom_geom::PlanarCurve,
+        start: ogeom_math::Point2,
+    }
+    let mut prepared: Vec<Ring> = Vec::with_capacity(2);
+    for (used, pcurve) in rings {
+        let edge = if used.orientation() == ogeom_topo::Orientation::Reversed {
+            used.reversed()
+        } else {
+            used.clone()
+        };
+        let Some((vertex, other)) = edge_vertices(model, &edge)? else {
+            ogeom_bail!(Construction, "a band ring has no vertex");
+        };
+        if !vertex.is_same(&other) {
+            ogeom_bail!(Construction, "a band ring is not closed");
+        }
+        let crange = {
+            let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+                ogeom_bail!(Construction, "a band ring holds no edge data");
+            };
+            let Some(EdgeRepr::Curve3d { range, .. }) = data.curve3d() else {
+                ogeom_bail!(Construction, "a band ring has no curve");
+            };
+            *range
+        };
+        let start = pcurve.point_at(crange.0, tol)?;
+        let end = pcurve.point_at(crange.1, tol)?;
+        if (end.x - start.x - span).abs() > 1e-3 {
+            ogeom_bail!(
+                Construction,
+                "a band ring's chart image must run the period forward in u"
+            );
+        }
+        prepared.push(Ring {
+            edge,
+            vertex,
+            crange,
+            pcurve,
+            start,
+        });
+    }
+    let column = prepared[0].start.x;
+    if (prepared[1].start.x - column).abs() > 1e-3 {
+        ogeom_bail!(
+            Construction,
+            "the band's rings do not start on the same chart column; the \
+             seam has nowhere to run"
+        );
+    }
+
+    // The seam: the surface's own iso-column between the two start rows,
+    // built along increasing `v` like every seam.
+    let (va, vb) = (prepared[0].start.y, prepared[1].start.y);
+    let Some(seam_curve) = surface_iso_u_curve(surface, column, tol) else {
+        ogeom_bail!(
+            Construction,
+            "the surface's iso-curve has no closed form; no seam can be built"
+        );
+    };
+    let (range, from, to, downward) = if va <= vb {
+        (
+            (va, vb),
+            prepared[0].vertex.clone(),
+            prepared[1].vertex.clone(),
+            false,
+        )
+    } else {
+        (
+            (vb, va),
+            prepared[1].vertex.clone(),
+            prepared[0].vertex.clone(),
+            true,
+        )
+    };
+    let curve_range = (
+        iso_curve_parameter_at(surface, range.0),
+        iso_curve_parameter_at(surface, range.1),
+    );
+    let seam = make_edge_between(model, seam_curve, curve_range, &from, &to, tol)?.shape;
+
+    // Both rings run forward, so the walk closes as [lo, up, hi rev, down]:
+    // the bottom ends at the far column, the top's reversed walk starts
+    // there, and the seam columns are assigned the way the band assigns
+    // them for same-winding rings.
+    let column_line = |u: f64| -> OgeomResult<ogeom_geom::PlanarCurve> {
+        Ok(ogeom_geom::Line2d::over(
+            ogeom_math::Axis2::new(
+                ogeom_math::Point2::new(u, 0.0),
+                ogeom_math::Direction2::new(ogeom_math::Vector2::new(0.0, 1.0), tol)?,
+            ),
+            range.0 - 1.0,
+            range.1 + 1.0,
+        )?
+        .into())
+    };
+    let (forward_col, reversed_col) = if downward {
+        (column, column + span)
+    } else {
+        (column + span, column)
+    };
+    attach_seam(
+        model,
+        &seam,
+        column_line(forward_col)?,
+        column_line(reversed_col)?,
+        surface_id,
+        Location::identity(),
+        range,
+    )?;
+    for ring in &prepared {
+        attach_pcurve(
+            model,
+            &ring.edge,
+            ring.pcurve.clone(),
+            surface_id,
+            Location::identity(),
+            ring.crange,
+        )?;
+    }
+
+    let up = if downward {
+        seam.reversed()
+    } else {
+        seam.clone()
+    };
+    let walk = vec![
+        prepared[0].edge.clone(),
+        up.clone(),
+        prepared[1].edge.reversed(),
+        up.reversed(),
+    ];
+    let wire = make_wire(model, &walk, tol)?.shape;
+    Ok(make_face_on(model, surface_id, &[wire], tol)?.shape)
+}
+
 /// Build the face of a revolution cap: one closed ring belting a cone, with
 /// the apex the file never wrote synthesised as the degenerate ring the band
 /// needs.
@@ -1269,6 +1440,108 @@ fn iso_curve_parameter_at(surface: &SurfaceGeometry, v: f64) -> f64 {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+
+    #[test]
+    fn a_band_between_a_circle_and_a_fitted_wavy_ring_closes_with_its_seam() {
+        use ogeom_geom::Curve2d as _;
+        use ogeom_geom::Curve3d as _;
+        use ogeom_geom::Surface as _;
+
+        let mut model = Model::new();
+        let radius = 2.0;
+        let cylinder = ogeom_geom::CylinderSurface::new(
+            ogeom_math::Cylinder::new(Frame::WORLD, radius, T).unwrap(),
+            (-1.0, 4.0),
+        )
+        .unwrap();
+        let surface: SurfaceGeometry = cylinder.into();
+
+        // The lower ring: the exact circle at z = 0, its chart image the row.
+        let lo_curve: Curve =
+            CircleCurve::new(Circle::new(Frame::WORLD, radius, T).unwrap()).into();
+        let lo_domain = lo_curve.domain();
+        let lo = make_edge(&mut model, lo_curve, lo_domain, T).unwrap().shape;
+        let lo_pcurve: ogeom_geom::PlanarCurve = ogeom_geom::Line2d::over(
+            ogeom_math::Axis2::new(
+                ogeom_math::Point2::new(0.0, 0.0),
+                ogeom_math::Direction2::new(ogeom_math::Vector2::new(1.0, 0.0), T).unwrap(),
+            ),
+            lo_domain.0,
+            lo_domain.1,
+        )
+        .unwrap()
+        .into();
+
+        // The upper ring: a wavy loop on the cylinder, fitted jointly with
+        // its own chart image so curve and pcurve stay same-parameter.
+        let tau = core::f64::consts::TAU;
+        let samples = 96;
+        let mut points = Vec::with_capacity(samples + 1);
+        let mut chart = Vec::with_capacity(samples + 1);
+        for i in 0..=samples {
+            #[allow(clippy::cast_precision_loss)]
+            let u = tau * (i as f64) / (samples as f64);
+            let v = (3.0 * u).sin().mul_add(0.2, 1.5);
+            points.push(Point::new(radius * u.cos(), radius * u.sin(), v));
+            chart.push(ogeom_math::Point2::new(u, v));
+        }
+        let (fitted, hi_chart, _) =
+            ogeom_geom::fit::fit_points_joint_closed(&points, &chart, &chart, 3, 1e-4, T).unwrap();
+        assert!(fitted.met, "the wavy ring fit should meet its tolerance");
+        let hi_curve: Curve = fitted.curve.into();
+        let hi_domain = hi_curve.domain();
+        let hi = make_edge(&mut model, hi_curve.clone(), hi_domain, T)
+            .unwrap()
+            .shape;
+
+        let band = make_band_between(
+            &mut model,
+            &surface,
+            [(&lo, lo_pcurve), (&hi, hi_chart.into())],
+            T,
+        )
+        .unwrap();
+
+        // Four traversals, three distinct edges: two rings and the seam,
+        // used once per side.
+        let occurrences =
+            ogeom_topo::explore(&model, &band, ogeom_topo::Filter::OfType(ShapeType::Edge))
+                .unwrap();
+        assert_eq!(occurrences.len(), 4);
+        assert_eq!(
+            explore_unique(&model, &band, ShapeType::Edge)
+                .unwrap()
+                .len(),
+            3
+        );
+
+        // The wavy ring's chart image lands on the curve itself: the fit is
+        // same-parameter, and the surface evaluates the image back onto it.
+        let hi_pcurve = {
+            let data = model.node(&hi).unwrap().data().as_edge().unwrap();
+            let repr = data
+                .representations
+                .iter()
+                .find_map(|r| match r {
+                    ogeom_topo::EdgeRepr::PCurve { curve, .. } => Some(*curve),
+                    _ => None,
+                })
+                .expect("the ring carries its pcurve");
+            model.geometry().pcurve(repr).unwrap().clone()
+        };
+        for i in 0..8 {
+            #[allow(clippy::cast_precision_loss)]
+            let t = hi_domain.0 + (hi_domain.1 - hi_domain.0) * (i as f64) / 8.0;
+            let uv = hi_pcurve.point_at(t, T).unwrap();
+            let through_chart = surface.point_at(uv.x, uv.y, T).unwrap();
+            let direct = hi_curve.point_at(t, T).unwrap();
+            assert!(
+                through_chart.distance(direct) < 1e-4,
+                "same-parameter drift at t = {t}"
+            );
+        }
+    }
+
     use super::*;
     use ogeom_geom::{CircleCurve, LineCurve, PlaneSurface};
     use ogeom_math::{Circle, Frame, Plane};
