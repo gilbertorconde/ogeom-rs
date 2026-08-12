@@ -1158,73 +1158,135 @@ pub fn make_band_between(
             start,
         });
     }
-    let column = prepared[0].start.x;
-    if (prepared[1].start.x - column).abs() > 1e-3 {
-        ogeom_bail!(
-            Construction,
-            "the band's rings do not start on the same chart column; the \
-             seam has nowhere to run"
+    // The connector between the rings' starts. On one column it is the
+    // surface's own iso; on different columns it is the straight chart
+    // segment — a ruling, a parallel arc, or a helix, all exact on a
+    // cylinder, and refused by name elsewhere.
+    let (start0, start1) = (prepared[0].start, prepared[1].start);
+    let dcol = start1.x - start0.x;
+    let (seam, up_is_forward, chart_from, chart_to) = if dcol.abs() <= 1e-3 {
+        let column = start0.x;
+        let (va, vb) = (start0.y, start1.y);
+        let Some(seam_curve) = surface_iso_u_curve(surface, column, tol) else {
+            ogeom_bail!(
+                Construction,
+                "the surface's iso-curve has no closed form; no seam can be built"
+            );
+        };
+        let (range, from, to, downward) = if va <= vb {
+            (
+                (va, vb),
+                prepared[0].vertex.clone(),
+                prepared[1].vertex.clone(),
+                false,
+            )
+        } else {
+            (
+                (vb, va),
+                prepared[1].vertex.clone(),
+                prepared[0].vertex.clone(),
+                true,
+            )
+        };
+        let curve_range = (
+            iso_curve_parameter_at(surface, range.0),
+            iso_curve_parameter_at(surface, range.1),
         );
-    }
-
-    // The seam: the surface's own iso-column between the two start rows,
-    // built along increasing `v` like every seam.
-    let (va, vb) = (prepared[0].start.y, prepared[1].start.y);
-    let Some(seam_curve) = surface_iso_u_curve(surface, column, tol) else {
-        ogeom_bail!(
-            Construction,
-            "the surface's iso-curve has no closed form; no seam can be built"
+        let seam = make_edge_between(model, seam_curve, curve_range, &from, &to, tol)?.shape;
+        let (a, b) = (
+            ogeom_math::Point2::new(column, range.0),
+            ogeom_math::Point2::new(column, range.1),
         );
-    };
-    let (range, from, to, downward) = if va <= vb {
-        (
-            (va, vb),
-            prepared[0].vertex.clone(),
-            prepared[1].vertex.clone(),
-            false,
-        )
+        (seam, !downward, a, b)
     } else {
-        (
-            (vb, va),
-            prepared[1].vertex.clone(),
-            prepared[0].vertex.clone(),
-            true,
-        )
+        let SurfaceGeometry::Cylinder(c) = surface else {
+            ogeom_bail!(
+                Construction,
+                "a band whose rings start on different columns needs a chart \
+                 connector only a cylinder speaks exactly"
+            );
+        };
+        let cylinder = c.cylinder();
+        let frame = cylinder.frame();
+        // The chart segment, parameterized by the angle so the pcurve's
+        // linear map onto it is exact.
+        let (a, b, from, to, forward) = if dcol > 0.0 {
+            (
+                start0,
+                start1,
+                prepared[0].vertex.clone(),
+                prepared[1].vertex.clone(),
+                true,
+            )
+        } else {
+            (
+                start1,
+                start0,
+                prepared[1].vertex.clone(),
+                prepared[0].vertex.clone(),
+                false,
+            )
+        };
+        let drow = b.y - a.y;
+        let connector: ogeom_geom::Curve = if drow.abs() <= 1e-9 {
+            // A parallel: an arc at one height.
+            let lifted = ogeom_math::Frame::new(
+                frame.origin() + frame.z().vector() * a.y,
+                frame.z(),
+                frame.x(),
+                tol,
+            )?;
+            ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(lifted, cylinder.radius(), tol)?)
+                .into()
+        } else {
+            // A helix through both chart points: the pitch is the slope, and
+            // the frame rides down so height zero lands where it must.
+            let pitch = core::f64::consts::TAU * drow / (b.x - a.x);
+            let dropped = ogeom_math::Frame::new(
+                frame.origin()
+                    + frame.z().vector() * (pitch / core::f64::consts::TAU).mul_add(-a.x, a.y),
+                frame.z(),
+                frame.x(),
+                tol,
+            )?;
+            ogeom_geom::HelixCurve::over(dropped, cylinder.radius(), pitch, a.x, b.x)?.into()
+        };
+        let seam = make_edge_between(model, connector, (a.x, b.x), &from, &to, tol)?.shape;
+        (seam, forward, a, b)
     };
-    let curve_range = (
-        iso_curve_parameter_at(surface, range.0),
-        iso_curve_parameter_at(surface, range.1),
-    );
-    let seam = make_edge_between(model, seam_curve, curve_range, &from, &to, tol)?.shape;
 
     // Both rings run forward, so the walk closes as [lo, up, hi rev, down]:
-    // the bottom ends at the far column, the top's reversed walk starts
-    // there, and the seam columns are assigned the way the band assigns
-    // them for same-winding rings.
-    let column_line = |u: f64| -> OgeomResult<ogeom_geom::PlanarCurve> {
+    // the bottom ends at the far column, and the seam's two chart images sit
+    // one period apart, assigned to whichever occurrence the walk meets
+    // first.
+    let segment_line = |shift: f64| -> OgeomResult<ogeom_geom::PlanarCurve> {
+        let a = ogeom_math::Point2::new(chart_from.x + shift, chart_from.y);
+        let b = ogeom_math::Point2::new(chart_to.x + shift, chart_to.y);
+        let d = ogeom_math::Vector2::new(b.x - a.x, b.y - a.y);
+        let m = d.x.hypot(d.y);
+        if m <= 1e-12 {
+            ogeom_bail!(Construction, "the seam's chart image has no length");
+        }
         Ok(ogeom_geom::Line2d::over(
-            ogeom_math::Axis2::new(
-                ogeom_math::Point2::new(u, 0.0),
-                ogeom_math::Direction2::new(ogeom_math::Vector2::new(0.0, 1.0), tol)?,
-            ),
-            range.0 - 1.0,
-            range.1 + 1.0,
+            ogeom_math::Axis2::new(a, ogeom_math::Direction2::new(d, tol)?),
+            0.0,
+            m,
         )?
         .into())
     };
-    let (forward_col, reversed_col) = if downward {
-        (column, column + span)
+    let (forward_shift, reversed_shift) = if up_is_forward {
+        (span, 0.0)
     } else {
-        (column + span, column)
+        (0.0, span)
     };
     attach_seam(
         model,
         &seam,
-        column_line(forward_col)?,
-        column_line(reversed_col)?,
+        segment_line(forward_shift)?,
+        segment_line(reversed_shift)?,
         surface_id,
         Location::identity(),
-        range,
+        (chart_from.y.min(chart_to.y), chart_from.y.max(chart_to.y)),
     )?;
     for ring in &prepared {
         attach_pcurve(
@@ -1237,10 +1299,10 @@ pub fn make_band_between(
         )?;
     }
 
-    let up = if downward {
-        seam.reversed()
-    } else {
+    let up = if up_is_forward {
         seam.clone()
+    } else {
+        seam.reversed()
     };
     let walk = vec![
         prepared[0].edge.clone(),
@@ -1440,6 +1502,82 @@ fn iso_curve_parameter_at(surface: &SurfaceGeometry, v: f64) -> f64 {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+
+    #[test]
+    fn a_band_whose_rings_start_apart_gets_a_helical_connector() {
+        // Two circles at different heights whose parameter origins differ:
+        // the seam has no single column to run down, so it runs the straight
+        // chart segment — a helix on the cylinder, exactly.
+        let mut model = Model::new();
+        let radius = 2.0;
+        let cylinder = ogeom_geom::CylinderSurface::new(
+            ogeom_math::Cylinder::new(Frame::WORLD, radius, T).unwrap(),
+            (-1.0, 4.0),
+        )
+        .unwrap();
+        let surface: SurfaceGeometry = cylinder.into();
+
+        let ring_at = |model: &mut Model, height: f64, phase: f64| {
+            let x = ogeom_math::Direction::new(
+                ogeom_math::Vector::new(phase.cos(), phase.sin(), 0.0),
+                T,
+            )
+            .unwrap();
+            let frame =
+                Frame::new(Point::new(0.0, 0.0, height), ogeom_math::Direction::Z, x, T).unwrap();
+            let curve: Curve = CircleCurve::new(Circle::new(frame, radius, T).unwrap()).into();
+            let domain = curve.domain();
+            let edge = make_edge(model, curve, domain, T).unwrap().shape;
+            let pcurve: ogeom_geom::PlanarCurve = ogeom_geom::Line2d::over(
+                ogeom_math::Axis2::new(
+                    ogeom_math::Point2::new(phase, height),
+                    ogeom_math::Direction2::new(ogeom_math::Vector2::new(1.0, 0.0), T).unwrap(),
+                ),
+                0.0,
+                core::f64::consts::TAU,
+            )
+            .unwrap()
+            .into();
+            (edge, pcurve)
+        };
+        let (lo, lo_pcurve) = ring_at(&mut model, 0.0, 0.0);
+        let (hi, hi_pcurve) = ring_at(&mut model, 2.0, 0.4);
+
+        let band = make_band_between(
+            &mut model,
+            &surface,
+            [(&lo, lo_pcurve), (&hi, hi_pcurve)],
+            T,
+        )
+        .unwrap();
+
+        assert_eq!(
+            explore_unique(&model, &band, ShapeType::Edge)
+                .unwrap()
+                .len(),
+            3
+        );
+        // The connector's curve is a genuine helix through both starts.
+        let helix = explore_unique(&model, &band, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find_map(|e| {
+                let data = model.node(&e)?.data().as_edge()?;
+                let ogeom_topo::EdgeRepr::Curve3d { curve, .. } = data.curve3d()? else {
+                    return None;
+                };
+                match model.geometry().curve(*curve)? {
+                    Curve::Helix(h) => Some(*h),
+                    _ => None,
+                }
+            })
+            .expect("the connector is a helix");
+        use ogeom_geom::Curve3d as _;
+        let at_start = Curve::Helix(helix).point_at(0.0, T).unwrap();
+        let at_end = Curve::Helix(helix).point_at(0.4, T).unwrap();
+        assert!(at_start.distance(Point::new(2.0, 0.0, 0.0)) < 1e-9);
+        assert!(at_end.distance(Point::new(2.0 * 0.4_f64.cos(), 2.0 * 0.4_f64.sin(), 2.0)) < 1e-9);
+    }
 
     #[test]
     fn a_band_between_a_circle_and_a_fitted_wavy_ring_closes_with_its_seam() {
