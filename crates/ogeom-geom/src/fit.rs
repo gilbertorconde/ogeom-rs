@@ -912,6 +912,50 @@ pub fn fit_surface_grid(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<crate::BSplineSurface>> {
+    fit_surface_grid_inner(rows, degree, tolerance, false, tol)
+}
+
+/// As [`fit_surface_grid`], with the `v` direction closed into a smooth loop.
+///
+/// The rows must form a loop — the first row repeated at the end — and the
+/// join across it is made C1 the way [`fit_points_closed`] makes a curve's:
+/// the constraint is eliminated inside the shared solve, so the two border
+/// control rows are equal and the loop crosses its own seam smoothly.
+///
+/// # Errors
+///
+/// As [`fit_surface_grid`], and additionally if the rows are not a loop.
+pub fn fit_surface_grid_closed_v(
+    rows: &[Vec<Point>],
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<crate::BSplineSurface>> {
+    if rows.len() < 3 {
+        ogeom_bail!(Construction, "a closed skin needs at least three rows");
+    }
+    let (first, last) = (&rows[0], &rows[rows.len() - 1]);
+    if first.len() != last.len()
+        || first
+            .iter()
+            .zip(last)
+            .any(|(a, b)| a.distance(*b) > tol.confusion() * 100.0)
+    {
+        ogeom_bail!(
+            Construction,
+            "a closed skin needs a loop: the first row repeated at the end"
+        );
+    }
+    fit_surface_grid_inner(rows, degree, tolerance, true, tol)
+}
+
+fn fit_surface_grid_inner(
+    rows: &[Vec<Point>],
+    degree: usize,
+    tolerance: f64,
+    closed_v: bool,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<crate::BSplineSurface>> {
     use crate::traits::Surface as _;
     if !tolerance.is_finite() || tolerance <= 0.0 {
         ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
@@ -948,14 +992,19 @@ pub fn fit_surface_grid(
     let v_params = average(&columns);
 
     // Pass one: every row on one shared knot vector.
-    let (u_knots, row_controls) = fit_family::<3>(&raw, &u_params, degree, tolerance * 0.5)?;
+    let (u_knots, row_controls) = fit_family::<3>(&raw, &u_params, degree, tolerance * 0.5, false)?;
     // Pass two: the columns of control points, against the v parameters.
     let k = u_knots.control_point_count();
     let control_columns: Vec<Vec<[f64; 3]>> = (0..k)
         .map(|i| row_controls.iter().map(|r| r[i]).collect())
         .collect();
-    let (v_knots, column_controls) =
-        fit_family::<3>(&control_columns, &v_params, degree, tolerance * 0.5)?;
+    let (v_knots, column_controls) = fit_family::<3>(
+        &control_columns,
+        &v_params,
+        degree,
+        tolerance * 0.5,
+        closed_v,
+    )?;
     let l = v_knots.control_point_count();
 
     // Assemble: `column_controls[i][j]` is the control at u-index i,
@@ -997,6 +1046,7 @@ fn fit_family<const D: usize>(
     parameters: &[f64],
     degree: usize,
     tolerance: f64,
+    closed: bool,
 ) -> OgeomResult<(KnotVector, Vec<Vec<[f64; D]>>)> {
     let degree = degree.min(parameters.len() - 1).max(1);
     let (a, b) = (parameters[0], parameters[parameters.len() - 1]);
@@ -1008,7 +1058,7 @@ fn fit_family<const D: usize>(
         let mut merged: Vec<(f64, f64)> = parameters.iter().map(|u| (*u, 0.0)).collect();
         let mut solvable = true;
         for row in family {
-            match least_squares::<D>(&knots, row, parameters, false) {
+            match least_squares::<D>(&knots, row, parameters, closed) {
                 Ok(control) => {
                     for (slot, entry) in residuals::<D>(&knots, &control, row, parameters)
                         .iter()
@@ -1031,7 +1081,9 @@ fn fit_family<const D: usize>(
         if best.as_ref().is_none_or(|(_, _, held)| worst < *held) {
             best = Some((knots.clone(), controls, worst));
         }
-        if worst <= tolerance || knots.control_point_count() >= parameters.len() {
+        if worst <= tolerance
+            || knots.control_point_count() >= parameters.len() + usize::from(closed)
+        {
             break;
         }
         let Some(refined) = refined_where_bad(&knots, &merged, tolerance)? else {
@@ -1429,6 +1481,66 @@ mod grid_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+
+    #[test]
+    fn a_v_closed_grid_fits_a_ring_with_a_smooth_join() {
+        use crate::traits::Surface as _;
+        // A torus sampled as a loop of rows: each row a tube circle, the
+        // rows running the major circle round and back to the start.
+        let tau = core::f64::consts::TAU;
+        let (major, minor) = (5.0_f64, 1.5_f64);
+        let rows: Vec<Vec<Point>> = (0..=24)
+            .map(|j| {
+                let a = tau * f64::from(j) / 24.0;
+                (0..=16)
+                    .map(|i| {
+                        let b = tau * f64::from(i) / 16.0;
+                        let r = minor.mul_add(b.cos(), major);
+                        Point::new(r * a.cos(), r * a.sin(), minor * b.sin())
+                    })
+                    .collect()
+            })
+            .collect();
+        let fitted = fit_surface_grid_closed_v(&rows, 3, 5e-3, T).unwrap();
+        assert!(fitted.met, "the ring fit should meet its tolerance");
+        let surface = fitted.curve;
+
+        // Exact closure: the two border control rows are equal, so the loop
+        // crosses its seam with nothing to weld.
+        let grid = surface.grid();
+        let (k, l) = (grid.u_count(), grid.v_count());
+        for i in 0..k {
+            let first = grid.points()[i * l].point();
+            let last = grid.points()[i * l + (l - 1)].point();
+            assert!(
+                first.distance(last) < 1e-12,
+                "border control rows differ at u-index {i}"
+            );
+        }
+
+        // And smoothly: the v-derivative agrees across the join.
+        let (u_dom, v_dom) = surface.domain();
+        for i in 0..5 {
+            let u = u_dom.0 + (u_dom.1 - u_dom.0) * f64::from(i) / 4.0;
+            let (_, dv0) = surface.d1_at(u, v_dom.0, T).unwrap();
+            let (_, dv1) = surface.d1_at(u, v_dom.1, T).unwrap();
+            let gap = (dv0 / dv0.magnitude() - dv1 / dv1.magnitude()).magnitude();
+            assert!(gap < 1e-6, "the join kinks at u = {u}: {gap}");
+        }
+    }
+
+    #[test]
+    fn a_grid_that_is_not_a_loop_is_refused_by_the_closed_entry() {
+        let rows: Vec<Vec<Point>> = (0..4)
+            .map(|j| {
+                (0..4)
+                    .map(|i| Point::new(f64::from(i), f64::from(j), 0.0))
+                    .collect()
+            })
+            .collect();
+        assert!(fit_surface_grid_closed_v(&rows, 3, 1e-3, T).is_err());
+    }
+
     use super::*;
     use crate::traits::{Curve2d as _, Curve3d as _};
     use core::f64::consts::TAU;
