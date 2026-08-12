@@ -266,3 +266,229 @@ fn a_pipe_along_a_free_form_spine_holds_pappus() {
     );
     assert!(!result.history.generated(&spine).is_empty());
 }
+
+/// A square profile face of side `side`, square to `tangent` at `centre`.
+fn square_profile(
+    model: &mut ogeom_topo::Model,
+    centre: ogeom_math::Point,
+    tangent: ogeom_math::Vector,
+    side: f64,
+) -> ogeom_topo::Shape {
+    use ogeom_math::Direction;
+    let normal = Direction::new(tangent, T).unwrap();
+    let plane = ogeom_math::Plane::through(centre, normal);
+    let frame = plane.frame();
+    let h = side / 2.0;
+    let corners: Vec<ogeom_math::Point> = [(-h, -h), (h, -h), (h, h), (-h, h)]
+        .iter()
+        .map(|(a, b)| centre + frame.x().vector() * *a + frame.y().vector() * *b)
+        .collect();
+    let wire = ogeom_algo::make_polygon(model, &corners, true, T)
+        .unwrap()
+        .shape;
+    let surface: ogeom_geom::SurfaceGeometry =
+        ogeom_geom::PlaneSurface::over(plane, (-side * 2.0, side * 2.0), (-side * 2.0, side * 2.0))
+            .unwrap()
+            .into();
+    ogeom_algo::make_face(model, surface, std::slice::from_ref(&wire), T)
+        .unwrap()
+        .shape
+}
+
+/// The quarter arc of radius `r` about the origin in the xy plane, starting
+/// at `(r, 0, 0)` heading `+y`.
+fn quarter_arc(model: &mut ogeom_topo::Model, r: f64) -> ogeom_topo::Shape {
+    let circle = ogeom_math::Circle::new(Frame::WORLD, r, T).unwrap();
+    let curve: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(circle).into();
+    ogeom_algo::make_edge(model, curve, (0.0, core::f64::consts::FRAC_PI_2), T)
+        .unwrap()
+        .shape
+}
+
+#[test]
+fn a_square_face_along_an_arc_sweeps_the_volume_pappus_names() {
+    let mut model = ogeom_topo::Model::new();
+    let r = 20.0;
+    let spine = quarter_arc(&mut model, r);
+    let start = Point::new(r, 0.0, 0.0);
+    let profile = square_profile(&mut model, start, ogeom_math::Vector::Y, 4.0);
+
+    let result =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // Pappus: the centroid rides the spine, so the volume is area times the
+    // arc's own length.
+    let expected = 16.0 * (core::f64::consts::FRAC_PI_2 * r);
+    let measured = ogeom_algo::volume_properties(
+        &model,
+        &result.shape,
+        ogeom_mesh::Deflection::with_chord(1e-3).unwrap(),
+        T,
+    )
+    .unwrap()
+    .mass;
+    assert!(
+        (measured - expected).abs() / expected < 0.01,
+        "pipe shell volume {measured} against {expected}"
+    );
+    assert!(!result.history.generated(&spine).is_empty());
+    assert!(!result.history.generated(&profile).is_empty());
+}
+
+#[test]
+fn a_triangle_along_a_helix_makes_a_thread() {
+    use ogeom_geom::Curve3d as _;
+    let mut model = ogeom_topo::Model::new();
+    let helix = ogeom_geom::HelixCurve::new(Frame::WORLD, 5.0, 4.0, 2.0).unwrap();
+    let curve: ogeom_geom::Curve = helix.into();
+    let domain = curve.domain();
+    let length = {
+        // Chord-sum over a fine sampling: the closed form is the hypotenuse
+        // law, but measuring it keeps the test honest about the curve.
+        let mut sum = 0.0;
+        let mut last = curve.point_at(domain.0, T).unwrap();
+        for i in 1..=512 {
+            let t = domain.0 + (domain.1 - domain.0) * f64::from(i) / 512.0;
+            let p = curve.point_at(t, T).unwrap();
+            sum += last.distance(p);
+            last = p;
+        }
+        sum
+    };
+    let start = curve.point_at(domain.0, T).unwrap();
+    let tangent = curve.d1_at(domain.0, T).unwrap();
+    let spine = ogeom_algo::make_edge(&mut model, curve, domain, T)
+        .unwrap()
+        .shape;
+
+    // A triangular wire centred on the spine, square to it: the thread form.
+    let normal = ogeom_math::Direction::new(tangent, T).unwrap();
+    let plane = ogeom_math::Plane::through(start, normal);
+    let frame = plane.frame();
+    let corners: Vec<Point> = [(0.6, 0.0), (-0.3, 0.45), (-0.3, -0.45)]
+        .iter()
+        .map(|(a, b)| start + frame.x().vector() * *a + frame.y().vector() * *b)
+        .collect();
+    let profile = ogeom_algo::make_polygon(&mut model, &corners, true, T)
+        .unwrap()
+        .shape;
+
+    let result =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, true, 1e-3, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // The triangle's area times the helix length brackets the thread: the
+    // Frenet frames turn the profile with the spine, and the centroid rides
+    // it, so the volume sits near the Pappus figure.
+    let area = 0.9 * 0.45; // base 0.9, height 0.9, halved
+    let expected = area * length;
+    // Coarse deflection on purpose: a hundred-station helical skin at a
+    // fine chord costs minutes and the claim here is a ten-percent band.
+    let measured =
+        ogeom_algo::volume_properties(&model, &result.shape, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    assert!(
+        (measured - expected).abs() / expected < 0.1,
+        "thread volume {measured} against {expected}"
+    );
+}
+
+#[test]
+fn a_profile_with_a_hole_sweeps_the_hole() {
+    let mut model = ogeom_topo::Model::new();
+    let r = 20.0;
+    let spine = quarter_arc(&mut model, r);
+    let start = Point::new(r, 0.0, 0.0);
+
+    // A square face with a round hole: the hole must ride the sweep.
+    let normal = ogeom_math::Direction::new(ogeom_math::Vector::Y, T).unwrap();
+    let plane = ogeom_math::Plane::through(start, normal);
+    let frame = plane.frame();
+    let h = 2.0;
+    let corners: Vec<Point> = [(-h, -h), (h, -h), (h, h), (-h, h)]
+        .iter()
+        .map(|(a, b)| start + frame.x().vector() * *a + frame.y().vector() * *b)
+        .collect();
+    let outer = ogeom_algo::make_polygon(&mut model, &corners, true, T)
+        .unwrap()
+        .shape;
+    let hole_circle =
+        ogeom_math::Circle::new(ogeom_math::Frame::about(start, normal), 1.0, T).unwrap();
+    let hole_curve: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(hole_circle).into();
+    let hole_domain = ogeom_geom::Curve3d::domain(&hole_curve);
+    let hole_edge = ogeom_algo::make_edge(&mut model, hole_curve, hole_domain, T)
+        .unwrap()
+        .shape;
+    let hole = ogeom_algo::make_wire(&mut model, std::slice::from_ref(&hole_edge), T)
+        .unwrap()
+        .shape;
+    let surface: ogeom_geom::SurfaceGeometry =
+        ogeom_geom::PlaneSurface::over(plane, (-8.0, 8.0), (-8.0, 8.0))
+            .unwrap()
+            .into();
+    let profile = ogeom_algo::make_face(&mut model, surface, &[outer, hole], T)
+        .unwrap()
+        .shape;
+
+    let result =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    let pi = core::f64::consts::PI;
+    let expected = (16.0 - pi) * (core::f64::consts::FRAC_PI_2 * r);
+    let measured = ogeom_algo::volume_properties(
+        &model,
+        &result.shape,
+        ogeom_mesh::Deflection::with_chord(1e-3).unwrap(),
+        T,
+    )
+    .unwrap()
+    .mass;
+    assert!(
+        (measured - expected).abs() / expected < 0.01,
+        "holed pipe shell volume {measured} against {expected}"
+    );
+}
+
+#[test]
+fn a_frenet_frame_on_a_straight_spine_is_refused_by_name() {
+    let mut model = ogeom_topo::Model::new();
+    let line =
+        ogeom_geom::LineCurve::segment(Point::new(0.0, 0.0, 0.0), Point::new(0.0, 10.0, 0.0), T)
+            .unwrap();
+    let curve: ogeom_geom::Curve = line.into();
+    let domain = ogeom_geom::Curve3d::domain(&curve);
+    let spine = ogeom_algo::make_edge(&mut model, curve, domain, T)
+        .unwrap()
+        .shape;
+    let profile = square_profile(
+        &mut model,
+        Point::new(0.0, 0.0, 0.0),
+        ogeom_math::Vector::Y,
+        2.0,
+    );
+    let err =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, true, 1e-3, T).unwrap_err();
+    assert!(err.to_string().contains("Frenet"), "{err}");
+}
+
+#[test]
+fn a_leaning_pipe_shell_profile_is_refused_by_name() {
+    let mut model = ogeom_topo::Model::new();
+    let spine = quarter_arc(&mut model, 20.0);
+    // The profile's plane contains the start tangent instead of crossing it.
+    let profile = square_profile(
+        &mut model,
+        Point::new(20.0, 0.0, 0.0),
+        ogeom_math::Vector::Z,
+        4.0,
+    );
+    let err =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap_err();
+    assert!(err.to_string().contains("leans"), "{err}");
+}

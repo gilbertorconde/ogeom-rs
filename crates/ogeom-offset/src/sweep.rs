@@ -497,7 +497,19 @@ pub fn make_loft(
     Ok(built)
 }
 
-/// A solid skinned over a grid of section samples, closed the way round.
+/// A skinned wall and the pieces a caller needs to close it: the rings at
+/// both ends, their exact border curves off the control net, and the chart's
+/// `u` window the ring pcurves span.
+struct SkinnedWall {
+    face: Shape,
+    ring0: Shape,
+    ring1: Shape,
+    curve0: ogeom_geom::Curve,
+    curve1: ogeom_geom::Curve,
+    u_dom: (f64, f64),
+}
+
+/// The wall of a skin over a grid of section samples, closed the way round.
 ///
 /// The wall is [`ogeom_geom::fit::fit_surface_grid`]'s surface with each row's
 /// first sample repeated at its end: the row fits pin their ends, so the two
@@ -506,13 +518,12 @@ pub fn make_loft(
 /// net — the v-borders are the fitted sections, planar whenever the
 /// sections are, which is what lets the caps be planes — and every pcurve
 /// is an iso line in the fitted chart, same-parameter by construction.
-fn skinned_solid(
+fn skinned_wall(
     model: &mut Model,
     rows: &[Vec<Point>],
-    cap_outward: (Vector, Vector),
     tolerance: f64,
     tol: Tolerances,
-) -> OgeomResult<Built> {
+) -> OgeomResult<SkinnedWall> {
     use ogeom_geom::Surface as _;
     let mut closed_rows: Vec<Vec<Point>> = Vec::with_capacity(rows.len());
     for row in rows {
@@ -649,6 +660,27 @@ fn skinned_solid(
             face.reversed()
         }
     };
+    Ok(SkinnedWall {
+        face: wall,
+        ring0,
+        ring1,
+        curve0: border_v(0)?,
+        curve1: border_v(l - 1)?,
+        u_dom,
+    })
+}
+
+/// A solid skinned over a grid of section samples: [`skinned_wall`] with a
+/// planar cap over each end ring.
+fn skinned_solid(
+    model: &mut Model,
+    rows: &[Vec<Point>],
+    cap_outward: (Vector, Vector),
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let wall = skinned_wall(model, rows, tolerance, tol)?;
+    let u_dom = wall.u_dom;
 
     let cap = |model: &mut Model,
                ring: &Shape,
@@ -690,15 +722,167 @@ fn skinned_solid(
         )?;
         Ok(face)
     };
-    let cap0 = cap(model, &ring0, border_v(0)?, cap_outward.0)?;
-    let cap1 = cap(model, &ring1, border_v(l - 1)?, cap_outward.1)?;
+    let cap0 = cap(model, &wall.ring0, wall.curve0.clone(), cap_outward.0)?;
+    let cap1 = cap(model, &wall.ring1, wall.curve1.clone(), cap_outward.1)?;
 
-    let faces = [wall, cap0, cap1];
+    let faces = [wall.face, cap0, cap1];
     let sewn = sew(model, &faces, tol)?;
     if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
         ogeom_bail!(Construction, "the skinned solid did not close");
     }
     make_solid(model, std::slice::from_ref(&sewn.shells[0]))
+}
+
+/// A skinned strip: one open patch of a sweep, with its border edges.
+///
+/// The wall of a *faceted* profile cannot be one closed skin — a fit cannot
+/// speak a corner — so each profile edge sweeps its own strip, cornered at
+/// the caller's shared vertices, and the strips weld along their rails by
+/// the tolerance the fit honestly carries.
+struct SkinnedStrip {
+    face: Shape,
+    /// The border along the first station, from `corners.0` to `corners.1`.
+    bottom: Shape,
+    /// The border along the last station, from `corners.2` to `corners.3`.
+    top: Shape,
+}
+
+/// Skin an open grid of samples — stations by profile-edge samples — into
+/// one strip. `corners` are the caller's vertices at (first station, edge
+/// start), (first, end), (last, start), (last, end), shared with the
+/// neighbouring strips so the wires chain.
+fn skinned_strip(
+    model: &mut Model,
+    rows: &[Vec<Point>],
+    corners: (&Shape, &Shape, &Shape, &Shape),
+    outward_hint: Point,
+    hole: bool,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<SkinnedStrip> {
+    use ogeom_geom::Surface as _;
+    let fitted = ogeom_geom::fit::fit_surface_grid(rows, 3, tolerance, tol)?;
+    if !fitted.met {
+        ogeom_bail!(
+            NotDone,
+            "the strip reached {} against a target of {tolerance}",
+            fitted.error
+        );
+    }
+    let error = fitted.error.max(tol.confusion());
+    let surface = fitted.curve;
+    let (u_knots, v_knots) = (surface.u_knots().clone(), surface.v_knots().clone());
+    let (k, l, net) = {
+        let grid = surface.grid();
+        let net: Vec<Point> = grid.points().iter().map(|w| (*w).point()).collect();
+        (grid.u_count(), grid.v_count(), net)
+    };
+    let point_at = |i: usize, j: usize| -> Point { net[i * l + j] };
+    let (u_dom, v_dom) = surface.domain();
+
+    let u_curve = |j: usize| -> OgeomResult<ogeom_geom::Curve> {
+        let control: Vec<Point> = (0..k).map(|i| point_at(i, j)).collect();
+        Ok(ogeom_geom::Curve::BSpline(ogeom_geom::BSplineCurve::new(
+            u_knots.clone(),
+            control,
+            tol,
+        )?))
+    };
+    let v_curve = |i: usize| -> OgeomResult<ogeom_geom::Curve> {
+        let control: Vec<Point> = (0..l).map(|j| point_at(i, j)).collect();
+        Ok(ogeom_geom::Curve::BSpline(ogeom_geom::BSplineCurve::new(
+            v_knots.clone(),
+            control,
+            tol,
+        )?))
+    };
+    let surface_geo: SurfaceGeometry = surface.into();
+    let surface_id = model.geometry_mut().add_surface(surface_geo.clone());
+
+    let (c00, c10, c01, c11) = corners;
+    let bottom = make_edge_between(model, u_curve(0)?, u_dom, c00, c10, tol)?.shape;
+    let top = make_edge_between(model, u_curve(l - 1)?, u_dom, c01, c11, tol)?.shape;
+    let rail0 = make_edge_between(model, v_curve(0)?, v_dom, c00, c01, tol)?.shape;
+    let rail1 = make_edge_between(model, v_curve(k - 1)?, v_dom, c10, c11, tol)?.shape;
+
+    let row_line = |v: f64| -> OgeomResult<ogeom_geom::PlanarCurve> {
+        Ok(Line2d::over(
+            ogeom_math::Axis2::new(Point2::new(0.0, v), ogeom_math::Direction2::X),
+            u_dom.0 - 1.0,
+            u_dom.1 + 1.0,
+        )?
+        .into())
+    };
+    let column_line = |u: f64| -> OgeomResult<ogeom_geom::PlanarCurve> {
+        Ok(Line2d::over(
+            ogeom_math::Axis2::new(Point2::new(u, 0.0), ogeom_math::Direction2::Y),
+            v_dom.0 - 1.0,
+            v_dom.1 + 1.0,
+        )?
+        .into())
+    };
+    ogeom_algo::attach_pcurve(
+        model,
+        &bottom,
+        row_line(v_dom.0)?,
+        surface_id,
+        ogeom_topo::Location::identity(),
+        u_dom,
+    )?;
+    ogeom_algo::attach_pcurve(
+        model,
+        &top,
+        row_line(v_dom.1)?,
+        surface_id,
+        ogeom_topo::Location::identity(),
+        u_dom,
+    )?;
+    ogeom_algo::attach_pcurve(
+        model,
+        &rail0,
+        column_line(u_dom.0)?,
+        surface_id,
+        ogeom_topo::Location::identity(),
+        v_dom,
+    )?;
+    ogeom_algo::attach_pcurve(
+        model,
+        &rail1,
+        column_line(u_dom.1)?,
+        surface_id,
+        ogeom_topo::Location::identity(),
+        v_dom,
+    )?;
+    // The rails carry the fit's honest budget: the neighbouring strip fitted
+    // the same transported corners independently, and the weld between them
+    // is only as tight as both fits.
+    for edge in [&bottom, &top, &rail0, &rail1] {
+        model.widen(edge, ogeom_core::Tolerance::new(error)?)?;
+    }
+
+    let wire = ogeom_algo::make_wire(
+        model,
+        &[
+            bottom.clone(),
+            rail1.clone(),
+            top.reversed(),
+            rail0.reversed(),
+        ],
+        tol,
+    )?
+    .shape;
+    let face = ogeom_algo::make_face_on(model, surface_id, std::slice::from_ref(&wire), tol)?.shape;
+    let mid_u = f64::midpoint(u_dom.0, u_dom.1);
+    let mid_v = f64::midpoint(v_dom.0, v_dom.1);
+    let s_mid = surface_geo.point_at(mid_u, mid_v, tol)?;
+    let (du, dv) = surface_geo.d1_at(mid_u, mid_v, tol)?;
+    let natural_out = du.cross(dv).dot(s_mid - outward_hint) >= 0.0;
+    let face = if natural_out == !hole {
+        face
+    } else {
+        face.reversed()
+    };
+    Ok(SkinnedStrip { face, bottom, top })
 }
 
 /// Loft a solid through many closed planar sections, skinned smoothly.
@@ -854,8 +1038,7 @@ pub fn make_pipe_skinned(
     };
     const STATIONS: usize = 33;
     const AROUND: usize = 40;
-    // Rotation-minimizing frames by double reflection.
-    let mut stations: Vec<(Point, Vector)> = Vec::with_capacity(STATIONS);
+    let mut stations: Vec<SpineStation> = Vec::with_capacity(STATIONS);
     for i in 0..STATIONS {
         #[allow(clippy::cast_precision_loss)]
         let t = range.0 + (range.1 - range.0) * (i as f64) / ((STATIONS - 1) as f64);
@@ -865,62 +1048,539 @@ pub fn make_pipe_skinned(
         if m <= tol.confusion() {
             ogeom_bail!(Construction, "the spine is degenerate at {t}");
         }
-        stations.push((p, d / m));
+        stations.push(SpineStation {
+            at: p,
+            tangent: d / m,
+        });
     }
-    let mut normals: Vec<Vector> = Vec::with_capacity(STATIONS);
-    {
-        let t0 = stations[0].1;
-        let seed = if t0.cross(ogeom_math::Vector::Z).magnitude() > 0.5 {
-            ogeom_math::Vector::Z
-        } else {
-            ogeom_math::Vector::X
-        };
-        let n0 = {
-            let v = seed - t0 * seed.dot(t0);
-            v / v.magnitude()
-        };
-        normals.push(n0);
-        for i in 1..STATIONS {
-            let (p0, t0) = stations[i - 1];
-            let (p1, t1) = stations[i];
-            let n = normals[i - 1];
-            // Double reflection: reflect in the chord plane, then in the
-            // plane bisecting the tangents.
-            let v1 = p1 - p0;
-            let c1 = v1.dot(v1);
-            let nl = n - v1 * (2.0 / c1 * v1.dot(n));
-            let tl = t0 - v1 * (2.0 / c1 * v1.dot(t0));
-            let v2 = t1 - tl;
-            let c2 = v2.dot(v2);
-            let next = if c2 > 1e-20 {
-                nl - v2 * (2.0 / c2 * v2.dot(nl))
-            } else {
-                nl
-            };
-            normals.push(next / next.magnitude());
-        }
-    }
+    let normals = rmf_normals(&stations);
     let mut rows: Vec<Vec<Point>> = Vec::with_capacity(STATIONS);
-    for (i, (p, t)) in stations.iter().enumerate() {
+    for (i, station) in stations.iter().enumerate() {
         let x = normals[i];
-        let y = t.cross(x);
+        let y = station.tangent.cross(x);
         let mut row = Vec::with_capacity(AROUND);
         for a in 0..AROUND {
             #[allow(clippy::cast_precision_loss)]
             let ang = core::f64::consts::TAU * (a as f64) / (AROUND as f64);
-            row.push(*p + (x * ang.cos() + y * ang.sin()) * radius);
+            row.push(station.at + (x * ang.cos() + y * ang.sin()) * radius);
         }
         rows.push(row);
     }
     let mut built = skinned_solid(
         model,
         &rows,
-        (-stations[0].1, stations[STATIONS - 1].1),
+        (-stations[0].tangent, stations[STATIONS - 1].tangent),
         tolerance,
         tol,
     )?;
     built.history.generate(spine, built.shape.clone());
     Ok(built)
+}
+
+/// One sampled spine station: where the spine is and which way it runs.
+#[derive(Clone, Copy)]
+struct SpineStation {
+    at: Point,
+    /// The unit tangent, in the direction of travel.
+    tangent: Vector,
+}
+
+/// Rotation-minimizing normals along the stations, by double reflection:
+/// reflect in each chord's plane, then in the plane bisecting the tangents.
+/// Self-contained — it needs only the station list — and shared by every
+/// sweep that must not twist where its spine bends.
+fn rmf_normals(stations: &[SpineStation]) -> Vec<Vector> {
+    let mut normals: Vec<Vector> = Vec::with_capacity(stations.len());
+    let t0 = stations[0].tangent;
+    let seed = if t0.cross(ogeom_math::Vector::Z).magnitude() > 0.5 {
+        ogeom_math::Vector::Z
+    } else {
+        ogeom_math::Vector::X
+    };
+    let n0 = {
+        let v = seed - t0 * seed.dot(t0);
+        v / v.magnitude()
+    };
+    normals.push(n0);
+    for i in 1..stations.len() {
+        let (p0, t0) = (stations[i - 1].at, stations[i - 1].tangent);
+        let (p1, t1) = (stations[i].at, stations[i].tangent);
+        let n = normals[i - 1];
+        let v1 = p1 - p0;
+        let c1 = v1.dot(v1);
+        let nl = n - v1 * (2.0 / c1 * v1.dot(n));
+        let tl = t0 - v1 * (2.0 / c1 * v1.dot(t0));
+        let v2 = t1 - tl;
+        let c2 = v2.dot(v2);
+        let next = if c2 > 1e-20 {
+            nl - v2 * (2.0 / c2 * v2.dot(nl))
+        } else {
+            nl
+        };
+        normals.push(next / next.magnitude());
+    }
+    normals
+}
+
+/// Sweep a planar profile — a wire, or a face whose holes ride along —
+/// down an arbitrary spine, one skinned wall per profile loop.
+///
+/// The spine may be a single edge or a wire of edges of any curve the
+/// vocabulary evaluates — lines, arcs, splines, helices. Frames along it are
+/// rotation-minimizing by default (the double-reflection construction), so
+/// the profile neither twists nor kinks where the spine bends; `frenet`
+/// asks for the Frenet frame instead, which turns with the spine's own
+/// curvature — the law a thread wants. Stations are placed by each edge's
+/// own turning, the skin holds every transported section to `tolerance`,
+/// and the caps sit perpendicular to the spine's ends, holes and all.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// profile is not planar, leans along the spine, or does not sit at the
+/// spine's start; if the spine is closed (the loop-back is the closed-skin
+/// milestone — docs/PARITY.md, offset.sweeps); or if `frenet` is asked of a
+/// spine that never bends.
+/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if the skin
+/// cannot reach the tolerance.
+pub fn make_pipe_shell(
+    model: &mut Model,
+    profile: &Shape,
+    spine: &Shape,
+    frenet: bool,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    const AROUND: usize = 40;
+
+    let stations = shell_stations(model, spine, tol)?;
+    if stations[0].at.distance(stations[stations.len() - 1].at) <= tol.confusion() * 10.0 {
+        ogeom_bail!(
+            Construction,
+            "a closed spine loops the shell back on itself; that \
+             construction is the closed-skin milestone — docs/PARITY.md, \
+             offset.sweeps"
+        );
+    }
+    let normals = if frenet {
+        frenet_normals(&stations, tol)?
+    } else {
+        rmf_normals(&stations)
+    };
+
+    // The profile's loops: a face contributes every wire, holes included;
+    // a bare wire is one loop.
+    let loops: Vec<Shape> = match model.kind_of(profile)? {
+        ShapeType::Face => explore(model, profile, Filter::OfType(ShapeType::Wire))?,
+        ShapeType::Wire => vec![profile.clone()],
+        other => ogeom_bail!(
+            Construction,
+            "a pipe shell sweeps a planar wire or face, not a {other:?}"
+        ),
+    };
+    if loops.is_empty() {
+        ogeom_bail!(Construction, "the profile has no loop to sweep");
+    }
+    let Some(plane) = ogeom_algo::find_plane(model, profile, tol)? else {
+        ogeom_bail!(Construction, "a pipe shell sweeps a planar profile");
+    };
+    let t0 = stations[0].tangent;
+    if plane.normal().vector().cross(t0).magnitude() > 1e-9 {
+        ogeom_bail!(
+            Construction,
+            "the profile leans along its spine; a pipe shell runs square to \
+             the start"
+        );
+    }
+    if plane.distance_to(stations[0].at) > tol.confusion() * 100.0 {
+        ogeom_bail!(
+            Construction,
+            "the profile does not sit at the spine's start"
+        );
+    }
+
+    // Transport: each loop expressed in the start frame's own 2D
+    // coordinates, then re-expressed in every station's frame. A loop of one
+    // smooth closed edge skins as one wall; a faceted loop skins one strip
+    // per edge, cornered at shared vertices, because no single fit can
+    // speak a corner.
+    let x0 = normals[0];
+    let y0 = t0.cross(x0);
+    let origin = stations[0].at;
+    let flat = |p: Point| -> (f64, f64) { ((p - origin).dot(x0), (p - origin).dot(y0)) };
+    let place = |i: usize, (a, b): (f64, f64)| -> Point {
+        let x = normals[i];
+        let y = stations[i].tangent.cross(x);
+        stations[i].at + x * a + y * b
+    };
+    let last = stations.len() - 1;
+
+    enum LoopWall {
+        Ring {
+            ring0: Shape,
+            ring1: Shape,
+        },
+        Chain {
+            bottoms: Vec<Shape>,
+            tops: Vec<Shape>,
+        },
+    }
+    let mut faces: Vec<Shape> = Vec::new();
+    let mut ends: Vec<LoopWall> = Vec::with_capacity(loops.len());
+    for (li, wire) in loops.iter().enumerate() {
+        let hole = li != 0;
+        let edges = model.ordered_children_of(wire)?;
+        let single_smooth = edges.len() == 1 && {
+            let (curve, _) = spine_curve_of(model, &edges[0])?;
+            !matches!(curve, ogeom_geom::Curve::Line(_))
+                && ogeom_algo::edge_vertices(model, &edges[0])?.is_some_and(|(a, b)| a.is_same(&b))
+        };
+        if single_smooth {
+            let samples = sample_wire(model, wire, AROUND, tol)?;
+            let flat_row: Vec<(f64, f64)> = samples.iter().map(|p| flat(*p)).collect();
+            let rows: Vec<Vec<Point>> = (0..stations.len())
+                .map(|i| flat_row.iter().map(|ab| place(i, *ab)).collect())
+                .collect();
+            let wall = skinned_wall(model, &rows, tolerance, tol)?;
+            faces.push(if hole {
+                wall.face.reversed()
+            } else {
+                wall.face.clone()
+            });
+            ends.push(LoopWall::Ring {
+                ring0: wall.ring0,
+                ring1: wall.ring1,
+            });
+        } else {
+            // Shared corner vertices at both ends of every edge junction.
+            let count = edges.len();
+            let mut corner_flat: Vec<(f64, f64)> = Vec::with_capacity(count);
+            for edge in &edges {
+                let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+                    ogeom_bail!(Construction, "a profile edge has no vertices");
+                };
+                let start = if edge.orientation() == ogeom_topo::Orientation::Reversed {
+                    b
+                } else {
+                    a
+                };
+                let Some(data) = model.node(&start).and_then(|n| n.data().as_vertex()) else {
+                    ogeom_bail!(Construction, "a profile vertex holds no data");
+                };
+                corner_flat.push(flat(data.point));
+            }
+            let make_corners = |model: &mut Model, station: usize| -> Vec<Shape> {
+                corner_flat
+                    .iter()
+                    .map(|ab| ogeom_algo::make_vertex(model, place(station, *ab)).shape)
+                    .collect()
+            };
+            let first_corners = make_corners(model, 0);
+            let last_corners = make_corners(model, last);
+
+            // The loop's own centroid line, for orienting each strip.
+            let hint_flat = {
+                let mut a = 0.0;
+                let mut b = 0.0;
+                for (fa, fb) in &corner_flat {
+                    a += fa;
+                    b += fb;
+                }
+                #[allow(clippy::cast_precision_loss)]
+                let n = count as f64;
+                (a / n, b / n)
+            };
+
+            let mut bottoms = Vec::with_capacity(count);
+            let mut tops = Vec::with_capacity(count);
+            for (ei, edge) in edges.iter().enumerate() {
+                let (curve, range) = spine_curve_of(model, edge)?;
+                let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+                const ALONG_EDGE: usize = 8;
+                let mut flat_row: Vec<(f64, f64)> = Vec::with_capacity(ALONG_EDGE + 1);
+                for k in 0..=ALONG_EDGE {
+                    #[allow(clippy::cast_precision_loss)]
+                    let f = (k as f64) / (ALONG_EDGE as f64);
+                    let t = if reversed {
+                        range.1 - (range.1 - range.0) * f
+                    } else {
+                        range.0 + (range.1 - range.0) * f
+                    };
+                    flat_row.push(flat(curve.point_at(t, tol)?));
+                }
+                let rows: Vec<Vec<Point>> = (0..stations.len())
+                    .map(|i| flat_row.iter().map(|ab| place(i, *ab)).collect())
+                    .collect();
+                let next = (ei + 1) % count;
+                let mid = stations[stations.len() / 2];
+                let hint = {
+                    let x = normals[stations.len() / 2];
+                    let y = mid.tangent.cross(x);
+                    mid.at + x * hint_flat.0 + y * hint_flat.1
+                };
+                let strip = skinned_strip(
+                    model,
+                    &rows,
+                    (
+                        &first_corners[ei],
+                        &first_corners[next],
+                        &last_corners[ei],
+                        &last_corners[next],
+                    ),
+                    hint,
+                    hole,
+                    tolerance,
+                    tol,
+                )?;
+                faces.push(strip.face.clone());
+                bottoms.push(strip.bottom);
+                tops.push(strip.top);
+            }
+            ends.push(LoopWall::Chain { bottoms, tops });
+        }
+    }
+
+    // A cap per end: one plane, one wire per loop, each edge's pcurve the
+    // exact projection of its control net into the plane's chart.
+    for end in 0..2 {
+        let (at, outward) = if end == 0 {
+            (stations[0].at, -stations[0].tangent)
+        } else {
+            (stations[last].at, stations[last].tangent)
+        };
+        let cap_plane = Plane::through(at, Direction::new(outward, tol)?);
+        let mut loop_edges: Vec<Vec<Shape>> = Vec::with_capacity(ends.len());
+        for wall in &ends {
+            loop_edges.push(match wall {
+                LoopWall::Ring { ring0, ring1 } => {
+                    vec![if end == 0 {
+                        ring0.clone()
+                    } else {
+                        ring1.clone()
+                    }]
+                }
+                LoopWall::Chain { bottoms, tops } => {
+                    if end == 0 {
+                        bottoms.clone()
+                    } else {
+                        tops.clone()
+                    }
+                }
+            });
+        }
+        let mut reach = 1.0_f64;
+        for edges in &loop_edges {
+            for edge in edges {
+                let (curve, range) = spine_curve_of(model, edge)?;
+                for t in 0..8 {
+                    let p =
+                        curve.point_at(range.0 + (range.1 - range.0) * f64::from(t) / 8.0, tol)?;
+                    reach = reach.max(p.distance(at) * 2.0);
+                }
+            }
+        }
+        let cap_surface: SurfaceGeometry =
+            PlaneSurface::over(cap_plane, (-reach, reach), (-reach, reach))?.into();
+        let mut wires: Vec<Shape> = Vec::with_capacity(loop_edges.len());
+        for edges in &loop_edges {
+            wires.push(ogeom_algo::make_wire(model, edges, tol)?.shape);
+        }
+        let face = ogeom_algo::make_face(model, cap_surface.clone(), &wires, tol)?.shape;
+        let cap_id = {
+            let Some(node) = model.node(&face) else {
+                ogeom_bail!(Dangling, "the cap just built is not in this model");
+            };
+            let ogeom_topo::NodeData::Face(data) = node.data() else {
+                ogeom_bail!(Construction, "the cap holds no face data");
+            };
+            data.surface
+        };
+        let frame = cap_plane.frame();
+        for edges in &loop_edges {
+            for edge in edges {
+                let (curve, range) = spine_curve_of(model, edge)?;
+                let ogeom_geom::Curve::BSpline(bs) = &curve else {
+                    ogeom_bail!(Construction, "a swept ring is not a spline");
+                };
+                // A planar polynomial spline's chart image is the same-degree
+                // spline of the projected control points — affine, so exact.
+                let control2: Vec<Point2> = bs
+                    .control_points()
+                    .iter()
+                    .map(|w| {
+                        let local = frame.to_local(w.point());
+                        Point2::new(local.x, local.y)
+                    })
+                    .collect();
+                let pcurve: ogeom_geom::PlanarCurve =
+                    ogeom_geom::BSpline2d::new(bs.knots().clone(), control2, tol)?.into();
+                ogeom_algo::attach_pcurve(
+                    model,
+                    edge,
+                    pcurve,
+                    cap_id,
+                    ogeom_topo::Location::identity(),
+                    range,
+                )?;
+            }
+        }
+        faces.push(face);
+    }
+
+    let sewn = sew(model, &faces, tol)?;
+    if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
+        ogeom_bail!(Construction, "the pipe shell did not close");
+    }
+    let mut built = make_solid(model, std::slice::from_ref(&sewn.shells[0]))?;
+    built.history.generate(profile, built.shape.clone());
+    built.history.generate(spine, built.shape.clone());
+    Ok(built)
+}
+
+/// An edge's 3D curve and range, cloned out of the model.
+fn spine_curve_of(model: &Model, edge: &Shape) -> OgeomResult<(ogeom_geom::Curve, (f64, f64))> {
+    let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
+        ogeom_bail!(Construction, "an edge holds no data");
+    };
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        ogeom_bail!(Construction, "an edge has no curve");
+    };
+    let Some(geometry) = model.geometry().curve(*curve) else {
+        ogeom_bail!(Dangling, "curve is not in this model");
+    };
+    Ok((geometry.clone(), *range))
+}
+
+/// Sample a spine — one edge or a wire of them — into stations, each edge
+/// given a station count by its own turning.
+fn shell_stations(model: &Model, spine: &Shape, tol: Tolerances) -> OgeomResult<Vec<SpineStation>> {
+    let edges: Vec<Shape> = match model.kind_of(spine)? {
+        ShapeType::Edge => vec![spine.clone()],
+        ShapeType::Wire => model.ordered_children_of(spine)?,
+        other => ogeom_bail!(
+            Construction,
+            "a pipe shell runs along an edge or a wire, not a {other:?}"
+        ),
+    };
+    if edges.is_empty() {
+        ogeom_bail!(Construction, "the spine has no edge to run along");
+    }
+    let mut stations: Vec<SpineStation> = Vec::new();
+    for edge in &edges {
+        let (curve, range) = {
+            let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
+                ogeom_bail!(Construction, "a spine edge holds no data");
+            };
+            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+                ogeom_bail!(Construction, "a spine edge has no curve");
+            };
+            let Some(geometry) = model.geometry().curve(*curve) else {
+                ogeom_bail!(Dangling, "curve is not in this model");
+            };
+            (geometry.clone(), *range)
+        };
+        let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+        // Stations by turning: sample tangents coarsely, sum the angles, and
+        // give each edge enough stations that no step turns more than a few
+        // degrees. A straight edge keeps a healthy minimum for the fit.
+        let turning = {
+            let mut sum = 0.0_f64;
+            let mut last: Option<Vector> = None;
+            for i in 0..=16 {
+                let t = range.0 + (range.1 - range.0) * f64::from(i) / 16.0;
+                let d = curve.d1_at(t, tol)?;
+                let m = d.magnitude();
+                if m <= tol.confusion() {
+                    continue;
+                }
+                let u = d / m;
+                if let Some(prev) = last {
+                    sum += prev.dot(u).clamp(-1.0, 1.0).acos() * 16.0 / 16.0;
+                }
+                last = Some(u);
+            }
+            sum
+        };
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let count = (turning / (core::f64::consts::TAU / 64.0)).ceil().max(8.0) as usize;
+        for i in 0..=count {
+            #[allow(clippy::cast_precision_loss)]
+            let f = (i as f64) / (count as f64);
+            let t = if reversed {
+                range.1 - (range.1 - range.0) * f
+            } else {
+                range.0 + (range.1 - range.0) * f
+            };
+            let p = curve.point_at(t, tol)?;
+            let d = curve.d1_at(t, tol)?;
+            let m = d.magnitude();
+            if m <= tol.confusion() {
+                ogeom_bail!(Construction, "the spine is degenerate at {t}");
+            }
+            let tangent = if reversed { -(d / m) } else { d / m };
+            if let Some(prev) = stations.last()
+                && prev.at.distance(p) <= tol.confusion()
+            {
+                continue;
+            }
+            stations.push(SpineStation { at: p, tangent });
+        }
+    }
+    if stations.len() < 2 {
+        ogeom_bail!(Construction, "the spine collapses to a point");
+    }
+    Ok(stations)
+}
+
+/// Frenet normals: each station's frame turns with the spine's own
+/// curvature, read from the tangents' finite differences. Straight runs
+/// carry the last bending station's normal forward; a spine that never
+/// bends has no Frenet frame at all and is refused by name.
+fn frenet_normals(stations: &[SpineStation], tol: Tolerances) -> OgeomResult<Vec<Vector>> {
+    let mut normals: Vec<Option<Vector>> = Vec::with_capacity(stations.len());
+    for i in 0..stations.len() {
+        let (before, after) = (
+            &stations[i.saturating_sub(1)],
+            &stations[(i + 1).min(stations.len() - 1)],
+        );
+        let dt = after.tangent - before.tangent;
+        let t = stations[i].tangent;
+        let bend = dt - t * dt.dot(t);
+        let m = bend.magnitude();
+        normals.push(if m > tol.angular().max(1e-9) {
+            Some(bend / m)
+        } else {
+            None
+        });
+    }
+    // Carry forward, then backward, so straight lead-ins take the first
+    // bend's frame rather than none.
+    let mut carried: Vec<Vector> = Vec::with_capacity(stations.len());
+    let mut last: Option<Vector> = None;
+    for n in &normals {
+        if let Some(n) = n {
+            last = Some(*n);
+        }
+        carried.push(last.unwrap_or(Vector::new(0.0, 0.0, 0.0)));
+    }
+    let mut ahead: Option<Vector> = None;
+    for i in (0..stations.len()).rev() {
+        if let Some(n) = normals[i] {
+            ahead = Some(n);
+        } else if carried[i].magnitude() < 0.5
+            && let Some(n) = ahead
+        {
+            carried[i] = n;
+        }
+    }
+    if carried.iter().any(|n| n.magnitude() < 0.5) {
+        ogeom_bail!(
+            Construction,
+            "a straight spine has no Frenet frame; use the \
+             rotation-minimizing default"
+        );
+    }
+    Ok(carried)
 }
 
 // --- the evolved shape -------------------------------------------------------

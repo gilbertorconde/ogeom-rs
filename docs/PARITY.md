@@ -198,7 +198,7 @@ entities, pcurve-only trimming, annotation and drafting.
 - **offset.projection** — Projecting wires normally onto faces, pcurves riding along · `covered` · 2 headers claimed
 - **offset.shell-thicken** — Offsetting shapes and thickening shells into solids · `covered` · 16 headers claimed
 - **offset.sweeps** — Sweeping profiles along spines: pipes, pipe shells, evolved shapes, the frame laws · `partial` · 120 headers claimed
-  - *restriction:* Pipes run a circular section along a single spine edge — exactly for straight and circular spines, skinned for free-form and helical ones — and the evolved sweep runs a profile along a planar spine, exactly, by composition. What is owed is the general pipe shell: an arbitrary planar profile along an arbitrary spine wire, with a frame law. The code's refusals point here.
+  - *restriction:* Pipes run a circular section along a single spine edge — exactly for straight and circular spines, skinned for free-form and helical ones — the evolved sweep runs a profile along a planar spine, exactly, by composition, and the pipe shell sweeps an arbitrary planar profile, holes and all, along an open spine wire under a rotation-minimizing or Frenet frame law. What is owed is the closed spine: the loop-back needs the v-periodic skin. The code's refusals point here.
 - **offset.wire-offset** — Offsetting planar wires, with the join styles · `covered` · 1 header claimed
 
 ### ogeom-topo

@@ -1089,10 +1089,11 @@ crate = "ogeom-offset"
 verdict = "partial"
 restriction = """Pipes run a circular section along a single spine edge — \
 exactly for straight and circular spines, skinned for free-form and helical \
-ones — and the evolved sweep runs a profile along a planar spine, exactly, \
-by composition. What is owed is the general pipe shell: an arbitrary planar \
-profile along an arbitrary spine wire, with a frame law. The code's \
-refusals point here."""
+ones — the evolved sweep runs a profile along a planar spine, exactly, by \
+composition, and the pipe shell sweeps an arbitrary planar profile, holes \
+and all, along an open spine wire under a rotation-minimizing or Frenet \
+frame law. What is owed is the closed spine: the loop-back needs the \
+v-periodic skin. The code's refusals point here."""
 claims = [
     "BRepOffsetAPI_MakePipe", "BRepOffsetAPI_MakePipeShell",
     "BRepOffsetAPI_MakeEvolved", "BRepSweep_*", "BRepFill", "BRepFill_*",
@@ -1100,7 +1101,7 @@ claims = [
 ]
 symbols = [
     "ogeom_offset::make_pipe", "ogeom_offset::make_pipe_skinned",
-    "ogeom_offset::make_evolved",
+    "ogeom_offset::make_pipe_shell", "ogeom_offset::make_evolved",
 ]
 tests = ["crates/ogeom-offset/tests/sweep.rs", "crates/ogeom/tests/evolved.rs"]
 
