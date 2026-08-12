@@ -44,6 +44,13 @@ cargo run --quiet --release -p ogeom-bench -- --check tools/ogeom-bench/baseline
 echo "== docs =="
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
 
+echo "== book =="
+# The guide's code blocks are included by anchor from crates/ogeom/tests/book.rs,
+# which the test pass above just ran — so a book that builds is a book whose
+# examples passed. Install the builder with `cargo install mdbook --locked`;
+# an absent mdbook fails here on purpose, because a skipped gate is a silent one.
+mdbook build docs/book
+
 echo "== parity =="
 # The audit gate: every verdict in docs/parity/parity.toml cites evidence that
 # still exists — symbols against the rustdoc just built, tests against the

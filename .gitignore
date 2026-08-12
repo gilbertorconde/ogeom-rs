@@ -24,3 +24,6 @@ Cargo.lock.orig
 *.swp
 
 *.proptest-regressions
+
+# The rendered book; `docs/book/src` is the source, this is build output.
+/docs/book/book

@@ -1,0 +1,14 @@
+[book]
+title = "ogeom — a B-rep CAD kernel in Rust"
+authors = ["Gilberto Conde"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/gilbertorconde/ogeom-rs"
+site-url = "/ogeom-rs/"
+
+[output.html.playground]
+# The examples are real integration tests included by anchor; they need the
+# whole kernel, which the playground does not have.
+runnable = false

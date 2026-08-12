@@ -22,6 +22,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # check.sh builds the book, whose code blocks are included from a test
+      # file the same script runs.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook
+
       # Format, lints, tests and docs. Repeats the test run, because property
       # tests draw fresh cases each time and one green run proves less than it
       # looks.

@@ -14,8 +14,13 @@ target is `docs/SCOPE.md`: parity with the reference kernel's modelling
 modules, and nothing else. `docs/PARITY.md` audits every public header of
 those modules against 97 named capabilities — every verdict citing symbols
 and tests the build verifies — and `tools/check.sh` fails if the audit and
-the code drift apart. The absences are five, each with a plan entry, and the
-`partial` rows say exactly what is missing.
+the code drift apart. No capability is absent; the `partial` rows say exactly
+what restriction each one carries.
+
+**Documentation:** [the guide](https://gilbertorconde.github.io/ogeom-rs/) and
+[the API reference](https://gilbertorconde.github.io/ogeom-rs/api/ogeom/).
+Every code block in the guide is included from a test this repository runs, so
+an example that stops being true fails the build.
 
 ## What this is
 
