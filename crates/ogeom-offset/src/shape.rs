@@ -64,14 +64,23 @@ pub fn offset_shape(
 /// Hollow a solid into a shell of the given wall `thickness`, opening it at
 /// the `removed` faces.
 ///
-/// The cavity is the inward offset of every kept face with the removed faces
-/// left in place, subtracted through the boolean — so the history reads as
-/// the cut it is, with the removed faces deleted.
+/// Two constructions, chosen by the opening's neighbours. When a removed
+/// face meets every neighbour across a corner, the cavity is the inward
+/// offset of every kept face with the removed faces left in place,
+/// subtracted through the boolean — the flush faces melt away, which is
+/// what opens the shell. When a removed face has a *tangent* neighbour — a
+/// blend melting into the face it rounds — leaving it in place would tear
+/// the shared vertices, so instead the whole solid offsets inward and each
+/// removed face's cavity image extrudes back out through the opening; the
+/// rim a tangent opening leaves is the tapering strip a true
+/// constant-thickness wall has there, which is correct rather than a
+/// defect.
 ///
 /// # Errors
 ///
 /// As [`offset_shape`], and additionally if `thickness` is not a usable
-/// length or a removed face is not a face of `solid`.
+/// length, a removed face is not a face of `solid`, or a tangent opening is
+/// not planar.
 pub fn make_thick_solid(
     model: &mut Model,
     solid: &Shape,
@@ -91,25 +100,134 @@ pub fn make_thick_solid(
             ogeom_bail!(Construction, "a removed face is not a face of the solid");
         }
     }
-    let skip: Vec<TShapeId> = removed.iter().map(Shape::node).collect();
-    let cavity = rebuilt(
-        model,
-        solid,
-        &|face| {
-            if skip.contains(&face.node()) {
-                0.0
-            } else {
-                -thickness
+
+    let mut tangent_opening = false;
+    for face in removed {
+        if has_tangent_neighbour(model, solid, face, tol)? {
+            tangent_opening = true;
+            break;
+        }
+    }
+    if !tangent_opening {
+        let skip: Vec<TShapeId> = removed.iter().map(Shape::node).collect();
+        let cavity = rebuilt(
+            model,
+            solid,
+            &|face| {
+                if skip.contains(&face.node()) {
+                    0.0
+                } else {
+                    -thickness
+                }
+            },
+            &|_| None,
+            tol,
+        )?;
+        let mut result = ogeom_bool::cut(model, solid, &cavity.shape, tol)?;
+        for face in removed {
+            result.history.delete(face);
+        }
+        return Ok(result);
+    }
+
+    // The tangent construction: everything moves together — which is what
+    // keeps the tangencies intact — and each opening is drilled back out by
+    // extruding its cavity image through where the wall used to be.
+    let cavity = rebuilt(model, solid, &|_| -thickness, &|_| None, tol)?;
+    let mut tool = cavity.shape.clone();
+    for face in removed {
+        let outward = {
+            let Some(NodeData::Face(data)) = model.node(face).map(ogeom_topo::TShape::data) else {
+                ogeom_bail!(Construction, "face node holds no face data");
+            };
+            let Some(SurfaceGeometry::Plane(p)) = model.geometry().surface(data.surface) else {
+                ogeom_bail!(
+                    Construction,
+                    "a tangent opening must be planar; a curved opening needs \
+                     the general rebuild — docs/PARITY.md, offset.shell-thicken"
+                );
+            };
+            let mut normal = p.plane().normal().vector();
+            if face.orientation() == Orientation::Reversed {
+                normal = -normal;
             }
-        },
-        &|_| None,
-        tol,
-    )?;
-    let mut result = ogeom_bool::cut(model, solid, &cavity.shape, tol)?;
+            normal
+        };
+        let [image] = cavity.history.modified(face) else {
+            ogeom_bail!(Construction, "a removed face has no single cavity image");
+        };
+        let punch =
+            ogeom_algo::make_prism(model, &image.clone(), outward * (2.0 * thickness), tol)?;
+        tool = ogeom_bool::fuse(model, &tool, &punch.shape, tol)?.shape;
+    }
+    let mut result = ogeom_bool::cut(model, solid, &tool, tol)?;
     for face in removed {
         result.history.delete(face);
     }
     Ok(result)
+}
+
+/// Whether any neighbour meets `face` tangentially along a shared edge.
+fn has_tangent_neighbour(
+    model: &Model,
+    solid: &Shape,
+    face: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    use ogeom_geom::Surface as _;
+
+    let own_edges: Vec<TShapeId> = explore(model, face, Filter::OfType(ShapeType::Edge))?
+        .iter()
+        .map(Shape::node)
+        .collect();
+    let normal_at = |model: &Model, face: &Shape, at: Point| -> OgeomResult<Option<Vector>> {
+        let Some(NodeData::Face(data)) = model.node(face).map(ogeom_topo::TShape::data) else {
+            ogeom_bail!(Construction, "face node holds no face data");
+        };
+        let Some(surface) = model.geometry().surface(data.surface) else {
+            ogeom_bail!(Dangling, "face refers to a surface not in this model");
+        };
+        let projection = ogeom_algo::project_on_surface(surface, at, 32, tol)?;
+        if projection.distance > tol.confusion() * 100.0 {
+            return Ok(None);
+        }
+        let (u, v) = projection.parameters;
+        let (du, dv) = surface.d1_at(u, v, tol)?;
+        let n = du.cross(dv);
+        let m = n.magnitude();
+        if m <= tol.confusion() {
+            return Ok(None);
+        }
+        Ok(Some(n / m))
+    };
+    for other in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+        if other.node() == face.node() {
+            continue;
+        }
+        for edge in explore(model, &other, Filter::OfType(ShapeType::Edge))? {
+            if !own_edges.contains(&edge.node()) {
+                continue;
+            }
+            let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+                continue;
+            };
+            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+                continue;
+            };
+            let Some(geometry) = model.geometry().curve(*curve) else {
+                continue;
+            };
+            let mid = geometry.point_at(f64::midpoint(range.0, range.1), tol)?;
+            let (Some(a), Some(b)) = (normal_at(model, face, mid)?, normal_at(model, &other, mid)?)
+            else {
+                continue;
+            };
+            if a.cross(b).magnitude() <= 1e-6 {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// A face prepared for the rebuild.

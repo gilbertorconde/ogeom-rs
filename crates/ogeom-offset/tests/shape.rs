@@ -320,3 +320,50 @@ fn a_rim_filleted_cylinder_offsets_with_its_toroidal_band() {
         4
     );
 }
+
+#[test]
+fn a_filleted_box_shells_open_at_its_blended_top() {
+    // The fillet-then-shell workflow with the opening tangent to its blend:
+    // the top face melts into the band along the tangency line, so the
+    // kept-in-place cavity would tear the shared vertices. The tangent
+    // construction offsets everything together and drills the opening back
+    // out; the rim at the tangent side is the tapering strip a true
+    // constant-thickness wall has there.
+    let mut model = ogeom_topo::Model::new();
+    let part = filleted_box(&mut model);
+    let top = face_at(&model, &part, Point::new(1.0, 0.5, 2.0));
+    let t = 0.2;
+    let result =
+        ogeom_offset::make_thick_solid(&mut model, &part, std::slice::from_ref(&top), t, T)
+            .unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // Solid minus cavity minus the punched opening above the cavity's top:
+    // its cross-section spans to the cavity band's own tangency line.
+    let pi = core::f64::consts::PI;
+    let solid = 8.0 - (1.0 - pi / 4.0) * 0.25 * 2.0;
+    let cavity = 1.6 * 1.6 * 1.6 - (1.0 - pi / 4.0) * 0.09 * 1.6;
+    let punched = 1.6 * 1.3 * t;
+    let expected = solid - cavity - punched;
+    let measured = volume(&model, &result.shape);
+    assert!(
+        (measured - expected).abs() < 2e-3,
+        "tangent shell volume {measured} against {expected}"
+    );
+
+    // The wall probed where each regime lives: a side wall, the emptied
+    // cavity, the opening, and the tapering rim past the tangency line.
+    let probes = [
+        (Point::new(0.1, 1.0, 1.0), ogeom_algo::Containment::In),
+        (Point::new(1.0, 1.0, 1.0), ogeom_algo::Containment::Out),
+        (Point::new(1.0, 1.0, 1.9), ogeom_algo::Containment::Out),
+        (Point::new(1.6, 1.0, 1.9), ogeom_algo::Containment::In),
+        (Point::new(1.9, 1.0, 1.0), ogeom_algo::Containment::In),
+    ];
+    for (probe, want) in probes {
+        let got = ogeom_algo::classify_in_solid_exact(&model, &result.shape, probe, T).unwrap();
+        assert_eq!(got, want, "probe at {probe:?}");
+    }
+    assert!(result.history.is_deleted(&top));
+}
