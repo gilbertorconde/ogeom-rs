@@ -341,6 +341,19 @@ Topology lives in typed index arenas — `Vec<T>` plus a typed `u32` key — not
 The cost is that a shape is only meaningful relative to the arena that owns it.
 That is the correct trade, and it is made explicit in the API rather than hidden.
 
+The arenas are append-only in practice — nothing in the kernel removes — and two
+non-builder paths lean on exactly that. `Model::from_parts` assembles a restored
+document by replaying the file's insertion order, which reproduces every handle.
+`Model::absorb` is the same engine pointed at a model that already has things in
+it: another document's parts append with every handle shifted past what the
+target holds, so an absorbed shape is indistinguishable from one built there.
+That is how a serialized tool body meets a live one in a boolean. Absorption
+preserves the source's identities under a plain offset (the remap table says
+where each landed), keeps its provenance verbatim — including source `OpId`s,
+which are meaningful only in the source document's own rebuild — and refuses,
+by name, a document at another unit scale: rescaling is a feature, not a
+default.
+
 > *Elsewhere:* a transient base class with intrusive reference counting plus a
 > custom small-block allocator. We need none of it.
 

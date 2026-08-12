@@ -114,8 +114,11 @@ claims = [
     "TopTools_FormatVersion", "BRepTools_ShapeSet", "BinTools", "BinTools_*",
     "GeomTools", "GeomTools_*",
 ]
-symbols = ["ogeom_io::read", "ogeom_io::write", "ogeom_io::VERSION"]
-tests = ["crates/ogeom/tests/brep_format.rs"]
+symbols = [
+    "ogeom_io::read", "ogeom_io::write", "ogeom_io::VERSION",
+    "ogeom_io::read_into", "ogeom_topo::Model::absorb",
+]
+tests = ["crates/ogeom/tests/brep_format.rs", "crates/ogeom/tests/absorb.rs"]
 
 # --- ogeom-core -----------------------------------------------------------
 

@@ -53,6 +53,8 @@ use ogeom_topo::{
     Orientation, Shape, ShapeType, TShape, TShapeId, Triangulation, VertexData,
 };
 
+pub use ogeom_topo::Absorbed;
+
 /// The format version this reads and writes.
 ///
 /// Bumped when the grammar changes in a way an older reader could not follow.
@@ -208,12 +210,54 @@ pub fn read(text: &str) -> OgeomResult<(Model, Vec<Shape>)> {
     Ok((model, roots))
 }
 
+/// Read a document's contents into an existing model.
+///
+/// Same grammar, same [`VERSION`]: this reads exactly what [`read`] reads, it
+/// just lands the result in a model that already has things in it — which is
+/// what lets a serialized tool body meet a live one in a boolean. The heavy
+/// lifting is [`Model::absorb`]: every handle shifts past what the model
+/// already holds, identities land under new ids, and the returned
+/// [`Absorbed`] says where, so references recorded against the source
+/// document still resolve.
+///
+/// A document authored at another unit scale is refused, not rescaled.
+///
+/// # Errors
+///
+/// As [`read`], plus the refusals of [`Model::absorb`].
+pub fn read_into(model: &mut Model, text: &str) -> OgeomResult<Absorbed> {
+    let (parts, roots, leftover, _) = read_parts(text)?;
+    if let Some(keyword) = leftover {
+        ogeom_bail!(Construction, "unknown record `{keyword}`");
+    }
+    model.absorb(parts, &roots)
+}
+
 /// The model section, stopping at the first record it does not know.
 ///
 /// Returns the leftover keyword and the cursor standing just past it, so a
 /// layered reader — the document's — can pick up where the model's ends.
 #[allow(clippy::type_complexity)]
 fn read_core(text: &str) -> OgeomResult<(Model, Vec<Shape>, Option<String>, Cursor<'_>)> {
+    let (parts, roots, leftover, cursor) = read_parts(text)?;
+    let model = Model::from_parts(parts)?;
+    // The roots were rebuilt alongside the rest but travel outside `ModelParts`,
+    // so they are still unbound: they name no arena and resolve nowhere. Binding
+    // them checks them too, which is why a file naming a root that is not there
+    // fails here rather than in whatever first tries to use it.
+    let roots = roots
+        .iter()
+        .map(|root| model.bind(root))
+        .collect::<OgeomResult<Vec<_>>>()?;
+    Ok((model, roots, leftover, cursor))
+}
+
+/// The record loop: text to [`ModelParts`] and unbound roots.
+///
+/// Everything [`read_core`] does short of assembling a model — split out so
+/// [`read_into`] can hand the same parts to [`Model::absorb`] instead.
+#[allow(clippy::type_complexity)]
+fn read_parts(text: &str) -> OgeomResult<(ModelParts, Vec<Shape>, Option<String>, Cursor<'_>)> {
     let mut cursor = Cursor::new(text);
     let mut leftover = None;
 
@@ -301,16 +345,7 @@ fn read_core(text: &str) -> OgeomResult<(Model, Vec<Shape>, Option<String>, Curs
     }
 
     parts.geometry = geometry;
-    let model = Model::from_parts(parts)?;
-    // The roots were rebuilt alongside the rest but travel outside `ModelParts`,
-    // so they are still unbound: they name no arena and resolve nowhere. Binding
-    // them checks them too, which is why a file naming a root that is not there
-    // fails here rather than in whatever first tries to use it.
-    let roots = roots
-        .iter()
-        .map(|root| model.bind(root))
-        .collect::<OgeomResult<Vec<_>>>()?;
-    Ok((model, roots, leftover, cursor))
+    Ok((parts, roots, leftover, cursor))
 }
 
 /// Read the `units` record, which every document since version 1 carries.
@@ -2793,6 +2828,213 @@ mod tests {
             model.provenance().len(),
             "the table changed length"
         );
+    }
+
+    #[test]
+    fn everything_reads_into_a_live_model_and_still_answers_the_same() {
+        // The same claims `the_restored_model_is_the_same_model` makes, with
+        // the document landing in a model that already has things in it.
+        let (model, roots) = everything();
+        let text = write(&model, &roots, WriteOptions::default()).unwrap();
+
+        let mut target = Model::new();
+        let resident = make_box(&mut target, Frame::WORLD, (7.0, 7.0, 7.0), T)
+            .unwrap()
+            .shape;
+        let absorbed = read_into(&mut target, &text).unwrap();
+        assert_eq!(absorbed.shapes.len(), roots.len());
+
+        for (before, after) in roots.iter().zip(&absorbed.shapes) {
+            for kind in [
+                ShapeType::Face,
+                ShapeType::Edge,
+                ShapeType::Vertex,
+                ShapeType::Shell,
+            ] {
+                assert_eq!(
+                    explore_unique(&target, after, kind).unwrap().len(),
+                    explore_unique(&model, before, kind).unwrap().len(),
+                    "{kind:?} count changed"
+                );
+            }
+            assert!(
+                check(&target, after, T).unwrap().is_valid(),
+                "absorbed shape is invalid: {}",
+                check(&target, after, T).unwrap()
+            );
+            let before_mesh = triangulate(&model, before, fine(), T).unwrap();
+            let after_mesh = triangulate(&target, after, fine(), T).unwrap();
+            assert_eq!(after_mesh.triangle_count(), before_mesh.triangle_count());
+            assert_relative_eq!(
+                after_mesh.volume(),
+                before_mesh.volume(),
+                max_relative = 0.0
+            );
+        }
+
+        // What lived here before is untouched and still measures.
+        assert!(check(&target, &resident, T).unwrap().is_valid());
+        assert_relative_eq!(
+            triangulate(&target, &resident, fine(), T).unwrap().volume(),
+            343.0,
+            max_relative = 1e-9
+        );
+    }
+
+    #[test]
+    fn identities_read_into_a_live_model_survive_under_an_offset() {
+        // `provenance_and_identity_survive`'s sibling: the ids are not the
+        // file's own — the target had already issued some — but the remap
+        // table says exactly where each one landed, and everything found
+        // through it answers the same.
+        let (model, roots) = everything();
+        let text = write(&model, &roots, WriteOptions::default()).unwrap();
+
+        let mut target = Model::new();
+        make_box(&mut target, Frame::WORLD, (7.0, 7.0, 7.0), T).unwrap();
+        let issued_before = target.provenance().len() as u64;
+        assert!(issued_before > 0);
+        let absorbed = read_into(&mut target, &text).unwrap();
+
+        for (before, after) in roots.iter().zip(&absorbed.shapes) {
+            let faces = explore_unique(&model, before, ShapeType::Face).unwrap();
+            let absorbed_faces = explore_unique(&target, after, ShapeType::Face).unwrap();
+            assert_eq!(faces.len(), absorbed_faces.len());
+            for (a, b) in faces.iter().zip(&absorbed_faces) {
+                let old = model.identity_of(a).expect("faces carry identities");
+                let new = absorbed.entities[&old];
+                assert_eq!(new.get(), old.get() + issued_before, "not a plain shift");
+                assert_eq!(target.identity_of(b), Some(new));
+                let found = target.shape_of(new).expect("the entity is findable");
+                assert!(found.is_partner(b), "identity found the wrong node");
+                assert_eq!(
+                    target.provenance_of(b).and_then(Provenance::role),
+                    model.provenance_of(a).and_then(Provenance::role),
+                    "a role changed in the shift"
+                );
+            }
+        }
+        assert_eq!(
+            target.provenance().len() as u64,
+            issued_before + model.provenance().len() as u64
+        );
+    }
+
+    #[test]
+    fn a_document_in_other_units_does_not_read_into_a_millimetre_model() {
+        let mut metric = Model::with_tolerances(Tolerances::metres());
+        let solid = make_box(
+            &mut metric,
+            Frame::WORLD,
+            (1.0, 1.0, 1.0),
+            Tolerances::metres(),
+        )
+        .unwrap()
+        .shape;
+        let text = write(
+            &metric,
+            std::slice::from_ref(&solid),
+            WriteOptions::default(),
+        )
+        .unwrap();
+
+        let mut target = Model::new();
+        make_box(&mut target, Frame::WORLD, (1.0, 1.0, 1.0), T).unwrap();
+        let nodes_before = target.node_count();
+        assert!(
+            read_into(&mut target, &text).is_err(),
+            "a metre document should not land in a millimetre model"
+        );
+        assert_eq!(
+            target.node_count(),
+            nodes_before,
+            "a refused read should leave the model alone"
+        );
+    }
+
+    #[test]
+    fn reading_the_same_document_into_a_model_twice_gives_independent_copies() {
+        let mut model = Model::new();
+        let solid = make_box(&mut model, Frame::WORLD, (1.0, 2.0, 3.0), T)
+            .unwrap()
+            .shape;
+        let text = write(
+            &model,
+            std::slice::from_ref(&solid),
+            WriteOptions::default(),
+        )
+        .unwrap();
+
+        let mut target = Model::new();
+        let first = read_into(&mut target, &text).unwrap();
+        let second = read_into(&mut target, &text).unwrap();
+
+        let a = &first.shapes[0];
+        let b = &second.shapes[0];
+        assert_ne!(
+            a.node().index(),
+            b.node().index(),
+            "the copies share a node"
+        );
+        // Containers carry no identity; a face of each copy does, and they
+        // must differ — the second read is a second body, not an alias.
+        let face_a = explore_unique(&target, a, ShapeType::Face).unwrap()[0].clone();
+        let face_b = explore_unique(&target, b, ShapeType::Face).unwrap()[0].clone();
+        assert_ne!(
+            target.identity_of(&face_a),
+            target.identity_of(&face_b),
+            "the copies share an identity"
+        );
+        assert_relative_eq!(
+            triangulate(&target, a, fine(), T).unwrap().volume(),
+            triangulate(&target, b, fine(), T).unwrap().volume(),
+            max_relative = 0.0
+        );
+    }
+
+    #[test]
+    fn read_into_reads_the_same_version_read_does() {
+        // The grammar did not change for read_into, so neither did VERSION —
+        // and both readers refuse the same unknown one.
+        let future = format!("{MAGIC} 99\nunits 1.0\n");
+        assert!(read(&future).is_err());
+        let mut target = Model::new();
+        assert!(read_into(&mut target, &future).is_err());
+    }
+
+    #[test]
+    fn a_document_with_meshes_reads_into_a_live_model() {
+        let mut model = Model::new();
+        let solid = make_box(&mut model, Frame::WORLD, (1.0, 2.0, 3.0), T)
+            .unwrap()
+            .shape;
+        ogeom_mesh::tessellate(&mut model, &solid, fine(), T).unwrap();
+        assert!(model.geometry().triangulation_count() > 0);
+        let text = write(
+            &model,
+            std::slice::from_ref(&solid),
+            WriteOptions::default(),
+        )
+        .unwrap();
+
+        let mut target = Model::new();
+        make_box(&mut target, Frame::WORLD, (7.0, 7.0, 7.0), T).unwrap();
+        let absorbed = read_into(&mut target, &text).unwrap();
+        assert_eq!(
+            target.geometry().triangulation_count(),
+            model.geometry().triangulation_count()
+        );
+        // The absorbed faces' cached-mesh handles resolve where they landed.
+        for face in explore_unique(&target, &absorbed.shapes[0], ShapeType::Face).unwrap() {
+            let node = target.node(&face).unwrap();
+            let mesh = node
+                .data()
+                .as_face()
+                .unwrap()
+                .triangulation
+                .expect("the cache travelled");
+            assert!(target.geometry().triangulation(mesh).is_some());
+        }
     }
 
     #[test]
