@@ -154,6 +154,14 @@ pub fn intersect_curves(
     check(options)?;
     let (basis_a, window_a) = through_trim(a);
     let (basis_b, window_b) = through_trim(b);
+    if let Some(found) = same_curve_3d(basis_a, basis_b) {
+        return Ok(clipped_to_windows(
+            found,
+            (basis_a, window_a),
+            (basis_b, window_b),
+            tol,
+        ));
+    }
     if let Some(found) = analytic_3d(basis_a, basis_b, options, tol) {
         return Ok(clipped_to_windows(
             found,
@@ -190,6 +198,7 @@ fn analytic_3d(
     match (a, b) {
         (Curve::Line(x), Curve::Line(y)) => Some(line_line_3d(x, y, options, tol)),
         (Curve::Circle(x), Curve::Circle(y)) => same_circle_3d(x, y, tol),
+        (Curve::Ellipse(x), Curve::Ellipse(y)) => same_ellipse_3d(x, y, tol),
         _ => None,
     }
 }
@@ -339,6 +348,88 @@ fn same_circle_3d(
     let start = a.point_at(lo, tol).ok()?;
     let local = cb.frame().to_local(start);
     let angle = local.y.atan2(local.x);
+    let phase = if b.is_reversed() { -angle } else { angle }.rem_euclid(core::f64::consts::TAU);
+    let along_a = a.d1_at(lo, tol).ok()?;
+    let along_b = b.d1_at(phase, tol).ok()?;
+    let winding: f64 = if along_a.dot(along_b) >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    Some(CurveIntersection {
+        crossings: Vec::new(),
+        overlaps: vec![Overlap {
+            on_a: (lo, hi),
+            on_b: (phase, winding.mul_add(hi - lo, phase)),
+        }],
+    })
+}
+
+/// The *same description* twice: one curve object meeting itself, forward
+/// or reversed. A fitted seam reused as a wedge's apex ring is exactly this
+/// pair, and the sampling path — every sample a hit — cannot answer it, for
+/// the same reason it cannot answer coincident circles. Equality here is
+/// structural, so two independent fits of one path still fall through to
+/// the general machinery, which is the honest place for them.
+fn same_curve_3d(a: &Curve, b: &Curve) -> Option<CurveIntersection<Point>> {
+    let (lo, hi) = Curve3d::domain(a);
+    if a == b {
+        return Some(CurveIntersection {
+            crossings: Vec::new(),
+            overlaps: vec![Overlap {
+                on_a: (lo, hi),
+                on_b: (lo, hi),
+            }],
+        });
+    }
+    use ogeom_geom::Reversible as _;
+    if *a == b.clone().reversed() {
+        let (blo, bhi) = Curve3d::domain(b);
+        return Some(CurveIntersection {
+            crossings: Vec::new(),
+            overlaps: vec![Overlap {
+                on_a: (lo, hi),
+                on_b: (bhi, blo),
+            }],
+        });
+    }
+    None
+}
+
+/// Two ellipses tracing the same point set in space: the ellipse counterpart
+/// of [`same_circle_3d`], and just as invisible to the sampling path. Unlike
+/// a circle, an ellipse's natural parameter is pinned to its major axis, so
+/// the correspondence is affine only when the two `x` axes line up — parallel
+/// or antiparallel — as well as the planes and radii; anything else falls
+/// through to the general machinery.
+fn same_ellipse_3d(
+    a: &ogeom_geom::EllipseCurve,
+    b: &ogeom_geom::EllipseCurve,
+    tol: Tolerances,
+) -> Option<CurveIntersection<Point>> {
+    let (ea, eb) = (a.ellipse(), b.ellipse());
+    if ea.frame().origin().distance(eb.frame().origin()) > tol.confusion() {
+        return None;
+    }
+    if (ea.major_radius() - eb.major_radius()).abs() > tol.confusion()
+        || (ea.minor_radius() - eb.minor_radius()).abs() > tol.confusion()
+    {
+        return None;
+    }
+    let (za, zb) = (ea.frame().z().vector(), eb.frame().z().vector());
+    if za.cross(zb).magnitude() > tol.angular() {
+        return None;
+    }
+    let (xa, xb) = (ea.frame().x().vector(), eb.frame().x().vector());
+    if xa.cross(xb).magnitude() > tol.angular() {
+        return None;
+    }
+    // As for circles: phase from where `a` starts on `b`, winding from
+    // whether the two run the same way there, and the ranges come back as
+    // the correspondence an overlap means.
+    let (lo, hi) = Curve3d::domain(a);
+    let start = a.point_at(lo, tol).ok()?;
+    let angle = ogeom_math::elementary::ellipse_parameter(&eb, start, tol).ok()?;
     let phase = if b.is_reversed() { -angle } else { angle }.rem_euclid(core::f64::consts::TAU);
     let along_a = a.d1_at(lo, tol).ok()?;
     let along_b = b.d1_at(phase, tol).ok()?;

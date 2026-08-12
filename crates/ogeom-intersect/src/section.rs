@@ -401,6 +401,20 @@ fn marched(
             }
             continue;
         }
+        if branch.stopped == crate::march::Stopped::RanOut {
+            ogeom_bail!(
+                NotDone,
+                "a marched section ran out of its point budget before \
+                 finishing; the seam is longer than the chord affords and \
+                 fitting the truncation would state a curve that is not there"
+            );
+        }
+        // A fit past its budget is still honest data: the error it reached
+        // is carried on the record and every consumer widens by it — an
+        // imported part's ragged pair can trace branches nothing fits, and
+        // those sections fall outside every trim downstream. Only a trace
+        // cut off by the point budget, refused above, states a curve that
+        // is not there.
         let fitted = approximate_branch(a, b, branch, options.tolerance, tol)?;
         out.push(SectionCurve {
             curve: fitted.curve.into(),
@@ -508,7 +522,13 @@ fn branch_is_tangential(
         if ma <= tol.confusion() || mb <= tol.confusion() {
             continue;
         }
-        if na.cross(nb).magnitude() / (ma * mb) > 1e-2 {
+        // The threshold carries the fitted world: a blend surface within a
+        // fit tolerance of true tangency crosses its host at an angle that
+        // grows as the square root of that tolerance, and calling such a
+        // graze transversal splits faces along slivers no classifier can
+        // hold. Genuinely transversal analytic pairs meeting under two
+        // degrees are the pathology, not the rule.
+        if na.cross(nb).magnitude() / (ma * mb) > 3e-2 {
             return Ok(false);
         }
     }
