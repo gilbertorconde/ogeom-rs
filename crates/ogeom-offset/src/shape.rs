@@ -15,9 +15,13 @@
 //! and the cut's same-domain resolution melts the flush faces away, which is
 //! what opens the shell.
 //!
-//! The honest limits, refused by name: faces that are not planes or full
-//! cylindrical bands, edges that are not straight or axis-normal circles,
-//! vertices not seated on three planes, and offsets that collapse the solid.
+//! The honest limits, refused by name: faces whose surfaces are not among
+//! the five analytics — a spline, revolution, extrusion, trimmed or offset
+//! surface has no same-family parallel to move to — edges that are neither
+//! straight nor circular, vertices whose seats leave them under-determined,
+//! and offsets that collapse the solid. Partial bands, tori and cones all
+//! move; what stops the rebuild is the edge between two moved surfaces that
+//! no longer meets in a line or a circle.
 
 use ogeom_algo::{
     Built, History, edge_vertices, make_edge, make_edge_between, make_face_with_pcurves,

@@ -15,8 +15,8 @@ per package.
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 69 |
-| `partial` | 13 |
+| `covered` | 67 |
+| `partial` | 15 |
 | `divergent` | 9 |
 | `n/a` | 5 |
 | `unreviewed` | 1 |
@@ -95,7 +95,7 @@ which case it is.
 - **fillet.chamfers** — Chamfering edges: symmetric, two-distance, distance-and-angle · `covered` · 1 header claimed
 - **fillet.corners-2d** — Filleting and chamfering the corners of planar wires · `covered` · 19 headers claimed
 - **fillet.edge-blends** — Blending edges: constant and variable radius fillets, rolling-ball, marched where no closed form exists · `partial` · 127 headers claimed
-  - *restriction:* Single edges, tangent chains and full rims blend, constant and variable radius, with the marching blend solving the ball's two contact points directly where no closed form exists. What is owed is the corner where three blends meet: docs/PLAN.md §B (B2), blocked on §A (A6) — the boolean's handling of tangency at a vertex of the tool's own patch. The blend of the corner is constructible; its trim against the part is not yet.
+  - *restriction:* Single edges, tangent chains and full rims blend, constant and variable radius, and the corner where three blends meet is closed: docs/PLAN.md §B (B2) with §A (A6) behind it. What is owed now: the marching blend solves the ball's two contact points directly where no closed form exists, but its contacts are not yet carried into topology, so an edge that is neither straight nor circular is refused by name; and of the corner family, the two-blend meeting and the N>3 setback vertex remain.
 - **fillet.osculating-cache** — Cached osculating surfaces along a blend's tangency curves · `divergent` · 1 header claimed
   - *reasoning:* An implementation detail of the reference's blend pipeline: it caches osculating approximations to march against. The marching blend here solves the ball's two contact points directly at each section (ogeom-fillet's march module), so there is no cache to keep coherent.
 
@@ -192,11 +192,13 @@ entities, pcurve-only trimming, annotation and drafting.
 - **offset.draft** — Drafting faces about a neutral plane for mould release · `covered` · 8 headers claimed
 - **offset.filling** — Filling a boundary with a face: the plate surface · `covered` · 32 headers claimed
 - **offset.form-features** — The form features: prism, revolution, rib and slot against a base · `covered` · 39 headers claimed
-- **offset.loft** — Lofting through sections, ruled or smoothed · `covered` · 1 header claimed
+- **offset.loft** — Lofting through sections, ruled or smoothed · `partial` · 1 header claimed
+  - *restriction:* The ruled loft takes exactly two closed wire sections — coaxial parallel circles, or polygons of the same corner count whose ruled walls come out planar; a skew wall is refused by name. The skinned loft takes N planar closed sections on a shared 48-sample resampling, with the start alignment the caller's authorship. What is owed: loft to a point, the closed loop-back, walls for skew ruled pairs, and an alignment hint. The code's refusals point here.
 - **offset.middle-path** — Extracting the middle path of a pipe-like solid · `unreviewed` · 1 header claimed
 - **offset.projection** — Projecting wires normally onto faces, pcurves riding along · `covered` · 2 headers claimed
 - **offset.shell-thicken** — Offsetting shapes and thickening shells into solids · `covered` · 16 headers claimed
-- **offset.sweeps** — Sweeping profiles along spines: pipes, pipe shells, evolved shapes, the frame laws · `covered` · 120 headers claimed
+- **offset.sweeps** — Sweeping profiles along spines: pipes, pipe shells, evolved shapes, the frame laws · `partial` · 120 headers claimed
+  - *restriction:* Pipes run a circular section along a single spine edge — exactly for straight and circular spines, skinned for free-form and helical ones — and the evolved sweep runs a profile along a planar spine, exactly, by composition. What is owed is the general pipe shell: an arbitrary planar profile along an arbitrary spine wire, with a frame law. The code's refusals point here.
 - **offset.wire-offset** — Offsetting planar wires, with the join styles · `covered` · 1 header claimed
 
 ### ogeom-topo

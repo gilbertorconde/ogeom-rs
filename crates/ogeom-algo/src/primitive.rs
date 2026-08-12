@@ -1020,9 +1020,10 @@ pub fn make_wedge(
 /// a point is on, which is the question a half space exists to answer.
 ///
 /// That is what it is for: a half space is an argument to a boolean — cut a
-/// solid with one and you have trimmed it by a surface — and until §8 exists
-/// there is nothing here that consumes it that way. Classification against it
-/// works today and is what the tests use.
+/// solid with one and you have trimmed it by a surface. `cut`, `common` and
+/// `section` all accept one as either operand; `fuse` refuses it by name,
+/// because an unbounded fuse has no volume to keep. Classification against it
+/// works too and is what the tests here use.
 ///
 /// # Errors
 ///
@@ -1789,7 +1790,7 @@ mod half_space_tests {
         // face with free edges all round, so it is *not* a closed shell — and
         // every query that needs an inside says so instead of guessing. That is
         // the correct answer for a shape whose boundary does not close, and it
-        // is why a half space is only useful as a boolean argument (§8).
+        // is why a half space is only useful as a boolean argument.
         let mut model = Model::new();
         let face = ground(&mut model);
         let built = make_half_space(&mut model, &face, Point::new(0.0, 0.0, 5.0), T).unwrap();

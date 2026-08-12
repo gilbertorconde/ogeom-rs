@@ -18,7 +18,7 @@ Everything here is `ogeom::offset`.
 ## Sweeps that live here
 
 The general sweeps share this crate's machinery: `make_pipe` (and
-`make_pipe_skinned`) along a spine wire, `make_loft` (and
+`make_pipe_skinned`) along a single spine edge, `make_loft` (and
 `make_loft_skinned`) through profile sections, `make_evolved` sweeping a
 profile along a planar spine. `make_filling` builds the face that fills a
 boundary — the N-sided patch.

@@ -1015,11 +1015,12 @@ title = "Blending edges: constant and variable radius fillets, rolling-ball, mar
 crate = "ogeom-fillet"
 verdict = "partial"
 restriction = """Single edges, tangent chains and full rims blend, constant \
-and variable radius, with the marching blend solving the ball's two contact \
-points directly where no closed form exists. What is owed is the corner \
-where three blends meet: docs/PLAN.md §B (B2), blocked on §A (A6) — the \
-boolean's handling of tangency at a vertex of the tool's own patch. The \
-blend of the corner is constructible; its trim against the part is not yet."""
+and variable radius, and the corner where three blends meet is closed: \
+docs/PLAN.md §B (B2) with §A (A6) behind it. What is owed now: the marching \
+blend solves the ball's two contact points directly where no closed form \
+exists, but its contacts are not yet carried into topology, so an edge that \
+is neither straight nor circular is refused by name; and of the corner \
+family, the two-blend meeting and the N>3 setback vertex remain."""
 claims = [
     "BRepFilletAPI_MakeFillet", "BRepFilletAPI_LocalOperation",
     "ChFi3d", "ChFi3d_*", "ChFiDS_*", "ChFiKPart_*",
@@ -1082,7 +1083,13 @@ tests = ["crates/ogeom-offset/tests/wire2d.rs"]
 id = "offset.sweeps"
 title = "Sweeping profiles along spines: pipes, pipe shells, evolved shapes, the frame laws"
 crate = "ogeom-offset"
-verdict = "covered"
+verdict = "partial"
+restriction = """Pipes run a circular section along a single spine edge — \
+exactly for straight and circular spines, skinned for free-form and helical \
+ones — and the evolved sweep runs a profile along a planar spine, exactly, \
+by composition. What is owed is the general pipe shell: an arbitrary planar \
+profile along an arbitrary spine wire, with a frame law. The code's \
+refusals point here."""
 claims = [
     "BRepOffsetAPI_MakePipe", "BRepOffsetAPI_MakePipeShell",
     "BRepOffsetAPI_MakeEvolved", "BRepSweep_*", "BRepFill", "BRepFill_*",
@@ -1098,10 +1105,20 @@ tests = ["crates/ogeom-offset/tests/sweep.rs", "crates/ogeom/tests/evolved.rs"]
 id = "offset.loft"
 title = "Lofting through sections, ruled or smoothed"
 crate = "ogeom-offset"
-verdict = "covered"
+verdict = "partial"
+restriction = """The ruled loft takes exactly two closed wire sections — \
+coaxial parallel circles, or polygons of the same corner count whose ruled \
+walls come out planar; a skew wall is refused by name. The skinned loft \
+takes N planar closed sections on a shared 48-sample resampling, with the \
+start alignment the caller's authorship. What is owed: loft to a point, the \
+closed loop-back, walls for skew ruled pairs, and an alignment hint. The \
+code's refusals point here."""
 claims = ["BRepOffsetAPI_ThruSections"]
 symbols = ["ogeom_offset::make_loft", "ogeom_offset::make_loft_skinned"]
-tests = ["crates/ogeom/tests/mechanical_part.rs"]
+tests = [
+    "crates/ogeom/tests/mechanical_part.rs",
+    "crates/ogeom-offset/tests/sweep.rs",
+]
 
 [[capability]]
 id = "offset.filling"
