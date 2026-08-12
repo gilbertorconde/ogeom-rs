@@ -15,8 +15,8 @@ per package.
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 67 |
-| `partial` | 15 |
+| `covered` | 66 |
+| `partial` | 16 |
 | `divergent` | 9 |
 | `n/a` | 5 |
 | `unreviewed` | 1 |
@@ -189,7 +189,8 @@ entities, pcurve-only trimming, annotation and drafting.
 
 ### ogeom-offset
 
-- **offset.draft** — Drafting faces about a neutral plane for mould release · `covered` · 8 headers claimed
+- **offset.draft** — Drafting faces about a neutral plane for mould release · `partial` · 8 headers claimed
+  - *restriction:* Planar faces turn about their neutral line, and walls of revolution — cylinders and cones — turn about their neutral circle into exact cones, the round-boss case. What is owed: the oblique neutral on a wall of revolution, and faces that are neither planar nor revolved. The code's refusals point here.
 - **offset.filling** — Filling a boundary with a face: the plate surface · `covered` · 32 headers claimed
 - **offset.form-features** — The form features: prism, revolution, rib and slot against a base · `covered` · 39 headers claimed
 - **offset.loft** — Lofting through sections, ruled or smoothed · `partial` · 1 header claimed

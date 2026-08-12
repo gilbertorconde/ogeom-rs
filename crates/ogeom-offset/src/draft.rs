@@ -73,12 +73,64 @@ pub fn apply_draft(
         let Some(surface) = model.geometry().surface(data.surface) else {
             ogeom_bail!(Dangling, "face refers to a surface not in this model");
         };
-        let SurfaceGeometry::Plane(p) = surface else {
-            ogeom_bail!(
+        let sign_of = |face: &Shape| {
+            if face.orientation() == Orientation::Reversed {
+                -1.0
+            } else {
+                1.0
+            }
+        };
+        // A wall of revolution drafts about its neutral *circle*: the same
+        // axis, the radius at the neutral plane held, the slant turned.
+        match surface {
+            SurfaceGeometry::Cylinder(c) => {
+                let cylinder = c.cylinder();
+                let (_, (v0, v1)) = surface.domain();
+                turned.push((
+                    face.node(),
+                    revolved_draft(
+                        cylinder.frame(),
+                        cylinder.radius(),
+                        0.0,
+                        (v0, v1),
+                        sign_of(face),
+                        neutral,
+                        pull,
+                        angle,
+                        tol,
+                    )?,
+                ));
+                continue;
+            }
+            SurfaceGeometry::Cone(co) => {
+                let cone = co.cone();
+                let (_, (v0, v1)) = surface.domain();
+                turned.push((
+                    face.node(),
+                    revolved_draft(
+                        cone.frame(),
+                        cone.reference_radius(),
+                        cone.half_angle(),
+                        (v0, v1),
+                        sign_of(face),
+                        neutral,
+                        pull,
+                        angle,
+                        tol,
+                    )?,
+                ));
+                continue;
+            }
+            SurfaceGeometry::Plane(_) => {}
+            _ => ogeom_bail!(
                 Construction,
-                "drafting a curved face needs a rebuild that can turn its \
-                 support; this is the planar form"
-            );
+                "drafting a face that is neither planar nor a wall of \
+                 revolution needs a support the rebuild cannot turn — \
+                 docs/PARITY.md, offset.draft"
+            ),
+        }
+        let SurfaceGeometry::Plane(p) = surface else {
+            unreachable!("the match above let only planes through");
         };
         let plane = p.plane();
         let ((u0, u1), (v0, v1)) = surface.domain();
@@ -146,6 +198,90 @@ pub fn apply_draft(
         },
         tol,
     )
+}
+
+/// The turned support for a drafted wall of revolution: a cone about the
+/// same axis, holding the radius at the neutral plane and leaning the slant
+/// by the draft, in the sense that tips the outward normal towards the pull.
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
+fn revolved_draft(
+    frame: Frame,
+    reference_radius: f64,
+    half_angle: f64,
+    window: (f64, f64),
+    sign: f64,
+    neutral: Plane,
+    pull: Direction,
+    angle: f64,
+    tol: Tolerances,
+) -> OgeomResult<SurfaceGeometry> {
+    use ogeom_geom::ConeSurface;
+
+    let axis_dir = frame.z().vector();
+    let along = axis_dir.dot(neutral.normal().vector());
+    if (along.abs() - 1.0).abs() > tol.angular().max(1e-9) {
+        ogeom_bail!(
+            Construction,
+            "a wall of revolution drafts about a neutral plane square to \
+             its axis; the oblique neutral needs the general machinery — \
+             docs/PARITY.md, offset.draft"
+        );
+    }
+    // The neutral circle: where the axis meets the plane, and the radius
+    // the wall holds there.
+    let height = -neutral.signed_distance_to(frame.origin()) * along.signum();
+    let neutral_point = frame.origin() + axis_dir * height;
+    let neutral_radius = half_angle.tan().mul_add(height, reference_radius);
+    if neutral_radius <= tol.confusion() {
+        ogeom_bail!(
+            Construction,
+            "the wall has no radius left at the neutral plane to hold"
+        );
+    }
+    let hinge_frame = Frame::new(neutral_point, frame.z(), frame.x(), tol)?;
+
+    // Which way to lean, by measurement: of the two candidate slants, keep
+    // the one whose outward normal — probed a little above the neutral
+    // circle — ends up leaning furthest towards the pull.
+    let mut best: Option<(f64, f64)> = None;
+    for sense in [1.0_f64, -1.0] {
+        let candidate = half_angle + angle * sense;
+        if candidate.abs() <= tol.angular()
+            || candidate.abs() >= core::f64::consts::FRAC_PI_2 - tol.angular()
+        {
+            continue;
+        }
+        let cone = ogeom_math::Cone::new(hinge_frame, neutral_radius, candidate, tol)?;
+        let surface: SurfaceGeometry = ConeSurface::new(cone, (-1.0, 1.0))?.into();
+        let (du, dv) = surface.d1_at(0.0, 1.0, tol)?;
+        let n = du.cross(dv);
+        let outward = n / n.magnitude() * sign;
+        let lean = outward.dot(pull.vector());
+        if best.as_ref().is_none_or(|(_, held)| lean > *held) {
+            best = Some((candidate, lean));
+        }
+    }
+    let Some((leaned, _)) = best else {
+        ogeom_bail!(
+            Construction,
+            "a draft of {angle} radians flattens the wall or swallows it"
+        );
+    };
+    let cone = ogeom_math::Cone::new(hinge_frame, neutral_radius, leaned, tol)?;
+
+    // The old window, re-expressed against the neutral origin and grown a
+    // little; refused when the slant runs out of radius inside it.
+    let shift = height;
+    let grow = (window.1 - window.0).abs().mul_add(0.1, 1.0);
+    let (w0, w1) = (window.0 - shift - grow, window.1 - shift + grow);
+    let apex_height = -neutral_radius / leaned.tan();
+    if apex_height > w0 && apex_height < w1 {
+        ogeom_bail!(
+            Construction,
+            "the draft swallows the drafted face's own apex"
+        );
+    }
+    Ok(ConeSurface::new(cone, (w0, w1))?.into())
 }
 
 /// A point on the line where two planes meet, nearest their origins.

@@ -1144,10 +1144,18 @@ tests = ["crates/ogeom/tests/filling.rs"]
 id = "offset.draft"
 title = "Drafting faces about a neutral plane for mould release"
 crate = "ogeom-offset"
-verdict = "covered"
+verdict = "partial"
+restriction = """Planar faces turn about their neutral line, and walls of \
+revolution — cylinders and cones — turn about their neutral circle into \
+exact cones, the round-boss case. What is owed: the oblique neutral on a \
+wall of revolution, and faces that are neither planar nor revolved. The \
+code's refusals point here."""
 claims = ["BRepOffsetAPI_DraftAngle", "BRepOffsetAPI_MakeDraft", "Draft", "Draft_*"]
 symbols = ["ogeom_offset::apply_draft"]
-tests = ["crates/ogeom/tests/features.rs::four_walls_drafted_about_the_base_make_a_frustum"]
+tests = [
+    "crates/ogeom/tests/features.rs::four_walls_drafted_about_the_base_make_a_frustum",
+    "crates/ogeom-offset/tests/draft.rs",
+]
 
 [[capability]]
 id = "offset.form-features"

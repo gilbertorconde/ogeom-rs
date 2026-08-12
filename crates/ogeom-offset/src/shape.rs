@@ -242,9 +242,6 @@ struct Prepared {
     sign: f64,
     /// For a full revolution band — seam and two closed rings — the rings.
     rings: Option<[Shape; 2]>,
-    /// Whether `instead_of` supplied the surface: a *turned* move, under
-    /// which the chart is not preserved and pcurves cannot be carried.
-    turned: bool,
 }
 
 /// The rebuild under both entry points: every face offset by its own amount,
@@ -314,7 +311,6 @@ pub(crate) fn rebuilt(
 
         let grow = amount.abs() * 4.0 + 1.0;
         let replacement = instead_of(face);
-        let turned = replacement.is_some();
         let moved: SurfaceGeometry = if let Some(given) = replacement {
             given
         } else {
@@ -404,7 +400,6 @@ pub(crate) fn rebuilt(
             } else {
                 None
             },
-            turned,
         });
     }
 
@@ -796,16 +791,9 @@ pub(crate) fn rebuilt(
             }
             let face = if face_uses.values().any(|c| *c >= 2) {
                 // A seam in a wire-assembled face — a band a boolean split
-                // into arc rings. The chart survives a same-family move
-                // untouched, so every pcurve carries over verbatim; a turned
-                // face cannot make that claim.
-                if prep.turned {
-                    ogeom_bail!(
-                        Construction,
-                        "a turned face with a seam cannot carry its pcurves; \
-                         the rebuild has no chart to preserve"
-                    );
-                }
+                // into arc rings. Every ordinary pcurve is recomputed on the
+                // moved surface; the seam's columns carry over, which the
+                // seam rebuild already validated against the re-solved ends.
                 assembled_with_seam(model, prep, &wires, &new_edges, tol)?
             } else {
                 make_face_with_pcurves(model, prep.surface.clone(), &wires, tol)?.shape
@@ -878,9 +866,6 @@ fn rebuilt_seam_edge(
 ) -> OgeomResult<Option<Shape>> {
     use ogeom_geom::Curve2d as _;
 
-    if prep.turned {
-        return Ok(None);
-    }
     let old_surface = {
         let Some(NodeData::Face(data)) = model.node(&prep.shape).map(ogeom_topo::TShape::data)
         else {
@@ -954,6 +939,14 @@ fn rebuilt_seam_edge(
         }
     };
     let (t_start, t_end) = (along(p_from)?, along(p_to)?);
+    // Self-validation instead of trusting the move: a turned support only
+    // keeps its column when the turn was built to — the re-solved ends say
+    // whether it was.
+    for (t, p) in [(t_start, p_from), (t_end, p_to)] {
+        if curve.point_at(t, tol)?.distance(p) > tol.confusion() * 100.0 {
+            return Ok(None);
+        }
+    }
     Ok(Some(if t_start <= t_end {
         make_edge_between(model, curve, (t_start, t_end), &v_from, &v_to, tol)?.shape
     } else {
