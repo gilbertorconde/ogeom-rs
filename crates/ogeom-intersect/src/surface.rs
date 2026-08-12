@@ -86,6 +86,11 @@ pub fn surface_surface(
         (S::Cylinder(c), S::Torus(t)) => coaxial_cylinder_torus(c.cylinder(), t.torus(), tol),
         (S::Torus(t), S::Cylinder(c)) => coaxial_cylinder_torus(c.cylinder(), t.torus(), tol),
         (S::Torus(x), S::Torus(y)) => coaxial_tori(x.torus(), y.torus(), tol),
+        (S::Plane(p), S::Cone(c)) => plane_cone(p.plane(), c.cone(), tol),
+        (S::Cone(c), S::Plane(p)) => plane_cone(p.plane(), c.cone(), tol),
+        (S::Cylinder(x), S::Cone(c)) => coaxial_cylinder_cone(x.cylinder(), c.cone(), tol),
+        (S::Cone(c), S::Cylinder(x)) => coaxial_cylinder_cone(x.cylinder(), c.cone(), tol),
+        (S::Cone(x), S::Cone(y)) => coaxial_cones(x.cone(), y.cone(), tol),
         _ => ogeom_bail!(
             NotDone,
             "this pair of surfaces has no closed-form intersection; it needs \
@@ -426,6 +431,175 @@ fn coaxial_cylinder_torus(
     } else {
         Meeting::Along(circles)
     })
+}
+
+/// A plane square to a cone's axis: the parallel at that height, or the apex.
+///
+/// The perpendicular slice is the configuration the rebuilds lean on — a
+/// drafted wall's cap, a chamfer cone against the face it melts into — and
+/// the answer is a circle framed on the cone's own frame, so a caller
+/// re-deriving an edge finds its parameters where the old ones were. An
+/// oblique plane meets a cone in a conic, which is the marching
+/// intersector's business.
+fn plane_cone(
+    plane: ogeom_math::Plane,
+    cone: ogeom_math::Cone,
+    tol: Tolerances,
+) -> OgeomResult<Meeting> {
+    let axis = cone.axis();
+    let along = plane.normal().dot(axis.direction);
+    if (along.abs() - 1.0).abs() > tol.angular() {
+        ogeom_bail!(
+            NotDone,
+            "a plane oblique to a cone's axis meets it in a conic, which \
+             needs the general marching intersector"
+        );
+    }
+    // The plane's height along the axis, from the cone frame's origin.
+    let height = -plane.signed_distance_to(axis.location) * along.signum();
+    let radius = cone.radius_at(height);
+    if radius.abs() <= tol.confusion() {
+        // The plane passes through the apex, where the parallel has no
+        // length: a touch, not a curve.
+        return Ok(Meeting::Touching(vec![cone.apex()]));
+    }
+    // A negative radius is the far nappe, where the surface's own
+    // parameterization runs half a turn out of phase; the parallel is the
+    // same circle either way.
+    let centre = axis.location + axis.direction.vector() * height;
+    Ok(match cone_parallel(&cone, centre, radius.abs(), tol) {
+        Some(circle) => Meeting::Along(vec![circle]),
+        None => Meeting::Apart,
+    })
+}
+
+/// A cylinder sharing a cone's axis: one parallel per nappe.
+///
+/// The slant crosses any coaxial cylinder's radius exactly once per nappe —
+/// the radius function is linear in height and spans every value — so the
+/// answer is always two circles, one of them on the far nappe.
+fn coaxial_cylinder_cone(
+    cylinder: ogeom_math::Cylinder,
+    cone: ogeom_math::Cone,
+    tol: Tolerances,
+) -> OgeomResult<Meeting> {
+    if !cylinder.axis().is_coaxial(cone.axis(), tol) {
+        ogeom_bail!(
+            NotDone,
+            "a cylinder off a cone's axis meets it in a curve only the \
+             general marching intersector can trace"
+        );
+    }
+    let axis = cone.axis();
+    let slope = cone.half_angle().tan();
+    let circles: Vec<Curve> = [cylinder.radius(), -cylinder.radius()]
+        .into_iter()
+        .filter_map(|radius| {
+            let height = (radius - cone.reference_radius()) / slope;
+            cone_parallel(
+                &cone,
+                axis.location + axis.direction.vector() * height,
+                cylinder.radius(),
+                tol,
+            )
+        })
+        .collect();
+    Ok(if circles.is_empty() {
+        Meeting::Apart
+    } else {
+        Meeting::Along(circles)
+    })
+}
+
+/// Two cones sharing an axis: the same surface, the shared apex, or the
+/// parallels where the slants cross.
+///
+/// In height–radius coordinates along the shared axis each cone is a line,
+/// and each nappe pairing is one linear equation; a solution's parallel is a
+/// circle unless it lands on the apex, which is a touch.
+fn coaxial_cones(
+    a: ogeom_math::Cone,
+    b: ogeom_math::Cone,
+    tol: Tolerances,
+) -> OgeomResult<Meeting> {
+    if !a.axis().is_coaxial(b.axis(), tol) {
+        ogeom_bail!(
+            NotDone,
+            "two cones that do not share an axis meet in a curve only the \
+             general marching intersector can trace"
+        );
+    }
+    let axis = a.axis();
+    // Both radius functions expressed against `a`'s height origin. The axes
+    // share a sense — `is_coaxial` checked — so the slopes compare directly.
+    let lift = (b.axis().location - a.axis().location).dot(axis.direction.vector());
+    let (slope_a, slope_b) = (a.half_angle().tan(), b.half_angle().tan());
+    let (ref_a, ref_b) = (
+        a.reference_radius(),
+        slope_b.mul_add(-lift, b.reference_radius()),
+    );
+    if (slope_a - slope_b).abs() <= tol.angular() {
+        // Parallel slants: the same cone, or two that never meet.
+        return Ok(if (ref_a - ref_b).abs() <= tol.confusion() {
+            Meeting::Same
+        } else {
+            Meeting::Apart
+        });
+    }
+    if (slope_a + slope_b).abs() <= tol.angular() && (ref_a + ref_b).abs() <= tol.confusion() {
+        // Mirror cones: the same double cone traversed the other way. Point
+        // sets coincide but the parameterizations run opposite nappes, and
+        // unifying them is not this module's call to make.
+        ogeom_bail!(
+            NotDone,
+            "two mirror cones share their double cone; resolving that \
+             coincidence needs the general machinery"
+        );
+    }
+    let mut touches = Vec::new();
+    let mut circles = Vec::new();
+    // One equation per nappe pairing: like signs and opposite signs.
+    for (rhs_ref, rhs_slope) in [(ref_b, slope_b), (-ref_b, -slope_b)] {
+        let run = slope_a - rhs_slope;
+        if run.abs() <= tol.angular() {
+            continue;
+        }
+        let height = (rhs_ref - ref_a) / run;
+        let radius = a.radius_at(height);
+        if radius.abs() <= tol.confusion() {
+            touches.push(a.apex());
+        } else if let Some(circle) = cone_parallel(
+            &a,
+            axis.location + axis.direction.vector() * height,
+            radius.abs(),
+            tol,
+        ) {
+            circles.push(circle);
+        }
+    }
+    Ok(if !circles.is_empty() {
+        Meeting::Along(circles)
+    } else if !touches.is_empty() {
+        touches.dedup_by(|p, q| (*p - *q).magnitude() <= tol.confusion());
+        Meeting::Touching(touches)
+    } else {
+        Meeting::Apart
+    })
+}
+
+/// A parallel of a cone, framed on the cone's own frame so parameters carry.
+fn cone_parallel(
+    cone: &ogeom_math::Cone,
+    centre: Point,
+    radius: f64,
+    tol: Tolerances,
+) -> Option<Curve> {
+    if radius <= tol.confusion() {
+        return None;
+    }
+    let frame = cone.frame();
+    let placed = Frame::new(centre, frame.z(), frame.x(), tol).ok()?;
+    Some(ogeom_geom::CircleCurve::new(Circle::new(placed, radius, tol).ok()?).into())
 }
 
 /// Two tori sharing an axis: the same surface, apart, or circles where the

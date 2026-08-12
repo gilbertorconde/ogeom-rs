@@ -47,6 +47,27 @@ mod accuracy {
             .into()
     }
 
+    fn cone(
+        origin: Point,
+        axis: Vector,
+        reference_radius: f64,
+        half_angle: f64,
+    ) -> SurfaceGeometry {
+        let frame = Frame::new(
+            origin,
+            Direction::new(axis, T).unwrap(),
+            Direction::from_cross(axis, Vector::new(0.3, 0.5, 0.9), T).unwrap(),
+            T,
+        )
+        .unwrap();
+        ogeom_geom::ConeSurface::new(
+            ogeom_math::Cone::new(frame, reference_radius, half_angle, T).unwrap(),
+            (-10.0, 10.0),
+        )
+        .unwrap()
+        .into()
+    }
+
     /// Every case with a closed form, named.
     fn corpus() -> Vec<(String, SurfaceGeometry, SurfaceGeometry)> {
         let mut out = Vec::new();
@@ -114,6 +135,21 @@ mod accuracy {
             cylinder(Point::ORIGIN, Vector::Z, 1.5),
             sphere(Point::ORIGIN, 3.0),
         );
+        add(
+            "plane/cone perpendicular",
+            plane(Point::new(0.0, 0.0, 2.0), Vector::Z),
+            cone(Point::ORIGIN, Vector::Z, 3.0, 0.2),
+        );
+        add(
+            "cylinder/cone coaxial",
+            cylinder(Point::ORIGIN, Vector::Z, 2.0),
+            cone(Point::ORIGIN, Vector::Z, 3.0, 0.3),
+        );
+        add(
+            "cone/cone coaxial crossing",
+            cone(Point::ORIGIN, Vector::Z, 3.0, 0.2),
+            cone(Point::new(0.0, 0.0, 1.0), Vector::Z, 2.0, 0.4),
+        );
         out
     }
 
@@ -148,6 +184,112 @@ mod accuracy {
             report.worst,
             report.worst_case
         );
+    }
+
+    #[test]
+    fn an_axis_normal_plane_meets_a_cone_in_the_circle_at_that_height() {
+        // Radius 3 at the reference, slope tan(0.2) per unit: at height 2 the
+        // parallel's radius is exactly the closed form's.
+        let Meeting::Along(curves) = surface_surface(
+            &plane(Point::new(0.0, 0.0, 2.0), Vector::Z),
+            &cone(Point::ORIGIN, Vector::Z, 3.0, 0.2),
+            T,
+        )
+        .unwrap() else {
+            panic!("the perpendicular slice should be a curve");
+        };
+        assert_eq!(curves.len(), 1);
+        let Curve::Circle(circle) = &curves[0] else {
+            panic!("the parallel should be a circle, got {curves:?}");
+        };
+        let expected = 0.2_f64.tan().mul_add(2.0, 3.0);
+        assert!((circle.circle().radius() - expected).abs() < 1e-12);
+
+        // Through the apex it is a touch — a point, not a zero-length curve.
+        let apex_height = -3.0 / 0.2_f64.tan();
+        assert!(matches!(
+            surface_surface(
+                &plane(Point::new(0.0, 0.0, apex_height), Vector::Z),
+                &cone(Point::ORIGIN, Vector::Z, 3.0, 0.2),
+                T,
+            )
+            .unwrap(),
+            Meeting::Touching(ref p) if p.len() == 1
+        ));
+
+        // Oblique stays deferred by name.
+        assert!(
+            surface_surface(
+                &plane(Point::ORIGIN, Vector::new(0.0, 1.0, 1.0)),
+                &cone(Point::ORIGIN, Vector::Z, 3.0, 0.2),
+                T,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_coaxial_cylinder_meets_a_cone_in_one_parallel_per_nappe() {
+        let Meeting::Along(curves) = surface_surface(
+            &cylinder(Point::ORIGIN, Vector::Z, 2.0),
+            &cone(Point::ORIGIN, Vector::Z, 3.0, 0.3),
+            T,
+        )
+        .unwrap() else {
+            panic!("a coaxial cylinder should cross the slant");
+        };
+        assert_eq!(curves.len(), 2, "one parallel per nappe");
+        for curve in &curves {
+            let Curve::Circle(circle) = curve else {
+                panic!("a parallel should be a circle");
+            };
+            assert!((circle.circle().radius() - 2.0).abs() < 1e-12);
+        }
+        // An off-axis cylinder is the marcher's business.
+        assert!(
+            surface_surface(
+                &cylinder(Point::new(1.0, 0.0, 0.0), Vector::Z, 2.0),
+                &cone(Point::ORIGIN, Vector::Z, 3.0, 0.3),
+                T,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn coaxial_equal_cones_are_the_same_surface() {
+        // The same cone described from a frame two units up its own axis: the
+        // reference radius grows by the slope times the lift.
+        let lifted = 0.2_f64.tan().mul_add(2.0, 3.0);
+        assert_eq!(
+            surface_surface(
+                &cone(Point::ORIGIN, Vector::Z, 3.0, 0.2),
+                &cone(Point::new(0.0, 0.0, 2.0), Vector::Z, lifted, 0.2),
+                T,
+            )
+            .unwrap(),
+            Meeting::Same
+        );
+        // Parallel slants that never meet are apart, not almost-the-same.
+        assert_eq!(
+            surface_surface(
+                &cone(Point::ORIGIN, Vector::Z, 3.0, 0.2),
+                &cone(Point::ORIGIN, Vector::Z, 4.0, 0.2),
+                T,
+            )
+            .unwrap(),
+            Meeting::Apart
+        );
+        // Crossing slants meet in the parallel where the radii agree.
+        let Meeting::Along(curves) = surface_surface(
+            &cone(Point::ORIGIN, Vector::Z, 3.0, 0.2),
+            &cone(Point::new(0.0, 0.0, 1.0), Vector::Z, 2.0, 0.4),
+            T,
+        )
+        .unwrap() else {
+            panic!("crossing slants should meet along a parallel");
+        };
+        assert!(!curves.is_empty());
     }
 
     #[test]
