@@ -7,7 +7,7 @@
 use ogeom::core::Tolerances;
 use ogeom::math::{Direction, Frame, Point};
 use ogeom::mesh::Deflection;
-use ogeom::topo::Model;
+use ogeom::topo::{Model, ShapeType, explore_unique};
 
 const T: Tolerances = Tolerances::millimetres();
 
@@ -286,5 +286,65 @@ fn a_point_touch_is_carried_rather_than_refused() {
         (volume(&model, &cut) - 4000.0).abs() < 1e-6,
         "a point removes nothing: {}",
         volume(&model, &cut)
+    );
+}
+
+#[test]
+fn a_fitted_edge_on_a_shared_cylinder_still_melts_the_same_domain_contact() {
+    // Two drums on the *identical* cylinder chart, one of them scooped at
+    // the top by a crossing cylinder: its wall's upper edges are marched,
+    // fitted curves with fitted pcurves, which no closed-form projection can
+    // carry into the other wall's chart. The same-domain melt used to refuse
+    // exactly here; now the stored pcurve — which on the identical chart
+    // already is the projection — stands in, and the fuse of a contained
+    // solid comes out as the container.
+    let mut model = Model::new();
+
+    let tall = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 2.0, 6.0, T)
+        .unwrap()
+        .shape;
+    let scoop_frame = Frame::new(
+        Point::new(-5.0, 0.0, 6.7),
+        ogeom::math::Direction::X,
+        ogeom::math::Direction::Y,
+        T,
+    )
+    .unwrap();
+    let scoop = ogeom::algo::make_cylinder(&mut model, scoop_frame, 2.5, 10.0, T)
+        .unwrap()
+        .shape;
+    let wavy = ogeom::boolean::cut(&mut model, &tall, &scoop, T)
+        .unwrap()
+        .shape;
+    let short = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 2.0, 4.0, T)
+        .unwrap()
+        .shape;
+
+    let before = volume(&model, &wavy);
+    let fused = ogeom::boolean::fuse(&mut model, &short, &wavy, T).unwrap();
+    assert!(
+        ogeom::algo::check(&model, &fused.shape, T)
+            .unwrap()
+            .is_valid(),
+        "the fused drum is a valid solid"
+    );
+    // The budget is two separately meshed fitted trims at this chord, not
+    // the melt: the fuse either resolves the contact or refuses by name.
+    let measured = volume(&model, &fused.shape);
+    assert!(
+        (measured - before).abs() < 2e-2,
+        "fusing a contained drum should give the container: {measured} vs {before}"
+    );
+    // Every face of the contained drum melted rather than surviving as a
+    // skin. The wall stays split where the contained drum's rim touched it —
+    // one face more than the container had, none of them inside.
+    assert_eq!(
+        explore_unique(&model, &fused.shape, ShapeType::Face)
+            .unwrap()
+            .len(),
+        explore_unique(&model, &wavy, ShapeType::Face)
+            .unwrap()
+            .len()
+            + 1
     );
 }

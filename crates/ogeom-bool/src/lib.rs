@@ -583,6 +583,46 @@ struct ContactRec {
     target_face: usize,
 }
 
+/// Whether two surfaces are the *identical chart* — the same
+/// parameterization, frame and all, not merely the same point set.
+///
+/// The five analytics only: a fitted surface never qualifies, because two
+/// independent fits of one geometry agree nowhere in parameter space. This
+/// is what lets a stored pcurve stand in for a closed-form projection in the
+/// same-domain melt — on the identical chart, the owner's pcurve already is
+/// the projection.
+fn same_chart(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerances) -> bool {
+    use SurfaceGeometry as S;
+    let frames = |fa: ogeom_math::Frame, fb: ogeom_math::Frame| -> bool {
+        fa.origin().distance(fb.origin()) <= tol.confusion()
+            && fa.z().vector().dot(fb.z().vector()) >= 1.0 - tol.angular()
+            && fa.x().vector().dot(fb.x().vector()) >= 1.0 - tol.angular()
+    };
+    match (a, b) {
+        (S::Plane(x), S::Plane(y)) => frames(x.plane().frame(), y.plane().frame()),
+        (S::Cylinder(x), S::Cylinder(y)) => {
+            frames(x.cylinder().frame(), y.cylinder().frame())
+                && (x.cylinder().radius() - y.cylinder().radius()).abs() <= tol.confusion()
+        }
+        (S::Cone(x), S::Cone(y)) => {
+            frames(x.cone().frame(), y.cone().frame())
+                && (x.cone().reference_radius() - y.cone().reference_radius()).abs()
+                    <= tol.confusion()
+                && (x.cone().half_angle() - y.cone().half_angle()).abs() <= tol.angular()
+        }
+        (S::Sphere(x), S::Sphere(y)) => {
+            frames(x.sphere().frame(), y.sphere().frame())
+                && (x.sphere().radius() - y.sphere().radius()).abs() <= tol.confusion()
+        }
+        (S::Torus(x), S::Torus(y)) => {
+            frames(x.torus().frame(), y.torus().frame())
+                && (x.torus().major_radius() - y.torus().major_radius()).abs() <= tol.confusion()
+                && (x.torus().minor_radius() - y.torus().minor_radius()).abs() <= tol.confusion()
+        }
+        _ => false,
+    }
+}
+
 /// What a face's arrangement strand stands for.
 #[derive(Clone)]
 enum Tag {
@@ -789,16 +829,34 @@ fn fill(
                     {
                         let _ = owner_from_a;
                         for e in &owner.edges {
-                            let Some(pcurve) =
-                                ogeom_intersect::exact_pcurve_of(&e.curve, &target.surface, tol)
-                            else {
-                                ogeom_bail!(
+                            let pcurve = match ogeom_intersect::exact_pcurve_of(
+                                &e.curve,
+                                &target.surface,
+                                tol,
+                            ) {
+                                Some(exact) => exact,
+                                // A fitted edge has no closed-form projection
+                                // — but when the two faces sit on the
+                                // *identical chart*, which is exactly the
+                                // situation `Same` names for the analytics,
+                                // the owner's own stored pcurve already is
+                                // the projection, attached at construction.
+                                // Usable when it speaks the curve's own
+                                // parameter; a chart that merely coincides
+                                // as a point set is still refused.
+                                None if same_chart(&owner.surface, &target.surface, tol)
+                                    && (e.prange.0 - e.crange.0).abs() <= PARAM_SNAP
+                                    && (e.prange.1 - e.crange.1).abs() <= PARAM_SNAP =>
+                                {
+                                    e.pcurve.clone()
+                                }
+                                None => ogeom_bail!(
                                     NotDone,
                                     "same-domain contact whose edges have no \
                                      closed-form projection into the shared \
                                      surface's chart is refused — see the \
                                      remaining work in docs/PLAN.md"
-                                );
+                                ),
                             };
                             contacts.push(ContactRec {
                                 curve: e.curve.clone(),
