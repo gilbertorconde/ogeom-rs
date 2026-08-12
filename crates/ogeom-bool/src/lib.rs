@@ -583,6 +583,44 @@ struct ContactRec {
     target_face: usize,
 }
 
+/// A stored pcurve re-spoken in its edge's own parameter.
+///
+/// The conventions let a pcurve's window map proportionally onto the edge's
+/// range; the arrangement wants the curve's parameter directly, so the
+/// stored image is sampled under the linear map and refitted at the edge's
+/// own parameters — exact for a straight image, tolerance-carrying and
+/// checked otherwise.
+fn reparameterized_pcurve(
+    pcurve: &PlanarCurve,
+    prange: (f64, f64),
+    crange: (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<PlanarCurve> {
+    use ogeom_geom::Curve2d as _;
+    const SAMPLES: usize = 24;
+    let mut params = Vec::with_capacity(SAMPLES + 1);
+    let mut points = Vec::with_capacity(SAMPLES + 1);
+    for i in 0..=SAMPLES {
+        #[allow(clippy::cast_precision_loss)]
+        let f = (i as f64) / (SAMPLES as f64);
+        let t = (crange.1 - crange.0).mul_add(f, crange.0);
+        let p = (prange.1 - prange.0).mul_add(f, prange.0);
+        params.push(t);
+        points.push(pcurve.point_at(p, tol)?);
+    }
+    let target = tol.confusion() * 0.5;
+    let fitted = ogeom_geom::fit::fit_points_2d_at(&params, &points, 3, target, tol)?;
+    if !fitted.met {
+        ogeom_bail!(
+            NotDone,
+            "a stored pcurve would not re-speak the curve's parameter within \
+             {target}; it reached {}",
+            fitted.error
+        );
+    }
+    Ok(fitted.curve.into())
+}
+
 /// Whether two surfaces are the *identical chart* — the same
 /// parameterization, frame and all, not merely the same point set.
 ///
@@ -841,14 +879,20 @@ fn fill(
                                 // situation `Same` names for the analytics,
                                 // the owner's own stored pcurve already is
                                 // the projection, attached at construction.
-                                // Usable when it speaks the curve's own
-                                // parameter; a chart that merely coincides
-                                // as a point set is still refused.
-                                None if same_chart(&owner.surface, &target.surface, tol)
-                                    && (e.prange.0 - e.crange.0).abs() <= PARAM_SNAP
-                                    && (e.prange.1 - e.crange.1).abs() <= PARAM_SNAP =>
-                                {
-                                    e.pcurve.clone()
+                                // Spoken in the curve's own parameter it is
+                                // used as it stands; under the proportional
+                                // window the conventions allow, it is
+                                // resampled onto the curve's parameter. A
+                                // chart that merely coincides as a point set
+                                // is still refused.
+                                None if same_chart(&owner.surface, &target.surface, tol) => {
+                                    if (e.prange.0 - e.crange.0).abs() <= PARAM_SNAP
+                                        && (e.prange.1 - e.crange.1).abs() <= PARAM_SNAP
+                                    {
+                                        e.pcurve.clone()
+                                    } else {
+                                        reparameterized_pcurve(&e.pcurve, e.prange, e.crange, tol)?
+                                    }
                                 }
                                 None => ogeom_bail!(
                                     NotDone,
