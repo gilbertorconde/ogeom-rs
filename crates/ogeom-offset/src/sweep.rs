@@ -733,6 +733,189 @@ fn skinned_solid(
     make_solid(model, std::slice::from_ref(&sewn.shells[0]))
 }
 
+/// A solid skinned over a grid of sections that loops back on itself: the
+/// wall is one face closed in both chart directions, no caps at all.
+///
+/// The `u` seam closes the way every skin's does — pinned row ends — and
+/// the `v` loop closes through [`ogeom_geom::fit::fit_surface_grid_closed_v`],
+/// C1 across the join. All four boundary traversals are two seam edges used
+/// twice, anchored at one shared vertex, exactly as a torus bounds itself.
+fn closed_skinned_solid(
+    model: &mut Model,
+    rows: &[Vec<Point>],
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    use ogeom_geom::Surface as _;
+    let mut closed_rows: Vec<Vec<Point>> = Vec::with_capacity(rows.len() + 1);
+    for row in rows {
+        let mut r = row.clone();
+        r.push(row[0]);
+        closed_rows.push(r);
+    }
+    closed_rows.push(closed_rows[0].clone());
+    let fitted = ogeom_geom::fit::fit_surface_grid_closed_v(&closed_rows, 3, tolerance, tol)?;
+    if !fitted.met {
+        ogeom_bail!(
+            NotDone,
+            "the closed skin reached {} against a target of {tolerance}",
+            fitted.error
+        );
+    }
+    let surface = fitted.curve;
+    let (u_knots, v_knots) = (surface.u_knots().clone(), surface.v_knots().clone());
+    let (k, l, net) = {
+        let grid = surface.grid();
+        let net: Vec<Point> = grid.points().iter().map(|w| (*w).point()).collect();
+        (grid.u_count(), grid.v_count(), net)
+    };
+    let point_at = |i: usize, j: usize| -> Point { net[i * l + j] };
+    let (u_dom, v_dom) = surface.domain();
+
+    // Both seams straight off the net: the u-run at v's join, and the v-run
+    // at u's.
+    let along_u = {
+        let control: Vec<Point> = (0..k).map(|i| point_at(i, 0)).collect();
+        ogeom_geom::Curve::BSpline(ogeom_geom::BSplineCurve::new(u_knots, control, tol)?)
+    };
+    let along_v = {
+        let control: Vec<Point> = (0..l).map(|j| point_at(0, j)).collect();
+        ogeom_geom::Curve::BSpline(ogeom_geom::BSplineCurve::new(v_knots, control, tol)?)
+    };
+    let surface_geo: SurfaceGeometry = surface.into();
+    let surface_id = model.geometry_mut().add_surface(surface_geo.clone());
+
+    let u_edge = make_edge(model, along_u, u_dom, tol)?.shape;
+    let Some((corner, _)) = ogeom_algo::edge_vertices(model, &u_edge)? else {
+        ogeom_bail!(Construction, "the closed skin's seam has no vertex");
+    };
+    let v_edge = make_edge_between(model, along_v, v_dom, &corner, &corner, tol)?.shape;
+
+    let row_line = |v: f64| -> OgeomResult<ogeom_geom::PlanarCurve> {
+        Ok(Line2d::over(
+            ogeom_math::Axis2::new(Point2::new(0.0, v), ogeom_math::Direction2::X),
+            u_dom.0 - 1.0,
+            u_dom.1 + 1.0,
+        )?
+        .into())
+    };
+    let column_line = |u: f64| -> OgeomResult<ogeom_geom::PlanarCurve> {
+        Ok(Line2d::over(
+            ogeom_math::Axis2::new(Point2::new(u, 0.0), ogeom_math::Direction2::Y),
+            v_dom.0 - 1.0,
+            v_dom.1 + 1.0,
+        )?
+        .into())
+    };
+    // The u-run is a seam in v — the same curve at both rows — and the
+    // v-run a seam in u.
+    ogeom_algo::attach_seam(
+        model,
+        &u_edge,
+        row_line(v_dom.0)?,
+        row_line(v_dom.1)?,
+        surface_id,
+        ogeom_topo::Location::identity(),
+        u_dom,
+    )?;
+    ogeom_algo::attach_seam(
+        model,
+        &v_edge,
+        column_line(u_dom.1)?,
+        column_line(u_dom.0)?,
+        surface_id,
+        ogeom_topo::Location::identity(),
+        v_dom,
+    )?;
+
+    let wire = ogeom_algo::make_wire(
+        model,
+        &[
+            u_edge.clone(),
+            v_edge.clone(),
+            u_edge.reversed(),
+            v_edge.reversed(),
+        ],
+        tol,
+    )?
+    .shape;
+    let face = ogeom_algo::make_face_on(model, surface_id, std::slice::from_ref(&wire), tol)?.shape;
+    let centroid = {
+        let mut c = Vector::new(0.0, 0.0, 0.0);
+        let mut n = 0.0;
+        for row in rows {
+            for p in row {
+                c += p.to_vector();
+                n += 1.0;
+            }
+        }
+        Point::from_vector(c / n)
+    };
+    let mid_u = f64::midpoint(u_dom.0, u_dom.1);
+    let mid_v = f64::midpoint(v_dom.0, v_dom.1);
+    let s_mid = surface_geo.point_at(mid_u, mid_v, tol)?;
+    let (du, dv) = surface_geo.d1_at(mid_u, mid_v, tol)?;
+    let face = if du.cross(dv).dot(s_mid - centroid) >= 0.0 {
+        face
+    } else {
+        face.reversed()
+    };
+
+    let sewn = sew(model, std::slice::from_ref(&face), tol)?;
+    if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
+        ogeom_bail!(Construction, "the closed skin did not close");
+    }
+    make_solid(model, std::slice::from_ref(&sewn.shells[0]))
+}
+
+/// Loft a ring through closed planar sections that loop back to the first.
+///
+/// [`make_loft_skinned`]'s closed sibling: the sections are sampled the same
+/// way, the skin runs through all of them and back to the start, C1 across
+/// the loop, and there are no caps — the result bounds itself the way a
+/// torus does. The sections are *not* repeated: the loop-back is the
+/// construction's own.
+///
+/// The closed join costs freedom: a sparse loop fits only loosely, and the
+/// refusal quotes the deviation it honestly reached. A loop that wants a
+/// tight tolerance wants sections dense enough to bend around — in
+/// practice, a dozen and up.
+///
+/// # Errors
+///
+/// As [`make_loft_skinned`], needing at least three sections;
+/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if the closed
+/// skin cannot reach the tolerance.
+pub fn make_loft_skinned_closed(
+    model: &mut Model,
+    sections: &[Shape],
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if sections.len() < 3 {
+        ogeom_bail!(Construction, "a closed loft needs at least three sections");
+    }
+    const AROUND: usize = 48;
+    let mut rows: Vec<Vec<Point>> = Vec::with_capacity(sections.len());
+    for wire in sections {
+        if model.kind_of(wire)? != ShapeType::Wire {
+            ogeom_bail!(Construction, "a loft section is a closed wire");
+        }
+        if !ogeom_algo::is_wire_closed(model, wire, tol)? {
+            ogeom_bail!(Construction, "a loft section must be closed");
+        }
+        if ogeom_algo::find_plane(model, wire, tol)?.is_none() {
+            ogeom_bail!(Construction, "a loft section must be planar");
+        }
+        rows.push(sample_wire(model, wire, AROUND, tol)?);
+    }
+    let mut built = closed_skinned_solid(model, &rows, tolerance, tol)?;
+    for section in sections {
+        built.history.generate(section, built.shape.clone());
+    }
+    Ok(built)
+}
+
 /// A skinned strip: one open patch of a sweep, with its border edges.
 ///
 /// The wall of a *faceted* profile cannot be one closed skin — a fit cannot

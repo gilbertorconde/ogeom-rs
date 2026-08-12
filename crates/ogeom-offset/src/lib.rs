@@ -20,6 +20,7 @@ pub use fill::make_filling;
 pub use project::{Projected, normal_projection};
 pub use shape::{make_thick_solid, offset_shape};
 pub use sweep::{
-    make_evolved, make_loft, make_loft_skinned, make_pipe, make_pipe_shell, make_pipe_skinned,
+    make_evolved, make_loft, make_loft_skinned, make_loft_skinned_closed, make_pipe,
+    make_pipe_shell, make_pipe_skinned,
 };
 pub use wire2d::{Join, offset_wire};

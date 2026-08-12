@@ -4,7 +4,7 @@
 use ogeom_core::Tolerances;
 use ogeom_geom::Curve3d as _;
 use ogeom_math::{Circle, Frame, Point};
-use ogeom_topo::Filter;
+use ogeom_topo::{Filter, ShapeType, explore};
 
 const T: Tolerances = Tolerances::millimetres();
 
@@ -491,4 +491,63 @@ fn a_leaning_pipe_shell_profile_is_refused_by_name() {
     let err =
         ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap_err();
     assert!(err.to_string().contains("leans"), "{err}");
+}
+
+#[test]
+fn a_closed_loft_through_four_sections_is_a_watertight_ring() {
+    // Four circles stood around a ring, each square to the ring's own
+    // tangent, lofted closed: one face bounding itself both ways round, no
+    // caps anywhere.
+    let mut model = ogeom_topo::Model::new();
+    let ring_r = 10.0;
+    let mut sections = Vec::new();
+    for i in 0..16 {
+        let angle = core::f64::consts::TAU / 16.0 * f64::from(i);
+        let centre = Point::new(ring_r * angle.cos(), ring_r * angle.sin(), 0.0);
+        let tangent = ogeom_math::Vector::new(-angle.sin(), angle.cos(), 0.0);
+        let normal = ogeom_math::Direction::new(tangent, T).unwrap();
+        // Alignment is the caller's authorship: every section shares its
+        // local axes, so the loop does not twist.
+        let frame = Frame::new(centre, normal, ogeom_math::Direction::Z, T).unwrap();
+        let circle = Circle::new(frame, 1.0, T).unwrap();
+        let curve: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(circle).into();
+        let domain = curve.domain();
+        let edge = ogeom_algo::make_edge(&mut model, curve, domain, T)
+            .unwrap()
+            .shape;
+        sections.push(
+            ogeom_algo::make_wire(&mut model, std::slice::from_ref(&edge), T)
+                .unwrap()
+                .shape,
+        );
+    }
+    let result = ogeom_offset::make_loft_skinned_closed(&mut model, &sections, 2e-2, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // One face, closed both ways round.
+    assert_eq!(
+        explore(&model, &result.shape, Filter::OfType(ShapeType::Face))
+            .unwrap()
+            .len(),
+        1
+    );
+    // Sixteen sections make the loop dense enough for the closed C1 solve;
+    // the volume then sits close to the torus the ring approximates.
+    let expected = core::f64::consts::PI * (core::f64::consts::TAU * ring_r);
+    let measured = ogeom_algo::volume_properties(
+        &model,
+        &result.shape,
+        ogeom_mesh::Deflection::with_chord(1e-3).unwrap(),
+        T,
+    )
+    .unwrap()
+    .mass;
+    assert!(
+        (measured - expected).abs() / expected < 0.05,
+        "closed loft volume {measured} against {expected}"
+    );
+    for section in &sections {
+        assert!(!result.history.generated(section).is_empty());
+    }
 }
