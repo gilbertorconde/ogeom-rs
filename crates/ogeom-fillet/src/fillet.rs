@@ -12,15 +12,16 @@
 //! the blend.
 
 use crate::support::{
-    Seat, apply_wedge, edge_curve, face_from_edges, planar_face, planar_seat, segment_between,
+    Seat, apply_wedge, edge_curve, face_from_edges, planar_face, planar_seat, revolved_flanks,
+    revolved_seat, segment_between,
 };
-use ogeom_algo::{Built, make_edge, make_edge_between, make_revolution_band, make_vertex};
+use ogeom_algo::{Built, make_edge_between, make_revolution_band, make_vertex};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{
     CircleCurve, Curve, CylinderSurface, PlaneSurface, SurfaceGeometry, TorusSurface,
 };
 use ogeom_math::{Circle, Cylinder, Direction, Frame, Plane, Point, Torus, Vector};
-use ogeom_topo::{Filter, Model, NodeData, Orientation, Shape, ShapeType, explore};
+use ogeom_topo::{Model, Shape};
 
 /// Round a convex edge of a solid with a constant-radius blend tangent to
 /// both of its faces.
@@ -484,209 +485,33 @@ fn revolved_fillet(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    let rim_circle = rim.circle();
-    let rim_centre = rim_circle.centre();
-    let rim_radius = rim_circle.radius();
-    let rim_axis = rim_circle.frame().z().vector();
+    let seat = revolved_seat(model, solid, edge, rim, tol)?;
 
-    // The two faces at the rim: exactly one plane and one coaxial cylinder.
-    let mut cap_normal: Option<Vector> = None;
-    let mut wall: Option<(Shape, f64)> = None;
-    for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
-        let touches = explore(model, &face, Filter::OfType(ShapeType::Edge))?
-            .iter()
-            .any(|e| e.node() == edge.node());
-        if !touches {
-            continue;
-        }
-        let Some(node) = model.node(&face) else {
-            ogeom_bail!(Dangling, "face is not in this model");
-        };
-        let NodeData::Face(data) = node.data() else {
-            ogeom_bail!(Construction, "face node holds no face data");
-        };
-        let placement = face.transform(model.datums())?;
-        let reversed = face.orientation() == Orientation::Reversed;
-        match model.geometry().surface(data.surface) {
-            Some(SurfaceGeometry::Plane(p)) => {
-                let mut normal = placement.apply_vector(p.plane().normal().vector());
-                if reversed {
-                    normal = -normal;
-                }
-                if normal.cross(rim_axis).magnitude() > tol.angular()
-                    || p.plane()
-                        .distance_to(placement.inverse()?.apply(rim_centre))
-                        > tol.confusion()
-                {
-                    ogeom_bail!(
-                        Construction,
-                        "the rim's cap is not the perpendicular plane through \
-                         it; that seat needs the marching blend machinery"
-                    );
-                }
-                cap_normal = Some(normal);
-            }
-            Some(SurfaceGeometry::Cylinder(c)) => {
-                let cyl = c.cylinder();
-                let axis_point = placement.apply(cyl.frame().origin());
-                let axis_z = placement.apply_vector(cyl.frame().z().vector());
-                let off_axis = {
-                    let to_rim = rim_centre - axis_point;
-                    (to_rim - axis_z * to_rim.dot(axis_z)).magnitude()
-                };
-                if axis_z.cross(rim_axis).magnitude() > tol.angular()
-                    || off_axis > tol.confusion()
-                    || (cyl.radius() - rim_radius).abs() > tol.confusion()
-                {
-                    ogeom_bail!(
-                        Construction,
-                        "the rim's wall is not the coaxial cylinder through \
-                         it; that seat needs the marching blend machinery"
-                    );
-                }
-                let sigma = if reversed { -1.0 } else { 1.0 };
-                wall = Some((face.clone(), sigma));
-            }
-            Some(_) => ogeom_bail!(
-                Construction,
-                "the rim meets a face that is neither plane nor cylinder; \
-                 that seat needs the marching blend machinery"
-            ),
-            None => ogeom_bail!(Dangling, "face refers to a surface not in this model"),
-        }
-    }
-    let (Some(up_raw), Some((wall_face, sigma))) = (cap_normal, wall) else {
-        ogeom_bail!(
-            Construction,
-            "a rim fillet needs the edge shared by one planar cap and one \
-             cylindrical wall"
-        );
-    };
-    let up = up_raw / up_raw.magnitude();
-
-    // Which side of the cap the wall extends: read from the wall band's other
-    // ring. `tau` positive means away from the cap's outward side — the rim
-    // configurations — and negative means alongside it, the concave seats.
-    let tau = {
-        let mut side = None;
-        for e in explore(model, &wall_face, Filter::OfType(ShapeType::Edge))? {
-            if e.node() == edge.node() {
-                continue;
-            }
-            // Any circular edge of the wall at another height says which
-            // side the wall extends — whether the ring survives as one
-            // closed edge or as the arcs a boolean rebuilt it into.
-            let Ok((curve, _)) = edge_curve(model, &e) else {
-                continue;
-            };
-            let Curve::Circle(c) = curve else {
-                continue;
-            };
-            let lean = (c.circle().centre() - rim_centre).dot(up);
-            if lean.abs() > tol.confusion() * 10.0 {
-                side = Some(lean);
-                break;
-            }
-        }
-        let Some(lean) = side else {
-            ogeom_bail!(
-                Construction,
-                "the rim's wall has no far ring to read its side from; the \
-                 partial seat needs the marching blend machinery"
-            );
-        };
-        if lean < 0.0 { 1.0 } else { -1.0 }
-    };
-    let additive = tau < 0.0;
-
-    let tube_rho = sigma.mul_add(-(tau * radius), rim_radius);
+    let tube_rho = seat.sigma.mul_add(-(seat.tau * radius), seat.radius);
     if tube_rho <= tol.confusion() {
         ogeom_bail!(
             Construction,
             "a fillet of radius {radius} swallows the axis of a rim of \
-             radius {rim_radius}"
+             radius {}",
+            seat.radius
         );
     }
-    let tube_level = rim_centre - up * (tau * radius);
-
-    let up_dir = Direction::new(up, tol)?;
-    let x_ref = rim_circle.frame().x();
-    let frame_at = |origin: Point| Frame::new(origin, up_dir, x_ref, tol);
-
-    let ring = |model: &mut Model, origin: Point, r: f64| -> OgeomResult<Shape> {
-        let circle = Circle::new(frame_at(origin)?, r, tol)?;
-        let curve = Curve::Circle(CircleCurve::new(circle));
-        let domain = ogeom_geom::Curve3d::domain(&curve);
-        Ok(make_edge(model, curve, domain, tol)?.shape)
-    };
-    let apex_ring = ring(model, rim_centre, rim_radius)?;
-    let wall_ring = ring(model, tube_level, rim_radius)?;
-    let cap_ring = ring(model, rim_centre, tube_rho)?;
-
-    // The band of the wall between the rim and the tangency parallel —
-    // coincident with the solid's own wall, aligned when subtracting and
-    // opposed when fusing, which is exactly what the melt needs either way.
-    let wall_band = {
-        let origin = rim_centre - up * (radius + 1.0);
-        let surface: SurfaceGeometry = CylinderSurface::new(
-            Cylinder::new(frame_at(origin)?, rim_radius, tol)?,
-            (0.0, 2.0 * radius + 2.0),
-        )?
-        .into();
-        let band = make_revolution_band(model, &surface, &wall_ring, &apex_ring, tol)?;
-        if sigma * tau < 0.0 {
-            band.reversed()
-        } else {
-            band
-        }
-    };
+    let tube_level = seat.centre - seat.up * (seat.tau * radius);
+    let flanks = revolved_flanks(model, &seat, radius, tube_rho, tol)?;
 
     // The blend: the quarter-tube between the tangencies, its natural normal
     // away from the tube's centre — into the wedge — so always reversed.
     let blend_band = {
-        let surface: SurfaceGeometry =
-            TorusSurface::new(Torus::new(frame_at(tube_level)?, tube_rho, radius, tol)?).into();
-        make_revolution_band(model, &surface, &wall_ring, &cap_ring, tol)?.reversed()
+        let surface: SurfaceGeometry = TorusSurface::new(Torus::new(
+            seat.frame_at(tube_level, tol)?,
+            tube_rho,
+            radius,
+            tol,
+        )?)
+        .into();
+        make_revolution_band(model, &surface, &flanks.wall_ring, &flanks.cap_ring, tol)?.reversed()
     };
 
-    // The annulus of the cap between the rim and the tangency circle.
-    let annulus = {
-        let plane = Plane::through(rim_centre, Direction::new(up * tau, tol)?);
-        let reach = (rim_radius + radius) * 2.0;
-        let surface: SurfaceGeometry =
-            PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
-        let outer = ogeom_algo::make_wire(model, std::slice::from_ref(&apex_ring), tol)?.shape;
-        let inner = ogeom_algo::make_wire(model, std::slice::from_ref(&cap_ring), tol)?.shape;
-        let face = ogeom_algo::make_face(model, surface.clone(), &[outer, inner], tol)?.shape;
-        let surface_id = {
-            let Some(node) = model.node(&face) else {
-                ogeom_bail!(Dangling, "the face just built is not in this model");
-            };
-            let NodeData::Face(data) = node.data() else {
-                ogeom_bail!(Construction, "the face holds no face data");
-            };
-            data.surface
-        };
-        for pedge in explore(model, &face, Filter::OfType(ShapeType::Edge))? {
-            let (curve, prange) = edge_curve(model, &pedge)?;
-            let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&curve, &surface, tol) else {
-                ogeom_bail!(
-                    Construction,
-                    "an annulus edge has no closed-form pcurve on its plane"
-                );
-            };
-            ogeom_algo::attach_pcurve(
-                model,
-                &pedge,
-                pcurve,
-                surface_id,
-                ogeom_topo::Location::identity(),
-                prange,
-            )?;
-        }
-        face
-    };
-
-    let faces = [wall_band, annulus, blend_band];
-    apply_wedge(model, solid, Some(edge), &faces, additive, tol)
+    let faces = [flanks.wall_band, flanks.annulus, blend_band];
+    apply_wedge(model, solid, Some(edge), &faces, seat.additive(), tol)
 }

@@ -229,7 +229,11 @@ mod accuracy {
     }
 
     #[test]
-    fn a_coaxial_cylinder_meets_a_cone_in_one_parallel_per_nappe() {
+    fn a_coaxial_cylinder_meets_a_cone_in_the_parallel_on_its_own_nappe() {
+        // The mirrored crossing past the apex is real geometry whose chart
+        // parameters run half a turn out of phase; reporting it would poison
+        // the arrangement of any face nearby, so only the chart's own nappe
+        // answers.
         let Meeting::Along(curves) = surface_surface(
             &cylinder(Point::ORIGIN, Vector::Z, 2.0),
             &cone(Point::ORIGIN, Vector::Z, 3.0, 0.3),
@@ -238,7 +242,7 @@ mod accuracy {
         .unwrap() else {
             panic!("a coaxial cylinder should cross the slant");
         };
-        assert_eq!(curves.len(), 2, "one parallel per nappe");
+        assert_eq!(curves.len(), 1, "the parallel on the chart's own nappe");
         for curve in &curves {
             let Curve::Circle(circle) = curve else {
                 panic!("a parallel should be a circle");
