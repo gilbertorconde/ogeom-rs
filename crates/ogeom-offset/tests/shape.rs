@@ -230,3 +230,93 @@ fn a_filleted_box_shells_blend_and_all() {
     );
     assert!(result.history.is_deleted(&bottom));
 }
+
+#[test]
+fn a_cone_offsets_to_the_parallel_cone_apex_and_all() {
+    // Base radius 3, height 4: the 3-4-5 cone. Offset by 0.5, the lateral
+    // surface becomes the parallel cone, the base drops by the amount, and
+    // the apex — a vertex with no normal to offer — lands on the parallel
+    // cone's own apex, 0.5 / sin over the old one.
+    let mut model = ogeom_topo::Model::new();
+    let cone = ogeom_algo::make_cone(&mut model, Frame::WORLD, 3.0, 0.0, 4.0, T).unwrap();
+    let result = ogeom_offset::offset_shape(&mut model, &cone.shape, 0.5, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // Radius 4 at the moved base, apex height 32/6 above it.
+    let pi = core::f64::consts::PI;
+    let expected = pi / 3.0 * 16.0 * (16.0 / 3.0);
+    let measured = volume(&model, &result.shape);
+    assert!(
+        (measured - expected).abs() < 1e-2,
+        "offset cone volume {measured} against {expected}"
+    );
+    assert_eq!(
+        explore(&model, &result.shape, Filter::OfType(ShapeType::Face))
+            .unwrap()
+            .len(),
+        2
+    );
+    // The apex vertex itself: at 29/6 above the original base plane.
+    let apex = explore(&model, &result.shape, Filter::OfType(ShapeType::Vertex))
+        .unwrap()
+        .into_iter()
+        .any(|v| {
+            model
+                .node(&v)
+                .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                .is_some_and(|p| (p.z - 29.0 / 6.0).abs() < 1e-6 && p.x.hypot(p.y) < 1e-6)
+        });
+    assert!(apex, "the apex rode the parallel cone");
+}
+
+#[test]
+fn a_rim_filleted_cylinder_offsets_with_its_toroidal_band() {
+    // The fillet's torus keeps its centre circle and grows its tube, which
+    // preserves the tangencies — so the offset part is the rim-filleted
+    // version of the offset cylinder, and the same closed form prices it.
+    let mut model = ogeom_topo::Model::new();
+    let (radius, height, blend, w) = (2.0, 4.0, 0.5, 0.3);
+    let drum = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, radius, height, T).unwrap();
+    let rim = explore(&model, &drum.shape, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            ogeom_algo::edge_vertices(&model, e)
+                .unwrap()
+                .is_some_and(|(a, _)| {
+                    model
+                        .node(&a)
+                        .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                        .is_some_and(|p| {
+                            (p.z - height).abs() < 1e-9 && (p.x.hypot(p.y) - radius).abs() < 1e-6
+                        })
+                })
+        })
+        .expect("the drum has its top rim");
+    let part = ogeom_fillet::fillet_edge(&mut model, &drum.shape, &rim, blend, T)
+        .unwrap()
+        .shape;
+
+    let result = ogeom_offset::offset_shape(&mut model, &part, w, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    let pi = core::f64::consts::PI;
+    let (r, h, b) = (radius + w, height + 2.0 * w, blend + w);
+    let removed =
+        2.0 * pi * (r * b * b - b * b * b / 2.0 - (r - b) * pi * b * b / 4.0 - b * b * b / 3.0);
+    let expected = pi * r * r * h - removed;
+    let measured = volume(&model, &result.shape);
+    assert!(
+        (measured - expected).abs() < 5e-3,
+        "offset rim-filleted drum volume {measured} against {expected}"
+    );
+    // Topology preserved: both caps, the wall, and the band.
+    assert_eq!(
+        explore(&model, &result.shape, Filter::OfType(ShapeType::Face))
+            .unwrap()
+            .len(),
+        4
+    );
+}
