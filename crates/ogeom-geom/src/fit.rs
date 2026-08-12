@@ -425,6 +425,37 @@ pub fn fit_points_2d_at(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<BSpline2d>> {
+    fit_points_2d_at_inner(parameters, points, degree, tolerance, false, tol)
+}
+
+/// As [`fit_points_2d_at`], with the loop's join made C1.
+///
+/// The chart image of a closed curve either returns to its first point or —
+/// crossing its surface's seam — to that point one period over; both are the
+/// same loop, and the join constraint holds either way because it speaks
+/// derivatives, not positions.
+///
+/// # Errors
+///
+/// As [`fit_points_2d_at`].
+pub fn fit_points_2d_at_closed(
+    parameters: &[f64],
+    points: &[Point2],
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<BSpline2d>> {
+    fit_points_2d_at_inner(parameters, points, degree, tolerance, true, tol)
+}
+
+fn fit_points_2d_at_inner(
+    parameters: &[f64],
+    points: &[Point2],
+    degree: usize,
+    tolerance: f64,
+    closed: bool,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<BSpline2d>> {
     if parameters.len() != points.len() {
         ogeom_bail!(Construction, "one parameter per point, or the fit is a lie");
     }
@@ -451,7 +482,7 @@ pub fn fit_points_2d_at(
         // A refinement can place a knot in a span the fixed parameters never
         // visit — clustered samples leave the system singular. That kills
         // the *round*, not the fit: the best earlier round still stands.
-        let control = match least_squares::<2>(&knots, &data, parameters, false) {
+        let control = match least_squares::<2>(&knots, &data, parameters, closed) {
             Ok(control) => control,
             Err(e) => {
                 if best.is_some() {
@@ -912,7 +943,7 @@ pub fn fit_surface_grid(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<crate::BSplineSurface>> {
-    fit_surface_grid_inner(rows, degree, tolerance, false, tol)
+    fit_surface_grid_inner(rows, degree, tolerance, false, false, tol)
 }
 
 /// As [`fit_surface_grid`], with the `v` direction closed into a smooth loop.
@@ -946,7 +977,41 @@ pub fn fit_surface_grid_closed_v(
             "a closed skin needs a loop: the first row repeated at the end"
         );
     }
-    fit_surface_grid_inner(rows, degree, tolerance, true, tol)
+    fit_surface_grid_inner(rows, degree, tolerance, true, false, tol)
+}
+
+/// As [`fit_surface_grid_closed_v`], parameterized by chord length instead
+/// of the centripetal assignment.
+///
+/// The choice matters for dense data: a marched grid samples smooth curves
+/// finely but not evenly, and chord length keeps the parameter's speed
+/// uniform across the spacing jumps a march's closure leaves behind.
+///
+/// # Errors
+///
+/// As [`fit_surface_grid_closed_v`].
+pub fn fit_surface_grid_closed_v_chordal(
+    rows: &[Vec<Point>],
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<crate::BSplineSurface>> {
+    if rows.len() < 3 {
+        ogeom_bail!(Construction, "a closed skin needs at least three rows");
+    }
+    let (first, last) = (&rows[0], &rows[rows.len() - 1]);
+    if first.len() != last.len()
+        || first
+            .iter()
+            .zip(last)
+            .any(|(a, b)| a.distance(*b) > tol.confusion() * 100.0)
+    {
+        ogeom_bail!(
+            Construction,
+            "a closed skin needs a loop: the first row repeated at the end"
+        );
+    }
+    fit_surface_grid_inner(rows, degree, tolerance, true, true, tol)
 }
 
 fn fit_surface_grid_inner(
@@ -954,6 +1019,7 @@ fn fit_surface_grid_inner(
     degree: usize,
     tolerance: f64,
     closed_v: bool,
+    by_chord: bool,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<crate::BSplineSurface>> {
     use crate::traits::Surface as _;
@@ -973,11 +1039,16 @@ fn fit_surface_grid_inner(
         .map(|r| r.iter().map(|p| [p.x, p.y, p.z]).collect())
         .collect();
 
-    // Averaged centripetal parameters: one shared assignment per direction.
+    // Averaged parameters: one shared assignment per direction.
     let average = |families: &[Vec<[f64; 3]>]| -> Vec<f64> {
         let mut sums = vec![0.0; families[0].len()];
         for family in families {
-            for (s, p) in sums.iter_mut().zip(centripetal::<3>(family)) {
+            let assigned = if by_chord {
+                chordal::<3>(family)
+            } else {
+                centripetal::<3>(family)
+            };
+            for (s, p) in sums.iter_mut().zip(assigned) {
                 *s += p;
             }
         }
@@ -1097,6 +1168,31 @@ fn fit_family<const D: usize>(
     Ok((knots, controls))
 }
 
+/// Chord-length parameters, normalized to `[0, 1]`.
+///
+/// For densely sampled points of a smooth curve, chord length approximates
+/// arc length whatever the sampling density does, so the parameter-to-point
+/// map keeps a uniform speed across spacing jumps — exactly where the
+/// centripetal assignment would fold a spacing jump into a speed kink.
+fn chordal<const D: usize>(points: &[[f64; D]]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(points.len());
+    out.push(0.0);
+    let mut total = 0.0;
+    for pair in points.windows(2) {
+        total += distance::<D>(&pair[0], &pair[1]);
+        out.push(total);
+    }
+    if total > 0.0 {
+        for u in &mut out {
+            *u /= total;
+        }
+    }
+    if let Some(last) = out.last_mut() {
+        *last = 1.0;
+    }
+    out
+}
+
 fn centripetal<const D: usize>(points: &[[f64; D]]) -> Vec<f64> {
     let mut out = Vec::with_capacity(points.len());
     out.push(0.0);
@@ -1148,11 +1244,13 @@ fn least_squares<const D: usize>(
         return Ok(control);
     }
 
-    // C1 across a closed loop's join: with the ends pinned to the same point,
-    // the clamped end derivatives are degree/(t_{p+1}-t_1) * (P_1 - P_0) and
+    // C1 across a closed loop's join: the clamped end derivatives are
+    // degree/(t_{p+1}-t_1) * (P_1 - P_0) and
     // degree/(t_{n+p-1}-t_{n-1}) * (P_{n-1} - P_{n-2}). Setting them equal
-    // makes P_{n-2} a linear function of P_1 — one unknown eliminated, the
-    // constraint exact in the solve rather than patched on after.
+    // makes P_{n-2} = P_{n-1} - r (P_1 - P_0) — one unknown eliminated, the
+    // constraint exact in the solve rather than patched on after. Both ends
+    // are pinned, so this holds whether they coincide or sit one period
+    // apart, as a chart image crossing its surface's seam does.
     let t = knots.knots();
     let ratio = if closed && n >= 4 {
         let d_start = t[degree + 1] - t[1];
@@ -1169,10 +1267,10 @@ fn least_squares<const D: usize>(
     if unknown_count == 0 {
         if let (Some(r), Some(e)) = (ratio, eliminated) {
             // Only P_1 = P_{n-2} remains, and the constraint alone fixes it:
-            // P_{n-2} = P_0 - r (P_1 - P_0) with P_1 = P_{n-2} gives the
-            // point dividing toward P_0.
+            // P_{n-2} = P_{n-1} - r (P_1 - P_0) with P_1 = P_{n-2} gives the
+            // point dividing between the pinned ends.
             for d in 0..D {
-                control[e][d] = points[0][d];
+                control[e][d] = r.mul_add(points[0][d], points[m - 1][d]) / (1.0 + r);
             }
             let _ = r;
         }
@@ -1194,13 +1292,14 @@ fn least_squares<const D: usize>(
             .map(|(j, b)| (first + j, *b))
             .collect();
         // Substitute the eliminated column: b_e P_e with
-        // P_e = (1 + r) P_0 - r P_1 becomes an extra known share on P_0 and
-        // a coefficient of -r b_e on P_1.
+        // P_e = P_{n-1} + r P_0 - r P_1 becomes known shares on the pinned
+        // ends and a coefficient of -r b_e on P_1.
         if let (Some(r), Some(e)) = (ratio, eliminated)
             && let Some(position) = row.iter().position(|(i, _)| *i == e)
         {
             let (_, b_e) = row.remove(position);
-            row.push((usize::MAX, b_e * (1.0 + r)));
+            row.push((usize::MAX, b_e * r));
+            row.push((n - 1, b_e));
             row.push((1, -r * b_e));
         }
         rows.push((k, row));
@@ -1254,7 +1353,7 @@ fn least_squares<const D: usize>(
     }
     if let (Some(r), Some(e)) = (ratio, eliminated) {
         for d in 0..D {
-            control[e][d] = (1.0 + r).mul_add(points[0][d], -(r * control[1][d]));
+            control[e][d] = points[m - 1][d] + r * (points[0][d] - control[1][d]);
         }
     }
     Ok(control)
