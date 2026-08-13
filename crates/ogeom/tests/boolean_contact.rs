@@ -442,3 +442,91 @@ fn a_doubled_copy_slid_along_its_shared_plane_fuses_over_a_partial_contact() {
         "cut volume {measured} against 750"
     );
 }
+
+/// A cylinder seated on the face it pierces: the two solids share the plane
+/// they both stand on, and the cylinder's cap lies strictly inside the
+/// block's bottom face. Both arguments therefore describe that one disk, and
+/// exactly one of the two descriptions may survive — the question `cut` never
+/// has to ask, which is why it closed while `common` did not.
+#[test]
+fn a_cylinder_seated_on_the_face_it_pierces_shares_only_the_segment_between_them() {
+    let build = |model: &mut Model| {
+        let frame = Frame::new(Point::new(10.0, 10.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+        let circle = ogeom::math::Circle::new(frame, 4.0, T).unwrap();
+        let curve = ogeom::geom::Curve::Circle(ogeom::geom::CircleCurve::new(circle));
+        let range = <ogeom::geom::Curve as ogeom::geom::Curve3d>::domain(&curve);
+        let edge = ogeom::algo::make_edge(model, curve, range, T)
+            .unwrap()
+            .shape;
+        let round =
+            ogeom::geom::PlaneSurface::over(ogeom::math::Plane::XY, (5.0, 15.0), (5.0, 15.0))
+                .unwrap();
+        let cap = ogeom::algo::make_face_with_pcurves(model, round.into(), &[vec![edge]], T)
+            .unwrap()
+            .shape;
+        let cylinder =
+            ogeom::algo::make_prism(model, &cap, ogeom::math::Vector::new(0.0, 0.0, 20.0), T)
+                .unwrap()
+                .shape;
+
+        let corners = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(20.0, 0.0, 0.0),
+            Point::new(20.0, 20.0, 0.0),
+            Point::new(0.0, 20.0, 0.0),
+        ];
+        let wire = ogeom::algo::make_polygon(model, &corners, true, T)
+            .unwrap()
+            .shape;
+        let flat =
+            ogeom::geom::PlaneSurface::over(ogeom::math::Plane::XY, (-1.0, 21.0), (-1.0, 21.0))
+                .unwrap();
+        let edges = model.children_of(&wire).unwrap();
+        let base = ogeom::algo::make_face_with_pcurves(model, flat.into(), &[edges], T)
+            .unwrap()
+            .shape;
+        let block =
+            ogeom::algo::make_prism(model, &base, ogeom::math::Vector::new(0.0, 0.0, 10.0), T)
+                .unwrap()
+                .shape;
+        (block, cylinder)
+    };
+    let pi = core::f64::consts::PI;
+
+    let mut model = Model::with_tolerances(T);
+    let (block, cylinder) = build(&mut model);
+    let shared = ogeom::boolean::common(&mut model, &block, &cylinder, T).unwrap();
+    assert!(
+        ogeom::algo::check(&model, &shared.shape, T)
+            .unwrap()
+            .is_valid(),
+        "the shared post is not valid"
+    );
+    // The post the block's height cuts out of the cylinder: two disks and the
+    // wall between them. Three faces — a fourth would be the shared disk
+    // described twice.
+    assert_eq!(
+        explore_unique(&model, &shared.shape, ShapeType::Face)
+            .unwrap()
+            .len(),
+        3,
+        "the disk the two solids share is described more than once"
+    );
+    let expected = pi * 16.0 * 10.0;
+    let measured = volume(&model, &shared.shape);
+    assert!(
+        (measured - expected).abs() < expected * 1e-3,
+        "common volume {measured} against {expected}"
+    );
+
+    // The neighbour that always worked, kept working.
+    let mut model = Model::with_tolerances(T);
+    let (block, cylinder) = build(&mut model);
+    let bored = ogeom::boolean::cut(&mut model, &block, &cylinder, T).unwrap();
+    let expected = 20.0_f64.mul_add(20.0 * 10.0, -(pi * 16.0 * 10.0));
+    let measured = volume(&model, &bored.shape);
+    assert!(
+        (measured - expected).abs() < expected * 1e-3,
+        "cut volume {measured} against {expected}"
+    );
+}

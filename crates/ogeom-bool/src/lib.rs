@@ -55,7 +55,9 @@ use ogeom_topo::{
     EdgeRepr, Filter, Location, Model, NodeData, Shape, ShapeType, explore, explore_unique,
 };
 
-use arrange::{Strand, Traversal, assemble as arrange_pieces, inside_many, inside_many_slanted};
+use arrange::{
+    Strand, Traversal, assemble as arrange_pieces, inside_many, inside_many_slanted, inside_rings,
+};
 
 /// Parameter-space chord for the polyline scaffolding.
 const SCAFFOLD_CHORD: f64 = 1e-3;
@@ -1914,8 +1916,14 @@ fn mark_covered_coincidences(ga: &GSolid, pieces: &mut [FacePiece], tol: Toleran
             let Some(at) = chart_point_of(host, piece.probe, tol) else {
                 continue;
             };
-            let rings: Vec<&[Point2]> = pieces[other].outlines.iter().map(Vec::as_slice).collect();
-            if inside_many(&rings, at) {
+            // The host piece's rings, not its boundary strands: a ring is a
+            // closed loop whose last point does not repeat its first, so the
+            // test has to close it. Asked as though the rings were strands
+            // that jointly close, the segment from the ring's end back to its
+            // start goes uncounted, and a point the ring plainly encloses
+            // comes back outside whenever that missing segment would have
+            // been crossed.
+            if inside_rings(&pieces[other].outlines, at) {
                 covered.push(index);
                 break;
             }

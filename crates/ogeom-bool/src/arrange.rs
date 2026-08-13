@@ -389,6 +389,20 @@ fn inside(ring: &[Point2], p: Point2) -> bool {
     inside
 }
 
+/// Even-odd containment of a point in a piece's rings.
+///
+/// A ring is a closed loop stored without repeating its first point, so each
+/// one is closed as it is walked. Ring `[0]` is the outer contour and the
+/// rest are holes, and the even-odd count over all of them answers for the
+/// region they jointly bound.
+///
+/// This is the test for a *piece*. [`inside_many`] is the test for the
+/// strands a piece is assembled from, which close only jointly and must not
+/// be closed one by one.
+pub(crate) fn inside_rings(rings: &[Vec<Point2>], p: Point2) -> bool {
+    rings.iter().fold(false, |acc, ring| acc != inside(ring, p))
+}
+
 /// Even-odd containment against open polylines that jointly close.
 ///
 /// The strands are pieces of closed rings, so counting crossings segment by
