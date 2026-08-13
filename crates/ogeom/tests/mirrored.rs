@@ -136,3 +136,58 @@ fn a_mirrored_drum_fuses_through_its_fitted_images() {
         "fused volume {measured} against {expected}"
     );
 }
+
+#[test]
+fn a_prism_fuses_with_its_mirrored_copy() {
+    // A pad is built as a profile face swept, which stores its near cap
+    // reversed and its far cap as that same node displaced. Copying such a
+    // body used to apply each stored placement and sense twice, which takes a
+    // wire apart; nothing said so until a reflecting placement forced the bake
+    // that walks every wire and rebuilds it.
+    let mut model = ogeom_topo::Model::with_tolerances(T);
+    let pts = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(10.0, 0.0, 0.0),
+        Point::new(10.0, 10.0, 0.0),
+        Point::new(0.0, 10.0, 0.0),
+    ];
+    let wire = ogeom_algo::make_polygon(&mut model, &pts, true, T)
+        .unwrap()
+        .shape;
+    let surface =
+        ogeom_geom::PlaneSurface::over(ogeom_math::Plane::XY, (-1.0, 11.0), (-1.0, 11.0)).unwrap();
+    let edges = model.children_of(&wire).unwrap();
+    let face = ogeom_algo::make_face_with_pcurves(
+        &mut model,
+        ogeom_geom::SurfaceGeometry::Plane(surface),
+        &[edges],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let a = ogeom_algo::make_prism(&mut model, &face, ogeom_math::Vector::new(0.0, 0.0, 5.0), T)
+        .unwrap()
+        .shape;
+
+    let fresh = ogeom_algo::copied(&mut model, &a).unwrap().shape;
+    let mirror = ogeom_math::Transform::plane_mirror(Point::ORIGIN, ogeom_math::Direction::X);
+    let b = ogeom_algo::transformed(&mut model, &fresh, mirror)
+        .unwrap()
+        .shape;
+
+    let fused = ogeom_bool::fuse(&mut model, &a, &b, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &fused.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // Two 10×10×5 pads meeting at the mirror plane, sharing only that face.
+    let measured = vol(&model, &fused.shape);
+    assert!(
+        (measured - 1000.0).abs() < 1e-6,
+        "fused volume {measured} against 1000"
+    );
+    // The pair spans the mirror. Bounds err outward, so assert one-sided and
+    // let the exact volume above pin how tight the body really is.
+    let bounds = ogeom_algo::shape_bounds(&model, &fused.shape, T).unwrap();
+    assert!(bounds.low().unwrap().x <= -10.0 + 1e-6);
+    assert!(bounds.high().unwrap().x >= 10.0 - 1e-6);
+}
