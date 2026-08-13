@@ -2156,7 +2156,12 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             let face_snap = contacts
                 .iter()
                 .filter(|c| c.target_from_a == from_a && c.target_face == fi)
-                .fold(PARAM_SNAP, |acc, c| acc.max(c.tolerance * 2.0));
+                .fold(PARAM_SNAP, |acc, c| acc.max(c.tolerance * 2.0))
+                .max(
+                    face.edges
+                        .iter()
+                        .fold(0.0_f64, |acc, e| acc.max(e.tolerance * 2.0)),
+                );
             if std::env::var("OGEOM_DEBUG_STRANDS").is_ok() {
                 for (si, st) in strands.iter().enumerate() {
                     let tag = match st.tag {

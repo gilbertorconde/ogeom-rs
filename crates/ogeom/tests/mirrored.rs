@@ -83,3 +83,56 @@ fn a_body_fuses_with_its_mirror_across_the_shared_face() {
         "the halves joined across their shared face"
     );
 }
+
+#[test]
+fn a_mirrored_drum_fuses_through_its_fitted_images() {
+    // A curved body under a reflection: the boolean restates it in world
+    // coordinates first, and whatever pcurves that restatement had to fit
+    // carry their slop on the record — the melt's snap reaches it, or the
+    // contact dangles a hair from the boundary it paved.
+    let mut model = ogeom_topo::Model::new();
+    let drum = ogeom_algo::make_cylinder(
+        &mut model,
+        Frame::new(
+            Point::new(3.0, 0.0, 0.0),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap(),
+        2.0,
+        6.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let mirror = ogeom_math::Transform::plane_mirror(Point::ORIGIN, ogeom_math::Direction::X);
+    let mirrored = model.placed(&drum, mirror);
+    let block = ogeom_algo::make_box(
+        &mut model,
+        Frame::new(
+            Point::new(-2.0, -5.0, 0.0),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap(),
+        (2.0, 10.0, 6.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let fused = ogeom_bool::fuse(&mut model, &block, &mirrored, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &fused.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // Block plus drum less the circular segment they share.
+    let pi = core::f64::consts::PI;
+    let theta = 2.0 * core::f64::consts::FRAC_PI_3;
+    let segment = 4.0 * (theta - theta.sin()) / 2.0 * 6.0;
+    let expected = 6.0_f64.mul_add(2.0 * 10.0, pi * 4.0 * 6.0) - segment;
+    let measured = vol(&model, &fused.shape);
+    assert!(
+        (measured - expected).abs() < expected * 1e-3,
+        "fused volume {measured} against {expected}"
+    );
+}

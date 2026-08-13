@@ -330,19 +330,41 @@ fn rebuild(
                                 Some(uv_of(model, &mut corner_uv, &bounds[bounds.len() - 1])?),
                             )
                         };
-                        let fitted = fit_pcurve(
+                        // Exact wherever the chart has a closed form — the
+                        // melt downstream compares these images against
+                        // exact geometry, and a fitted stand-in for a
+                        // closed-form projection carries slop for nothing.
+                        let derived = match ogeom_intersect::exact_pcurve_over(
                             &new_curve,
                             new_range,
                             &patch_surface,
-                            None,
-                            ends,
-                            target,
                             tol,
-                        )?;
+                        ) {
+                            Some(exact) => exact,
+                            None => {
+                                let fitted = fit_pcurve(
+                                    &new_curve,
+                                    new_range,
+                                    &patch_surface,
+                                    None,
+                                    ends,
+                                    target,
+                                    tol,
+                                )?;
+                                // The fit's honest slop rides the edge, so
+                                // every downstream filter widens by it.
+                                if let Some(node) = model.node_mut(&new_edge)
+                                    && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+                                {
+                                    data.tolerance = data.tolerance.widen_to(target);
+                                }
+                                fitted
+                            }
+                        };
                         attach_pcurve(
                             model,
                             &new_edge,
-                            fitted,
+                            derived,
                             surface_id,
                             Location::identity(),
                             new_range,
