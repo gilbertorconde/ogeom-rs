@@ -186,11 +186,19 @@ each with a test that will say so if it reopens.
 >
 > **What remains, and what the refusal means.** A piece that lies on the other
 > solid's boundary with no coincident partner face whose trim accepts its probe
-> is still refused by name. What reaches it now is genuine edge or vertex
-> contact — contact confined to a line or a point, where there is no shared
-> *region* for a partner to be found in and the two normals it would compare do
-> not exist. The configurations above no longer reach it: each had a cause of
-> its own, and none was that case.
+> is still refused by name, and the four configurations above no longer reach
+> it: each had a cause of its own, and none was that case. Two things do reach
+> it. The one the text describes — genuine edge or vertex contact, confined to
+> a line or a point, where there is no shared *region* for a partner to be
+> found in and the two normals it would compare do not exist. And one it
+> describes wrongly: a same-domain pair that is genuinely *not* analytic, a
+> sheared copy sharing a plane with its original, where the surfaces are
+> B-splines by necessity rather than by oversight and no closed form answers
+> `Same` for them. That is the marcher being handed a coincident pair it says
+> it must never be handed, and it reports as edge contact something that is
+> nothing of the kind, after some seconds of marching. It wants a coincidence
+> gate ahead of the marched fallback so the honest same-domain refusal already
+> written in the filler is what comes back.
 
 
 ### B. Blending
