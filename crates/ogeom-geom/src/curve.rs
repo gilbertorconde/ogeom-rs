@@ -108,15 +108,19 @@ pub struct ParabolaCurve {
 ///
 /// The point at `t` sits at angle `t` around the axis, radius out along the
 /// turned `x`, risen by `pitch·t/2π` along `z` — so one full turn advances
-/// exactly one pitch, and a negative pitch winds the other hand. The speed
-/// `√(r² + (pitch/2π)²)` is constant, which gives the arc length a closed
-/// form. A helix is transcendental: no rational B-spline states it exactly,
-/// which is why it is its own type rather than a conversion.
+/// exactly one pitch, and a negative pitch winds the other hand. A non-zero
+/// `taper` advances the radius the same way and winds a cone instead. A
+/// helix is transcendental: no rational B-spline states it exactly, which
+/// is why it is its own type rather than a conversion.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HelixCurve {
     frame: Frame,
     radius: f64,
     pitch: f64,
+    /// The radial advance per full turn: zero is the cylindrical helix,
+    /// anything else winds a cone whose half-angle satisfies
+    /// `tan(angle) = taper / pitch`.
+    taper: f64,
     domain: (f64, f64),
     reversed: bool,
 }
@@ -404,9 +408,45 @@ impl HelixCurve {
             frame,
             radius,
             pitch,
+            taper: 0.0,
             domain: (start, end),
             reversed: false,
         })
+    }
+
+    /// A conical helix: the radius advances by `taper` per full turn while
+    /// the point rises by `pitch`, winding the cone whose half-angle
+    /// satisfies `tan(angle) = taper / pitch`. `radius` is the radius at
+    /// angle zero, whether or not the interval holds it.
+    ///
+    /// # Errors
+    ///
+    /// As [`HelixCurve::over`], and additionally if `taper` is not finite
+    /// or the radius runs non-positive anywhere on the interval — past the
+    /// apex there is no cone to wind.
+    pub fn conical(
+        frame: Frame,
+        radius: f64,
+        pitch: f64,
+        taper: f64,
+        start: f64,
+        end: f64,
+    ) -> OgeomResult<Self> {
+        let mut helix = Self::over(frame, radius, pitch, start, end)?;
+        if !taper.is_finite() {
+            ogeom_bail!(Construction, "helix taper {taper} must be finite");
+        }
+        let slope = taper / core::f64::consts::TAU;
+        let (ra, rb) = (slope.mul_add(start, radius), slope.mul_add(end, radius));
+        if ra <= 0.0 || rb <= 0.0 {
+            ogeom_bail!(
+                Construction,
+                "the helix radius runs non-positive on [{start}, {end}]; \
+                 past the apex there is no cone to wind"
+            );
+        }
+        helix.taper = taper;
+        Ok(helix)
     }
 
     /// The frame the helix turns about.
@@ -425,6 +465,12 @@ impl HelixCurve {
     #[must_use]
     pub const fn pitch(&self) -> f64 {
         self.pitch
+    }
+
+    /// The radial advance per full turn; zero is the cylindrical helix.
+    #[must_use]
+    pub const fn taper(&self) -> f64 {
+        self.taper
     }
 
     /// Whether evaluation runs the domain backwards.
@@ -447,13 +493,14 @@ impl HelixCurve {
         let y = self.frame.y().vector();
         let z = self.frame.z().vector();
         let rise = self.pitch / core::f64::consts::TAU;
-        let point = self.frame.origin()
-            + x * (self.radius * cos)
-            + y * (self.radius * sin)
-            + z * (rise * t);
-        let d1 = x * (-self.radius * sin) + y * (self.radius * cos) + z * rise;
-        let d2 = x * (-self.radius * cos) + y * (-self.radius * sin);
-        let d3 = x * (self.radius * sin) + y * (-self.radius * cos);
+        let slope = self.taper / core::f64::consts::TAU;
+        let r = slope.mul_add(t, self.radius);
+        let point = self.frame.origin() + x * (r * cos) + y * (r * sin) + z * (rise * t);
+        let d1 = x * slope.mul_add(cos, -(r * sin)) + y * slope.mul_add(sin, r * cos) + z * rise;
+        let d2 = x * (2.0 * slope).mul_add(-sin, -(r * cos))
+            + y * (2.0 * slope).mul_add(cos, -(r * sin));
+        let d3 =
+            x * (3.0 * slope).mul_add(-cos, r * sin) + y * (3.0 * slope).mul_add(-sin, -(r * cos));
         (point, d1, d2, d3)
     }
 }
@@ -791,6 +838,77 @@ impl BSplineCurve {
             rational,
             periodic: false,
         })
+    }
+
+    /// A smoothly periodic B-spline through a ring of control points.
+    ///
+    /// The ring is wrapped: the first `degree` controls repeat past the
+    /// end over a uniform knot vector, and evaluation wraps its parameter,
+    /// so the loop closes with `degree - 1` continuous derivatives and no
+    /// clamped seam. The domain runs one knot step per ring point.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the ring
+    /// has no more points than the degree, or the degree is zero.
+    pub fn periodic(control: &[Point], degree: usize, tol: Tolerances) -> OgeomResult<Self> {
+        if degree == 0 {
+            ogeom_bail!(Construction, "a curve needs a degree of at least one");
+        }
+        if control.len() <= degree {
+            ogeom_bail!(
+                Construction,
+                "a periodic ring of {} points cannot carry degree {degree}",
+                control.len()
+            );
+        }
+        let n = control.len();
+        let mut wrapped: Vec<Point> = Vec::with_capacity(n + degree);
+        wrapped.extend_from_slice(control);
+        wrapped.extend_from_slice(&control[..degree]);
+        #[allow(clippy::cast_precision_loss)]
+        let knots: Vec<f64> = (0..wrapped.len() + degree + 1).map(|i| i as f64).collect();
+        let mut built = Self::new(KnotVector::new(knots, degree)?, wrapped, tol)?;
+        built.periodic = true;
+        Ok(built)
+    }
+
+    /// The exact periodic representation, as a reader restores it: wrapped
+    /// knots and control, with the wrap verified rather than assumed.
+    ///
+    /// # Errors
+    ///
+    /// As [`BSplineCurve::rational`], and additionally if the trailing
+    /// `degree` controls do not repeat the leading ones — an unwrapped ring
+    /// evaluated periodically would tear at the seam.
+    pub fn periodic_from_parts(
+        knots: KnotVector,
+        control: Vec<Weighted<Point>>,
+        tol: Tolerances,
+    ) -> OgeomResult<Self> {
+        let degree = knots.degree();
+        if control.len() <= degree {
+            ogeom_bail!(
+                Construction,
+                "a periodic curve of {} controls cannot carry degree {degree}",
+                control.len()
+            );
+        }
+        let n = control.len() - degree;
+        for i in 0..degree {
+            let (a, b) = (control[i], control[n + i]);
+            if !a.point().is_equal(b.point(), tol) || (a.weight - b.weight).abs() > 1e-12 {
+                ogeom_bail!(
+                    Construction,
+                    "a periodic curve's trailing controls must repeat its \
+                     leading ones; control {} does not",
+                    n + i
+                );
+            }
+        }
+        let mut built = Self::rational(knots, control)?;
+        built.periodic = true;
+        Ok(built)
     }
 
     /// The knot vector.
@@ -1380,6 +1498,7 @@ impl Transformable for Curve {
                 frame: t.apply_frame(&c.frame, tol)?,
                 radius: c.radius * t.scale_factor().abs(),
                 pitch: c.pitch * t.scale_factor().abs(),
+                taper: c.taper * t.scale_factor().abs(),
                 ..*c
             }),
             Self::Offset(c) => Self::Offset(Box::new(OffsetCurve {
@@ -2066,5 +2185,67 @@ mod tests {
                 CurveKind::Trimmed,
             ]
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+mod conical_tests {
+    use super::*;
+    use ogeom_math::Vector;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    #[test]
+    fn a_conical_helix_winds_its_cone_and_speaks_its_derivatives() {
+        let tau = core::f64::consts::TAU;
+        // Radius 5 at angle zero, growing 2 per turn, rising 3 per turn.
+        let helix = HelixCurve::conical(Frame::WORLD, 5.0, 3.0, 2.0, 0.0, 2.0 * tau).unwrap();
+        for i in 0..=8 {
+            let t = 2.0 * tau * f64::from(i) / 8.0;
+            let p = helix.point_at(t, T).unwrap();
+            let r = 2.0f64.mul_add(t / tau, 5.0);
+            assert!((p.to_vector().dot(Vector::Z) - 3.0 * t / tau).abs() < 1e-9);
+            assert!((p.x.hypot(p.y) - r).abs() < 1e-9, "radius at {t}");
+        }
+        // The derivative against finite differences.
+        let t = 1.234;
+        let h = 1e-6;
+        let d1 = helix.d1_at(t, T).unwrap();
+        let fwd = helix.point_at(t + h, T).unwrap();
+        let bwd = helix.point_at(t - h, T).unwrap();
+        let fd = (fwd - bwd) / (2.0 * h);
+        assert!((d1 - fd).magnitude() < 1e-6, "d1 {d1:?} against {fd:?}");
+    }
+
+    #[test]
+    fn a_helix_past_its_apex_is_refused_by_name() {
+        let tau = core::f64::consts::TAU;
+        let err = HelixCurve::conical(Frame::WORLD, 1.0, 3.0, -2.0, 0.0, 2.0 * tau).unwrap_err();
+        assert!(err.to_string().contains("apex"), "{err}");
+    }
+
+    #[test]
+    fn a_periodic_bspline_wraps_smoothly_and_says_so() {
+        let ring: Vec<Point> = (0..8)
+            .map(|i| {
+                let a = core::f64::consts::TAU * f64::from(i) / 8.0;
+                Point::new(a.cos() * 4.0, a.sin() * 4.0, 0.0)
+            })
+            .collect();
+        let curve = BSplineCurve::periodic(&ring, 3, T).unwrap();
+        assert!(Curve3d::is_periodic(&curve));
+        let (lo, hi) = Curve3d::domain(&curve);
+        // The loop closes with matching tangents across the seam.
+        let p_lo = curve.point_at(lo, T).unwrap();
+        let p_hi = curve.point_at(hi, T).unwrap();
+        assert!(p_lo.distance(p_hi) < 1e-9);
+        let d_lo = curve.d1_at(lo, T).unwrap();
+        let d_hi = curve.d1_at(hi, T).unwrap();
+        assert!((d_lo - d_hi).magnitude() < 1e-9, "C1 across the seam");
+        // And a wrapped parameter lands where its image does.
+        let inside = curve.point_at(lo + 0.4, T).unwrap();
+        let wrapped = curve.point_at(hi + 0.4, T).unwrap();
+        assert!(inside.distance(wrapped) < 1e-9);
     }
 }

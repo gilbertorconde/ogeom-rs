@@ -55,12 +55,14 @@ use ogeom_topo::{
 
 pub use ogeom_topo::Absorbed;
 
-/// The format version this reads and writes.
+/// The format version this writes.
 ///
 /// Bumped when the grammar changes in a way an older reader could not follow.
 /// A file naming a version this does not know is refused rather than guessed
-/// at.
-pub const VERSION: u32 = 1;
+/// at; every version up to this one still reads, because version 2 only
+/// *added* records — the conical helix and the periodic B-spline — and a
+/// version 1 file contains neither.
+pub const VERSION: u32 = 2;
 
 /// The word every file starts with.
 const MAGIC: &str = "ogeom";
@@ -265,10 +267,11 @@ fn read_parts(text: &str) -> OgeomResult<(ModelParts, Vec<Shape>, Option<String>
         ogeom_bail!(Construction, "not an ogeom document");
     }
     let version = cursor.count()?;
-    if version != VERSION as usize {
+    if version == 0 || version > VERSION as usize {
         ogeom_bail!(
             Construction,
-            "document is version {version}; this reads version {VERSION}"
+            "document is version {version}; this reads versions 1 through \
+             {VERSION}"
         );
     }
 
@@ -1260,23 +1263,32 @@ fn curve(t: &mut Vec<String>, c: &Curve) -> OgeomResult<()> {
             flag(t, p.is_reversed());
         }
         Curve::Helix(h) => {
-            w(t, "helix");
-            frame(t, h.frame());
-            n(t, h.radius());
-            n(t, h.pitch());
-            range(t, Curve3d::domain(h));
-            flag(t, h.is_reversed());
+            if h.taper() == 0.0 {
+                w(t, "helix");
+                frame(t, h.frame());
+                n(t, h.radius());
+                n(t, h.pitch());
+                range(t, Curve3d::domain(h));
+                flag(t, h.is_reversed());
+            } else {
+                w(t, "conical");
+                frame(t, h.frame());
+                n(t, h.radius());
+                n(t, h.pitch());
+                n(t, h.taper());
+                range(t, Curve3d::domain(h));
+                flag(t, h.is_reversed());
+            }
         }
         Curve::BSpline(b) => {
-            if b.is_periodic() {
-                ogeom_bail!(
-                    Construction,
-                    "a periodic B-spline curve cannot be written: nothing \
-                     builds one today, so the format has no way to say so, and \
-                     dropping the flag would give back a different curve"
-                );
-            }
-            w(t, "bspline");
+            w(
+                t,
+                if b.is_periodic() {
+                    "bspline_periodic"
+                } else {
+                    "bspline"
+                },
+            );
             knots(t, b.knots());
             u(t, b.control_points().len() as u64);
             for c in b.control_points() {
@@ -1896,6 +1908,15 @@ impl<'a> Cursor<'a> {
                 let curve = HelixCurve::over(frame, radius, pitch, lo, hi)?;
                 reverse_if(curve.into(), self.flag()?)
             }
+            "conical" => {
+                let frame = self.frame(tol)?;
+                let radius = self.number()?;
+                let pitch = self.number()?;
+                let taper = self.number()?;
+                let (lo, hi) = self.range()?;
+                let curve = HelixCurve::conical(frame, radius, pitch, taper, lo, hi)?;
+                reverse_if(curve.into(), self.flag()?)
+            }
             "bspline" => {
                 let knots = self.knots()?;
                 let n = self.count()?;
@@ -1904,6 +1925,15 @@ impl<'a> Cursor<'a> {
                     control.push(self.weighted()?);
                 }
                 BSplineCurve::rational(knots, control)?.into()
+            }
+            "bspline_periodic" => {
+                let knots = self.knots()?;
+                let n = self.count()?;
+                let mut control = Vec::with_capacity(n);
+                for _ in 0..n {
+                    control.push(self.weighted()?);
+                }
+                BSplineCurve::periodic_from_parts(knots, control, tol)?.into()
             }
             "trimmed" => {
                 let (lo, hi) = self.range()?;
@@ -2591,6 +2621,69 @@ mod tests {
                     .geometry()
                     .curves()
                     .any(|(_, c)| matches!(c, Curve::OnSurface(_)))
+        );
+    }
+
+    #[test]
+    fn a_version_one_document_still_reads() {
+        // Version 2 only added records; a version 1 file contains none of
+        // them, and the promise is that it keeps reading forever.
+        let mut model = Model::new();
+        ogeom_algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
+        let text = write(&model, &[], WriteOptions::default()).unwrap();
+        let downgraded = text.replacen("ogeom 2", "ogeom 1", 1);
+        assert_ne!(text, downgraded, "the header really carried version 2");
+        let (back, _) = read(&downgraded).unwrap();
+        assert_eq!(
+            back.geometry().surfaces().count(),
+            model.geometry().surfaces().count()
+        );
+    }
+
+    #[test]
+    fn a_conical_helix_and_a_periodic_bspline_round_trip_byte_stable() {
+        let mut model = Model::new();
+        let helix = ogeom_geom::HelixCurve::conical(
+            Frame::new(
+                ogeom_math::Point::new(1.0, 2.0, -0.5),
+                ogeom_math::Direction::from_coords(0.0, 0.6, 0.8, T).unwrap(),
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap(),
+            4.0,
+            3.0,
+            1.25,
+            0.5,
+            9.0,
+        )
+        .unwrap();
+        let domain = Curve3d::domain(&helix);
+        ogeom_algo::make_edge(&mut model, Curve::Helix(helix), domain, T).unwrap();
+
+        let ring: Vec<ogeom_math::Point> = (0..8)
+            .map(|i| {
+                let a = core::f64::consts::TAU * f64::from(i) / 8.0;
+                ogeom_math::Point::new(a.cos() * 4.0, a.sin() * 4.0, 0.0)
+            })
+            .collect();
+        let loop_curve = ogeom_geom::BSplineCurve::periodic(&ring, 3, T).unwrap();
+        let domain = Curve3d::domain(&loop_curve);
+        ogeom_algo::make_edge(&mut model, Curve::BSpline(loop_curve), domain, T).unwrap();
+
+        let text = write(&model, &[], WriteOptions::default()).unwrap();
+        let (back, _) = read(&text).unwrap();
+        let again = write(&back, &[], WriteOptions::default()).unwrap();
+        assert_eq!(text, again, "the second write reproduces the first");
+        assert!(
+            back.geometry()
+                .curves()
+                .any(|(_, c)| matches!(c, Curve::Helix(h) if (h.taper() - 1.25).abs() < 1e-12))
+        );
+        assert!(
+            back.geometry()
+                .curves()
+                .any(|(_, c)| matches!(c, Curve::BSpline(b) if b.is_periodic()))
         );
     }
 

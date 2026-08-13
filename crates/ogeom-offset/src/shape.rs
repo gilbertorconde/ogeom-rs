@@ -146,7 +146,7 @@ pub fn make_thick_solid(
     thickness: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    if !thickness.is_finite() || thickness <= tol.confusion() {
+    if !thickness.is_finite() || thickness.abs() <= tol.confusion() {
         ogeom_bail!(Construction, "a wall of {thickness} holds nothing");
     }
     let (canonical, mapped, prefix) = canonical_input(model, solid, removed, tol)?;
@@ -155,6 +155,10 @@ pub fn make_thick_solid(
         out.history = prefix.then(&out.history);
         return Ok(out);
     }
+    // The sign is the side: positive hollows inward, negative builds the
+    // walls outward around the solid, which becomes the cavity itself.
+    let outward_walls = thickness < 0.0;
+    let reach = thickness.abs();
     let own: Vec<TShapeId> = explore(model, solid, Filter::OfType(ShapeType::Face))?
         .iter()
         .map(Shape::node)
@@ -174,20 +178,30 @@ pub fn make_thick_solid(
     }
     if !tangent_opening {
         let skip: Vec<TShapeId> = removed.iter().map(Shape::node).collect();
-        let cavity = rebuilt(
+        let moved = rebuilt(
             model,
             solid,
             &|face| {
                 if skip.contains(&face.node()) {
                     0.0
+                } else if outward_walls {
+                    reach
                 } else {
-                    -thickness
+                    -reach
                 }
             },
             &|_| None,
             tol,
         )?;
-        let mut result = ogeom_bool::cut(model, solid, &cavity.shape, tol)?;
+        // Inward, the moved copy is the cavity carved from the solid;
+        // outward, the solid is the cavity carved from the moved copy. The
+        // held-in-place opening faces coincide either way, and the melt is
+        // what leaves them open.
+        let mut result = if outward_walls {
+            ogeom_bool::cut(model, &moved.shape, solid, tol)?
+        } else {
+            ogeom_bool::cut(model, solid, &moved.shape, tol)?
+        };
         for face in removed {
             result.history.delete(face);
         }
@@ -196,35 +210,49 @@ pub fn make_thick_solid(
 
     // The tangent construction: everything moves together — which is what
     // keeps the tangencies intact — and each opening is drilled back out by
-    // extruding its cavity image through where the wall used to be.
-    let cavity = rebuilt(model, solid, &|_| -thickness, &|_| None, tol)?;
-    let mut tool = cavity.shape.clone();
-    for face in removed {
-        let outward = {
-            let Some(NodeData::Face(data)) = model.node(face).map(ogeom_topo::TShape::data) else {
-                ogeom_bail!(Construction, "face node holds no face data");
-            };
-            let Some(SurfaceGeometry::Plane(p)) = model.geometry().surface(data.surface) else {
-                ogeom_bail!(
-                    Construction,
-                    "a tangent opening must be planar; a curved opening needs \
-                     the general rebuild — docs/PARITY.md, offset.shell-thicken"
-                );
-            };
-            let mut normal = p.plane().normal().vector();
-            if face.orientation() == Orientation::Reversed {
-                normal = -normal;
-            }
-            normal
+    // extruding its opening image through where the wall now stands.
+    let displaced = if outward_walls { reach } else { -reach };
+    let moved = rebuilt(model, solid, &|_| displaced, &|_| None, tol)?;
+    let opening_normal = |model: &Model, face: &Shape| -> OgeomResult<Vector> {
+        let Some(NodeData::Face(data)) = model.node(face).map(ogeom_topo::TShape::data) else {
+            ogeom_bail!(Construction, "face node holds no face data");
         };
-        let [image] = cavity.history.modified(face) else {
-            ogeom_bail!(Construction, "a removed face has no single cavity image");
+        let Some(SurfaceGeometry::Plane(p)) = model.geometry().surface(data.surface) else {
+            ogeom_bail!(
+                Construction,
+                "a tangent opening must be planar; a curved opening needs \
+                 the general rebuild — docs/PARITY.md, offset.shell-thicken"
+            );
         };
-        let punch =
-            ogeom_algo::make_prism(model, &image.clone(), outward * (2.0 * thickness), tol)?;
-        tool = ogeom_bool::fuse(model, &tool, &punch.shape, tol)?.shape;
-    }
-    let mut result = ogeom_bool::cut(model, solid, &tool, tol)?;
+        let mut normal = p.plane().normal().vector();
+        if face.orientation() == Orientation::Reversed {
+            normal = -normal;
+        }
+        Ok(normal)
+    };
+    let mut result = if outward_walls {
+        // The solid itself is the cavity; the openings drill outward from
+        // its own faces through the new walls.
+        let mut tool = solid.clone();
+        for face in removed {
+            let outward = opening_normal(model, face)?;
+            let punch = ogeom_algo::make_prism(model, &face.clone(), outward * (2.0 * reach), tol)?;
+            tool = ogeom_bool::fuse(model, &tool, &punch.shape, tol)?.shape;
+        }
+        ogeom_bool::cut(model, &moved.shape, &tool, tol)?
+    } else {
+        let mut tool = moved.shape.clone();
+        for face in removed {
+            let outward = opening_normal(model, face)?;
+            let [image] = moved.history.modified(face) else {
+                ogeom_bail!(Construction, "a removed face has no single cavity image");
+            };
+            let punch =
+                ogeom_algo::make_prism(model, &image.clone(), outward * (2.0 * reach), tol)?;
+            tool = ogeom_bool::fuse(model, &tool, &punch.shape, tol)?.shape;
+        }
+        ogeom_bool::cut(model, solid, &tool, tol)?
+    };
     for face in removed {
         result.history.delete(face);
     }

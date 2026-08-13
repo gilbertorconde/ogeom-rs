@@ -367,3 +367,45 @@ fn a_filleted_box_shells_open_at_its_blended_top() {
     }
     assert!(result.history.is_deleted(&top));
 }
+
+#[test]
+fn a_negative_thickness_builds_the_walls_outward() {
+    // The box becomes its own cavity: half-unit walls grow around it, the
+    // top stays open, and the arithmetic is the outer block less the box
+    // that was there.
+    let mut model = ogeom_topo::Model::new();
+    let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (8.0, 6.0, 4.0), T).unwrap();
+    let top = explore(&model, &block.shape, Filter::OfType(ShapeType::Face))
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let d = model.node(f).and_then(|n| n.data().as_face());
+            let Some(d) = d else { return false };
+            let Some(ogeom_geom::SurfaceGeometry::Plane(p)) = model.geometry().surface(d.surface)
+            else {
+                return false;
+            };
+            let placed = f.transform(model.datums()).unwrap();
+            let origin = placed.apply(p.plane().frame().origin());
+            let n = placed.apply_vector(p.plane().normal().vector());
+            (n.z - 1.0).abs() < 1e-9 && (origin.z - 4.0).abs() < 1e-9
+        })
+        .expect("the top face");
+    let shelled = ogeom_offset::make_thick_solid(
+        &mut model,
+        &block.shape,
+        std::slice::from_ref(&top),
+        -0.5,
+        T,
+    )
+    .unwrap();
+    let diagnosis = ogeom_algo::check(&model, &shelled.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // Outer 9 by 7 by 4.5, less the 8 by 6 by 4 cavity, still open above it.
+    let expected = 9.0 * 7.0 * 4.5 - 8.0 * 6.0 * 4.0;
+    let measured = volume(&model, &shelled.shape);
+    assert!(
+        (measured - expected).abs() < 1e-6,
+        "outward shell volume {measured} against {expected}"
+    );
+}

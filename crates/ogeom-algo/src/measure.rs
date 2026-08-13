@@ -65,12 +65,17 @@ pub fn curve_bounds(curve: &Curve, tol: Tolerances) -> OgeomResult<Aabb> {
         // the same convention the circle uses.
         Curve::Helix(h) => {
             let rise = h.pitch() / core::f64::consts::TAU;
+            let slope = h.taper() / core::f64::consts::TAU;
             let (a, b) = h.domain();
+            let reach = slope
+                .mul_add(a, h.radius())
+                .abs()
+                .max(slope.mul_add(b, h.radius()).abs());
             let mid = h.frame().origin() + h.frame().z().vector() * (rise * f64::midpoint(a, b));
             frame_bounds(
                 mid,
                 *h.frame(),
-                (h.radius(), h.radius(), (rise * (b - a) / 2.0).abs()),
+                (reach, reach, (rise * (b - a) / 2.0).abs()),
             )
         }
 
@@ -274,15 +279,25 @@ pub fn shape_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResul
             out.transformed(&placement).expanded(e.tolerance.get())
         }
         NodeData::Face(f) => {
-            // The surface bound covers the whole surface, and the face is a
-            // piece of it, so this contains the face. The wires below tighten
-            // nothing but cost nothing either — the union is taken regardless.
-            match model.geometry().surface(f.surface) {
-                Some(surface) => surface_bounds(surface, tol)
-                    .unwrap_or(Aabb::EMPTY)
-                    .transformed(&placement)
-                    .expanded(f.tolerance.get()),
-                None => Aabb::EMPTY,
+            // A planar face lies inside its boundary's own hull, so its
+            // wires below say everything — an imported plane's carrier
+            // window can span kilometres and would drown every consumer. A
+            // curved face can bulge past its boundary — a dome past its
+            // equator — so those keep the whole surface's bound.
+            let planar = matches!(
+                model.geometry().surface(f.surface),
+                Some(ogeom_geom::SurfaceGeometry::Plane(_))
+            );
+            if planar && !model.children_of(shape)?.is_empty() {
+                Aabb::EMPTY
+            } else {
+                match model.geometry().surface(f.surface) {
+                    Some(surface) => surface_bounds(surface, tol)
+                        .unwrap_or(Aabb::EMPTY)
+                        .transformed(&placement)
+                        .expanded(f.tolerance.get()),
+                    None => Aabb::EMPTY,
+                }
             }
         }
         NodeData::Container => Aabb::EMPTY,
@@ -1532,5 +1547,31 @@ mod deflection_tests {
         assert!(relative_deflection(&model, &solid, 0.0, T).is_err());
         assert!(relative_deflection(&model, &solid, -1.0, T).is_err());
         assert!(relative_deflection(&model, &solid, f64::NAN, T).is_err());
+    }
+
+    #[test]
+    fn a_planar_face_is_bounded_by_its_wires_not_its_carrier() {
+        // An imported plane declares a carrier window of kilometres; the
+        // face on it spans a hand's width, and its bound must say so.
+        let mut model = Model::new();
+        let block = crate::make_box(
+            &mut model,
+            ogeom_math::Frame::WORLD,
+            (8.0, 6.0, 4.0),
+            Tolerances::millimetres(),
+        )
+        .unwrap();
+        let bound = shape_bounds(&model, &block.shape, Tolerances::millimetres()).unwrap();
+        let (Some(lo), Some(hi)) = (bound.low(), bound.high()) else {
+            panic!("the box has a bound");
+        };
+        assert!(
+            lo.distance(ogeom_math::Point::new(0.0, 0.0, 0.0)) < 1e-3,
+            "{lo:?}"
+        );
+        assert!(
+            hi.distance(ogeom_math::Point::new(8.0, 6.0, 4.0)) < 1e-3,
+            "{hi:?}"
+        );
     }
 }
