@@ -348,3 +348,97 @@ fn a_fitted_edge_on_a_shared_cylinder_still_melts_the_same_domain_contact() {
             + 1
     );
 }
+
+/// A scaled copy shares whole planes with its original, and the shared
+/// regions nest rather than match: the small box's faces at the origin lie
+/// strictly inside the big box's. The contact is real same-domain contact,
+/// so it has to reach the melt — which it only does while the scale is
+/// carried as the placement it is, since a restated plane no longer says it
+/// is one and no closed form recognizes the pair.
+#[test]
+fn a_box_and_its_doubled_copy_fuse_into_the_bigger_box() {
+    let mut model = Model::with_tolerances(T);
+    let a = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let doubled = ogeom::math::GeneralTransform {
+        linear: ogeom::math::Matrix3::from_columns(
+            ogeom::math::Vector::new(2.0, 0.0, 0.0),
+            ogeom::math::Vector::new(0.0, 2.0, 0.0),
+            ogeom::math::Vector::new(0.0, 0.0, 2.0),
+        ),
+        translation: ogeom::math::Vector::ZERO,
+    };
+    let b = ogeom::algo::general_transformed_shape(&mut model, &a, &doubled, T)
+        .unwrap()
+        .shape;
+
+    let fused = ogeom::boolean::fuse(&mut model, &a, &b, T).unwrap();
+
+    let diagnosis = ogeom::algo::check(&model, &fused.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // The small box is inside the big one, so the union is the big one.
+    let measured = volume(&model, &fused.shape);
+    assert!(
+        (measured - 8000.0).abs() < 1e-6,
+        "fused volume {measured} against 8000"
+    );
+}
+
+/// The same pair slid along the plane they share, so neither shared face
+/// contains the other and the overlap is partial in both directions.
+#[test]
+fn a_doubled_copy_slid_along_its_shared_plane_fuses_over_a_partial_contact() {
+    let build = |model: &mut Model| {
+        let a = ogeom::algo::make_box(model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let slid = ogeom::math::GeneralTransform {
+            linear: ogeom::math::Matrix3::from_columns(
+                ogeom::math::Vector::new(2.0, 0.0, 0.0),
+                ogeom::math::Vector::new(0.0, 2.0, 0.0),
+                ogeom::math::Vector::new(0.0, 0.0, 2.0),
+            ),
+            translation: ogeom::math::Vector::new(5.0, 5.0, 0.0),
+        };
+        let b = ogeom::algo::general_transformed_shape(model, &a, &slid, T)
+            .unwrap()
+            .shape;
+        (a, b)
+    };
+
+    // a = [0,10]³, b = [5,25]×[5,25]×[0,20]; they share the z = 0 plane and
+    // overlap there on [5,10]², which neither face contains.
+    let mut model = Model::with_tolerances(T);
+    let (a, b) = build(&mut model);
+    let fused = ogeom::boolean::fuse(&mut model, &a, &b, T).unwrap();
+    assert!(
+        ogeom::algo::check(&model, &fused.shape, T)
+            .unwrap()
+            .is_valid(),
+        "the fused body is not valid"
+    );
+    let measured = volume(&model, &fused.shape);
+    assert!(
+        (measured - 8750.0).abs() < 1e-6,
+        "fused volume {measured} against 8750"
+    );
+
+    let mut model = Model::with_tolerances(T);
+    let (a, b) = build(&mut model);
+    let shared = ogeom::boolean::common(&mut model, &a, &b, T).unwrap();
+    let measured = volume(&model, &shared.shape);
+    assert!(
+        (measured - 250.0).abs() < 1e-6,
+        "common volume {measured} against 250"
+    );
+
+    let mut model = Model::with_tolerances(T);
+    let (a, b) = build(&mut model);
+    let rest = ogeom::boolean::cut(&mut model, &a, &b, T).unwrap();
+    let measured = volume(&model, &rest.shape);
+    assert!(
+        (measured - 750.0).abs() < 1e-6,
+        "cut volume {measured} against 750"
+    );
+}

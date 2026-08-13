@@ -79,15 +79,29 @@ pub fn baked_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomRe
 /// conversion survive untouched, because an affine map does not
 /// reparameterize.
 ///
+/// A similarity is the other case, and it is a placement. The kernel's own
+/// types already draw that line — [`Transform`](ogeom_math::Transform) is a
+/// similarity by construction and is kept apart from [`GeneralTransform`]
+/// precisely so analytic geometry survives one — so a similarity handed in
+/// here is applied as the placement it is. Converting it would be worse than
+/// wasteful: a restated plane is still that plane but no longer *says* so,
+/// and coincidence downstream is decided on what the geometry says. Two
+/// coplanar faces would stop being coplanar *surfaces*, no closed form would
+/// answer `Same` for them, and the boolean would be handed a coincident pair
+/// with nothing to recognize it by.
+///
 /// # Errors
 ///
-/// As [`to_nurbs`].
+/// As [`to_nurbs`], or as [`transformed`](crate::transformed) for a similarity.
 pub fn general_transformed_shape(
     model: &mut Model,
     shape: &Shape,
     transform: &GeneralTransform,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    if let Some(similarity) = transform.to_similarity(tol.angular()) {
+        return crate::place::transformed(model, shape, similarity);
+    }
     rebuild(model, shape, Some(transform), true, tol)
 }
 
@@ -850,6 +864,40 @@ mod tests {
             "volume {} against {exact}",
             props.mass
         );
+    }
+
+    #[test]
+    fn a_uniform_scale_is_a_placement_and_leaves_the_surfaces_analytic() {
+        // The distinction this module is built on, stated as a test. A
+        // similarity carries a plane to a plane, so the shape keeps saying
+        // what it is; converting it would leave six patches that happen to be
+        // flat, and nothing downstream that asks about coincidence can read
+        // flatness out of a patch.
+        let mut model = Model::new();
+        let solid = make_box(&mut model, Frame::WORLD, (2.0, 3.0, 4.0), T).unwrap();
+        let scale = GeneralTransform::new(
+            ogeom_math::Matrix3 {
+                rows: [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]],
+            },
+            ogeom_math::Vector::ZERO,
+        );
+
+        let scaled = general_transformed_shape(&mut model, &solid.shape, &scale, T).unwrap();
+
+        for face in explore(&model, &scaled.shape, Filter::OfType(ShapeType::Face)).unwrap() {
+            let NodeData::Face(data) = model.node(&face).unwrap().data() else {
+                panic!("face data");
+            };
+            assert!(
+                matches!(
+                    model.geometry().surface(data.surface),
+                    Some(SurfaceGeometry::Plane(_))
+                ),
+                "a scaled box's face stopped being a plane"
+            );
+        }
+        let props = volume_properties(&model, &scaled.shape, fine(), T).unwrap();
+        assert!((props.mass - 192.0).abs() < 1e-6, "scaled {}", props.mass);
     }
 
     #[test]
