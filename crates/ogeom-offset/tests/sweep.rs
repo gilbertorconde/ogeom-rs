@@ -937,3 +937,90 @@ fn a_sharp_cornered_closed_spine_is_refused_by_name() {
         ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 5e-2, T).unwrap_err();
     assert!(err.to_string().contains("sharp corner"), "{err}");
 }
+
+#[test]
+fn an_l_spine_mitres_its_corner_and_the_runs_share_the_ring() {
+    // An open cornered spine: two straight legs at a right angle. Each leg
+    // sweeps as its own ruled wall between end rings, the corner's twin
+    // stations throw both boundary rings onto the bisector plane, and the
+    // sew joins the runs along that one mitred ring. The mitre passes
+    // through the centreline corner, so Pappus prices the whole elbow at
+    // area times the legs' summed length — exactly.
+    let mut model = ogeom_topo::Model::new();
+    let a = Point::new(0.0, 0.0, 0.0);
+    let b = Point::new(20.0, 0.0, 0.0);
+    let c = Point::new(20.0, 20.0, 0.0);
+    let va = ogeom_algo::make_vertex(&mut model, a).shape;
+    let vb = ogeom_algo::make_vertex(&mut model, b).shape;
+    let vc = ogeom_algo::make_vertex(&mut model, c).shape;
+    let seg = |model: &mut ogeom_topo::Model,
+               f: (&ogeom_topo::Shape, Point),
+               t: (&ogeom_topo::Shape, Point)|
+     -> ogeom_topo::Shape {
+        let line = ogeom_geom::LineCurve::segment(f.1, t.1, T).unwrap();
+        let curve = ogeom_geom::Curve::Line(line);
+        let d = ogeom_geom::Curve3d::domain(&curve);
+        ogeom_algo::make_edge_between(model, curve, d, f.0, t.0, T)
+            .unwrap()
+            .shape
+    };
+    let e1 = seg(&mut model, (&va, a), (&vb, b));
+    let e2 = seg(&mut model, (&vb, b), (&vc, c));
+    let spine = ogeom_algo::make_wire(&mut model, &[e1, e2], T)
+        .unwrap()
+        .shape;
+    let profile = square_profile(&mut model, a, ogeom_math::Vector::X, 4.0);
+
+    let result =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let measured = volume(&model, &result.shape);
+    assert!(
+        (measured - 640.0).abs() < 640.0 * 1e-3,
+        "mitred elbow volume {measured} against 640"
+    );
+}
+
+#[test]
+fn a_corner_against_a_curved_leg_is_refused_by_name() {
+    // The mitre is exact only where the leg is straight: a ruled wall
+    // between end rings *is* the trimmed prism. Against an arc it is not,
+    // and the refusal says so.
+    let mut model = ogeom_topo::Model::new();
+    let r = 20.0;
+    // A quarter arc ending at (0, 20), then a straight leg heading +x —
+    // a genuine corner between a curved run and a straight one.
+    let arc_curve: ogeom_geom::Curve =
+        ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(Frame::WORLD, r, T).unwrap()).into();
+    let a = Point::new(r, 0.0, 0.0);
+    let b = Point::new(0.0, r, 0.0);
+    let c = Point::new(0.0, r + 20.0, 0.0);
+    let va = ogeom_algo::make_vertex(&mut model, a).shape;
+    let vb = ogeom_algo::make_vertex(&mut model, b).shape;
+    let vc = ogeom_algo::make_vertex(&mut model, c).shape;
+    let arc = ogeom_algo::make_edge_between(
+        &mut model,
+        arc_curve,
+        (0.0, core::f64::consts::FRAC_PI_2),
+        &va,
+        &vb,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let line = ogeom_geom::LineCurve::segment(b, c, T).unwrap();
+    // The arc leaves its end heading -x; the leg turns square up +y.
+    let lcurve = ogeom_geom::Curve::Line(line);
+    let ldomain = ogeom_geom::Curve3d::domain(&lcurve);
+    let leg = ogeom_algo::make_edge_between(&mut model, lcurve, ldomain, &vb, &vc, T)
+        .unwrap()
+        .shape;
+    let spine = ogeom_algo::make_wire(&mut model, &[arc, leg], T)
+        .unwrap()
+        .shape;
+    let profile = square_profile(&mut model, a, ogeom_math::Vector::Y, 4.0);
+    let err =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap_err();
+    assert!(err.to_string().contains("mitre"), "{err}");
+}

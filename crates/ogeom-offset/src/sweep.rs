@@ -1622,6 +1622,13 @@ fn rmf_normals(stations: &[SpineStation]) -> Vec<Vector> {
         let n = normals[i - 1];
         let v1 = p1 - p0;
         let c1 = v1.dot(v1);
+        if c1 <= 1e-20 {
+            // A corner's twin station: no travel to reflect through. The
+            // normal carries straight across, which is exactly the parallel
+            // transport a mitred joint's mirror symmetry needs.
+            normals.push(n);
+            continue;
+        }
         let nl = n - v1 * (2.0 / c1 * v1.dot(n));
         let tl = t0 - v1 * (2.0 / c1 * v1.dot(t0));
         let v2 = t1 - tl;
@@ -1668,13 +1675,95 @@ pub fn make_pipe_shell(
     const AROUND: usize = 40;
 
     let stations = shell_stations(model, spine, tol)?;
+    // Corners: twin stations standing on one point with different headings.
+    let kinks: Vec<usize> = (0..stations.len() - 1)
+        .filter(|&i| {
+            stations[i].at.distance(stations[i + 1].at) <= tol.confusion()
+                && (stations[i]
+                    .tangent
+                    .cross(stations[i + 1].tangent)
+                    .magnitude()
+                    > tol.angular()
+                    || stations[i].tangent.dot(stations[i + 1].tangent) < 0.0)
+        })
+        .collect();
     if stations[0].at.distance(stations[stations.len() - 1].at) <= tol.confusion() * 10.0 {
+        if !kinks.is_empty() {
+            ogeom_bail!(
+                Construction,
+                "a closed spine's sharp corners are still owed their mitres \
+                 — docs/PARITY.md, offset.sweeps"
+            );
+        }
         return closed_pipe_shell(model, profile, spine, stations, frenet, tolerance, tol);
+    }
+    if frenet && !kinks.is_empty() {
+        ogeom_bail!(
+            Construction,
+            "a Frenet frame has no direction at a corner; sweep a cornered \
+             spine with the rotation-minimizing frame"
+        );
     }
     let normals = if frenet {
         frenet_normals(&stations, tol)?
     } else {
         rmf_normals(&stations)
+    };
+    // At each corner both twin sections are thrown onto the bisector plane
+    // along their own tangents; the mirror symmetry of the rotation-
+    // minimizing frame lands them on one ring, the mitre both runs share.
+    let mitre: Vec<Option<(Point, Vector)>> = {
+        let mut out: Vec<Option<(Point, Vector)>> = vec![None; stations.len()];
+        for &k in &kinks {
+            let n = stations[k].tangent + stations[k + 1].tangent;
+            if n.magnitude() <= tol.angular() {
+                ogeom_bail!(
+                    Construction,
+                    "the spine doubles straight back on itself; no mitre \
+                     plane divides that corner"
+                );
+            }
+            out[k] = Some((stations[k].at, n));
+            out[k + 1] = Some((stations[k + 1].at, n));
+        }
+        out
+    };
+    let runs: Vec<(usize, usize)> = {
+        let mut out = Vec::with_capacity(kinks.len() + 1);
+        let mut start = 0;
+        for &k in &kinks {
+            out.push((start, k));
+            start = k + 1;
+        }
+        out.push((start, stations.len() - 1));
+        out
+    };
+    // A mitred end is a *shear*: the honest wall is the run's own surface
+    // trimmed by the mitre plane, which for a straight leg is exactly the
+    // ruled skin between its two end rings. A curved leg's trim is not a
+    // loft of its rows, so a corner against one stays refused by name.
+    let straight = |rs: usize, re: usize| -> bool {
+        let t0 = stations[rs].tangent;
+        (rs..=re).all(|i| stations[i].tangent.cross(t0).magnitude() <= tol.angular())
+    };
+    for &(rs, re) in &runs {
+        if (mitre[rs].is_some() || mitre[re].is_some()) && !straight(rs, re) {
+            ogeom_bail!(
+                Construction,
+                "a sharp corner against a curved leg is still owed its \
+                 mitre; straight legs mitre exactly — docs/PARITY.md, \
+                 offset.sweeps"
+            );
+        }
+    }
+    // The stations a run's skin actually interpolates: a straight run is
+    // its two end rings, ruled — the trimmed prism itself.
+    let run_stations = |rs: usize, re: usize| -> Vec<usize> {
+        if straight(rs, re) {
+            vec![rs, re]
+        } else {
+            (rs..=re).collect()
+        }
     };
 
     // The profile's loops: a face contributes every wire, holes included;
@@ -1720,7 +1809,14 @@ pub fn make_pipe_shell(
     let place = |i: usize, (a, b): (f64, f64)| -> Point {
         let x = normals[i];
         let y = stations[i].tangent.cross(x);
-        stations[i].at + x * a + y * b
+        let p = stations[i].at + x * a + y * b;
+        match mitre[i] {
+            Some((corner, n)) => {
+                let t = stations[i].tangent;
+                p + t * ((corner - p).dot(n) / t.dot(n))
+            }
+            None => p,
+        }
     };
     let last = stations.len() - 1;
 
@@ -1747,19 +1843,31 @@ pub fn make_pipe_shell(
         if single_smooth {
             let samples = sample_wire(model, wire, AROUND, tol)?;
             let flat_row: Vec<(f64, f64)> = samples.iter().map(|p| flat(*p)).collect();
-            let rows: Vec<Vec<Point>> = (0..stations.len())
-                .map(|i| flat_row.iter().map(|ab| place(i, *ab)).collect())
-                .collect();
-            let wall = skinned_wall(model, &rows, tolerance, tol)?;
-            faces.push(if hole {
-                wall.face.reversed()
-            } else {
-                wall.face.clone()
-            });
-            ends.push(LoopWall::Ring {
-                ring0: wall.ring0,
-                ring1: wall.ring1,
-            });
+            // One wall per smooth run: a fit across a corner speaks nothing,
+            // and the twin stations put both runs' boundary rows on the one
+            // mitred ring, where the sew joins them.
+            let mut ring0: Option<Shape> = None;
+            let mut ring1: Option<Shape> = None;
+            for &(rs, re) in &runs {
+                let rows: Vec<Vec<Point>> = run_stations(rs, re)
+                    .into_iter()
+                    .map(|i| flat_row.iter().map(|ab| place(i, *ab)).collect())
+                    .collect();
+                let wall = skinned_wall(model, &rows, tolerance, tol)?;
+                faces.push(if hole {
+                    wall.face.reversed()
+                } else {
+                    wall.face.clone()
+                });
+                if ring0.is_none() {
+                    ring0 = Some(wall.ring0);
+                }
+                ring1 = Some(wall.ring1);
+            }
+            let (Some(ring0), Some(ring1)) = (ring0, ring1) else {
+                ogeom_bail!(Construction, "the sweep produced no wall");
+            };
+            ends.push(LoopWall::Ring { ring0, ring1 });
         } else {
             // Shared corner vertices at both ends of every edge junction.
             let count = edges.len();
@@ -1784,8 +1892,17 @@ pub fn make_pipe_shell(
                     .map(|ab| ogeom_algo::make_vertex(model, place(station, *ab)).shape)
                     .collect()
             };
-            let first_corners = make_corners(model, 0);
-            let last_corners = make_corners(model, last);
+            // Corner vertex sets at every run boundary; a kink's twin
+            // stations land on the same mitred points, so both runs take
+            // the same vertex objects.
+            let mut corners_at: Vec<Option<Vec<Shape>>> = vec![None; stations.len()];
+            corners_at[0] = Some(make_corners(model, 0));
+            corners_at[last] = Some(make_corners(model, last));
+            for &k in &kinks {
+                let set = make_corners(model, k);
+                corners_at[k] = Some(set.clone());
+                corners_at[k + 1] = Some(set);
+            }
 
             // The loop's own centroid line, for orienting each strip.
             let hint_flat = {
@@ -1817,33 +1934,43 @@ pub fn make_pipe_shell(
                     };
                     flat_row.push(flat(curve.point_at(t, tol)?));
                 }
-                let rows: Vec<Vec<Point>> = (0..stations.len())
-                    .map(|i| flat_row.iter().map(|ab| place(i, *ab)).collect())
-                    .collect();
                 let next = (ei + 1) % count;
-                let mid = stations[stations.len() / 2];
-                let hint = {
-                    let x = normals[stations.len() / 2];
-                    let y = mid.tangent.cross(x);
-                    mid.at + x * hint_flat.0 + y * hint_flat.1
+                let mut bottom: Option<Shape> = None;
+                let mut top: Option<Shape> = None;
+                for &(rs, re) in &runs {
+                    let rows: Vec<Vec<Point>> = run_stations(rs, re)
+                        .into_iter()
+                        .map(|i| flat_row.iter().map(|ab| place(i, *ab)).collect())
+                        .collect();
+                    let mid_i = usize::midpoint(rs, re);
+                    let hint = {
+                        let x = normals[mid_i];
+                        let y = stations[mid_i].tangent.cross(x);
+                        stations[mid_i].at + x * hint_flat.0 + y * hint_flat.1
+                    };
+                    let (Some(from), Some(to)) = (&corners_at[rs], &corners_at[re]) else {
+                        ogeom_bail!(Construction, "a run boundary has no corners");
+                    };
+                    let strip = skinned_strip(
+                        model,
+                        &rows,
+                        (&from[ei], &from[next], &to[ei], &to[next]),
+                        hint,
+                        hole,
+                        tolerance,
+                        tol,
+                    )?;
+                    faces.push(strip.face.clone());
+                    if bottom.is_none() {
+                        bottom = Some(strip.bottom);
+                    }
+                    top = Some(strip.top);
+                }
+                let (Some(bottom), Some(top)) = (bottom, top) else {
+                    ogeom_bail!(Construction, "the sweep produced no strip");
                 };
-                let strip = skinned_strip(
-                    model,
-                    &rows,
-                    (
-                        &first_corners[ei],
-                        &first_corners[next],
-                        &last_corners[ei],
-                        &last_corners[next],
-                    ),
-                    hint,
-                    hole,
-                    tolerance,
-                    tol,
-                )?;
-                faces.push(strip.face.clone());
-                bottoms.push(strip.bottom);
-                tops.push(strip.top);
+                bottoms.push(bottom);
+                tops.push(top);
             }
             ends.push(LoopWall::Chain { bottoms, tops });
         }
@@ -2175,9 +2302,13 @@ fn shell_stations(model: &Model, spine: &Shape, tol: Tolerances) -> OgeomResult<
             let tangent = if reversed { -(d / m) } else { d / m };
             if let Some(prev) = stations.last()
                 && prev.at.distance(p) <= tol.confusion()
+                && prev.tangent.cross(tangent).magnitude() <= tol.angular()
+                && prev.tangent.dot(tangent) > 0.0
             {
                 continue;
             }
+            // A station coincident with the last but heading elsewhere is a
+            // *corner*: both stations stay, a twin pair the sweep mitres.
             stations.push(SpineStation { at: p, tangent });
         }
     }
