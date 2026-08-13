@@ -357,7 +357,12 @@ fn rebuild(
                 wires.push(make_wire(model, &ring, tol)?.shape);
             }
             let built = make_face_on(model, surface_id, &wires, tol)?.shape;
-            let built = if face.orientation() == Orientation::Reversed {
+            // The rebuilt chart is right-handed wherever the old one stood;
+            // a reflecting placement flipped the old chart's natural normal,
+            // and the flag must carry that flip or the baked solid comes
+            // out inside-out.
+            let reflected = !face.location().preserves_handedness(model.datums())?;
+            let built = if (face.orientation() == Orientation::Reversed) != reflected {
                 built.reversed()
             } else {
                 built

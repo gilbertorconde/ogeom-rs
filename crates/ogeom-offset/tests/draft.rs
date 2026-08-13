@@ -175,3 +175,86 @@ fn a_draft_that_swallows_the_apex_is_refused_by_name() {
     .unwrap_err();
     assert!(err.to_string().contains("apex"), "{err}");
 }
+
+#[test]
+fn the_angles_sign_picks_inward_or_outward() {
+    // Positive narrows the solid in the pull direction, negative widens it
+    // — the two wedges mirror about the undrafted volume.
+    let mut measured = Vec::new();
+    for angle in [10.0_f64, -10.0] {
+        let mut model = ogeom_topo::Model::new();
+        let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T).unwrap();
+        let wall = explore(&model, &block.shape, Filter::OfType(ShapeType::Face))
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                let d = model.node(f).and_then(|n| n.data().as_face());
+                let Some(d) = d else { return false };
+                let Some(ogeom_geom::SurfaceGeometry::Plane(p)) =
+                    model.geometry().surface(d.surface)
+                else {
+                    return false;
+                };
+                let placed = f.transform(model.datums()).unwrap();
+                let n = placed.apply_vector(p.plane().normal().vector());
+                n.z.abs() < 1e-9 && (n.y - 1.0).abs() < 1e-9
+            })
+            .expect("the +y wall");
+        let neutral = Plane::through(Point::new(0.0, 0.0, 0.0), ogeom_math::Direction::Z);
+        let drafted = ogeom_offset::apply_draft(
+            &mut model,
+            &block.shape,
+            std::slice::from_ref(&wall),
+            neutral,
+            ogeom_math::Direction::Z,
+            angle.to_radians(),
+            T,
+        )
+        .unwrap();
+        measured.push(volume(&model, &drafted.shape));
+    }
+    let wedge = 10.0 * (10.0 * 10.0 / 2.0) * 10.0_f64.to_radians().tan();
+    assert!(
+        (measured[0] - (1000.0 - wedge)).abs() < 1e-3,
+        "inward volume {} against {}",
+        measured[0],
+        1000.0 - wedge
+    );
+    assert!(
+        (measured[1] - (1000.0 + wedge)).abs() < 1e-3,
+        "outward volume {} against {}",
+        measured[1],
+        1000.0 + wedge
+    );
+}
+
+#[test]
+fn a_negative_draft_widens_the_drum() {
+    // The revolved path honours the sign the same way: the wall flares
+    // outward into the frustum whose base sits on the neutral circle.
+    let mut model = ogeom_topo::Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 10.0, T).unwrap();
+    let wall = wall_of(&model, &drum.shape);
+    let angle = (-2.0_f64).to_radians();
+    let neutral = Plane::through(Point::new(0.0, 0.0, 0.0), ogeom_math::Direction::Z);
+    let result = ogeom_offset::apply_draft(
+        &mut model,
+        &drum.shape,
+        std::slice::from_ref(&wall),
+        neutral,
+        ogeom_math::Direction::Z,
+        angle,
+        T,
+    )
+    .unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let pi = core::f64::consts::PI;
+    let r1 = 10.0_f64.mul_add(2.0_f64.to_radians().tan(), 5.0);
+    let expected = pi * 10.0 / 3.0 * 5.0_f64.mul_add(5.0 + r1, r1 * r1);
+    let measured = volume(&model, &result.shape);
+    assert!(
+        (measured - expected).abs() < 0.15,
+        "widened drum volume {measured} against {expected}"
+    );
+}

@@ -2845,15 +2845,20 @@ pub fn make_periodic(
 /// re-derived against the new parameterizations. Unscaled shapes pass
 /// through untouched.
 fn baked_if_scaled(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Shape> {
-    let mut scaled = false;
+    let mut restate = false;
     for face in ogeom_topo::explore(model, shape, Filter::OfType(ShapeType::Face))? {
         let placement = face.transform(model.datums())?;
-        if (placement.scale_factor().abs() - 1.0).abs() > 1e-9 {
-            scaled = true;
+        // A scale changes lengths the melt compares; a reflection flips
+        // every chart's natural normal against its face's flag. Either way
+        // the operand is restated in world coordinates first, where both
+        // effects are already folded in.
+        if (placement.scale_factor().abs() - 1.0).abs() > 1e-9 || !placement.preserves_handedness()
+        {
+            restate = true;
             break;
         }
     }
-    if !scaled {
+    if !restate {
         return Ok(shape.clone());
     }
     Ok(ogeom_algo::baked_shape(model, shape, tol)?.shape)

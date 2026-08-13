@@ -160,13 +160,14 @@ pub fn apply_draft(
         let along = along / magnitude;
         let hinge = meet(plane, neutral, along, tol)?;
 
-        // Which way to turn: the sense whose outward normal ends up leaning
-        // furthest towards the pull, which is the face leaning inwards and
-        // the solid narrowing as it leaves.
+        // Which way to turn: probed at the angle's *magnitude*, so the
+        // sense names the inward lean — outward normal furthest towards the
+        // pull, the solid narrowing as it leaves — and the angle's sign
+        // stays the caller's: positive drafts inward, negative outward.
         let axis = ogeom_math::Axis::new(hinge, Direction::new(along, tol)?);
         let mut candidates = Vec::with_capacity(2);
         for sense in [1.0, -1.0] {
-            let turn = Transform::rotation(axis, angle * sense);
+            let turn = Transform::rotation(axis, angle.abs() * sense);
             candidates.push((sense, turn.apply_vector(outward).dot(pull.vector())));
         }
         let leaning = candidates
@@ -251,13 +252,18 @@ fn revolved_draft(
     // circle — ends up leaning furthest towards the pull.
     let mut best: Option<(f64, f64)> = None;
     for sense in [1.0_f64, -1.0] {
+        // Probed at the magnitude: the sense names the inward lean, and the
+        // caller's sign then picks inward or outward through it.
+        let probe = half_angle + angle.abs() * sense;
         let candidate = half_angle + angle * sense;
-        if candidate.abs() <= tol.angular()
+        if probe.abs() <= tol.angular()
+            || probe.abs() >= core::f64::consts::FRAC_PI_2 - tol.angular()
+            || candidate.abs() <= tol.angular()
             || candidate.abs() >= core::f64::consts::FRAC_PI_2 - tol.angular()
         {
             continue;
         }
-        let cone = ogeom_math::Cone::new(hinge_frame, neutral_radius, candidate, tol)?;
+        let cone = ogeom_math::Cone::new(hinge_frame, neutral_radius, probe, tol)?;
         let surface: SurfaceGeometry = ConeSurface::new(cone, (-1.0, 1.0))?.into();
         let (du, dv) = surface.d1_at(0.0, 1.0, tol)?;
         let n = du.cross(dv);

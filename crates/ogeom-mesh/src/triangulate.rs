@@ -85,7 +85,10 @@ pub fn triangulate_face(
     // Lift into space. The normal follows the face's orientation, not the
     // surface's: a reversed face presents the other side, and a renderer or a
     // volume computation that ignored that would have the solid inside out.
-    let flip = face.orientation() == Orientation::Reversed;
+    // A reflecting placement flips it once more — the mirrored chart's
+    // natural normal points the other way through the same flag.
+    let flip = (face.orientation() == Orientation::Reversed)
+        != !face.location().preserves_handedness(model.datums())?;
     let mut mesh = Triangulation::new();
     mesh.deflection_met = met;
     let mut hits = 0_usize;
