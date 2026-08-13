@@ -684,6 +684,14 @@ impl Reader<'_> {
                         .into(),
                 )
             }
+            "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" => {
+                // A curve dressed in its surface associations — what every
+                // exporter derived from the reference kernel writes for
+                // every edge. The 3D curve is the first argument; the
+                // pcurve list is advisory and this reader re-derives its
+                // own, so unwrapping is the whole job.
+                self.curve(args.get(1).and_then(Arg::reference).unwrap_or(0))?
+            }
             other => {
                 self.report.warnings.push(format!(
                     "#{id}: curve kind {other} is not read yet; its edge is skipped"
