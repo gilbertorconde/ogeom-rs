@@ -406,12 +406,17 @@ pub(crate) fn inside_many(lines: &[&[Point2]], p: Point2) -> bool {
     inside
 }
 
-/// A point strictly inside the region the rings bound, by scanline.
+/// Points strictly inside the region the rings bound, by scanline.
 ///
 /// A horizontal line through the widest gap between distinct vertex heights
 /// cannot pass through a vertex or run along a horizontal segment, so its
 /// crossings are transversal and the midpoint of the first inside interval
 /// is interior with room to spare.
+///
+/// The rest are for the caller who has to ask again. They vary in *both*
+/// chart directions — other heights, and other positions along each — because
+/// a piece that merely touches the other solid touches it somewhere, and a
+/// second opinion taken from the same place is not one.
 fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
     let mut heights: Vec<f64> = rings.iter().flatten().map(|p| p.y).collect();
     heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
@@ -458,12 +463,49 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
             let width = pair[1] - pair[0];
             if width > snap {
                 candidates.push((width, Point2::new(f64::midpoint(pair[0], pair[1]), level)));
+                // And its quarter positions, ranked below the midpoint. Moving
+                // the scanline is not enough on its own: a piece symmetric
+                // about a chart-vertical line — a cylinder band, a revolved
+                // wall, a chart rectangle — has the same midpoint at every
+                // height, so a solid touching it along that line is met by
+                // every one of these "different" probes at once. The quarter
+                // heights above exist for the same reason in the other
+                // direction; this is that rule, applied to the width.
+                candidates.push((
+                    width * 0.5,
+                    Point2::new(width.mul_add(0.25, pair[0]), level),
+                ));
+                candidates.push((
+                    width * 0.5,
+                    Point2::new(width.mul_add(0.75, pair[0]), level),
+                ));
             }
         }
     }
     candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
-    candidates.truncate(5);
-    candidates.into_iter().map(|(_, p)| p).collect()
+
+    // Room first, but never room alone. Ranked purely by width, every scanline
+    // of a piece symmetric about a chart-vertical line offers its own midpoint
+    // before any of them offers a different position, so a caller asking nine
+    // times asks the same column nine times. Take the roomiest candidate at
+    // each distinct column first, then the rest in width order — which leaves
+    // the other columns at the front for a touch running down one, and the
+    // other heights right behind them for a touch running across.
+    let mut chosen: Vec<(f64, Point2)> = Vec::new();
+    let mut rest: Vec<(f64, Point2)> = Vec::new();
+    for candidate in candidates {
+        if chosen
+            .iter()
+            .any(|(_, p)| (p.x - candidate.1.x).abs() <= snap)
+        {
+            rest.push(candidate);
+        } else {
+            chosen.push(candidate);
+        }
+    }
+    chosen.extend(rest);
+    chosen.truncate(9);
+    chosen.into_iter().map(|(_, p)| p).collect()
 }
 
 #[cfg(test)]
@@ -530,6 +572,27 @@ mod tests {
         assert_eq!(pieces.len(), 1);
         assert_eq!(pieces[0].rings.len(), 1);
         assert_eq!(pieces[0].rings[0].len(), 4);
+    }
+
+    #[test]
+    fn a_rectangle_offers_probes_away_from_its_own_centre_line() {
+        // A piece symmetric about a chart-vertical line has the same midpoint
+        // at every height, so ranking probes by room alone offers one column
+        // over and over. A solid touching this piece down that column would
+        // meet every probe at once, and the classifier — which asks again
+        // precisely because the first answer was "on the boundary" — would
+        // have nowhere else to ask.
+        let pieces = assemble(&square(2.0), 1e-7).unwrap();
+        assert_eq!(pieces.len(), 1);
+
+        let columns = pieces[0].interiors.iter().map(|p| p.x);
+        let spread = columns.clone().fold(f64::NEG_INFINITY, f64::max)
+            - columns.fold(f64::INFINITY, f64::min);
+        assert!(
+            spread > 1e-6,
+            "every probe stands in the same column: {:?}",
+            pieces[0].interiors
+        );
     }
 
     #[test]

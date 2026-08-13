@@ -1048,9 +1048,65 @@ fn revolution_over_edge(
         return flat_revolution(model, rails, edge, &geometry, (lo, hi), turn, tol);
     }
 
-    let surface = model
-        .geometry_mut()
-        .add_surface(ogeom_geom::RevolutionSurface::new(geometry, turn.axis, turn.angle)?.into());
+    // A profile line *parallel* to the axis sweeps a cylinder, and naming it
+    // is worth as much here as naming the plane above. A revolution is a
+    // surface nothing has a closed form for: no intersection answers `Same`
+    // for one, so a revolved ring can never melt against the cylinder it is,
+    // and every plane meeting it has to be marched into a fitted curve where
+    // an exact ruling was available. Built on this frame the chart *is* the
+    // revolution's — `u` the turned angle from the profile's own meridian —
+    // so only `v` moves, from the curve's parameter to height along the axis,
+    // and it moves affinely.
+    let along = turn.axis.direction.vector();
+    let canonical = if let ogeom_geom::Curve::Line(line) = &geometry
+        && line.axis().direction.vector().dot(along).abs() >= 1.0 - tol.angular()
+    {
+        let foot = geometry.point_at(lo, tol)?;
+        let radius_vector = foot - turn.axis.project(foot);
+        ogeom_math::Direction::new(radius_vector, tol)
+            .ok()
+            .map(|radial| -> OgeomResult<_> {
+                let frame =
+                    ogeom_math::Frame::new(turn.axis.location, turn.axis.direction, radial, tol)?;
+                // The curve's parameter carried to height along the axis. The
+                // map is affine, so the two ends fix it, and every straight
+                // pcurve below stays straight under it.
+                let height = |t: f64| -> OgeomResult<f64> {
+                    Ok((geometry.point_at(t, tol)? - turn.axis.location).dot(along))
+                };
+                let (chart_lo, chart_hi) = (height(lo)?, height(hi)?);
+                let margin = (chart_hi - chart_lo).abs() * 0.1 + 1.0;
+                let surface = ogeom_geom::CylinderSurface::new(
+                    ogeom_math::Cylinder::new(frame, radius_vector.magnitude(), tol)?,
+                    (
+                        chart_lo.min(chart_hi) - margin,
+                        chart_lo.max(chart_hi) + margin,
+                    ),
+                )?;
+                Ok((
+                    ogeom_geom::SurfaceGeometry::from(surface),
+                    (chart_lo, chart_hi),
+                ))
+            })
+            .transpose()?
+    } else {
+        None
+    };
+
+    // Where the profile runs *against* the axis, the cylinder's `v` climbs as
+    // the curve's parameter falls, so its normal is the revolution's reversed.
+    // A rectangular profile has one such side and one of the other, so both
+    // occur in a single ring and the face's own flag has to absorb it.
+    let opposed = canonical
+        .as_ref()
+        .is_some_and(|(_, (chart_lo, chart_hi))| chart_hi < chart_lo);
+    let (lo, hi) = canonical.as_ref().map_or((lo, hi), |&(_, chart)| chart);
+    let surface = match canonical {
+        Some((exact, _)) => model.geometry_mut().add_surface(exact),
+        None => model.geometry_mut().add_surface(
+            ogeom_geom::RevolutionSurface::new(geometry, turn.axis, turn.angle)?.into(),
+        ),
+    };
 
     let reversed = edge.orientation() == Orientation::Reversed;
     let (v_start, v_end) = if reversed { (hi, lo) } else { (lo, hi) };
@@ -1128,7 +1184,15 @@ fn revolution_over_edge(
     // occurrence the wire walks forwards is the one that has to be reversed
     // here. It is not the surface that decides which side is material; it is
     // which way the profile's wire goes round.
-    let face = if reversed { built } else { built.reversed() };
+    //
+    // A cylinder's `v` climbs with the axis whichever way the profile ran, so
+    // where the two disagree the chart's normal is the revolution's reversed
+    // and this flag carries the difference.
+    let face = if reversed != opposed {
+        built
+    } else {
+        built.reversed()
+    };
     model.set_derived(&face, std::slice::from_ref(edge), roles::SWEEP_SIDE)?;
 
     let mut history = History::new();
@@ -2219,6 +2283,61 @@ mod tests {
             "{} against {exact}",
             mesh.volume()
         );
+    }
+
+    #[test]
+    fn a_wall_parallel_to_the_axis_names_the_cylinder_it_is() {
+        // A ring profile runs one side up the axis's direction and the other
+        // back down it, so both senses occur in a single wire — which is what
+        // makes the chart's normal disagree with the revolution's on exactly
+        // one of them, and the face's own flag carry the difference. If it did
+        // not, one wall would stand inside out and the volume would come back
+        // wrong or the shell would not close.
+        let (inner, outer, height) = (3.0_f64, 5.0_f64, 4.0_f64);
+        for flip in [false, true] {
+            let mut model = Model::new();
+            let mut corners = [
+                Point::new(inner, 0.0, 0.0),
+                Point::new(outer, 0.0, 0.0),
+                Point::new(outer, 0.0, height),
+                Point::new(inner, 0.0, height),
+            ];
+            if flip {
+                corners.reverse();
+            }
+            let profile = profile_from(&mut model, &corners);
+            let revolved = make_revolution(&mut model, &profile, Axis::Z, TAU, T).unwrap();
+
+            for face in explore_unique(&model, &revolved.shape, ShapeType::Face).unwrap() {
+                let NodeData::Face(data) = model.node(&face).unwrap().data() else {
+                    panic!("face data");
+                };
+                let surface = model.geometry().surface(data.surface).unwrap();
+                assert!(
+                    matches!(
+                        surface,
+                        ogeom_geom::SurfaceGeometry::Cylinder(_)
+                            | ogeom_geom::SurfaceGeometry::Plane(_)
+                    ),
+                    "flip {flip}: a ring's face is a {surface:?}, not the \
+                     cylinder or plane it is"
+                );
+            }
+
+            assert!(
+                crate::check(&model, &revolved.shape, T).unwrap().is_valid(),
+                "flip {flip}: {}",
+                crate::check(&model, &revolved.shape, T).unwrap()
+            );
+            let exact = std::f64::consts::PI * outer.mul_add(outer, -(inner * inner)) * height;
+            let measured = volume_properties(&model, &revolved.shape, deflection(0.005), T)
+                .unwrap()
+                .mass;
+            assert!(
+                (measured - exact).abs() < exact * 1e-3,
+                "flip {flip}: ring volume {measured} against {exact}"
+            );
+        }
     }
 
     #[test]
