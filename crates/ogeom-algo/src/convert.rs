@@ -178,7 +178,7 @@ fn rebuild(
                             else {
                                 ogeom_bail!(Construction, "vertex node holds no vertex data");
                             };
-                            map(edge_placement.apply(v.point))
+                            map(vertex.transform(model.datums())?.apply(v.point))
                         };
                         let new_vertex = new_vertices
                             .entry((vertex.node(), point_bits(at)))
@@ -432,7 +432,10 @@ fn convert_edge(
         let Some(data) = model.node(occurrence).and_then(|n| n.data().as_vertex()) else {
             ogeom_bail!(Construction, "vertex node holds no vertex data");
         };
-        let at = map(placement.apply(data.point));
+        // The vertex's *own* composed placement, not the edge's: a prism's
+        // far cap references the profile's vertex nodes under the travel,
+        // and an edge placed identically still ends on a moved vertex.
+        let at = map(occurrence.transform(model.datums())?.apply(data.point));
         Ok(vertices
             .entry((occurrence.node(), point_bits(at)))
             .or_insert_with(|| make_vertex(model, at).shape)

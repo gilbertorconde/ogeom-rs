@@ -51,6 +51,12 @@ pub fn apply_draft(
             "a draft of {angle} radians turns the face past its own plane"
         );
     }
+    let (canonical, mapped, prefix) = crate::shape::canonical_input(model, solid, faces, tol)?;
+    if let Some(prefix) = prefix {
+        let mut out = apply_draft(model, &canonical, &mapped, neutral, pull, angle, tol)?;
+        out.history = prefix.then(&out.history);
+        return Ok(out);
+    }
     if faces.is_empty() {
         ogeom_bail!(Construction, "a draft of no faces drafts nothing");
     }

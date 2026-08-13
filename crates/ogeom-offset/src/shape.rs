@@ -41,6 +41,58 @@ use std::collections::HashMap;
 /// The displacement constraint one face puts on a point of itself.
 type Displacement<'a> = dyn Fn(&Model, usize, Point) -> OgeomResult<Option<(Vector, f64)>> + 'a;
 
+/// Canonicalize a solid whose topology is *instanced*: the same node placed
+/// twice — a prism's far cap reusing the profile's nodes under the travel.
+///
+/// The rebuild below resolves everything by node, which is one name for two
+/// places on such a solid. Baking restates every occurrence as its own node
+/// in world coordinates, and the caller's face handles ride the bake's
+/// history. A solid whose nodes are each placed once passes through
+/// untouched.
+pub(crate) fn canonical_input(
+    model: &mut Model,
+    solid: &Shape,
+    handles: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<(Shape, Vec<Shape>, Option<ogeom_algo::History>)> {
+    let probe = Point::new(0.123_456_789, 9.87, -3.21);
+    let mut seen: HashMap<TShapeId, Point> = HashMap::new();
+    let mut instanced = false;
+    'outer: for kind in [ShapeType::Vertex, ShapeType::Edge] {
+        for occurrence in explore(model, solid, Filter::OfType(kind))? {
+            let at = occurrence.transform(model.datums())?.apply(probe);
+            match seen.entry(occurrence.node()) {
+                std::collections::hash_map::Entry::Occupied(held) => {
+                    if held.get().distance(at) > tol.confusion() {
+                        instanced = true;
+                        break 'outer;
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(at);
+                }
+            }
+        }
+    }
+    if !instanced {
+        return Ok((solid.clone(), handles.to_vec(), None));
+    }
+    let baked = ogeom_algo::baked_shape(model, solid, tol)?;
+    let mapped = handles
+        .iter()
+        .map(|h| match baked.history.trace(h) {
+            [one] => Ok(one.clone()),
+            traced => ogeom_bail!(
+                Construction,
+                "a face handle resolved to {} faces through the canonical \
+                 rebuild; the reference is ambiguous",
+                traced.len()
+            ),
+        })
+        .collect::<OgeomResult<Vec<Shape>>>()?;
+    Ok((baked.shape, mapped, Some(baked.history)))
+}
+
 /// Offset a solid by `offset`: positive grows it, negative shrinks it, and
 /// the topology is preserved one-for-one.
 ///
@@ -57,6 +109,12 @@ pub fn offset_shape(
 ) -> OgeomResult<Built> {
     if !offset.is_finite() || offset.abs() <= tol.confusion() {
         ogeom_bail!(Construction, "an offset of {offset} moves nothing");
+    }
+    let (canonical, _, prefix) = canonical_input(model, solid, &[], tol)?;
+    if let Some(prefix) = prefix {
+        let mut out = offset_shape(model, &canonical, offset, tol)?;
+        out.history = prefix.then(&out.history);
+        return Ok(out);
     }
     rebuilt(model, solid, &|_| offset, &|_| None, tol)
 }
@@ -90,6 +148,12 @@ pub fn make_thick_solid(
 ) -> OgeomResult<Built> {
     if !thickness.is_finite() || thickness <= tol.confusion() {
         ogeom_bail!(Construction, "a wall of {thickness} holds nothing");
+    }
+    let (canonical, mapped, prefix) = canonical_input(model, solid, removed, tol)?;
+    if let Some(prefix) = prefix {
+        let mut out = make_thick_solid(model, &canonical, &mapped, thickness, tol)?;
+        out.history = prefix.then(&out.history);
+        return Ok(out);
     }
     let own: Vec<TShapeId> = explore(model, solid, Filter::OfType(ShapeType::Face))?
         .iter()
@@ -776,7 +840,9 @@ pub(crate) fn rebuilt(
             let mut face_uses: HashMap<TShapeId, usize> = HashMap::new();
             for wire in explore(model, &prep.shape, Filter::OfType(ShapeType::Wire))? {
                 let mut edges: Vec<Shape> = Vec::new();
-                for used in explore(model, &wire, Filter::OfType(ShapeType::Edge))? {
+                // The wire's own order, not the walker's: a rebuilt wire is
+                // re-chained edge to edge, and the walk order is not a chain.
+                for used in model.ordered_children_of(&wire)? {
                     *face_uses.entry(used.node()).or_insert(0) += 1;
                     let Some(fresh) = new_edges.get(&used.node()) else {
                         ogeom_bail!(Construction, "a face edge was not rebuilt");
