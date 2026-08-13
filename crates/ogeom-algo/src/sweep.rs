@@ -881,7 +881,47 @@ fn revolution_over_face(
              volume; a face revolved within its own plane is not a solid"
         );
     }
-    let profile = if along < 0.0 {
+    // The sweep's material side follows the profile wire's own walk, so the
+    // walk is normalized to one hand — measured from the traversal itself,
+    // as the loop's area vector against the sweep tangent. The face's
+    // stated normal cannot answer this: it speaks the carrier's chart,
+    // and one loop reads as either hand depending on which way the chart
+    // was laid down.
+    let hand = {
+        let mut area = ogeom_math::Vector::ZERO;
+        let wires = model.ordered_children_of(face)?;
+        let Some(outer) = wires.first() else {
+            ogeom_bail!(Construction, "the profile has no boundary to revolve");
+        };
+        let mut walk: Vec<Point> = Vec::new();
+        for edge in model.ordered_children_of(outer)? {
+            let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+                ogeom_bail!(Construction, "a profile edge holds no data");
+            };
+            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+                ogeom_bail!(Construction, "a profile edge has no curve");
+            };
+            let Some(stored) = model.geometry().curve(*curve) else {
+                ogeom_bail!(Dangling, "curve is not in this model");
+            };
+            let placed = stored
+                .clone()
+                .transformed(&edge.transform(model.datums())?, tol)?;
+            let flipped = edge.orientation() == Orientation::Reversed;
+            for k in 0..8 {
+                let f = f64::from(k) / 8.0;
+                let f = if flipped { 1.0 - f } else { f };
+                let t = (range.1 - range.0).mul_add(f, range.0);
+                walk.push(placed.point_at(t, tol)?);
+            }
+        }
+        for k in 0..walk.len() {
+            let (a, b) = (walk[k], walk[(k + 1) % walk.len()]);
+            area += (a - point).cross(b - point);
+        }
+        area.dot(tangent)
+    };
+    let profile = if hand < 0.0 {
         face.reversed()
     } else {
         face.clone()

@@ -2157,6 +2157,22 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 .iter()
                 .filter(|c| c.target_from_a == from_a && c.target_face == fi)
                 .fold(PARAM_SNAP, |acc, c| acc.max(c.tolerance * 2.0));
+            if std::env::var("OGEOM_DEBUG_STRANDS").is_ok() {
+                for (si, st) in strands.iter().enumerate() {
+                    let tag = match st.tag {
+                        Tag::Boundary { edge, range } => format!("Boundary e{edge} {range:?}"),
+                        Tag::Contact { contact, range } => format!("Contact c{contact} {range:?}"),
+                        Tag::Section { section, range } => format!("Section s{section} {range:?}"),
+                        Tag::Pole { pole, range } => format!("Pole p{pole} {range:?}"),
+                    };
+                    let (a, b) = (st.polyline[0], st.polyline[st.polyline.len() - 1]);
+                    eprintln!(
+                        "STRAND from_a={from_a} fi={fi} {si}: boundary={} {tag} pts={} {a:?} .. {b:?}",
+                        st.boundary,
+                        st.polyline.len()
+                    );
+                }
+            }
             let split = arrange_pieces(&strands, face_snap)?;
             for piece in split {
                 // Where a piece stands is asked at its interior probes in
@@ -2286,6 +2302,26 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         }
     }
     mark_covered_coincidences(&ga, &mut pieces, tol);
+    if std::env::var("OGEOM_ARRANGE_DEBUG").is_ok() {
+        for (i, p) in pieces.iter().enumerate() {
+            let own = if p.from_a {
+                &ga.faces[p.face]
+            } else {
+                &gb.faces[p.face]
+            };
+            let kind = match &own.surface {
+                SurfaceGeometry::Plane(_) => "plane",
+                SurfaceGeometry::Cylinder(_) => "cyl",
+                SurfaceGeometry::Torus(_) => "torus",
+                SurfaceGeometry::BSpline(_) => "bspline",
+                _ => "other",
+            };
+            eprintln!(
+                "PIECE {i} from_a={} face={} {kind} state={:?} covered={} probe={:?}",
+                p.from_a, p.face, p.state, p.covered, p.probe
+            );
+        }
+    }
     ogeom_core::progress::stage("boolean: classified");
     Ok(GeneralFused {
         a: ga,
@@ -2634,6 +2670,44 @@ fn assemble_result(
     let sewn = sew(model, &faces, tol)?;
     for shell in &sewn.shells {
         if !is_shell_closed(model, shell)? {
+            // Env-gated forensics: the open shell's unshared edges, the
+            // question every failure here starts from.
+            if std::env::var("OGEOM_ARRANGE_DEBUG").is_ok() {
+                use ogeom_geom::Curve3d as _;
+                for edge in ogeom_topo::explore_unique(model, shell, ShapeType::Edge)? {
+                    let users = ogeom_topo::explore(model, shell, Filter::OfType(ShapeType::Face))?
+                        .iter()
+                        .filter(|f| {
+                            ogeom_topo::explore_unique(model, f, ShapeType::Edge)
+                                .map(|es| es.iter().any(|e2| e2.node() == edge.node()))
+                                .unwrap_or(false)
+                        })
+                        .count();
+                    let mut occurrences = 0_usize;
+                    for f in ogeom_topo::explore(model, shell, Filter::OfType(ShapeType::Face))? {
+                        for wire in model.children_of(&f)? {
+                            for e2 in model.children_of(&wire)? {
+                                if e2.node() == edge.node() {
+                                    occurrences += 1;
+                                }
+                            }
+                        }
+                    }
+                    if occurrences % 2 == 1
+                        && let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge())
+                        && let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) =
+                            data.curve3d()
+                        && let Some(g) = model.geometry().curve(*curve)
+                    {
+                        let a = g.point_at(range.0, tol)?;
+                        let b = g.point_at(range.1, tol)?;
+                        eprintln!(
+                            "  open edge uses={occurrences} faces={users} {:?} range={range:?}: {a:?} -> {b:?}",
+                            core::mem::discriminant(g)
+                        );
+                    }
+                }
+            }
             ogeom_bail!(
                 NotDone,
                 "the kept pieces did not close into a shell; the configuration \
