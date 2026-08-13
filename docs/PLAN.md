@@ -127,6 +127,72 @@ chosen, and still keep an open-ended list of configurations that defeat
 them. Nothing here changes that. What closed is five named configurations,
 each with a test that will say so if it reopens.
 
+> **A7 — four faults behind one family of refusals.** **Closed.** A
+> downstream front end brought four failures that all read as boolean gaps
+> and were not all boolean gaps. Each is now pinned:
+> `crates/ogeom/tests/mirrored.rs`,
+> `crates/ogeom/tests/boolean_contact.rs` and `crates/ogeom/tests/groove.rs`.
+>
+> The two that were never the boolean's. A *copy* applied every stored
+> placement and orientation twice — it recursed on occurrences that already
+> carried the parent's, stored those, and composed the parent's on again. A
+> doubled placement only misplaces; a doubled orientation takes a wire apart,
+> since reversing one reverses the walk as well as each edge and only the
+> second half of that survives a re-composition. A box cannot show it, having
+> nothing stored reversed or displaced; a prism can, its near cap being the
+> profile reversed and its far cap that same node moved. And
+> `general_transformed_shape` converted every surface to a B-spline for any
+> general transform, though a similarity is a placement and the kernel's own
+> types say which is which. The cost was not the conversion but the silence
+> after it: a restated plane is still that plane and no longer *says* so,
+> `surface_surface` has no closed form for a plane against a patch, and the
+> coincidence went unrecognized — so the marcher, which documents that it is
+> deliberately not a coincidence detector, was handed a coincident pair, and
+> a face lying on the other solid's boundary reached the classifier with no
+> partner to compare sides against. Both surfaced as boolean refusals two
+> stages downstream of themselves.
+>
+> The two that were. A revolved wall *parallel* to the turn's axis is a
+> cylinder, and `revolution_over_edge` named only the plane its perpendicular
+> case makes. A revolution is a surface nothing has a closed form for, so a
+> ring could never melt against the cylinder it is and every plane meeting it
+> was marched into a fitted curve where an exact ruling stood — which is what
+> left a groove cut through a block unable to close. It is named now, on a
+> frame whose chart is the revolution's own, so only `v` moves and it moves
+> affinely; a profile running against the axis puts the chart's normal
+> opposite the revolution's, and the face's flag carries that, which a
+> rectangular profile exercises in a single ring. The oblique line and the
+> meridian circle — the cone and the torus — are not named yet, and the cone
+> would want its apex emitted as a pole edge.
+>
+> Last, the interior probes a piece offers. They varied the scanline's
+> *height* and always took each interval's midpoint, so a piece symmetric
+> about a chart-vertical line — a cylinder band, a revolved wall, a chart
+> rectangle — offered the same column at every height, and a solid touching it
+> down that column met every probe at once. The probes now vary along the
+> scanline too, and are ranked so that a different column comes before a
+> further height: the roomiest candidate in each distinct column first, then
+> the rest by room. It is the same rule the quarter *heights* already stated,
+> applied to the width.
+>
+> One thing this pass corrected rather than closed: which coincident piece
+> stands in for which is decided by asking whether one piece's probe lies
+> inside another piece's outline, and that was asked with the test for
+> *strands*, which close only jointly. A piece's outline is a single ring that
+> does not repeat its first point, so the segment closing it went uncounted
+> and a point the ring plainly encloses came back outside whenever the ray
+> crossed exactly there. `common` then kept both descriptions of one disk
+> while `cut`, which never asks, closed — which is the shape the report had.
+>
+> **What remains, and what the refusal means.** A piece that lies on the other
+> solid's boundary with no coincident partner face whose trim accepts its probe
+> is still refused by name. What reaches it now is genuine edge or vertex
+> contact — contact confined to a line or a point, where there is no shared
+> *region* for a partner to be found in and the two normals it would compare do
+> not exist. The configurations above no longer reach it: each had a cause of
+> its own, and none was that case.
+
+
 ### B. Blending
 
 **B1 — the marching blend.** **Done.** `march_blend` solves the section's two
