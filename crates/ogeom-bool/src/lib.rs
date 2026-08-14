@@ -849,7 +849,19 @@ fn fill(
                     ..ogeom_intersect::Marching::default()
                 },
             };
-            let met = intersect_surfaces(&fa.surface, &fb.surface, options, tol)?;
+            // Coincidence is asked before the intersector is, but only where
+            // the closed forms have already declined the pair. The marcher
+            // documents that it is not the one to answer it — it seeds on
+            // sign changes, and a pair that never separates has none — so
+            // what it traces over a coincident pair is noise wearing a
+            // section's name, and it costs seconds to produce.
+            let met = if ogeom_intersect::surface_surface(&fa.surface, &fb.surface, tol).is_err()
+                && surfaces_coincide(&fa.surface, &fb.surface, options.tolerance, tol)
+            {
+                SurfaceIntersection::Same
+            } else {
+                intersect_surfaces(&fa.surface, &fb.surface, options, tol)?
+            };
             match met {
                 SurfaceIntersection::Apart => {}
                 SurfaceIntersection::Same => {
@@ -1687,6 +1699,77 @@ fn surfaces_stand_apart(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerance
         }
     }
     clearance > tol.confusion() * 1e3
+}
+
+/// Whether two surfaces are one surface wherever they overlap, measured.
+///
+/// The closed forms answer this for the pairs they know. Where there is no
+/// closed form it does not stop being a fair question — two patches restated
+/// from one plane are the same surface, and nothing in their control points
+/// says so — but it stops being answerable exactly, so it is measured here
+/// and only for the pairs the analytic layer has already declined.
+///
+/// Sampled on the *smaller* window, because the answer is about the region
+/// the two share and a stated window is not that region: a plane's own
+/// extends for a billion units either way, and a grid over it samples
+/// nothing. A sample whose foot lands on the rim of the other is skipped
+/// rather than counted against — the other patch simply does not reach that
+/// far, and a distance measured to its rim is about the window, not the
+/// surface.
+///
+/// One-sided by construction: a pair that crosses puts interior samples well
+/// off the other, so it cannot pass, and a pair this cannot resolve marches
+/// exactly as it did before.
+fn surfaces_coincide(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    reach: f64,
+    tol: Tolerances,
+) -> bool {
+    use ogeom_geom::Surface as _;
+    /// Samples per direction over the window, and how many must land inside
+    /// the other before agreement means anything.
+    const GRID: usize = 6;
+    const EVIDENCE: usize = 4;
+
+    let span = |s: &SurfaceGeometry| -> f64 {
+        let ((ua, ub), (va, vb)) = s.domain();
+        (ub - ua).abs().max((vb - va).abs())
+    };
+    let (sampled, against) = if span(a) <= span(b) { (a, b) } else { (b, a) };
+    let ((ua, ub), (va, vb)) = sampled.domain();
+    if !(ua.is_finite() && ub.is_finite() && va.is_finite() && vb.is_finite()) {
+        return false;
+    }
+    let ((wu0, wu1), (wv0, wv1)) = against.domain();
+    // A twentieth of the window in from each rim: enough that a foot the
+    // search pinned to the rim is not read as one the surface truly reaches.
+    let (mu, mv) = ((wu1 - wu0) * 0.05, (wv1 - wv0) * 0.05);
+
+    let mut evidence = 0_usize;
+    for i in 0..=GRID {
+        for j in 0..=GRID {
+            #[allow(clippy::cast_precision_loss)]
+            let u = ua + (ub - ua) * (i as f64 / GRID as f64);
+            #[allow(clippy::cast_precision_loss)]
+            let v = va + (vb - va) * (j as f64 / GRID as f64);
+            let Ok(p) = sampled.point_at(u, v, tol) else {
+                return false;
+            };
+            let Ok(foot) = ogeom_algo::project_on_surface(against, p, 16, tol) else {
+                return false;
+            };
+            let (fu, fv) = foot.parameters;
+            if fu <= wu0 + mu || fu >= wu1 - mu || fv <= wv0 + mv || fv >= wv1 - mv {
+                continue;
+            }
+            if foot.distance > reach {
+                return false;
+            }
+            evidence += 1;
+        }
+    }
+    evidence >= EVIDENCE
 }
 
 // --- the general fuse --------------------------------------------------------
@@ -3202,6 +3285,44 @@ mod tests {
 
     const T: Tolerances = Tolerances::millimetres();
     const PI: f64 = core::f64::consts::PI;
+
+    #[test]
+    fn coincidence_is_measured_over_the_overlap_and_nowhere_else() {
+        // Patches restated from planes: the geometry no longer says "plane",
+        // which is the whole reason this measurement exists.
+        let patch = |plane: ogeom_math::Plane, u: (f64, f64), v: (f64, f64)| {
+            let surface: SurfaceGeometry =
+                ogeom_geom::PlaneSurface::over(plane, u, v).unwrap().into();
+            SurfaceGeometry::from(surface.to_bspline(T).unwrap())
+        };
+        let reach = T.confusion() * 1e2;
+
+        // Two windows on one plane, overlapping over a quarter of each. They
+        // are the same surface exactly where they meet, which is the claim.
+        let here = patch(ogeom_math::Plane::XY, (0.0, 10.0), (0.0, 10.0));
+        let over = patch(ogeom_math::Plane::XY, (5.0, 15.0), (5.0, 15.0));
+        assert!(surfaces_coincide(&here, &over, reach, T));
+
+        // The same plane lifted clear of itself is not the same surface, and
+        // a plane square to it crosses rather than coincides — the case that
+        // must keep marching, since a crossing has a section to find.
+        let above = patch(
+            ogeom_math::Plane::new(
+                Frame::new(Point::new(0.0, 0.0, 1.0), Direction::Z, Direction::X, T).unwrap(),
+            ),
+            (0.0, 10.0),
+            (0.0, 10.0),
+        );
+        assert!(!surfaces_coincide(&here, &above, reach, T));
+        let across = patch(
+            ogeom_math::Plane::new(
+                Frame::new(Point::new(5.0, 0.0, 0.0), Direction::X, Direction::Y, T).unwrap(),
+            ),
+            (0.0, 10.0),
+            (0.0, 10.0),
+        );
+        assert!(!surfaces_coincide(&here, &across, reach, T));
+    }
 
     fn frame_at(origin: Point) -> Frame {
         Frame::new(origin, Direction::Z, Direction::X, T).unwrap()

@@ -530,3 +530,43 @@ fn a_cylinder_seated_on_the_face_it_pierces_shares_only_the_segment_between_them
         "cut volume {measured} against {expected}"
     );
 }
+
+/// A shear is the transform a placement cannot express, so the body is
+/// restated as patches — correctly; there is no other way to carry a box's
+/// planes under one. What the patches lose is the *word* plane, and
+/// coincidence is decided on what the geometry says: nothing answers `Same`
+/// for two patches, so the pair went to the marcher, which documents that it
+/// is not a coincidence detector and has no crossing to trace here. It came
+/// back with a section made of noise, and the boolean refused some stages
+/// later for edge or vertex contact, which this is not.
+#[test]
+fn a_sheared_copy_sharing_a_plane_is_refused_as_the_same_domain_contact_it_is() {
+    let mut model = Model::with_tolerances(T);
+    let a = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    // Unit determinant, so the copy keeps its volume, and slid clear along
+    // the z = 0 plane the two go on sharing.
+    let shear = ogeom::math::GeneralTransform {
+        linear: ogeom::math::Matrix3 {
+            rows: [[1.0, 0.5, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        },
+        translation: ogeom::math::Vector::new(5.0, 0.0, 0.0),
+    };
+    let b = ogeom::algo::general_transformed_shape(&mut model, &a, &shear, T)
+        .unwrap()
+        .shape;
+
+    let refused = ogeom::boolean::fuse(&mut model, &a, &b, T)
+        .expect_err("a same-domain pair with no closed-form pcurve is not resolved yet");
+
+    let said = refused.to_string();
+    assert!(
+        said.contains("same-domain contact"),
+        "refused as something else: {said}"
+    );
+    assert!(
+        !said.contains("edge or vertex contact"),
+        "still refusing by the name of a different configuration: {said}"
+    );
+}

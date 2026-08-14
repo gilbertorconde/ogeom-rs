@@ -162,8 +162,13 @@ each with a test that will say so if it reopens.
 > affinely; a profile running against the axis puts the chart's normal
 > opposite the revolution's, and the face's flag carries that, which a
 > rectangular profile exercises in a single ring. The oblique line and the
-> meridian circle — the cone and the torus — are not named yet, and the cone
-> would want its apex emitted as a pole edge.
+> meridian circle are named the same way — a cone measured from where the
+> profile's own low end stands, so its reference radius is one the profile
+> states, with its window stopped at the apex because past it the radius
+> comes back negative and that is the *other* nappe; and a torus whose `v` is
+> the angle round the tube, which the circle's own parameter gives up to a
+> turn and a sign. A revolved cone and a revolved torus now stand on the same
+> surfaces the primitives build them from, and say so.
 >
 > Last, the interior probes a piece offers. They varied the scanline's
 > *height* and always took each interval's midpoint, so a piece symmetric
@@ -184,21 +189,44 @@ each with a test that will say so if it reopens.
 > crossed exactly there. `common` then kept both descriptions of one disk
 > while `cut`, which never asks, closed — which is the shape the report had.
 >
+> **Coincidence where there is no closed form.** A sheared copy sharing a
+> plane with its original used to reach the same refusal, and it is not that
+> case at all: the surfaces are B-splines by necessity rather than by
+> oversight, nothing answers `Same` for two patches, and the marcher — which
+> documents that it is not a coincidence detector, and has no crossing to
+> trace over a coincident pair — was handed it anyway. It came back with a
+> section made of noise, and the boolean refused for edge or vertex contact
+> some seconds later.
+>
+> Coincidence is now measured, but only for the pairs the closed forms have
+> already declined, and only over the region the two actually share: sampled
+> on the smaller window, since a plane's own runs for a billion units and a
+> grid over it samples nothing, and a sample whose foot lands on the rim of
+> the other is skipped rather than counted against, because a distance
+> measured to a rim is about the window and not about the surface. The
+> failure is one-sided — a pair that crosses puts interior samples well off
+> the other, so it cannot pass, and a pair this cannot resolve marches as it
+> did. What comes back for the sheared copy is the refusal the filler already
+> had written for it, in a few hundred microseconds rather than forty seconds.
+>
+> Resolving that case, rather than refusing it, wants a same-domain contact
+> whose edges project into a *fitted* chart, which is the pcurve-fitting
+> question and not this one.
+>
 > **What remains, and what the refusal means.** A piece that lies on the other
 > solid's boundary with no coincident partner face whose trim accepts its probe
-> is still refused by name, and the four configurations above no longer reach
-> it: each had a cause of its own, and none was that case. Two things do reach
-> it. The one the text describes — genuine edge or vertex contact, confined to
-> a line or a point, where there is no shared *region* for a partner to be
-> found in and the two normals it would compare do not exist. And one it
-> describes wrongly: a same-domain pair that is genuinely *not* analytic, a
-> sheared copy sharing a plane with its original, where the surfaces are
-> B-splines by necessity rather than by oversight and no closed form answers
-> `Same` for them. That is the marcher being handed a coincident pair it says
-> it must never be handed, and it reports as edge contact something that is
-> nothing of the kind, after some seconds of marching. It wants a coincidence
-> gate ahead of the marched fallback so the honest same-domain refusal already
-> written in the filler is what comes back.
+> is still refused by name, and what reaches it now is the configuration the
+> text describes: genuine edge or vertex contact, confined to a line or a
+> point, where there is no shared *region* for a partner to be found in and the
+> two normals it would compare do not exist.
+>
+> One thing sits in the wrong crate and is worth saying so. The measurement
+> above belongs to the intersector, which owns `Same` — but the projection it
+> needs lives in `ogeom-algo`, which depends on the intersector rather than
+> the other way about, so it is done in the boolean, next to the apartness
+> test it mirrors. Moving `project_on_surface` down into `ogeom-geom` would
+> let the intersector answer for itself, and every caller of
+> `intersect_surfaces` would get the same benefit instead of only this one.
 
 
 ### B. Blending
