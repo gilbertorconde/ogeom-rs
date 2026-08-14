@@ -46,8 +46,8 @@ pub use length::{curve_length, parameter_at_length, points_by_count, points_by_s
 pub use mass::{MassProperties, linear_properties, surface_properties, volume_properties};
 pub use measure::{
     Obb, Projection, SurfaceProjection, curve_bounds, face_normal, oriented_bounds,
-    project_on_curve, project_on_planar_curve, project_on_surface, relative_deflection,
-    shape_bounds, surface_bounds, vertex_bounds, widened_to_hold,
+    project_on_curve, project_on_planar_curve, project_on_surface, project_on_surface_from,
+    relative_deflection, shape_bounds, surface_bounds, vertex_bounds, widened_to_hold,
 };
 pub use medial::{MedialAxis, medial_axis};
 pub use place::{copied, transformed};

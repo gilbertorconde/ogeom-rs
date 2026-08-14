@@ -782,6 +782,50 @@ pub fn project_on_surface(
         }
     }
 
+    refine_foot(surface, target, (best.0, best.1), tol)
+}
+
+/// The nearest point on a surface to `target`, starting from a guess.
+///
+/// [`project_on_surface`] brackets with a grid before refining. A caller
+/// walking *along* something — the samples of a curve being projected into a
+/// chart — already has a far better guess than any grid: where the previous
+/// sample landed. Neighbouring samples of a curve are neighbouring points of
+/// the surface, so the refinement starts inside the right basin and converges
+/// in a few steps, and the grid's hundreds of evaluations per sample are not
+/// spent at all.
+///
+/// The guess is load-bearing: this converges on the foot point nearest it, not
+/// on the globally nearest one. A caller that cannot vouch for its guess
+/// should check the reported distance and fall back to
+/// [`project_on_surface`], which is what the exchange readers do.
+///
+/// # Errors
+///
+/// As [`project_on_surface`].
+pub fn project_on_surface_from(
+    surface: &SurfaceGeometry,
+    target: Point,
+    guess: (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<SurfaceProjection> {
+    refine_foot(surface, target, guess, tol)
+}
+
+/// Newton on the foot-point conditions from a starting parameter pair.
+fn refine_foot(
+    surface: &SurfaceGeometry,
+    target: Point,
+    start: (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<SurfaceProjection> {
+    let best = (
+        start.0,
+        start.1,
+        surface
+            .point_at(start.0, start.1, tol)
+            .map_or(f64::INFINITY, |p| p.square_distance(target)),
+    );
     // The foot point conditions: (S - target) . Su = 0 and (S - target) . Sv = 0.
     let residual = |x: &[f64]| {
         let (u, v) = (x[0], x[1]);
@@ -987,6 +1031,57 @@ mod tests {
     use ogeom_math::{Circle, Cylinder, Direction, Frame, KnotVector, Plane, Sphere, Torus};
 
     const T: Tolerances = Tolerances::millimetres();
+
+    #[test]
+    fn a_guessed_foot_lands_where_the_grid_lands() {
+        // The warm start is only sound where the guess is already in the right
+        // basin, which is the case it exists for: walking along a curve, each
+        // sample near the last. Held to the grid's own answer along such a
+        // walk, over a curved surface where the two could disagree.
+        let sphere = SurfaceGeometry::Sphere(SphereSurface::new(
+            Sphere::new(Frame::WORLD, 5.0, T).unwrap(),
+        ));
+        let mut guess = (0.4, 0.1);
+        for i in 0..40 {
+            let t = f64::from(i) * 0.04;
+            // A path across the chart, lifted onto the sphere and nudged off
+            // it, so the projection has real work to do.
+            let (u, v) = (0.4 + t, 0.1 + t * 0.5);
+            let on = sphere.point_at(u, v, T).unwrap();
+            let target = on + (on - Point::ORIGIN) * 0.01;
+
+            let gridded = project_on_surface(&sphere, target, 24, T).unwrap();
+            let guessed = project_on_surface_from(&sphere, target, guess, T).unwrap();
+
+            assert!(
+                guessed.distance <= gridded.distance + T.confusion(),
+                "step {i}: the guessed foot is farther than the gridded one"
+            );
+            assert!(
+                guessed.point.distance(gridded.point) < 1e-6,
+                "step {i}: the two feet are different points"
+            );
+            guess = guessed.parameters;
+        }
+    }
+
+    #[test]
+    fn a_guess_in_the_wrong_basin_reports_its_distance_honestly() {
+        // The other half of the contract: a bad guess is not silently wrong,
+        // it comes back with a distance the caller can reject on — which is
+        // exactly what the exchange readers do before keeping it.
+        let cylinder = SurfaceGeometry::Cylinder(
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, 2.0, T).unwrap(), (-5.0, 5.0))
+                .unwrap(),
+        );
+        let target = Point::new(2.0, 0.0, 1.0);
+        let opposite =
+            project_on_surface_from(&cylinder, target, (core::f64::consts::PI, 1.0), T).unwrap();
+        assert!(
+            opposite.distance > 1.0 || opposite.point.distance(target) < 1e-6,
+            "a guess on the far side either finds the point or says how far it is"
+        );
+    }
 
     /// A curve sampled densely — the ground truth a bound must contain.
     fn dense_points(curve: &Curve, n: usize) -> Vec<Point> {

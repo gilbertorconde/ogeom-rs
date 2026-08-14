@@ -1,12 +1,12 @@
 {
-  "construct_boxes": 0.2961,
-  "traverse_box": 0.3734,
-  "tessellate_torus": 0.0460,
-  "boolean_drill": 0.2643,
-  "boolean_many_faces": 3.9630,
-  "boolean_marched": 0.6403,
+  "construct_boxes": 0.2813,
+  "traverse_box": 0.3556,
+  "tessellate_torus": 0.0437,
+  "boolean_drill": 0.2558,
+  "boolean_many_faces": 4.0022,
+  "boolean_marched": 0.7506,
   "fillet_block": 0.5407,
-  "tessellate_part": 4.8151,
+  "tessellate_part": 5.6493,
   "import_ftc11": 0.0022,
-  "import_ctc02": 18.0275
+  "import_ctc02": 4.3454
 }

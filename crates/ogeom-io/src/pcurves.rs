@@ -81,20 +81,37 @@ pub(crate) fn fit_projected_pcurve(
                 (uv, p.distance(lifted))
             }
             None => {
-                let mut projection = ogeom_algo::project_on_surface(surface, p, 24, tol)?;
-                if projection.distance > tol.confusion() * 1e5 {
-                    // A miss this large on a spline surface is more often
-                    // a projection stuck in the wrong basin than real
-                    // slop; seed denser before believing it.
-                    let denser = ogeom_algo::project_on_surface(surface, p, 96, tol)?;
-                    if denser.distance < projection.distance {
-                        projection = denser;
+                // Where the previous sample landed is a far better starting
+                // guess than any grid: consecutive samples of a curve are
+                // neighbouring points of the surface. Trusted only when it
+                // lands convincingly *on* the surface — the same bar the
+                // denser reseed below is judged against — so a guess that
+                // wandered into the wrong basin, or the first sample, which
+                // has no predecessor, still pays for the grid.
+                let near = previous.and_then(|(_, luv)| {
+                    ogeom_algo::project_on_surface_from(surface, p, (luv.x, luv.y), tol).ok()
+                });
+                if let Some(close) = near.filter(|f| f.distance <= tol.confusion() * 1e5) {
+                    (
+                        ogeom_math::Point2::new(close.parameters.0, close.parameters.1),
+                        close.distance,
+                    )
+                } else {
+                    let mut projection = ogeom_algo::project_on_surface(surface, p, 24, tol)?;
+                    if projection.distance > tol.confusion() * 1e5 {
+                        // A miss this large on a spline surface is more often
+                        // a projection stuck in the wrong basin than real
+                        // slop; seed denser before believing it.
+                        let denser = ogeom_algo::project_on_surface(surface, p, 96, tol)?;
+                        if denser.distance < projection.distance {
+                            projection = denser;
+                        }
                     }
+                    (
+                        ogeom_math::Point2::new(projection.parameters.0, projection.parameters.1),
+                        projection.distance,
+                    )
                 }
-                (
-                    ogeom_math::Point2::new(projection.parameters.0, projection.parameters.1),
-                    projection.distance,
-                )
             }
         };
         // The cap separates a file's own slop — routinely a micron or
