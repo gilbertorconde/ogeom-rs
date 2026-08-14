@@ -42,8 +42,8 @@ mod defeature;
 pub use defeature::remove_faces;
 
 use ogeom_algo::{
-    Built, Containment, History, classify_in_solid_exact, is_shell_closed, make_edge_between,
-    make_face_on, make_vertex, make_wire, sew, shape_bounds,
+    Built, Containment, History, is_shell_closed, make_edge_between, make_face_on, make_vertex,
+    make_wire, sew, shape_bounds,
 };
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve2d as _;
@@ -2028,6 +2028,12 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     ogeom_core::progress::stage("boolean: split");
     let mut pieces: Vec<FacePiece> = Vec::new();
     for (from_a, own, other) in [(true, &ga, &gb.solid), (false, &gb, &ga.solid)] {
+        // The other solid's boundary, prepared once for the whole side. It is
+        // asked once per face piece, and what it costs to prepare — every
+        // face's trimming rings, polylined — does not depend on the point
+        // being asked about. Rebuilt per question it dwarfed the question:
+        // 3.5 ms of preparation against 5.6 µs of ray casting.
+        let boundary = ogeom_algo::SolidBoundary::of(model, other, tol.confusion() * 1e4, tol)?;
         for (fi, face) in own.faces.iter().enumerate() {
             ogeom_core::progress::checkpoint()?;
             let mut strands: Vec<Strand<Tag>> = Vec::new();
@@ -2297,7 +2303,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     let says = if shared {
                         Containment::On
                     } else {
-                        classify_in_solid_exact(model, other, at, tol)?
+                        boundary.holds(model, at, tol)?
                     };
                     if chosen.is_none() || !matches!(says, Containment::On) {
                         chosen = Some((*candidate, at, says));

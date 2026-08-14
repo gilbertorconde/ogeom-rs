@@ -36,8 +36,8 @@ pub use build::{
 };
 pub use check::{Diagnosis, Problem, Severity, check, check_self_intersection, check_tessellation};
 pub use classify::{
-    Containment, classify_in_solid, classify_in_solid_exact, classify_in_solid_exact_banded,
-    classify_on_face,
+    Containment, SolidBoundary, classify_in_solid, classify_in_solid_exact,
+    classify_in_solid_exact_banded, classify_on_face,
 };
 pub use convert::{baked_shape, general_transformed_shape, to_nurbs};
 pub use fit::{Spacing, approximate, approximate_within, interpolate};
