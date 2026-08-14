@@ -91,16 +91,32 @@ pub fn copied(model: &mut Model, shape: &Shape) -> OgeomResult<Built> {
 
     let mut done: HashMap<TShapeId, Shape> = HashMap::new();
     let mut history = History::new();
-    let root = duplicate(model, shape, &mut done, &mut history)?;
+    let bare = duplicate(model, shape, &mut done, &mut history)?;
+    // The root's own placement and orientation, applied here and nowhere else.
+    let root = bare.moved(shape.location()).composed(shape.orientation());
     Ok(Built::new(root, history))
 }
 
-/// Copy one node and everything below it, memoized.
+/// Copy one node and everything below it, memoized. Returns the *bare* copy —
+/// the new node at identity, forward — never the occurrence it was reached by.
 ///
 /// The memo is not an optimization. A shared edge appears under two faces, and
 /// copying it twice would give the copy two edges where the original had one —
 /// the shell would then be open along every shared boundary, and nothing about
 /// the geometry would say why.
+///
+/// The recursion is keyed by *node*, and each level copies its children from
+/// what the node **stores**, not from what [`Model::children_of`] returns.
+/// That accessor composes the parent's placement and orientation onto each
+/// child, which is right for traversal and wrong for copying: storing the
+/// composed occurrence and then returning it composed again applies the
+/// parent's transform twice. A doubled placement merely puts the copy in the
+/// wrong place, but a doubled orientation takes a wire apart — reversing a
+/// wire is *reverse the order and flip every sense*, and `children_of` carries
+/// only the sense half, so the second application flips the senses back while
+/// the order stays put and consecutive edges stop meeting. A parent's
+/// `(location, orientation)` is applied exactly once: by whoever stores the
+/// occurrence, or by [`copied`] at the root.
 fn duplicate(
     model: &mut Model,
     shape: &Shape,
@@ -108,9 +124,7 @@ fn duplicate(
     history: &mut History,
 ) -> OgeomResult<Shape> {
     if let Some(existing) = done.get(&shape.node()) {
-        return Ok(existing
-            .moved(shape.location())
-            .composed(shape.orientation()));
+        return Ok(existing.clone());
     }
 
     let Some(node) = model.node(shape) else {
@@ -118,12 +132,26 @@ fn duplicate(
     };
     let kind = node.kind();
     let data = node.data().clone();
+    let stored = node.children().to_vec();
 
     // Children first: a node is built from the shapes below it, so they have to
     // exist before it does.
     let mut children = Vec::new();
-    for child in model.children_of(shape)? {
-        children.push(duplicate(model, &child, done, history)?);
+    for raw in &stored {
+        // History and provenance are keyed by where the child stands in the
+        // world, which is the occurrence `children_of` would have handed back.
+        let world = raw.moved(shape.location()).composed(shape.orientation());
+        let bare = duplicate(model, &world, done, history)?;
+        // The copied child stands where the original's stored entry said, with
+        // that entry's own placement and sense carried over verbatim.
+        // `Shape::new` rather than `moved`/`composed` because composition
+        // absorbs `Internal` and `External`, and a copy must not quietly
+        // convert them into a plain reversal.
+        children.push(Shape::new(
+            bare.node(),
+            raw.location().clone(),
+            raw.orientation(),
+        ));
     }
 
     let fresh = match (kind, data) {
@@ -149,7 +177,7 @@ fn duplicate(
     history.modify(shape, bare.clone());
     done.insert(shape.node(), bare.clone());
 
-    Ok(bare.moved(shape.location()).composed(shape.orientation()))
+    Ok(bare)
 }
 
 #[cfg(test)]
@@ -293,6 +321,83 @@ mod tests {
             );
         }
         assert!(check(&model, &copy, T).unwrap().is_valid());
+    }
+
+    #[test]
+    fn a_copy_of_a_prism_with_instanced_caps_is_still_a_closed_solid() {
+        // A box is the easy case: every occurrence it stores is forward and at
+        // identity, so copying it cannot tell whether a parent's placement is
+        // being applied once or twice. A prism can — its near cap is the
+        // profile *reversed* and its far cap is that same node at a
+        // displacement — and a wire is where a doubled orientation shows,
+        // because reversing one reverses the walk as well as each edge.
+        let mut model = Model::new();
+        let solid = prism_of_a_square(&mut model);
+
+        let copy = copied(&mut model, &solid).unwrap().shape;
+
+        let diagnosis = check(&model, &copy, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let props = volume_properties(&model, &copy, deflection(), T).unwrap();
+        assert_relative_eq!(props.mass, 500.0, epsilon = 1e-9);
+
+        // And the instancing survived: one cap node used twice, not two.
+        for kind in [
+            ShapeType::Face,
+            ShapeType::Edge,
+            ShapeType::Vertex,
+            ShapeType::Wire,
+        ] {
+            assert_eq!(
+                explore_unique(&model, &copy, kind).unwrap().len(),
+                explore_unique(&model, &solid, kind).unwrap().len(),
+                "the copy has a different number of {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_copy_of_a_prism_bakes_cleanly() {
+        // The bake walks every wire in traversal order and rebuilds it, so it
+        // is the shortest path to the question "do this copy's edges still
+        // meet?" — and it is the path a mirrored operand takes into the
+        // boolean, where this last went wrong.
+        let mut model = Model::new();
+        let solid = prism_of_a_square(&mut model);
+        let copy = copied(&mut model, &solid).unwrap().shape;
+
+        let baked = crate::convert::baked_shape(&mut model, &copy, T)
+            .unwrap()
+            .shape;
+
+        let diagnosis = check(&model, &baked, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let props = volume_properties(&model, &baked, deflection(), T).unwrap();
+        assert_relative_eq!(props.mass, 500.0, epsilon = 1e-6);
+    }
+
+    /// A 10×10×5 prism built the way a pad is: a profile face, swept.
+    fn prism_of_a_square(model: &mut Model) -> Shape {
+        use crate::build::{make_face_with_pcurves, make_polygon};
+        use crate::sweep::make_prism;
+        use ogeom_geom::{PlaneSurface, SurfaceGeometry};
+        use ogeom_math::Plane;
+
+        let pts = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(10.0, 10.0, 0.0),
+            Point::new(0.0, 10.0, 0.0),
+        ];
+        let wire = make_polygon(model, &pts, true, T).unwrap().shape;
+        let surface = PlaneSurface::over(Plane::XY, (-1.0, 11.0), (-1.0, 11.0)).unwrap();
+        let edges = model.children_of(&wire).unwrap();
+        let face = make_face_with_pcurves(model, SurfaceGeometry::Plane(surface), &[edges], T)
+            .unwrap()
+            .shape;
+        make_prism(model, &face, Vector::new(0.0, 0.0, 5.0), T)
+            .unwrap()
+            .shape
     }
 
     #[test]
