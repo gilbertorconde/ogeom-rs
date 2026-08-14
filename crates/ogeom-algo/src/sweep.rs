@@ -1048,55 +1048,12 @@ fn revolution_over_edge(
         return flat_revolution(model, rails, edge, &geometry, (lo, hi), turn, tol);
     }
 
-    // A profile line *parallel* to the axis sweeps a cylinder, and naming it
-    // is worth as much here as naming the plane above. A revolution is a
-    // surface nothing has a closed form for: no intersection answers `Same`
-    // for one, so a revolved ring can never melt against the cylinder it is,
-    // and every plane meeting it has to be marched into a fitted curve where
-    // an exact ruling was available. Built on this frame the chart *is* the
-    // revolution's — `u` the turned angle from the profile's own meridian —
-    // so only `v` moves, from the curve's parameter to height along the axis,
-    // and it moves affinely.
-    let along = turn.axis.direction.vector();
-    let canonical = if let ogeom_geom::Curve::Line(line) = &geometry
-        && line.axis().direction.vector().dot(along).abs() >= 1.0 - tol.angular()
-    {
-        let foot = geometry.point_at(lo, tol)?;
-        let radius_vector = foot - turn.axis.project(foot);
-        ogeom_math::Direction::new(radius_vector, tol)
-            .ok()
-            .map(|radial| -> OgeomResult<_> {
-                let frame =
-                    ogeom_math::Frame::new(turn.axis.location, turn.axis.direction, radial, tol)?;
-                // The curve's parameter carried to height along the axis. The
-                // map is affine, so the two ends fix it, and every straight
-                // pcurve below stays straight under it.
-                let height = |t: f64| -> OgeomResult<f64> {
-                    Ok((geometry.point_at(t, tol)? - turn.axis.location).dot(along))
-                };
-                let (chart_lo, chart_hi) = (height(lo)?, height(hi)?);
-                let margin = (chart_hi - chart_lo).abs() * 0.1 + 1.0;
-                let surface = ogeom_geom::CylinderSurface::new(
-                    ogeom_math::Cylinder::new(frame, radius_vector.magnitude(), tol)?,
-                    (
-                        chart_lo.min(chart_hi) - margin,
-                        chart_lo.max(chart_hi) + margin,
-                    ),
-                )?;
-                Ok((
-                    ogeom_geom::SurfaceGeometry::from(surface),
-                    (chart_lo, chart_hi),
-                ))
-            })
-            .transpose()?
-    } else {
-        None
-    };
+    let canonical = canonical_revolution(&geometry, (lo, hi), turn, tol)?;
 
-    // Where the profile runs *against* the axis, the cylinder's `v` climbs as
-    // the curve's parameter falls, so its normal is the revolution's reversed.
-    // A rectangular profile has one such side and one of the other, so both
-    // occur in a single ring and the face's own flag has to absorb it.
+    // Where the profile runs *against* the chart's own `v`, the canonical
+    // surface's normal is the revolution's reversed. A rectangular profile has
+    // one such side and one of the other, so both occur in a single ring and
+    // the face's own flag has to absorb it.
     let opposed = canonical
         .as_ref()
         .is_some_and(|(_, (chart_lo, chart_hi))| chart_hi < chart_lo);
@@ -1205,6 +1162,131 @@ fn revolution_over_edge(
         history.generate(edge, displaced);
     }
     Ok((Some(face), history))
+}
+
+/// The surface a profile sweeps, named where the vocabulary has a name for
+/// it, with the profile's range carried into that surface's own `v`.
+///
+/// Worth the trouble because a revolution is a surface nothing has a closed
+/// form for: no intersection answers `Same` for one, so a revolved body can
+/// never melt against the cylinder or cone or torus it *is*, and every
+/// surface meeting it has to be marched into a fitted curve where an exact
+/// section was available.
+///
+/// Each frame below is built so the chart *is* the revolution's — `u` stays
+/// the angle turned from the profile's own meridian — so only `v` moves, and
+/// it moves affinely, which is what lets the straight pcurves the caller
+/// writes stay straight. The returned pair is the profile's own `(lo, hi)`
+/// read in that `v`; `hi < lo` says the profile runs against the chart, which
+/// the caller folds into the face's orientation.
+///
+/// A profile perpendicular to the axis is not here: it sweeps a plane, and
+/// [`flat_revolution`] owns that case because it builds a different face.
+fn canonical_revolution(
+    geometry: &ogeom_geom::Curve,
+    (lo, hi): (f64, f64),
+    turn: &Turn,
+    tol: Tolerances,
+) -> OgeomResult<Option<(ogeom_geom::SurfaceGeometry, (f64, f64))>> {
+    let axis = turn.axis;
+    let along = axis.direction.vector();
+    let radius_of = |p: Point| p - axis.project(p);
+    match geometry {
+        // A straight profile sweeps a cylinder where it runs parallel to the
+        // axis and a cone where it leans. Both carry `v` to height along the
+        // axis, and the lean is the only difference between them.
+        ogeom_geom::Curve::Line(_) => {
+            let (p_lo, p_hi) = (geometry.point_at(lo, tol)?, geometry.point_at(hi, tol)?);
+            let (h_lo, h_hi) = (
+                (p_lo - axis.location).dot(along),
+                (p_hi - axis.location).dot(along),
+            );
+            let rise = h_hi - h_lo;
+            if rise.abs() <= tol.confusion() {
+                return Ok(None);
+            }
+            let (r_lo, r_hi) = (radius_of(p_lo).magnitude(), radius_of(p_hi).magnitude());
+            // The radial direction is the profile's own meridian, taken from
+            // whichever end stands off the axis: a cone's apex end has none.
+            let stem = if r_lo > r_hi { p_lo } else { p_hi };
+            let Ok(radial) = Direction::new(radius_of(stem), tol) else {
+                return Ok(None);
+            };
+            let slope = (r_hi - r_lo) / rise;
+            if slope.abs() <= tol.angular() {
+                let frame = Frame::new(axis.location, axis.direction, radial, tol)?;
+                let margin = rise.abs() * 0.1 + 1.0;
+                let surface = ogeom_geom::CylinderSurface::new(
+                    ogeom_math::Cylinder::new(frame, r_lo, tol)?,
+                    (h_lo.min(h_hi) - margin, h_lo.max(h_hi) + margin),
+                )?;
+                return Ok(Some((surface.into(), (h_lo, h_hi))));
+            }
+            // The cone is measured from where the profile's own low end
+            // stands, so its reference radius is one the profile states and
+            // cannot come out negative.
+            let base = axis.project(p_lo);
+            let frame = Frame::new(base, axis.direction, radial, tol)?;
+            let cone = ogeom_math::Cone::new(frame, r_lo, slope.atan(), tol)?;
+            let (v_lo, v_hi) = (0.0_f64, rise);
+            let margin = rise.abs() * 0.1 + 1.0;
+            // The window stops at the apex. Past it the radius would come back
+            // negative, which is the *other* nappe — a second surface wearing
+            // this one's name, and nothing downstream expects to meet it.
+            let apex = -r_lo / slope;
+            let (mut low, mut high) = (v_lo.min(v_hi) - margin, v_lo.max(v_hi) + margin);
+            if slope > 0.0 {
+                low = low.max(apex);
+            } else {
+                high = high.min(apex);
+            }
+            let surface = ogeom_geom::ConeSurface::new(cone, (low, high))?;
+            Ok(Some((surface.into(), (v_lo, v_hi))))
+        }
+        // A circle in a meridian plane sweeps a torus, whose `v` is the angle
+        // round the tube. The circle's own parameter is an angle too, so the
+        // two differ by a turn and possibly a sign — affine either way.
+        ogeom_geom::Curve::Circle(c) => {
+            let circle = c.circle();
+            let (centre, normal) = (circle.frame().origin(), circle.frame().z().vector());
+            let offset = radius_of(centre);
+            let (major, minor) = (offset.magnitude(), circle.radius());
+            // The circle's plane must contain the axis — its normal square to
+            // the axis and to the offset — or the sweep is no torus. A tube
+            // that reaches its own axis is a spindle, which this vocabulary
+            // does not name and the revolution still describes.
+            if normal.dot(along).abs() > tol.angular()
+                || normal.dot(offset).abs() > tol.confusion()
+                || major <= minor + tol.confusion()
+            {
+                return Ok(None);
+            }
+            let Ok(radial) = Direction::new(offset, tol) else {
+                return Ok(None);
+            };
+            let frame = Frame::new(axis.project(centre), axis.direction, radial, tol)?;
+            let torus = ogeom_math::Torus::new(frame, major, minor, tol)?;
+
+            // Where the profile's parameter stands round the tube, and which
+            // way it runs: `v = atan2(z, radial)` about the tube's centre, so
+            // the sense is the sign of that angle's derivative.
+            let (at, tangent) = (geometry.point_at(lo, tol)?, geometry.d1_at(lo, tol)?);
+            let spoke = at - centre;
+            let (a, b) = (spoke.dot(radial.vector()), spoke.dot(along));
+            let (da, db) = (tangent.dot(radial.vector()), tangent.dot(along));
+            let v_lo = b.atan2(a);
+            let sense = a.mul_add(db, -(b * da));
+            if sense.abs() <= tol.confusion() {
+                return Ok(None);
+            }
+            let v_hi = (hi - lo).copysign(sense) + v_lo;
+            Ok(Some((
+                ogeom_geom::TorusSurface::new(torus).into(),
+                (v_lo, v_hi),
+            )))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// The planar face a radial profile line sweeps: a disc, an annulus or a
@@ -1678,6 +1760,7 @@ mod tests {
     use crate::build::is_shell_closed;
     use crate::mass::volume_properties;
     use approx::assert_relative_eq;
+    use ogeom_geom::SurfaceKind;
     use ogeom_math::{Frame, Point};
     use ogeom_mesh::{Deflection, triangulate};
     use ogeom_topo::{ShapeType, explore_unique};
@@ -2365,6 +2448,11 @@ mod tests {
             2,
             "a flank and one cap; the side on the axis sweeps out nothing"
         );
+        assert_eq!(
+            surface_kinds(&model, &built.shape),
+            vec![SurfaceKind::Cone, SurfaceKind::Plane],
+            "the flank is the cone it sweeps, and the cap its plane"
+        );
         let shell = explore_unique(&model, &built.shape, ShapeType::Shell).unwrap()[0].clone();
         assert!(is_shell_closed(&model, &shell).unwrap());
         assert!(
@@ -2381,6 +2469,73 @@ mod tests {
             mesh.volume() > exact * 0.99,
             "{} against {exact}",
             mesh.volume()
+        );
+    }
+
+    /// Every distinct surface a shape stands on, sorted, so two shapes can be
+    /// compared by what they are made of rather than by how many faces they have.
+    fn surface_kinds(model: &Model, shape: &Shape) -> Vec<ogeom_geom::SurfaceKind> {
+        use ogeom_geom::Surface as _;
+        let mut kinds: Vec<ogeom_geom::SurfaceKind> = explore_unique(model, shape, ShapeType::Face)
+            .unwrap()
+            .iter()
+            .map(|face| {
+                let NodeData::Face(data) = model.node(face).unwrap().data() else {
+                    panic!("face data");
+                };
+                model.geometry().surface(data.surface).unwrap().kind()
+            })
+            .collect();
+        kinds.sort_by_key(|k| format!("{k:?}"));
+        kinds
+    }
+
+    #[test]
+    fn a_frustum_profile_names_a_cone_on_each_leaning_side() {
+        // A cone the profile never brings to its apex, and both walls lean —
+        // one outward and one inward, so the two run opposite ways round the
+        // chart and the face flag has to carry the difference for each.
+        let mut model = Model::new();
+        let profile = profile_from(
+            &mut model,
+            &[
+                Point::new(3.0, 0.0, 0.0),
+                Point::new(5.0, 0.0, 0.0),
+                Point::new(4.0, 0.0, 4.0),
+                Point::new(2.0, 0.0, 4.0),
+            ],
+        );
+        let built = make_revolution(&mut model, &profile, Axis::Z, TAU, T).unwrap();
+
+        assert_eq!(
+            surface_kinds(&model, &built.shape),
+            vec![
+                SurfaceKind::Cone,
+                SurfaceKind::Cone,
+                SurfaceKind::Plane,
+                SurfaceKind::Plane
+            ],
+            "two leaning walls and two flat ends"
+        );
+        assert!(
+            crate::check(&model, &built.shape, T).unwrap().is_valid(),
+            "{}",
+            crate::check(&model, &built.shape, T).unwrap()
+        );
+
+        // Pappus: the annulus between the two walls, turned about the axis.
+        // Outer wall 5..4 and inner 3..2 over a height of 4, so each ring
+        // section is a trapezium and the solid is the difference of two
+        // frusta: (pi h / 3)(R1^2 + R1 R2 + R2^2) with the inner subtracted.
+        let frustum =
+            |a: f64, b: f64| std::f64::consts::PI * 4.0 / 3.0 * a.mul_add(a, b.mul_add(b, a * b));
+        let exact = frustum(5.0, 4.0) - frustum(3.0, 2.0);
+        let measured = volume_properties(&model, &built.shape, deflection(0.005), T)
+            .unwrap()
+            .mass;
+        assert!(
+            (measured - exact).abs() < exact * 1e-3,
+            "frustum volume {measured} against {exact}"
         );
     }
 
@@ -2460,6 +2615,11 @@ mod tests {
             counts(&built.shape, ShapeType::Edge),
             2,
             "one seam each way"
+        );
+        assert_eq!(
+            surface_kinds(&model, &built.shape),
+            surface_kinds(&model, &primitive.shape),
+            "a revolved disc is the torus make_torus builds, and should say so"
         );
 
         let shell = explore_unique(&model, &built.shape, ShapeType::Shell).unwrap()[0].clone();
