@@ -198,3 +198,38 @@ fn a_parallel_boolean_is_bit_identical() {
         "the cut solid's bytes must not depend on the thread count"
     );
 }
+
+/// A STEP import reads the same model however many threads derived its
+/// pcurves.
+///
+/// The reader derives a solid's pcurves in parallel and attaches them on its
+/// own thread, in file order. What must not move is the model: handles are
+/// issued in insertion order, so a pcurve attached out of turn would renumber
+/// everything after it. Serialized bytes are the honest comparison.
+#[test]
+fn a_parallel_step_read_is_bit_identical() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/corpus/nist_ctc_01_asme1_rd.stp"
+    );
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return; // The corpus is optional; nothing to compare without it.
+    };
+    let read_at = |threads: usize| {
+        parallel::set_threads(threads);
+        let import = ogeom::io::read_step(&text, T).unwrap();
+        parallel::set_threads(0);
+        ogeom::io::native::write(
+            import.document.model(),
+            &import.solids,
+            ogeom::io::native::WriteOptions::default(),
+        )
+        .unwrap()
+    };
+    let serial = read_at(1);
+    let threaded = read_at(4);
+    assert_eq!(
+        serial, threaded,
+        "the imported model's bytes must not depend on the thread count"
+    );
+}

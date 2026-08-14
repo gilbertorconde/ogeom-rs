@@ -86,6 +86,7 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         edges: HashMap::new(),
         faces: HashMap::new(),
         callout_index: HashMap::new(),
+        pcurves: HashMap::new(),
         tol,
     };
     reader.report.scale_mm = reader.unit_scale();
@@ -137,6 +138,27 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
 /// direction runs against the curve.
 type BuiltEdge = (Shape, Curve, (f64, f64), bool);
 
+/// A pcurve derived ahead of the face that needs it.
+///
+/// Deriving one is a pure function of a curve, its range and a surface — no
+/// model, no order — and on a real assembly it is 95% of the time spent
+/// building solids. So it is done for a whole solid at once, off the walk
+/// that attaches it.
+enum PreparedPcurve {
+    /// The projection had a closed form.
+    Exact(PlanarCurve),
+    /// It did not, and this is the fit, with what the fit cost.
+    Fitted {
+        curve: PlanarCurve,
+        error: f64,
+        met: bool,
+        worst_off: f64,
+        warning: Option<String>,
+    },
+    /// Neither worked; the face gets the warning the walk would have made.
+    Refused(String),
+}
+
 struct Reader<'a> {
     exchange: &'a Exchange,
     model: Model,
@@ -149,6 +171,9 @@ struct Reader<'a> {
     faces: HashMap<u64, Shape>,
     /// STEP id → index into the callouts just built, for the views pass.
     callout_index: HashMap<u64, usize>,
+    /// `(face, edge)` → the pcurve already derived for it, from the parallel
+    /// pass at the head of each solid.
+    pcurves: HashMap<(u64, u64), PreparedPcurve>,
     tol: Tolerances,
 }
 
@@ -975,6 +1000,7 @@ impl Reader<'_> {
                 if annotated.insert(edge_id) {
                     self.attach_pcurves(
                         id,
+                        edge_id,
                         &shape,
                         &curve,
                         range,
@@ -1098,6 +1124,7 @@ impl Reader<'_> {
     fn attach_pcurves(
         &mut self,
         face_id: u64,
+        edge_id: u64,
         edge: &Shape,
         curve: &Curve,
         range: (f64, f64),
@@ -1117,6 +1144,46 @@ impl Reader<'_> {
             }
             p
         };
+        // Claimed rather than derived, where the pass at the head of the solid
+        // already did it. The fallbacks below stay exactly as they were, for
+        // the faces no pass covered — a face reached outside a solid walk, or
+        // one whose preparation refused.
+        if let Some(prepared) = self.pcurves.remove(&(face_id, edge_id)) {
+            match prepared {
+                PreparedPcurve::Exact(exact) => {
+                    return self.record_pcurve(edge, widen(exact), surface_id, seam, range);
+                }
+                PreparedPcurve::Fitted {
+                    curve: fitted,
+                    error,
+                    met,
+                    worst_off,
+                    warning,
+                } => {
+                    if let Some(w) = warning {
+                        self.report.warnings.push(w);
+                    }
+                    if !met {
+                        self.report.warnings.push(format!(
+                            "face #{face_id}: a projected pcurve fit \
+                             stopped at {error:.2e}; the face's mesh may \
+                             sit that far off along this edge"
+                        ));
+                    }
+                    if worst_off > self.tol.confusion()
+                        && let Some(node) = self.model.node_mut(edge)
+                        && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+                    {
+                        data.tolerance = data.tolerance.widen_to(worst_off + self.tol.confusion());
+                    }
+                    return self.record_pcurve(edge, fitted, surface_id, seam, range);
+                }
+                PreparedPcurve::Refused(why) => {
+                    self.report.warnings.push(why);
+                    return Ok(());
+                }
+            }
+        }
         let pcurve =
             match ogeom_intersect::exact_pcurve_over(curve, range, surface, self.tol).map(widen) {
                 Some(exact) => exact,
@@ -1161,7 +1228,23 @@ impl Reader<'_> {
                     }
                 }
             };
+        self.record_pcurve(edge, pcurve, surface_id, seam, range)
+    }
+
+    /// Attach a derived pcurve, seaming it where the edge bounds the chart
+    /// twice. The tail of `attach_pcurves`, shared with the prepared path.
+    fn record_pcurve(
+        &mut self,
+        edge: &Shape,
+        pcurve: PlanarCurve,
+        surface_id: ogeom_topo::SurfaceId,
+        seam: bool,
+        range: (f64, f64),
+    ) -> OgeomResult<()> {
         if seam {
+            let Some(surface) = self.model.geometry().surface(surface_id).cloned() else {
+                ogeom_bail!(Dangling, "the surface is not in this model");
+            };
             let ((ua, ub), _) = surface.domain();
             let span = ub - ua;
             // One side is where the projection landed; the other is one
@@ -1192,7 +1275,131 @@ impl Reader<'_> {
         Ok(())
     }
 
-    /// A pcurve fitted from projection at the curve's own parameters.
+    /// Derive every pcurve this solid's faces will want, in parallel.
+    ///
+    /// Deriving one is a pure function of a curve, its range and a surface —
+    /// it reads no model and depends on no order — and measured on a 330-solid
+    /// assembly it is 95% of the time spent building solids. The walk that
+    /// follows attaches them, in file order, exactly as it did when it derived
+    /// them itself.
+    ///
+    /// Resolving *what* to derive still runs on the walk's own thread, since
+    /// it builds edges and vertices into the model. That part is cheap; it is
+    /// the projection and the fitting that are not.
+    ///
+    /// Best-effort by design: anything this cannot resolve is simply left out
+    /// of the table, and `attach_pcurves` derives it the old way. So a face
+    /// shape this does not anticipate costs time, never correctness.
+    fn prepare_pcurves(&mut self, face_ids: &[u64]) {
+        struct Job {
+            face: u64,
+            edge: u64,
+            curve: Curve,
+            range: (f64, f64),
+            /// Index into `surfaces`. The surface is held once per face, not
+            /// once per edge: a B-spline patch owns its whole control grid,
+            /// and cloning that per edge costs more than the projection it
+            /// was cloned for.
+            surface: usize,
+        }
+        let mut surfaces: Vec<SurfaceGeometry> = Vec::new();
+        let mut jobs: Vec<Job> = Vec::new();
+        let mut seen: HashSet<(u64, u64)> = HashSet::new();
+        for &fid in face_ids {
+            let Ok(args) = self.args(fid, "ADVANCED_FACE") else {
+                continue;
+            };
+            let Some(surface) = args
+                .get(2)
+                .and_then(Arg::reference)
+                .and_then(|sid| self.surface(sid).ok().flatten())
+            else {
+                continue;
+            };
+            surfaces.push(surface);
+            let at = surfaces.len() - 1;
+            let bounds: Vec<u64> = args
+                .get(1)
+                .and_then(Arg::list)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(Arg::reference)
+                .collect();
+            for bound in bounds {
+                let Ok((loop_id, _)) = self.bound_args(bound) else {
+                    continue;
+                };
+                let Ok(loop_args) = self.args(loop_id, "EDGE_LOOP") else {
+                    continue;
+                };
+                let uses: Vec<u64> = loop_args
+                    .get(1)
+                    .and_then(Arg::list)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(Arg::reference)
+                    .collect();
+                for oe_id in uses {
+                    let Ok(oargs) = self.args(oe_id, "ORIENTED_EDGE") else {
+                        continue;
+                    };
+                    let Some(edge_id) = oargs.get(3).and_then(Arg::reference) else {
+                        continue;
+                    };
+                    if !seen.insert((fid, edge_id)) {
+                        continue;
+                    }
+                    if let Ok(Some((_, curve, range, _))) = self.edge(edge_id) {
+                        jobs.push(Job {
+                            face: fid,
+                            edge: edge_id,
+                            curve,
+                            range,
+                            surface: at,
+                        });
+                    }
+                }
+            }
+        }
+        // Below a handful of edges the threads cost more than the work; the
+        // sequential path through `attach_pcurves` is already correct, so the
+        // table is simply left empty and the walk derives them itself.
+        if jobs.len() < 16 {
+            return;
+        }
+        let tol = self.tol;
+        let derived = ogeom_core::parallel::map_ordered(&jobs, |_, job| {
+            let surface = &surfaces[job.surface];
+            match ogeom_intersect::exact_pcurve_over(&job.curve, job.range, surface, tol) {
+                Some(exact) => PreparedPcurve::Exact(exact),
+                None => {
+                    match crate::pcurves::fit_projected_pcurve(&job.curve, job.range, surface, tol)
+                    {
+                        Ok((curve, error, met, worst_off, warning)) => PreparedPcurve::Fitted {
+                            curve,
+                            error,
+                            met,
+                            worst_off,
+                            warning,
+                        },
+                        Err(e) => PreparedPcurve::Refused(format!(
+                            "face #{}: no pcurve for an edge on this surface ({e}); \
+                         the face may not triangulate",
+                            job.face
+                        )),
+                    }
+                }
+            }
+        });
+        for (job, pcurve) in jobs.iter().zip(derived) {
+            self.pcurves.insert((job.face, job.edge), pcurve);
+        }
+    }
+
+    /// The solid a `MANIFOLD_SOLID_BREP` names: its shell's faces, sewn.
+    ///
+    /// (The comment that stood here described a fitted pcurve, which is not
+    /// what this builds; it had been copied from elsewhere.)
     fn solid(&mut self, id: u64) -> OgeomResult<Shape> {
         let args = self.args(id, "MANIFOLD_SOLID_BREP")?;
         let shell_id = args.get(1).and_then(Arg::reference).unwrap_or(0);
@@ -1209,6 +1416,7 @@ impl Reader<'_> {
             .iter()
             .filter_map(Arg::reference)
             .collect();
+        self.prepare_pcurves(&face_ids);
         let mut faces = Vec::new();
         for fid in face_ids {
             if let Some(face) = self.face(fid)? {
