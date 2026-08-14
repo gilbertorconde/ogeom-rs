@@ -599,6 +599,20 @@ worklist should a caller ever need the general region.
 
 These are settled. They are here so nobody reopens them by accident.
 
+- **A surface's accessors are not combined into one evaluation.** A foot-point
+  solve asks a surface for its point and all five derivatives at the same
+  place, and a tensor-product patch answers by locating its spans, building
+  its basis functions and summing its control grid — three times, once per
+  accessor. Answering from a single order-two table looks free and is not: the
+  table computes nine cells where the three calls compute one, four and nine,
+  so the saving is about half, measured at 3–25% of a spline-rich STEP read.
+  Against that, `evaluate_surface` sums by de Boor and the derivative table by
+  basis functions, and `basis_derivatives` does not return identical
+  lower-order rows at different requested orders — so the combined answer
+  differs from the separate ones in the last bits, and which numbers a caller
+  got would depend on which door it came through. A tenth of an import is not
+  worth two accessors on one surface disagreeing. Tried, measured, reverted;
+  the test that caught it is the one worth writing again before anyone retries.
 - **A pcurve with no closed form is `None`, not a fit.** An exact curve
   carrying a fitted pcurve would be a curve whose two descriptions disagree
   by an amount nothing on it records. The consumer that needs one marches the

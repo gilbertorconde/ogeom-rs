@@ -136,10 +136,24 @@ pub fn triangulate(
     deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<Triangulation> {
+    // Faces in two phases, as `tessellate` does: each face is meshed from a
+    // model nothing is writing to, in parallel; the pieces are then appended
+    // sequentially in face order. The split is what keeps the answer
+    // bit-identical at any thread count — scheduling decides only who does
+    // which face, never where its triangles land.
+    let faces: Vec<Shape> =
+        ogeom_topo::explore(model, shape, ogeom_topo::Filter::OfType(ShapeType::Face))?;
+    let read_model: &Model = model;
+    let computed: Vec<OgeomResult<Triangulation>> =
+        ogeom_core::parallel::map_ordered(&faces, |_, face| {
+            ogeom_core::progress::checkpoint()?;
+            triangulate_face(read_model, face, deflection, tol)
+        });
+
     let mut mesh = Triangulation::new();
-    let mut pieces: Vec<(usize, usize)> = Vec::new();
-    for face in ogeom_topo::explore(model, shape, ogeom_topo::Filter::OfType(ShapeType::Face))? {
-        let piece = triangulate_face(model, &face, deflection, tol)?;
+    let mut pieces: Vec<(usize, usize)> = Vec::with_capacity(faces.len());
+    for piece in computed {
+        let piece = piece?;
         let t0 = mesh.triangles.len();
         mesh.append(&piece);
         pieces.push((t0, mesh.triangles.len()));
