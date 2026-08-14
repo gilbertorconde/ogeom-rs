@@ -2017,6 +2017,16 @@ fn mark_covered_coincidences(ga: &GSolid, pieces: &mut [FacePiece], tol: Toleran
     }
 }
 
+/// The debug dumps, read once rather than once per face.
+///
+/// `env::var` takes a process-wide lock and allocates; the strand dump asked
+/// it inside the per-face loop, where a large model asks thousands of times
+/// to be told no.
+static DEBUG_STRANDS: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("OGEOM_DEBUG_STRANDS").is_ok());
+static ARRANGE_DEBUG: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("OGEOM_ARRANGE_DEBUG").is_ok());
+
 fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<GeneralFused> {
     ogeom_core::progress::stage("boolean: gather");
     let ga = gather(model, a, tol)?;
@@ -2259,7 +2269,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                         .iter()
                         .fold(0.0_f64, |acc, e| acc.max(e.tolerance * 2.0)),
                 );
-            if std::env::var("OGEOM_DEBUG_STRANDS").is_ok() {
+            if *DEBUG_STRANDS {
                 for (si, st) in strands.iter().enumerate() {
                     let tag = match st.tag {
                         Tag::Boundary { edge, range } => format!("Boundary e{edge} {range:?}"),
@@ -2404,7 +2414,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         }
     }
     mark_covered_coincidences(&ga, &mut pieces, tol);
-    if std::env::var("OGEOM_ARRANGE_DEBUG").is_ok() {
+    if *ARRANGE_DEBUG {
         for (i, p) in pieces.iter().enumerate() {
             let own = if p.from_a {
                 &ga.faces[p.face]
@@ -2774,7 +2784,7 @@ fn assemble_result(
         if !is_shell_closed(model, shell)? {
             // Env-gated forensics: the open shell's unshared edges, the
             // question every failure here starts from.
-            if std::env::var("OGEOM_ARRANGE_DEBUG").is_ok() {
+            if *ARRANGE_DEBUG {
                 use ogeom_geom::Curve3d as _;
                 for edge in ogeom_topo::explore_unique(model, shell, ShapeType::Edge)? {
                     let users = ogeom_topo::explore(model, shell, Filter::OfType(ShapeType::Face))?

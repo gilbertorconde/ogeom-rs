@@ -109,7 +109,7 @@ pub fn triangulate_face(
         mesh.normals.push(if flip { -normal } else { normal });
         mesh.parameters.push((u, v));
     }
-    if std::env::var("OGEOM_MESH_DEBUG").is_ok() {
+    if *MESH_DEBUG {
         eprintln!(
             "DBG anchors map={} hits={} verts={}",
             anchored.len(),
@@ -1444,6 +1444,13 @@ fn crosses_odd_times<P: Predicates>(ring: &[Point2], p: Point2) -> bool {
     }
     inside
 }
+
+/// Whether the mesh debug dump is on, read once.
+///
+/// `env::var` takes a process-wide lock and allocates its answer, and this was
+/// asked once per face — on an imported assembly, once per face of every part.
+static MESH_DEBUG: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("OGEOM_MESH_DEBUG").is_ok());
 
 /// The ring edges that can cross a horizontal ray, bucketed by height.
 ///

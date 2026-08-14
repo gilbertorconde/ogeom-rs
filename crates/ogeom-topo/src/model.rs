@@ -1130,16 +1130,28 @@ pub fn explore(model: &Model, root: &Shape, filter: Filter) -> OgeomResult<Vec<S
     let mut out = Vec::new();
     let mut stack = vec![root.clone()];
     while let Some(shape) = stack.pop() {
+        // The node is fetched once and answers both questions. `kind_of` would
+        // repeat the arena lookup that `children_of` is about to do anyway,
+        // and this walk is the kernel's most travelled road.
+        let Some(node) = model.node(&shape) else {
+            ogeom_bail!(Dangling, "shape refers to a node not in this model");
+        };
         let matches = match filter {
-            Filter::OfType(want) => model.kind_of(&shape)? == want,
+            Filter::OfType(want) => node.kind() == want,
             Filter::All => true,
         };
-        if matches {
-            out.push(shape.clone());
+        let children = node.children();
+        stack.reserve(children.len());
+        // `children_of`'s composition, inline: the parent's placement and
+        // sense onto each child. Done here so the walk does not allocate a
+        // `Vec` per node only to drain it.
+        for child in children.iter().rev() {
+            stack.push(child.moved(shape.location()).composed(shape.orientation()));
         }
-        // `children_of` is what does the composing; nothing here re-derives it.
-        for child in model.children_of(&shape)?.into_iter().rev() {
-            stack.push(child);
+        if matches {
+            // `shape` is owned and finished with; cloning it to keep it would
+            // copy a location chain for nothing.
+            out.push(shape);
         }
     }
     Ok(out)
@@ -1158,9 +1170,10 @@ pub fn explore_unique(model: &Model, root: &Shape, want: ShapeType) -> OgeomResu
 
     use crate::shape::SameKey;
 
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for shape in explore(model, root, Filter::OfType(want))? {
+    let found = explore(model, root, Filter::OfType(want))?;
+    let mut seen = HashSet::with_capacity(found.len());
+    let mut out = Vec::with_capacity(found.len());
+    for shape in found {
         if seen.insert(SameKey(shape.clone())) {
             out.push(shape);
         }
