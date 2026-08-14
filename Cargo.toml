@@ -98,6 +98,10 @@ proptest = "1"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+# Symbols, so a profiler can name what it samples. Line tables only: no
+# runtime cost, no effect on the generated code, and without them `perf` and
+# `samply` report a wall of addresses.
+debug = 1
 
 # Debug builds of a geometry kernel are unusably slow with unoptimized deps.
 [profile.dev.package."*"]

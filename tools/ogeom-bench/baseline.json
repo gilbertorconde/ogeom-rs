@@ -1,7 +1,12 @@
 {
-  "construct_boxes": 0.3084,
-  "traverse_box": 0.3939,
-  "tessellate_torus": 0.0742,
-  "boolean_drill": 0.2839,
-  "import_ftc11": 0.0022
+  "construct_boxes": 0.2968,
+  "traverse_box": 0.3902,
+  "tessellate_torus": 0.0678,
+  "boolean_drill": 0.2897,
+  "boolean_many_faces": 4.1868,
+  "boolean_marched": 0.6995,
+  "fillet_block": 0.6101,
+  "tessellate_part": 21.9069,
+  "import_ftc11": 0.0028,
+  "import_ctc02": 18.9306
 }
