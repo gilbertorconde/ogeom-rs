@@ -243,149 +243,237 @@ pub fn classify_in_solid_exact_banded(
     ring_chord: f64,
     tol: Tolerances,
 ) -> OgeomResult<Containment> {
-    let kind = model.kind_of(solid)?;
-    if !matches!(kind, ShapeType::Solid | ShapeType::Shell) {
-        ogeom_bail!(Construction, "expected a solid or a shell, got {kind:?}");
+    SolidBoundary::of(model, solid, ring_chord, tol)?.holds(model, point, tol)
+}
+
+/// One face of a prepared boundary, with everything about it that does not
+/// depend on the point being classified.
+#[derive(Debug)]
+struct PreparedFace {
+    face: Shape,
+    surface: ogeom_geom::SurfaceGeometry,
+    /// The placement's inverse, for carrying a point into the surface's frame.
+    inverse: ogeom_math::Transform,
+    /// The trimming rings, polylined at the boundary's stated chord.
+    rings: Vec<Vec<Point2>>,
+}
+
+/// A solid's boundary, prepared once and asked about many points.
+///
+/// Classifying a point casts rays and counts crossings, which is cheap. What
+/// is not cheap is what the rays are cast *against*: every face's trimming
+/// rings, polylined, plus its placement's inverse. That work depends on the
+/// solid and the chord, never on the point — and asked point by point it was
+/// redone from scratch every time, which for a boolean means once per face
+/// piece. Measured on a four-hole cut, preparing took 3.5 ms against 5.6 µs
+/// of ray casting: six hundred times the work of the question being asked.
+///
+/// `docs/PLAN.md` §A named this as owed and said what it was worth.
+#[derive(Debug)]
+pub struct SolidBoundary {
+    faces: Vec<PreparedFace>,
+    bound: ogeom_math::Aabb,
+    centre: Point,
+    diagonal: f64,
+    ring_chord: f64,
+}
+
+impl SolidBoundary {
+    /// Prepare a solid's boundary for classification at a given ring chord.
+    ///
+    /// # Errors
+    ///
+    /// As [`classify_in_solid_exact`].
+    pub fn of(model: &Model, solid: &Shape, ring_chord: f64, tol: Tolerances) -> OgeomResult<Self> {
+        Self::prepare(model, solid, ring_chord, tol)
     }
-    let shells = if kind == ShapeType::Shell {
-        vec![solid.clone()]
-    } else {
-        ogeom_topo::explore_unique(model, solid, ShapeType::Shell)?
-    };
-    if shells.is_empty() {
-        ogeom_bail!(Construction, "the shape has no shell, so no boundary");
-    }
-    for shell in &shells {
-        if !crate::build::is_shell_closed(model, shell)? {
-            ogeom_bail!(
-                Construction,
-                "the boundary is not closed, so there is no inside to be in"
-            );
+
+    fn prepare(
+        model: &Model,
+        solid: &Shape,
+        ring_chord: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<Self> {
+        let kind = model.kind_of(solid)?;
+        if !matches!(kind, ShapeType::Solid | ShapeType::Shell) {
+            ogeom_bail!(Construction, "expected a solid or a shell, got {kind:?}");
         }
+        let shells = if kind == ShapeType::Shell {
+            vec![solid.clone()]
+        } else {
+            ogeom_topo::explore_unique(model, solid, ShapeType::Shell)?
+        };
+        if shells.is_empty() {
+            ogeom_bail!(Construction, "the shape has no shell, so no boundary");
+        }
+        for shell in &shells {
+            if !crate::build::is_shell_closed(model, shell)? {
+                ogeom_bail!(
+                    Construction,
+                    "the boundary is not closed, so there is no inside to be in"
+                );
+            }
+        }
+
+        // Anything outside the shape's bound is outside the shape, and the bound
+        // also sets how long a ray must be to have left everything behind.
+        let bound = crate::measure::shape_bounds(model, solid, tol)?;
+        let (Some(centre), diagonal) = (bound.centre(), bound.diagonal()) else {
+            ogeom_bail!(Construction, "the boundary bounds nothing");
+        };
+
+        // The rings' own polylining error, spatially: they are only used to
+        // decide which side of a face's trim a crossing landed, and a crossing
+        // nearer the ring than this is ambiguous rather than decided.
+        let ring_deflection = Deflection {
+            chord: ring_chord,
+            angular: 0.05,
+            ..Deflection::default()
+        };
+
+        let faces = ogeom_topo::explore_unique(model, solid, ShapeType::Face)?;
+        let mut prepared = Vec::with_capacity(faces.len());
+        for face in faces {
+            let Some(node) = model.node(&face) else {
+                ogeom_bail!(Dangling, "face is not in this model");
+            };
+            let NodeData::Face(data) = node.data() else {
+                ogeom_bail!(Construction, "face node holds no face data");
+            };
+            let Some(surface) = model.geometry().surface(data.surface) else {
+                ogeom_bail!(Dangling, "face refers to a surface not in this model");
+            };
+            let inverse = face.transform(model.datums())?.inverse()?;
+            let rings = face_boundary(model, &face, ring_deflection, tol)?;
+            prepared.push(PreparedFace {
+                face,
+                surface: surface.clone(),
+                inverse,
+                rings,
+            });
+        }
+        Ok(Self {
+            faces: prepared,
+            bound,
+            centre,
+            diagonal,
+            ring_chord,
+        })
     }
 
-    // Anything outside the shape's bound is outside the shape, and the bound
-    // also sets how long a ray must be to have left everything behind.
-    let bound = crate::measure::shape_bounds(model, solid, tol)?;
-    let reach = tol.confusion();
-    let (Some(centre), diagonal) = (bound.centre(), bound.diagonal()) else {
-        ogeom_bail!(Construction, "the boundary bounds nothing");
-    };
-    if !bound.expanded(reach).contains(point) {
-        return Ok(Containment::Out);
-    }
-    let length = point.distance(centre) + diagonal + 1.0;
+    /// Where a point stands against this boundary.
+    ///
+    /// # Errors
+    ///
+    /// As [`classify_in_solid_exact`].
+    pub fn holds(&self, model: &Model, point: Point, tol: Tolerances) -> OgeomResult<Containment> {
+        let ring_chord = self.ring_chord;
+        let ring_deflection = Deflection {
+            chord: ring_chord,
+            angular: 0.05,
+            ..Deflection::default()
+        };
+        let reach = tol.confusion();
+        if !self.bound.expanded(reach).contains(point) {
+            return Ok(Containment::Out);
+        }
+        let length = point.distance(self.centre) + self.diagonal + 1.0;
 
-    // The rings' own polylining error, spatially: they are only used to
-    // decide which side of a face's trim a crossing landed, and a crossing
-    // nearer the ring than this is ambiguous rather than decided.
-    let ring_deflection = Deflection {
-        chord: ring_chord,
-        angular: 0.05,
-        ..Deflection::default()
-    };
-
-    let faces = ogeom_topo::explore_unique(model, solid, ShapeType::Face)?;
-    let mut prepared = Vec::with_capacity(faces.len());
-    for face in faces {
         // On the boundary beats either side, and each face answers exactly:
         // projection distance against the true surface, trimming in parameter
         // space.
-        if classify_on_face(model, &face, point, ring_deflection, tol)? != Containment::Out {
-            return Ok(Containment::On);
-        }
-        let Some(node) = model.node(&face) else {
-            ogeom_bail!(Dangling, "face is not in this model");
-        };
-        let NodeData::Face(data) = node.data() else {
-            ogeom_bail!(Construction, "face node holds no face data");
-        };
-        let Some(surface) = model.geometry().surface(data.surface) else {
-            ogeom_bail!(Dangling, "face refers to a surface not in this model");
-        };
-        let inverse = face.transform(model.datums())?.inverse()?;
-        let rings = face_boundary(model, &face, ring_deflection, tol)?;
-        prepared.push((surface.clone(), inverse, rings));
-    }
-
-    'directions: for direction in RAY_DIRECTIONS {
-        let along = Vector::new(direction[0], direction[1], direction[2]);
-        let far = point + along * length;
-        let mut crossings = 0_usize;
-
-        for (surface, inverse, rings) in &prepared {
-            // Into the face's frame, as two points rather than a direction, so
-            // a placement that scales still carries the ray faithfully.
-            let from = inverse.apply(point);
-            let to = inverse.apply(far);
-            let ray: ogeom_geom::Curve = ogeom_geom::LineCurve::segment(from, to, tol)?.into();
-            let found = ogeom_intersect::intersect_curve_surface(
-                &ray,
-                surface,
-                ogeom_intersect::CurveSurfaceOptions::default(),
-                tol,
-            )?;
-            if !found.lying.is_empty() {
-                // The ray runs in this face's surface: it crosses nothing and
-                // touches everything, which no parity expresses.
-                continue 'directions;
+        for prepared in &self.faces {
+            if classify_on_face(model, &prepared.face, point, ring_deflection, tol)?
+                != Containment::Out
+            {
+                return Ok(Containment::On);
             }
-            for hit in &found.crossings {
-                if hit.on_curve <= tol.confusion() {
-                    // At the very start: the probe lies in this face's
-                    // *surface*. Whether that matters depends on the trim —
-                    // the boundary test above already said the point is off
-                    // every face, so a start-crossing far from this face's
-                    // rings is the unbounded surface talking, not the face,
-                    // and it neither counts nor poisons the ray.
+        }
+        'directions: for direction in RAY_DIRECTIONS {
+            let along = Vector::new(direction[0], direction[1], direction[2]);
+            let far = point + along * length;
+            let mut crossings = 0_usize;
+
+            for PreparedFace {
+                surface,
+                inverse,
+                rings,
+                ..
+            } in &self.faces
+            {
+                // Into the face's frame, as two points rather than a direction, so
+                // a placement that scales still carries the ray faithfully.
+                let from = inverse.apply(point);
+                let to = inverse.apply(far);
+                let ray: ogeom_geom::Curve = ogeom_geom::LineCurve::segment(from, to, tol)?.into();
+                let found = ogeom_intersect::intersect_curve_surface(
+                    &ray,
+                    surface,
+                    ogeom_intersect::CurveSurfaceOptions::default(),
+                    tol,
+                )?;
+                if !found.lying.is_empty() {
+                    // The ray runs in this face's surface: it crosses nothing and
+                    // touches everything, which no parity expresses.
+                    continue 'directions;
+                }
+                for hit in &found.crossings {
+                    if hit.on_curve <= tol.confusion() {
+                        // At the very start: the probe lies in this face's
+                        // *surface*. Whether that matters depends on the trim —
+                        // the boundary test above already said the point is off
+                        // every face, so a start-crossing far from this face's
+                        // rings is the unbounded surface talking, not the face,
+                        // and it neither counts nor poisons the ray.
+                        let (u, v) = hit.on_surface;
+                        let at = fold_toward_rings(surface, rings, Point2::new(u, v));
+                        let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
+                        if distance_to_rings(rings, at) <= band || inside_boundary(rings, at) {
+                            continue 'directions;
+                        }
+                        continue;
+                    }
                     let (u, v) = hit.on_surface;
-                    let at = fold_toward_rings(surface, rings, Point2::new(u, v));
-                    let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
-                    if distance_to_rings(rings, at) <= band || inside_boundary(rings, at) {
+                    use ogeom_geom::Surface as _;
+                    let Ok((du, dv)) = surface.d1_at(u, v, tol) else {
+                        continue 'directions;
+                    };
+                    let normal = du.cross(dv);
+                    if normal.magnitude() <= tol.confusion() {
+                        // A pole or an apex: no normal, no transversality.
                         continue 'directions;
                     }
-                    continue;
-                }
-                let (u, v) = hit.on_surface;
-                use ogeom_geom::Surface as _;
-                let Ok((du, dv)) = surface.d1_at(u, v, tol) else {
-                    continue 'directions;
-                };
-                let normal = du.cross(dv);
-                if normal.magnitude() <= tol.confusion() {
-                    // A pole or an apex: no normal, no transversality.
-                    continue 'directions;
-                }
-                let ray_direction = (to - from) / (to - from).magnitude();
-                if normal.dot(ray_direction).abs() <= GRAZING * normal.magnitude() {
-                    // Tangential. A grazing contact counts once where parity
-                    // needs zero or two; abandon the ray rather than guess.
-                    continue 'directions;
-                }
-                let at = fold_toward_rings(surface, rings, Point2::new(u, v));
-                let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
-                if distance_to_rings(rings, at) <= band {
-                    // Too near the face's boundary to know which side of the
-                    // trim it crossed — and a shared edge would be counted by
-                    // both faces or neither.
-                    continue 'directions;
-                }
-                if inside_boundary(rings, at) {
-                    crossings += 1;
+                    let ray_direction = (to - from) / (to - from).magnitude();
+                    if normal.dot(ray_direction).abs() <= GRAZING * normal.magnitude() {
+                        // Tangential. A grazing contact counts once where parity
+                        // needs zero or two; abandon the ray rather than guess.
+                        continue 'directions;
+                    }
+                    let at = fold_toward_rings(surface, rings, Point2::new(u, v));
+                    let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
+                    if distance_to_rings(rings, at) <= band {
+                        // Too near the face's boundary to know which side of the
+                        // trim it crossed — and a shared edge would be counted by
+                        // both faces or neither.
+                        continue 'directions;
+                    }
+                    if inside_boundary(rings, at) {
+                        crossings += 1;
+                    }
                 }
             }
+            return Ok(if crossings % 2 == 1 {
+                Containment::In
+            } else {
+                Containment::Out
+            });
         }
-        return Ok(if crossings % 2 == 1 {
-            Containment::In
-        } else {
-            Containment::Out
-        });
+        ogeom_bail!(
+            NotDone,
+            "every ray tried met a tangency, a boundary, or a degenerate point, \
+             where the crossing count is ambiguous"
+        )
     }
-    ogeom_bail!(
-        NotDone,
-        "every ray tried met a tangency, a boundary, or a degenerate point, \
-         where the crossing count is ambiguous"
-    )
 }
 
 /// The sine of the shallowest crossing angle a counted ray/surface crossing

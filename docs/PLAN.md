@@ -599,6 +599,19 @@ worklist should a caller ever need the general region.
 
 These are settled. They are here so nobody reopens them by accident.
 
+- **A surface answers for its point and derivatives in one evaluation, and
+  says so agrees only to rounding.** A foot-point solve wants all six at the
+  same place, and a tensor-product patch answering three separate accessors
+  locates its spans, builds its basis functions and sums its control grid
+  three times over. [`Surface::jet_at`] answers from one order-two table —
+  worth 3–25% of a spline-rich STEP read, which is not nothing on the files
+  that take a minute. The price is stated rather than hidden: a patch sums its
+  point by de Boor and its derivatives by basis functions, those reassociate
+  differently, and `basis_derivatives` does not return identical lower-order
+  rows at different requested orders — so a jet may differ from the separate
+  accessors in the last ulp. Consistency within a jet is what a Newton step
+  needs and what the type guarantees; a caller must not mix a jet with the
+  accessors at the same parameters and expect the bits to match.
 - **A pcurve with no closed form is `None`, not a fit.** An exact curve
   carrying a fitted pcurve would be a curve whose two descriptions disagree
   by an amount nothing on it records. The consumer that needs one marches the

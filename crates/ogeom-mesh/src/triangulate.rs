@@ -109,7 +109,7 @@ pub fn triangulate_face(
         mesh.normals.push(if flip { -normal } else { normal });
         mesh.parameters.push((u, v));
     }
-    if std::env::var("OGEOM_MESH_DEBUG").is_ok() {
+    if *MESH_DEBUG {
         eprintln!(
             "DBG anchors map={} hits={} verts={}",
             anchored.len(),
@@ -136,10 +136,24 @@ pub fn triangulate(
     deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<Triangulation> {
+    // Faces in two phases, as `tessellate` does: each face is meshed from a
+    // model nothing is writing to, in parallel; the pieces are then appended
+    // sequentially in face order. The split is what keeps the answer
+    // bit-identical at any thread count — scheduling decides only who does
+    // which face, never where its triangles land.
+    let faces: Vec<Shape> =
+        ogeom_topo::explore(model, shape, ogeom_topo::Filter::OfType(ShapeType::Face))?;
+    let read_model: &Model = model;
+    let computed: Vec<OgeomResult<Triangulation>> =
+        ogeom_core::parallel::map_ordered(&faces, |_, face| {
+            ogeom_core::progress::checkpoint()?;
+            triangulate_face(read_model, face, deflection, tol)
+        });
+
     let mut mesh = Triangulation::new();
-    let mut pieces: Vec<(usize, usize)> = Vec::new();
-    for face in ogeom_topo::explore(model, shape, ogeom_topo::Filter::OfType(ShapeType::Face))? {
-        let piece = triangulate_face(model, &face, deflection, tol)?;
+    let mut pieces: Vec<(usize, usize)> = Vec::with_capacity(faces.len());
+    for piece in computed {
+        let piece = piece?;
         let t0 = mesh.triangles.len();
         mesh.append(&piece);
         pieces.push((t0, mesh.triangles.len()));
@@ -1132,6 +1146,10 @@ fn triangulate_region(
     // The repair measures the truth: any kept triangle whose midpoints sag
     // beyond the chord gets its centre inserted, and the loop runs until the
     // mesh is honest or the cap says the surface is being unreasonable.
+    // The rings do not change while the mesh is refined, so the containment
+    // test they answer is indexed once and reused by every round below and by
+    // the output pass.
+    let bands = RingBands::over(rings);
     if !matches!(surface.kind(), ogeom_geom::SurfaceKind::Plane) {
         for _ in 0..REFINEMENT_ROUNDS {
             let mut worst: Vec<SpadePoint<f64>> = Vec::new();
@@ -1139,16 +1157,14 @@ fn triangulate_region(
                 let vertices = triangle.vertices();
                 let centre = triangle.center();
                 let at = Point2::new(centre.x, centre.y);
-                if !inside_region(rings, at) {
+                if !bands.holds(at) {
                     continue;
                 }
-                let corners: Vec<(f64, f64)> = vertices
-                    .iter()
-                    .map(|v| {
-                        let p = v.position();
-                        (p.x, p.y)
-                    })
-                    .collect();
+                let corners: [(f64, f64); 3] = [
+                    (vertices[0].position().x, vertices[0].position().y),
+                    (vertices[1].position().x, vertices[1].position().y),
+                    (vertices[2].position().x, vertices[2].position().y),
+                ];
                 // A chart-degenerate hair is dropped from the mesh, not
                 // refined: its 3D chord can sag enormously, and feeding its
                 // centre back in only breeds more hairs along the same line.
@@ -1202,7 +1218,7 @@ fn triangulate_region(
         // A constrained Delaunay covers the convex hull of its input, so
         // triangles outside the trimmed region — across a concavity, or inside
         // a hole — have to be discarded. Winding tells them apart.
-        if !inside_region(rings, Point2::new(centre.x, centre.y)) {
+        if !bands.holds(Point2::new(centre.x, centre.y)) {
             continue;
         }
         // A boundary run whose points differ by last-bit noise — a chart row
@@ -1337,10 +1353,21 @@ const MAX_DIRECTION_STEPS: usize = 512;
 /// endpoints included.
 fn refine_direction<F: Fn(f64, f64) -> f64>(lo: f64, hi: f64, chord: f64, sag: F) -> Vec<f64> {
     let mut values = vec![lo, f64::midpoint(lo, hi), hi];
-    while values.len() < MAX_DIRECTION_STEPS {
-        let Some(i) = (0..values.len() - 1).find(|&i| sag(values[i], values[i + 1]) > chord) else {
-            break;
-        };
+    // A cursor rather than a rescan. Splitting an interval cannot change
+    // whether an *earlier* one sags — the earlier one's endpoints do not move
+    // — so restarting the search at zero re-measures intervals already known
+    // to be good, and re-measuring is what costs: each measurement here is
+    // several `sag_between` calls and each of those is three surface
+    // evaluations. Reaching n points that way costs on the order of n²
+    // measurements; walking forward costs n, and splits in the same
+    // left-to-right order, so the values come out identical — including where
+    // the step cap truncates them.
+    let mut i = 0;
+    while i + 1 < values.len() && values.len() < MAX_DIRECTION_STEPS {
+        if sag(values[i], values[i + 1]) <= chord {
+            i += 1;
+            continue;
+        }
         let mid = f64::midpoint(values[i], values[i + 1]);
         // A split that does not divide the interval means the parameters have
         // reached the resolution of f64, and refining further would loop.
@@ -1418,6 +1445,144 @@ fn crosses_odd_times<P: Predicates>(ring: &[Point2], p: Point2) -> bool {
     inside
 }
 
+/// Whether the mesh debug dump is on, read once.
+///
+/// `env::var` takes a process-wide lock and allocates its answer, and this was
+/// asked once per face — on an imported assembly, once per face of every part.
+static MESH_DEBUG: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("OGEOM_MESH_DEBUG").is_ok());
+
+/// The ring edges that can cross a horizontal ray, bucketed by height.
+///
+/// [`crosses_odd_times`] walks every edge of every ring for each point it is
+/// asked about. That is fine for a handful of queries and ruinous for the
+/// refinement loop, which asks once per triangle per round while the rings
+/// themselves never change: a face with 544 boundary points and 41 000
+/// triangles pays a quarter of a billion edge visits, nearly all on edges
+/// nowhere near the point.
+///
+/// An edge can only straddle a ray at height `y` if `y` lies within the edge's
+/// own `y` span, so bucketing edges by that span and querying one bucket tests
+/// a conservative superset of the edges that could contribute. **The answer is
+/// therefore identical** — the same straddle test and the same exact predicate
+/// decide each candidate; the index only declines to visit edges that could
+/// not have counted.
+///
+/// Parity is taken over all rings at once, which is what
+/// [`inside_boundary_with`] computes as an exclusive-or of per-ring parities:
+/// the two agree because the parity of the total crossing count is the sum of
+/// the rings' parities.
+struct RingBands {
+    /// Every ring's edges, flattened.
+    edges: Vec<(Point2, Point2)>,
+    /// Edge indices per band, low `y` first.
+    bands: Vec<Vec<u32>>,
+    low: f64,
+    high: f64,
+    /// Band height. Zero when every point shares one `y`, which leaves a
+    /// single band holding everything.
+    step: f64,
+}
+
+impl RingBands {
+    /// Index the rings. Cheap enough to build per face and paid back by the
+    /// first few hundred queries.
+    fn over(rings: &[Vec<Point2>]) -> Self {
+        let mut edges = Vec::new();
+        for ring in rings {
+            for i in 0..ring.len() {
+                edges.push((ring[i], ring[(i + 1) % ring.len()]));
+            }
+        }
+        let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+        for (a, b) in &edges {
+            low = low.min(a.y).min(b.y);
+            high = high.max(a.y).max(b.y);
+        }
+        if edges.is_empty() || !low.is_finite() || !high.is_finite() {
+            return Self {
+                edges,
+                bands: Vec::new(),
+                low: 0.0,
+                high: 0.0,
+                step: 0.0,
+            };
+        }
+        // About four edges to a band: enough to keep the per-query walk short
+        // without spreading a long edge across a table of mostly empty bands.
+        let count = edges.len().div_ceil(4).clamp(1, 4096);
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a band count, far below the integers f64 represents exactly"
+        )]
+        let step = (high - low) / count as f64;
+        let mut bands: Vec<Vec<u32>> = vec![Vec::new(); count];
+        for (i, (a, b)) in edges.iter().enumerate() {
+            let (lo, hi) = (a.y.min(b.y), a.y.max(b.y));
+            let first = Self::band_of(lo, low, step, count);
+            let last = Self::band_of(hi, low, step, count);
+            for band in &mut bands[first..=last] {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "an edge index, bounded by the ring lengths"
+                )]
+                band.push(i as u32);
+            }
+        }
+        Self {
+            edges,
+            bands,
+            low,
+            high,
+            step,
+        }
+    }
+
+    /// Which band a height falls in, clamped to the table.
+    fn band_of(y: f64, low: f64, step: f64, count: usize) -> usize {
+        if step <= 0.0 {
+            return 0;
+        }
+        let raw = (y - low) / step;
+        if raw <= 0.0 {
+            return 0;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped to the band count on the next line"
+        )]
+        let index = raw as usize;
+        index.min(count - 1)
+    }
+
+    /// Whether the point lies inside the region the rings bound.
+    fn holds(&self, p: Point2) -> bool {
+        if self.bands.is_empty() || p.y < self.low || p.y > self.high {
+            return false;
+        }
+        let band = Self::band_of(p.y, self.low, self.step, self.bands.len());
+        let at = |q: Point2| [q.x, q.y];
+        let mut inside = false;
+        for &i in &self.bands[band] {
+            let (a, b) = self.edges[i as usize];
+            if (a.y > p.y) == (b.y > p.y) {
+                continue;
+            }
+            let side = Exact::orient2d(at(a), at(b), [p.x, p.y]);
+            let rightwards = if b.y > a.y {
+                side == ogeom_core::Sign::Positive
+            } else {
+                side == ogeom_core::Sign::Negative
+            };
+            if rightwards {
+                inside = !inside;
+            }
+        }
+        inside
+    }
+}
+
 /// The unit normal of a triangle, or `None` if it is degenerate.
 #[must_use]
 pub fn triangle_normal(a: Point, b: Point, c: Point, tol: Tolerances) -> Option<Direction> {
@@ -1469,6 +1634,93 @@ mod tests {
     use ogeom_topo::explore_unique;
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// `refine_direction` as it was written: rescan from zero after every
+    /// split. Kept here as the reference the cursor form is held to.
+    fn refine_by_rescan<F: Fn(f64, f64) -> f64>(lo: f64, hi: f64, chord: f64, sag: F) -> Vec<f64> {
+        let mut values = vec![lo, f64::midpoint(lo, hi), hi];
+        while values.len() < MAX_DIRECTION_STEPS {
+            let Some(i) = (0..values.len() - 1).find(|&i| sag(values[i], values[i + 1]) > chord)
+            else {
+                break;
+            };
+            let mid = f64::midpoint(values[i], values[i + 1]);
+            if mid <= values[i] || mid >= values[i + 1] {
+                break;
+            }
+            values.insert(i + 1, mid);
+        }
+        values
+    }
+
+    #[test]
+    fn walking_forward_splits_where_rescanning_did() {
+        // The cursor is only sound because splitting an interval cannot change
+        // whether an earlier one sags. Held to the old form's output exactly,
+        // over sag profiles that bite in different places: flat, steep at one
+        // end, periodic, and one savage enough to reach the step cap.
+        /// A named sag profile to hold both forms to.
+        type Profile = (&'static str, Box<dyn Fn(f64, f64) -> f64>);
+        let cases: Vec<Profile> = vec![
+            ("flat", Box::new(|_a: f64, _b: f64| 0.0)),
+            ("width", Box::new(|a: f64, b: f64| (b - a).abs())),
+            (
+                "steep at the low end",
+                Box::new(|a: f64, b: f64| (b - a).abs() / a.abs().max(1e-3)),
+            ),
+            (
+                "periodic",
+                Box::new(|a: f64, b: f64| (b - a).abs() * (a * 12.0).sin().abs()),
+            ),
+            (
+                "beyond the cap",
+                Box::new(|a: f64, b: f64| (b - a).abs() * 1e6),
+            ),
+        ];
+        for (name, sag) in cases {
+            for chord in [1.0, 0.1, 0.01, 1e-3] {
+                let walked = refine_direction(0.0, 1.0, chord, &sag);
+                let rescanned = refine_by_rescan(0.0, 1.0, chord, &sag);
+                assert_eq!(
+                    walked, rescanned,
+                    "{name} at chord {chord}: the cursor split somewhere the rescan did not"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn banded_containment_answers_what_the_full_scan_answers() {
+        // The index may only decline to visit edges that could not have
+        // counted. Held to the unindexed predicate over a ring with a hole,
+        // on a grid that straddles both boundaries and the vertices themselves.
+        let outer: Vec<Point2> = vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(4.0, 0.0),
+            Point2::new(4.0, 3.0),
+            Point2::new(2.0, 1.5),
+            Point2::new(0.0, 3.0),
+        ];
+        let hole: Vec<Point2> = vec![
+            Point2::new(1.0, 0.5),
+            Point2::new(1.0, 1.0),
+            Point2::new(1.5, 1.0),
+            Point2::new(1.5, 0.5),
+        ];
+        let rings = vec![outer, hole];
+        let bands = RingBands::over(&rings);
+        for i in 0..=80 {
+            for j in 0..=60 {
+                #[allow(clippy::cast_precision_loss)]
+                let p = Point2::new(f64::from(i) * 0.05 - 0.1, f64::from(j) * 0.05 - 0.1);
+                assert_eq!(
+                    bands.holds(p),
+                    inside_region(&rings, p),
+                    "the index disagreed with the full scan at {p:?}"
+                );
+            }
+        }
+    }
 
     fn fine() -> Deflection {
         Deflection {

@@ -875,6 +875,37 @@ impl Surface for BSplineSurface {
         ))
     }
 
+    fn jet_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<crate::SurfaceJet> {
+        // One order-two table answers for all six. Through the separate
+        // accessors this patch locates its spans, builds its basis functions
+        // and sums its control grid three times for the same numbers.
+        let (u, v) = self.normalize_parameters(u, v, tol)?;
+        let d = if self.rational {
+            bspline::rational_surface_derivatives(
+                &self.u_knots,
+                &self.v_knots,
+                &self.grid,
+                u,
+                v,
+                2,
+                tol,
+            )?
+        } else {
+            bspline::surface_derivatives(&self.u_knots, &self.v_knots, &self.grid, u, v, 2, tol)?
+                .into_iter()
+                .map(|row| row.into_iter().map(|w| w.scaled).collect())
+                .collect()
+        };
+        Ok(crate::SurfaceJet {
+            point: Point::ORIGIN + d[0][0].to_vector(),
+            du: d[1][0].to_vector(),
+            dv: d[0][1].to_vector(),
+            d2u: d[2][0].to_vector(),
+            duv: d[1][1].to_vector(),
+            d2v: d[0][2].to_vector(),
+        })
+    }
+
     fn kind(&self) -> SurfaceKind {
         SurfaceKind::BSpline
     }
@@ -1120,6 +1151,14 @@ impl Surface for SurfaceGeometry {
         dispatch!(self, s => s.d2_at(u, v, tol))
     }
 
+    // Dispatched like the rest. Without it the enum answers with the trait's
+    // default, which asks the three accessors — so the variant that overrides
+    // `jet_at` to avoid exactly that would never be reached through a
+    // `SurfaceGeometry`, which is how every caller holds a surface.
+    fn jet_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<crate::SurfaceJet> {
+        dispatch!(self, s => s.jet_at(u, v, tol))
+    }
+
     fn kind(&self) -> SurfaceKind {
         dispatch!(self, s => s.kind())
     }
@@ -1276,6 +1315,63 @@ mod tests {
     use ogeom_math::{Circle, Frame};
 
     const T: Tolerances = Tolerances::millimetres();
+
+    #[test]
+    fn a_jet_agrees_with_the_separate_accessors() {
+        // `jet_at` answers in one evaluation what three accessors answer in
+        // three. Its contract is agreement to rounding, not to the bit: a
+        // patch sums its point by de Boor and its derivatives by basis
+        // functions, and those reassociate differently. Held to a relative
+        // ulp-scale bound, which a real disagreement would blow through by
+        // orders of magnitude.
+        let close = |a: Vector, b: Vector, what: &str| {
+            let scale = a.magnitude().max(b.magnitude()).max(1.0);
+            assert!(
+                (a - b).magnitude() <= scale * 1e-12,
+                "{what}: {a:?} against {b:?}"
+            );
+        };
+        let surfaces: Vec<SurfaceGeometry> = vec![
+            SurfaceGeometry::Plane(PlaneSurface::new(ogeom_math::Plane::XY)),
+            SurfaceGeometry::Sphere(SphereSurface::new(
+                ogeom_math::Sphere::new(ogeom_math::Frame::WORLD, 3.0, T).unwrap(),
+            )),
+            bspline_patch(),
+        ];
+        for surface in &surfaces {
+            let ((ua, ub), (va, vb)) = surface.domain();
+            for i in 1..5 {
+                for j in 1..5 {
+                    let u = ua + (ub - ua) * f64::from(i) / 5.0;
+                    let v = va + (vb - va) * f64::from(j) / 5.0;
+                    let jet = surface.jet_at(u, v, T).unwrap();
+                    let point = surface.point_at(u, v, T).unwrap();
+                    close(jet.point - Point::ORIGIN, point - Point::ORIGIN, "point");
+                    let (du, dv) = surface.d1_at(u, v, T).unwrap();
+                    close(jet.du, du, "du");
+                    close(jet.dv, dv, "dv");
+                    let (d2u, duv, d2v) = surface.d2_at(u, v, T).unwrap();
+                    close(jet.d2u, d2u, "d2u");
+                    close(jet.duv, duv, "duv");
+                    close(jet.d2v, d2v, "d2v");
+                }
+            }
+        }
+    }
+
+    /// A bicubic patch with a bulge, so its derivatives are not degenerate.
+    fn bspline_patch() -> SurfaceGeometry {
+        let knots = KnotVector::new(vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 3).unwrap();
+        let mut points = Vec::new();
+        for i in 0..4 {
+            for j in 0..4 {
+                let z = if i == 1 && j == 2 { 2.0 } else { 0.0 };
+                points.push(Point::new(f64::from(i), f64::from(j), z));
+            }
+        }
+        let grid = ControlGrid::new(points, 4, 4).unwrap();
+        SurfaceGeometry::BSpline(BSplineSurface::new(knots.clone(), knots, &grid, T).unwrap())
+    }
 
     #[test]
     fn an_offset_cylinder_is_the_larger_cylinder() {

@@ -42,8 +42,8 @@ mod defeature;
 pub use defeature::remove_faces;
 
 use ogeom_algo::{
-    Built, Containment, History, classify_in_solid_exact, is_shell_closed, make_edge_between,
-    make_face_on, make_vertex, make_wire, sew, shape_bounds,
+    Built, Containment, History, is_shell_closed, make_edge_between, make_face_on, make_vertex,
+    make_wire, sew, shape_bounds,
 };
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve2d as _;
@@ -2017,6 +2017,16 @@ fn mark_covered_coincidences(ga: &GSolid, pieces: &mut [FacePiece], tol: Toleran
     }
 }
 
+/// The debug dumps, read once rather than once per face.
+///
+/// `env::var` takes a process-wide lock and allocates; the strand dump asked
+/// it inside the per-face loop, where a large model asks thousands of times
+/// to be told no.
+static DEBUG_STRANDS: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("OGEOM_DEBUG_STRANDS").is_ok());
+static ARRANGE_DEBUG: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("OGEOM_ARRANGE_DEBUG").is_ok());
+
 fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<GeneralFused> {
     ogeom_core::progress::stage("boolean: gather");
     let ga = gather(model, a, tol)?;
@@ -2028,6 +2038,12 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     ogeom_core::progress::stage("boolean: split");
     let mut pieces: Vec<FacePiece> = Vec::new();
     for (from_a, own, other) in [(true, &ga, &gb.solid), (false, &gb, &ga.solid)] {
+        // The other solid's boundary, prepared once for the whole side. It is
+        // asked once per face piece, and what it costs to prepare — every
+        // face's trimming rings, polylined — does not depend on the point
+        // being asked about. Rebuilt per question it dwarfed the question:
+        // 3.5 ms of preparation against 5.6 µs of ray casting.
+        let boundary = ogeom_algo::SolidBoundary::of(model, other, tol.confusion() * 1e4, tol)?;
         for (fi, face) in own.faces.iter().enumerate() {
             ogeom_core::progress::checkpoint()?;
             let mut strands: Vec<Strand<Tag>> = Vec::new();
@@ -2253,7 +2269,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                         .iter()
                         .fold(0.0_f64, |acc, e| acc.max(e.tolerance * 2.0)),
                 );
-            if std::env::var("OGEOM_DEBUG_STRANDS").is_ok() {
+            if *DEBUG_STRANDS {
                 for (si, st) in strands.iter().enumerate() {
                     let tag = match st.tag {
                         Tag::Boundary { edge, range } => format!("Boundary e{edge} {range:?}"),
@@ -2297,7 +2313,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     let says = if shared {
                         Containment::On
                     } else {
-                        classify_in_solid_exact(model, other, at, tol)?
+                        boundary.holds(model, at, tol)?
                     };
                     if chosen.is_none() || !matches!(says, Containment::On) {
                         chosen = Some((*candidate, at, says));
@@ -2398,7 +2414,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         }
     }
     mark_covered_coincidences(&ga, &mut pieces, tol);
-    if std::env::var("OGEOM_ARRANGE_DEBUG").is_ok() {
+    if *ARRANGE_DEBUG {
         for (i, p) in pieces.iter().enumerate() {
             let own = if p.from_a {
                 &ga.faces[p.face]
@@ -2768,7 +2784,7 @@ fn assemble_result(
         if !is_shell_closed(model, shell)? {
             // Env-gated forensics: the open shell's unshared edges, the
             // question every failure here starts from.
-            if std::env::var("OGEOM_ARRANGE_DEBUG").is_ok() {
+            if *ARRANGE_DEBUG {
                 use ogeom_geom::Curve3d as _;
                 for edge in ogeom_topo::explore_unique(model, shell, ShapeType::Edge)? {
                     let users = ogeom_topo::explore(model, shell, Filter::OfType(ShapeType::Face))?

@@ -116,6 +116,95 @@ fn benchmarks() -> Vec<(&'static str, f64)> {
         }),
     ));
 
+    // The boolean with many faces in play: a block drilled four times, then
+    // cut by a torus. The classifier is asked once per face piece and asks
+    // the *other* solid's every face, so this is where that product shows.
+    out.push((
+        "boolean_many_faces",
+        median(5, || {
+            let mut model = Model::new();
+            let mut block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+                .unwrap()
+                .shape;
+            for (x, y) in [(5.0, 5.0), (15.0, 5.0), (5.0, 15.0), (15.0, 15.0)] {
+                let frame =
+                    Frame::new(Point::new(x, y, -1.0), Direction::Z, Direction::X, T).unwrap();
+                let drill = ogeom::algo::make_cylinder(&mut model, frame, 2.0, 12.0, T)
+                    .unwrap()
+                    .shape;
+                block = ogeom::boolean::cut(&mut model, &block, &drill, T)
+                    .unwrap()
+                    .shape;
+            }
+            std::hint::black_box(&block);
+        }),
+    ));
+
+    // The boolean with no closed form: crossed cylinders, whose sections only
+    // the marcher can trace. `boolean_drill` is analytic end to end and never
+    // reaches that machinery.
+    out.push((
+        "boolean_marched",
+        median(5, || {
+            let mut model = Model::new();
+            let upright = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 1.0, 4.0, T)
+                .unwrap()
+                .shape;
+            let frame =
+                Frame::new(Point::new(-2.0, 0.0, 2.0), Direction::X, Direction::Y, T).unwrap();
+            let across = ogeom::algo::make_cylinder(&mut model, frame, 0.6, 4.0, T)
+                .unwrap()
+                .shape;
+            let both = ogeom::boolean::fuse(&mut model, &upright, &across, T).unwrap();
+            std::hint::black_box(&both.shape);
+        }),
+    ));
+
+    // A constant-radius fillet: the blend machinery, which no benchmark reached.
+    out.push((
+        "fillet_block",
+        median(5, || {
+            let mut model = Model::new();
+            let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+                .unwrap()
+                .shape;
+            let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+            let rolled =
+                ogeom::fillet::fillet_edges(&mut model, &block, &edges[..1], 1.0, T).unwrap();
+            std::hint::black_box(&rolled.shape);
+        }),
+    ));
+
+    // Whole-shape tessellation of a real imported part: the sequential face
+    // loop that mass properties falls into whenever a face is not analytic,
+    // which is guaranteed on an imported b-rep. A primitive will not do —
+    // a torus answers from its closed form and never meshes at all.
+    {
+        let path = format!(
+            "{}/../../tests/corpus/nist_ftc_11_asme1_rb.stp",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        if let Ok(text) = std::fs::read_to_string(&path)
+            && let Ok(import) = ogeom::io::read_step(&text, T)
+            && let Some(solid) = import.solids.first().cloned()
+        {
+            let model = import.document;
+            out.push((
+                "tessellate_part",
+                median(5, || {
+                    let mesh = ogeom::mesh::triangulate(
+                        model.model(),
+                        &solid,
+                        Deflection::with_chord(1e-2).unwrap(),
+                        T,
+                    )
+                    .unwrap();
+                    std::hint::black_box(mesh.triangles.len());
+                }),
+            ));
+        }
+    }
+
     // Import: the smallest corpus part, read and healed.
     {
         let path = format!(
@@ -125,6 +214,24 @@ fn benchmarks() -> Vec<(&'static str, f64)> {
         if let Ok(text) = std::fs::read_to_string(&path) {
             out.push((
                 "import_ftc11",
+                median(3, || {
+                    let import = ogeom::io::read_step(&text, T).unwrap();
+                    std::hint::black_box(import.solids.len());
+                }),
+            ));
+        }
+    }
+
+    // Import: the largest corpus part, so the reader is measured at a size
+    // the smallest file cannot show.
+    {
+        let path = format!(
+            "{}/../../tests/corpus/nist_ctc_02_asme1_rc.stp",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            out.push((
+                "import_ctc02",
                 median(3, || {
                     let import = ogeom::io::read_step(&text, T).unwrap();
                     std::hint::black_box(import.solids.len());

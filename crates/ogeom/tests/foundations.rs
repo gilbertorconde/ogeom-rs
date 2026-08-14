@@ -108,3 +108,48 @@ fn a_boolean_reports_its_stages() {
         "{volume} vs {expected}"
     );
 }
+
+/// The whole-shape mesh is the same at one thread and at four, to the bit.
+///
+/// `tessellate` writes its meshes into the model, so the test above can
+/// compare serialized bytes. `triangulate` hands its mesh straight back, and
+/// what has to be identical is that mesh: every position, every index, in
+/// order. A face landing in the wrong slot, or a piece appended out of turn,
+/// would show here and nowhere else.
+#[test]
+fn parallel_triangulation_returns_the_same_mesh() {
+    let mesh_at = |threads: usize| {
+        parallel::set_threads(threads);
+        let mut model = Model::new();
+        let shapes = build(&mut model);
+        let meshes: Vec<_> = shapes
+            .iter()
+            .map(|shape| ogeom::mesh::triangulate(&model, shape, Deflection::default(), T).unwrap())
+            .collect();
+        parallel::set_threads(0);
+        meshes
+    };
+    let serial = mesh_at(1);
+    let threaded = mesh_at(4);
+
+    assert_eq!(serial.len(), threaded.len());
+    for (one, many) in serial.iter().zip(&threaded) {
+        assert_eq!(
+            one.triangles, many.triangles,
+            "the triangles must not depend on the thread count"
+        );
+        assert_eq!(
+            one.positions.len(),
+            many.positions.len(),
+            "the vertex count must not depend on the thread count"
+        );
+        for (a, b) in one.positions.iter().zip(&many.positions) {
+            assert!(
+                a.x.to_bits() == b.x.to_bits()
+                    && a.y.to_bits() == b.y.to_bits()
+                    && a.z.to_bits() == b.z.to_bits(),
+                "a vertex moved between thread counts: {a:?} against {b:?}"
+            );
+        }
+    }
+}
