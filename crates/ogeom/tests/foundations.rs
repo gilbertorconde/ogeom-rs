@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::{OgeomError, Tolerances, parallel, progress};
-use ogeom::math::Frame;
+use ogeom::math::{Frame, Point};
 use ogeom::mesh::Deflection;
 use ogeom::topo::{Model, Shape};
 
@@ -152,4 +152,49 @@ fn parallel_triangulation_returns_the_same_mesh() {
             );
         }
     }
+}
+
+/// A boolean's answer does not depend on how many threads paved its sections.
+///
+/// The filler measures each section against the boundaries it crosses, and
+/// that measuring now runs in parallel. What must not move is where the
+/// crossings land: a pave arriving in a different order would split an edge
+/// at the same places in a different sequence, and the rebuilt solid would
+/// differ in its vertex numbering even where its geometry agreed. Serialized
+/// bytes catch exactly that.
+#[test]
+fn a_parallel_boolean_is_bit_identical() {
+    let cut_at = |threads: usize| {
+        parallel::set_threads(threads);
+        let mut model = Model::new();
+        let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let mut solid = block;
+        for (x, y) in [(5.0, 5.0), (15.0, 5.0), (5.0, 15.0)] {
+            let frame = Frame::new(
+                Point::new(x, y, -1.0),
+                ogeom_math::Direction::Z,
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap();
+            let drill = ogeom::algo::make_cylinder(&mut model, frame, 2.0, 12.0, T)
+                .unwrap()
+                .shape;
+            solid = ogeom::boolean::cut(&mut model, &solid, &drill, T)
+                .unwrap()
+                .shape;
+        }
+        parallel::set_threads(0);
+        let shapes = vec![solid];
+        ogeom::io::native::write(&model, &shapes, ogeom::io::native::WriteOptions::default())
+            .unwrap()
+    };
+    let serial = cut_at(1);
+    let threaded = cut_at(4);
+    assert_eq!(
+        serial, threaded,
+        "the cut solid's bytes must not depend on the thread count"
+    );
 }

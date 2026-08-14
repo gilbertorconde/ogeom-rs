@@ -1032,302 +1032,321 @@ fn fill(
     let mut paves: std::collections::HashMap<ogeom_topo::TShapeId, Vec<f64>> =
         std::collections::HashMap::new();
     let mut pieces: Vec<SectionPiece> = Vec::new();
-    for (si, section) in sections.iter().enumerate() {
-        // A fitted section meets an edge within its own budget, not within
-        // rounding.
-        let reach = tol.confusion().max(section.tolerance * 2.0);
-        let cc = CurveCurveOptions {
-            gap: reach.max(CurveCurveOptions::default().gap),
-            ..CurveCurveOptions::default()
-        };
-        let domain = section.curve.domain();
-        let mut trim_ts: Vec<f64> = Vec::new();
-        let mut edge_hits: Vec<(ogeom_topo::TShapeId, f64, f64)> = Vec::new();
-        // Spans of the section running *along* a boundary edge. The split
-        // such a span would make already exists as boundary — stacked boxes'
-        // perpendicular side planes meet exactly at the boxes' own edges —
-        // so the span is excluded from that face's strands rather than
-        // refused or duplicated.
-        //
-        // Which face, though, is the whole point. A plane through a bore's
-        // axis meets the wall along two rulings, and one of them is the
-        // wall's own seam: on the wall that ruling is boundary already, and
-        // on the plane it is the curve that separates the two halves the
-        // section leaves. Dropped from both, the plane keeps one region where
-        // it has two, and the result does not close. So the exclusion is
-        // recorded per face.
-        let mut along: [Vec<(f64, f64)>; 2] = [Vec::new(), Vec::new()];
-        for (side, own) in [
-            (0_usize, &ga.faces[section.face_a]),
-            (1, &gb.faces[section.face_b]),
-        ] {
-            for e in &own.edges {
-                let found = intersect_curves(&section.curve, &e.curve, cc, tol)?;
-                for crossing in &found.crossings {
-                    if crossing.gap > reach {
-                        continue;
-                    }
-                    let on_b = onto_range(crossing.on_b, &e.curve, e.crange, tol);
-                    // A crossing at a boundary edge's own end *is* that end's
-                    // vertex, exactly. The stop the section keeps must be the
-                    // vertex's parameter on the section — the meet of two
-                    // curves a fit tolerance apart lands a couple of microns
-                    // off, the boundary side keeps its exact vertex, and the
-                    // rebuilt wire gapes by the difference.
-                    let mut on_a = crossing.on_a;
-                    // The window is the fit-slop scale, not the section's
-                    // own: the boundary curve may be a fitted intersection
-                    // from an earlier boolean carrying a couple of microns
-                    // of wobble, and a stop that misses the vertex by that
-                    // much gapes the rebuilt wire by the same.
-                    let weld = reach.max(tol.confusion() * 1e2);
-                    for end in [e.crange.0, e.crange.1] {
-                        let vertex = e.curve.point_at(end, tol)?;
-                        if vertex.distance(crossing.point) <= weld {
-                            let snapped =
-                                ogeom_algo::project_on_curve(&section.curve, vertex, 64, tol)?;
-                            if snapped.distance <= weld {
-                                on_a = snapped.parameter;
-                            }
-                            break;
-                        }
-                    }
-                    trim_ts.push(on_a);
-                    edge_hits.push((e.node, on_b, on_a));
-                }
-                for overlap in &found.overlaps {
-                    // The curves overlap; what is *boundary* is the stretch
-                    // the edge actually covers. A sphere's seam and the far
-                    // half of the same great circle lie on one curve, and
-                    // reading the whole curve as boundary makes the meridian
-                    // opposite the seam disappear — which is the octant's own
-                    // edge, on a ball cut at its corner.
-                    let Some((lo, hi)) = overlap_within(overlap, e.crange, &e.curve, tol) else {
-                        continue;
-                    };
-                    trim_ts.push(lo);
-                    trim_ts.push(hi);
-                    along[side].push((lo, hi));
-                }
-            }
-        }
-        let mut cross_ts: Vec<f64> = Vec::new();
-        for (sj, other) in sections.iter().enumerate() {
-            if sj == si {
-                continue;
-            }
-            if other.face_a != section.face_a && other.face_b != section.face_b {
-                continue;
-            }
-            let both = reach.max(tol.confusion().max(other.tolerance * 2.0));
-            let cc2 = CurveCurveOptions {
-                gap: both.max(CurveCurveOptions::default().gap),
+    // Each section's paving depends only on the sections and the two
+    // gathered solids, all read-only here, and writes nothing the next
+    // section reads. So the measuring runs in parallel and the accumulating
+    // runs afterwards in section order — the same split `tessellate` uses,
+    // and the same reason: nothing about scheduling can reach the answer.
+    type SectionWork = (Vec<(ogeom_topo::TShapeId, f64)>, Vec<SectionPiece>);
+    let paved: Vec<OgeomResult<SectionWork>> =
+        ogeom_core::parallel::map_ordered(&sections, |si, section: &SectionRec| {
+            ogeom_core::progress::checkpoint()?;
+            let mut paves: Vec<(ogeom_topo::TShapeId, f64)> = Vec::new();
+            let mut pieces: Vec<SectionPiece> = Vec::new();
+            // A fitted section meets an edge within its own budget, not within
+            // rounding.
+            let reach = tol.confusion().max(section.tolerance * 2.0);
+            let cc = CurveCurveOptions {
+                gap: reach.max(CurveCurveOptions::default().gap),
                 ..CurveCurveOptions::default()
             };
-            let found = intersect_curves(&section.curve, &other.curve, cc2, tol)?;
-            for crossing in &found.crossings {
-                if crossing.gap <= both {
-                    cross_ts.push(crossing.on_a);
-                }
-            }
-        }
-
-        // Candidate intervals between trim crossings, kept where the middle
-        // sits inside both faces' trims.
-        trim_ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-        trim_ts.dedup_by(|a, b| (*a - *b).abs() <= tol.parametric());
-        let mut candidates: Vec<(f64, f64)> = Vec::new();
-        if section.closed {
-            let period = domain.1 - domain.0;
-            if trim_ts.is_empty() {
-                candidates.push(domain);
-            } else {
-                for i in 0..trim_ts.len() {
-                    let lo = trim_ts[i];
-                    let hi = if i + 1 < trim_ts.len() {
-                        trim_ts[i + 1]
-                    } else {
-                        trim_ts[0] + period
-                    };
-                    candidates.push((lo, hi));
-                }
-            }
-        } else {
-            let mut stops = vec![domain.0];
-            stops.extend(
-                trim_ts
-                    .iter()
-                    .copied()
-                    .filter(|t| *t > domain.0 && *t < domain.1),
-            );
-            stops.push(domain.1);
-            for pair in stops.windows(2) {
-                candidates.push((pair[0], pair[1]));
-            }
-        }
-
-        let inside_both = |t: f64| -> OgeomResult<bool> {
-            let tf = if section.closed { fold(t, domain) } else { t };
-            let ua = fold_point_into_chart(
-                section.pc_a.point_at(tf, tol)?,
-                &ga.faces[section.face_a].surface,
-            );
-            let ub = fold_point_into_chart(
-                section.pc_b.point_at(tf, tol)?,
-                &gb.faces[section.face_b].surface,
-            );
-            let la: Vec<&[Point2]> = outlines_a[section.face_a]
-                .iter()
-                .map(Vec::as_slice)
-                .collect();
-            let lb: Vec<&[Point2]> = outlines_b[section.face_b]
-                .iter()
-                .map(Vec::as_slice)
-                .collect();
-            Ok(inside_many(&la, ua) && inside_many(&lb, ub))
-        };
-
-        for (lo, hi) in candidates {
-            if hi - lo <= tol.parametric() {
-                continue;
-            }
-            let mid = f64::midpoint(lo, hi);
-            let mid_folded = if section.closed {
-                fold(mid, domain)
-            } else {
-                mid
-            };
-            if !inside_both(mid)? {
-                continue;
-            }
-            // A section that runs along a boundary edge of a face splits
-            // nothing *there*: the split already exists as boundary. The
-            // analytic overlap detection above catches the same-support
-            // cases; this catches the rest — a fitted section tracing a
-            // boundary curve, a surface meeting another exactly at its own
-            // trim — by measurement rather than by recognising supports.
-            let mut hugs = [false; 2];
-            for (side, own, side_from_a, side_face) in [
-                (0_usize, &ga.faces[section.face_a], true, section.face_a),
-                (1, &gb.faces[section.face_b], false, section.face_b),
+            let domain = section.curve.domain();
+            let mut trim_ts: Vec<f64> = Vec::new();
+            let mut edge_hits: Vec<(ogeom_topo::TShapeId, f64, f64)> = Vec::new();
+            // Spans of the section running *along* a boundary edge. The split
+            // such a span would make already exists as boundary — stacked boxes'
+            // perpendicular side planes meet exactly at the boxes' own edges —
+            // so the span is excluded from that face's strands rather than
+            // refused or duplicated.
+            //
+            // Which face, though, is the whole point. A plane through a bore's
+            // axis meets the wall along two rulings, and one of them is the
+            // wall's own seam: on the wall that ruling is boundary already, and
+            // on the plane it is the curve that separates the two halves the
+            // section leaves. Dropped from both, the plane keeps one region where
+            // it has two, and the result does not close. So the exclusion is
+            // recorded per face.
+            let mut along: [Vec<(f64, f64)>; 2] = [Vec::new(), Vec::new()];
+            for (side, own) in [
+                (0_usize, &ga.faces[section.face_a]),
+                (1, &gb.faces[section.face_b]),
             ] {
-                if along[side]
-                    .iter()
-                    .any(|(alo, ahi)| mid_folded >= *alo && mid_folded <= *ahi)
-                {
-                    hugs[side] = true;
+                for e in &own.edges {
+                    let found = intersect_curves(&section.curve, &e.curve, cc, tol)?;
+                    for crossing in &found.crossings {
+                        if crossing.gap > reach {
+                            continue;
+                        }
+                        let on_b = onto_range(crossing.on_b, &e.curve, e.crange, tol);
+                        // A crossing at a boundary edge's own end *is* that end's
+                        // vertex, exactly. The stop the section keeps must be the
+                        // vertex's parameter on the section — the meet of two
+                        // curves a fit tolerance apart lands a couple of microns
+                        // off, the boundary side keeps its exact vertex, and the
+                        // rebuilt wire gapes by the difference.
+                        let mut on_a = crossing.on_a;
+                        // The window is the fit-slop scale, not the section's
+                        // own: the boundary curve may be a fitted intersection
+                        // from an earlier boolean carrying a couple of microns
+                        // of wobble, and a stop that misses the vertex by that
+                        // much gapes the rebuilt wire by the same.
+                        let weld = reach.max(tol.confusion() * 1e2);
+                        for end in [e.crange.0, e.crange.1] {
+                            let vertex = e.curve.point_at(end, tol)?;
+                            if vertex.distance(crossing.point) <= weld {
+                                let snapped =
+                                    ogeom_algo::project_on_curve(&section.curve, vertex, 64, tol)?;
+                                if snapped.distance <= weld {
+                                    on_a = snapped.parameter;
+                                }
+                                break;
+                            }
+                        }
+                        trim_ts.push(on_a);
+                        edge_hits.push((e.node, on_b, on_a));
+                    }
+                    for overlap in &found.overlaps {
+                        // The curves overlap; what is *boundary* is the stretch
+                        // the edge actually covers. A sphere's seam and the far
+                        // half of the same great circle lie on one curve, and
+                        // reading the whole curve as boundary makes the meridian
+                        // opposite the seam disappear — which is the octant's own
+                        // edge, on a ball cut at its corner.
+                        let Some((lo, hi)) = overlap_within(overlap, e.crange, &e.curve, tol)
+                        else {
+                            continue;
+                        };
+                        trim_ts.push(lo);
+                        trim_ts.push(hi);
+                        along[side].push((lo, hi));
+                    }
+                }
+            }
+            let mut cross_ts: Vec<f64> = Vec::new();
+            for (sj, other) in sections.iter().enumerate() {
+                if sj == si {
                     continue;
                 }
-                let mut all_near = true;
-                for i in 0..=4 {
-                    let t = lo + (hi - lo) * f64::from(i) / 4.0;
-                    let tf = if section.closed { fold(t, domain) } else { t };
-                    let at = section.curve.point_at(tf, tol)?;
-                    // Wider than the crossing filters on purpose: a
-                    // tangentially-traced curve wobbles about the boundary it
-                    // hugs by far more than a fit budget, and a genuine
-                    // section keeps a distance of feature scale, not microns.
-                    let width = reach.max(tol.confusion() * 1e3);
-                    let mut near = false;
-                    for e in &own.edges {
-                        if distance_to_edge_curve(&e.curve, e.crange, at, tol)? <= width {
-                            near = true;
-                            break;
-                        }
+                if other.face_a != section.face_a && other.face_b != section.face_b {
+                    continue;
+                }
+                let both = reach.max(tol.confusion().max(other.tolerance * 2.0));
+                let cc2 = CurveCurveOptions {
+                    gap: both.max(CurveCurveOptions::default().gap),
+                    ..CurveCurveOptions::default()
+                };
+                let found = intersect_curves(&section.curve, &other.curve, cc2, tol)?;
+                for crossing in &found.crossings {
+                    if crossing.gap <= both {
+                        cross_ts.push(crossing.on_a);
                     }
-                    // A contact edge is a strand on this face too — the other
-                    // solid's boundary, carried into a chart they share — so a
-                    // section tracing one would be the same curve twice, and
-                    // the arrangement cannot walk a line it meets from both
-                    // sides at once. Two boxes side by side put the low one's
-                    // lid exactly there.
-                    if !near {
-                        for c in &contacts {
-                            if c.target_from_a != side_from_a || c.target_face != side_face {
-                                continue;
-                            }
-                            if distance_to_edge_curve(&c.curve, c.crange, at, tol)? <= width {
+                }
+            }
+
+            // Candidate intervals between trim crossings, kept where the middle
+            // sits inside both faces' trims.
+            trim_ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+            trim_ts.dedup_by(|a, b| (*a - *b).abs() <= tol.parametric());
+            let mut candidates: Vec<(f64, f64)> = Vec::new();
+            if section.closed {
+                let period = domain.1 - domain.0;
+                if trim_ts.is_empty() {
+                    candidates.push(domain);
+                } else {
+                    for i in 0..trim_ts.len() {
+                        let lo = trim_ts[i];
+                        let hi = if i + 1 < trim_ts.len() {
+                            trim_ts[i + 1]
+                        } else {
+                            trim_ts[0] + period
+                        };
+                        candidates.push((lo, hi));
+                    }
+                }
+            } else {
+                let mut stops = vec![domain.0];
+                stops.extend(
+                    trim_ts
+                        .iter()
+                        .copied()
+                        .filter(|t| *t > domain.0 && *t < domain.1),
+                );
+                stops.push(domain.1);
+                for pair in stops.windows(2) {
+                    candidates.push((pair[0], pair[1]));
+                }
+            }
+
+            let inside_both = |t: f64| -> OgeomResult<bool> {
+                let tf = if section.closed { fold(t, domain) } else { t };
+                let ua = fold_point_into_chart(
+                    section.pc_a.point_at(tf, tol)?,
+                    &ga.faces[section.face_a].surface,
+                );
+                let ub = fold_point_into_chart(
+                    section.pc_b.point_at(tf, tol)?,
+                    &gb.faces[section.face_b].surface,
+                );
+                let la: Vec<&[Point2]> = outlines_a[section.face_a]
+                    .iter()
+                    .map(Vec::as_slice)
+                    .collect();
+                let lb: Vec<&[Point2]> = outlines_b[section.face_b]
+                    .iter()
+                    .map(Vec::as_slice)
+                    .collect();
+                Ok(inside_many(&la, ua) && inside_many(&lb, ub))
+            };
+
+            for (lo, hi) in candidates {
+                if hi - lo <= tol.parametric() {
+                    continue;
+                }
+                let mid = f64::midpoint(lo, hi);
+                let mid_folded = if section.closed {
+                    fold(mid, domain)
+                } else {
+                    mid
+                };
+                if !inside_both(mid)? {
+                    continue;
+                }
+                // A section that runs along a boundary edge of a face splits
+                // nothing *there*: the split already exists as boundary. The
+                // analytic overlap detection above catches the same-support
+                // cases; this catches the rest — a fitted section tracing a
+                // boundary curve, a surface meeting another exactly at its own
+                // trim — by measurement rather than by recognising supports.
+                let mut hugs = [false; 2];
+                for (side, own, side_from_a, side_face) in [
+                    (0_usize, &ga.faces[section.face_a], true, section.face_a),
+                    (1, &gb.faces[section.face_b], false, section.face_b),
+                ] {
+                    if along[side]
+                        .iter()
+                        .any(|(alo, ahi)| mid_folded >= *alo && mid_folded <= *ahi)
+                    {
+                        hugs[side] = true;
+                        continue;
+                    }
+                    let mut all_near = true;
+                    for i in 0..=4 {
+                        let t = lo + (hi - lo) * f64::from(i) / 4.0;
+                        let tf = if section.closed { fold(t, domain) } else { t };
+                        let at = section.curve.point_at(tf, tol)?;
+                        // Wider than the crossing filters on purpose: a
+                        // tangentially-traced curve wobbles about the boundary it
+                        // hugs by far more than a fit budget, and a genuine
+                        // section keeps a distance of feature scale, not microns.
+                        let width = reach.max(tol.confusion() * 1e3);
+                        let mut near = false;
+                        for e in &own.edges {
+                            if distance_to_edge_curve(&e.curve, e.crange, at, tol)? <= width {
                                 near = true;
                                 break;
                             }
                         }
+                        // A contact edge is a strand on this face too — the other
+                        // solid's boundary, carried into a chart they share — so a
+                        // section tracing one would be the same curve twice, and
+                        // the arrangement cannot walk a line it meets from both
+                        // sides at once. Two boxes side by side put the low one's
+                        // lid exactly there.
+                        if !near {
+                            for c in &contacts {
+                                if c.target_from_a != side_from_a || c.target_face != side_face {
+                                    continue;
+                                }
+                                if distance_to_edge_curve(&c.curve, c.crange, at, tol)? <= width {
+                                    near = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if !near {
+                            all_near = false;
+                            break;
+                        }
                     }
-                    if !near {
-                        all_near = false;
-                        break;
+                    hugs[side] = all_near;
+                }
+                if hugs[0] && hugs[1] {
+                    // Boundary on both sides: the split exists twice over and
+                    // adding it a third time would cancel what it copies.
+                    continue;
+                }
+                // Keep the paves that end a kept interval: those are where edges
+                // genuinely split.
+                for (node, on_edge, on_section) in &edge_hits {
+                    let s = *on_section;
+                    let near = |x: f64| {
+                        (s - x).abs() <= tol.parametric()
+                            || (section.closed
+                                && ((s + (domain.1 - domain.0)) - x).abs() <= tol.parametric())
+                    };
+                    if near(lo) || near(hi) {
+                        paves.push((*node, *on_edge));
                     }
                 }
-                hugs[side] = all_near;
-            }
-            if hugs[0] && hugs[1] {
-                // Boundary on both sides: the split exists twice over and
-                // adding it a third time would cancel what it copies.
-                continue;
-            }
-            // Keep the paves that end a kept interval: those are where edges
-            // genuinely split.
-            for (node, on_edge, on_section) in &edge_hits {
-                let s = *on_section;
-                let near = |x: f64| {
-                    (s - x).abs() <= tol.parametric()
-                        || (section.closed
-                            && ((s + (domain.1 - domain.0)) - x).abs() <= tol.parametric())
-                };
-                if near(lo) || near(hi) {
-                    paves.entry(*node).or_default().push(*on_edge);
+                // Split at section/section crossings inside the kept interval,
+                // so every face sees the same subdivision.
+                let mut cuts = vec![lo];
+                // A wrap interval also splits at the curve's own domain end, so
+                // every piece lives within one period and evaluates in-domain
+                // after a single fold.
+                if section.closed
+                    && domain.1 > lo + tol.parametric()
+                    && domain.1 < hi - tol.parametric()
+                {
+                    cuts.push(domain.1);
+                }
+                for &c in &cross_ts {
+                    let c2 = if section.closed && c < lo {
+                        c + (domain.1 - domain.0)
+                    } else {
+                        c
+                    };
+                    if c2 > lo + tol.parametric() && c2 < hi - tol.parametric() {
+                        cuts.push(c2);
+                    }
+                }
+                cuts.push(hi);
+                cuts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+                for pair in cuts.windows(2) {
+                    let (lo2, hi2) = (pair[0], pair[1]);
+                    let from = section.curve.point_at(fold(lo2, domain), tol)?;
+                    let to = section.curve.point_at(fold(hi2, domain), tol)?;
+                    if from.distance(to) <= tol.confusion() {
+                        // A full loop: two arcs, so every strand has two
+                        // distinct endpoints.
+                        let mid = f64::midpoint(lo2, hi2);
+                        pieces.push(SectionPiece {
+                            section: si,
+                            range: (lo2, mid),
+                            hugs,
+                        });
+                        pieces.push(SectionPiece {
+                            section: si,
+                            range: (mid, hi2),
+                            hugs,
+                        });
+                    } else {
+                        pieces.push(SectionPiece {
+                            section: si,
+                            range: (lo2, hi2),
+                            hugs,
+                        });
+                    }
                 }
             }
-            // Split at section/section crossings inside the kept interval,
-            // so every face sees the same subdivision.
-            let mut cuts = vec![lo];
-            // A wrap interval also splits at the curve's own domain end, so
-            // every piece lives within one period and evaluates in-domain
-            // after a single fold.
-            if section.closed
-                && domain.1 > lo + tol.parametric()
-                && domain.1 < hi - tol.parametric()
-            {
-                cuts.push(domain.1);
-            }
-            for &c in &cross_ts {
-                let c2 = if section.closed && c < lo {
-                    c + (domain.1 - domain.0)
-                } else {
-                    c
-                };
-                if c2 > lo + tol.parametric() && c2 < hi - tol.parametric() {
-                    cuts.push(c2);
-                }
-            }
-            cuts.push(hi);
-            cuts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-            for pair in cuts.windows(2) {
-                let (lo2, hi2) = (pair[0], pair[1]);
-                let from = section.curve.point_at(fold(lo2, domain), tol)?;
-                let to = section.curve.point_at(fold(hi2, domain), tol)?;
-                if from.distance(to) <= tol.confusion() {
-                    // A full loop: two arcs, so every strand has two
-                    // distinct endpoints.
-                    let mid = f64::midpoint(lo2, hi2);
-                    pieces.push(SectionPiece {
-                        section: si,
-                        range: (lo2, mid),
-                        hugs,
-                    });
-                    pieces.push(SectionPiece {
-                        section: si,
-                        range: (mid, hi2),
-                        hugs,
-                    });
-                } else {
-                    pieces.push(SectionPiece {
-                        section: si,
-                        range: (lo2, hi2),
-                        hugs,
-                    });
-                }
-            }
+            Ok((paves, pieces))
+        });
+    for work in paved {
+        let (found, made) = work?;
+        for (node, at) in found {
+            paves.entry(node).or_default().push(at);
         }
+        pieces.extend(made);
     }
     // A contact edge splits where it crosses the target face's boundary —
     // and that crossing is a pave on *both* edges, so the owner's own face
