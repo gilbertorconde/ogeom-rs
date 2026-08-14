@@ -106,3 +106,15 @@ debug = 1
 # Debug builds of a geometry kernel are unusably slow with unoptimized deps.
 [profile.dev.package."*"]
 opt-level = 2
+
+# `package."*"` above covers dependencies and *not* workspace members, so
+# without this the kernel's own fifteen crates compiled unoptimised for every
+# `cargo test` — and a kernel is arithmetic end to end. The heaviest suite,
+# eleven real b-reps read and meshed, spent 165 s that way and spends 29 s
+# here.
+#
+# Level 1 rather than 2 on the evidence: level 2 took the same suite to 27 s,
+# a further 6%, and took an incremental rebuild from 4 s to 25 s. Nearly all
+# the run-time win, at a sixth of the compile cost.
+[profile.dev]
+opt-level = 1
