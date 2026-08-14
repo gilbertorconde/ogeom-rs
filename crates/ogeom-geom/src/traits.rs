@@ -296,6 +296,25 @@ pub trait Curve2d {
     }
 }
 
+/// A surface's point and its derivatives through second order, at one place.
+///
+/// What a foot-point solve needs in one go — see [`Surface::jet_at`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceJet {
+    /// The point at the parameters asked for.
+    pub point: Point,
+    /// The first derivative along `u`.
+    pub du: Vector,
+    /// The first derivative along `v`.
+    pub dv: Vector,
+    /// The second derivative along `u`.
+    pub d2u: Vector,
+    /// The mixed second derivative.
+    pub duv: Vector,
+    /// The second derivative along `v`.
+    pub d2v: Vector,
+}
+
 /// A parametric surface.
 ///
 /// Implementors must guarantee:
@@ -329,6 +348,43 @@ pub trait Surface {
     ///
     /// As [`Surface::point_at`].
     fn d2_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<(Vector, Vector, Vector)>;
+
+    /// The point and every derivative through second order, together.
+    ///
+    /// The default asks the three accessors above, which is right for a
+    /// surface carrying its answer in closed form: a plane or a cylinder costs
+    /// the same either way.
+    ///
+    /// It is not right for a tensor-product patch, where each accessor
+    /// re-locates the knot spans, rebuilds the basis functions and sums the
+    /// control grid again — three times, for numbers the order-two table
+    /// already holds. Anything walking a surface and asking for all six at a
+    /// point, as a foot-point solve does at every step, pays that over and
+    /// over. Such surfaces override this.
+    ///
+    /// **The contract is agreement to rounding, not to the bit.** A patch sums
+    /// its point by de Boor and its derivatives by basis functions, and those
+    /// reassociate differently; the combined answer may differ from the
+    /// separate accessors' in the last ulp. Callers needing one consistent
+    /// jet — every value from the same evaluation — should use this and not
+    /// mix it with the accessors at the same parameters.
+    ///
+    /// # Errors
+    ///
+    /// As [`Surface::point_at`].
+    fn jet_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<SurfaceJet> {
+        let point = self.point_at(u, v, tol)?;
+        let (du, dv) = self.d1_at(u, v, tol)?;
+        let (d2u, duv, d2v) = self.d2_at(u, v, tol)?;
+        Ok(SurfaceJet {
+            point,
+            du,
+            dv,
+            d2u,
+            duv,
+            d2v,
+        })
+    }
 
     /// What kind of surface this is.
     fn kind(&self) -> SurfaceKind;

@@ -829,16 +829,22 @@ fn refine_foot(
     // The foot point conditions: (S - target) . Su = 0 and (S - target) . Sv = 0.
     let residual = |x: &[f64]| {
         let (u, v) = (x[0], x[1]);
-        let Ok(p) = surface.point_at(u, v, tol) else {
+        // One evaluation, not three. This closure wants the point and every
+        // derivative at the same place, and a tensor-product patch charges
+        // full price for each accessor asked separately. Every value here
+        // comes from that one evaluation, so they are consistent with each
+        // other, which is what a Newton step needs.
+        let Ok(jet) = surface.jet_at(u, v, tol) else {
             return (vec![0.0, 0.0], vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
         };
-        let Ok((du, dv)) = surface.d1_at(u, v, tol) else {
-            return (vec![0.0, 0.0], vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
-        };
-        let (d2u, duv, d2v) =
-            surface
-                .d2_at(u, v, tol)
-                .unwrap_or((Vector::ZERO, Vector::ZERO, Vector::ZERO));
+        let ogeom_geom::SurfaceJet {
+            point: p,
+            du,
+            dv,
+            d2u,
+            duv,
+            d2v,
+        } = jet;
         let gap = p - target;
         (
             vec![gap.dot(du), gap.dot(dv)],

@@ -1,12 +1,12 @@
 {
-  "construct_boxes": 0.3092,
-  "traverse_box": 0.3721,
-  "tessellate_torus": 0.0528,
-  "boolean_drill": 0.2416,
-  "boolean_many_faces": 2.8833,
-  "boolean_marched": 0.4818,
-  "fillet_block": 0.4889,
-  "tessellate_part": 2.8408,
-  "import_ftc11": 0.0017,
-  "import_ctc02": 3.3923
+  "construct_boxes": 0.2915,
+  "traverse_box": 0.3897,
+  "tessellate_torus": 0.0493,
+  "boolean_drill": 0.2328,
+  "boolean_many_faces": 2.7878,
+  "boolean_marched": 0.5853,
+  "fillet_block": 0.5945,
+  "tessellate_part": 3.5950,
+  "import_ftc11": 0.0021,
+  "import_ctc02": 3.7280
 }
