@@ -114,13 +114,16 @@ pub(crate) fn fit_projected_pcurve(
                 }
             }
         };
-        // The cap separates a file's own slop — routinely a micron or
-        // two on these parts — from an edge paired with the wrong
-        // surface, which misses by whole millimetres. Slop inside the
-        // cap is accepted and *recorded*: the edge's tolerance is
-        // widened to cover it, so the model says what it knows instead
-        // of refusing to triangulate.
-        if off > tol.confusion() * 1e6 {
+        // The cap separates a file's own slop from an edge paired with
+        // the wrong surface. Slop is routinely a micron or two, but real
+        // community exports carry as much as 0.34 mm (issue #15) — while a
+        // wrong pairing misses by the distance between two different
+        // surfaces of the body, whole millimetres. One millimetre stands
+        // between the worst slop observed and the smallest wrong pairing
+        // plausible. Slop inside the cap is accepted and *recorded*: the
+        // edge's tolerance is widened to cover it, so the model says what
+        // it knows instead of refusing to triangulate.
+        if off > tol.confusion() * 1e7 {
             ogeom_bail!(
                 Construction,
                 "the edge sits {off:.2e} from the surface it should bound"
@@ -244,4 +247,47 @@ pub(crate) fn fit_projected_pcurve(
         worst_off,
         slop,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    use super::*;
+    use ogeom_core::Tolerances;
+    use ogeom_geom::{CircleCurve, CylinderSurface};
+    use ogeom_math::{Circle, Cylinder, Frame};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// A boundary 0.3 mm off its surface fits, and says so.
+    ///
+    /// Community exports carry boundary curves that far from the surfaces
+    /// they trim (issue #15: 0.12–0.34 mm on a real assembly). The fit
+    /// accepts anything under a millimetre and reports the offset, so the
+    /// reader widens the edge's tolerance instead of leaving the face
+    /// without a trim; a miss of whole millimetres — the signature of an
+    /// edge paired with the wrong surface — still refuses.
+    #[test]
+    fn slop_under_a_millimetre_fits_and_is_reported() {
+        let wall: SurfaceGeometry =
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, 10.0, T).unwrap(), (-50.0, 50.0))
+                .unwrap()
+                .into();
+        let rim = |radius: f64| -> Curve {
+            CircleCurve::new(Circle::new(Frame::WORLD, radius, T).unwrap()).into()
+        };
+        // 0.3 mm proud of the wall: every sample sits exactly that far off.
+        let (_, _, _, worst_off, warning) =
+            fit_projected_pcurve(&rim(10.3), (0.0, core::f64::consts::TAU), &wall, T).unwrap();
+        assert!(
+            (worst_off - 0.3).abs() < 1e-6,
+            "the offset is measured: {worst_off}"
+        );
+        assert!(warning.is_some(), "slop this large is worth a warning");
+        // 3 mm off is not slop; it is the wrong surface.
+        assert!(
+            fit_projected_pcurve(&rim(13.0), (0.0, core::f64::consts::TAU), &wall, T).is_err(),
+            "a miss of millimetres still refuses"
+        );
+    }
 }
