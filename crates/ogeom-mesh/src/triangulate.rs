@@ -658,6 +658,13 @@ fn boundary_ring(
         children.rotate_left(start);
     }
 
+    // The column each seam edge's first traversal effectively walked — after
+    // folding — and whether its two sides differ in u or in v. A seam bounds
+    // its face twice, and the two traversals must bracket the ring exactly
+    // one period apart; the walk checks the second against this record.
+    let mut seam_walked: std::collections::HashMap<ogeom_topo::TShapeId, Point2> =
+        std::collections::HashMap::new();
+
     for edge in children {
         let Some(node) = model.node(&edge) else {
             ogeom_bail!(Dangling, "edge is not in this model");
@@ -665,6 +672,9 @@ fn boundary_ring(
         let NodeData::Edge(data) = node.data() else {
             ogeom_bail!(Construction, "edge node holds no edge data");
         };
+        // Whether this edge is a seam, and if so whether its two sides
+        // differ in u (true) or in v.
+        let mut seam: Option<bool> = None;
         let (pcurve_id, pcurve_range) = match data.pcurve_for(surface, edge.location()) {
             Some(EdgeRepr::PCurve { curve, range, .. }) => (*curve, *range),
             // A seam edge runs along a closed surface's join and bounds its
@@ -681,6 +691,13 @@ fn boundary_ring(
                 ..
             }) => {
                 let (f, r) = (*forward, *reversed);
+                let side_start = |id: ogeom_topo::PCurveId| -> Option<Point2> {
+                    model.geometry().pcurve(id)?.point_at(range.0, tol).ok()
+                };
+                seam = Some(match (side_start(f), side_start(r)) {
+                    (Some(a), Some(b)) => (a.x - b.x).abs() >= (a.y - b.y).abs(),
+                    _ => true,
+                });
                 let picked = if let Some(last) = ring.last().copied() {
                     let start_of = |id: ogeom_topo::PCurveId| -> Option<Point2> {
                         let pc = model.geometry().pcurve(id)?;
@@ -835,24 +852,70 @@ fn boundary_ring(
                 }
             };
             let mut shift = Point2::new(0.0, 0.0);
+            // A repeated seam edge folds like any other — but never onto its
+            // own first traversal. The two traversals bound the face up one
+            // side of the chart and down the other, one period apart, and at
+            // a degenerate row continuity cannot say so: a cone walked to
+            // its apex reaches a corner that maps to the whole row, both
+            // sides continue it equally, and folding by nearness closes the
+            // ring over nothing. The record decides instead: land exactly a
+            // period from the first walk, on the side the ring occupies.
+            let prior = seam.and_then(|_| seam_walked.get(&edge.node())).copied();
             if geometry.is_periodic_u() && (ub - ua) > 0.0 {
                 let span = ub - ua;
                 let gap = last.x - first.x;
                 shift.x = whole_periods(gap, span);
-                if shift.x != 0.0 && (gap - shift.x).abs() <= span * 1e-6 {
-                    // The start already stood a whole period from the walk —
-                    // the same 3D point — so this fold is a choice, not a
-                    // repair; recorded so a mis-wound ring can be unwound.
-                    folds.push((ring.len(), shift.x));
-                } else if ((gap / span).fract().abs() - 0.5).abs() <= 1e-9 {
-                    // A half-period tie: either side of the degenerate row
-                    // was defensible, and if the ring comes out wound the
-                    // unwinding starts here rather than at the later fold.
-                    ties.push(ring.len());
+                let mut bracketed = false;
+                if seam == Some(true)
+                    && let Some(prior) = prior
+                    && (first.x + shift.x - prior.x).abs() < span * 0.5
+                {
+                    let (lo, hi) = ring
+                        .iter()
+                        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+                            (lo.min(p.x), hi.max(p.x))
+                        });
+                    let side = if f64::midpoint(lo, hi) >= prior.x {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    shift.x = prior.x + side * span - first.x;
+                    bracketed = true;
+                }
+                if !bracketed {
+                    if shift.x != 0.0 && (gap - shift.x).abs() <= span * 1e-6 {
+                        // The start already stood a whole period from the walk —
+                        // the same 3D point — so this fold is a choice, not a
+                        // repair; recorded so a mis-wound ring can be unwound.
+                        folds.push((ring.len(), shift.x));
+                    } else if ((gap / span).fract().abs() - 0.5).abs() <= 1e-9 {
+                        // A half-period tie: either side of the degenerate row
+                        // was defensible, and if the ring comes out wound the
+                        // unwinding starts here rather than at the later fold.
+                        ties.push(ring.len());
+                    }
                 }
             }
             if geometry.is_periodic_v() && (vb - va) > 0.0 {
-                shift.y = whole_periods(last.y - first.y, vb - va);
+                let span = vb - va;
+                shift.y = whole_periods(last.y - first.y, span);
+                if seam == Some(false)
+                    && let Some(prior) = prior
+                    && (first.y + shift.y - prior.y).abs() < span * 0.5
+                {
+                    let (lo, hi) = ring
+                        .iter()
+                        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+                            (lo.min(p.y), hi.max(p.y))
+                        });
+                    let side = if f64::midpoint(lo, hi) >= prior.y {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    shift.y = prior.y + side * span - first.y;
+                }
             }
             if shift.x != 0.0 || shift.y != 0.0 {
                 for p in &mut points {
@@ -860,6 +923,11 @@ fn boundary_ring(
                     p.y += shift.y;
                 }
             }
+        }
+        if seam.is_some()
+            && let Some(first) = points.first().copied()
+        {
+            seam_walked.entry(edge.node()).or_insert(first);
         }
         // The previous edge already contributed the shared vertex — but only
         // where the chart agrees it is shared. Two rulings meeting at an

@@ -112,3 +112,70 @@ fn every_nist_part_reads_and_reports_honestly() {
         );
     }
 }
+
+/// A cone trimmed to its own apex triangulates.
+///
+/// The face is bounded the way ST-Developer writes a countersink drilled to
+/// a point: the rim, and one slant line used twice — down to the apex and
+/// back. No vertex loop, no degenerate edge; the apex exists only as the
+/// vertex the slant line ends at. In the chart that line is a seam, and its
+/// second traversal must take the other side of the parameter rectangle —
+/// continuity cannot say so, because at the apex both sides start at the
+/// same 3D point, and choosing by nearness closes the ring over nothing.
+/// Found as two invisible countersinks in a real frame assembly (issue #14).
+#[test]
+fn a_cone_walked_to_its_apex_triangulates() {
+    let text = r#"ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION((''),'2;1');
+FILE_NAME('apex','2026-08-25',(''),(''),'','','');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));
+ENDSEC;
+DATA;
+#1=CARTESIAN_POINT('',(0.,0.,0.));
+#2=DIRECTION('',(0.,0.,1.));
+#3=DIRECTION('',(1.,0.,0.));
+#4=AXIS2_PLACEMENT_3D('',#1,#2,#3);
+#5=CONICAL_SURFACE('',#4,1.,0.7853981633974483);
+#6=PLANE('',#4);
+#7=CARTESIAN_POINT('',(0.,0.,-1.));
+#8=CARTESIAN_POINT('',(1.,0.,0.));
+#9=VERTEX_POINT('',#7);
+#10=VERTEX_POINT('',#8);
+#11=DIRECTION('',(0.7071067811865476,0.,0.7071067811865476));
+#12=VECTOR('',#11,1.);
+#13=LINE('',#7,#12);
+#14=CIRCLE('',#4,1.);
+#15=EDGE_CURVE('',#9,#10,#13,.T.);
+#16=EDGE_CURVE('',#10,#10,#14,.T.);
+#17=ORIENTED_EDGE('',*,*,#15,.T.);
+#18=ORIENTED_EDGE('',*,*,#16,.T.);
+#19=ORIENTED_EDGE('',*,*,#15,.F.);
+#20=EDGE_LOOP('',(#17,#18,#19));
+#21=FACE_OUTER_BOUND('',#20,.T.);
+#22=ADVANCED_FACE('',(#21),#5,.F.);
+#23=ORIENTED_EDGE('',*,*,#16,.F.);
+#24=EDGE_LOOP('',(#23));
+#25=FACE_OUTER_BOUND('',#24,.T.);
+#26=ADVANCED_FACE('',(#25),#6,.T.);
+#27=CLOSED_SHELL('',(#22,#26));
+#28=MANIFOLD_SOLID_BREP('',#27);
+ENDSEC;
+END-ISO-10303-21;
+"#;
+    let import = ogeom_io::read_step(text, T).unwrap();
+    assert_eq!(import.solids.len(), 1);
+    let model = import.document.model();
+    let solid = &import.solids[0];
+    for face in ogeom_topo::explore(
+        model,
+        solid,
+        ogeom_topo::Filter::OfType(ogeom_topo::ShapeType::Face),
+    )
+    .unwrap()
+    {
+        let mesh = ogeom_mesh::triangulate_face(model, &face, ogeom_mesh::Deflection::default(), T)
+            .expect("every face of the cone-to-apex solid meshes");
+        assert!(!mesh.triangles.is_empty());
+    }
+}
