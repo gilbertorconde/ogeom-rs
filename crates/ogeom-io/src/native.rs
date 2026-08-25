@@ -106,7 +106,386 @@ pub fn write(model: &Model, roots: &[Shape], options: WriteOptions) -> OgeomResu
             ogeom_bail!(Construction, "a root shape is not in this model");
         }
     }
+    // The file carries the reachable closure of `roots`, not the model: a
+    // snapshot of one body from a 330-solid assembly is that body's records,
+    // not 35 MB of everyone else's (issue #16). Empty roots keep the whole
+    // model — that is `write_document`'s contract, whose products name
+    // shapes the root list does not. When the closure covers everything, the
+    // subset would be a copy of the model spelled the long way, so the model
+    // itself is written and the handles keep their numbers.
+    if !roots.is_empty() {
+        let closure = closure_of(model, roots);
+        if !closure.covers(model) {
+            let (parts, unbound) = subset_parts(model, roots, &closure)?;
+            let subset = Model::from_parts(parts)?;
+            let bound = unbound
+                .iter()
+                .map(|root| subset.bind(root))
+                .collect::<OgeomResult<Vec<_>>>()?;
+            return write_full(&subset, &bound, options);
+        }
+    }
+    write_full(model, roots, options)
+}
 
+/// Which of each arena's entries the roots reach.
+struct Closure {
+    nodes: std::collections::HashSet<u32>,
+    datums: std::collections::HashSet<u32>,
+    curves: std::collections::HashSet<u32>,
+    pcurves: std::collections::HashSet<u32>,
+    surfaces: std::collections::HashSet<u32>,
+    meshes: std::collections::HashSet<u32>,
+    /// The highest entity id any retained node carries. Entities are kept as
+    /// the table's *prefix* up to here, ids untouched: a derivation only ever
+    /// names entities minted before it, so the prefix is transitively closed
+    /// — and a consumer's recorded `EntityId`s stay valid, which
+    /// `provenance_and_identity_survive` holds the writer to.
+    last_entity: u64,
+}
+
+impl Closure {
+    fn covers(&self, model: &Model) -> bool {
+        let (curves, pcurves, surfaces) = model.geometry().counts();
+        self.nodes.len() == model.nodes().count()
+            && self.curves.len() == curves
+            && self.pcurves.len() == pcurves
+            && self.surfaces.len() == surfaces
+            && usize::try_from(self.last_entity)
+                .is_ok_and(|n| n == model.provenance().iter().count())
+    }
+}
+
+/// Walk the roots' sub-shape graphs and note everything they touch.
+fn closure_of(model: &Model, roots: &[Shape]) -> Closure {
+    let mut c = Closure {
+        nodes: std::collections::HashSet::new(),
+        datums: std::collections::HashSet::new(),
+        curves: std::collections::HashSet::new(),
+        pcurves: std::collections::HashSet::new(),
+        surfaces: std::collections::HashSet::new(),
+        meshes: std::collections::HashSet::new(),
+        last_entity: 0,
+    };
+    let note_location = |datums: &mut std::collections::HashSet<u32>, l: &Location| {
+        for (datum, _) in l.chain() {
+            datums.insert(datum.index());
+        }
+    };
+    let mut queue: Vec<TShapeId> = Vec::new();
+    for root in roots {
+        note_location(&mut c.datums, root.location());
+        if c.nodes.insert(root.node().index()) {
+            queue.push(root.node());
+        }
+    }
+    while let Some(id) = queue.pop() {
+        let Some(node) = model.node_by_id(id) else {
+            continue;
+        };
+        for child in node.children() {
+            note_location(&mut c.datums, child.location());
+            if c.nodes.insert(child.node().index()) {
+                queue.push(child.node());
+            }
+        }
+        match node.data() {
+            NodeData::Edge(e) => {
+                for repr in &e.representations {
+                    match repr {
+                        EdgeRepr::Curve3d {
+                            curve, location, ..
+                        } => {
+                            c.curves.insert(curve.index());
+                            note_location(&mut c.datums, location);
+                        }
+                        EdgeRepr::PCurve {
+                            curve,
+                            surface,
+                            location,
+                            ..
+                        } => {
+                            c.pcurves.insert(curve.index());
+                            c.surfaces.insert(surface.index());
+                            note_location(&mut c.datums, location);
+                        }
+                        EdgeRepr::Seam {
+                            forward,
+                            reversed,
+                            surface,
+                            location,
+                            ..
+                        } => {
+                            c.pcurves.insert(forward.index());
+                            c.pcurves.insert(reversed.index());
+                            c.surfaces.insert(surface.index());
+                            note_location(&mut c.datums, location);
+                        }
+                        EdgeRepr::Polyline { location, .. } => {
+                            note_location(&mut c.datums, location);
+                        }
+                        EdgeRepr::PolygonOnTriangulation { triangulation, .. } => {
+                            c.meshes.insert(triangulation.index());
+                        }
+                        // The enum is non-exhaustive; a representation this
+                        // walker does not know cannot name handles it should
+                        // retain, and the writer itself would refuse it first.
+                        _ => {}
+                    }
+                }
+            }
+            NodeData::Face(f) => {
+                c.surfaces.insert(f.surface.index());
+                note_location(&mut c.datums, &f.location);
+                if let Some(mesh) = f.triangulation {
+                    c.meshes.insert(mesh.index());
+                }
+            }
+            NodeData::Vertex(_) | NodeData::Container => {}
+        }
+    }
+    for (node, entity) in model.identities() {
+        if c.nodes.contains(&node.index()) {
+            c.last_entity = c.last_entity.max(entity.get());
+        }
+    }
+    c
+}
+
+/// The closure rebuilt as its own parts, every handle re-densified in the
+/// model's own order, plus the roots respelled in the new numbering.
+fn subset_parts(
+    model: &Model,
+    roots: &[Shape],
+    closure: &Closure,
+) -> OgeomResult<(ModelParts, Vec<Shape>)> {
+    use std::collections::HashMap;
+    // A dense index for a retained entry. The source arena held it as u32,
+    // and a subset is no larger, so the fit is by construction.
+    let dense = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    // Old index -> new dense index, in arena order, so the same model and
+    // roots write the same bytes every time.
+    let mut node_map: HashMap<u32, u32> = HashMap::new();
+    let mut nodes_in_order: Vec<TShapeId> = Vec::new();
+    for (id, _) in model.nodes() {
+        if closure.nodes.contains(&id.index()) {
+            node_map.insert(id.index(), dense(nodes_in_order.len()));
+            nodes_in_order.push(id);
+        }
+    }
+    let mut datum_map: HashMap<u32, u32> = HashMap::new();
+    let mut datums = Vec::new();
+    for (id, datum) in model.datums().iter() {
+        if closure.datums.contains(&id.index()) {
+            datum_map.insert(id.index(), dense(datums.len()));
+            datums.push(datum);
+        }
+    }
+    let geometry_in = model.geometry();
+    let mut geometry = GeometryStore::new();
+    let mut curve_map: HashMap<u32, u32> = HashMap::new();
+    for (id, c) in geometry_in.curves() {
+        if closure.curves.contains(&id.index()) {
+            curve_map.insert(id.index(), dense(geometry.counts().0));
+            geometry.add_curve(c.clone());
+        }
+    }
+    let mut pcurve_map: HashMap<u32, u32> = HashMap::new();
+    for (id, c) in geometry_in.pcurves() {
+        if closure.pcurves.contains(&id.index()) {
+            pcurve_map.insert(id.index(), dense(geometry.counts().1));
+            geometry.add_pcurve(c.clone());
+        }
+    }
+    let mut surface_map: HashMap<u32, u32> = HashMap::new();
+    for (id, sf) in geometry_in.surfaces() {
+        if closure.surfaces.contains(&id.index()) {
+            surface_map.insert(id.index(), dense(geometry.counts().2));
+            geometry.add_surface(sf.clone());
+        }
+    }
+    let mut mesh_map: HashMap<u32, u32> = HashMap::new();
+    for (id, mesh) in geometry_in.triangulations() {
+        if closure.meshes.contains(&id.index()) {
+            mesh_map.insert(id.index(), dense(geometry.triangulation_count()));
+            geometry.add_triangulation(mesh.clone());
+        }
+    }
+    let provenance: Vec<Provenance> = model
+        .provenance()
+        .iter()
+        .take_while(|(id, _)| id.get() <= closure.last_entity)
+        .map(|(_, entry)| entry.clone())
+        .collect();
+
+    let missing = || ogeom_core::ogeom_err!(Dangling, "the closure misses a referenced handle");
+    let relocate = |l: &Location| -> OgeomResult<Location> {
+        let mut out = Location::identity();
+        for (datum, power) in l.chain() {
+            let new = *datum_map.get(&datum.index()).ok_or_else(missing)?;
+            out = out.then(&Location::powered(Key::from_parts(new, 0), *power));
+        }
+        Ok(out)
+    };
+    let reshape = |s: &Shape| -> OgeomResult<Shape> {
+        let new = *node_map.get(&s.node().index()).ok_or_else(missing)?;
+        Ok(Shape::new(
+            Key::from_parts(new, 0),
+            relocate(s.location())?,
+            s.orientation(),
+        ))
+    };
+
+    let mut nodes: Vec<TShape> = Vec::new();
+    for id in &nodes_in_order {
+        let node = model.node_by_id(*id).ok_or_else(missing)?;
+        let data = match node.data() {
+            NodeData::Vertex(v) => {
+                NodeData::Vertex(VertexData::with_tolerance(v.point, v.tolerance.get())?)
+            }
+            NodeData::Edge(e) => {
+                let mut edge = EdgeData::new();
+                edge.tolerance = e.tolerance;
+                edge.degenerate = e.degenerate;
+                for repr in &e.representations {
+                    edge.add(match repr {
+                        EdgeRepr::Curve3d {
+                            curve,
+                            location,
+                            range,
+                        } => EdgeRepr::Curve3d {
+                            curve: Key::from_parts(
+                                *curve_map.get(&curve.index()).ok_or_else(missing)?,
+                                0,
+                            ),
+                            location: relocate(location)?,
+                            range: *range,
+                        },
+                        EdgeRepr::PCurve {
+                            curve,
+                            surface,
+                            location,
+                            range,
+                        } => EdgeRepr::PCurve {
+                            curve: Key::from_parts(
+                                *pcurve_map.get(&curve.index()).ok_or_else(missing)?,
+                                0,
+                            ),
+                            surface: Key::from_parts(
+                                *surface_map.get(&surface.index()).ok_or_else(missing)?,
+                                0,
+                            ),
+                            location: relocate(location)?,
+                            range: *range,
+                        },
+                        EdgeRepr::Seam {
+                            forward,
+                            reversed,
+                            surface,
+                            location,
+                            range,
+                        } => EdgeRepr::Seam {
+                            forward: Key::from_parts(
+                                *pcurve_map.get(&forward.index()).ok_or_else(missing)?,
+                                0,
+                            ),
+                            reversed: Key::from_parts(
+                                *pcurve_map.get(&reversed.index()).ok_or_else(missing)?,
+                                0,
+                            ),
+                            surface: Key::from_parts(
+                                *surface_map.get(&surface.index()).ok_or_else(missing)?,
+                                0,
+                            ),
+                            location: relocate(location)?,
+                            range: *range,
+                        },
+                        EdgeRepr::Polyline {
+                            points,
+                            parameters,
+                            location,
+                            deflection,
+                        } => EdgeRepr::Polyline {
+                            points: points.clone(),
+                            parameters: parameters.clone(),
+                            location: relocate(location)?,
+                            deflection: *deflection,
+                        },
+                        EdgeRepr::PolygonOnTriangulation {
+                            triangulation,
+                            indices,
+                            location,
+                        } => EdgeRepr::PolygonOnTriangulation {
+                            triangulation: Key::from_parts(
+                                *mesh_map.get(&triangulation.index()).ok_or_else(missing)?,
+                                0,
+                            ),
+                            indices: indices.clone(),
+                            location: relocate(location)?,
+                        },
+                        other => ogeom_bail!(
+                            Construction,
+                            "an edge representation this writer does not know: {other:?}"
+                        ),
+                    });
+                }
+                edge.assert_same_parameter(e.same_parameter());
+                NodeData::Edge(Box::new(edge))
+            }
+            NodeData::Face(f) => {
+                let surface =
+                    Key::from_parts(*surface_map.get(&f.surface.index()).ok_or_else(missing)?, 0);
+                let at = relocate(&f.location)?;
+                let mut face = if f.natural_restriction {
+                    FaceData::natural(surface, at)
+                } else {
+                    FaceData::new(surface, at)
+                };
+                face.tolerance = f.tolerance;
+                face.triangulation = match f.triangulation {
+                    Some(mesh) => Some(Key::from_parts(
+                        *mesh_map.get(&mesh.index()).ok_or_else(missing)?,
+                        0,
+                    )),
+                    None => None,
+                };
+                NodeData::Face(Box::new(face))
+            }
+            NodeData::Container => NodeData::Container,
+        };
+        let children = node
+            .children()
+            .iter()
+            .map(&reshape)
+            .collect::<OgeomResult<Vec<_>>>()?;
+        nodes.push(TShape::new(node.kind(), data, children));
+    }
+
+    let mut identity = Vec::new();
+    for (node, entity) in model.identities() {
+        if let Some(&n) = node_map.get(&node.index()) {
+            identity.push((Key::from_parts(n, 0), entity));
+        }
+    }
+    identity.sort_unstable_by_key(|(node, _)| node.index());
+
+    let parts = ModelParts {
+        nodes,
+        datums,
+        geometry,
+        provenance,
+        identity,
+        current_op: model.current_operation(),
+        tolerances: model.tolerances(),
+    };
+    let unbound = roots
+        .iter()
+        .map(&reshape)
+        .collect::<OgeomResult<Vec<_>>>()?;
+    Ok((parts, unbound))
+}
+
+fn write_full(model: &Model, roots: &[Shape], options: WriteOptions) -> OgeomResult<String> {
     let mut out = String::new();
     out.push_str(&format!("{MAGIC} {VERSION}\n"));
 
