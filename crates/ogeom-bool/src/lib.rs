@@ -107,12 +107,17 @@ struct GFace {
     face: Shape,
     /// The surface in world space, placement applied.
     surface: SurfaceGeometry,
-    /// A generous world bound: the boundary edges' sampled extent, expanded
-    /// by most of its own diagonal so a face bulging past its boundary — a
-    /// dome past its equator — stays covered. Used only to *gate refusals*:
-    /// two faces on one surface, or touching tangentially, are only a
-    /// conflict where the faces could actually meet.
+    /// A conservative world bound: the boundary edges' sampled extent plus
+    /// the surface's own allowance — nothing for a plane, measured sampling
+    /// slack for the ruled kinds whose rulings pin them to their boundary's
+    /// hull, most of the diagonal for anything that can genuinely bulge — a
+    /// dome past its equator. The poles join after. Gates the pair filter
+    /// and refusals; `OGEOM_BOOL_AUDIT_BOUNDS` audits its conservatism.
     bound: ogeom_math::Aabb,
+    /// The scale the marching chord derives from — deliberately *not* the
+    /// filter box's diagonal, so the filter can tighten without silently
+    /// tightening the marcher.
+    chord_scale: f64,
     edges: Vec<BoundaryEdge>,
     poles: Vec<PoleEdge>,
 }
@@ -308,26 +313,74 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
             }
         }
         let mut bound = ogeom_math::Aabb::EMPTY;
+        // For a ruled surface the box will be trusted to the boundary's own
+        // hull, so the boundary's sampling slack must be measured: how far
+        // the true edge sags from the 16-chord polyline, read at each
+        // chord's midpoint and doubled for the sag's asymmetry. Nothing else
+        // uses the measurement, and the extra evaluations are priced on
+        // spline edges, so nothing else pays for it: an unruled face keeps
+        // the exact box it always had, and the exact admit set with it.
+        let ruled = matches!(
+            &surface,
+            SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_)
+        );
+        let mut slack = 0.0_f64;
         for e in &edges {
+            let mut previous: Option<Point> = None;
             for i in 0..=16 {
-                #[allow(clippy::cast_precision_loss)]
+                #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
                 let t = e.crange.0 + (e.crange.1 - e.crange.0) * f64::from(i) / 16.0;
-                bound = bound.with_point(e.curve.point_at(t, tol)?);
+                let p = e.curve.point_at(t, tol)?;
+                if ruled && let Some(q) = previous {
+                    let step = (e.crange.1 - e.crange.0) / 32.0;
+                    let mid = e.curve.point_at(t - step, tol)?;
+                    slack = slack.max(mid.distance(Point::midpoint(q, p)) * 2.0);
+                    bound = bound.with_point(mid);
+                }
+                bound = bound.with_point(p);
+                previous = Some(p);
             }
         }
-        // A plane never bulges past its boundary; anything curved may — a
-        // dome past its equator — and gets most of its own diagonal as
-        // allowance.
+        // A plane never bulges past its boundary. A ruled surface — cylinder,
+        // cone — cannot either: every surface point lies on a straight ruling
+        // whose ends are on the boundary, so the face sits inside its
+        // boundary's hull and only the boundary's own sampling slack is owed.
+        // Anything else may genuinely bulge — a dome past its equator — and
+        // keeps most of its own diagonal as allowance. The audit behind
+        // OGEOM_BOOL_AUDIT_BOUNDS holds every arm to conservatism.
         let bulge = match &surface {
             SurfaceGeometry::Plane(_) => 0.0,
+            SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_) => slack,
             _ => bound.diagonal() * 0.75,
         };
-        let bound = bound.expanded(bulge + tol.confusion() * 1e2);
+        // The scale the marching chord is derived from, decoupled from the
+        // filter box. It reproduces exactly what the heuristic was tuned
+        // against — the diagonal as the blanket three-quarter bulge left it —
+        // because the chord is a tolerance, not a bound: tightening the
+        // filter must not silently tighten the marcher, which is exactly
+        // what happened when the box fed both (issue #12).
+        let margin = tol.confusion() * 1e2;
+        let chord_scale = match &surface {
+            SurfaceGeometry::Plane(_) => bound.expanded(margin).diagonal(),
+            _ => bound.expanded(bound.diagonal() * 0.75 + margin).diagonal(),
+        };
+        // A pole bounds the chart with no edge to sample: a cone drilled to
+        // its apex reaches the apex, and a bound that omits it would let the
+        // filter drop a pair the apex genuinely meets. It joins *after* the
+        // bulge is taken from the boundary's own diagonal — the pole is an
+        // exact point, and letting it stretch the diagonal would inflate a
+        // dome's allowance by its own height over again.
+        let mut bound = bound.expanded(bulge);
+        for pole in &poles {
+            bound = bound.with_point(pole.point);
+        }
+        let bound = bound.expanded(tol.confusion() * 1e2);
         faces.push(GFace {
             poles,
             face,
             surface,
             bound,
+            chord_scale,
             edges,
         });
     }
@@ -832,11 +885,12 @@ fn fill(
     // recorded per section and widens the crossing filters.
     for (ia, fa) in ga.faces.iter().enumerate() {
         for (ib, fb) in gb.faces.iter().enumerate() {
-            if !fa.bound.intersects(&fb.bound) {
+            let admitted = fa.bound.intersects(&fb.bound);
+            if !admitted && !*AUDIT_BOUNDS {
                 // The faces cannot meet, whatever their surfaces do.
                 continue;
             }
-            let scale = fa.bound.diagonal().min(fb.bound.diagonal());
+            let scale = fa.chord_scale.min(fb.chord_scale);
             let chord = (scale * 1e-7).max(tol.confusion() * 0.5);
             let options = IntersectOptions {
                 // The fit budget scales with the chord: a section against a
@@ -979,7 +1033,14 @@ fn fill(
                                 // An exact curve whose projection has no
                                 // closed form: march the pair instead, so
                                 // curve and pcurves are fitted *together*.
-                                let shared = fa.bound.intersection(&fb.bound);
+                                let shared = if admitted {
+                                    fa.bound.intersection(&fb.bound)
+                                } else {
+                                    // Audit only: disjoint bounds have no
+                                    // window, and an empty window would mask
+                                    // the very miss being hunted.
+                                    fa.bound.union(&fb.bound)
+                                };
                                 for fitted in march_pair(
                                     &windowed_to(&fa.surface, &shared),
                                     &windowed_to(&fb.surface, &shared),
@@ -1347,6 +1408,35 @@ fn fill(
             paves.entry(node).or_default().push(at);
         }
         pieces.extend(made);
+    }
+    // The audit's verdict. A dropped pair whose surfaces intersect is not a
+    // filter bug — planes meet along an infinite line the paving then trims
+    // to the faces, usually to nothing. A dropped pair whose section
+    // *survives paving* is: some of that curve lies inside both faces, so
+    // the faces genuinely meet and the filter's boxes failed to. Contacts
+    // need no check — a contact is an owner edge lying in the target face,
+    // which forces the boxes to overlap where the edge does.
+    //
+    // Evidence, not proof: the audit paves with every pair admitted, and
+    // paving is not compositional — a section's kept intervals see the other
+    // sections' paves — so a filtered run is not replayed exactly. It has
+    // already earned its keep the other way, by clearing a suspected filter
+    // miss and pointing the hunt at the real coupling (the marching chord
+    // fed from the filter box).
+    if *AUDIT_BOUNDS {
+        for piece in &pieces {
+            let section = &sections[piece.section];
+            let (fa, fb) = (&ga.faces[section.face_a], &gb.faces[section.face_b]);
+            assert!(
+                fa.bound.intersects(&fb.bound),
+                "bound filter audit: faces {}/{} were dropped by the bound \
+                 filter, yet their section paved a surviving piece over \
+                 {:?}; the filter under-approximates",
+                section.face_a,
+                section.face_b,
+                piece.range,
+            );
+        }
     }
     // A contact edge splits where it crosses the target face's boundary —
     // and that crossing is a pave on *both* edges, so the owner's own face
@@ -2041,6 +2131,14 @@ fn mark_covered_coincidences(ga: &GSolid, pieces: &mut [FacePiece], tol: Toleran
 /// `env::var` takes a process-wide lock and allocates; the strand dump asked
 /// it inside the per-face loop, where a large model asks thousands of times
 /// to be told no.
+/// The face-bound filter's audit: admit every pair, and name any the filter
+/// would have dropped that then produces a record. A conservative filter is
+/// a correctness precondition — a pair wrongly dropped is absorbed by the
+/// empty-result fallback today, and would be a wrong solid if that fallback
+/// ever came up empty too — and this is the check that makes the
+/// precondition falsifiable (issue #12). Costs one branch per pair when off.
+static AUDIT_BOUNDS: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("OGEOM_BOOL_AUDIT_BOUNDS").is_ok());
 static DEBUG_STRANDS: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("OGEOM_DEBUG_STRANDS").is_ok());
 static ARRANGE_DEBUG: std::sync::LazyLock<bool> =
