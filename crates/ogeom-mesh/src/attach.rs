@@ -73,8 +73,11 @@ pub fn tessellate(
     // doing them in the other order would store a face mesh whose boundary the
     // edge polylines then contradict.
     ogeom_core::progress::stage("tessellate: edges");
-    for edge in explore_unique(model, shape, ShapeType::Edge)? {
+    let edges = explore_unique(model, shape, ShapeType::Edge)?;
+    let edge_total = edges.len() as u64;
+    for (at, edge) in edges.into_iter().enumerate() {
         ogeom_core::progress::checkpoint()?;
+        ogeom_core::progress::stage_at("tessellate: edges", at as u64 + 1, edge_total);
         if attach_polyline(model, &edge, deflection, tol)? {
             done.edges += 1;
         }
@@ -91,11 +94,22 @@ pub fn tessellate(
         .into_iter()
         .collect();
     let read_model: &Model = model;
+    // Counted with an atomic because the workers finish in their own order:
+    // each announcement carries a distinct `done`, all of them reach the
+    // sink exactly once, and the consumer's bar may briefly see them out of
+    // sequence — which is what completion order means.
+    let face_total = faces.len() as u64;
+    let faces_done = std::sync::atomic::AtomicU64::new(0);
     type FaceWork = (Triangulation, Vec<(Shape, Vec<u32>)>);
     let computed: Vec<OgeomResult<FaceWork>> =
         ogeom_core::parallel::map_ordered(&faces, |_, face| {
             ogeom_core::progress::checkpoint()?;
             let mesh = triangulate_face(read_model, face, deflection, tol)?;
+            ogeom_core::progress::stage_at(
+                "tessellate: faces",
+                faces_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+                face_total,
+            );
 
             // Each boundary edge's path through this mesh, as node indices —
             // the PolygonOnTriangulation representation. Matched while the

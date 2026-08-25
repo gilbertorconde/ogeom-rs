@@ -36,7 +36,7 @@ pub use arena::{Arena, Key, UNSCOPED};
 pub use error::{Cause, OgeomError, OgeomResult};
 pub use id::{EntityId, OpId, Provenance, ProvenanceTable, Role, SourceId};
 pub use predicates::{Exact, Fast, P2, P3, Predicates, Sign};
-pub use progress::{Canceller, Watch};
+pub use progress::{Canceller, Stage, Watch};
 pub use tolerance::{Tolerance, Tolerances, check_containment};
 
 /// The predicate implementation algorithms use unless told otherwise.

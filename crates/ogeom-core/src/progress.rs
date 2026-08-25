@@ -25,8 +25,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{OgeomError, OgeomResult};
 
-/// A stage sink: hears each stage name as the operation reaches it.
-type Sink = Arc<dyn Fn(&str) + Send + Sync>;
+/// A stage announcement: the name, and where the operation stands in it
+/// when the operation knows.
+#[derive(Debug, Clone, Copy)]
+pub struct Stage<'a> {
+    /// The stage's name, stable across a run: `"step: solid"`,
+    /// `"tessellate: faces"`.
+    pub name: &'a str,
+    /// `(done, total)` within this stage, when both are known — what a
+    /// determinate progress bar needs. `None` for a bare boundary.
+    pub progress: Option<(u64, u64)>,
+}
+
+/// A stage sink: hears each announcement as the operation reaches it.
+type Sink = Arc<dyn Fn(Stage<'_>) + Send + Sync>;
 
 /// What a watch carries: the flag, and an optional stage sink.
 #[derive(Clone)]
@@ -69,8 +81,20 @@ impl Watch {
 
     /// A watch whose sink hears each stage name once as the operation
     /// reaches it. The sink runs on whichever thread reaches the stage.
+    ///
+    /// The name-only convenience: a sink that also wants the counts behind
+    /// a determinate progress bar installs [`Watch::with_stage_sink`].
     #[must_use]
     pub fn with_sink(sink: impl Fn(&str) + Send + Sync + 'static) -> Self {
+        Self::with_stage_sink(move |stage: Stage<'_>| sink(stage.name))
+    }
+
+    /// A watch whose sink hears each full [`Stage`] announcement — the name,
+    /// and `(done, total)` where the operation states them. The sink runs on
+    /// whichever thread reaches the stage; a parallel stage's counts arrive
+    /// in completion order, each value once.
+    #[must_use]
+    pub fn with_stage_sink(sink: impl Fn(Stage<'_>) + Send + Sync + 'static) -> Self {
         Self {
             state: State {
                 cancel: Arc::new(AtomicBool::new(false)),
@@ -157,11 +181,29 @@ pub fn checkpoint() -> OgeomResult<()> {
 
 /// Announce a stage boundary to the active watch's sink, if there is one.
 pub fn stage(name: &str) {
+    announce(Stage {
+        name,
+        progress: None,
+    });
+}
+
+/// Announce a stage with its position: `done` of `total` items complete.
+/// What a determinate progress bar is built from; emitted by the operations
+/// that know both numbers — a reader over its solids, a tessellation over
+/// its faces.
+pub fn stage_at(name: &str, done: u64, total: u64) {
+    announce(Stage {
+        name,
+        progress: Some((done, total)),
+    });
+}
+
+fn announce(stage: Stage<'_>) {
     ACTIVE.with(|active| {
         if let Some(state) = active.borrow().as_ref()
             && let Some(sink) = &state.sink
         {
-            sink(name);
+            sink(stage);
         }
     });
 }
@@ -196,6 +238,41 @@ pub struct WatchSnapshot {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn counts_reach_a_stage_sink_and_names_still_reach_a_plain_one() {
+        use std::sync::Mutex;
+        type Heard = Vec<(String, Option<(u64, u64)>)>;
+        let heard: Arc<Mutex<Heard>> = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&heard);
+        let watch = Watch::with_stage_sink(move |stage: Stage<'_>| {
+            record
+                .lock()
+                .unwrap()
+                .push((stage.name.to_owned(), stage.progress));
+        });
+        watched(&watch, || {
+            stage("plain");
+            stage_at("counted", 2, 5);
+        });
+        assert_eq!(
+            *heard.lock().unwrap(),
+            vec![
+                ("plain".to_owned(), None),
+                ("counted".to_owned(), Some((2, 5))),
+            ]
+        );
+
+        // The name-only sink keeps working, counts and all announced.
+        let names: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&names);
+        let watch =
+            Watch::with_sink(move |name: &str| record.lock().unwrap().push(name.to_owned()));
+        watched(&watch, || {
+            stage_at("counted", 1, 3);
+        });
+        assert_eq!(*names.lock().unwrap(), vec!["counted".to_owned()]);
+    }
 
     #[test]
     fn unwatched_checkpoints_are_free_and_fine() {

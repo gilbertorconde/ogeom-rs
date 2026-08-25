@@ -140,10 +140,15 @@ claims = [
     "Message_ProgressIndicator", "Message_ProgressRange",
     "Message_ProgressScope", "Message_ProgressSentry",
 ]
-symbols = ["ogeom_core::Watch", "ogeom_core::Canceller"]
+symbols = ["ogeom_core::Watch", "ogeom_core::Canceller", "ogeom_core::Stage"]
 tests = [
     "crates/ogeom/tests/foundations.rs::a_cancelled_watch_stops_tessellation",
+    "crates/ogeom-io/tests/step_corpus.rs::a_step_read_announces_each_solid_with_its_total",
 ]
+restriction = """Flat stages with per-stage (done, total) counts — enough for \
+a determinate bar over an import or a tessellation. No nested sub-range \
+scopes: the reference's Message_ProgressScope lets a stage subdivide its \
+own fraction recursively, which nothing here models yet."""
 
 # --- ogeom-math -----------------------------------------------------------
 

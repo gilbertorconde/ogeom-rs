@@ -179,3 +179,27 @@ END-ISO-10303-21;
         assert!(!mesh.triangles.is_empty());
     }
 }
+
+/// A determinate progress bar's contract: reading a file with N solids
+/// announces `step: solid` exactly N times, as `(1, N) … (N, N)`.
+///
+/// The denominator arrives with the *first* event — the host never counts
+/// events or guesses the total (issue #9).
+#[test]
+fn a_step_read_announces_each_solid_with_its_total() {
+    use std::sync::{Arc, Mutex};
+    let text = corpus("nist_ftc_11_asme1_rb.stp");
+    let heard: Arc<Mutex<Vec<(u64, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&heard);
+    let watch = ogeom_core::progress::Watch::with_stage_sink(move |stage| {
+        if stage.name == "step: solid"
+            && let Some(at) = stage.progress
+        {
+            record.lock().unwrap().push(at);
+        }
+    });
+    let import = ogeom_core::progress::watched(&watch, || ogeom_io::read_step(&text, T)).unwrap();
+    let n = import.solids.len() as u64;
+    let expected: Vec<(u64, u64)> = (1..=n).map(|i| (i, n)).collect();
+    assert_eq!(*heard.lock().unwrap(), expected);
+}

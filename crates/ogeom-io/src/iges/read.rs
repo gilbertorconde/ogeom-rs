@@ -107,9 +107,10 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         .filter(|(_, e)| e.kind == 186)
         .map(|(de, _)| *de)
         .collect();
-    for de in solid_des {
+    let total = solid_des.len() as u64;
+    for (done, de) in solid_des.into_iter().enumerate() {
         ogeom_core::progress::checkpoint()?;
-        ogeom_core::progress::stage("iges: solid");
+        ogeom_core::progress::stage_at("iges: solid", done as u64 + 1, total);
         match reader.manifold_solid(de) {
             Ok(solid) => solids.push((de, solid)),
             Err(e) => reader
@@ -134,9 +135,10 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         })
         .map(|(de, _)| *de)
         .collect();
-    for de in face_des {
+    let total = face_des.len() as u64;
+    for (done, de) in face_des.into_iter().enumerate() {
         ogeom_core::progress::checkpoint()?;
-        ogeom_core::progress::stage("iges: face");
+        ogeom_core::progress::stage_at("iges: face", done as u64 + 1, total);
         match reader.face(de) {
             Ok(face) => faces.push(face),
             Err(e) => reader
