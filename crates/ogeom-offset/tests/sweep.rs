@@ -906,7 +906,7 @@ fn a_round_profile_along_a_closed_square_spine_is_a_ring() {
 }
 
 #[test]
-fn a_sharp_cornered_closed_spine_is_refused_by_name() {
+fn a_sharp_cornered_closed_spine_mitres_a_smooth_profile() {
     let mut model = ogeom_topo::Model::new();
     let corners = [
         Point::new(8.0, -8.0, 0.0),
@@ -933,9 +933,17 @@ fn a_sharp_cornered_closed_spine_is_refused_by_name() {
     let profile = ogeom_algo::make_wire(&mut model, std::slice::from_ref(&sedge), T)
         .unwrap()
         .shape;
-    let err =
-        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 5e-2, T).unwrap_err();
-    assert!(err.to_string().contains("sharp corner"), "{err}");
+    // Once the mitred ring's refusal (issue #20 step 4); flipped to
+    // measured the day the corners learned their mitres. A symmetric
+    // profile's corner wedges cancel, so Pappus holds exactly: area times
+    // the square's perimeter.
+    let ring = ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 5e-2, T).unwrap();
+    let measured = volume(&model, &ring.shape);
+    let expected = core::f64::consts::PI * 64.0;
+    assert!(
+        (measured - expected).abs() < expected * 0.02,
+        "mitred round ring volume {measured} against {expected}"
+    );
 }
 
 #[test]
@@ -1338,5 +1346,150 @@ fn a_faceted_ring_round_a_wavy_spine_closes_and_measures() {
     assert!(
         (measured - expected).abs() / expected < 0.02,
         "wavy ring volume {measured} against A*L {expected}"
+    );
+}
+
+#[test]
+fn a_mitred_square_ring_measures_pappus_exactly() {
+    // A 4x4 profile round a 30x30 square spine: the mitred ring is four
+    // trimmed prisms meeting on their bisector planes, and its volume is
+    // exactly area x perimeter — the outer box minus the inner box.
+    let mut model = ogeom_topo::Model::new();
+    let spine = ogeom_algo::make_polygon(
+        &mut model,
+        &[
+            ogeom_math::Point::new(0.0, 0.0, 0.0),
+            ogeom_math::Point::new(30.0, 0.0, 0.0),
+            ogeom_math::Point::new(30.0, 30.0, 0.0),
+            ogeom_math::Point::new(0.0, 30.0, 0.0),
+        ],
+        true,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let profile = square_profile(
+        &mut model,
+        ogeom_math::Point::new(0.0, 0.0, 0.0),
+        ogeom_math::Vector::new(1.0, 0.0, 0.0),
+        4.0,
+    );
+    let ring = ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-4, T).unwrap();
+    let measured = volume(&model, &ring.shape);
+    let exact = 16.0 * 120.0;
+    assert!(
+        (measured - exact).abs() < exact * 1e-3,
+        "mitred ring volume {measured} against {exact}"
+    );
+}
+
+#[test]
+fn a_cornered_ring_seamed_mid_leg_refuses_by_name() {
+    let mut model = ogeom_topo::Model::new();
+    let spine = ogeom_algo::make_polygon(
+        &mut model,
+        &[
+            ogeom_math::Point::new(15.0, 0.0, 0.0),
+            ogeom_math::Point::new(30.0, 0.0, 0.0),
+            ogeom_math::Point::new(30.0, 30.0, 0.0),
+            ogeom_math::Point::new(0.0, 30.0, 0.0),
+            ogeom_math::Point::new(0.0, 0.0, 0.0),
+        ],
+        true,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let profile = square_profile(
+        &mut model,
+        ogeom_math::Point::new(15.0, 0.0, 0.0),
+        ogeom_math::Vector::new(1.0, 0.0, 0.0),
+        4.0,
+    );
+    let err = ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-4, T)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("seam at one of its own corners"),
+        "the mid-leg seam names itself: {err}"
+    );
+}
+
+#[test]
+fn a_skew_cornered_ring_refuses_by_name() {
+    // Corners with genuine out-of-plane turn: the parallel-carried frame
+    // leaves the far tangent's plane and the sheared sections no longer
+    // meet on their mitres. Refused, not sewn hoping.
+    let mut model = ogeom_topo::Model::new();
+    let pts = [
+        ogeom_math::Point::new(0.0, 0.0, 0.0),
+        ogeom_math::Point::new(20.0, 0.0, 4.0),
+        ogeom_math::Point::new(30.0, 15.0, 0.0),
+        ogeom_math::Point::new(20.0, 30.0, 4.0),
+        ogeom_math::Point::new(0.0, 30.0, 0.0),
+        ogeom_math::Point::new(-10.0, 15.0, 4.0),
+    ];
+    let spine = ogeom_algo::make_polygon(&mut model, &pts, true, T)
+        .unwrap()
+        .shape;
+    let profile = square_profile(&mut model, pts[0], pts[1] - pts[0], 4.0);
+    let err = ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-4, T)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("skew-cornered ring"),
+        "the skew ring names itself: {err}"
+    );
+}
+
+#[test]
+fn a_holed_profile_rounds_a_mitred_ring() {
+    // A 6x6 profile with a 2x2 hole: the hole's walls sweep their own
+    // shell, the void tunnel riding the same mitres. Exactly
+    // (36 - 4) x perimeter.
+    use ogeom_math::{Direction, Point, Vector};
+    let mut model = ogeom_topo::Model::new();
+    let spine = ogeom_algo::make_polygon(
+        &mut model,
+        &[
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(30.0, 0.0, 0.0),
+            Point::new(30.0, 30.0, 0.0),
+            Point::new(0.0, 30.0, 0.0),
+        ],
+        true,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let plane = ogeom_math::Plane::through(Point::ORIGIN, Direction::new(Vector::X, T).unwrap());
+    let frame = plane.frame();
+    let ring_at = |model: &mut ogeom_topo::Model, half: f64| {
+        let corners: Vec<Point> = [(-half, -half), (half, -half), (half, half), (-half, half)]
+            .iter()
+            .map(|(a, b)| Point::ORIGIN + frame.x().vector() * *a + frame.y().vector() * *b)
+            .collect();
+        ogeom_algo::make_polygon(model, &corners, true, T)
+            .unwrap()
+            .shape
+    };
+    let outer = ring_at(&mut model, 3.0);
+    let hole = ring_at(&mut model, 1.0);
+    let face = ogeom_algo::make_face(
+        &mut model,
+        ogeom_geom::PlaneSurface::over(plane, (-12.0, 12.0), (-12.0, 12.0))
+            .unwrap()
+            .into(),
+        &[outer, hole],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let ring = ogeom_offset::make_pipe_shell(&mut model, &face, &spine, false, 1e-4, T).unwrap();
+    let measured = volume(&model, &ring.shape);
+    let exact = 32.0 * 120.0;
+    assert!(
+        (measured - exact).abs() < exact * 1e-3,
+        "holed mitred ring volume {measured} against {exact}"
     );
 }

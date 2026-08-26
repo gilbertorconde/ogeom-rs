@@ -1111,9 +1111,13 @@ composition, and the pipe shell sweeps an arbitrary planar profile, holes \
 and all, along an open spine wire under a rotation-minimizing or Frenet \
 frame law — and a profile round a closed spine, smooth or faceted, holes \
 and all: the loop's holonomy paid off, a faceted profile skinned as one \
-C1-closed strip per facet, each hole a void tunnel of its own shell. What \
-is owed on the loop: the Frenet law, and the mitred ring round a sharp \
-corner. The code's refusals point here."""
+C1-closed strip per facet, each hole a void tunnel of its own shell. A \
+sharp-cornered ring mitres exactly when its corners turn in the plane: \
+the wrap is one more mitre, the seam must stand on a corner, and the \
+planar Pappus volumes land to the last digit. What is owed on the loop: \
+the Frenet law, the skew-cornered ring whose parallel-carried frame \
+leaves the far tangent's plane, and the ring seamed mid-leg. The code's \
+refusals point here."""
 claims = [
     "BRepOffsetAPI_MakePipe", "BRepOffsetAPI_MakePipeShell",
     "BRepOffsetAPI_MakeEvolved", "BRepSweep_*", "BRepFill", "BRepFill_*",

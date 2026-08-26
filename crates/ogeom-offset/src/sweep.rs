@@ -2169,15 +2169,23 @@ pub fn make_pipe_shell(
                     || stations[i].tangent.dot(stations[i + 1].tangent) < 0.0)
         })
         .collect();
-    if stations[0].at.distance(stations[stations.len() - 1].at) <= tol.confusion() * 10.0 {
-        if !kinks.is_empty() {
+    let ring = stations[0].at.distance(stations[stations.len() - 1].at) <= tol.confusion() * 10.0;
+    if ring && kinks.is_empty() {
+        return closed_pipe_shell(model, profile, spine, stations, frenet, tolerance, tol);
+    }
+    if ring {
+        // The cornered ring closes at its own wrap: the wire's seam must
+        // stand on a corner, so the wrap is one more mitre and every run
+        // between corners is an ordinary mitred leg.
+        let (t_in, t_out) = (stations[stations.len() - 1].tangent, stations[0].tangent);
+        if t_in.cross(t_out).magnitude() <= tol.angular() && t_in.dot(t_out) > 0.0 {
             ogeom_bail!(
                 Construction,
-                "a closed spine's sharp corners are still owed their mitres \
-                 — docs/PARITY.md, offset.sweeps"
+                "a cornered ring must seam at one of its own corners; \
+                 re-anchor the spine wire there — docs/PARITY.md, \
+                 offset.sweeps"
             );
         }
-        return closed_pipe_shell(model, profile, spine, stations, frenet, tolerance, tol);
     }
     if frenet && !kinks.is_empty() {
         ogeom_bail!(
@@ -2190,6 +2198,38 @@ pub fn make_pipe_shell(
         frenet_normals(&stations, tol)?
     } else {
         rmf_normals(&stations)
+    };
+    // A ring's frame must come home: carry once more across the wrap
+    // corner, read the twist between departure and return, and spread it
+    // along the arc — the smooth loop's own reconciliation, ending at a
+    // mitre instead of a tangent join.
+    let normals = if ring {
+        let mut extended = stations.clone();
+        extended.push(stations[0]);
+        let carried = rmf_normals(&extended);
+        let (n0, n_home) = (carried[0], carried[carried.len() - 1]);
+        let t0 = stations[0].tangent;
+        let twist = (n0.cross(n_home).dot(t0)).atan2(n0.dot(n_home));
+        let mut lengths = vec![0.0_f64];
+        for pair in extended.windows(2) {
+            let held = lengths[lengths.len() - 1];
+            lengths.push(held + pair[0].at.distance(pair[1].at));
+        }
+        let total = lengths[lengths.len() - 1];
+        carried
+            .iter()
+            .take(stations.len())
+            .enumerate()
+            .map(|(i, n)| {
+                let phi = -twist * lengths[i] / total;
+                let t = extended[i].tangent;
+                let v = *n * phi.cos() + t.cross(*n) * phi.sin();
+                let v = v - t * v.dot(t);
+                v / v.magnitude()
+            })
+            .collect()
+    } else {
+        normals
     };
     // At each corner both twin sections are thrown onto the bisector plane
     // along their own tangents; the mirror symmetry of the rotation-
@@ -2207,6 +2247,19 @@ pub fn make_pipe_shell(
             }
             out[k] = Some((stations[k].at, n));
             out[k + 1] = Some((stations[k + 1].at, n));
+        }
+        if ring {
+            let wrap = stations.len() - 1;
+            let n = stations[wrap].tangent + stations[0].tangent;
+            if n.magnitude() <= tol.angular() {
+                ogeom_bail!(
+                    Construction,
+                    "the spine doubles straight back on itself; no mitre \
+                     plane divides that corner"
+                );
+            }
+            out[wrap] = Some((stations[wrap].at, n));
+            out[0] = Some((stations[0].at, n));
         }
         out
     };
@@ -2378,8 +2431,41 @@ pub fn make_pipe_shell(
             // stations land on the same mitred points, so both runs take
             // the same vertex objects.
             let mut corners_at: Vec<Option<Vec<Shape>>> = vec![None; stations.len()];
-            corners_at[0] = Some(make_corners(model, 0));
-            corners_at[last] = Some(make_corners(model, last));
+            if ring {
+                // The wrap is one corner: both runs take the same vertex
+                // objects. Every corner's two sheared sections must land on
+                // one ring for the loop to close; a planar ring's do
+                // exactly, and a skew ring's — whose parallel-carried frame
+                // leaves the far tangent's plane — do not, so the residue
+                // is measured and the skew ring refused by name rather
+                // than sewn hoping.
+                let mut worst = 0.0_f64;
+                for ab in &corner_flat {
+                    worst = worst.max(place(last, *ab).distance(place(0, *ab)));
+                    for &k in &kinks {
+                        worst = worst.max(place(k, *ab).distance(place(k + 1, *ab)));
+                    }
+                }
+                if worst > tolerance.max(tol.confusion() * 100.0) {
+                    ogeom_bail!(
+                        Construction,
+                        "a skew-cornered ring's sections do not meet on \
+                         their mitres; the out-of-plane corner's frame law \
+                         is still owed — docs/PARITY.md, offset.sweeps"
+                    );
+                }
+                let set = make_corners(model, 0);
+                if worst > tol.confusion() {
+                    for v in &set {
+                        model.widen(v, ogeom_core::Tolerance::new(worst * 2.0)?)?;
+                    }
+                }
+                corners_at[0] = Some(set.clone());
+                corners_at[last] = Some(set);
+            } else {
+                corners_at[0] = Some(make_corners(model, 0));
+                corners_at[last] = Some(make_corners(model, last));
+            }
             for &k in &kinks {
                 let set = make_corners(model, k);
                 corners_at[k] = Some(set.clone());
@@ -2459,8 +2545,10 @@ pub fn make_pipe_shell(
     }
 
     // A cap per end: one plane, one wire per loop, each edge's pcurve the
-    // exact projection of its control net into the plane's chart.
-    for end in 0..2 {
+    // exact projection of its control net into the plane's chart. A ring
+    // has no ends: its two boundary rings stand on one mitre plane and the
+    // sew joins them.
+    for end in 0..if ring { 0 } else { 2 } {
         let (at, outward) = if end == 0 {
             (stations[0].at, -stations[0].tangent)
         } else {
@@ -2546,10 +2634,33 @@ pub fn make_pipe_shell(
     }
 
     let sewn = sew(model, &faces, tol)?;
-    if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
-        ogeom_bail!(Construction, "the pipe shell did not close");
-    }
-    let mut built = make_solid(model, std::slice::from_ref(&sewn.shells[0]))?;
+    let mut built = if ring {
+        // A holed ring sews into one shell per profile loop: the outer
+        // bounds the material, each hole a void tunnel. Largest bound
+        // first, the voids' faces already turned at build.
+        if sewn.shells.is_empty() {
+            ogeom_bail!(Construction, "the pipe shell did not close");
+        }
+        for shell in &sewn.shells {
+            if !ogeom_algo::is_shell_closed(model, shell)? {
+                ogeom_bail!(Construction, "the pipe shell did not close");
+            }
+        }
+        let mut ordered = sewn.shells.clone();
+        let mut sized: Vec<(f64, Shape)> = Vec::with_capacity(ordered.len());
+        for shell in ordered.drain(..) {
+            let bound = ogeom_algo::shape_bounds(model, &shell, tol)?;
+            sized.push((bound.diagonal(), shell));
+        }
+        sized.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
+        let shells: Vec<Shape> = sized.into_iter().map(|(_, s)| s).collect();
+        make_solid(model, &shells)?
+    } else {
+        if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
+            ogeom_bail!(Construction, "the pipe shell did not close");
+        }
+        make_solid(model, std::slice::from_ref(&sewn.shells[0]))?
+    };
     built.history.generate(profile, built.shape.clone());
     built.history.generate(spine, built.shape.clone());
     Ok(built)
