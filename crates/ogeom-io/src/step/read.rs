@@ -129,6 +129,7 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         pcurves: HashMap::new(),
         untrimmed_ids: Vec::new(),
         tallies: HashMap::new(),
+        cdsr_of_nauo: None,
         tol,
     };
     reader.report.scale_mm = reader.unit_scale();
@@ -249,6 +250,11 @@ struct Reader<'a> {
     untrimmed_ids: Vec<u64>,
     /// kind → (count, worst, exemplar), folded into the report's summary.
     tallies: HashMap<&'static str, (usize, f64, u64)>,
+    /// Usage → its `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION`, built once.
+    /// The lookup used to rescan the whole exchange per assembly edge —
+    /// O(usages × entities), 333 × 457 k on one reporting assembly, which
+    /// was three quarters of the entire document build.
+    cdsr_of_nauo: Option<HashMap<u64, u64>>,
     tol: Tolerances,
 }
 
@@ -1692,6 +1698,8 @@ impl Reader<'_> {
             .map(|(id, _)| *id)
             .collect();
         nauos.sort_unstable();
+        let entry_of_pd: HashMap<u64, usize> =
+            entries.iter().enumerate().map(|(i, e)| (e.pd, i)).collect();
         for nauo in nauos {
             let Ok(args) = self.args(nauo, "NEXT_ASSEMBLY_USAGE_OCCURRENCE") else {
                 continue;
@@ -1720,8 +1728,8 @@ impl Reader<'_> {
             let at = self
                 .usage_transform(nauo, child_sr)
                 .unwrap_or(Transform::IDENTITY);
-            if let Some(entry) = entries.iter_mut().find(|e| e.pd == parent) {
-                entry.children.push((child, at, name));
+            if let Some(&at_index) = entry_of_pd.get(&parent) {
+                entries[at_index].children.push((child, at, name));
             }
         }
         Some(entries)
@@ -1783,24 +1791,36 @@ impl Reader<'_> {
     /// representation, not from argument order, because real files disagree
     /// about the order.
     fn usage_transform(&mut self, nauo: u64, child_sr: Option<u64>) -> Option<Transform> {
-        let mut cdsrs: Vec<u64> = self
-            .exchange
-            .data
-            .iter()
-            .filter(|(_, inst)| {
-                inst.part("CONTEXT_DEPENDENT_SHAPE_REPRESENTATION")
-                    .is_some()
-            })
-            .map(|(id, _)| *id)
-            .collect();
-        cdsrs.sort_unstable();
-        let cdsr = cdsrs.into_iter().find(|id| {
-            self.args(*id, "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION")
-                .ok()
-                .and_then(|args| args.get(1).and_then(Arg::reference))
-                .and_then(|pds| self.definition_of_shape(pds))
-                == Some(nauo)
-        })?;
+        if self.cdsr_of_nauo.is_none() {
+            // One pass over the CDSRs, each resolved to the usage it
+            // describes; ascending id order so a usage described twice keeps
+            // the same one the old lowest-id-first scan chose.
+            let mut cdsrs: Vec<u64> = self
+                .exchange
+                .data
+                .iter()
+                .filter(|(_, inst)| {
+                    inst.part("CONTEXT_DEPENDENT_SHAPE_REPRESENTATION")
+                        .is_some()
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            cdsrs.sort_unstable();
+            let mut index: HashMap<u64, u64> = HashMap::new();
+            for id in cdsrs {
+                let Some(owner) = self
+                    .args(id, "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION")
+                    .ok()
+                    .and_then(|args| args.get(1).and_then(Arg::reference))
+                    .and_then(|pds| self.definition_of_shape(pds))
+                else {
+                    continue;
+                };
+                index.entry(owner).or_insert(id);
+            }
+            self.cdsr_of_nauo = Some(index);
+        }
+        let cdsr = *self.cdsr_of_nauo.as_ref()?.get(&nauo)?;
         let rr = self
             .args(cdsr, "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION")
             .ok()?
