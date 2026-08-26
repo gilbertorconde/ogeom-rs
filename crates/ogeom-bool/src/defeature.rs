@@ -57,6 +57,27 @@ pub fn remove_faces(
     if faces.is_empty() {
         ogeom_bail!(Construction, "no faces named; there is nothing to remove");
     }
+    // Separate features remove separately. Two bores named in one call are
+    // two wounds; classifying their ring edges together declares the two
+    // longest interrupted faces "the sides" across both and recovers a
+    // nonsense edge. Faces group into features by shared edges, and each
+    // feature runs the whole machinery on the previous feature's result —
+    // sequential exactly as a caller would have called it, so one call
+    // means what N calls mean, in the order given.
+    let groups = feature_groups(model, faces)?;
+    if groups.len() > 1 {
+        let mut current = Built::from_nothing(solid.clone());
+        for group in &groups {
+            // A later group's faces survive the earlier surgeries untouched
+            // — different regions — but the solid they belong to is new.
+            let step = remove_faces(model, &current.shape, group, tol)?;
+            current = Built {
+                shape: step.shape,
+                history: current.history.then(&step.history),
+            };
+        }
+        return Ok(current);
+    }
     let all_faces = explore(model, solid, Filter::OfType(ShapeType::Face))?;
     let removed: HashSet<TShapeId> = faces.iter().map(Shape::node).collect();
     for face in faces {
@@ -187,6 +208,48 @@ pub fn remove_faces(
 /// Close a band wound: two side faces re-intersected, end faces' edges
 /// extended to the recovered corners, all four-plus faces rebuilt.
 #[allow(clippy::too_many_lines, reason = "one wound, one narrative")]
+/// The connected components of the removal set: faces joined by shared
+/// edges belong to one feature and close as one wound.
+fn feature_groups(model: &Model, faces: &[Shape]) -> OgeomResult<Vec<Vec<Shape>>> {
+    let mut edge_sets: Vec<HashSet<TShapeId>> = Vec::with_capacity(faces.len());
+    for face in faces {
+        edge_sets.push(
+            explore(model, face, Filter::OfType(ShapeType::Edge))?
+                .iter()
+                .map(Shape::node)
+                .collect(),
+        );
+    }
+    let mut group_of: Vec<usize> = (0..faces.len()).collect();
+    // Union by scan: small sets, clarity over asymptotics.
+    fn root(group_of: &mut [usize], mut i: usize) -> usize {
+        while group_of[i] != i {
+            group_of[i] = group_of[group_of[i]];
+            i = group_of[i];
+        }
+        i
+    }
+    for i in 0..faces.len() {
+        for j in i + 1..faces.len() {
+            if edge_sets[i].intersection(&edge_sets[j]).next().is_some() {
+                let (a, b) = (root(&mut group_of, i), root(&mut group_of, j));
+                group_of[a.max(b)] = a.min(b);
+            }
+        }
+    }
+    let mut groups: HashMap<usize, Vec<Shape>> = HashMap::new();
+    for (i, face) in faces.iter().enumerate() {
+        groups
+            .entry(root(&mut group_of, i))
+            .or_default()
+            .push(face.clone());
+    }
+    let mut out: Vec<Vec<Shape>> = groups.into_values().collect();
+    // Deterministic order: by each group's smallest node index.
+    out.sort_by_key(|g| g.iter().map(|f| f.node().index()).min());
+    Ok(out)
+}
+
 fn close_band(
     model: &mut Model,
     interrupted: &[Shape],

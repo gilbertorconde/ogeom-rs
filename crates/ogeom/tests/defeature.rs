@@ -184,3 +184,50 @@ fn edge_near(model: &Model, solid: &Shape, at: Point) -> Shape {
     }
     best.unwrap().1
 }
+
+/// Two separate features named in one call remove as two wounds.
+///
+/// Two fillets on opposite edges share nothing; classifying their ring
+/// edges together used to elect "the sides" across both features and die
+/// recovering a nonsense edge. Grouped by shared edges, each feature runs
+/// the whole machinery on the previous result, and the box comes back
+/// sharp — exactly, both wounds.
+#[test]
+fn two_separate_fillets_remove_in_one_call() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let mut solid = block;
+    for target in [Point::new(10.0, 5.0, 10.0), Point::new(0.0, 5.0, 0.0)] {
+        let edge = edge_near(&model, &solid, target);
+        solid = ogeom::fillet::fillet_edge(&mut model, &solid, &edge, 2.0, T)
+            .unwrap()
+            .shape;
+    }
+    // The two blend faces: the cylindrical ones.
+    let mut blends = Vec::new();
+    for face in explore_unique(&model, &solid, ShapeType::Face).unwrap() {
+        let data = model.node(&face).unwrap().data().as_face().unwrap();
+        let surface = model.geometry().surface(data.surface).unwrap();
+        if matches!(surface, ogeom::geom::SurfaceGeometry::Cylinder(_)) {
+            blends.push(face);
+        }
+    }
+    assert_eq!(blends.len(), 2, "two fillets leave two cylindrical faces");
+    let restored = ogeom::boolean::remove_faces(&mut model, &solid, &blends, T)
+        .unwrap()
+        .shape;
+    assert!(
+        ogeom::algo::check(&model, &restored, T).unwrap().is_valid(),
+        "the restored box is a valid solid"
+    );
+    let volume =
+        ogeom::algo::volume_properties(&model, &restored, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    assert!(
+        (volume - 1000.0).abs() < 1e-6,
+        "both wounds close exactly: {volume} against 1000"
+    );
+}
