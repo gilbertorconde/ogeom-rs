@@ -1187,3 +1187,75 @@ fn a_square_profile_along_a_closed_circle_is_a_pappus_ring() {
         "square ring volume {measured} against Pappus {expected}"
     );
 }
+
+/// A holed profile round a closed spine: the outer square ring less the
+/// tunnel its hole sweeps — Pappus on both, subtracted.
+#[test]
+fn a_holed_profile_round_a_closed_spine_carries_its_tunnel() {
+    let mut model = ogeom_topo::Model::new();
+    let frame = Frame::new(
+        Point::new(0.0, 0.0, 0.0),
+        ogeom_math::Direction::Z,
+        ogeom_math::Direction::X,
+        T,
+    )
+    .unwrap();
+    let circle = Circle::new(frame, 20.0, T).unwrap();
+    let curve = ogeom_geom::Curve::Circle(ogeom_geom::CircleCurve::new(circle));
+    let domain = curve.domain();
+    let spine_edge = ogeom_algo::make_edge(&mut model, curve, domain, T)
+        .unwrap()
+        .shape;
+    let spine = ogeom_algo::make_wire(&mut model, std::slice::from_ref(&spine_edge), T)
+        .unwrap()
+        .shape;
+    // A 6x6 square with a 2x2 hole, centred at the spine's start.
+    let outer = ogeom_algo::make_polygon(
+        &mut model,
+        &[
+            Point::new(17.0, 0.0, -3.0),
+            Point::new(23.0, 0.0, -3.0),
+            Point::new(23.0, 0.0, 3.0),
+            Point::new(17.0, 0.0, 3.0),
+        ],
+        true,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let hole = ogeom_algo::make_polygon(
+        &mut model,
+        &[
+            Point::new(19.0, 0.0, -1.0),
+            Point::new(21.0, 0.0, -1.0),
+            Point::new(21.0, 0.0, 1.0),
+            Point::new(19.0, 0.0, 1.0),
+        ],
+        true,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let plane = ogeom_math::Plane::through(Point::new(20.0, 0.0, 0.0), ogeom_math::Direction::Y);
+    let surface: ogeom_geom::SurfaceGeometry =
+        ogeom_geom::PlaneSurface::over(plane, (-10.0, 10.0), (-10.0, 10.0))
+            .unwrap()
+            .into();
+    let profile = ogeom_algo::make_face(&mut model, surface, &[outer, hole], T)
+        .unwrap()
+        .shape;
+    let built =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 5e-3, T).unwrap();
+    assert!(
+        ogeom_algo::check(&model, &built.shape, T)
+            .unwrap()
+            .is_valid(),
+        "the holed ring is a valid solid"
+    );
+    let expected = (36.0 - 4.0) * core::f64::consts::TAU * 20.0;
+    let measured = volume(&model, &built.shape);
+    assert!(
+        (measured - expected).abs() / expected < 5e-3,
+        "holed ring volume {measured} against Pappus {expected}"
+    );
+}

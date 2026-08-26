@@ -1088,6 +1088,18 @@ fn closed_skinned_solid(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    let shell = closed_skinned_shell(model, rows, tolerance, tol)?;
+    make_solid(model, std::slice::from_ref(&shell))
+}
+
+/// The closed skin as a shell, for callers assembling solids with voids —
+/// a holed profile's ring is one outer shell and one per tunnel.
+fn closed_skinned_shell(
+    model: &mut Model,
+    rows: &[Vec<Point>],
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
     use ogeom_geom::Surface as _;
     let mut closed_rows: Vec<Vec<Point>> = Vec::with_capacity(rows.len() + 1);
     for row in rows {
@@ -1207,7 +1219,7 @@ fn closed_skinned_solid(
     if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
         ogeom_bail!(Construction, "the closed skin did not close");
     }
-    make_solid(model, std::slice::from_ref(&sewn.shells[0]))
+    Ok(sewn.shells[0].clone())
 }
 
 /// The loft to a point: a wire section closing onto a single apex vertex.
@@ -1972,6 +1984,94 @@ struct SpineStation {
     tangent: Vector,
 }
 
+/// One profile wire's closed shell round the spine: smooth wires skin as a
+/// single closed face, faceted ones as one ring strip per facet.
+#[allow(clippy::too_many_arguments, reason = "one frame, spelled out")]
+fn closed_loop_shell(
+    model: &mut Model,
+    profile_loop: &Shape,
+    edges: &[Shape],
+    smooth: bool,
+    stations: &[SpineStation],
+    normals: &[Vector],
+    frame0: (Point, Vector),
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    const AROUND: usize = 40;
+    let (origin, x0) = frame0;
+    let t0 = stations[0].tangent;
+    let y0 = t0.cross(x0);
+    if !smooth {
+        // A faceted profile: one ring strip per profile edge — a fit cannot
+        // speak a corner, so each facet gets its own v-closed skin and the
+        // strips sew along the corner loops they share within tolerance.
+        const ALONG_EDGE: usize = 8;
+        let centroid = {
+            let mut c = Vector::new(0.0, 0.0, 0.0);
+            for st in stations {
+                c += st.at.to_vector();
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let n = stations.len() as f64;
+            Point::from_vector(c / n)
+        };
+        let mut faces = Vec::with_capacity(edges.len());
+        for edge in edges {
+            let (curve, range) = spine_curve_of(model, edge)?;
+            let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+            let mut flat_row: Vec<(f64, f64)> = Vec::with_capacity(ALONG_EDGE + 1);
+            for kk in 0..=ALONG_EDGE {
+                #[allow(clippy::cast_precision_loss)]
+                let f = (kk as f64) / (ALONG_EDGE as f64);
+                let t = if reversed {
+                    range.1 - (range.1 - range.0) * f
+                } else {
+                    range.0 + (range.1 - range.0) * f
+                };
+                let p = curve.point_at(t, tol)?;
+                flat_row.push(((p - origin).dot(x0), (p - origin).dot(y0)));
+            }
+            // rows[j = station][i = across the facet].
+            let rows: Vec<Vec<Point>> = stations
+                .iter()
+                .enumerate()
+                .map(|(i, station)| {
+                    let x = normals[i];
+                    let y = station.tangent.cross(x);
+                    flat_row
+                        .iter()
+                        .map(|(a, b)| station.at + x * *a + y * *b)
+                        .collect()
+                })
+                .collect();
+            faces.push(skinned_ring_strip(model, &rows, centroid, tolerance, tol)?);
+        }
+        let sewn = sew(model, &faces, tol)?;
+        if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
+            ogeom_bail!(Construction, "the faceted ring did not close");
+        }
+        return Ok(sewn.shells[0].clone());
+    }
+    let samples = sample_wire(model, profile_loop, AROUND, tol)?;
+    let flat: Vec<(f64, f64)> = samples
+        .iter()
+        .map(|p| ((*p - origin).dot(x0), (*p - origin).dot(y0)))
+        .collect();
+    let rows: Vec<Vec<Point>> = stations
+        .iter()
+        .enumerate()
+        .map(|(i, station)| {
+            let x = normals[i];
+            let y = station.tangent.cross(x);
+            flat.iter()
+                .map(|(a, b)| station.at + x * *a + y * *b)
+                .collect()
+        })
+        .collect();
+    closed_skinned_shell(model, &rows, tolerance, tol)
+}
+
 /// Rotation-minimizing normals along the stations, by double reflection:
 /// reflect in each chord's plane, then in the plane bisecting the tangents.
 /// Self-contained — it needs only the station list — and shared by every
@@ -2479,7 +2579,6 @@ fn closed_pipe_shell(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    const AROUND: usize = 40;
     if frenet {
         ogeom_bail!(
             Construction,
@@ -2515,13 +2614,9 @@ fn closed_pipe_shell(
             "a pipe shell sweeps a planar wire or face, not a {other:?}"
         ),
     };
-    let [profile_loop] = loops.as_slice() else {
-        ogeom_bail!(
-            Construction,
-            "a holed profile on a closed spine needs nested shells, which \
-             are still owed — docs/PARITY.md, offset.sweeps"
-        );
-    };
+    // Every wire sweeps its own closed shell: the outer boundary first,
+    // each hole a void tunnel inside it.
+    let profile_loop = &loops[0];
     let edges = model.ordered_children_of(profile_loop)?;
     let smooth = edges.len() == 1
         && ogeom_algo::edge_vertices(model, &edges[0])?.is_some_and(|(a, b)| a.is_same(&b));
@@ -2575,78 +2670,32 @@ fn closed_pipe_shell(
     }
 
     let x0 = normals[0];
-    let y0 = t0.cross(x0);
     let origin = stations[0].at;
-    if !smooth {
-        // A faceted profile: one ring strip per profile edge — a fit cannot
-        // speak a corner, so each facet gets its own v-closed skin and the
-        // strips sew along the corner loops they share within tolerance.
-        const ALONG_EDGE: usize = 8;
-        let centroid = {
-            let mut c = Vector::new(0.0, 0.0, 0.0);
-            for st in &stations {
-                c += st.at.to_vector();
-            }
-            #[allow(clippy::cast_precision_loss)]
-            let n = stations.len() as f64;
-            Point::from_vector(c / n)
-        };
-        let mut faces = Vec::with_capacity(edges.len());
-        for edge in &edges {
-            let (curve, range) = spine_curve_of(model, edge)?;
-            let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
-            let mut flat_row: Vec<(f64, f64)> = Vec::with_capacity(ALONG_EDGE + 1);
-            for kk in 0..=ALONG_EDGE {
-                #[allow(clippy::cast_precision_loss)]
-                let f = (kk as f64) / (ALONG_EDGE as f64);
-                let t = if reversed {
-                    range.1 - (range.1 - range.0) * f
-                } else {
-                    range.0 + (range.1 - range.0) * f
-                };
-                let p = curve.point_at(t, tol)?;
-                flat_row.push(((p - origin).dot(x0), (p - origin).dot(y0)));
-            }
-            // rows[j = station][i = across the facet].
-            let rows: Vec<Vec<Point>> = stations
-                .iter()
-                .enumerate()
-                .map(|(i, station)| {
-                    let x = normals[i];
-                    let y = station.tangent.cross(x);
-                    flat_row
-                        .iter()
-                        .map(|(a, b)| station.at + x * *a + y * *b)
-                        .collect()
-                })
-                .collect();
-            faces.push(skinned_ring_strip(model, &rows, centroid, tolerance, tol)?);
-        }
-        let sewn = sew(model, &faces, tol)?;
-        if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
-            ogeom_bail!(Construction, "the faceted ring did not close");
-        }
-        return make_solid(model, std::slice::from_ref(&sewn.shells[0]));
+    let mut shells: Vec<Shape> = Vec::with_capacity(loops.len());
+    for (li, wire) in loops.iter().enumerate() {
+        let wire_edges = model.ordered_children_of(wire)?;
+        let wire_smooth = wire_edges.len() == 1
+            && ogeom_algo::edge_vertices(model, &wire_edges[0])?
+                .is_some_and(|(a, b)| a.is_same(&b));
+        let shell = closed_loop_shell(
+            model,
+            wire,
+            &wire_edges,
+            wire_smooth,
+            &stations,
+            &normals,
+            (origin, x0),
+            tolerance,
+            tol,
+        )?;
+        // A void's faces leave the material toward the tunnel: reversed
+        // against the outward orientation every shell is built with.
+        shells.push(if li == 0 { shell } else { shell.reversed() });
     }
-    let samples = sample_wire(model, profile_loop, AROUND, tol)?;
-    let flat: Vec<(f64, f64)> = samples
-        .iter()
-        .map(|p| ((*p - origin).dot(x0), (*p - origin).dot(y0)))
-        .collect();
-    let rows: Vec<Vec<Point>> = stations
-        .iter()
-        .enumerate()
-        .map(|(i, station)| {
-            let x = normals[i];
-            let y = station.tangent.cross(x);
-            flat.iter()
-                .map(|(a, b)| station.at + x * *a + y * *b)
-                .collect()
-        })
-        .collect();
-    let mut built = closed_skinned_solid(model, &rows, tolerance, tol)?;
+    let mut built = make_solid(model, &shells)?;
     built.history.generate(profile, built.shape.clone());
     built.history.generate(spine, built.shape.clone());
+    let _ = (smooth, profile_loop, edges);
     Ok(built)
 }
 
