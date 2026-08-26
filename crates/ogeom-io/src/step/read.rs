@@ -121,7 +121,11 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
             ..StepReport::default()
         },
         angle_scale: 1.0,
-        visited: HashSet::new(),
+        visited: {
+            let top = exchange.data.keys().max().copied().unwrap_or(0);
+            let top = usize::try_from(top).unwrap_or(usize::MAX - 1);
+            vec![false; top + 1]
+        },
         vertices: HashMap::new(),
         edges: HashMap::new(),
         faces: HashMap::new(),
@@ -191,7 +195,11 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
 
     // Everything never visited, counted by its leading keyword.
     for (id, instance) in &exchange.data {
-        if !reader.visited.contains(id) {
+        if !usize::try_from(*id)
+            .ok()
+            .and_then(|i| reader.visited.get(i).copied())
+            .unwrap_or(false)
+        {
             *reader
                 .report
                 .skipped
@@ -238,7 +246,9 @@ struct Reader<'a> {
     report: StepReport,
     /// Radians per file angle unit — degrees are common.
     angle_scale: f64,
-    visited: HashSet<u64>,
+    /// One slot per possible instance id: the reader touches instances
+    /// millions of times, and a direct index beats hashing every touch.
+    visited: Vec<bool>,
     vertices: HashMap<u64, Shape>,
     edges: HashMap<u64, BuiltEdge>,
     faces: HashMap<u64, Shape>,
@@ -270,7 +280,11 @@ struct Reader<'a> {
 
 impl Reader<'_> {
     fn instance(&mut self, id: u64) -> OgeomResult<&'_ Instance> {
-        self.visited.insert(id);
+        if let Ok(i) = usize::try_from(id)
+            && let Some(slot) = self.visited.get_mut(i)
+        {
+            *slot = true;
+        }
         self.exchange.data.get(&id).ok_or_else(|| {
             ogeom_core::ogeom_err!(
                 Construction,
@@ -332,7 +346,7 @@ impl Reader<'_> {
             .map(|(id, _)| *id)
             .collect();
         contexts.sort_unstable();
-        contexts.sort_by_key(|id| !cited.contains(id));
+        contexts.sort_by_cached_key(|id| !cited.contains(id));
 
         let mut out = Vec::new();
         for id in contexts {
@@ -2661,13 +2675,21 @@ impl Reader<'_> {
             if let Some(args) = instance.part("PROPERTY_DEFINITION") {
                 // Read for the index is read: the skipped table should not
                 // claim the reader never looked.
-                self.visited.insert(*id);
+                if let Ok(i) = usize::try_from(*id)
+                    && let Some(slot) = self.visited.get_mut(i)
+                {
+                    *slot = true;
+                }
                 if let Some(definition) = args.get(2).and_then(Arg::reference) {
                     properties.entry(definition).or_default().push(*id);
                 }
             }
             if let Some(args) = instance.part("SHAPE_DEFINITION_REPRESENTATION") {
-                self.visited.insert(*id);
+                if let Ok(i) = usize::try_from(*id)
+                    && let Some(slot) = self.visited.get_mut(i)
+                {
+                    *slot = true;
+                }
                 if let Some(property) = args.first().and_then(Arg::reference) {
                     sdrs.entry(property).or_default().push(*id);
                 }
