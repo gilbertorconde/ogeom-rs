@@ -21,6 +21,7 @@ pub mod length;
 pub mod mass;
 pub mod measure;
 pub mod medial;
+pub mod pcurve_fit;
 pub mod place;
 pub mod primitive;
 pub mod proximity;
