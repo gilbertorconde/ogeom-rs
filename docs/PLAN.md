@@ -468,6 +468,12 @@ re-deriving edge ranges on this kernel's own parameterizations exactly as the
 STEP reader does. Twenty-nine entity types translate; the live figure and the
 refused remainder are the parity ledger's `io.iges` row.
 
+Coverage grows on demand, not on speculation: when a real file supplies an
+entity outside the set, an issue names the entity and the file, and the
+translation is built against that evidence — the policy issue #27 records.
+The table in the module is the single source; `tools/parity.py exchange`
+regenerates the figure from it.
+
 Two findings came out of building it that reach past IGES. The exchange
 writers paired both of an edge's vertices with the edge's own placement,
 which quietly welds an instanced vertex — a prism's top corner is its bottom
