@@ -27,7 +27,10 @@ millimetre the boundary is not describing that surface at all, and a
 fitted trim would be invented geometry drawn with confidence: the face
 reads untrimmed, refuses to mesh, and `report.untrimmed_faces` carries it
 — file id and face shape both — so a consumer can mark the exact gap or
-hand the face straight to the healer. `check` reports the
+hand the face straight to the healer. The flood itself is counted:
+`report.summary` digests thousands of per-edge warnings into one entry
+per kind — count, worst measured value, an exemplar id — which is what a
+status bar shows while `warnings` keeps the full prose. `check` reports the
 same faces as broken from the model side.
 
 A large import is worth watching. A `Watch` scoped around the call hears

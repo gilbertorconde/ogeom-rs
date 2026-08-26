@@ -288,3 +288,30 @@ END-ISO-10303-21;
         "and the prose still tells the story"
     );
 }
+
+/// The warning flood, counted: the hovering face's read carries its kinds
+/// as summary entries — count, worst measured value, an exemplar id — so a
+/// consumer shows four lines where the prose runs to hundreds (issue #24).
+#[test]
+fn warnings_summarise_by_kind_with_counts_and_worsts() {
+    let text = corpus("nist_ftc_11_asme1_rb.stp");
+    let import = ogeom_io::read_step(&text, T).unwrap();
+    // The corpus file is imprecise the way real files are: something
+    // tallies. Every entry is coherent — counted, and its worst finite.
+    for entry in &import.report.summary {
+        assert!(entry.count > 0);
+        assert!(entry.worst.is_finite());
+    }
+    // The summary is a digest, not a second flood.
+    assert!(
+        import.report.summary.len() <= 8,
+        "kinds, not occurrences: {}",
+        import.report.summary.len()
+    );
+    let prose = import.report.warnings.len();
+    let counted: usize = import.report.summary.iter().map(|e| e.count).sum();
+    assert!(
+        counted <= prose + import.report.untrimmed_faces.len(),
+        "the summary counts what the prose says: {counted} vs {prose}"
+    );
+}

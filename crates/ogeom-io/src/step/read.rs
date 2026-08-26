@@ -49,6 +49,12 @@ pub struct StepReport {
     pub skipped: BTreeMap<String, usize>,
     /// Everything that imported less than perfectly, one line each.
     pub warnings: Vec<String>,
+    /// The warning flood, counted: one entry per *kind* of imperfection,
+    /// with how often it happened, the worst measured value where the kind
+    /// measures one, and one exemplar entity id. A 776-warning community
+    /// file summarises to a handful of lines a consumer can actually show;
+    /// `warnings` keeps the full prose. Sorted by count, largest first.
+    pub summary: Vec<WarningSummary>,
     /// Faces that read without a complete trim: an edge's boundary sat too
     /// far from the surface for any honest pcurve (beyond the one-millimetre
     /// healing cap), so the face will refuse to triangulate. Deduplicated,
@@ -58,6 +64,21 @@ pub struct StepReport {
     /// refused id whose face never finished building has nothing to act on
     /// and stays in the warnings alone.
     pub untrimmed_faces: Vec<UntrimmedFace>,
+}
+
+/// One kind of imperfect import, counted rather than repeated.
+#[derive(Debug, Clone)]
+pub struct WarningSummary {
+    /// The kind, stable across runs: `"vertex-miss"`, `"boundary-slop"`,
+    /// `"fit-short"`, `"untrimmed"`.
+    pub kind: &'static str,
+    /// How many times it happened.
+    pub count: usize,
+    /// The worst measured value among them — a distance, for every kind
+    /// that measures one; zero where none applies.
+    pub worst: f64,
+    /// One entity id to look at first.
+    pub exemplar: u64,
 }
 
 /// A face the reader could not trim, with the shape to act on.
@@ -107,6 +128,7 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         callout_index: HashMap::new(),
         pcurves: HashMap::new(),
         untrimmed_ids: Vec::new(),
+        tallies: HashMap::new(),
         tol,
     };
     reader.report.scale_mm = reader.unit_scale();
@@ -128,6 +150,22 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         let solid = reader.solid(id)?;
         by_msb.insert(id, solid.clone());
         solids.push(solid);
+    }
+    // The tallies fold into the summary, largest first, ties by kind so the
+    // order is the file's and not the map's.
+    {
+        let mut entries: Vec<WarningSummary> = reader
+            .tallies
+            .drain()
+            .map(|(kind, (count, worst, exemplar))| WarningSummary {
+                kind,
+                count,
+                worst,
+                exemplar,
+            })
+            .collect();
+        entries.sort_by(|a, b| b.count.cmp(&a.count).then(a.kind.cmp(b.kind)));
+        reader.report.summary = entries;
     }
     // The noted refusals resolve to the faces themselves, now that they
     // exist: the same cache the shells were assembled from answers by the
@@ -209,6 +247,8 @@ struct Reader<'a> {
     /// Faces noted untrimmed, by file id; resolved to shapes once the read
     /// is far enough along for the shapes to exist.
     untrimmed_ids: Vec<u64>,
+    /// kind → (count, worst, exemplar), folded into the report's summary.
+    tallies: HashMap<&'static str, (usize, f64, u64)>,
     tol: Tolerances,
 }
 
@@ -901,9 +941,7 @@ impl Reader<'_> {
                 {
                     data.tolerance = data.tolerance.widen_to(gap + self.tol.confusion());
                 }
-                self.report.warnings.push(format!(
-                    "#{id}: a curve end misses its vertex by {gap:.2e}; the                      vertex tolerance grew to say so"
-                ));
+                self.warn_vertex_miss(id, gap);
             }
         }
         let shape =
@@ -1196,14 +1234,10 @@ impl Reader<'_> {
                     warning,
                 } => {
                     if let Some(w) = warning {
-                        self.report.warnings.push(w);
+                        self.warn_slop(w, worst_off, face_id);
                     }
                     if !met {
-                        self.report.warnings.push(format!(
-                            "face #{face_id}: a projected pcurve fit \
-                             stopped at {error:.2e}; the face's mesh may \
-                             sit that far off along this edge"
-                        ));
+                        self.warn_fit_short(face_id, error);
                     }
                     if worst_off > self.tol.confusion()
                         && let Some(node) = self.model.node_mut(edge)
@@ -1233,14 +1267,10 @@ impl Reader<'_> {
                     match crate::pcurves::fit_projected_pcurve(curve, range, surface, self.tol) {
                         Ok((fitted, error, met, worst_off, slop_warning)) => {
                             if let Some(w) = slop_warning {
-                                self.report.warnings.push(w);
+                                self.warn_slop(w, worst_off, face_id);
                             }
                             if !met {
-                                self.report.warnings.push(format!(
-                                    "face #{face_id}: a projected pcurve fit \
-                                 stopped at {error:.2e}; the face's mesh may \
-                                 sit that far off along this edge"
-                                ));
+                                self.warn_fit_short(face_id, error);
                             }
                             // The edge provably sits `worst_off` from the surface
                             // it bounds; its tolerance grows to cover that, the
@@ -1268,10 +1298,45 @@ impl Reader<'_> {
         self.record_pcurve(edge, pcurve, surface_id, seam, range)
     }
 
+    /// Count one occurrence of a warning kind toward the summary.
+    fn tally(&mut self, kind: &'static str, measured: f64, exemplar: u64) {
+        let entry = self.tallies.entry(kind).or_insert((0, 0.0, exemplar));
+        entry.0 += 1;
+        if measured > entry.1 {
+            entry.1 = measured;
+            entry.2 = exemplar;
+        }
+    }
+
+    /// A curve end missing its vertex: the prose, and the count.
+    fn warn_vertex_miss(&mut self, id: u64, gap: f64) {
+        self.report.warnings.push(format!(
+            "#{id}: a curve end misses its vertex by {gap:.2e}; the vertex \
+             tolerance grew to say so"
+        ));
+        self.tally("vertex-miss", gap, id);
+    }
+
+    /// A fitted trim that stopped short of its target: prose and count.
+    fn warn_fit_short(&mut self, face_id: u64, error: f64) {
+        self.report.warnings.push(format!(
+            "face #{face_id}: a projected pcurve fit stopped at {error:.2e}; \
+             the face's mesh may sit that far off along this edge"
+        ));
+        self.tally("fit-short", error, face_id);
+    }
+
+    /// The file's own boundary slop, carried and counted.
+    fn warn_slop(&mut self, prose: String, worst: f64, exemplar: u64) {
+        self.report.warnings.push(prose);
+        self.tally("boundary-slop", worst, exemplar);
+    }
+
     /// Note a face left without a complete trim, once.
     fn note_untrimmed(&mut self, face_id: u64) {
         if self.untrimmed_ids.last() != Some(&face_id) {
             self.untrimmed_ids.push(face_id);
+            self.tally("untrimmed", 0.0, face_id);
         }
     }
 

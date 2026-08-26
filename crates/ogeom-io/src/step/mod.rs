@@ -10,5 +10,5 @@ pub mod parse;
 pub mod read;
 pub mod write;
 
-pub use read::{StepImport, StepReport, UntrimmedFace, read_step};
+pub use read::{StepImport, StepReport, UntrimmedFace, WarningSummary, read_step};
 pub use write::write_step;
