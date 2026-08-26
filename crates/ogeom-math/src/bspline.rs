@@ -13,6 +13,12 @@
 //! to rational geometry via [`Weighted`], which matters because exact circles,
 //! cylinders and spheres are *only* representable rationally.
 
+use smallvec::SmallVec;
+
+/// Derivatives up to a small order in each direction, inline: the kernel
+/// asks for jets of order two, and the innermost evaluation loops must not
+/// pay heap for their own scratch.
+pub type DerivativeGrid<P> = SmallVec<[SmallVec<[P; 4]>; 4]>;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 
 use crate::{KnotVector, Point, Point2, Vector, Vector2};
@@ -1089,14 +1095,17 @@ pub fn surface_derivatives<P: Blend>(
     v: f64,
     order: usize,
     tol: Tolerances,
-) -> OgeomResult<Vec<Vec<P>>> {
+) -> OgeomResult<DerivativeGrid<P>> {
     check_grid_shape(ku, kv, grid)?;
     let (p, q) = (ku.degree(), kv.degree());
     let (su, sv) = (ku.span(u, tol)?, kv.span(v, tol)?);
     let du = ku.basis_derivatives(su, u, order);
     let dv = kv.basis_derivatives(sv, v, order);
 
-    let mut out = vec![vec![P::zero(); order + 1]; order + 1];
+    let mut out: DerivativeGrid<P> =
+        core::iter::repeat_with(|| core::iter::repeat_with(P::zero).take(order + 1).collect())
+            .take(order + 1)
+            .collect();
     for (k, row) in out.iter_mut().enumerate() {
         for (l, cell) in row.iter_mut().enumerate() {
             // Derivatives past the degree in either direction vanish, and the
@@ -1165,7 +1174,7 @@ pub fn rational_surface_derivatives<P: Blend>(
     v: f64,
     order: usize,
     tol: Tolerances,
-) -> OgeomResult<Vec<Vec<P>>> {
+) -> OgeomResult<DerivativeGrid<P>> {
     let h = surface_derivatives(ku, kv, grid, u, v, order, tol)?;
     let w0 = h[0][0].weight;
     if w0.abs() <= tol.confusion() {
@@ -1175,7 +1184,10 @@ pub fn rational_surface_derivatives<P: Blend>(
         );
     }
 
-    let mut s = vec![vec![P::zero(); order + 1]; order + 1];
+    let mut s: DerivativeGrid<P> =
+        core::iter::repeat_with(|| core::iter::repeat_with(P::zero).take(order + 1).collect())
+            .take(order + 1)
+            .collect();
     for k in 0..=order {
         for l in 0..=order {
             let mut value = h[k][l].scaled;

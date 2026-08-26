@@ -31,6 +31,10 @@ use smallvec::SmallVec;
 /// Basis values for one span, sized to avoid allocating for typical degrees.
 pub type BasisValues = SmallVec<[f64; 8]>;
 
+/// One row of basis values per derivative order, inline up to the jet
+/// orders the kernel asks for.
+pub type DerivativeRows = SmallVec<[BasisValues; 4]>;
+
 /// A non-decreasing knot sequence with an associated degree.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KnotVector {
@@ -332,7 +336,7 @@ impl KnotVector {
     /// `span - degree + i`. Orders above the degree are identically zero and
     /// are returned as such rather than as noise.
     #[must_use]
-    pub fn basis_derivatives(&self, span: usize, u: f64, n: usize) -> Vec<BasisValues> {
+    pub fn basis_derivatives(&self, span: usize, u: f64, n: usize) -> DerivativeRows {
         let p = self.degree;
         let order = n.min(p);
 
@@ -362,7 +366,10 @@ impl KnotVector {
             ndu[j][j] = saved;
         }
 
-        let mut derivatives = vec![BasisValues::from_elem(0.0, p + 1); n + 1];
+        let mut derivatives: DerivativeRows =
+            core::iter::repeat_with(|| BasisValues::from_elem(0.0, p + 1))
+                .take(n + 1)
+                .collect();
         for (j, slot) in derivatives[0].iter_mut().enumerate() {
             *slot = ndu[j][p];
         }
