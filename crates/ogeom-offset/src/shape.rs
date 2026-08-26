@@ -17,11 +17,14 @@
 //!
 //! The honest limits, refused by name: faces whose surfaces are not among
 //! the five analytics — a spline, revolution, extrusion, trimmed or offset
-//! surface has no same-family parallel to move to — edges that are neither
-//! straight nor circular, vertices whose seats leave them under-determined,
-//! and offsets that collapse the solid. Partial bands, tori and cones all
-//! move; what stops the rebuild is the edge between two moved surfaces that
-//! no longer meets in a line or a circle.
+//! surface has no same-family parallel to move to, though a face something
+//! *replaces* (a draft's turned wall) rides through on the replacement and
+//! a face moved by nothing keeps its own surface whatever the family —
+//! vertices whose seats leave them under-determined, and offsets that
+//! collapse the solid. Edges between moved supports re-derive exactly where
+//! a line or circle exists; anywhere else the pair's own intersection is
+//! marched and fitted, with its stated slop widening the edge — an edge
+//! that sits unmoved on both supports rebuilds on its own curve.
 
 use ogeom_algo::{
     Built, History, edge_vertices, make_edge, make_edge_between, make_face_with_pcurves,
@@ -405,6 +408,11 @@ pub(crate) fn rebuilt(
         let replacement = instead_of(face);
         let moved: SurfaceGeometry = if let Some(given) = replacement {
             given
+        } else if amount == 0.0 {
+            // A face a draft or a partial offset leaves alone stays on its
+            // own surface, whatever family that is: moving by nothing is
+            // identity, not a construction the family has to support.
+            surface.clone()
         } else {
             match surface {
                 SurfaceGeometry::Plane(p) => {
@@ -836,11 +844,167 @@ pub(crate) fn rebuilt(
                     make_edge_between(model, moved, (t0, t1), &v_from, &v_to, tol)?.shape
                 }
             }
-            _ => ogeom_bail!(
-                Construction,
-                "offsetting an edge that is neither straight nor circular \
-                 needs the general rebuild — docs/PARITY.md, offset.shell-thicken"
-            ),
+            _ => {
+                // The general edge. First the still question: a hinge edge —
+                // a draft's neutral crossing — sits on both moved supports
+                // exactly where it always was, and an edge that did not move
+                // rebuilds on its own curve rather than on a march of it.
+                let unmoved = {
+                    let mut worst = 0.0_f64;
+                    'probe: for i in 0..9 {
+                        #[allow(clippy::cast_precision_loss)]
+                        let t = range.0 + (range.1 - range.0) * (i as f64) / 8.0;
+                        let p = curve.point_at(t, tol)?;
+                        for side in [sides[0], sides[1]] {
+                            let Ok(near) =
+                                ogeom_algo::project_on_surface(&prepared[side].surface, p, 17, tol)
+                            else {
+                                worst = f64::INFINITY;
+                                break 'probe;
+                            };
+                            worst = worst.max(near.distance);
+                        }
+                    }
+                    // Within the moved supports' own stated accuracy: a
+                    // fitted support holds its points only to the fit
+                    // target, and the hinge is exactly on it by less.
+                    (worst <= (tol.confusion() * 1e3).max(1e-4)).then_some(worst)
+                };
+                if let Some(worst) = unmoved {
+                    let Some((sv, ev)) = edge_vertices(model, &forward)? else {
+                        ogeom_bail!(Construction, "an edge has no vertices");
+                    };
+                    let closed = sv.node() == ev.node();
+                    let built = if closed {
+                        make_edge(model, curve.clone(), range, tol)?.shape
+                    } else {
+                        let (Some((v_from, p_from)), Some((v_to, p_to))) = (
+                            new_vertices.get(&sv.node()).cloned(),
+                            new_vertices.get(&ev.node()).cloned(),
+                        ) else {
+                            ogeom_bail!(Construction, "an edge end has no re-solved vertex");
+                        };
+                        // The ends re-solved against a fitted support land a
+                        // fit's breadth from the curve that did not move; the
+                        // vertices own that breadth.
+                        let gap = curve
+                            .point_at(range.0, tol)?
+                            .distance(p_from)
+                            .min(curve.point_at(range.0, tol)?.distance(p_to))
+                            .max(
+                                curve
+                                    .point_at(range.1, tol)?
+                                    .distance(p_to)
+                                    .min(curve.point_at(range.1, tol)?.distance(p_from)),
+                            );
+                        if gap > tol.confusion() {
+                            for v in [&v_from, &v_to] {
+                                model.widen(v, ogeom_core::Tolerance::new(gap * 2.0)?)?;
+                            }
+                        }
+                        make_edge_between(model, curve.clone(), range, &v_from, &v_to, tol)?.shape
+                    };
+                    if worst > tol.confusion()
+                        && let Some(node) = model.node_mut(&built)
+                        && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+                    {
+                        data.tolerance = data.tolerance.widen_to(worst);
+                    }
+                    history.modify(&edge, built.clone());
+                    new_edges.insert(edge.node(), built);
+                    continue;
+                }
+                // Otherwise the moved pair's own intersection, marched where
+                // no closed form exists — a drafted spline wall re-meeting
+                // its cap plane — with the candidate nearest the old edge
+                // kept and trimmed between the re-solved ends. The section's
+                // stated slop widens the edge; nothing pretends the fit is
+                // exact.
+                let mid = curve.point_at(f64::midpoint(range.0, range.1), tol)?;
+                let found = ogeom_intersect::intersect_surfaces(
+                    &prepared[sides[0]].surface,
+                    &prepared[sides[1]].surface,
+                    ogeom_intersect::IntersectOptions::default(),
+                    tol,
+                )?;
+                let ogeom_intersect::SurfaceIntersection::Along(candidates) = found else {
+                    ogeom_bail!(
+                        Construction,
+                        "the moved faces no longer meet along the edge they \
+                         shared; the offset collapses it"
+                    );
+                };
+                let mut best: Option<(Curve, f64, f64)> = None;
+                for section in candidates {
+                    let Ok(projected) = ogeom_algo::project_on_curve(&section.curve, mid, 64, tol)
+                    else {
+                        continue;
+                    };
+                    if best
+                        .as_ref()
+                        .is_none_or(|(_, _, held)| projected.distance < *held)
+                    {
+                        best = Some((section.curve, section.tolerance, projected.distance));
+                    }
+                }
+                let Some((moved, slop, _)) = best else {
+                    ogeom_bail!(
+                        Construction,
+                        "the moved faces meet along nothing where the edge \
+                         was; the offset collapses it"
+                    );
+                };
+                let closed = {
+                    let Some((sv, ev)) = edge_vertices(model, &forward)? else {
+                        ogeom_bail!(Construction, "an edge has no vertices");
+                    };
+                    sv.node() == ev.node()
+                };
+                let built = if closed {
+                    let window = moved.domain();
+                    make_edge(model, moved, window, tol)?.shape
+                } else {
+                    let Some((sv, ev)) = edge_vertices(model, &forward)? else {
+                        ogeom_bail!(Construction, "an edge has no vertices");
+                    };
+                    let (Some((v_from, p_from)), Some((v_to, p_to))) = (
+                        new_vertices.get(&sv.node()).cloned(),
+                        new_vertices.get(&ev.node()).cloned(),
+                    ) else {
+                        ogeom_bail!(Construction, "an edge end has no re-solved vertex");
+                    };
+                    // The fitted section lands within its stated slop of the
+                    // re-solved ends; the vertices own that slop.
+                    if slop > tol.confusion() {
+                        for v in [&v_from, &v_to] {
+                            model.widen(v, ogeom_core::Tolerance::new(slop * 2.0)?)?;
+                        }
+                    }
+                    let ta = ogeom_algo::project_on_curve(&moved, p_from, 64, tol)?.parameter;
+                    let tb = ogeom_algo::project_on_curve(&moved, p_to, 64, tol)?.parameter;
+                    if (tb - ta).abs() <= tol.parametric() {
+                        ogeom_bail!(Construction, "the offset collapses an edge");
+                    }
+                    // The ends run with the curve or against it; a run
+                    // against builds on the reversed parameterization so
+                    // the edge still leaves `v_from` first.
+                    let (moved, ta, tb) = if ta <= tb {
+                        (moved, ta, tb)
+                    } else {
+                        use ogeom_geom::Reversible as _;
+                        let (lo, hi) = moved.domain();
+                        (moved.reversed(), lo + hi - ta, lo + hi - tb)
+                    };
+                    make_edge_between(model, moved, (ta, tb), &v_from, &v_to, tol)?.shape
+                };
+                if slop > tol.confusion()
+                    && let Some(node) = model.node_mut(&built)
+                    && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+                {
+                    data.tolerance = data.tolerance.widen_to(slop);
+                }
+                built
+            }
         };
         history.modify(&edge, built.clone());
         new_edges.insert(edge.node(), built);
@@ -906,7 +1070,21 @@ pub(crate) fn rebuilt(
     if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
         ogeom_bail!(Construction, "the offset solid did not close");
     }
-    let built = make_solid(model, std::slice::from_ref(&sewn.shells[0]))?;
+    // The faces carried their use-orientations through; the *shell* has one
+    // too, and a solid whose outer shell was used reversed reads inside out
+    // if the rebuilt shell forgets it.
+    let outer = {
+        let old_reversed = model
+            .children_of(solid)?
+            .first()
+            .is_some_and(|s| s.orientation() == Orientation::Reversed);
+        if old_reversed {
+            sewn.shells[0].reversed()
+        } else {
+            sewn.shells[0].clone()
+        }
+    };
+    let built = make_solid(model, std::slice::from_ref(&outer))?;
 
     // The one global guard the local checks cannot give: an offset that
     // moved faces past each other builds a shell that is closed and inside
