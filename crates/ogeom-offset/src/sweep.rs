@@ -744,6 +744,14 @@ fn skinned_ring_strip(
 
     let rail0 = make_edge(model, rail_curve(0)?, v_dom, tol)?.shape;
     let rail1 = make_edge(model, rail_curve(k - 1)?, v_dom, tol)?.shape;
+    // Neighbouring strips fit the shared corner loop independently; the
+    // rails agree only within the fits' own honesty, and the sew can only
+    // join what the tolerances admit. Every border widens to the error the
+    // fit reported — skinned_strip's own discipline.
+    let slack = fitted.error + tol.confusion();
+    for edge in [&rail0, &rail1] {
+        model.widen(edge, ogeom_core::Tolerance::new(slack)?)?;
+    }
     let anchor0 = ogeom_algo::edge_vertices(model, &rail0)?
         .map(|(a, _)| a)
         .ok_or_else(|| ogeom_core::ogeom_err!(Construction, "a strip rail has no vertex"))?;
@@ -2007,15 +2015,10 @@ fn closed_loop_shell(
         // speak a corner, so each facet gets its own v-closed skin and the
         // strips sew along the corner loops they share within tolerance.
         const ALONG_EDGE: usize = 8;
-        let centroid = {
-            let mut c = Vector::new(0.0, 0.0, 0.0);
-            for st in stations {
-                c += st.at.to_vector();
-            }
-            #[allow(clippy::cast_precision_loss)]
-            let n = stations.len() as f64;
-            Point::from_vector(c / n)
-        };
+        // Outward for a ring strip means away from the spine's own line,
+        // not from the loop's centroid — a ring's inner side *faces* the
+        // centroid. The hint is the station the strip's midpoint rides.
+        let mid_station = stations[stations.len() / 2].at;
         let mut faces = Vec::with_capacity(edges.len());
         for edge in edges {
             let (curve, range) = spine_curve_of(model, edge)?;
@@ -2045,7 +2048,13 @@ fn closed_loop_shell(
                         .collect()
                 })
                 .collect();
-            faces.push(skinned_ring_strip(model, &rows, centroid, tolerance, tol)?);
+            faces.push(skinned_ring_strip(
+                model,
+                &rows,
+                mid_station,
+                tolerance,
+                tol,
+            )?);
         }
         let sewn = sew(model, &faces, tol)?;
         if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
@@ -2579,13 +2588,6 @@ fn closed_pipe_shell(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    if frenet {
-        ogeom_bail!(
-            Construction,
-            "the Frenet law on a closed spine is not carried yet; use the \
-             rotation-minimizing default"
-        );
-    }
     // The walk visits the join twice; the loop owns it once.
     stations.pop();
     if stations.len() < 3 {
@@ -2638,11 +2640,27 @@ fn closed_pipe_shell(
         );
     }
 
-    // Rotation-minimizing frames with the holonomy paid off: transport once
-    // more back to the start, read the twist, and spread it along the arc.
+    // Frames with the loop's mismatch paid off: carry once more back to the
+    // start, read the twist between departure and return, and spread it
+    // along the arc. Rotation-minimizing frames owe this for their
+    // holonomy; the Frenet law owes it too, because straight stretches
+    // carry the frame through by continuation and the continuation is
+    // path-dependent. One reconciliation serves both.
     let mut normals: Vec<Vector> = {
         let mut extended = stations.clone();
         extended.push(stations[0]);
+        if frenet {
+            // Wired and measured: the Frenet frames reconcile at the join,
+            // but the faceted strips built on them refuse to close on the
+            // spines that would prove them. Refused until that is
+            // understood rather than shipped hoping.
+            ogeom_bail!(
+                Construction,
+                "the Frenet law on a closed spine is not carried yet; use \
+                 the rotation-minimizing default — docs/PARITY.md, \
+                 offset.sweeps"
+            );
+        }
         let carried = rmf_normals(&extended);
         let (n0, n_home) = (carried[0], carried[carried.len() - 1]);
         let twist = (n0.cross(n_home).dot(t0)).atan2(n0.dot(n_home));

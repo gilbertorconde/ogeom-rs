@@ -1259,3 +1259,84 @@ fn a_holed_profile_round_a_closed_spine_carries_its_tunnel() {
         "holed ring volume {measured} against Pappus {expected}"
     );
 }
+
+/// A faceted ring round a wavy *non-planar* closed spine: the geometry
+/// that exposed two step-1 debts — rails must widen to their fits' honest
+/// error before the sew can join them, and a ring strip's outward is away
+/// from the spine's own line, not the loop's centroid. Volume is the
+/// generalized Pappus, section area times the spine's arc length, held
+/// loosely for the wave's second-order skew.
+#[test]
+fn a_faceted_ring_round_a_wavy_spine_closes_and_measures() {
+    let mut model = ogeom_topo::Model::new();
+    // A closed non-planar spine: a radius-20 circle with a gentle z-wave,
+    // so the Frenet frame genuinely twists.
+    let n = 96_i32;
+    let pts: Vec<Point> = (0..=n)
+        .map(|i| {
+            let a = core::f64::consts::TAU * f64::from(i % n) / f64::from(n);
+            Point::new(
+                20.0 * a.cos(),
+                20.0 * a.sin(),
+                1.5 * (1.0 - (3.0 * a).cos()),
+            )
+        })
+        .collect();
+    let fitted = ogeom_geom::fit::fit_points_closed(&pts, 3, 1e-4, T).unwrap();
+    let curve = ogeom_geom::Curve::BSpline(fitted.curve);
+    let domain = curve.domain();
+    let arc = {
+        // The spine's own arc length, finely summed.
+        let mut total = 0.0;
+        let mut last = curve.point_at(domain.0, T).unwrap();
+        for k in 1..=2048 {
+            let t = domain.0 + (domain.1 - domain.0) * f64::from(k) / 2048.0;
+            let p = curve.point_at(t, T).unwrap();
+            total += last.distance(p);
+            last = p;
+        }
+        total
+    };
+    // The profile stands square to the *fitted* tangent — the fit's own
+    // start, not the ideal circle's.
+    let (start, tangent) = {
+        let p = curve.point_at(domain.0, T).unwrap();
+        let d = curve.d1_at(domain.0, T).unwrap();
+        (p, ogeom_math::Direction::new(d, T).unwrap())
+    };
+    let spine_edge = ogeom_algo::make_edge(&mut model, curve, domain, T)
+        .unwrap()
+        .shape;
+    let spine = ogeom_algo::make_wire(&mut model, std::slice::from_ref(&spine_edge), T)
+        .unwrap()
+        .shape;
+    let (ex, ey) = {
+        let plane = ogeom_math::Plane::through(start, tangent);
+        let f = plane.frame();
+        (f.x().vector(), f.y().vector())
+    };
+    let corner = |a: f64, b: f64| start + ex * a + ey * b;
+    let profile = ogeom_algo::make_polygon(
+        &mut model,
+        &[corner(-1.5, -1.0), corner(1.5, -1.0), corner(0.0, 1.6)],
+        true,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let built =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 5e-3, T).unwrap();
+    assert!(
+        ogeom_algo::check(&model, &built.shape, T)
+            .unwrap()
+            .is_valid(),
+        "the wavy ring is a valid solid"
+    );
+    let area = 0.5 * 3.0 * 2.6;
+    let expected = area * arc;
+    let measured = volume(&model, &built.shape);
+    assert!(
+        (measured - expected).abs() / expected < 0.02,
+        "wavy ring volume {measured} against A*L {expected}"
+    );
+}
