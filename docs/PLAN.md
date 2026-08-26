@@ -635,7 +635,9 @@ These are settled. They are here so nobody reopens them by accident.
 
 1. ~~**A** — the interference table.~~ **Done.** Five named failures closed,
    B2 and D2 unblocked.
-2. **C**, **E2**, **F3** — contained pieces, any order, each a stone.
+2. ~~**C**, **E2**, **F3**~~ — **Done**, each in its own section. What their
+   completion left owed lives with the entries: D2's drawing side, B2's
+   two-blend meeting and N>3 setback vertex, and H1's refused-by-name list.
 3. ~~**The walker abstraction.**~~ **Done.** `ogeom_intersect::walk`: a
    `Condition` in `n` unknowns and `n − 1` equations, and one walk over it.
    The shortfall is the point — the solution set of `n − 1` equations in `n`
