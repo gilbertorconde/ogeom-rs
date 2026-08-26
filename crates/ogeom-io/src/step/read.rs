@@ -130,6 +130,8 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         untrimmed_ids: Vec::new(),
         tallies: HashMap::new(),
         cdsr_of_nauo: None,
+        properties_of_definition: None,
+        sdrs_of_property: None,
         tol,
     };
     reader.report.scale_mm = reader.unit_scale();
@@ -255,6 +257,14 @@ struct Reader<'a> {
     /// O(usages × entities), 333 × 457 k on one reporting assembly, which
     /// was three quarters of the entire document build.
     cdsr_of_nauo: Option<HashMap<u64, u64>>,
+    /// Definition → its `PROPERTY_DEFINITION`s, and property → its
+    /// `SHAPE_DEFINITION_REPRESENTATION`s, built together once. The datum
+    /// target lookup used to rescan the whole exchange per property *per
+    /// target* — the same quadratic shape the assembly index retired, one
+    /// storey deeper. Each list ascends by id, so whichever entry answers
+    /// is the one the old scan would have reached first.
+    properties_of_definition: Option<HashMap<u64, Vec<u64>>>,
+    sdrs_of_property: Option<HashMap<u64, Vec<u64>>>,
     tol: Tolerances,
 }
 
@@ -2357,23 +2367,27 @@ impl Reader<'_> {
 
         // The target's placement and size live in a shape representation the
         // target's own property definition names. The lengths come in the
-        // file's own unit, as every length does.
+        // file's own unit, as every length does. Both hops go through the
+        // indexes: the old form rescanned every entity per property *per
+        // target*, the assembly quadratic one storey deeper.
+        self.ensure_property_indexes();
         let mut frame = None;
         let mut lengths: Vec<f64> = Vec::new();
-        for property in self.ids_with("PROPERTY_DEFINITION") {
-            let Ok(args) = self.args(property, "PROPERTY_DEFINITION") else {
-                continue;
-            };
-            if args.get(2).and_then(Arg::reference) != Some(id) {
-                continue;
-            }
-            for sdr in self.ids_with("SHAPE_DEFINITION_REPRESENTATION") {
+        let properties: Vec<u64> = self
+            .properties_of_definition
+            .as_ref()
+            .and_then(|m| m.get(&id).cloned())
+            .unwrap_or_default();
+        for property in properties {
+            let sdrs: Vec<u64> = self
+                .sdrs_of_property
+                .as_ref()
+                .and_then(|m| m.get(&property).cloned())
+                .unwrap_or_default();
+            for sdr in sdrs {
                 let Ok(args) = self.args(sdr, "SHAPE_DEFINITION_REPRESENTATION") else {
                     continue;
                 };
-                if args.first().and_then(Arg::reference) != Some(property) {
-                    continue;
-                }
                 let Some(rep) = args.get(1).and_then(Arg::reference) else {
                     continue;
                 };
@@ -2629,6 +2643,41 @@ impl Reader<'_> {
             .filter(|(_, inst)| inst.part(keyword).is_some())
             .map(|(id, _)| *id)
             .collect()
+    }
+
+    /// One pass over the exchange builds both property-chain indexes:
+    /// definition → its `PROPERTY_DEFINITION`s (by the definition argument),
+    /// property → its `SHAPE_DEFINITION_REPRESENTATION`s (by the definition
+    /// they represent). Ascending ids inside each list, so a lookup visits
+    /// candidates in the same order the old full scan would have.
+    fn ensure_property_indexes(&mut self) {
+        if self.properties_of_definition.is_some() {
+            return;
+        }
+        let mut properties: HashMap<u64, Vec<u64>> = HashMap::new();
+        let mut sdrs: HashMap<u64, Vec<u64>> = HashMap::new();
+        let exchange = self.exchange;
+        for (id, instance) in &exchange.data {
+            if let Some(args) = instance.part("PROPERTY_DEFINITION") {
+                // Read for the index is read: the skipped table should not
+                // claim the reader never looked.
+                self.visited.insert(*id);
+                if let Some(definition) = args.get(2).and_then(Arg::reference) {
+                    properties.entry(definition).or_default().push(*id);
+                }
+            }
+            if let Some(args) = instance.part("SHAPE_DEFINITION_REPRESENTATION") {
+                self.visited.insert(*id);
+                if let Some(property) = args.first().and_then(Arg::reference) {
+                    sdrs.entry(property).or_default().push(*id);
+                }
+            }
+        }
+        for list in properties.values_mut().chain(sdrs.values_mut()) {
+            list.sort_unstable();
+        }
+        self.properties_of_definition = Some(properties);
+        self.sdrs_of_property = Some(sdrs);
     }
 
     /// A measure item's value and kind, scaled into the document's units.

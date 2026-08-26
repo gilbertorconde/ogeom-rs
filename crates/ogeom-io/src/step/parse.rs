@@ -142,7 +142,10 @@ pub fn parse(text: &str) -> OgeomResult<Exchange> {
 
     p.expect_keyword("DATA")?;
     p.expect(b';')?;
-    let mut data = HashMap::new();
+    // Sized up front: an instance averages well under a hundred bytes, so
+    // this over-reserves a little rather than rehashing a half-million-entry
+    // map several times on the way up.
+    let mut data = HashMap::with_capacity(text.len() / 96);
     loop {
         p.skip_noise();
         if p.peek_keyword("ENDSEC") {
@@ -288,7 +291,7 @@ impl Parser<'_> {
 
     fn arguments(&mut self) -> OgeomResult<Vec<Arg>> {
         self.expect(b'(')?;
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(4);
         loop {
             self.skip_noise();
             if self.peek(b')') {
@@ -351,6 +354,22 @@ impl Parser<'_> {
         self.expect(b'\'')?;
         let mut out = String::new();
         loop {
+            // The common run — everything up to the next quote or non-ASCII
+            // byte — lands in one push, not a byte at a time. Bytes above
+            // ASCII keep their historical Latin-1 reading, one by one.
+            let start = self.at;
+            while self
+                .bytes
+                .get(self.at)
+                .is_some_and(|b| *b != b'\'' && b.is_ascii())
+            {
+                self.at += 1;
+            }
+            if self.at > start
+                && let Ok(run) = std::str::from_utf8(&self.bytes[start..self.at])
+            {
+                out.push_str(run);
+            }
             match self.bytes.get(self.at) {
                 None => ogeom_bail!(Construction, "the exchange file ends inside a string"),
                 Some(b'\'') => {
