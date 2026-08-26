@@ -277,7 +277,8 @@ within the corner cube every fillet prism's removal lies inside the
 spike's, so V = 10³ − 3(1−π/4)r²(10−r) − r³ + πr³/6. What remains of the
 family is the two-blend meeting and the N>3 setback vertex, neither of
 which the corner construction covers and neither of which is blocked by
-anything below it any more.
+anything below it any more. Tracked as issue #18; the defeaturing corner
+family that shares its machinery is #19.
 
 *The original entry, kept for its analysis:* The family is right: one blend running out at a
 face's boundary, two meeting — resolved by intersecting them or by extending
@@ -403,7 +404,7 @@ normal is square to the view at every point of what comes back.
 **D2 — the on-axis half-section.** Unblocked: A4 is closed, and the boolean
 now cuts a bore on its own axis and reports the two rulings. What is left is
 the drawing side — the half-section as a view, with its own hatching
-convention.
+convention. Tracked as issue #32.
 
 ### E. Documents
 
@@ -527,7 +528,7 @@ because extending a cap's dangling edge decides that edge for the side that
 shares it, and sewing rejoins them on the one node. Multiple simultaneous
 bands, bands meeting at corners (the B2/A6 family), and spline-surfaced
 neighbours are refused by name — the parity ledger's `bool.defeaturing`
-restriction is the live list.
+restriction is the live list, and issue #19 is its plan.
 
 What follows is the original entry, kept because the overshoot finding is a
 real measurement about the tool-based road not taken.
@@ -637,7 +638,10 @@ These are settled. They are here so nobody reopens them by accident.
    B2 and D2 unblocked.
 2. ~~**C**, **E2**, **F3**~~ — **Done**, each in its own section. What their
    completion left owed lives with the entries: D2's drawing side, B2's
-   two-blend meeting and N>3 setback vertex, and H1's refused-by-name list.
+   two-blend meeting and N>3 setback vertex, and H1's refused-by-name list —
+   all filed, with the rest of the kernel's known debts, as issues #17–#32
+   (features #17–#22, performance #23–#26, the tail #27–#32). The tracker is
+   the state; this file stays the narrative.
 3. ~~**The walker abstraction.**~~ **Done.** `ogeom_intersect::walk`: a
    `Condition` in `n` unknowns and `n − 1` equations, and one walk over it.
    The shortfall is the point — the solution set of `n − 1` equations in `n`
