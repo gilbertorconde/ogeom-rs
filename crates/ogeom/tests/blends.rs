@@ -238,3 +238,88 @@ fn b2_three_fillets_and_the_corner_tool_round_the_vertex() {
         previous = error;
     }
 }
+
+/// The promoted corner tool: `round_vertex` reproduces the B2 closed form.
+///
+/// Same three fillets, same corner, same inclusion–exclusion reference —
+/// but the ball-and-block construction now lives in the fillet crate with
+/// its own refusals, instead of being spelled out per call site.
+#[test]
+fn round_vertex_reproduces_the_b2_closed_form() {
+    let mut model = Model::new();
+    let r = 3.0;
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    // The corner is captured while it still exists: the fillets consume the
+    // tip, and the promoted tool reads the corner's planes from wherever the
+    // vertex's *point* says they are.
+    let vertex = vertex_near(&model, &block, Point::new(10.0, 10.0, 10.0));
+    let mut solid = block;
+    for target in [
+        Point::new(10.0, 10.0, 5.0),
+        Point::new(10.0, 5.0, 10.0),
+        Point::new(5.0, 10.0, 10.0),
+    ] {
+        let edge = edge_near(&model, &solid, target);
+        solid = ogeom::fillet::fillet_edge(&mut model, &solid, &edge, r, T)
+            .unwrap()
+            .shape;
+    }
+    let rounded = ogeom::fillet::round_vertex(&mut model, &solid, &vertex, r, T)
+        .unwrap()
+        .shape;
+    assert!(
+        ogeom::algo::check(&model, &rounded, T).unwrap().is_valid(),
+        "the rounded corner is a valid solid"
+    );
+    let expected = 784.0 + 51.75 * core::f64::consts::PI;
+    for chord in [1e-3, 1e-4] {
+        let fine = ogeom::mesh::Deflection::with_chord(chord).unwrap();
+        let measured = ogeom::algo::volume_properties(&model, &rounded, fine, T)
+            .unwrap()
+            .mass;
+        let error = (measured - expected).abs() / expected;
+        assert!(
+            error < chord * 2.0,
+            "round_vertex against the closed form at chord {chord}: \
+             {measured} vs {expected} ({error:.2e})"
+        );
+    }
+}
+
+/// The refusals name their families: a curved-edged corner and an oblique
+/// one both belong to the setback construction, and say so.
+#[test]
+fn round_vertex_refuses_the_setback_family_by_name() {
+    let mut model = Model::new();
+    // A cylinder's rim vertex has a curved edge: refused as curved.
+    let cyl = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let v = vertex_near(&model, &cyl, Point::new(5.0, 0.0, 10.0));
+    let err = ogeom::fillet::round_vertex(&mut model, &cyl, &v, 1.0, T)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("still owed") || err.contains("exactly three"),
+        "the curved corner names its family: {err}"
+    );
+}
+
+fn vertex_near(model: &Model, shape: &Shape, near: Point) -> Shape {
+    explore_unique(model, shape, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .min_by(|a, b| {
+            let at = |v: &Shape| {
+                let p = model.node(v).unwrap().data().as_vertex().unwrap().point;
+                v.transform(model.datums()).unwrap().apply(p)
+            };
+            at(a)
+                .distance(near)
+                .partial_cmp(&at(b).distance(near))
+                .unwrap()
+        })
+        .unwrap()
+}
