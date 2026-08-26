@@ -597,13 +597,14 @@ title = "Fixing broken shapes: wires, faces, shells, solids, free bounds, small 
 crate = "ogeom-heal"
 verdict = "partial"
 restriction = """What exists: reanchoring periodic rings, sewing, validity \
-diagnosis, and the fixed heal sequence the STEP reader applies inline for \
-what the corpus exhibits. What does not: a standalone fix-anything entry \
-point taking an arbitrary broken shape — wire reordering, small-face and \
-small-solid removal, ComposeShell's face-across-a-patch-grid rebuild. The \
-honest statement is that healing here is measured by the imported corpus \
-rather than claimed in general, and a file the corpus does not resemble \
-may need fixes with no entry point yet."""
+diagnosis, the reader's inline heal sequence, and the instructed fixes — \
+fix_face_pcurves fits the trims the reader refused at a caller's cap, and \
+reanchor_boundaries moves a boundary onto the surface it bounds with the \
+displacement recorded in widened tolerances, both measured on community \
+assemblies with boundaries millimetres off. What does not: wire \
+reordering, small-face and small-solid removal, the \
+face-across-a-patch-grid rebuild. Healing here is measured by the \
+imported corpus rather than claimed in general."""
 claims = [
     "ShapeFix", "ShapeFix_Shape", "ShapeFix_Face", "ShapeFix_FaceConnect",
     "ShapeFix_Wire", "ShapeFix_Wireframe", "ShapeFix_WireSegment",
