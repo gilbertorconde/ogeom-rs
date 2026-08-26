@@ -338,10 +338,16 @@ impl KnotVector {
 
         // `ndu` holds the basis values and the knot differences from the
         // triangular recurrence; both halves are needed to build derivatives.
-        let mut ndu = vec![vec![0.0_f64; p + 1]; p + 1];
+        // Every scratch row lives inline for the degrees the kernel actually
+        // meets: this is the innermost loop of every spline evaluation, and
+        // it used to be the kernel's single largest allocation source.
+        let mut ndu: SmallVec<[BasisValues; 8]> =
+            core::iter::repeat_with(|| BasisValues::from_elem(0.0, p + 1))
+                .take(p + 1)
+                .collect();
         ndu[0][0] = 1.0;
-        let mut left = vec![0.0_f64; p + 1];
-        let mut right = vec![0.0_f64; p + 1];
+        let mut left = BasisValues::from_elem(0.0, p + 1);
+        let mut right = BasisValues::from_elem(0.0, p + 1);
 
         for j in 1..=p {
             left[j] = u - self.knots[span + 1 - j];
@@ -364,7 +370,10 @@ impl KnotVector {
         // piecewise polynomial is identically zero, not merely small.
 
         // Two alternating rows of coefficients, per the standard algorithm.
-        let mut a = vec![vec![0.0_f64; p + 1]; 2];
+        let mut a = [
+            BasisValues::from_elem(0.0, p + 1),
+            BasisValues::from_elem(0.0, p + 1),
+        ];
         for r in 0..=p {
             let (mut s1, mut s2) = (0_usize, 1_usize);
             a[0][0] = 1.0;

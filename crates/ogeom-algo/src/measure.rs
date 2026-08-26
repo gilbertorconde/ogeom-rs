@@ -892,7 +892,9 @@ fn refine_foot(
             .map_or(f64::INFINITY, |p| p.square_distance(target)),
     );
     // The foot point conditions: (S - target) . Su = 0 and (S - target) . Sv = 0.
-    let residual = |x: &[f64]| {
+    // Allocation-free on purpose: this is the innermost loop of every
+    // projection, and the fixed two-unknown Newton spends nothing per step.
+    let residual = |x: [f64; 2]| {
         let (u, v) = (x[0], x[1]);
         // One evaluation, not three. This closure wants the point and every
         // derivative at the same place, and a tensor-product patch charges
@@ -900,7 +902,7 @@ fn refine_foot(
         // comes from that one evaluation, so they are consistent with each
         // other, which is what a Newton step needs.
         let Ok(jet) = surface.jet_at(u, v, tol) else {
-            return (vec![0.0, 0.0], vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
+            return ([0.0, 0.0], [[1.0, 0.0], [0.0, 1.0]]);
         };
         let ogeom_geom::SurfaceJet {
             point: p,
@@ -912,17 +914,17 @@ fn refine_foot(
         } = jet;
         let gap = p - target;
         (
-            vec![gap.dot(du), gap.dot(dv)],
-            vec![
-                vec![du.dot(du) + gap.dot(d2u), du.dot(dv) + gap.dot(duv)],
-                vec![du.dot(dv) + gap.dot(duv), dv.dot(dv) + gap.dot(d2v)],
+            [gap.dot(du), gap.dot(dv)],
+            [
+                [du.dot(du) + gap.dot(d2u), du.dot(dv) + gap.dot(duv)],
+                [du.dot(dv) + gap.dot(duv), dv.dot(dv) + gap.dot(d2v)],
             ],
         )
     };
 
-    let refined = solve::newton_system(
+    let refined = solve::newton_system_2(
         residual,
-        &[best.0, best.1],
+        [best.0, best.1],
         solve::Criteria {
             residual: tol.confusion(),
             step: tol.parametric(),
@@ -931,8 +933,8 @@ fn refine_foot(
     );
 
     let (u, v) = match refined {
-        Ok(solution) if solution.convergence.is_converged() => {
-            let (u, v) = (solution.value[0], solution.value[1]);
+        Ok((value, _, convergence, _)) if convergence.is_converged() => {
+            let (u, v) = (value[0], value[1]);
             // Newton is free to wander outside the domain; a foot point that
             // left it is not a foot point of this surface.
             match surface.normalize_parameters(u, v, tol) {

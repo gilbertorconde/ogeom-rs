@@ -709,6 +709,91 @@ where
     })
 }
 
+/// A two-unknown [`newton_system`], allocation-free.
+///
+/// The foot-point projection runs this system millions of times per real
+/// model, and the general path pays a heap allocation for every residual,
+/// Jacobian, vector and factorization of every damped step. The algorithm
+/// here is the same — damped Newton, halving until the residual falls, the
+/// same three convergence verdicts — with the two-by-two solve written out:
+/// partial pivoting is one comparison, and singularity is a vanishing
+/// pivot.
+///
+/// # Errors
+///
+/// [`OgeomError::Numeric`](ogeom_core::OgeomError::Numeric) if the Jacobian
+/// is singular.
+pub fn newton_system_2<F>(
+    mut f: F,
+    start: [f64; 2],
+    criteria: Criteria,
+) -> OgeomResult<([f64; 2], f64, Convergence, usize)>
+where
+    F: FnMut([f64; 2]) -> ([f64; 2], [[f64; 2]; 2]),
+{
+    let mut x = start;
+    let (mut residual, mut jacobian) = f(x);
+    let mut norm = residual[0].hypot(residual[1]);
+
+    for iteration in 1..=criteria.max_iterations {
+        if norm <= criteria.residual {
+            return Ok((x, norm, Convergence::Residual, iteration - 1));
+        }
+
+        // Solve J * delta = residual, partial pivoting on the first column.
+        let (row0, row1, rhs0, rhs1) = if jacobian[0][0].abs() >= jacobian[1][0].abs() {
+            (jacobian[0], jacobian[1], residual[0], residual[1])
+        } else {
+            (jacobian[1], jacobian[0], residual[1], residual[0])
+        };
+        if row0[0].abs() <= f64::EPSILON * (row1[0].abs() + row0[1].abs()).max(1.0) {
+            ogeom_bail!(Numeric, "Jacobian is singular after {iteration} iterations");
+        }
+        let factor = row1[0] / row0[0];
+        let denom = factor.mul_add(-row0[1], row1[1]);
+        if denom.abs() <= f64::EPSILON * row0[1].abs().max(1.0) {
+            ogeom_bail!(Numeric, "Jacobian is singular after {iteration} iterations");
+        }
+        let d1 = factor.mul_add(-rhs0, rhs1) / denom;
+        let d0 = d1.mul_add(-row0[1], rhs0) / row0[0];
+        let delta = [d0, d1];
+
+        // Damping: keep halving until the residual actually falls.
+        let mut scale = 1.0;
+        let mut accepted = None;
+        for _ in 0..30 {
+            let candidate = [
+                delta[0].mul_add(-scale, x[0]),
+                delta[1].mul_add(-scale, x[1]),
+            ];
+            let (r, jj) = f(candidate);
+            let candidate_norm = r[0].hypot(r[1]);
+            if candidate_norm < norm || candidate_norm <= criteria.residual {
+                accepted = Some((candidate, r, jj, candidate_norm));
+                break;
+            }
+            scale *= 0.5;
+        }
+        let Some((next, r, jj, next_norm)) = accepted else {
+            return Ok((x, norm, Convergence::Exhausted, iteration));
+        };
+
+        let step = (next[0] - x[0]).hypot(next[1] - x[1]);
+        x = next;
+        residual = r;
+        jacobian = jj;
+        norm = next_norm;
+
+        if norm <= criteria.residual {
+            return Ok((x, norm, Convergence::Residual, iteration));
+        }
+        if step <= criteria.step {
+            return Ok((x, norm, Convergence::Step, iteration));
+        }
+    }
+    Ok((x, norm, Convergence::Exhausted, criteria.max_iterations))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
