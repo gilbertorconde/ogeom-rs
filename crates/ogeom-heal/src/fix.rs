@@ -24,8 +24,9 @@ pub struct FixedTrims {
 
 /// Give a face's pcurve-less edges the trims projection can honestly fit.
 ///
-/// The reader heals boundary slop up to a millimetre and names what it
-/// refuses in `untrimmed_faces`; this is the instructed follow-up — the
+/// The reader heals boundary slop up to a millimetre and hands what it
+/// refuses over in `untrimmed_faces`, face shape included; this is the
+/// instructed follow-up — the
 /// same projection fit, at the cap the caller chooses. Each fitted edge's
 /// tolerance widens to the offset actually measured, so the model says
 /// what it now knows; an edge past the cap is reported, not touched.

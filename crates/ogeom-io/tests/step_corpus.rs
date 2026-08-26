@@ -263,9 +263,21 @@ END-ISO-10303-21;
 "#;
     let import = ogeom_io::read_step(text, T).unwrap();
     assert_eq!(
-        import.report.untrimmed_faces,
-        vec![56],
-        "the hovering face is named, exactly once, by its file id"
+        import.report.untrimmed_faces.len(),
+        1,
+        "the hovering face is named exactly once"
+    );
+    let refused = &import.report.untrimmed_faces[0];
+    assert_eq!(refused.entity, 56, "by its file id");
+    let of_solid = ogeom_topo::explore_unique(
+        import.document.model(),
+        &import.solids[0],
+        ogeom_topo::ShapeType::Face,
+    )
+    .unwrap();
+    assert!(
+        of_solid.iter().any(|f| f.node() == refused.face.node()),
+        "and the carried shape is a face of the solid"
     );
     assert!(
         import

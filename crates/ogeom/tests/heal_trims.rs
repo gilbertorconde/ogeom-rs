@@ -2,7 +2,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
-use ogeom::topo::{Filter, ShapeType, explore};
 
 const T: Tolerances = Tolerances::millimetres();
 
@@ -61,16 +60,13 @@ ENDSEC;
 END-ISO-10303-21;
 "#;
     let import = ogeom::io::read_step(text, T).unwrap();
-    assert_eq!(
-        import.report.untrimmed_faces,
-        vec![56],
-        "the reader refused it"
-    );
+    // The report hands over the face itself — the instructed follow-up
+    // needs no search (issue #34).
+    assert_eq!(import.report.untrimmed_faces.len(), 1);
+    let refused = &import.report.untrimmed_faces[0];
+    assert_eq!(refused.entity, 56, "named by the id the warnings use");
+    let face = refused.face.clone();
     let mut document = import.document;
-    let solid = import.solids[0].clone();
-    let face = explore(document.model(), &solid, Filter::OfType(ShapeType::Face))
-        .unwrap()
-        .remove(0);
 
     // Before: the face cannot draw.
     assert!(
@@ -104,14 +100,9 @@ END-ISO-10303-21;
 
     // A cap *below* the offset still refuses, and says how far.
     let import2 = ogeom::io::read_step(text, T).unwrap();
+    let face2 = import2.report.untrimmed_faces[0].face.clone();
     let mut document2 = import2.document;
-    let face2 = explore(
-        document2.model(),
-        &import2.solids[0],
-        Filter::OfType(ShapeType::Face),
-    )
-    .unwrap()
-    .remove(0);
+
     let report2 = ogeom::heal::fix_face_pcurves(document2.model_mut(), &face2, 1.0, T).unwrap();
     assert_eq!(report2.fitted, 0);
     assert_eq!(report2.refused.len(), 4);

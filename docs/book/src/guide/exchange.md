@@ -25,8 +25,9 @@ edge's tolerance widens to the measured offset, and a warning says so —
 because that is the file's own error, honestly carried. Beyond a
 millimetre the boundary is not describing that surface at all, and a
 fitted trim would be invented geometry drawn with confidence: the face
-reads untrimmed, refuses to mesh, and `report.untrimmed_faces` names it
-by file id so a consumer can mark the exact gap. `check` reports the
+reads untrimmed, refuses to mesh, and `report.untrimmed_faces` carries it
+— file id and face shape both — so a consumer can mark the exact gap or
+hand the face straight to the healer. `check` reports the
 same faces as broken from the model side.
 
 A large import is worth watching. A `Watch` scoped around the call hears

@@ -38,5 +38,5 @@ pub use iges::{IgesImport, IgesReport, read_iges, write_iges};
 pub use mesh_formats::{
     ExportMesh, ImportedMesh, read_glb, read_gltf, write_glb, write_obj, write_ply,
 };
-pub use step::{StepImport, StepReport, read_step, write_step};
+pub use step::{StepImport, StepReport, UntrimmedFace, read_step, write_step};
 pub use stl::{Encoding, read, write};

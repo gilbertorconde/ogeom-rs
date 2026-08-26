@@ -51,12 +51,23 @@ pub struct StepReport {
     pub warnings: Vec<String>,
     /// Faces that read without a complete trim: an edge's boundary sat too
     /// far from the surface for any honest pcurve (beyond the one-millimetre
-    /// healing cap), so the face will refuse to triangulate. STEP entity
-    /// ids, deduplicated, in file order — the structured form of the
-    /// warnings that name them, so a consumer can mark the exact faces
-    /// instead of parsing prose. `check` reports the same faces as broken
-    /// from the model side.
-    pub untrimmed_faces: Vec<u64>,
+    /// healing cap), so the face will refuse to triangulate. Deduplicated,
+    /// in file order — the structured form of the warnings that name them,
+    /// carrying the face itself so the instructed follow-up needs no search.
+    /// `check` reports the same faces as broken from the model side. A
+    /// refused id whose face never finished building has nothing to act on
+    /// and stays in the warnings alone.
+    pub untrimmed_faces: Vec<UntrimmedFace>,
+}
+
+/// A face the reader could not trim, with the shape to act on.
+#[derive(Debug, Clone)]
+pub struct UntrimmedFace {
+    /// The file's id for the face — the same id the warnings name.
+    pub entity: u64,
+    /// The face as built; hand it to `ogeom_heal::fix_face_pcurves` with
+    /// the cap the situation deserves.
+    pub face: Shape,
 }
 
 /// A read exchange file: the model, the solids found, and the report.
@@ -95,6 +106,7 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         faces: HashMap::new(),
         callout_index: HashMap::new(),
         pcurves: HashMap::new(),
+        untrimmed_ids: Vec::new(),
         tol,
     };
     reader.report.scale_mm = reader.unit_scale();
@@ -116,6 +128,17 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         let solid = reader.solid(id)?;
         by_msb.insert(id, solid.clone());
         solids.push(solid);
+    }
+    // The noted refusals resolve to the faces themselves, now that they
+    // exist: the same cache the shells were assembled from answers by the
+    // very id the warnings name.
+    for id in std::mem::take(&mut reader.untrimmed_ids) {
+        if let Some(face) = reader.faces.get(&id) {
+            reader.report.untrimmed_faces.push(UntrimmedFace {
+                entity: id,
+                face: face.clone(),
+            });
+        }
     }
     if solids.is_empty() {
         ogeom_bail!(
@@ -183,6 +206,9 @@ struct Reader<'a> {
     /// `(face, edge)` → the pcurve already derived for it, from the parallel
     /// pass at the head of each solid.
     pcurves: HashMap<(u64, u64), PreparedPcurve>,
+    /// Faces noted untrimmed, by file id; resolved to shapes once the read
+    /// is far enough along for the shapes to exist.
+    untrimmed_ids: Vec<u64>,
     tol: Tolerances,
 }
 
@@ -1244,8 +1270,8 @@ impl Reader<'_> {
 
     /// Note a face left without a complete trim, once.
     fn note_untrimmed(&mut self, face_id: u64) {
-        if self.report.untrimmed_faces.last() != Some(&face_id) {
-            self.report.untrimmed_faces.push(face_id);
+        if self.untrimmed_ids.last() != Some(&face_id) {
+            self.untrimmed_ids.push(face_id);
         }
     }
 
