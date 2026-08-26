@@ -1137,3 +1137,53 @@ fn a_non_planar_middle_section_lofts() {
         "wavy loft volume {v} outside ({lo}, {hi})"
     );
 }
+
+/// A faceted profile round a closed circular spine: the square torus, whose
+/// volume Pappus names exactly — side² × 2πR.
+#[test]
+fn a_square_profile_along_a_closed_circle_is_a_pappus_ring() {
+    let mut model = ogeom_topo::Model::new();
+    // The spine: a full circle of radius 20 in the XY plane.
+    let frame = Frame::new(
+        Point::new(0.0, 0.0, 0.0),
+        ogeom_math::Direction::Z,
+        ogeom_math::Direction::X,
+        T,
+    )
+    .unwrap();
+    let circle = Circle::new(frame, 20.0, T).unwrap();
+    let curve = ogeom_geom::Curve::Circle(ogeom_geom::CircleCurve::new(circle));
+    let domain = curve.domain();
+    let spine_edge = ogeom_algo::make_edge(&mut model, curve, domain, T)
+        .unwrap()
+        .shape;
+    let spine = ogeom_algo::make_wire(&mut model, std::slice::from_ref(&spine_edge), T)
+        .unwrap()
+        .shape;
+    // The profile: a 4x4 square at the spine's start (20, 0, 0), square to
+    // the spine's tangent (+Y), spanned by the plane normal X... the sweep
+    // wants the profile square to the start tangent.
+    let corners = [
+        Point::new(18.0, 0.0, -2.0),
+        Point::new(22.0, 0.0, -2.0),
+        Point::new(22.0, 0.0, 2.0),
+        Point::new(18.0, 0.0, 2.0),
+    ];
+    let profile = ogeom_algo::make_polygon(&mut model, &corners, true, T)
+        .unwrap()
+        .shape;
+    let built =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 5e-3, T).unwrap();
+    assert!(
+        ogeom_algo::check(&model, &built.shape, T)
+            .unwrap()
+            .is_valid(),
+        "the square ring is a valid solid"
+    );
+    let expected = 16.0 * core::f64::consts::TAU * 20.0;
+    let measured = volume(&model, &built.shape);
+    assert!(
+        (measured - expected).abs() / expected < 5e-3,
+        "square ring volume {measured} against Pappus {expected}"
+    );
+}

@@ -685,6 +685,137 @@ fn skinned_wall(
     })
 }
 
+/// A strip closed the *long* way: open across its own width, a smooth loop
+/// along the sweep — one face of a faceted ring, [`skinned_wall`]'s
+/// construction with the chart's roles swapped and the loop made C1 by
+/// [`ogeom_geom::fit::fit_surface_grid_closed_v`]. The rails are the two
+/// closed border loops; the seam is one station's column, used twice.
+fn skinned_ring_strip(
+    model: &mut Model,
+    rows: &[Vec<Point>],
+    outward_hint: Point,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    use ogeom_geom::Surface as _;
+    // The loop: first row repeated at the end, as the closed fit demands.
+    let mut looped: Vec<Vec<Point>> = rows.to_vec();
+    looped.push(rows[0].clone());
+    let fitted = ogeom_geom::fit::fit_surface_grid_closed_v(&looped, 3, tolerance, tol)?;
+    if !fitted.met {
+        ogeom_bail!(
+            NotDone,
+            "the ring strip reached {} against a target of {tolerance}",
+            fitted.error
+        );
+    }
+    let surface = fitted.curve;
+    let (u_knots, v_knots) = (surface.u_knots().clone(), surface.v_knots().clone());
+    let (k, l, net) = {
+        let grid = surface.grid();
+        let net: Vec<Point> = grid.points().iter().map(|w| (*w).point()).collect();
+        (grid.u_count(), grid.v_count(), net)
+    };
+    let point_at = |i: usize, j: usize| -> Point { net[i * l + j] };
+    let (u_dom, v_dom) = surface.domain();
+
+    // The chart's roles, straight: `u` runs across the strip (open), `v`
+    // around the loop (closed). The rails are v-curves — the closed border
+    // loops at the two u-borders — and the seam is the u-row at the loop's
+    // join, bounding the chart twice as every seam does.
+    let rail_curve = |i: usize| -> OgeomResult<ogeom_geom::Curve> {
+        let control: Vec<Point> = (0..l).map(|j| point_at(i, j)).collect();
+        Ok(ogeom_geom::Curve::BSpline(ogeom_geom::BSplineCurve::new(
+            v_knots.clone(),
+            control,
+            tol,
+        )?))
+    };
+    let seam_curve = {
+        let control: Vec<Point> = (0..k).map(|i| point_at(i, 0)).collect();
+        ogeom_geom::Curve::BSpline(ogeom_geom::BSplineCurve::new(
+            u_knots.clone(),
+            control,
+            tol,
+        )?)
+    };
+    let surface_geo: SurfaceGeometry = surface.into();
+    let surface_id = model.geometry_mut().add_surface(surface_geo.clone());
+
+    let rail0 = make_edge(model, rail_curve(0)?, v_dom, tol)?.shape;
+    let rail1 = make_edge(model, rail_curve(k - 1)?, v_dom, tol)?.shape;
+    let anchor0 = ogeom_algo::edge_vertices(model, &rail0)?
+        .map(|(a, _)| a)
+        .ok_or_else(|| ogeom_core::ogeom_err!(Construction, "a strip rail has no vertex"))?;
+    let anchor1 = ogeom_algo::edge_vertices(model, &rail1)?
+        .map(|(a, _)| a)
+        .ok_or_else(|| ogeom_core::ogeom_err!(Construction, "a strip rail has no vertex"))?;
+    let seam = make_edge_between(model, seam_curve, u_dom, &anchor0, &anchor1, tol)?.shape;
+
+    let row_line = |v: f64| -> OgeomResult<ogeom_geom::PlanarCurve> {
+        Ok(Line2d::over(
+            ogeom_math::Axis2::new(Point2::new(0.0, v), ogeom_math::Direction2::X),
+            u_dom.0 - 1.0,
+            u_dom.1 + 1.0,
+        )?
+        .into())
+    };
+    let column_line = |u: f64| -> OgeomResult<ogeom_geom::PlanarCurve> {
+        Ok(Line2d::over(
+            ogeom_math::Axis2::new(Point2::new(u, 0.0), ogeom_math::Direction2::Y),
+            v_dom.0 - 1.0,
+            v_dom.1 + 1.0,
+        )?
+        .into())
+    };
+    ogeom_algo::attach_pcurve(
+        model,
+        &rail0,
+        column_line(u_dom.0)?,
+        surface_id,
+        ogeom_topo::Location::identity(),
+        v_dom,
+    )?;
+    ogeom_algo::attach_pcurve(
+        model,
+        &rail1,
+        column_line(u_dom.1)?,
+        surface_id,
+        ogeom_topo::Location::identity(),
+        v_dom,
+    )?;
+    ogeom_algo::attach_seam(
+        model,
+        &seam,
+        row_line(v_dom.0)?,
+        row_line(v_dom.1)?,
+        surface_id,
+        ogeom_topo::Location::identity(),
+        u_dom,
+    )?;
+    let wire = ogeom_algo::make_wire(
+        model,
+        &[
+            rail0.clone(),
+            seam.clone(),
+            rail1.reversed(),
+            seam.reversed(),
+        ],
+        tol,
+    )?
+    .shape;
+    let face = ogeom_algo::make_face_on(model, surface_id, std::slice::from_ref(&wire), tol)?.shape;
+    let mid_u = f64::midpoint(u_dom.0, u_dom.1);
+    let mid_v = f64::midpoint(v_dom.0, v_dom.1);
+    let s_mid = surface_geo.point_at(mid_u, mid_v, tol)?;
+    let (du, dv) = surface_geo.d1_at(mid_u, mid_v, tol)?;
+    Ok(if du.cross(dv).dot(s_mid - outward_hint) >= 0.0 {
+        face
+    } else {
+        face.reversed()
+    })
+}
+
 /// A solid skinned over a grid of section samples: [`skinned_wall`] with a
 /// planar cap over each end ring.
 fn skinned_solid(
@@ -2394,13 +2525,6 @@ fn closed_pipe_shell(
     let edges = model.ordered_children_of(profile_loop)?;
     let smooth = edges.len() == 1
         && ogeom_algo::edge_vertices(model, &edges[0])?.is_some_and(|(a, b)| a.is_same(&b));
-    if !smooth {
-        ogeom_bail!(
-            Construction,
-            "a faceted profile on a closed spine needs closed strips, which \
-             are still owed — docs/PARITY.md, offset.sweeps"
-        );
-    }
     let Some(plane) = ogeom_algo::find_plane(model, profile, tol)? else {
         ogeom_bail!(Construction, "a pipe shell sweeps a planar profile");
     };
@@ -2453,6 +2577,57 @@ fn closed_pipe_shell(
     let x0 = normals[0];
     let y0 = t0.cross(x0);
     let origin = stations[0].at;
+    if !smooth {
+        // A faceted profile: one ring strip per profile edge — a fit cannot
+        // speak a corner, so each facet gets its own v-closed skin and the
+        // strips sew along the corner loops they share within tolerance.
+        const ALONG_EDGE: usize = 8;
+        let centroid = {
+            let mut c = Vector::new(0.0, 0.0, 0.0);
+            for st in &stations {
+                c += st.at.to_vector();
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let n = stations.len() as f64;
+            Point::from_vector(c / n)
+        };
+        let mut faces = Vec::with_capacity(edges.len());
+        for edge in &edges {
+            let (curve, range) = spine_curve_of(model, edge)?;
+            let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+            let mut flat_row: Vec<(f64, f64)> = Vec::with_capacity(ALONG_EDGE + 1);
+            for kk in 0..=ALONG_EDGE {
+                #[allow(clippy::cast_precision_loss)]
+                let f = (kk as f64) / (ALONG_EDGE as f64);
+                let t = if reversed {
+                    range.1 - (range.1 - range.0) * f
+                } else {
+                    range.0 + (range.1 - range.0) * f
+                };
+                let p = curve.point_at(t, tol)?;
+                flat_row.push(((p - origin).dot(x0), (p - origin).dot(y0)));
+            }
+            // rows[j = station][i = across the facet].
+            let rows: Vec<Vec<Point>> = stations
+                .iter()
+                .enumerate()
+                .map(|(i, station)| {
+                    let x = normals[i];
+                    let y = station.tangent.cross(x);
+                    flat_row
+                        .iter()
+                        .map(|(a, b)| station.at + x * *a + y * *b)
+                        .collect()
+                })
+                .collect();
+            faces.push(skinned_ring_strip(model, &rows, centroid, tolerance, tol)?);
+        }
+        let sewn = sew(model, &faces, tol)?;
+        if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
+            ogeom_bail!(Construction, "the faceted ring did not close");
+        }
+        return make_solid(model, std::slice::from_ref(&sewn.shells[0]));
+    }
     let samples = sample_wire(model, profile_loop, AROUND, tol)?;
     let flat: Vec<(f64, f64)> = samples
         .iter()
