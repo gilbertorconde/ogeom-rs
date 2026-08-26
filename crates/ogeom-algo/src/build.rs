@@ -534,11 +534,24 @@ pub fn make_face_with_pcurves(
             };
             (geometry.clone(), *range)
         };
-        let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&curve, &surface, tol) else {
-            ogeom_bail!(
-                Construction,
-                "a face edge has no closed-form pcurve on its surface"
-            );
+        let pcurve = match ogeom_intersect::exact_pcurve_of(&curve, &surface, tol) {
+            Some(exact) => exact,
+            // No closed form — a fitted surface, mostly. The edge lies on
+            // the surface by construction here (a rebuilt boundary, a
+            // recovered intersection), so the projected fit speaks it: the
+            // same machinery the exchange readers trust, at the same cap,
+            // and the measured offset widens the edge honestly.
+            None => {
+                let (fitted, _, _, worst_off, _) =
+                    crate::pcurve_fit::fit_projected_pcurve(&curve, prange, &surface, tol)?;
+                if worst_off > tol.confusion()
+                    && let Some(node) = model.node_mut(&edge)
+                    && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+                {
+                    data.tolerance = data.tolerance.widen_to(worst_off + tol.confusion());
+                }
+                fitted
+            }
         };
         attach_pcurve(
             model,
@@ -1508,6 +1521,106 @@ fn iso_curve_parameter_at(surface: &SurfaceGeometry, v: f64) -> f64 {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use super::*;
+
+    /// A face on a fitted surface builds with fitted trims: the closed-form
+    /// refusal falls back to the projected fit, which is what lets a
+    /// defeaturing rebuild stand a face on a spline neighbour (issue #19).
+    #[test]
+    fn a_face_on_a_fitted_surface_gains_projected_pcurves() {
+        let tol = ogeom_core::Tolerances::millimetres();
+        let mut model = Model::new();
+        // A gently wavy fitted patch, nothing analytic recognises.
+        let rows: Vec<Vec<ogeom_math::Point>> = (0..5)
+            .map(|j| {
+                (0..5)
+                    .map(|i| {
+                        let (x, y) = (f64::from(i) * 2.5, f64::from(j) * 2.5);
+                        ogeom_math::Point::new(x, y, 0.4 * (x * 0.7).sin() * (y * 0.5).cos())
+                    })
+                    .collect()
+            })
+            .collect();
+        let surface: ogeom_geom::SurfaceGeometry =
+            ogeom_geom::fit::fit_surface_grid(&rows, 3, 1e-6, tol)
+                .unwrap()
+                .curve
+                .into();
+        // The border iso-curves, straight off the fitted chart.
+        use ogeom_geom::Surface as _;
+        let ((ua, ub), (va, vb)) = surface.domain();
+        let iso = |fixed_u: Option<f64>, fixed_v: Option<f64>| -> Curve {
+            const N: usize = 33;
+            let pts: Vec<ogeom_math::Point> = (0..N)
+                .map(|k| {
+                    let t = f64::from(u32::try_from(k).unwrap())
+                        / f64::from(u32::try_from(N - 1).unwrap());
+                    let (u, v) = match (fixed_u, fixed_v) {
+                        (Some(u), None) => (u, va + (vb - va) * t),
+                        (None, Some(v)) => (ua + (ub - ua) * t, v),
+                        _ => unreachable!(),
+                    };
+                    surface.point_at(u, v, tol).unwrap()
+                })
+                .collect();
+            Curve::BSpline(
+                ogeom_geom::fit::fit_points(&pts, 3, 1e-9, tol)
+                    .unwrap()
+                    .curve,
+            )
+        };
+        // Shared corner vertices, widened to absorb the border fits' own
+        // slack, so the ring connects by node rather than by luck.
+        let corners: Vec<Shape> = [(ua, va), (ub, va), (ub, vb), (ua, vb)]
+            .into_iter()
+            .map(|(u, v)| {
+                let p = surface.point_at(u, v, tol).unwrap();
+                let vertex = model.add_vertex(ogeom_topo::VertexData::new(p));
+                if let Some(node) = model.node_mut(&vertex)
+                    && let ogeom_topo::NodeData::Vertex(data) = node.data_mut()
+                {
+                    data.tolerance = data.tolerance.widen_to(1e-4);
+                }
+                vertex
+            })
+            .collect();
+        let ring = [
+            (iso(None, Some(va)), 0usize, 1usize),
+            (iso(Some(ub), None), 1, 2),
+            (iso(None, Some(vb)), 3, 2),
+            (iso(Some(ua), None), 0, 3),
+        ];
+        let edges: Vec<Shape> = ring
+            .into_iter()
+            .enumerate()
+            .map(|(k, (c, from, to))| {
+                use ogeom_geom::Curve3d as _;
+                let domain = c.domain();
+                let edge =
+                    make_edge_between(&mut model, c, domain, &corners[from], &corners[to], tol)
+                        .unwrap()
+                        .shape;
+                if k >= 2 { edge.reversed() } else { edge }
+            })
+            .collect();
+        let built =
+            make_face_with_pcurves(&mut model, surface, std::slice::from_ref(&edges), tol).unwrap();
+        // Every edge carries a pcurve for the face's surface now.
+        let data = model
+            .node(&built.shape)
+            .unwrap()
+            .data()
+            .as_face()
+            .unwrap()
+            .clone();
+        for edge in &edges {
+            let e = model.node(edge).unwrap().data().as_edge().unwrap();
+            assert!(
+                e.pcurve_for(data.surface, edge.location()).is_some(),
+                "a fitted trim was attached"
+            );
+        }
+    }
 
     #[test]
     fn a_band_whose_rings_start_apart_gets_a_helical_connector() {
@@ -1686,7 +1799,6 @@ mod tests {
         }
     }
 
-    use super::*;
     use ogeom_geom::{CircleCurve, LineCurve, PlaneSurface};
     use ogeom_math::{Circle, Frame, Plane};
     use ogeom_topo::explore_unique;
