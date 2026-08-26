@@ -16,7 +16,7 @@
 //! images come from closed-form inversion on the host charts, unwrapped for
 //! continuity.
 
-use crate::march::{BlendStop, Sides, march_blend_sided};
+use crate::march::{BlendStop, Sides, march_blend_seeded};
 use crate::support::{apply_wedge, edge_curve};
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -157,8 +157,13 @@ pub(crate) fn marched_fillet(
     // the second's outward normal. It decides everything downstream — which
     // of the four ball seatings is the fillet's, and whether the wedge adds
     // or removes.
+    //
+    // Probed at the *edge's* own midpoint, not the reconstructed loop's: a
+    // conic arc re-opened to its full period runs through territory the
+    // boolean cut away, and a probe standing off the solid reads nothing in
+    // either direction. The edge's midpoint is on the crease by definition.
     use ogeom_geom::Surface as _;
-    let mid_t = f64::midpoint(guide_range.0, guide_range.1);
+    let mid_t = f64::midpoint(edge_range.0, edge_range.1);
     let mid = guide.point_at(mid_t, tol)?;
     let outward_at = |surface: &SurfaceGeometry, sign: f64| -> OgeomResult<Vector> {
         let projection = ogeom_algo::project_on_surface(surface, mid, 32, tol)?;
@@ -182,10 +187,7 @@ pub(crate) fn marched_fillet(
             }
             t / m
         };
-        let span = guide
-            .point_at(guide_range.0, tol)?
-            .distance(mid)
-            .max(radius);
+        let span = guide.point_at(edge_range.0, tol)?.distance(mid).max(radius);
         let mut extends: Option<Vector> = None;
         'scales: for scale in [1e-3, 1e-2, 5e-2] {
             let eps = span * scale;
@@ -232,12 +234,17 @@ pub(crate) fn marched_fillet(
         second: (seat_sign * sign_second) as i8,
     };
 
-    let blend = march_blend_sided(
+    // Seeded at the edge's own midpoint: on a reconstructed loop the domain
+    // midpoint may stand in cut-away territory where no ball seats, but the
+    // crease's own midpoint is seat by definition, and a closed loop closes
+    // from wherever the walker starts.
+    let blend = march_blend_seeded(
         &first,
         &second,
         radius,
         &guide,
         sides,
+        mid_t,
         Marching {
             chord: 3e-6,
             ..Marching::default()
@@ -268,6 +275,7 @@ pub(crate) fn marched_fillet(
         blend.touch_second.pop();
         blend.on_first.pop();
         blend.on_second.pop();
+        blend.along.pop();
     }
     // A march may also overshoot its start before noticing closure, leaving
     // trailing stations that re-trace the loop's opening arc: the sequence
@@ -285,6 +293,7 @@ pub(crate) fn marched_fillet(
         blend.touch_second.pop();
         blend.on_first.pop();
         blend.on_second.pop();
+        blend.along.pop();
     }
     {
         let winding = |on: &[(f64, f64)], surface: &SurfaceGeometry| -> f64 {
@@ -334,6 +343,7 @@ pub(crate) fn marched_fillet(
             blend.touch_second.reverse();
             blend.on_first.reverse();
             blend.on_second.reverse();
+            blend.along.reverse();
         }
 
         // A winding leg closes as a band, and the band's connector joins the
@@ -368,6 +378,7 @@ pub(crate) fn marched_fillet(
             blend.touch_second.rotate_left(k);
             blend.on_first.rotate_left(k);
             blend.on_second.rotate_left(k);
+            blend.along.rotate_left(k);
             // The march's closing step may be far shorter than its stride;
             // rotated into the loop's interior, that cramped pair would put
             // two grid columns nearly on top of each other and poison the
@@ -389,6 +400,7 @@ pub(crate) fn marched_fillet(
                     blend.touch_second.remove(i);
                     blend.on_first.remove(i);
                     blend.on_second.remove(i);
+                    blend.along.remove(i);
                 } else {
                     i += 1;
                 }

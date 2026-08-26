@@ -125,6 +125,9 @@ pub struct MarchedBlend {
     pub touch_first: Vec<Point>,
     /// And on the second.
     pub touch_second: Vec<Point>,
+    /// The guide parameter at each station — where along the seat the
+    /// section stands. An open blend's run-out is built from its ends.
+    pub along: Vec<f64>,
     /// Which side of each support the ball rolled on.
     pub sides: Sides,
     /// Why it stopped.
@@ -176,7 +179,16 @@ pub fn march_blend(
     options: Marching,
     tol: Tolerances,
 ) -> OgeomResult<MarchedBlend> {
-    march_blend_on(first, second, radius, guide, &Sides::ALL, options, tol)
+    march_blend_on(
+        first,
+        second,
+        radius,
+        guide,
+        &Sides::ALL,
+        None,
+        options,
+        tol,
+    )
 }
 
 /// As [`march_blend`], with the ball's sides named by the caller.
@@ -198,15 +210,52 @@ pub fn march_blend_sided(
     options: Marching,
     tol: Tolerances,
 ) -> OgeomResult<MarchedBlend> {
-    march_blend_on(first, second, radius, guide, &[sides], options, tol)
+    march_blend_on(first, second, radius, guide, &[sides], None, options, tol)
 }
 
+/// As [`march_blend_sided`], seated at the caller's own guide parameter.
+///
+/// The default seat solves at the guide domain's midpoint, which serves a
+/// guide that runs along the seat end to end. A caller whose guide is a
+/// reconstructed loop — a conic arc re-opened to its full period — knows the
+/// loop runs through territory that is not seat at all, and names a
+/// parameter that is: the walker still covers the whole loop from wherever
+/// it starts.
+///
+/// # Errors
+///
+/// As [`march_blend`].
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
+pub fn march_blend_seeded(
+    first: &SurfaceGeometry,
+    second: &SurfaceGeometry,
+    radius: f64,
+    guide: &Curve,
+    sides: Sides,
+    seed: f64,
+    options: Marching,
+    tol: Tolerances,
+) -> OgeomResult<MarchedBlend> {
+    march_blend_on(
+        first,
+        second,
+        radius,
+        guide,
+        &[sides],
+        Some(seed),
+        options,
+        tol,
+    )
+}
+
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
 fn march_blend_on(
     first: &SurfaceGeometry,
     second: &SurfaceGeometry,
     radius: f64,
     guide: &Curve,
     candidates: &[Sides],
+    seed: Option<f64>,
     options: Marching,
     tol: Tolerances,
 ) -> OgeomResult<MarchedBlend> {
@@ -214,7 +263,7 @@ fn march_blend_on(
         ogeom_bail!(Construction, "a blend of radius {radius} rounds nothing");
     }
     options.validate()?;
-    let (start, sides) = seat(first, second, radius, guide, candidates, tol)?;
+    let (start, sides) = seat(first, second, radius, guide, candidates, seed, tol)?;
     let guide_loops = guide.is_periodic() || {
         let (lo, hi) = guide.domain();
         guide
@@ -238,6 +287,7 @@ fn march_blend_on(
         on_second: Vec::with_capacity(walked.states.len()),
         touch_first: Vec::with_capacity(walked.states.len()),
         touch_second: Vec::with_capacity(walked.states.len()),
+        along: Vec::with_capacity(walked.states.len()),
         sides,
         stopped: BlendStop::Stalled,
     };
@@ -256,6 +306,7 @@ fn march_blend_on(
         blend.on_second.push((x[2], x[3]));
         blend.touch_first.push(p1);
         blend.touch_second.push(p2);
+        blend.along.push(x[4]);
     }
     blend.stopped = why(&contact, &walked, tol);
     Ok(blend)
@@ -310,10 +361,13 @@ fn seat(
     radius: f64,
     guide: &Curve,
     candidates: &[Sides],
+    seed: Option<f64>,
     tol: Tolerances,
 ) -> OgeomResult<([f64; 5], Sides)> {
-    let (lo, hi) = guide.domain();
-    let at = f64::midpoint(lo, hi);
+    let at = seed.unwrap_or_else(|| {
+        let (lo, hi) = guide.domain();
+        f64::midpoint(lo, hi)
+    });
     let anchor = guide.point_at(at, tol)?;
     let near_first = ogeom_algo::project_on_surface(first, anchor, 24, tol)?;
     let near_second = ogeom_algo::project_on_surface(second, anchor, 24, tol)?;

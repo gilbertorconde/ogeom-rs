@@ -307,6 +307,44 @@ fn round_vertex_refuses_the_setback_family_by_name() {
     );
 }
 
+#[test]
+fn a_seam_split_crease_arc_reaches_the_march_and_names_the_open_seat() {
+    use ogeom::math::Vector;
+    // A box grooved by a tilted drum: the top crease is one ellipse loop cut
+    // open by the box side, and the cylinder's own seam splits it into two
+    // arcs sharing a mid-scoop vertex. The seat probe used to die on those
+    // arcs — the reconstructed loop's midpoint stands in cut-away territory
+    // — before the march could even speak. Probed and seated at the edge's
+    // own midpoint, both arcs now march the seat and refuse with the open
+    // seat's honest name.
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let tilt = 0.35_f64;
+    let axis = Direction::new(Vector::new(0.0, tilt.cos(), -tilt.sin()), T).unwrap();
+    let frame = Frame::new(Point::new(10.0, -5.0, 11.5), axis, Direction::X, T).unwrap();
+    let drum = ogeom::algo::make_cylinder(&mut model, frame, 4.0, 30.0, T)
+        .unwrap()
+        .shape;
+    let grooved = ogeom::boolean::cut(&mut model, &block, &drum, T)
+        .unwrap()
+        .shape;
+    // The two seam-split halves of the top crease, one on each side of the
+    // shared vertex at (10, 10.77, 10).
+    for near in [Point::new(7.3, 7.7, 10.0), Point::new(12.7, 7.7, 10.0)] {
+        let arc = edge_near(&model, &grooved, near);
+        let err = ogeom::fillet::fillet_edge(&mut model, &grooved, &arc, 1.0, T)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("did not close on itself"),
+            "the arc must reach the march and name the open seat, not die \
+             in the probe: {err}"
+        );
+    }
+}
+
 fn vertex_near(model: &Model, shape: &Shape, near: Point) -> Shape {
     explore_unique(model, shape, ShapeType::Vertex)
         .unwrap()

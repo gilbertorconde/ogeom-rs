@@ -23,4 +23,6 @@ pub use corner::round_vertex;
 pub use corner2d::{chamfer_corner_2d, fillet_corner_2d};
 pub use facepair::blend_faces;
 pub use fillet::{fillet_edge, fillet_edge_variable, fillet_edges};
-pub use march::{BlendStop, MarchedBlend, Sides, march_blend, march_blend_sided};
+pub use march::{
+    BlendStop, MarchedBlend, Sides, march_blend, march_blend_seeded, march_blend_sided,
+};
