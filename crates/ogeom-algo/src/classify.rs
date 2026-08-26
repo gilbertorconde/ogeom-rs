@@ -332,9 +332,13 @@ impl SolidBoundary {
         };
 
         let faces = ogeom_topo::explore_unique(model, solid, ShapeType::Face)?;
-        let mut prepared = Vec::with_capacity(faces.len());
-        for face in faces {
-            let Some(node) = model.node(&face) else {
+        // One prepared face per face, in face order, computed in parallel:
+        // each preparation reads the model and writes nothing, and walking a
+        // face's trimming rings is the whole cost of building a boundary —
+        // 84% of the boolean's split stage before this ran wide.
+        let prepared = ogeom_core::parallel::map_ordered(&faces, |_, face| {
+            ogeom_core::progress::checkpoint()?;
+            let Some(node) = model.node(face) else {
                 ogeom_bail!(Dangling, "face is not in this model");
             };
             let NodeData::Face(data) = node.data() else {
@@ -344,14 +348,16 @@ impl SolidBoundary {
                 ogeom_bail!(Dangling, "face refers to a surface not in this model");
             };
             let inverse = face.transform(model.datums())?.inverse()?;
-            let rings = face_boundary(model, &face, ring_deflection, tol)?;
-            prepared.push(PreparedFace {
-                face,
+            let rings = face_boundary(model, face, ring_deflection, tol)?;
+            Ok(PreparedFace {
+                face: face.clone(),
                 surface: surface.clone(),
                 inverse,
                 rings,
-            });
-        }
+            })
+        })
+        .into_iter()
+        .collect::<OgeomResult<Vec<_>>>()?;
         Ok(Self {
             faces: prepared,
             bound,
