@@ -1788,6 +1788,14 @@ fn surfaces_stand_apart(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerance
     }
     let ((ua, ub), (va, vb)) = sample.domain();
     const GRID: usize = 9;
+    // One seeding grid over the far surface, asked a hundred times: the
+    // same seeds and the same Newton the per-call projection would use, so
+    // the verdict is bit-identical, at hundreds of evaluations instead of
+    // tens of thousands — the price issue #26 named for every genuine
+    // near-miss.
+    let Ok(seeds) = ogeom_algo::SurfaceSeeds::over(against, 16, tol) else {
+        return false;
+    };
     let mut clearance = f64::INFINITY;
     for i in 0..=GRID {
         for j in 0..=GRID {
@@ -1798,7 +1806,7 @@ fn surfaces_stand_apart(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerance
             let Ok(p) = sample.point_at(u, v, tol) else {
                 return false;
             };
-            let Ok(projection) = ogeom_algo::project_on_surface(against, p, 16, tol) else {
+            let Ok(projection) = seeds.project(against, p, tol) else {
                 return false;
             };
             clearance = clearance.min(projection.distance);

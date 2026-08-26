@@ -785,6 +785,71 @@ pub fn project_on_surface(
     refine_foot(surface, target, (best.0, best.1), tol)
 }
 
+/// A surface's seeding grid, built once and asked many times.
+///
+/// [`project_on_surface`] evaluates the same grid of surface points for
+/// every call — hundreds of evaluations per projection, identical each
+/// time. A caller projecting *many* targets onto *one* surface builds the
+/// grid once and each projection reduces to a nearest-seed scan plus the
+/// Newton polish: the same seeds, the same refinement, the same answer to
+/// the bit, at a fraction of the evaluations.
+#[derive(Debug, Clone)]
+pub struct SurfaceSeeds {
+    seeds: Vec<(f64, f64, Point)>,
+}
+
+impl SurfaceSeeds {
+    /// Evaluate the grid `project_on_surface` would use, once.
+    ///
+    /// # Errors
+    ///
+    /// Never for a well-formed surface; evaluation failures leave gaps in
+    /// the grid exactly as the per-call version tolerates them.
+    pub fn over(surface: &SurfaceGeometry, samples: usize, tol: Tolerances) -> OgeomResult<Self> {
+        use ogeom_geom::Surface as _;
+        let ((ua, ub), (va, vb)) = surface.domain();
+        let steps = samples.max(4);
+        let mut seeds = Vec::with_capacity((steps + 1) * (steps + 1));
+        for i in 0..=steps {
+            for j in 0..=steps {
+                #[allow(clippy::cast_precision_loss)]
+                let (u, v) = (
+                    ua + (ub - ua) * (i as f64 / steps as f64),
+                    va + (vb - va) * (j as f64 / steps as f64),
+                );
+                if let Ok(p) = surface.point_at(u, v, tol) {
+                    seeds.push((u, v, p));
+                }
+            }
+        }
+        Ok(Self { seeds })
+    }
+
+    /// Project `target`, seeded from the stored grid — bit-identical to
+    /// [`project_on_surface`] at the same sample count.
+    ///
+    /// # Errors
+    ///
+    /// As [`project_on_surface`].
+    pub fn project(
+        &self,
+        surface: &SurfaceGeometry,
+        target: Point,
+        tol: Tolerances,
+    ) -> OgeomResult<SurfaceProjection> {
+        use ogeom_geom::Surface as _;
+        let ((ua, _), (va, _)) = surface.domain();
+        let mut best = (ua, va, f64::INFINITY);
+        for (u, v, p) in &self.seeds {
+            let d = p.square_distance(target);
+            if d < best.2 {
+                best = (*u, *v, d);
+            }
+        }
+        refine_foot(surface, target, (best.0, best.1), tol)
+    }
+}
+
 /// The nearest point on a surface to `target`, starting from a guess.
 ///
 /// [`project_on_surface`] brackets with a grid before refining. A caller
@@ -1467,6 +1532,29 @@ mod tests {
         assert_relative_eq!(p.distance, 4.0, max_relative = 1e-6);
         assert_relative_eq!(p.point.z, 1.0, epsilon = 1e-6);
         assert_relative_eq!(p.point.x.hypot(p.point.y), 2.0, max_relative = 1e-7);
+    }
+
+    #[test]
+    fn shared_seeds_project_to_the_bit_where_the_per_call_grid_lands() {
+        // The contract SurfaceSeeds sells: same seeds, same Newton, same
+        // answer to the bit — while the grid is evaluated once instead of
+        // once per target. A cylinder exercises the periodic axis and the
+        // straight one together.
+        let cylinder = Cylinder::new(Frame::WORLD, 2.0, T).unwrap();
+        let surface: SurfaceGeometry = CylinderSurface::new(cylinder, (-5.0, 5.0)).unwrap().into();
+        let seeds = SurfaceSeeds::over(&surface, 16, T).unwrap();
+        for target in [
+            Point::new(6.0, 0.0, 1.0),
+            Point::new(-1.0, 3.0, -4.5),
+            Point::new(0.5, -0.5, 0.0),
+            Point::new(2.0, 0.0, 5.0),
+        ] {
+            let gridded = project_on_surface(&surface, target, 16, T).unwrap();
+            let seeded = seeds.project(&surface, target, T).unwrap();
+            assert_eq!(seeded.parameters, gridded.parameters);
+            assert_eq!(seeded.point, gridded.point);
+            assert_eq!(seeded.distance, gridded.distance);
+        }
     }
 
     #[test]

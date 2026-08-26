@@ -46,7 +46,7 @@ pub use history::{Built, History};
 pub use length::{curve_length, parameter_at_length, points_by_count, points_by_spacing};
 pub use mass::{MassProperties, linear_properties, surface_properties, volume_properties};
 pub use measure::{
-    Obb, Projection, SurfaceProjection, curve_bounds, face_normal, oriented_bounds,
+    Obb, Projection, SurfaceProjection, SurfaceSeeds, curve_bounds, face_normal, oriented_bounds,
     project_on_curve, project_on_planar_curve, project_on_surface, project_on_surface_from,
     relative_deflection, shape_bounds, surface_bounds, vertex_bounds, widened_to_hold,
 };
