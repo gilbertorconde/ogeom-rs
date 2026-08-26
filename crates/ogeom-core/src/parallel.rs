@@ -55,32 +55,44 @@ where
     }
 
     let snapshot = progress::snapshot();
-    let chunk = items.len().div_ceil(workers);
-    let mut results: Vec<Vec<R>> = Vec::with_capacity(workers);
+    // Work is *taken*, not dealt: expensive items cluster — one spline-heavy
+    // face's edges sit adjacent in a reader's job list — and a worker dealt
+    // that region as a contiguous chunk finishes last while the rest idle.
+    // Each worker pulls the next undone index instead, so the wall clock
+    // tracks the total work rather than the heaviest deal. The answer cannot
+    // tell the difference: every index is computed by the same call exactly
+    // once, and the merge reassembles by index, so the output is the item
+    // order however the indices were claimed.
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut parts: Vec<Vec<(usize, R)>> = Vec::with_capacity(workers);
     std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(workers);
-        for (w, slice) in items.chunks(chunk).enumerate() {
-            let start = w * chunk;
+        for _ in 0..workers {
             let f = &f;
+            let next = &next;
             let snapshot = snapshot.clone();
             handles.push(scope.spawn(move || {
                 progress::with_snapshot(snapshot.as_ref(), || {
-                    slice
-                        .iter()
-                        .enumerate()
-                        .map(|(i, t)| f(start + i, t))
-                        .collect::<Vec<R>>()
+                    let mut mine = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(item) = items.get(i) else { break };
+                        mine.push((i, f(i, item)));
+                    }
+                    mine
                 })
             }));
         }
         for handle in handles {
             match handle.join() {
-                Ok(part) => results.push(part),
+                Ok(part) => parts.push(part),
                 Err(panic) => std::panic::resume_unwind(panic),
             }
         }
     });
-    results.into_iter().flatten().collect()
+    let mut indexed: Vec<(usize, R)> = parts.into_iter().flatten().collect();
+    indexed.sort_unstable_by_key(|(i, _)| *i);
+    indexed.into_iter().map(|(_, r)| r).collect()
 }
 
 #[cfg(test)]
