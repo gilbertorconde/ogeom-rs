@@ -253,37 +253,53 @@ pub fn discretize(
         .map(|u| curve.point_at(*u, tol))
         .collect::<OgeomResult<_>>()?;
 
+    // Leftmost-first subdivision with a worklist: each segment is settled
+    // before the walk moves right, and a split pushes its halves back for
+    // re-examination — the exact split sequence the old
+    // rescan-from-zero-and-insert loop produced, without re-asking every
+    // settled segment on every pass or shifting the vectors per split. Same
+    // splits in the same order, so the same floats come out; a circle that
+    // took ~8 000 midpoint measurements to reach 128 points now takes ~250.
     let mut met = true;
-    loop {
-        let mut split_at: Option<usize> = None;
-        for i in 0..points.len() - 1 {
-            if needs_split(
-                curve,
-                (parameters[i], parameters[i + 1]),
-                (points[i], points[i + 1]),
-                deflection,
-                tol,
-            )? {
-                split_at = Some(i);
-                break;
+    let seeds = core::mem::take(&mut parameters);
+    let seed_points = core::mem::take(&mut points);
+    parameters.push(seeds[0]);
+    points.push(seed_points[0]);
+    // The unsettled boundary, rightmost at the bottom; the top is always the
+    // segment just right of the settled prefix.
+    let mut pending: Vec<(f64, Point)> = seeds[1..]
+        .iter()
+        .copied()
+        .zip(seed_points[1..].iter().copied())
+        .rev()
+        .collect();
+    let mut splitting = true;
+    while let Some((t1, p1)) = pending.pop() {
+        let t0 = *parameters.last().unwrap_or(&t1);
+        let p0 = points.last().copied().unwrap_or(p1);
+        if splitting && needs_split(curve, (t0, t1), (p0, p1), deflection, tol)? {
+            // The count the cap sees is every point currently alive, exactly
+            // as the old loop counted before each split.
+            if parameters.len() + pending.len() + 1 > deflection.max_segments {
+                met = false;
+                splitting = false;
+            } else {
+                let mid = f64::midpoint(t0, t1);
+                // A split that does not actually divide the interval means
+                // the parameters have reached the resolution of f64;
+                // refining further would loop without improving anything.
+                if mid <= t0 || mid >= t1 {
+                    met = false;
+                    splitting = false;
+                } else {
+                    pending.push((t1, p1));
+                    pending.push((mid, curve.point_at(mid, tol)?));
+                    continue;
+                }
             }
         }
-        let Some(i) = split_at else { break };
-
-        if points.len() > deflection.max_segments {
-            met = false;
-            break;
-        }
-        let mid = f64::midpoint(parameters[i], parameters[i + 1]);
-        // A split that does not actually divide the interval means the
-        // parameters have reached the resolution of f64; refining further would
-        // loop without improving anything.
-        if mid <= parameters[i] || mid >= parameters[i + 1] {
-            met = false;
-            break;
-        }
-        parameters.insert(i + 1, mid);
-        points.insert(i + 1, curve.point_at(mid, tol)?);
+        parameters.push(t1);
+        points.push(p1);
     }
 
     Ok(Polyline {
