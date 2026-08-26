@@ -127,3 +127,40 @@ fn refused_by_name() {
     assert!(err.to_string().contains("cylinder radius"));
     // ANCHOR_END: refused_by_name
 }
+
+#[test]
+fn watching_an_import() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 10.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let mut document = ogeom::doc::Document::over(model);
+    document.add_part("block", block);
+    let text = ogeom::io::write_step(&document, T).unwrap();
+
+    // ANCHOR: watching_an_import
+    use ogeom::core::progress::{self, Stage, Watch};
+
+    // A watch scopes a long operation: its sink hears each stage as the
+    // operation reaches it, and its canceller stops the work at the next
+    // checkpoint. Stages that know their numbers say them — "step: solid"
+    // arrives as (done, total), which is what a determinate progress bar
+    // is made of.
+    let watch = Watch::with_stage_sink(|stage: Stage<'_>| {
+        if let Some((done, total)) = stage.progress {
+            // e.g. hand (done, total) to the status bar
+            assert!(done <= total);
+        }
+    });
+    let stop = watch.canceller(); // send this to the cancel button
+    let import = progress::watched(&watch, || ogeom::io::read_step(&text, T)).unwrap();
+    drop(stop);
+
+    // The report is the import's honest ledger: entities the reader met
+    // and did not translate, warnings one line each — and the faces that
+    // read without a complete trim, by file id, because their boundary
+    // sat too far from the surface for any honest pcurve. Nothing here:
+    // this file is clean.
+    assert!(import.report.untrimmed_faces.is_empty());
+    // ANCHOR_END: watching_an_import
+}
