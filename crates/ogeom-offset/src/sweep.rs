@@ -21,7 +21,7 @@ use ogeom_geom::{
     CircleCurve, Curve, Line2d, LineCurve, PlaneSurface, SurfaceGeometry, TorusSurface,
 };
 use ogeom_math::{Circle, Direction, Frame, Plane, Point, Point2, Torus, Transform, Vector};
-use ogeom_topo::{EdgeRepr, Filter, Model, Shape, ShapeType, explore};
+use ogeom_topo::{EdgeData, EdgeRepr, Filter, Model, Shape, ShapeType, VertexData, explore};
 
 /// Sweep a circular profile of `radius` along a spine edge.
 ///
@@ -748,6 +748,202 @@ fn skinned_solid(
     make_solid(model, std::slice::from_ref(&sewn.shells[0]))
 }
 
+/// A solid skinned down to a point: [`skinned_wall`]'s construction with the
+/// top ring replaced by the apex — a degenerate edge on one vertex, bounding
+/// the chart's whole top row the way a cone's apex bounds a countersink.
+/// One cap, at the open end; the apex end closes by construction.
+fn skinned_solid_to_apex(
+    model: &mut Model,
+    rows: &[Vec<Point>],
+    cap_outward: Vector,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    use ogeom_geom::Surface as _;
+    let mut closed_rows: Vec<Vec<Point>> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut r = row.clone();
+        r.push(row[0]);
+        closed_rows.push(r);
+    }
+    let fitted = ogeom_geom::fit::fit_surface_grid(&closed_rows, 3, tolerance, tol)?;
+    if !fitted.met {
+        ogeom_bail!(
+            NotDone,
+            "the skin reached {} against a target of {tolerance}",
+            fitted.error
+        );
+    }
+    let surface = fitted.curve;
+    let (u_knots, v_knots) = (surface.u_knots().clone(), surface.v_knots().clone());
+    let (k, l, net) = {
+        let grid = surface.grid();
+        let net: Vec<Point> = grid.points().iter().map(|w| (*w).point()).collect();
+        (grid.u_count(), grid.v_count(), net)
+    };
+    let point_at = |i: usize, j: usize| -> Point { net[i * l + j] };
+    let (u_dom, v_dom) = surface.domain();
+    let apex = rows[rows.len() - 1][0];
+
+    let ring_curve = {
+        let control: Vec<Point> = (0..k).map(|i| point_at(i, 0)).collect();
+        ogeom_geom::Curve::BSpline(ogeom_geom::BSplineCurve::new(
+            u_knots.clone(),
+            control,
+            tol,
+        )?)
+    };
+    let seam_curve = {
+        let control: Vec<Point> = (0..l).map(|j| point_at(0, j)).collect();
+        ogeom_geom::Curve::BSpline(ogeom_geom::BSplineCurve::new(
+            v_knots.clone(),
+            control,
+            tol,
+        )?)
+    };
+    let surface_geo: SurfaceGeometry = surface.into();
+    let surface_id = model.geometry_mut().add_surface(surface_geo.clone());
+
+    let ring0 = make_edge(model, ring_curve.clone(), u_dom, tol)?.shape;
+    let anchor0 = ogeom_algo::edge_vertices(model, &ring0)?
+        .map(|(a, _)| a)
+        .ok_or_else(|| ogeom_core::ogeom_err!(Construction, "a skinned ring has no vertex"))?;
+    let apex_vertex = model.add_vertex(VertexData::new(apex));
+    let apex_edge = {
+        let mut data = EdgeData::new();
+        data.degenerate = true;
+        model.add_edge(data, &[apex_vertex.clone(), apex_vertex.clone()])?
+    };
+    let seam = make_edge_between(model, seam_curve, v_dom, &anchor0, &apex_vertex, tol)?.shape;
+
+    let row_line = |v: f64| -> OgeomResult<ogeom_geom::PlanarCurve> {
+        Ok(Line2d::over(
+            ogeom_math::Axis2::new(Point2::new(0.0, v), ogeom_math::Direction2::X),
+            u_dom.0 - 1.0,
+            u_dom.1 + 1.0,
+        )?
+        .into())
+    };
+    let column_line = |u: f64| -> OgeomResult<ogeom_geom::PlanarCurve> {
+        Ok(Line2d::over(
+            ogeom_math::Axis2::new(Point2::new(u, 0.0), ogeom_math::Direction2::Y),
+            v_dom.0 - 1.0,
+            v_dom.1 + 1.0,
+        )?
+        .into())
+    };
+    ogeom_algo::attach_pcurve(
+        model,
+        &ring0,
+        row_line(v_dom.0)?,
+        surface_id,
+        ogeom_topo::Location::identity(),
+        u_dom,
+    )?;
+    // The apex bounds the chart's whole top row while covering no distance:
+    // the degenerate edge carries the row's pcurve, exactly as a cone's apex
+    // does after the reader synthesises it.
+    ogeom_algo::attach_pcurve(
+        model,
+        &apex_edge,
+        row_line(v_dom.1)?,
+        surface_id,
+        ogeom_topo::Location::identity(),
+        u_dom,
+    )?;
+    ogeom_algo::attach_seam(
+        model,
+        &seam,
+        column_line(u_dom.0)?,
+        column_line(u_dom.1)?,
+        surface_id,
+        ogeom_topo::Location::identity(),
+        v_dom,
+    )?;
+
+    let wall = {
+        let wire = ogeom_algo::make_wire(
+            model,
+            &[
+                ring0.clone(),
+                seam.clone(),
+                apex_edge.reversed(),
+                seam.reversed(),
+            ],
+            tol,
+        )?
+        .shape;
+        let face =
+            ogeom_algo::make_face_on(model, surface_id, std::slice::from_ref(&wire), tol)?.shape;
+        let mid_u = f64::midpoint(u_dom.0, u_dom.1);
+        let mid_v = f64::midpoint(v_dom.0, v_dom.1);
+        let s_mid = surface_geo.point_at(mid_u, mid_v, tol)?;
+        let (du, dv) = surface_geo.d1_at(mid_u, mid_v, tol)?;
+        let centroid = {
+            let mut c = Vector::new(0.0, 0.0, 0.0);
+            let mut n = 0.0;
+            for row in rows {
+                for p in row {
+                    c += p.to_vector();
+                    n += 1.0;
+                }
+            }
+            Point::from_vector(c / n)
+        };
+        if du.cross(dv).dot(s_mid - centroid) >= 0.0 {
+            face
+        } else {
+            face.reversed()
+        }
+    };
+
+    // One cap, on the open end; the machinery is skinned_solid's, inlined
+    // for the single ring.
+    let cap = {
+        let at = ring_curve.point_at(u_dom.0, tol)?;
+        let plane = Plane::through(at, Direction::new(cap_outward, tol)?);
+        let mut reach = 1.0_f64;
+        for t in 0..8 {
+            let p = ring_curve.point_at(u_dom.0 + (u_dom.1 - u_dom.0) * f64::from(t) / 8.0, tol)?;
+            reach = reach.max(p.distance(at) * 2.0);
+        }
+        let cap_surface: SurfaceGeometry =
+            PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
+        let wire = ogeom_algo::make_wire(model, std::slice::from_ref(&ring0), tol)?.shape;
+        let face =
+            ogeom_algo::make_face(model, cap_surface.clone(), std::slice::from_ref(&wire), tol)?
+                .shape;
+        let id = {
+            let Some(node) = model.node(&face) else {
+                ogeom_bail!(Dangling, "the cap just built is not in this model");
+            };
+            let ogeom_topo::NodeData::Face(data) = node.data() else {
+                ogeom_bail!(Construction, "the cap holds no face data");
+            };
+            data.surface
+        };
+        let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&ring_curve, &cap_surface, tol) else {
+            ogeom_bail!(Construction, "a cap edge has no closed-form pcurve");
+        };
+        ogeom_algo::attach_pcurve(
+            model,
+            &ring0,
+            pcurve,
+            id,
+            ogeom_topo::Location::identity(),
+            u_dom,
+        )?;
+        face
+    };
+
+    let faces = [wall, cap];
+    let sewn = sew(model, &faces, tol)?;
+    if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
+        ogeom_bail!(Construction, "the skinned apex solid did not close");
+    }
+    make_solid(model, std::slice::from_ref(&sewn.shells[0]))
+}
+
 /// A solid skinned over a grid of sections that loops back on itself: the
 /// wall is one face closed in both chart directions, no caps at all.
 ///
@@ -1397,32 +1593,78 @@ pub fn make_loft_skinned(
         ogeom_bail!(Construction, "a loft needs at least two sections");
     }
     const AROUND: usize = 48;
+    // A trailing vertex is the apex form: the skin narrows to a point and
+    // the solid closes there without a cap.
+    let apex = match model.kind_of(&sections[sections.len() - 1])? {
+        ShapeType::Vertex => {
+            if sections.len() < 2 {
+                ogeom_bail!(
+                    Construction,
+                    "a loft to a point needs a section to start from"
+                );
+            }
+            let Some(data) = model
+                .node(&sections[sections.len() - 1])
+                .and_then(|n| n.data().as_vertex())
+            else {
+                ogeom_bail!(Construction, "the apex vertex holds no point");
+            };
+            Some(data.point)
+        }
+        _ => None,
+    };
+    let wires = &sections[..sections.len() - usize::from(apex.is_some())];
     let mut rows: Vec<Vec<Point>> = Vec::with_capacity(sections.len());
-    let mut planes: Vec<Plane> = Vec::with_capacity(sections.len());
-    for wire in sections {
+    let mut cap_planes: Vec<Option<Plane>> = Vec::with_capacity(wires.len());
+    for wire in wires {
         if model.kind_of(wire)? != ShapeType::Wire {
             ogeom_bail!(Construction, "a loft section is a wire");
         }
         if !ogeom_algo::is_wire_closed(model, wire, tol)? {
             ogeom_bail!(Construction, "a loft section must be closed");
         }
-        let Some(plane) = ogeom_algo::find_plane(model, wire, tol)? else {
-            ogeom_bail!(Construction, "a loft section must be planar");
-        };
-        planes.push(plane);
+        // Planarity is a *cap's* requirement, not the fit's: only the
+        // sections a cap will stand on must hold a plane. A wavy middle
+        // section skins fine.
+        cap_planes.push(ogeom_algo::find_plane(model, wire, tol)?);
         rows.push(sample_wire(model, wire, AROUND, tol)?);
     }
-    let outward0 = {
-        let towards = rows[1][0] - rows[0][0];
-        let n = planes[0].normal().vector();
-        if n.dot(towards) > 0.0 { -n } else { n }
+    let outward_at =
+        |rows: &[Vec<Point>], planes: &[Option<Plane>], end: bool| -> OgeomResult<Vector> {
+            let (i, j) = if end {
+                (rows.len() - 1, rows.len() - 2)
+            } else {
+                (0, 1)
+            };
+            let Some(plane) = &planes[i] else {
+                ogeom_bail!(
+                    Construction,
+                    "a loft's end section must be planar; a cap stands on it"
+                );
+            };
+            let towards = rows[j][0] - rows[i][0];
+            let n = plane.normal().vector();
+            Ok(if n.dot(towards) > 0.0 { -n } else { n })
+        };
+    let mut built = if let Some(apex) = apex {
+        if rows.len() < 2 {
+            // One ring to a point is exact machinery's job when it can be;
+            // the skin still needs two rows to shape the wall, so a middle
+            // row is interpolated halfway toward the apex.
+            let half: Vec<Point> = rows[0]
+                .iter()
+                .map(|p| Point::from_vector((p.to_vector() + apex.to_vector()) * 0.5))
+                .collect();
+            rows.push(half);
+        }
+        let outward0 = outward_at(&rows, &cap_planes, false)?;
+        rows.push(vec![apex; AROUND]);
+        skinned_solid_to_apex(model, &rows, outward0, tolerance, tol)?
+    } else {
+        let outward0 = outward_at(&rows, &cap_planes, false)?;
+        let outward1 = outward_at(&rows, &cap_planes, true)?;
+        skinned_solid(model, &rows, (outward0, outward1), tolerance, tol)?
     };
-    let outward1 = {
-        let towards = rows[rows.len() - 2][0] - rows[rows.len() - 1][0];
-        let n = planes[planes.len() - 1].normal().vector();
-        if n.dot(towards) > 0.0 { -n } else { n }
-    };
-    let mut built = skinned_solid(model, &rows, (outward0, outward1), tolerance, tol)?;
     for section in sections {
         built.history.generate(section, built.shape.clone());
     }

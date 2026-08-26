@@ -1024,3 +1024,116 @@ fn a_corner_against_a_curved_leg_is_refused_by_name() {
         ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap_err();
     assert!(err.to_string().contains("mitre"), "{err}");
 }
+
+/// A skinned loft ends at a point: circles narrowing to an apex, the apex
+/// deliberately off every axis so no exact cone could stand in.
+///
+/// The reference is piecewise: Pappus's frustum from the two rings, plus the
+/// cone from the top ring to the apex — whose shear off the axis changes
+/// nothing, volume being shear-invariant. The skin smooths the crease where
+/// the pieces meet, so the assertion carries the fit's honesty, not the
+/// mesher's.
+#[test]
+fn a_skinned_loft_to_an_offset_point_measures_as_frustum_plus_cone() {
+    let mut model = ogeom_topo::Model::new();
+    let ring = |model: &mut ogeom_topo::Model, r: f64, z: f64| {
+        let frame = Frame::new(
+            Point::new(0.0, 0.0, z),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let circle = Circle::new(frame, r, T).unwrap();
+        let curve = ogeom_geom::Curve::Circle(ogeom_geom::CircleCurve::new(circle));
+        let domain = curve.domain();
+        let edge = ogeom_algo::make_edge(model, curve, domain, T)
+            .unwrap()
+            .shape;
+        ogeom_algo::make_wire(model, std::slice::from_ref(&edge), T)
+            .unwrap()
+            .shape
+    };
+    let s0 = ring(&mut model, 10.0, 0.0);
+    let s1 = ring(&mut model, 6.0, 6.0);
+    let apex = ogeom_algo::make_vertex(&mut model, Point::new(2.0, 1.0, 15.0)).shape;
+    let built = ogeom_offset::make_loft_skinned(&mut model, &[s0, s1, apex], 1e-2, T).unwrap();
+    assert!(
+        ogeom_algo::check(&model, &built.shape, T)
+            .unwrap()
+            .is_valid(),
+        "the apex loft is a valid solid"
+    );
+    let frustum = core::f64::consts::PI * 6.0 / 3.0 * (100.0 + 60.0 + 36.0);
+    let cone = core::f64::consts::PI * 36.0 * 9.0 / 3.0;
+    let measured = volume(&model, &built.shape);
+    let reference = frustum + cone;
+    assert!(
+        (measured - reference).abs() / reference < 0.01,
+        "apex loft volume {measured} against {reference}"
+    );
+}
+
+/// A wavy middle section skins: planarity is the caps' requirement, and only
+/// the end sections carry caps.
+#[test]
+fn a_non_planar_middle_section_lofts() {
+    let mut model = ogeom_topo::Model::new();
+    let flat = |model: &mut ogeom_topo::Model, r: f64, z: f64| {
+        let frame = Frame::new(
+            Point::new(0.0, 0.0, z),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let circle = Circle::new(frame, r, T).unwrap();
+        let curve = ogeom_geom::Curve::Circle(ogeom_geom::CircleCurve::new(circle));
+        let domain = curve.domain();
+        let edge = ogeom_algo::make_edge(model, curve, domain, T)
+            .unwrap()
+            .shape;
+        ogeom_algo::make_wire(model, std::slice::from_ref(&edge), T)
+            .unwrap()
+            .shape
+    };
+    // The middle ring waves out of plane: a trigonometric-spline circle
+    // whose z oscillates, fitted closed.
+    let wavy = {
+        let n = 64_i32;
+        let pts: Vec<Point> = (0..=n)
+            .map(|i| {
+                #[allow(clippy::cast_precision_loss)]
+                let a = core::f64::consts::TAU * f64::from(i % n) / f64::from(n);
+                Point::new(8.0 * a.cos(), 8.0 * a.sin(), 5.0 + 0.5 * (3.0 * a).sin())
+            })
+            .collect();
+        let fitted = ogeom_geom::fit::fit_points_closed(&pts, 3, 1e-3, T).unwrap();
+        let curve = ogeom_geom::Curve::BSpline(fitted.curve);
+        let domain = curve.domain();
+        let edge = ogeom_algo::make_edge(&mut model, curve, domain, T)
+            .unwrap()
+            .shape;
+        ogeom_algo::make_wire(&mut model, std::slice::from_ref(&edge), T)
+            .unwrap()
+            .shape
+    };
+    let s0 = flat(&mut model, 10.0, 0.0);
+    let s2 = flat(&mut model, 9.0, 10.0);
+    let built = ogeom_offset::make_loft_skinned(&mut model, &[s0, wavy, s2], 5e-2, T).unwrap();
+    assert!(
+        ogeom_algo::check(&model, &built.shape, T)
+            .unwrap()
+            .is_valid(),
+        "the wavy loft is a valid solid"
+    );
+    // Coarse expectation only: between the r=10 and r=9 caps through an
+    // r=8 waist, the volume sits between the two bounding cylinders.
+    let v = volume(&model, &built.shape);
+    let lo = core::f64::consts::PI * 64.0 * 10.0;
+    let hi = core::f64::consts::PI * 100.0 * 10.0;
+    assert!(
+        lo < v && v < hi,
+        "wavy loft volume {v} outside ({lo}, {hi})"
+    );
+}

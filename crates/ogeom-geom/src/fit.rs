@@ -1039,10 +1039,25 @@ fn fit_surface_grid_inner(
         .map(|r| r.iter().map(|p| [p.x, p.y, p.z]).collect())
         .collect();
 
-    // Averaged parameters: one shared assignment per direction.
+    // Averaged parameters: one shared assignment per direction. A family
+    // with no extent — a row collapsed to a single point, the apex a skin
+    // narrows to — has no parameterization opinion: its zero chords assign
+    // [0, …, 0, 1], and averaging that in compresses everyone else's
+    // parameters toward the start and sends the fitted border curves on an
+    // oscillating sprint over the tail. It rides the others' parameters
+    // instead; a constant row fits exactly at any assignment.
     let average = |families: &[Vec<[f64; 3]>]| -> Vec<f64> {
         let mut sums = vec![0.0; families[0].len()];
+        let mut counted = 0.0_f64;
         for family in families {
+            let extent: f64 = family
+                .windows(2)
+                .map(|pair| distance::<3>(&pair[0], &pair[1]))
+                .sum();
+            if extent <= 0.0 {
+                continue;
+            }
+            counted += 1.0;
             let assigned = if by_chord {
                 chordal::<3>(family)
             } else {
@@ -1052,9 +1067,18 @@ fn fit_surface_grid_inner(
                 *s += p;
             }
         }
-        #[allow(clippy::cast_precision_loss)]
-        let n = families.len() as f64;
-        sums.iter().map(|s| s / n).collect()
+        if counted == 0.0 {
+            // Every family degenerate: uniform is the only honest assignment.
+            let n = sums.len();
+            return (0..n)
+                .map(|i| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let t = i as f64 / (n - 1).max(1) as f64;
+                    t
+                })
+                .collect();
+        }
+        sums.iter().map(|s| s / counted).collect()
     };
     let u_params = average(&raw);
     let columns: Vec<Vec<[f64; 3]>> = (0..nu)

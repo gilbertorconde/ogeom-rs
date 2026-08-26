@@ -1127,11 +1127,12 @@ verdict = "partial"
 restriction = """The ruled loft takes two closed wire sections — coaxial \
 parallel circles, or polygons of the same corner count whose ruled walls \
 come out planar — or a section and a point: a cone on a circle's own axis, \
-an exact pyramid over any straight loop. The skinned loft takes N planar \
-closed sections, loops back on itself on request, and takes per-section \
-alignment hints. Skew ruled walls stay refused by name and route through \
-the skinned form; mixed edge counts are authorship, not geometry, and stay \
-with the skinned resampling. The fitted loft-to-point is still owed."""
+an exact pyramid over any straight loop. The skinned loft takes N closed \
+sections — planar at the ends, where the caps stand; wavy in the middle, \
+where nothing does — ends at a point on request, loops back on itself, and \
+takes per-section alignment hints. Skew ruled walls stay refused by name \
+and route through the skinned form; mixed edge counts are authorship, not \
+geometry, and stay with the skinned resampling."""
 claims = ["BRepOffsetAPI_ThruSections"]
 symbols = [
     "ogeom_offset::make_loft", "ogeom_offset::make_loft_skinned",
