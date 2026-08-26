@@ -49,6 +49,14 @@ pub struct StepReport {
     pub skipped: BTreeMap<String, usize>,
     /// Everything that imported less than perfectly, one line each.
     pub warnings: Vec<String>,
+    /// Faces that read without a complete trim: an edge's boundary sat too
+    /// far from the surface for any honest pcurve (beyond the one-millimetre
+    /// healing cap), so the face will refuse to triangulate. STEP entity
+    /// ids, deduplicated, in file order — the structured form of the
+    /// warnings that name them, so a consumer can mark the exact faces
+    /// instead of parsing prose. `check` reports the same faces as broken
+    /// from the model side.
+    pub untrimmed_faces: Vec<u64>,
 }
 
 /// A read exchange file: the model, the solids found, and the report.
@@ -1181,6 +1189,7 @@ impl Reader<'_> {
                 }
                 PreparedPcurve::Refused(why) => {
                     self.report.warnings.push(why);
+                    self.note_untrimmed(face_id);
                     return Ok(());
                 }
             }
@@ -1224,12 +1233,20 @@ impl Reader<'_> {
                                 "face #{face_id}: no pcurve for an edge on this \
                              surface ({e}); the face may not triangulate"
                             ));
+                            self.note_untrimmed(face_id);
                             return Ok(());
                         }
                     }
                 }
             };
         self.record_pcurve(edge, pcurve, surface_id, seam, range)
+    }
+
+    /// Note a face left without a complete trim, once.
+    fn note_untrimmed(&mut self, face_id: u64) {
+        if self.report.untrimmed_faces.last() != Some(&face_id) {
+            self.report.untrimmed_faces.push(face_id);
+        }
     }
 
     /// Attach a derived pcurve, seaming it where the edge bounds the chart
