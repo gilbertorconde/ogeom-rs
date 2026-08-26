@@ -402,6 +402,28 @@ fn a_seam_split_crease_arc_rounds_with_run_out_caps() {
     assert!(volume > 0.0 && volume.is_finite());
 }
 
+#[test]
+fn two_disjoint_run_out_blends_coexist_on_one_solid() {
+    // The first capped blend lands on the bottom crease; the second on the
+    // top crease's far seam-half, nowhere near the first. Sequential
+    // marched blends must not disturb each other's wounds.
+    let mut model = Model::new();
+    let grooved = grooved_block(&mut model);
+    let first_arc = edge_near(&model, &grooved, Point::new(10.0, 14.84, 0.0));
+    let first = ogeom::fillet::fillet_edge(&mut model, &grooved, &first_arc, 1.0, T).unwrap();
+    let second_arc = edge_near(&model, &first.shape, Point::new(7.3, 7.7, 10.0));
+    let second = ogeom::fillet::fillet_edge(&mut model, &first.shape, &second_arc, 1.0, T).unwrap();
+    let volume = ogeom::algo::volume_properties(
+        &model,
+        &second.shape,
+        ogeom::mesh::Deflection::default(),
+        T,
+    )
+    .unwrap()
+    .mass;
+    assert!(volume > 0.0 && volume.is_finite());
+}
+
 fn vertex_near(model: &Model, shape: &Shape, near: Point) -> Shape {
     explore_unique(model, shape, ShapeType::Vertex)
         .unwrap()
