@@ -860,6 +860,7 @@ fn at_param(t: f64, domain: (f64, f64), closed: bool) -> f64 {
 fn fill(
     ga: &GSolid,
     gb: &GSolid,
+    admit_all: bool,
     tol: Tolerances,
 ) -> OgeomResult<(
     Vec<SectionRec>,
@@ -886,7 +887,7 @@ fn fill(
     for (ia, fa) in ga.faces.iter().enumerate() {
         for (ib, fb) in gb.faces.iter().enumerate() {
             let admitted = fa.bound.intersects(&fb.bound);
-            if !admitted && !*AUDIT_BOUNDS {
+            if !admitted && !admit_all {
                 // The faces cannot meet, whatever their surfaces do.
                 continue;
             }
@@ -1417,13 +1418,12 @@ fn fill(
     // need no check — a contact is an owner edge lying in the target face,
     // which forces the boxes to overlap where the edge does.
     //
-    // Evidence, not proof: the audit paves with every pair admitted, and
-    // paving is not compositional — a section's kept intervals see the other
-    // sections' paves — so a filtered run is not replayed exactly. It has
-    // already earned its keep the other way, by clearing a suspected filter
-    // miss and pointing the hunt at the real coupling (the marching chord
-    // fed from the filter box).
-    if *AUDIT_BOUNDS {
+    // This membership check is the audit's first tooth; the second is the
+    // strict replay in general_fuse, which runs the *filtered* fill for the
+    // production result and diffs this unfiltered one against it, so the
+    // non-compositionality of paving — a section's kept intervals see the
+    // other sections' paves — is caught rather than stated as a limit.
+    if admit_all {
         for piece in &pieces {
             let section = &sections[piece.section];
             let (fa, fb) = (&ga.faces[section.face_a], &gb.faces[section.face_b]);
@@ -2152,13 +2152,101 @@ static DEBUG_STRANDS: std::sync::LazyLock<bool> =
 static ARRANGE_DEBUG: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("OGEOM_ARRANGE_DEBUG").is_ok());
 
+/// The strict audit's verdict: the filtered fill and the unfiltered fill
+/// keep the same material.
+///
+/// Pieces are compared as merged parameter intervals per section — the
+/// unfiltered run sees more curves, and a dropped pair's dead section can
+/// still cross a live one and split its pieces differently, so individual
+/// piece boundaries are noise and the kept *union* is the signal. Sections
+/// are keyed by their face pair and a sampled point, because indices differ
+/// between the runs.
+fn audit_fill_equivalence(
+    filtered: (&[SectionRec], &[SectionPiece]),
+    unfiltered: (&[SectionRec], &[SectionPiece]),
+    tol: Tolerances,
+) {
+    type Key = (usize, usize, [i64; 3]);
+    let key_of = |section: &SectionRec, tol: Tolerances| -> Key {
+        let (lo, hi) = section.curve.domain();
+        let p = section
+            .curve
+            .point_at(f64::midpoint(lo, hi), tol)
+            .unwrap_or(ogeom_math::Point::ORIGIN);
+        let grid = (tol.confusion() * 100.0).max(1e-9);
+        #[allow(clippy::cast_possible_truncation)]
+        let q = |x: f64| (x / grid).round() as i64;
+        (section.face_a, section.face_b, [q(p.x), q(p.y), q(p.z)])
+    };
+    let merged = |sections: &[SectionRec], pieces: &[SectionPiece], tol: Tolerances| {
+        let mut kept: std::collections::HashMap<Key, Vec<(f64, f64)>> =
+            std::collections::HashMap::new();
+        for piece in pieces {
+            kept.entry(key_of(&sections[piece.section], tol))
+                .or_default()
+                .push(piece.range);
+        }
+        let slop = tol.parametric() * 10.0;
+        for ranges in kept.values_mut() {
+            ranges.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
+            let mut out: Vec<(f64, f64)> = Vec::with_capacity(ranges.len());
+            for &(lo, hi) in ranges.iter() {
+                match out.last_mut() {
+                    Some(last) if lo <= last.1 + slop => last.1 = last.1.max(hi),
+                    _ => out.push((lo, hi)),
+                }
+            }
+            *ranges = out;
+        }
+        kept
+    };
+    let a = merged(filtered.0, filtered.1, tol);
+    let b = merged(unfiltered.0, unfiltered.1, tol);
+    let slop = tol.parametric() * 20.0;
+    let matches = |x: &Vec<(f64, f64)>, y: &Vec<(f64, f64)>| {
+        x.len() == y.len()
+            && x.iter()
+                .zip(y)
+                .all(|(p, q)| (p.0 - q.0).abs() <= slop && (p.1 - q.1).abs() <= slop)
+    };
+    for (key, ranges) in &b {
+        let held = a.get(key);
+        assert!(
+            held.is_some_and(|r| matches(r, ranges)),
+            "strict bound-filter audit: the unfiltered fill keeps {ranges:?} \
+             on section {key:?}, the filtered fill keeps {held:?}; the \
+             filter drops material"
+        );
+    }
+    for (key, ranges) in &a {
+        assert!(
+            b.contains_key(key),
+            "strict bound-filter audit: the filtered fill keeps {ranges:?} \
+             on section {key:?} the unfiltered fill never made"
+        );
+    }
+}
+
 fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<GeneralFused> {
     ogeom_core::progress::stage("boolean: gather");
     let ga = gather(model, a, tol)?;
     let gb = gather(model, b, tol)?;
     ogeom_core::progress::stage("boolean: intersect");
     let (sections, section_pieces, contacts, tangents, contact_along, paves, same_a, same_b) =
-        fill(&ga, &gb, tol)?;
+        fill(&ga, &gb, false, tol)?;
+    // The strict audit: fill again with every pair admitted and demand the
+    // same kept material. The production result above is always the
+    // filtered run — under audit too — so the audit compares rather than
+    // substitutes, and a filtered run *is* replayed exactly. Zero cost with
+    // the variable unset.
+    if *AUDIT_BOUNDS {
+        let (audit_sections, audit_pieces, ..) = fill(&ga, &gb, true, tol)?;
+        audit_fill_equivalence(
+            (&sections, &section_pieces),
+            (&audit_sections, &audit_pieces),
+            tol,
+        );
+    }
 
     ogeom_core::progress::stage("boolean: split");
     let mut pieces: Vec<FacePiece> = Vec::new();
