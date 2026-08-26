@@ -17,7 +17,7 @@
 //! continuity.
 
 use crate::march::{BlendStop, Sides, march_blend_seeded};
-use crate::support::{apply_wedge, edge_curve};
+use crate::support::{apply_wedge, edge_curve, face_from_edges};
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
@@ -251,16 +251,40 @@ pub(crate) fn marched_fillet(
         },
         tol,
     )?;
-    if blend.stopped != BlendStop::Closed {
+    // An open seat — the ball ran off the end of a support in each
+    // direction — ends in run-out caps instead of closing: the arc-restricted
+    // wedge of the revolved fillets, generalised to the fitted band.
+    let open_stop = matches!(
+        blend.stopped,
+        BlendStop::LeftTheFirstSupport
+            | BlendStop::LeftTheSecondSupport
+            | BlendStop::LeftBothSupports
+    );
+    if blend.stopped != BlendStop::Closed && !open_stop {
         ogeom_bail!(
             Construction,
-            "the blend did not close on itself ({:?}); the open seat's \
-             run-out is still owed — docs/PARITY.md, fillet.edge-blends",
+            "the blend neither closed on itself nor ran off its supports \
+             ({:?}); this stop has no construction yet — docs/PARITY.md, \
+             fillet.edge-blends",
             blend.stopped
         );
     }
     if blend.len() < 8 {
         ogeom_bail!(Construction, "the march produced too few stations to fit");
+    }
+    if open_stop {
+        return open_runout_wedge(
+            model,
+            solid,
+            edge,
+            blend,
+            &guide,
+            edge_range,
+            [(&first, sign_first), (&second, sign_second)],
+            radius,
+            convex,
+            tol,
+        );
     }
     // The band wants every winding rail to run its period forward; when the
     // march went the other way round, the whole loop reverses.
@@ -615,6 +639,676 @@ pub(crate) fn marched_fillet(
         blend_face,
     ];
     apply_wedge(model, solid, Some(edge), &faces, additive, tol)
+}
+
+/// The open seat's wedge: a marched band that ran off its supports, capped
+/// at both ends — the revolved fillets' arc-restricted wedge generalised to
+/// the fitted band.
+///
+/// Five faces close it: the band fitted *open* through the ball's arcs, one
+/// leg on each host between the crease and the touch rail, and one planar
+/// cap in the section plane of each end station — the plane the march's own
+/// fourth equation held every section to, so the end arc, both touch points
+/// and the crease point all stand in it by construction.
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
+#[allow(clippy::too_many_lines, reason = "one wedge, assembled end to end")]
+fn open_runout_wedge(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    mut blend: crate::march::MarchedBlend,
+    guide: &Curve,
+    edge_range: (f64, f64),
+    hosts: [(&SurfaceGeometry, f64); 2],
+    radius: f64,
+    convex: bool,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    use ogeom_geom::Surface as _;
+    let [(first, sign_first), (second, sign_second)] = hosts;
+    let additive = !convex;
+
+    // The walker clamps the guide parameter into its window; a run that
+    // crossed the period comes back wrapped. Unwrap it into one monotonic
+    // sweep, turn the whole band forward, and drop any station that fails
+    // to advance — the seed join can hand back a duplicate.
+    if guide.is_periodic() {
+        let (lo, hi) = guide.domain();
+        let period = hi - lo;
+        for i in 1..blend.along.len() {
+            let mut t = blend.along[i];
+            while t - blend.along[i - 1] > period / 2.0 {
+                t -= period;
+            }
+            while blend.along[i - 1] - t > period / 2.0 {
+                t += period;
+            }
+            blend.along[i] = t;
+        }
+    }
+    if blend.along.last() < blend.along.first() {
+        blend.spine.reverse();
+        blend.touch_first.reverse();
+        blend.touch_second.reverse();
+        blend.on_first.reverse();
+        blend.on_second.reverse();
+        blend.along.reverse();
+    }
+    let mut i = 1;
+    while i < blend.len() {
+        if blend.along[i] <= blend.along[i - 1] && blend.len() > 8 {
+            blend.spine.remove(i);
+            blend.touch_first.remove(i);
+            blend.touch_second.remove(i);
+            blend.on_first.remove(i);
+            blend.on_second.remove(i);
+            blend.along.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+    // The seat the fillet owns is the *edge's* window, not everywhere the
+    // supports happen to extend: the surfaces run on past the solid — a box
+    // face's plane does not end at the box — and the march runs with them
+    // into territory the boolean cut away. Trim the band to the edge's own
+    // window, and solve the exact section at each end: the caps stand on
+    // those, not on wherever the walker's last step landed.
+    {
+        let span = edge_range.1 - edge_range.0;
+        if span <= 0.0 {
+            ogeom_bail!(Construction, "the edge's window has no length");
+        }
+        // The unwrapped run lives on its own branch of a periodic guide;
+        // shift the edge window onto it before comparing parameters.
+        let mut w0 = edge_range.0;
+        if guide.is_periodic() {
+            let (lo, hi) = guide.domain();
+            let period = hi - lo;
+            let mid_run = f64::midpoint(blend.along[0], blend.along[blend.len() - 1]);
+            let k = ((mid_run - (w0 + span / 2.0)) / period).round();
+            w0 += k * period;
+        }
+        let w1 = w0 + span;
+        // Only cap at an end the march actually reached past; where it
+        // stopped short — the true seat ended first — the walker's own last
+        // station is the honest end.
+        let cap0 = blend.along[0] < w0;
+        let cap1 = blend.along[blend.len() - 1] > w1;
+        let mut keep_from = 0;
+        let mut keep_to = blend.len();
+        for (i, t) in blend.along.iter().enumerate() {
+            if *t <= w0 {
+                keep_from = i + 1;
+            }
+            if *t >= w1 && keep_to == blend.len() {
+                keep_to = i;
+            }
+        }
+        if keep_from >= keep_to {
+            ogeom_bail!(
+                Construction,
+                "the marched band and the edge's window do not overlap; the \
+                 guide does not run along this seat"
+            );
+        }
+        let cut = |v: &mut Vec<Point>, from: usize, to: usize| {
+            v.truncate(to);
+            v.drain(..from);
+        };
+        cut(&mut blend.spine, keep_from, keep_to);
+        cut(&mut blend.touch_first, keep_from, keep_to);
+        cut(&mut blend.touch_second, keep_from, keep_to);
+        blend.on_first.truncate(keep_to);
+        blend.on_first.drain(..keep_from);
+        blend.on_second.truncate(keep_to);
+        blend.on_second.drain(..keep_from);
+        blend.along.truncate(keep_to);
+        blend.along.drain(..keep_from);
+        let mut end_station = |w: f64, front: bool| -> OgeomResult<()> {
+            // Seeded from the adjacent kept station: the Newton must settle
+            // in *this* seat's basin — a drum's far side holds a ball too.
+            let i = if front { 0 } else { blend.len() - 1 };
+            let near = [
+                blend.on_first[i].0,
+                blend.on_first[i].1,
+                blend.on_second[i].0,
+                blend.on_second[i].1,
+            ];
+            let x = crate::march::seat_section(
+                first,
+                second,
+                radius,
+                guide,
+                blend.sides,
+                w,
+                near,
+                tol,
+            )?;
+            let p1 = first.point_at(x[0], x[1], tol)?;
+            let p2 = second.point_at(x[2], x[3], tol)?;
+            let n1 = {
+                let (du, dv) = first.d1_at(x[0], x[1], tol)?;
+                let n = du.cross(dv);
+                n / n.magnitude()
+            };
+            let centre = p1 + n1 * (f64::from(blend.sides.first) * radius);
+            if front {
+                blend.spine.insert(0, centre);
+                blend.touch_first.insert(0, p1);
+                blend.touch_second.insert(0, p2);
+                blend.on_first.insert(0, (x[0], x[1]));
+                blend.on_second.insert(0, (x[2], x[3]));
+                blend.along.insert(0, w);
+            } else {
+                blend.spine.push(centre);
+                blend.touch_first.push(p1);
+                blend.touch_second.push(p2);
+                blend.on_first.push((x[0], x[1]));
+                blend.on_second.push((x[2], x[3]));
+                blend.along.push(w);
+            }
+            Ok(())
+        };
+        if cap0 {
+            end_station(w0, true)?;
+        }
+        if cap1 {
+            end_station(w1, false)?;
+        }
+    }
+    if blend.len() < 8 {
+        ogeom_bail!(
+            Construction,
+            "the edge's window holds too few marched stations to fit"
+        );
+    }
+
+    // The forward and backward halves join at the seed, and the walker's
+    // landing on each boundary comes in short refining steps: both leave
+    // stations standing nearly on top of a neighbour, and a cramped pair
+    // puts two grid columns in the same place and poisons the fit's
+    // parameterization. One sweep, the closed loop's own remedy.
+    {
+        let mut steps: Vec<f64> = blend
+            .spine
+            .windows(2)
+            .map(|w| w[0].distance(w[1]))
+            .collect();
+        steps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+        let cramped = steps.get(steps.len() / 2).copied().unwrap_or(0.0) * 0.25;
+        let mut i = 1;
+        while i < blend.len() {
+            // The two boundary stations are the run-out itself; the sweep
+            // drops their crowding neighbours, never the ends.
+            let at_end = i == blend.len() - 1;
+            let victim = if at_end { i - 1 } else { i };
+            if victim > 0
+                && blend.spine[i].distance(blend.spine[i - 1]) <= cramped
+                && blend.len() > 8
+            {
+                blend.spine.remove(victim);
+                blend.touch_first.remove(victim);
+                blend.touch_second.remove(victim);
+                blend.on_first.remove(victim);
+                blend.on_second.remove(victim);
+                blend.along.remove(victim);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    let n = blend.len();
+    let fit_target = (tol.confusion() * 1e3).max(1e-4);
+
+    // The band: each station's exact ball arc, fitted open along the
+    // stations — same arcs as the closed case, no wrap. Sampled twice as
+    // finely across: the scoop's widest sections sweep well past a right
+    // angle, and the knot refinement can only split spans that still hold
+    // data.
+    const ACROSS_OPEN: usize = 17;
+    let mut rows: Vec<Vec<Point>> = (0..ACROSS_OPEN).map(|_| Vec::with_capacity(n)).collect();
+    for at in 0..n {
+        let centre = blend.spine[at];
+        let a = (blend.touch_first[at] - centre) / radius;
+        let b = (blend.touch_second[at] - centre) / radius;
+        let cross = a.cross(b);
+        let m = cross.magnitude();
+        if m <= tol.angular() {
+            ogeom_bail!(
+                Construction,
+                "a blend section collapsed; the radius wedges rather than \
+                 seats at station {at}"
+            );
+        }
+        let axis = cross / m;
+        let sweep = a.dot(b).clamp(-1.0, 1.0).acos();
+        for (k, row) in rows.iter_mut().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let theta = sweep * (k as f64) / ((ACROSS_OPEN - 1) as f64);
+            let dir = a * theta.cos() + axis.cross(a) * theta.sin();
+            row.push(centre + dir * radius);
+        }
+    }
+    let stations: Vec<Vec<Point>> = (0..n)
+        .map(|i| (0..ACROSS_OPEN).map(|k| rows[k][i]).collect())
+        .collect();
+    // Fitted at half the target: the two passes each hold their half, but
+    // the assembled surface's honest error is measured across both, and an
+    // open band lands near their sum where the closed band's wrap absorbs
+    // it. The acceptance stays the caller's target.
+    let fitted = ogeom_geom::fit::fit_surface_grid_chordal(&stations, 3, fit_target * 0.5, tol)?;
+    if fitted.error > fit_target {
+        ogeom_bail!(
+            NotDone,
+            "the blend surface reached {} against a target of {fit_target}",
+            fitted.error
+        );
+    }
+    let surface = fitted.curve;
+    let (u_knots, v_knots) = (surface.u_knots().clone(), surface.v_knots().clone());
+    let (k_count, l_count, net) = {
+        let grid = surface.grid();
+        let net: Vec<Point> = grid.points().iter().map(|w| (*w).point()).collect();
+        (grid.u_count(), grid.v_count(), net)
+    };
+    let point_at = |i: usize, j: usize| -> Point { net[i * l_count + j] };
+    let blend_geo: SurfaceGeometry = surface.into();
+    let (u_dom, v_dom) = blend_geo.domain();
+    let blend_id = model.geometry_mut().add_surface(blend_geo.clone());
+
+    // Six shared vertices: the four band corners off the control net —
+    // which the clamped borders interpolate exactly — and the crease's two
+    // ends off the guide itself.
+    // The cap at each end stands in the end section's *own* plane — the
+    // plane of the ball's arc, which holds both touch points exactly. The
+    // march's guide condition holds only one point of the section to the
+    // guide-normal plane, so that plane cannot close a cap. The cap's apex
+    // is where the crease crosses the arc plane: a whisker off the end
+    // parameter, found by one-dimensional Newton along the guide.
+    let section_plane = |end: usize| -> OgeomResult<ogeom_math::Plane> {
+        let centre = blend.spine[end];
+        let a = (blend.touch_first[end] - centre) / radius;
+        let b = (blend.touch_second[end] - centre) / radius;
+        let n = a.cross(b);
+        let m = n.magnitude();
+        if m <= tol.angular() {
+            ogeom_bail!(Construction, "a run-out section has no plane to cap in");
+        }
+        Ok(ogeom_math::Plane::through(
+            centre,
+            ogeom_math::Direction::new(n / m, tol)?,
+        ))
+    };
+    let apex_on = |plane: &ogeom_math::Plane, near: f64| -> OgeomResult<f64> {
+        let mut t = near;
+        for _ in 0..40 {
+            let f = plane.signed_distance_to(guide.point_at(t, tol)?);
+            if f.abs() <= tol.confusion() * 0.01 {
+                return Ok(t);
+            }
+            let df = plane.normal().vector().dot(guide.d1_at(t, tol)?);
+            if df.abs() <= 1e-12 {
+                break;
+            }
+            t -= f / df;
+        }
+        ogeom_bail!(
+            Construction,
+            "the crease does not cross a run-out cap's section plane"
+        );
+    };
+    let plane0 = section_plane(0)?;
+    let plane1 = section_plane(n - 1)?;
+    let (t0, t1) = (
+        apex_on(&plane0, blend.along[0])?,
+        apex_on(&plane1, blend.along[n - 1])?,
+    );
+    if t1 <= t0 {
+        ogeom_bail!(Construction, "the run-out caps cross; nothing to blend");
+    }
+    let apex0 = guide.point_at(t0, tol)?;
+    let apex1 = guide.point_at(t1, tol)?;
+    let corner = |i: usize, j: usize| point_at(i, j);
+    let va0 = ogeom_algo::make_vertex(model, apex0).shape;
+    let va1 = ogeom_algo::make_vertex(model, apex1).shape;
+    let vc00 = ogeom_algo::make_vertex(model, corner(0, 0)).shape;
+    let vc01 = ogeom_algo::make_vertex(model, corner(0, l_count - 1)).shape;
+    let vc10 = ogeom_algo::make_vertex(model, corner(k_count - 1, 0)).shape;
+    let vc11 = ogeom_algo::make_vertex(model, corner(k_count - 1, l_count - 1)).shape;
+    // The corners stand a fit error from the exact touch points the
+    // connectors end at; the vertices own that slop.
+    for v in [&vc00, &vc01, &vc10, &vc11] {
+        model.widen(v, ogeom_core::Tolerance::new(fit_target)?)?;
+    }
+
+    // The band's borders, straight off the control net.
+    let border = |i: usize| -> OgeomResult<Curve> {
+        let control: Vec<Point> = (0..l_count).map(|j| point_at(i, j)).collect();
+        Ok(Curve::BSpline(ogeom_geom::BSplineCurve::new(
+            v_knots.clone(),
+            control,
+            tol,
+        )?))
+    };
+    let end_arc = |j: usize| -> OgeomResult<Curve> {
+        let control: Vec<Point> = (0..k_count).map(|i| point_at(i, j)).collect();
+        Ok(Curve::BSpline(ogeom_geom::BSplineCurve::new(
+            u_knots.clone(),
+            control,
+            tol,
+        )?))
+    };
+    let rail_first =
+        ogeom_algo::make_edge_between(model, border(0)?, v_dom, &vc00, &vc01, tol)?.shape;
+    let rail_second =
+        ogeom_algo::make_edge_between(model, border(k_count - 1)?, v_dom, &vc10, &vc11, tol)?.shape;
+    let arc_start =
+        ogeom_algo::make_edge_between(model, end_arc(0)?, u_dom, &vc00, &vc10, tol)?.shape;
+    let arc_end =
+        ogeom_algo::make_edge_between(model, end_arc(l_count - 1)?, u_dom, &vc01, &vc11, tol)?
+            .shape;
+    for rail in [&rail_first, &rail_second, &arc_start, &arc_end] {
+        if let Some(node) = model.node_mut(rail)
+            && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+        {
+            data.tolerance = data.tolerance.widen_to(fit_target);
+        }
+    }
+
+    // The crease over the marched window. On a periodic guide the unwrapped
+    // window may stand past the stored domain; the curve is the same turn
+    // either way, so shift it back in.
+    let apex_edge = {
+        let (lo, hi) = guide.domain();
+        let mut window = (t0, t1);
+        if guide.is_periodic() {
+            let period = hi - lo;
+            while window.1 > hi {
+                window = (window.0 - period, window.1 - period);
+            }
+            while window.0 < lo {
+                window = (window.0 + period, window.1 + period);
+            }
+        }
+        ogeom_algo::make_edge_between(model, guide.clone(), window, &va0, &va1, tol)?.shape
+    };
+
+    // One connector per host per end: the host's own section in the cap's
+    // plane, from the crease to the touch rail.
+    let conn_first_0 = section_connector(
+        model,
+        first,
+        plane0,
+        (&va0, apex0),
+        (&vc00, corner(0, 0)),
+        radius,
+        fit_target,
+        tol,
+    )?;
+    let conn_first_1 = section_connector(
+        model,
+        first,
+        plane1,
+        (&va1, apex1),
+        (&vc01, corner(0, l_count - 1)),
+        radius,
+        fit_target,
+        tol,
+    )?;
+    let conn_second_0 = section_connector(
+        model,
+        second,
+        plane0,
+        (&va0, apex0),
+        (&vc10, corner(k_count - 1, 0)),
+        radius,
+        fit_target,
+        tol,
+    )?;
+    let conn_second_1 = section_connector(
+        model,
+        second,
+        plane1,
+        (&va1, apex1),
+        (&vc11, corner(k_count - 1, l_count - 1)),
+        radius,
+        fit_target,
+        tol,
+    )?;
+
+    // The band face: same-parameter iso pcurves on its own chart, no seam.
+    let row_line = |v: f64| -> OgeomResult<PlanarCurve> {
+        Ok(ogeom_geom::Line2d::over(
+            ogeom_math::Axis2::new(Point2::new(0.0, v), ogeom_math::Direction2::X),
+            u_dom.0 - 1.0,
+            u_dom.1 + 1.0,
+        )?
+        .into())
+    };
+    let column_line = |u: f64| -> OgeomResult<PlanarCurve> {
+        Ok(ogeom_geom::Line2d::over(
+            ogeom_math::Axis2::new(Point2::new(u, 0.0), ogeom_math::Direction2::Y),
+            v_dom.0 - 1.0,
+            v_dom.1 + 1.0,
+        )?
+        .into())
+    };
+    ogeom_algo::attach_pcurve(
+        model,
+        &rail_first,
+        column_line(u_dom.0)?,
+        blend_id,
+        ogeom_topo::Location::identity(),
+        v_dom,
+    )?;
+    ogeom_algo::attach_pcurve(
+        model,
+        &rail_second,
+        column_line(u_dom.1)?,
+        blend_id,
+        ogeom_topo::Location::identity(),
+        v_dom,
+    )?;
+    ogeom_algo::attach_pcurve(
+        model,
+        &arc_start,
+        row_line(v_dom.0)?,
+        blend_id,
+        ogeom_topo::Location::identity(),
+        u_dom,
+    )?;
+    ogeom_algo::attach_pcurve(
+        model,
+        &arc_end,
+        row_line(v_dom.1)?,
+        blend_id,
+        ogeom_topo::Location::identity(),
+        u_dom,
+    )?;
+    let blend_face = {
+        let wire = ogeom_algo::make_wire(
+            model,
+            &[
+                arc_start.clone(),
+                rail_second.clone(),
+                arc_end.reversed(),
+                rail_first.reversed(),
+            ],
+            tol,
+        )?
+        .shape;
+        let face =
+            ogeom_algo::make_face_on(model, blend_id, std::slice::from_ref(&wire), tol)?.shape;
+        let mid_u = f64::midpoint(u_dom.0, u_dom.1);
+        let mid_v = f64::midpoint(v_dom.0, v_dom.1);
+        let p = blend_geo.point_at(mid_u, mid_v, tol)?;
+        let (du, dv) = blend_geo.d1_at(mid_u, mid_v, tol)?;
+        let towards_centre = (blend.spine[n / 2] - p).dot(du.cross(dv)) > 0.0;
+        if towards_centre == !additive {
+            face
+        } else {
+            face.reversed()
+        }
+    };
+
+    // The legs: each host's own surface between the crease and its rail,
+    // closed at the ends by the connectors.
+    let leg_first = face_from_edges(
+        model,
+        first.clone(),
+        &[
+            apex_edge.clone(),
+            conn_first_1.clone(),
+            rail_first.reversed(),
+            conn_first_0.reversed(),
+        ],
+        tol,
+    )?;
+    let leg_second = face_from_edges(
+        model,
+        second.clone(),
+        &[
+            apex_edge.clone(),
+            conn_second_1.clone(),
+            rail_second.reversed(),
+            conn_second_0.reversed(),
+        ],
+        tol,
+    )?;
+
+    // The caps: the section planes, bounded by connector–arc–connector.
+    // Outward is out of the marched window — against the guide at the
+    // start, along it at the end.
+    let cap = |model: &mut Model,
+               plane: ogeom_math::Plane,
+               edges: &[Shape],
+               outward: Vector|
+     -> OgeomResult<Shape> {
+        let reach = (radius * 4.0).max(1.0);
+        let surface: SurfaceGeometry =
+            ogeom_geom::PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
+        let face = face_from_edges(model, surface, edges, tol)?;
+        if plane.normal().vector().dot(outward) > 0.0 {
+            Ok(face)
+        } else {
+            Ok(face.reversed())
+        }
+    };
+    let cap0 = cap(
+        model,
+        plane0,
+        &[
+            conn_first_0.clone(),
+            arc_start.clone(),
+            conn_second_0.reversed(),
+        ],
+        -guide.d1_at(t0, tol)?,
+    )?;
+    let cap1 = cap(
+        model,
+        plane1,
+        &[
+            conn_first_1.clone(),
+            arc_end.clone(),
+            conn_second_1.reversed(),
+        ],
+        guide.d1_at(t1, tol)?,
+    )?;
+
+    let orient = |face: Shape, host_sign: f64| -> Shape {
+        let aligned = if additive { -host_sign } else { host_sign };
+        if aligned > 0.0 { face } else { face.reversed() }
+    };
+    let faces = [
+        orient(leg_first, sign_first),
+        orient(leg_second, sign_second),
+        blend_face,
+        cap0,
+        cap1,
+    ];
+    apply_wedge(model, solid, Some(edge), &faces, additive, tol)
+}
+
+/// The host's own curve in a cap's section plane, from the crease vertex to
+/// the touch-rail corner: a segment on a planar host, the exact conic the
+/// plane cuts from a drum, always the short way round.
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
+fn section_connector(
+    model: &mut Model,
+    host: &SurfaceGeometry,
+    plane: ogeom_math::Plane,
+    from: (&Shape, Point),
+    to: (&Shape, Point),
+    radius: f64,
+    slack: f64,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    if matches!(host, SurfaceGeometry::Plane(_)) {
+        return crate::support::segment_between(model, from, to, tol);
+    }
+    let reach = (radius * 8.0).max(from.1.distance(to.1) * 4.0);
+    let section: SurfaceGeometry =
+        ogeom_geom::PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
+    let ogeom_intersect::surface::Meeting::Along(curves) =
+        ogeom_intersect::surface::surface_surface(&section, host, tol)?
+    else {
+        ogeom_bail!(
+            Construction,
+            "a run-out cap's plane does not cut its host in a curve"
+        );
+    };
+    for curve in curves {
+        let pa = ogeom_algo::project_on_curve(&curve, from.1, 64, tol)?;
+        let pb = ogeom_algo::project_on_curve(&curve, to.1, 64, tol)?;
+        // The rail corner stands a fit error off the exact touch point; the
+        // section still owns it, at the band's own slack.
+        let slack = slack.max(tol.confusion() * 100.0);
+        if pa.distance > slack || pb.distance > slack {
+            continue;
+        }
+        let (pa, pb) = (pa.parameter, pb.parameter);
+        if curve.is_periodic() {
+            let (lo, hi) = curve.domain();
+            let period = hi - lo;
+            let d = (pb - pa).rem_euclid(period);
+            if d <= period - d {
+                return Ok(ogeom_algo::make_edge_between(
+                    model,
+                    curve,
+                    (pa, pa + d),
+                    from.0,
+                    to.0,
+                    tol,
+                )?
+                .shape);
+            }
+            return Ok(ogeom_algo::make_edge_between(
+                model,
+                curve,
+                (pb, pb + (period - d)),
+                to.0,
+                from.0,
+                tol,
+            )?
+            .shape
+            .reversed());
+        }
+        if pa <= pb {
+            return Ok(
+                ogeom_algo::make_edge_between(model, curve, (pa, pb), from.0, to.0, tol)?.shape,
+            );
+        }
+        return Ok(
+            ogeom_algo::make_edge_between(model, curve, (pb, pa), to.0, from.0, tol)?
+                .shape
+                .reversed(),
+        );
+    }
+    ogeom_bail!(
+        Construction,
+        "a run-out cap's section does not pass through its own corner"
+    )
 }
 
 /// One leg: the host's own surface bounded by the marched rail and the

@@ -263,7 +263,7 @@ fn march_blend_on(
         ogeom_bail!(Construction, "a blend of radius {radius} rounds nothing");
     }
     options.validate()?;
-    let (start, sides) = seat(first, second, radius, guide, candidates, seed, tol)?;
+    let (start, sides) = seat(first, second, radius, guide, candidates, seed, None, tol)?;
     let guide_loops = guide.is_periodic() || {
         let (lo, hi) = guide.domain();
         guide
@@ -349,12 +349,40 @@ fn why(
     }
 }
 
+/// The ball's exact section at one guide parameter: the seat solve, held at
+/// `at`. What a run-out cap stands on — the marched stations bracket the
+/// edge's own end, and the cap wants the section exactly there.
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
+pub(crate) fn seat_section(
+    first: &SurfaceGeometry,
+    second: &SurfaceGeometry,
+    radius: f64,
+    guide: &Curve,
+    sides: Sides,
+    at: f64,
+    near: [f64; 4],
+    tol: Tolerances,
+) -> OgeomResult<[f64; 5]> {
+    let (x, _) = seat(
+        first,
+        second,
+        radius,
+        guide,
+        &[sides],
+        Some(at),
+        Some(near),
+        tol,
+    )?;
+    Ok(x)
+}
+
 /// Where the ball first sits, and which side of each support it sits on.
 ///
 /// Tried rather than assumed: the four sign combinations are each given a
 /// Newton solve from the guide's own start, and the one that seats a ball
 /// touching two *distinct* points wins. A radius the corner cannot hold seats
 /// none of them, and that is what the refusal says.
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
 fn seat(
     first: &SurfaceGeometry,
     second: &SurfaceGeometry,
@@ -362,22 +390,31 @@ fn seat(
     guide: &Curve,
     candidates: &[Sides],
     seed: Option<f64>,
+    near: Option<[f64; 4]>,
     tol: Tolerances,
 ) -> OgeomResult<([f64; 5], Sides)> {
     let at = seed.unwrap_or_else(|| {
         let (lo, hi) = guide.domain();
         f64::midpoint(lo, hi)
     });
-    let anchor = guide.point_at(at, tol)?;
-    let near_first = ogeom_algo::project_on_surface(first, anchor, 24, tol)?;
-    let near_second = ogeom_algo::project_on_surface(second, anchor, 24, tol)?;
-    let start = [
-        near_first.parameters.0,
-        near_first.parameters.1,
-        near_second.parameters.0,
-        near_second.parameters.1,
-        at,
-    ];
+    // A caller with a neighbouring station names the basin; a bare
+    // projection can land the Newton on a different seating entirely — the
+    // far side of a drum holds one too.
+    let start = match near {
+        Some(uv) => [uv[0], uv[1], uv[2], uv[3], at],
+        None => {
+            let anchor = guide.point_at(at, tol)?;
+            let near_first = ogeom_algo::project_on_surface(first, anchor, 24, tol)?;
+            let near_second = ogeom_algo::project_on_surface(second, anchor, 24, tol)?;
+            [
+                near_first.parameters.0,
+                near_first.parameters.1,
+                near_second.parameters.0,
+                near_second.parameters.1,
+                at,
+            ]
+        }
+    };
 
     for sides in candidates.iter().copied() {
         let contact = BallContact {

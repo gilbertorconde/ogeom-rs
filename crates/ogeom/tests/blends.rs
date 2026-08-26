@@ -307,42 +307,99 @@ fn round_vertex_refuses_the_setback_family_by_name() {
     );
 }
 
-#[test]
-fn a_seam_split_crease_arc_reaches_the_march_and_names_the_open_seat() {
+/// The recon shape of issue #18 step 2: a box grooved by a tilted drum,
+/// whose creases are ellipse arcs cut open by the box sides and split
+/// again by the cylinder's own seam.
+fn grooved_block(model: &mut Model) -> Shape {
     use ogeom::math::Vector;
-    // A box grooved by a tilted drum: the top crease is one ellipse loop cut
-    // open by the box side, and the cylinder's own seam splits it into two
-    // arcs sharing a mid-scoop vertex. The seat probe used to die on those
-    // arcs — the reconstructed loop's midpoint stands in cut-away territory
-    // — before the march could even speak. Probed and seated at the edge's
-    // own midpoint, both arcs now march the seat and refuse with the open
-    // seat's honest name.
-    let mut model = Model::new();
-    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+    let block = ogeom::algo::make_box(model, Frame::WORLD, (20.0, 20.0, 10.0), T)
         .unwrap()
         .shape;
     let tilt = 0.35_f64;
     let axis = Direction::new(Vector::new(0.0, tilt.cos(), -tilt.sin()), T).unwrap();
     let frame = Frame::new(Point::new(10.0, -5.0, 11.5), axis, Direction::X, T).unwrap();
-    let drum = ogeom::algo::make_cylinder(&mut model, frame, 4.0, 30.0, T)
+    let drum = ogeom::algo::make_cylinder(model, frame, 4.0, 30.0, T)
         .unwrap()
         .shape;
-    let grooved = ogeom::boolean::cut(&mut model, &block, &drum, T)
+    ogeom::boolean::cut(model, &block, &drum, T).unwrap().shape
+}
+
+#[test]
+fn an_open_seat_ends_in_run_out_caps() {
+    // The bottom crease of the grooved block is an ellipse arc that meets
+    // the box wall at both ends: an open seat. The marched band is trimmed
+    // to the edge's own window and capped in each end section's own plane —
+    // material comes off, the blend rides both hosts tangentially, and the
+    // caps stand square to the band, which is what a run-out is.
+    let mut model = Model::new();
+    let grooved = grooved_block(&mut model);
+    let before =
+        ogeom::algo::volume_properties(&model, &grooved, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    let arc = edge_near(&model, &grooved, Point::new(10.0, 14.84, 0.0));
+    let built = ogeom::fillet::fillet_edge(&mut model, &grooved, &arc, 1.0, T).unwrap();
+    let after =
+        ogeom::algo::volume_properties(&model, &built.shape, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    let removed = before - after;
+    assert!(
+        removed > 1.0 && removed < before * 0.05,
+        "a run-out fillet removes a sliver, not a bite: {removed}"
+    );
+
+    // The blend face is the fitted band; its rails ride the hosts
+    // tangentially and its end arcs stand square in the caps.
+    use ogeom::topo::NodeData;
+    let blend = explore_unique(&model, &built.shape, ShapeType::Face)
         .unwrap()
-        .shape;
-    // The two seam-split halves of the top crease, one on each side of the
-    // shared vertex at (10, 10.77, 10).
-    for near in [Point::new(7.3, 7.7, 10.0), Point::new(12.7, 7.7, 10.0)] {
-        let arc = edge_near(&model, &grooved, near);
-        let err = ogeom::fillet::fillet_edge(&mut model, &grooved, &arc, 1.0, T)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("did not close on itself"),
-            "the arc must reach the march and name the open seat, not die \
-             in the probe: {err}"
-        );
+        .into_iter()
+        .find(|f| {
+            let NodeData::Face(d) = model.node(f).unwrap().data() else {
+                return false;
+            };
+            matches!(
+                model.geometry().surface(d.surface),
+                Some(ogeom::geom::SurfaceGeometry::BSpline(_))
+            )
+        })
+        .expect("the fitted band is a face of the result");
+    let contacts = ogeom::fillet::analyse_blend(&model, &built.shape, &blend, 15, T).unwrap();
+    let mut smooth = 0;
+    let mut square = 0;
+    for c in &contacts {
+        assert!(c.gap < 1e-3, "a contact stands off its edge: {}", c.gap);
+        if c.tangency_error < 5e-3 {
+            smooth += 1;
+        } else if (c.tangency_error - core::f64::consts::FRAC_PI_2).abs() < 1e-3 {
+            square += 1;
+        }
     }
+    assert_eq!(
+        (smooth, square),
+        (2, 2),
+        "two tangent rails and two square caps: {contacts:?}"
+    );
+}
+
+#[test]
+fn a_seam_split_crease_arc_rounds_with_run_out_caps() {
+    // The top crease is split by the cylinder's own seam into two arcs
+    // sharing a mid-scoop vertex. The seat probe used to die on these —
+    // the reconstructed loop's midpoint stands in cut-away territory —
+    // before the march could speak. Probed and seated on the crease
+    // itself, the arc marches its seat and lands as a capped blend.
+    let mut model = Model::new();
+    let grooved = grooved_block(&mut model);
+    let arc = edge_near(&model, &grooved, Point::new(7.3, 7.7, 10.0));
+    let built = ogeom::fillet::fillet_edge(&mut model, &grooved, &arc, 1.0, T).unwrap();
+    // The result still meshes as one closed solid.
+    let volume =
+        ogeom::algo::volume_properties(&model, &built.shape, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    assert!(volume > 0.0 && volume.is_finite());
 }
 
 fn vertex_near(model: &Model, shape: &Shape, near: Point) -> Shape {

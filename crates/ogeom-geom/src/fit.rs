@@ -1040,6 +1040,23 @@ pub fn fit_surface_grid(
     fit_surface_grid_inner(rows, degree, tolerance, false, false, tol)
 }
 
+/// As [`fit_surface_grid`], parameterized by chord length instead of the
+/// centripetal assignment — the open counterpart of
+/// [`fit_surface_grid_closed_v_chordal`], for a marched band that stops at
+/// its run-out instead of closing on itself.
+///
+/// # Errors
+///
+/// As [`fit_surface_grid`].
+pub fn fit_surface_grid_chordal(
+    rows: &[Vec<Point>],
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<crate::BSplineSurface>> {
+    fit_surface_grid_inner(rows, degree, tolerance, false, true, tol)
+}
+
 /// As [`fit_surface_grid`], with the `v` direction closed into a smooth loop.
 ///
 /// The rows must form a loop — the first row repeated at the end — and the
