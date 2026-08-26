@@ -1163,11 +1163,15 @@ id = "offset.draft"
 title = "Drafting faces about a neutral plane for mould release"
 crate = "ogeom-offset"
 verdict = "partial"
-restriction = """Planar faces turn about their neutral line, and walls of \
+restriction = """Planar faces turn about their neutral line, walls of \
 revolution — cylinders and cones — turn about their neutral circle into \
-exact cones, the round-boss case. What is owed: the oblique neutral on a \
-wall of revolution, and faces that are neither planar nor revolved. The \
-code's refusals point here."""
+exact cones, and extruded walls (a spline profile swept straight) turn \
+ruling by ruling about their neutral crossing's own tangent and re-fit, \
+with the drafted angle held along the height. A draft whose turned \
+rulings cross inside the drafted window — a profile curled tighter than \
+the draft's reach — is refused by name, as the scope demands. What is \
+owed: the oblique neutral on a wall of revolution, and walls on raw \
+fitted patches with no ruling to turn. The code's refusals point here."""
 claims = ["BRepOffsetAPI_DraftAngle", "BRepOffsetAPI_MakeDraft", "Draft", "Draft_*"]
 symbols = ["ogeom_offset::apply_draft"]
 tests = [

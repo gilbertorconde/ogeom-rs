@@ -258,3 +258,177 @@ fn a_negative_draft_widens_the_drum() {
         "widened drum volume {measured} against {expected}"
     );
 }
+
+/// The recon prism of issue #22: a wavy spline profile closed into a slab
+/// footprint, extruded along `z`, whose front wall is an extruded-spline
+/// surface. `amplitude` and `frequency` set how tightly the wall curls.
+fn spline_prism(
+    model: &mut ogeom_topo::Model,
+    amplitude: f64,
+    frequency: f64,
+) -> ogeom_topo::Shape {
+    use ogeom_geom::Curve;
+    let points: Vec<Point> = (0..=16)
+        .map(|i| {
+            let x = 20.0 * f64::from(i) / 16.0;
+            Point::new(x, (x * frequency).sin() * amplitude, 0.0)
+        })
+        .collect();
+    let spline = ogeom_geom::fit::fit_points(&points, 3, 1e-6, T)
+        .unwrap()
+        .curve;
+    let curve: Curve = Curve::BSpline(spline);
+    let dom = {
+        use ogeom_geom::Curve3d as _;
+        curve.domain()
+    };
+    let a = ogeom_algo::make_vertex(model, points[0]).shape;
+    let b = ogeom_algo::make_vertex(model, points[16]).shape;
+    let c = ogeom_algo::make_vertex(model, Point::new(20.0, -8.0, 0.0)).shape;
+    let d = ogeom_algo::make_vertex(model, Point::new(0.0, -8.0, 0.0)).shape;
+    let e_spline = ogeom_algo::make_edge_between(model, curve, dom, &a, &b, T)
+        .unwrap()
+        .shape;
+    let seg = |m: &mut ogeom_topo::Model, p: Point, q: Point, vp, vq| {
+        let line: Curve = Curve::Line(ogeom_geom::LineCurve::segment(p, q, T).unwrap());
+        let ld = {
+            use ogeom_geom::Curve3d as _;
+            line.domain()
+        };
+        ogeom_algo::make_edge_between(m, line, ld, vp, vq, T)
+            .unwrap()
+            .shape
+    };
+    let e1 = seg(model, points[16], Point::new(20.0, -8.0, 0.0), &b, &c);
+    let e2 = seg(
+        model,
+        Point::new(20.0, -8.0, 0.0),
+        Point::new(0.0, -8.0, 0.0),
+        &c,
+        &d,
+    );
+    let e3 = seg(model, Point::new(0.0, -8.0, 0.0), points[0], &d, &a);
+    let plane = Plane::through(Point::ORIGIN, ogeom_math::Direction::Z);
+    // Counter-clockwise about +z, so the face's material is the footprint.
+    let face = ogeom_algo::make_face_with_pcurves(
+        model,
+        ogeom_geom::PlaneSurface::over(plane, (-40.0, 40.0), (-40.0, 40.0))
+            .unwrap()
+            .into(),
+        &[vec![
+            e3.reversed(),
+            e2.reversed(),
+            e1.reversed(),
+            e_spline.reversed(),
+        ]],
+        T,
+    )
+    .unwrap()
+    .shape;
+    ogeom_algo::make_prism(model, &face, ogeom_math::Vector::new(0.0, 0.0, 10.0), T)
+        .unwrap()
+        .shape
+}
+
+/// The face of `solid` on an extrusion surface.
+fn extruded_wall_of(model: &ogeom_topo::Model, solid: &ogeom_topo::Shape) -> ogeom_topo::Shape {
+    explore(model, solid, Filter::OfType(ShapeType::Face))
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            model
+                .node(f)
+                .and_then(|n| n.data().as_face())
+                .and_then(|d| model.geometry().surface(d.surface))
+                .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::Extrusion(_)))
+        })
+        .expect("the solid has an extruded wall")
+}
+
+#[test]
+fn an_extruded_spline_wall_drafts_to_the_requested_angle() {
+    use ogeom_geom::Surface as _;
+    let mut model = ogeom_topo::Model::new();
+    let solid = spline_prism(&mut model, 1.5, 0.4);
+    let before = volume(&model, &solid);
+    let wall = extruded_wall_of(&model, &solid);
+    let angle = 0.1_f64;
+    let drafted = ogeom_offset::apply_draft(
+        &mut model,
+        &solid,
+        std::slice::from_ref(&wall),
+        Plane::through(Point::ORIGIN, ogeom_math::Direction::Z),
+        ogeom_math::Direction::Z,
+        angle,
+        T,
+    )
+    .unwrap();
+    let after = volume(&model, &drafted.shape);
+    assert!(
+        after < before && before - after < before * 0.2,
+        "a draft shaves a wedge: {before} -> {after}"
+    );
+
+    // The drafted wall is the fitted face; its normal leans off the pull by
+    // exactly the requested angle, at three sampled heights.
+    let fitted = explore(&model, &drafted.shape, Filter::OfType(ShapeType::Face))
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            model
+                .node(f)
+                .and_then(|n| n.data().as_face())
+                .and_then(|d| model.geometry().surface(d.surface))
+                .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::BSpline(_)))
+        })
+        .expect("the drafted wall is fitted");
+    let surface = {
+        let d = model
+            .node(&fitted)
+            .unwrap()
+            .data()
+            .as_face()
+            .unwrap()
+            .clone();
+        model.geometry().surface(d.surface).unwrap().clone()
+    };
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    for frac in [0.25, 0.5, 0.75] {
+        let (u, v) = (f64::midpoint(u0, u1), v0 + (v1 - v0) * frac);
+        let (du, dv) = surface.d1_at(u, v, T).unwrap();
+        let n = du.cross(dv);
+        let lean = (n / n.magnitude())
+            .dot(ogeom_math::Vector::new(0.0, 0.0, 1.0))
+            .asin()
+            .abs();
+        assert!(
+            (lean - angle).abs() < 1e-4,
+            "the wall leans {lean} at height {frac}, wanted {angle}"
+        );
+    }
+}
+
+#[test]
+fn a_draft_that_folds_the_wall_refuses_by_name() {
+    // A profile curled tighter than the draft's reach: the turned rulings
+    // cross inside the drafted window, and the fold is refused before
+    // anything is fitted.
+    let mut model = ogeom_topo::Model::new();
+    let solid = spline_prism(&mut model, 2.0, 0.7);
+    let wall = extruded_wall_of(&model, &solid);
+    let err = ogeom_offset::apply_draft(
+        &mut model,
+        &solid,
+        std::slice::from_ref(&wall),
+        Plane::through(Point::ORIGIN, ogeom_math::Direction::Z),
+        ogeom_math::Direction::Z,
+        0.1,
+        T,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("folds the wall"),
+        "the fold names itself: {err}"
+    );
+}
