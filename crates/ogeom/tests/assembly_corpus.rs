@@ -219,7 +219,7 @@ fn a_real_part_round_trips_with_its_volume() {
     let healed_volume = |mut import: ogeom::io::StepImport| -> f64 {
         let solid = import.solids[0].clone();
         let healed = ogeom::heal::reanchor_periodic_rings(import.document.model_mut(), &solid, T)
-            .map_or(solid, |h| h.shape);
+            .map_or(solid, |h| h.0.shape);
         ogeom::algo::volume_properties(import.document.model(), &healed, fine, T)
             .unwrap()
             .mass

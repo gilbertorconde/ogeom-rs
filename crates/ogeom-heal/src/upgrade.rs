@@ -28,7 +28,11 @@ use crate::reshape::Reshape;
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
 /// merged boundary fails to chain into closed wires.
-pub fn unify_same_domain(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+pub fn unify_same_domain(
+    model: &mut Model,
+    shape: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<(Built, usize)> {
     let faces = explore_unique(model, shape, ShapeType::Face)?;
 
     // The carrier of each planar face: where it lies in the world, which
@@ -134,9 +138,10 @@ pub fn unify_same_domain(model: &mut Model, shape: &Shape, tol: Tolerances) -> O
     if reshape.is_empty() {
         let mut built = Built::from_nothing(shape.clone());
         built.history.modify(shape, shape.clone());
-        return Ok(built);
+        return Ok((built, 0));
     }
-    reshape.apply(model, shape)
+    let unified = reshape.len();
+    Ok((reshape.apply(model, shape)?, unified))
 }
 
 /// Where a planar face lies and which chart it was stored in.
@@ -249,29 +254,39 @@ fn chart_line(
 /// # Errors
 ///
 /// As the model's own builders.
-pub fn merge_edges(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+pub fn merge_edges(
+    model: &mut Model,
+    shape: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<(Built, usize)> {
     // One pass merges disjoint pairs; a chain of three needs the next pass
     // to see the pair the first one made. Eight is well past any real chain.
     let mut current = shape.clone();
     let mut steps: Vec<History> = Vec::new();
+    let mut merged = 0;
     for _ in 0..8 {
-        let Some(step) = merge_pass(model, &current, tol)? else {
+        let Some((step, joined)) = merge_pass(model, &current, tol)? else {
             break;
         };
         current = step.shape;
         steps.push(step.history);
+        merged += joined;
     }
     if steps.is_empty() {
         let mut built = Built::from_nothing(shape.clone());
         built.history.modify(shape, shape.clone());
-        return Ok(built);
+        return Ok((built, 0));
     }
-    Ok(Built::new(current, History::chain(&steps)))
+    Ok((Built::new(current, History::chain(&steps)), merged))
 }
 
 /// One merge pass: every disjoint joinable pair, in one rebuild. `None`
 /// when nothing joins.
-fn merge_pass(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Option<Built>> {
+fn merge_pass(
+    model: &mut Model,
+    shape: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Built, usize)>> {
     // Which parameterizations each edge is actually *read* on: the faces
     // bounding it, not whatever reprs it accumulated along the way. An
     // earlier unification leaves pcurves on surfaces nothing carries any
@@ -345,7 +360,8 @@ fn merge_pass(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<
     if reshape.is_empty() {
         return Ok(None);
     }
-    reshape.apply(model, shape).map(Some)
+    let joined = reshape.len();
+    Ok(Some((reshape.apply(model, shape)?, joined)))
 }
 
 /// Whether an ordered edge list closes back on its own start.

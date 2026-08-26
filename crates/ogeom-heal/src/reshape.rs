@@ -39,6 +39,12 @@ impl Reshape {
         self.requests.insert(old.node(), None);
     }
 
+    /// How many replacements are staged.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.requests.len()
+    }
+
     /// Whether anything is requested.
     #[must_use]
     pub fn is_empty(&self) -> bool {

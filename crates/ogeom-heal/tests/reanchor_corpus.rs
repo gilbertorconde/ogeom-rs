@@ -22,7 +22,7 @@ fn reanchoring_makes_the_smallest_nist_part_whole() {
     let healed =
         ogeom_heal::reanchor_periodic_rings(import.document.model_mut(), &import.solids[0], T)
             .unwrap();
-    assert!(!healed.history.is_empty(), "something was healed");
+    assert!(!healed.0.history.is_empty(), "something was healed");
 
     // Every face of the healed solid now triangulates, and the part
     // measures: the reader's warning became the healer's work order, and
@@ -33,7 +33,7 @@ fn reanchoring_makes_the_smallest_nist_part_whole() {
     };
     let faces = ogeom_topo::explore(
         import.document.model(),
-        &healed.shape,
+        &healed.0.shape,
         ogeom_topo::Filter::OfType(ogeom_topo::ShapeType::Face),
     )
     .unwrap();
@@ -44,7 +44,7 @@ fn reanchoring_makes_the_smallest_nist_part_whole() {
     }
     let shell = ogeom_topo::explore_unique(
         import.document.model(),
-        &healed.shape,
+        &healed.0.shape,
         ogeom_topo::ShapeType::Shell,
     )
     .unwrap()
@@ -57,7 +57,7 @@ fn reanchoring_makes_the_smallest_nist_part_whole() {
     // window-coherent pcurves, boundary vertices anchor to their edges'
     // curves, and the volume integral has a watertight boundary.
     let props =
-        ogeom_algo::volume_properties(import.document.model(), &healed.shape, fine, T).unwrap();
+        ogeom_algo::volume_properties(import.document.model(), &healed.0.shape, fine, T).unwrap();
     eprintln!("REPORT healed volume {:.3} mm^3", props.mass);
     assert!(props.mass > 0.0, "the healed part encloses volume");
 }

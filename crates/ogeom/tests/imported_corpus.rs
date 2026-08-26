@@ -44,7 +44,7 @@ fn the_corpus_heals_and_every_part_measures() {
         // Healing is idempotent where nothing is broken and surgery where
         // something is; either way the shell must close.
         let healed = ogeom::heal::reanchor_periodic_rings(import.document.model_mut(), &solid, T)
-            .map_or(solid, |h| h.shape);
+            .map_or(solid, |h| h.0.shape);
         let shell = explore_unique(import.document.model(), &healed, ShapeType::Shell)
             .unwrap()
             .remove(0);
@@ -72,6 +72,7 @@ fn an_imported_part_takes_a_boolean_cut() {
     let solid = import.solids[0].clone();
     let healed = ogeom::heal::reanchor_periodic_rings(import.document.model_mut(), &solid, T)
         .unwrap()
+        .0
         .shape;
     let fine = ogeom::mesh::Deflection {
         chord: 1e-2,

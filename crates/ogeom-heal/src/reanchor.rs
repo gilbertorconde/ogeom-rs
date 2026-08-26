@@ -58,7 +58,7 @@ pub fn reanchor_periodic_rings(
     model: &mut Model,
     shape: &Shape,
     tol: Tolerances,
-) -> OgeomResult<Built> {
+) -> OgeomResult<(Built, usize)> {
     if model.kind_of(shape)? != ShapeType::Solid {
         ogeom_bail!(Construction, "ring re-anchoring heals solids");
     }
@@ -140,7 +140,7 @@ pub fn reanchor_periodic_rings(
         });
     }
     if !any_broken {
-        return Ok(Built::new(shape.clone(), History::new()));
+        return Ok((Built::new(shape.clone(), History::new()), 0));
     }
     let broken = revolution;
 
@@ -216,7 +216,7 @@ pub fn reanchor_periodic_rings(
         }
     }
     if healable.is_empty() {
-        return Ok(Built::new(shape.clone(), History::new()));
+        return Ok((Built::new(shape.clone(), History::new()), 0));
     }
 
     // --- rebuild every face that touches a substituted edge ------------------
@@ -287,7 +287,8 @@ pub fn reanchor_periodic_rings(
     }
     let solid = make_solid(model, &shells)?.shape;
     history.modify(shape, solid.clone());
-    Ok(Built::new(solid, history))
+    let moved = substitution.len();
+    Ok((Built::new(solid, history), moved))
 }
 
 /// Anchor every ring of one coaxial chain at the chain's own half-plane.

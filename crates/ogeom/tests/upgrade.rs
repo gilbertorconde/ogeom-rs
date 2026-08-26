@@ -33,6 +33,7 @@ fn a_fused_pair_of_halves_unifies_back_to_a_box() {
 
     let unified = ogeom::heal::unify_same_domain(&mut model, &fused, T)
         .unwrap()
+        .0
         .shape;
     assert_eq!(
         explore_unique(&model, &unified, ShapeType::Face)
@@ -53,6 +54,7 @@ fn a_fused_pair_of_halves_unifies_back_to_a_box() {
     // edge merge takes those out too.
     let merged = ogeom::heal::merge_edges(&mut model, &unified, T)
         .unwrap()
+        .0
         .shape;
     let edges = explore_unique(&model, &merged, ShapeType::Edge)
         .unwrap()
