@@ -514,53 +514,88 @@ pub fn make_face_with_pcurves(
         };
         data.surface
     };
-    for edge in ogeom_topo::explore(
-        model,
-        &built.shape,
-        ogeom_topo::Filter::OfType(ShapeType::Edge),
-    )? {
-        let (curve, prange) = {
-            let Some(node) = model.node(&edge) else {
-                ogeom_bail!(Dangling, "edge is not in this model");
+    // Walked in each wire's own traversal order, so that on a periodic
+    // chart every pcurve lands on the *same branch* as its neighbour: an
+    // exact inversion answers with whatever phase its construction likes,
+    // and two images a full period apart describe the same points while
+    // tearing the boundary the arrangement walks. Each pcurve after the
+    // first is shifted by whole periods until its start meets the previous
+    // traversal's end.
+    use ogeom_geom::Curve2d as _;
+    use ogeom_geom::Surface as _;
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let u_period = surface.is_periodic_u().then_some(ub - ua);
+    let v_period = surface.is_periodic_v().then_some(vb - va);
+    let mut done: Vec<Shape> = Vec::new();
+    for edges in wires {
+        let mut prev_end: Option<ogeom_math::Point2> = None;
+        for edge in edges {
+            let (curve, prange) = {
+                let Some(node) = model.node(edge) else {
+                    ogeom_bail!(Dangling, "edge is not in this model");
+                };
+                let Some(data) = node.data().as_edge() else {
+                    ogeom_bail!(Construction, "edge node holds no edge data");
+                };
+                let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+                    ogeom_bail!(Construction, "a face edge has no 3D curve");
+                };
+                let Some(geometry) = model.geometry().curve(*curve) else {
+                    ogeom_bail!(Dangling, "curve is not in this model");
+                };
+                (geometry.clone(), *range)
             };
-            let Some(data) = node.data().as_edge() else {
-                ogeom_bail!(Construction, "edge node holds no edge data");
-            };
-            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
-                ogeom_bail!(Construction, "a face edge has no 3D curve");
-            };
-            let Some(geometry) = model.geometry().curve(*curve) else {
-                ogeom_bail!(Dangling, "curve is not in this model");
-            };
-            (geometry.clone(), *range)
-        };
-        let pcurve = match ogeom_intersect::exact_pcurve_of(&curve, &surface, tol) {
-            Some(exact) => exact,
-            // No closed form — a fitted surface, mostly. The edge lies on
-            // the surface by construction here (a rebuilt boundary, a
-            // recovered intersection), so the projected fit speaks it: the
-            // same machinery the exchange readers trust, at the same cap,
-            // and the measured offset widens the edge honestly.
-            None => {
-                let (fitted, _, _, worst_off, _) =
-                    crate::pcurve_fit::fit_projected_pcurve(&curve, prange, &surface, tol)?;
-                if worst_off > tol.confusion()
-                    && let Some(node) = model.node_mut(&edge)
-                    && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
-                {
-                    data.tolerance = data.tolerance.widen_to(worst_off + tol.confusion());
+            let mut pcurve = match ogeom_intersect::exact_pcurve_of(&curve, &surface, tol) {
+                Some(exact) => exact,
+                // No closed form — a fitted surface, mostly. The edge lies on
+                // the surface by construction here (a rebuilt boundary, a
+                // recovered intersection), so the projected fit speaks it: the
+                // same machinery the exchange readers trust, at the same cap,
+                // and the measured offset widens the edge honestly.
+                None => {
+                    let (fitted, _, _, worst_off, _) =
+                        crate::pcurve_fit::fit_projected_pcurve(&curve, prange, &surface, tol)?;
+                    if worst_off > tol.confusion()
+                        && let Some(node) = model.node_mut(edge)
+                        && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+                    {
+                        data.tolerance = data.tolerance.widen_to(worst_off + tol.confusion());
+                    }
+                    fitted
                 }
-                fitted
+            };
+            let (t_start, t_end) = if edge.orientation() == ogeom_topo::Orientation::Reversed {
+                (prange.1, prange.0)
+            } else {
+                (prange.0, prange.1)
+            };
+            if u_period.is_some() || v_period.is_some() {
+                let start = pcurve.point_at(t_start, tol)?;
+                if let Some(prev) = prev_end {
+                    let shift = ogeom_math::Vector2::new(
+                        u_period.map_or(0.0, |p| ((prev.x - start.x) / p).round() * p),
+                        v_period.map_or(0.0, |p| ((prev.y - start.y) / p).round() * p),
+                    );
+                    if shift.x != 0.0 || shift.y != 0.0 {
+                        pcurve =
+                            pcurve.transformed(&ogeom_math::Transform2::translation(shift), tol)?;
+                    }
+                }
+                prev_end = Some(pcurve.point_at(t_end, tol)?);
             }
-        };
-        attach_pcurve(
-            model,
-            &edge,
-            pcurve,
-            surface_id,
-            Location::identity(),
-            prange,
-        )?;
+            if done.iter().any(|e| e.is_same(edge)) {
+                continue;
+            }
+            done.push(edge.clone());
+            attach_pcurve(
+                model,
+                edge,
+                pcurve,
+                surface_id,
+                Location::identity(),
+                prange,
+            )?;
+        }
     }
     Ok(built)
 }
