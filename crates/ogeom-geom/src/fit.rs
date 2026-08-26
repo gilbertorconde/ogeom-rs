@@ -428,6 +428,100 @@ pub fn fit_points_2d_at(
     fit_points_2d_at_inner(parameters, points, degree, tolerance, false, tol)
 }
 
+/// Fit space points at *fixed* parameters: the caller's `t` values are the
+/// curve's own, which is what keeps a replacement curve same-parameter with
+/// every chart already speaking the old one.
+///
+/// # Errors
+///
+/// As [`fit_points`], and the parameters must be strictly increasing and as
+/// many as the points.
+pub fn fit_points_at(
+    parameters: &[f64],
+    points: &[Point],
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<BSplineCurve>> {
+    if parameters.len() != points.len() {
+        ogeom_bail!(Construction, "one parameter per point, or the fit is a lie");
+    }
+    if parameters.windows(2).any(|w| w[1] <= w[0]) {
+        ogeom_bail!(Construction, "fixed parameters must strictly increase");
+    }
+    if !tolerance.is_finite() || tolerance <= 0.0 {
+        ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
+    }
+    if degree == 0 {
+        ogeom_bail!(Construction, "a fit needs a degree of at least one");
+    }
+    let data: Vec<[f64; 3]> = points.iter().map(|p| [p.x, p.y, p.z]).collect();
+    if data.len() < 2 {
+        ogeom_bail!(Construction, "a fit needs at least two points");
+    }
+    let degree = degree.min(data.len() - 1);
+    let (a, b) = (parameters[0], parameters[parameters.len() - 1]);
+    let mut knots = single_span(degree, a, b)?;
+
+    const ROUNDS: usize = 32;
+    let mut best: Option<(KnotVector, Vec<[f64; 3]>, f64)> = None;
+    for _ in 0..ROUNDS {
+        let control = match least_squares::<3>(&knots, &data, parameters, false) {
+            Ok(control) => control,
+            Err(e) => {
+                if best.is_some() {
+                    break;
+                }
+                return Err(e);
+            }
+        };
+        let errors = residuals::<3>(&knots, &control, &data, parameters);
+        let worst = errors.iter().fold(0.0_f64, |acc, e| acc.max(e.1));
+        if best.as_ref().is_none_or(|(_, _, held)| worst < *held) {
+            best = Some((knots.clone(), control.clone(), worst));
+        }
+        if worst <= tolerance {
+            let curve = build_curve_3(knots, control, tol)?;
+            return Ok(Fitted {
+                curve,
+                error: worst,
+                met: true,
+            });
+        }
+        if knots.control_point_count() >= data.len() {
+            break;
+        }
+        let Some(refined) = refined_where_bad(&knots, &errors, tolerance)? else {
+            break;
+        };
+        knots = refined;
+    }
+    let Some((knots, control, worst)) = best else {
+        ogeom_bail!(Construction, "the fit found no usable rounds");
+    };
+    let curve = build_curve_3(knots, control, tol)?;
+    Ok(Fitted {
+        curve,
+        error: worst,
+        met: false,
+    })
+}
+
+fn build_curve_3(
+    knots: KnotVector,
+    control: Vec<[f64; 3]>,
+    tol: Tolerances,
+) -> OgeomResult<BSplineCurve> {
+    BSplineCurve::new(
+        knots,
+        control
+            .into_iter()
+            .map(|c| Point::new(c[0], c[1], c[2]))
+            .collect(),
+        tol,
+    )
+}
+
 /// As [`fit_points_2d_at`], with the loop's join made C1.
 ///
 /// The chart image of a closed curve either returns to its first point or —

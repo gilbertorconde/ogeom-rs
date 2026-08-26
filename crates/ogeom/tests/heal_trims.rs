@@ -5,13 +5,7 @@ use ogeom::core::Tolerances;
 
 const T: Tolerances = Tolerances::millimetres();
 
-/// The reader's refusal is the healer's instruction: a boundary 3 mm off
-/// its surface reads untrimmed and refuses to mesh; `fix_face_pcurves` at
-/// a caller's cap of 5 mm fits the trims the reader would not, widens the
-/// edges to the measured offset, and the face triangulates.
-#[test]
-fn a_face_the_reader_refused_heals_at_the_callers_cap() {
-    let text = r#"ISO-10303-21;
+const HOVER: &str = r#"ISO-10303-21;
 HEADER;
 FILE_DESCRIPTION((''),'2;1');
 FILE_NAME('hover','2026-08-26',(''),(''),'','','');
@@ -59,6 +53,14 @@ DATA;
 ENDSEC;
 END-ISO-10303-21;
 "#;
+
+/// The reader's refusal is the healer's instruction: a boundary 3 mm off
+/// its surface reads untrimmed and refuses to mesh; `fix_face_pcurves` at
+/// a caller's cap of 5 mm fits the trims the reader would not, widens the
+/// edges to the measured offset, and the face triangulates.
+#[test]
+fn a_face_the_reader_refused_heals_at_the_callers_cap() {
+    let text = HOVER;
     let import = ogeom::io::read_step(text, T).unwrap();
     // The report hands over the face itself — the instructed follow-up
     // needs no search (issue #34).
@@ -112,4 +114,49 @@ END-ISO-10303-21;
             .iter()
             .all(|(_, off)| (*off - 3.0).abs() < 0.1)
     );
+}
+
+/// The stronger fix: the hovering boundary *moves* onto its surface, the
+/// displacement recorded in widened tolerances, and the trims then fit as
+/// on-surface trims — the composition `reanchor_boundaries` then
+/// `fix_face_pcurves` that a 3 mm-off face deserves.
+#[test]
+fn a_hovering_boundary_reanchors_then_trims_then_meshes() {
+    let import = ogeom::io::read_step(HOVER, T).unwrap();
+    let refused = import.report.untrimmed_faces[0].face.clone();
+    let mut document = import.document;
+    let solid = import.solids[0].clone();
+
+    let (built, report) =
+        ogeom::heal::reanchor_boundaries(document.model_mut(), &solid, 5.0, T).unwrap();
+    assert_eq!(report.moved, 4, "all four hovering edges moved");
+    assert!(
+        (report.worst_before - 3.0).abs() < 1e-6,
+        "{}",
+        report.worst_before
+    );
+    assert!(report.worst_after < 1e-3, "{}", report.worst_after);
+    assert!(report.refused.is_empty());
+
+    // The face in the rebuilt solid, its boundary now on the surface: the
+    // trims fit with next to no offset, and it draws.
+    let face = ogeom::topo::explore(
+        document.model(),
+        &built.shape,
+        ogeom::topo::Filter::OfType(ogeom::topo::ShapeType::Face),
+    )
+    .unwrap()
+    .remove(0);
+    let trims = ogeom::heal::fix_face_pcurves(document.model_mut(), &face, 1.0, T).unwrap();
+    assert_eq!(trims.fitted, 4);
+    assert!(trims.worst < 1e-3, "on-surface now: {}", trims.worst);
+    let mesh = ogeom::mesh::triangulate_face(
+        document.model(),
+        &face,
+        ogeom::mesh::Deflection::default(),
+        T,
+    )
+    .unwrap();
+    assert!(!mesh.triangles.is_empty());
+    let _ = refused;
 }

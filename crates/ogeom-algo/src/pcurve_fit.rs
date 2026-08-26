@@ -268,6 +268,48 @@ pub fn fit_projected_pcurve_capped(
     };
     let target = (tol.confusion() * 1e2 * scale).max(f64::MIN_POSITIVE);
     let fitted = ogeom_geom::fit::fit_points_2d_at(&parameters, &trace, 3, target, tol)?;
+    // A least-squares fit wiggles past its samples at the ends, and a
+    // surface with a *tight* stated window — an imported patch, not a
+    // reader-built analytic with its enormous extents — refuses evaluation
+    // a hair outside it. The control points clamp into the window on the
+    // non-periodic axes: the curve lives in its controls' hull, so the
+    // clamp is a guarantee, and the distance it moved joins the reported
+    // error instead of being hidden. Periodic axes stay free — an unwrapped
+    // trace crosses the seam on purpose.
+    let fitted = {
+        let ((wa, wb), (va2, vb2)) = surface.domain();
+        let clamp_u = !(surface.is_periodic_u() || surface.is_closed_u(tol));
+        let clamp_v = !(surface.is_periodic_v() || surface.is_closed_v(tol));
+        if clamp_u || clamp_v {
+            let mut moved = 0.0_f64;
+            let knots = fitted.curve.knots().clone();
+            let control: Vec<ogeom_math::Point2> = fitted
+                .curve
+                .control_points()
+                .iter()
+                .map(|w| {
+                    let p = w.point();
+                    let q = ogeom_math::Point2::new(
+                        if clamp_u { p.x.clamp(wa, wb) } else { p.x },
+                        if clamp_v { p.y.clamp(va2, vb2) } else { p.y },
+                    );
+                    moved = moved.max(p.distance(q));
+                    q
+                })
+                .collect();
+            if moved > 0.0 {
+                ogeom_geom::fit::Fitted {
+                    curve: ogeom_geom::BSpline2d::new(knots, control, tol)?,
+                    error: fitted.error + moved,
+                    met: fitted.met && fitted.error + moved <= target,
+                }
+            } else {
+                fitted
+            }
+        } else {
+            fitted
+        }
+    };
     let slop = (worst_off > tol.confusion() * 1e3).then(|| {
         format!(
             "an edge sits up to {worst_off:.2e} from the surface it \

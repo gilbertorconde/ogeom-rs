@@ -17,7 +17,7 @@ pub mod reshape;
 pub mod upgrade;
 
 pub use canonical::{CanonicalReport, Simplified, canonical_simplify, recognize_surface};
-pub use fix::{FixedTrims, fix_face_pcurves};
+pub use fix::{FixedTrims, ReanchoredBoundaries, fix_face_pcurves, reanchor_boundaries};
 pub use reanchor::reanchor_periodic_rings;
 pub use reshape::Reshape;
 pub use same_parameter::{SameParameterReport, repair_same_parameter};
