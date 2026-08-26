@@ -180,6 +180,98 @@ fn face_on_plane(
     Ok((aligned && on).then(|| surface.clone()))
 }
 
+/// Cut away one quarter of the part and draw the half-section.
+///
+/// The plane's frame states the whole convention: material on the `+z`
+/// side is removed, but only over the frame's `+x` half — the split line
+/// is the frame's own `y` axis. The section outline covers the cut half,
+/// hatched by the draughtsman's convention through [`hatch`]; the drawing
+/// shows the other half in outside view, which is what a half-section is
+/// for.
+///
+/// # Errors
+///
+/// As [`section()`].
+pub fn half_section(
+    model: &mut Model,
+    solid: &Shape,
+    plane: &Plane,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<SectionView> {
+    let reach = reach_of(model, solid, tol)?;
+    section_with_window(
+        model,
+        solid,
+        plane,
+        (0.0, -reach),
+        (reach, reach),
+        deflection,
+        tol,
+    )
+}
+
+/// Hatch the section outline: parallel lines at `angle`, `spacing` apart,
+/// clipped to the material by the even-odd rule.
+///
+/// The outline loops are taken as [`SectionView::outline`] hands them over
+/// — outer loops and holes together — so a hole interrupts the hatching
+/// exactly as it interrupts the material. Each returned pair is one hatch
+/// stroke in the plane's `(x, y)`.
+#[must_use]
+pub fn hatch(outline: &[Vec<Point2>], spacing: f64, angle: f64) -> Vec<(Point2, Point2)> {
+    if !(spacing.is_finite() && spacing > 0.0) || outline.is_empty() {
+        return Vec::new();
+    }
+    let (c, s) = (angle.cos(), angle.sin());
+    // Into the hatch frame: strokes run along local x, lines stack in y.
+    let into = |p: Point2| Point2::new(p.x * c + p.y * s, -p.x * s + p.y * c);
+    let back = |p: Point2| Point2::new(p.x * c - p.y * s, p.x * s + p.y * c);
+    let mut lo = (f64::INFINITY, f64::INFINITY);
+    let mut hi = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let turned: Vec<Vec<Point2>> = outline
+        .iter()
+        .map(|ring| ring.iter().map(|p| into(*p)).collect())
+        .collect();
+    for ring in &turned {
+        for p in ring {
+            lo = (lo.0.min(p.x), lo.1.min(p.y));
+            hi = (hi.0.max(p.x), hi.1.max(p.y));
+        }
+    }
+    if !(lo.0.is_finite() && hi.0.is_finite()) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    // The first line half a step in, so a shape exactly one spacing tall
+    // still receives a stroke.
+    let mut y = lo.1 + spacing * 0.5;
+    while y < hi.1 {
+        // Every crossing of this scanline with every loop edge; sorted,
+        // then paired even-odd — inside between the first and second,
+        // outside between the second and third, and so on.
+        let mut crossings: Vec<f64> = Vec::new();
+        for ring in &turned {
+            let n = ring.len();
+            for i in 0..n {
+                let (a, b) = (ring[i], ring[(i + 1) % n]);
+                if (a.y <= y) == (b.y <= y) {
+                    continue;
+                }
+                crossings.push(a.x + (b.x - a.x) * (y - a.y) / (b.y - a.y));
+            }
+        }
+        crossings.sort_by(|p, q| p.partial_cmp(q).unwrap_or(core::cmp::Ordering::Equal));
+        for pair in crossings.chunks_exact(2) {
+            if pair[1] - pair[0] > f64::EPSILON {
+                out.push((back(Point2::new(pair[0], y)), back(Point2::new(pair[1], y))));
+            }
+        }
+        y += spacing;
+    }
+    out
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -303,5 +395,66 @@ mod tests {
         );
         assert!(section(&mut model, &solid.shape, &plane, fine(), T).is_err());
         let _ = Vector::ZERO;
+    }
+    #[test]
+    fn a_half_section_of_a_bored_cylinder_hatches_the_cut_half() {
+        // A drum with a coaxial bore, half-sectioned on its own axis: the
+        // cut quarter shows the wall as hatchable loops, the other half
+        // stays in outside view in the drawing.
+        let mut model = Model::new();
+        let drum = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 10.0, 30.0, T)
+            .unwrap()
+            .shape;
+        let bore = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 4.0, 30.0, T)
+            .unwrap()
+            .shape;
+        let part = ogeom_bool::cut(&mut model, &drum, &bore, T).unwrap().shape;
+        // The section plane holds the axis: its frame's z is the cut
+        // normal, its y the split line — the axis itself.
+        let plane = Plane::new(Frame::new(Point::ORIGIN, Direction::X, Direction::Z, T).unwrap());
+        let view = half_section(&mut model, &part, &plane, fine(), T).unwrap();
+
+        // The cut half: material where the plane met the wall, all of it in
+        // the +x half of the plane's own chart, adding up to the wall's
+        // half-area (two 6 x 30 rectangles of it stand in the section).
+        assert!(!view.outline.is_empty(), "the section cut material");
+        let mut total = 0.0;
+        for ring in &view.outline {
+            for p in ring {
+                assert!(p.x >= -1e-6, "the outline stays on the cut half: {p:?}");
+            }
+            total += area(ring).abs();
+        }
+        assert!(
+            (total - 2.0 * 6.0 * 30.0).abs() < 5.0,
+            "the section shows the bored wall: {total}"
+        );
+
+        // The convention's hatching: strokes exist, and every one lies in
+        // the material by the even-odd rule that made it.
+        let strokes = hatch(&view.outline, 1.5, core::f64::consts::FRAC_PI_4);
+        assert!(strokes.len() > 20, "the section hatches: {}", strokes.len());
+        for (a, b) in &strokes {
+            let mid = Point2::new(f64::midpoint(a.x, b.x), f64::midpoint(a.y, b.y));
+            let mut crossings = 0;
+            for ring in &view.outline {
+                let n = ring.len();
+                for i in 0..n {
+                    let (p, q) = (ring[i], ring[(i + 1) % n]);
+                    if (p.y <= mid.y) != (q.y <= mid.y)
+                        && p.x + (q.x - p.x) * (mid.y - p.y) / (q.y - p.y) > mid.x
+                    {
+                        crossings += 1;
+                    }
+                }
+            }
+            assert!(crossings % 2 == 1, "a stroke lies outside the material");
+        }
+
+        // The far half remains: the drawing sees the uncut side's outline.
+        assert!(
+            !view.drawing.visible.is_empty(),
+            "the far side draws in outline"
+        );
     }
 }

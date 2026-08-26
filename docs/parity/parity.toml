@@ -745,6 +745,8 @@ claims = [
 symbols = [
     "ogeom_hlr::project", "ogeom_hlr::project_exact", "ogeom_hlr::Visibility",
     "ogeom_hlr::silhouettes", "ogeom_hlr::reflect_lines", "ogeom_hlr::Drawing",
+    "ogeom_hlr::section", "ogeom_hlr::broken_section", "ogeom_hlr::half_section",
+    "ogeom_hlr::hatch",
 ]
 tests = ["crates/ogeom/tests/exact_hlr.rs"]
 

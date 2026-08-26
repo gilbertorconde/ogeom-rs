@@ -401,10 +401,14 @@ Measured against the torus's own equators seen down its axis — radii
 no closed form at all, against the defining property itself: the surface's
 normal is square to the view at every point of what comes back.
 
-**D2 — the on-axis half-section.** Unblocked: A4 is closed, and the boolean
-now cuts a bore on its own axis and reports the two rulings. What is left is
-the drawing side — the half-section as a view, with its own hatching
-convention. Tracked as issue #32.
+**D2 — the on-axis half-section.** **Done.** A4's boolean side cuts a bore on
+its own axis and reports the two rulings; the drawing side is
+`ogeom_hlr::half_section` — the plane's frame states the whole convention
+(`+z` removed over the `+x` half, the frame's `y` axis the split line) — with
+`ogeom_hlr::hatch` clipping the draughtsman's strokes to the section loops by
+the even-odd rule, holes interrupting the hatching exactly as they interrupt
+the material. The bored drum's half-section measures its wall's half-area and
+every stroke lands in material. Was issue #32.
 
 ### E. Documents
 

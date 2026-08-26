@@ -11,4 +11,4 @@ pub mod project;
 pub mod section;
 
 pub use project::{Drawing, DrawnCurve, Source, View, Visibility, project};
-pub use section::{SectionView, broken_section, section};
+pub use section::{SectionView, broken_section, half_section, hatch, section};
