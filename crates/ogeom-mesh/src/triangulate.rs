@@ -1164,6 +1164,50 @@ fn triangulate_region(
     deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<PlanarMesh> {
+    // A chart mangled enough — trims fitted through millimetres of boundary
+    // error — can drive the triangulation library past its own asserts, and
+    // a panic in a dependency is a crash in every consumer. The rings are
+    // screened for what provably breaks it, and whatever still slips
+    // through is caught at this boundary and spoken as the refusal it is:
+    // the kernel's contract is refusal by name, never a crash on bad input.
+    for ring in rings {
+        let mut extent = 0.0_f64;
+        for p in ring {
+            if !p.x.is_finite() || !p.y.is_finite() {
+                ogeom_bail!(
+                    NotDone,
+                    "a boundary ring carries a non-finite chart coordinate; \
+                     the face's trim does not describe a region"
+                );
+            }
+            extent = extent.max(p.x.abs()).max(p.y.abs());
+        }
+        if extent > 1e12 {
+            ogeom_bail!(
+                NotDone,
+                "a boundary ring reaches {extent:.1e} in the chart; a trim \
+                 that far out describes no face"
+            );
+        }
+    }
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        triangulate_region_inner(rings, surface, deflection, tol)
+    })) {
+        Ok(result) => result,
+        Err(_) => ogeom_bail!(
+            NotDone,
+            "the face's boundary broke the triangulation; the chart is too \
+             degenerate to mesh"
+        ),
+    }
+}
+
+fn triangulate_region_inner(
+    rings: &[Vec<Point2>],
+    surface: &SurfaceGeometry,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<PlanarMesh> {
     let mut cdt: ConstrainedDelaunayTriangulation<SpadePoint<f64>> =
         ConstrainedDelaunayTriangulation::new();
 
@@ -1696,6 +1740,42 @@ pub fn polyline_of_edge(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wild_chart_refuses_instead_of_crashing() {
+        let plane: SurfaceGeometry = ogeom_geom::PlaneSurface::over(
+            ogeom_math::Plane::through(
+                ogeom_math::Point::new(0.0, 0.0, 0.0),
+                ogeom_math::Direction::Z,
+            ),
+            (-10.0, 10.0),
+            (-10.0, 10.0),
+        )
+        .unwrap()
+        .into();
+        let tol = Tolerances::millimetres();
+        // Coordinates wilder than any face: refused by the screen.
+        let wild = vec![vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(1e15, 0.0),
+            Point2::new(0.0, 1e15),
+        ]];
+        let Err(err) = triangulate_region(&wild, &plane, Deflection::default(), tol) else {
+            panic!("a wild chart must refuse");
+        };
+        assert!(err.to_string().contains("describes no face"), "{err}");
+        // A non-finite coordinate: refused by name, not fed to the library.
+        let nan = vec![vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(f64::NAN, 1.0),
+            Point2::new(1.0, 1.0),
+        ]];
+        let Err(err) = triangulate_region(&nan, &plane, Deflection::default(), tol) else {
+            panic!("a NaN chart must refuse");
+        };
+        assert!(err.to_string().contains("non-finite"), "{err}");
+    }
+
     use approx::assert_relative_eq;
     use ogeom_algo::make_box;
     use ogeom_math::Frame;
