@@ -682,16 +682,22 @@ fn on_cone(
             } else {
                 line.domain()
             };
-            let mut local = frame.to_local(axis.location);
+            // Only the used range votes. The line's own origin is stated
+            // wherever the file likes — some writers park it hundreds of
+            // kilometres down the infinite line, past the apex on the other
+            // nappe — and letting it compete reads the angle half a turn
+            // from the side the edge actually uses.
+            let mut local: Option<ogeom_math::Point> = None;
             for t in [lo, hi] {
                 if !t.is_finite() {
                     continue;
                 }
                 let candidate = frame.to_local(axis.location + axis.direction.vector() * t);
-                if candidate.x.hypot(candidate.y) > local.x.hypot(local.y) {
-                    local = candidate;
+                if local.is_none_or(|held| candidate.x.hypot(candidate.y) > held.x.hypot(held.y)) {
+                    local = Some(candidate);
                 }
             }
+            let local = local?;
             if local.x.hypot(local.y) <= tol.confusion() {
                 return None;
             }
@@ -1765,5 +1771,46 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn a_far_stated_ruling_reads_its_angle_on_the_used_nappe() {
+        use ogeom_geom::ConeSurface;
+        // A 45-degree cone opening along +z, reference radius 24 at the
+        // frame's origin; a ruling at chart angle 0.01, exactly as a real
+        // file states it: the line's own origin parked seven hundred
+        // kilometres down the infinite line, past the apex on the other
+        // nappe. Only the used range may vote on the angle, or the pcurve
+        // lands half a turn away and the face triangulates as a fan across
+        // the whole chart — the issue #36 bug.
+        let cone =
+            ogeom_math::Cone::new(Frame::WORLD, 24.0, core::f64::consts::FRAC_PI_4, T).unwrap();
+        let surface: SurfaceGeometry = ConeSurface::new(cone, (-1e5, 1e5)).unwrap().into();
+        let u_true = 0.01_f64;
+        let radial = Vector::new(u_true.cos(), u_true.sin(), 0.0);
+        // The ruling climbs outward at 45 degrees; its stated origin sits
+        // far beyond the apex (z = -24 on this cone), on the other nappe.
+        let direction =
+            Direction::new((radial + Vector::new(0.0, 0.0, 1.0)) / 2f64.sqrt(), T).unwrap();
+        let far = -7.0e5;
+        let origin = Point::ORIGIN + radial * 24.0 + direction.vector() * far;
+        let line = ogeom_geom::LineCurve::over(
+            ogeom_math::Axis::new(origin, direction),
+            far.abs() - 1.0,
+            far.abs() + 1.0,
+        )
+        .unwrap();
+        let curve: Curve = line.into();
+        let range = ogeom_geom::Curve3d::domain(&curve);
+        let pcurve = exact_pcurve_over(&curve, range, &surface, T).expect("a ruling inverts");
+        let at = pcurve.point_at(range.0, T).unwrap();
+        let tau = core::f64::consts::TAU;
+        let gap = (at.x - u_true)
+            .rem_euclid(tau)
+            .min(tau - (at.x - u_true).rem_euclid(tau));
+        assert!(
+            gap < 1e-6,
+            "the ruling's chart angle must be the used side's: got u {} against {u_true}",
+            at.x
+        );
     }
 }
