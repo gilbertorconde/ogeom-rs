@@ -380,6 +380,23 @@ fn check_connected(model: &Model, edges: &[Shape], tol: Tolerances) -> OgeomResu
             );
         };
         if !end.is_same(next_start) && !model.same_position(end, next_start, tol)? {
+            if std::env::var("OGEOM_DEBUG_WIRE").is_ok()
+                && let (Some(a), Some(b)) = (
+                    model.node(end).and_then(|n| n.data().as_vertex().cloned()),
+                    model
+                        .node(next_start)
+                        .and_then(|n| n.data().as_vertex().cloned()),
+                )
+            {
+                eprintln!(
+                    "WIRE GAP: {:?} (tol {:.2e}) vs {:?} (tol {:.2e}), gap {:.3e}",
+                    a.point,
+                    a.tolerance.get(),
+                    b.point,
+                    b.tolerance.get(),
+                    a.point.distance(b.point)
+                );
+            }
             ogeom_bail!(
                 Construction,
                 "edge {i} ends where edge {} does not begin; a wire whose edges \

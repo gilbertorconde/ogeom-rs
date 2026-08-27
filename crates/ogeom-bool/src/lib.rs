@@ -2272,7 +2272,27 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                         .collect();
                     ts.sort_by(|x, y| x.partial_cmp(y).unwrap_or(core::cmp::Ordering::Equal));
                     ts.dedup_by(|x, y| (*x - *y).abs() <= tol.parametric());
-                    stops.extend(ts);
+                    // Paves the edge itself cannot tell apart are one
+                    // junction. A tolerant rail meeting several of a wedge's
+                    // faces near one corner collects a cluster of crossings
+                    // inside its own stated radius; split at each, the edge
+                    // shatters into dust no weld downstream can rejoin. The
+                    // first of each cluster speaks for it, measured along
+                    // the curve in space, at the edge's own honesty.
+                    let reach = e.tolerance.max(tol.confusion() * 10.0);
+                    let mut kept: Vec<f64> = Vec::with_capacity(ts.len());
+                    let mut prev_at: Option<Point> = None;
+                    for t in ts {
+                        let at = e.curve.point_at(t, tol)?;
+                        // Cluster by gap: a new junction starts where the
+                        // spacing first exceeds the edge's honesty, and the
+                        // cluster's first pave speaks for all of it.
+                        if prev_at.is_none_or(|held: Point| held.distance(at) > reach) {
+                            kept.push(t);
+                        }
+                        prev_at = Some(at);
+                    }
+                    stops.extend(kept);
                 }
                 stops.push(e.crange.1);
                 // A closed boundary edge — a cap's full circle — needs two
@@ -2835,6 +2855,22 @@ fn build_sub_edge(
             let v1 = rebuild.vertex(to, tol);
             let model = &mut *rebuild.model;
             let built = make_edge_between(model, e.curve.clone(), *range, &v0, &v1, tol)?.shape;
+            // A piece of a tolerant edge is the same curve with the same
+            // honest radius: a fitted rail's stated slop must survive the
+            // split, or the next boolean over this solid measures the rail
+            // against a tolerance it never had. The ends own it too — a
+            // junction on a tolerant curve is a junction to the curve's own
+            // resolution, and the wires rebuilt through it meet within that.
+            if e.tolerance > tol.confusion() {
+                if let Some(node) = model.node_mut(&built)
+                    && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+                {
+                    data.tolerance = data.tolerance.widen_to(e.tolerance);
+                }
+                for v in [&v0, &v1] {
+                    model.widen(v, ogeom_core::Tolerance::new(e.tolerance)?)?;
+                }
+            }
             let sub_p = (
                 rescale(range.0, e.crange, e.prange),
                 rescale(range.1, e.crange, e.prange),
@@ -2877,6 +2913,19 @@ fn build_sub_edge(
             let v1 = rebuild.vertex(to, tol);
             let model = &mut *rebuild.model;
             let built = make_edge_between(model, c.curve.clone(), *range, &v0, &v1, tol)?.shape;
+            // A tolerant contact's pieces and ends own its stated slop, as a
+            // boundary's and a section's do: three kinds of strand close one
+            // ring, and every junction meets at the strands' own honesty.
+            if c.tolerance > tol.confusion() {
+                if let Some(node) = model.node_mut(&built)
+                    && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+                {
+                    data.tolerance = data.tolerance.widen_to(c.tolerance);
+                }
+                for v in [&v0, &v1] {
+                    model.widen(v, ogeom_core::Tolerance::new(c.tolerance)?)?;
+                }
+            }
             // The stored image keeps its own window; the attached copy names
             // the sub-window this piece covers under the proportional map.
             let sub_p = (
@@ -2908,6 +2957,20 @@ fn build_sub_edge(
             let v1 = rebuild.vertex(to, tol);
             let model = &mut *rebuild.model;
             let built = make_edge_between(model, s.curve.clone(), (f0, f1), &v0, &v1, tol)?.shape;
+            // A fitted section's pieces and their ends own the section's
+            // stated slop, exactly as a tolerant boundary's do: the ring
+            // they close alternates between the two, and both sides must
+            // meet at the junction's own resolution.
+            if s.tolerance > tol.confusion() {
+                if let Some(node) = model.node_mut(&built)
+                    && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+                {
+                    data.tolerance = data.tolerance.widen_to(s.tolerance);
+                }
+                for v in [&v0, &v1] {
+                    model.widen(v, ogeom_core::Tolerance::new(s.tolerance)?)?;
+                }
+            }
             // The section's pcurve is unwrapped across any seam; the face's
             // triangulator lives in one chart, so the attached copy is folded
             // home by the same period shift the arrangement gave this

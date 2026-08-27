@@ -100,6 +100,50 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
         ends.push((from, to));
     }
 
+    // Dust welds through. A strand shorter than the snap is dropped from
+    // the graph, but its two ends were still one junction of the boundary:
+    // a run of consecutive dust pieces — the paving's crossing clusters on
+    // a tolerant rail leave them — can jointly span more than the snap, and
+    // dropping the pieces one by one would tear a gap no positional weld
+    // reaches. Each dropped strand therefore aliases its endpoints, and a
+    // chain of dust aliases end to end, so the surviving neighbours meet at
+    // one node however long the run.
+    {
+        let mut parent: Vec<usize> = (0..nodes.len()).collect();
+        let find = |parent: &mut Vec<usize>, mut i: usize| -> usize {
+            while parent[i] != i {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+            i
+        };
+        let mut any = false;
+        for strand in strands {
+            if strand.polyline.len() < 2 || polyline_length(&strand.polyline) > snap {
+                continue;
+            }
+            let a = canon(strand.polyline[0], &mut nodes);
+            let b = canon(
+                *strand.polyline.last().unwrap_or(&strand.polyline[0]),
+                &mut nodes,
+            );
+            while parent.len() < nodes.len() {
+                parent.push(parent.len());
+            }
+            let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+            if ra != rb {
+                parent[rb] = ra;
+                any = true;
+            }
+        }
+        if any {
+            for (from, to) in &mut ends {
+                *from = find(&mut parent, *from);
+                *to = find(&mut parent, *to);
+            }
+        }
+    }
+
     // Prune dangling chains. A section that fails to separate material hangs
     // by an end; a *boundary* strand doing so means the face's own boundary
     // does not close, which no amount of pruning repairs.
@@ -115,6 +159,15 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
         for (strand, (u, v)) in live.iter().zip(&ends) {
             if degree[*u] < 2 || degree[*v] < 2 {
                 if strand.boundary {
+                    if std::env::var("OGEOM_ARRANGE_DEBUG").is_ok() {
+                        eprintln!(
+                            "DANGLE: boundary strand {:?} .. {:?} (deg {} / {})",
+                            strand.polyline[0],
+                            strand.polyline[strand.polyline.len() - 1],
+                            degree[*u],
+                            degree[*v]
+                        );
+                    }
                     ogeom_bail!(
                         Construction,
                         "a face boundary strand dangles; the boundary does not \
