@@ -27,3 +27,12 @@ files: conformance checkers report syntax errors in them. That is part of their
 value — a reader that only accepts clean files has not been tested. The
 PMI-annotated AP242 variants exist in the same zip and can be added under the
 same licence when PMI is in scope.
+
+## m5x16_bhcs.step
+
+An M5x16 button-head cap screw, five placed bodies, extracted standalone
+from a community printer assembly (issue #37's fixture). Nothing but the
+classic primitives — spherical button head, cylindrical shank, conical
+chamfers — with the head's sphere zone slit along a meridian that sits at
+the chart's own seam: the minimal reproducer for a doubly-used edge that
+is a slit, not a period-wrapping seam.

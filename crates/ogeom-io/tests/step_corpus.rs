@@ -315,3 +315,66 @@ fn warnings_summarise_by_kind_with_counts_and_worsts() {
         "the summary counts what the prose says: {counted} vs {prose}"
     );
 }
+
+#[test]
+fn a_slit_sphere_zone_meshes_its_own_region_not_the_complement() {
+    // Issue #37: the button head's sphere zone is slit along a meridian
+    // that sits at the chart's own seam. The doubly-used slit edge was
+    // bracketed like a period-wrapping seam, which wound the ring, pulled
+    // in a pole row the face never touches, and meshed the complement of
+    // the head — a fan the size of the whole sphere. The honest measure is
+    // chart-consistency: every triangle's centre must sit at sag distance
+    // from the surface evaluated at its own chart centre.
+    use ogeom_geom::{Surface as _, Transformable as _};
+    use ogeom_topo::{Filter, NodeData, ShapeType, explore};
+    let text = corpus("m5x16_bhcs.step");
+    let import = ogeom_io::step::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let solid = &import.solids[0];
+    let mut checked = 0;
+    for face in explore(model, solid, Filter::OfType(ShapeType::Face)).unwrap() {
+        let NodeData::Face(d) = model.node(&face).unwrap().data() else {
+            continue;
+        };
+        let surface = model
+            .geometry()
+            .surface(d.surface)
+            .unwrap()
+            .clone()
+            .transformed(&face.transform(model.datums()).unwrap(), T)
+            .unwrap();
+        let Ok(mesh) =
+            ogeom_mesh::triangulate_face(model, &face, ogeom_mesh::Deflection::default(), T)
+        else {
+            continue;
+        };
+        let mut worst = 0.0_f64;
+        for t in &mesh.triangles {
+            let [a, b, c] = [
+                mesh.positions[t[0] as usize],
+                mesh.positions[t[1] as usize],
+                mesh.positions[t[2] as usize],
+            ];
+            let mid = ogeom_math::Point::from_vector(
+                (a.to_vector() + b.to_vector() + c.to_vector()) / 3.0,
+            );
+            let mu = (mesh.parameters[t[0] as usize].0
+                + mesh.parameters[t[1] as usize].0
+                + mesh.parameters[t[2] as usize].0)
+                / 3.0;
+            let mv = (mesh.parameters[t[0] as usize].1
+                + mesh.parameters[t[1] as usize].1
+                + mesh.parameters[t[2] as usize].1)
+                / 3.0;
+            if let Ok(on) = surface.point_at(mu, mv, T) {
+                worst = worst.max(on.distance(mid));
+            }
+        }
+        assert!(
+            worst < 0.2,
+            "a face's triangles wander {worst} mm from their own chart"
+        );
+        checked += 1;
+    }
+    assert!(checked > 10, "the screw has faces to check: {checked}");
+}

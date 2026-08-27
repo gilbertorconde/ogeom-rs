@@ -875,13 +875,24 @@ fn boundary_ring(
                         .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
                             (lo.min(p.x), hi.max(p.x))
                         });
-                    let side = if f64::midpoint(lo, hi) >= prior.x {
-                        1.0
-                    } else {
-                        -1.0
-                    };
-                    shift.x = prior.x + side * span - first.x;
-                    bracketed = true;
+                    // Bracketing is for the face that wraps the period — a
+                    // band whose rims run the whole way round, its two seam
+                    // columns a period apart. A *slit* uses one edge twice
+                    // without wrapping: the ring stays in a fraction of the
+                    // chart, both traversals stand on one column, and
+                    // forcing them apart winds the ring, invites a pole row
+                    // it never touches, and meshes the complement of the
+                    // face — the issue #37 screw head. The ring's own reach
+                    // says which face this is.
+                    if hi - lo >= span * 0.5 {
+                        let side = if f64::midpoint(lo, hi) >= prior.x {
+                            1.0
+                        } else {
+                            -1.0
+                        };
+                        shift.x = prior.x + side * span - first.x;
+                        bracketed = true;
+                    }
                 }
                 if !bracketed {
                     if shift.x != 0.0 && (gap - shift.x).abs() <= span * 1e-6 {
