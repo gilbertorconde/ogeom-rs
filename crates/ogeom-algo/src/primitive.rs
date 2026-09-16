@@ -169,6 +169,70 @@ pub fn make_parallelepiped(
     box_like(model, &corner_points, tol)
 }
 
+/// A hexahedron: the solid on eight corners laid out like a box's, whose
+/// six faces are planar. The corners come in a box's order: the four of
+/// the bottom face counter-clockwise from the origin corner — `(0,0,0)`,
+/// `(1,0,0)`, `(1,1,0)`, `(0,1,0)` — then the four above them in the same
+/// order.
+///
+/// A box and a parallelepiped are the square and sheared cases; a corner
+/// tool's block at an oblique vertex, bounded by the three host planes and
+/// three planes through the ball's centre, is the general one. Each face's
+/// four corners must be coplanar; a corner off its face's plane is refused.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
+/// corner is not finite, a face's four corners are not coplanar, or the
+/// corners span no volume.
+pub fn make_hexahedron(
+    model: &mut Model,
+    corners: [Point; 8],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    for (face, _) in FACES {
+        let [a, b, c, d] = [
+            corners[face[0]],
+            corners[face[1]],
+            corners[face[2]],
+            corners[face[3]],
+        ];
+        let n = (b - a).cross(c - a);
+        let m = n.magnitude();
+        if !m.is_finite() || m <= tol.confusion() {
+            ogeom_bail!(Construction, "a hexahedron's face has no area");
+        }
+        let off = ((d - a).dot(n) / m).abs();
+        if off > tol.confusion() * 10.0 {
+            ogeom_bail!(
+                Construction,
+                "a hexahedron's face is not planar; its fourth corner sits {off} off"
+            );
+        }
+    }
+    let volume = (corners[1] - corners[0])
+        .cross(corners[3] - corners[0])
+        .dot(corners[4] - corners[0]);
+    if !volume.is_finite() || volume.abs() <= tol.confusion() {
+        ogeom_bail!(Construction, "a hexahedron's corners span no volume");
+    }
+    // Wound like a parallelepiped: the first two edges swapped when the
+    // three come left-handed, so the faces look outward either way.
+    let ordered: Vec<Point> = if volume > 0.0 {
+        corners.to_vec()
+    } else {
+        CORNERS
+            .iter()
+            .map(|&(i, j, k)| {
+                let at = CORNERS.iter().position(|&c| c == (j, i, k)).unwrap_or(0);
+                corners[at]
+            })
+            .collect()
+    };
+    model.begin_operation();
+    box_like(model, &ordered, tol)
+}
+
 /// Build a solid from eight corners laid out like [`CORNERS`], with the six
 /// faces of [`FACES`].
 ///
@@ -1408,6 +1472,50 @@ mod tests {
             .is_err(),
             "coplanar edges span no volume"
         );
+    }
+
+    /// A truncated pyramid on eight corners: planar trapezoid walls, the
+    /// frustum's own volume, and a corner off its face's plane refused.
+    #[test]
+    fn a_hexahedron_is_a_frustum_when_its_corners_say_so() {
+        let mut model = Model::new();
+        let (h, a, b) = (3.0, 2.0, 1.0);
+        let corners = [
+            Point::new(-a, -a, 0.0),
+            Point::new(a, -a, 0.0),
+            Point::new(a, a, 0.0),
+            Point::new(-a, a, 0.0),
+            Point::new(-b, -b, h),
+            Point::new(b, -b, h),
+            Point::new(b, b, h),
+            Point::new(-b, b, h),
+        ];
+        let solid = make_hexahedron(&mut model, corners, T).unwrap().shape;
+        assert_eq!(model.kind_of(&solid).unwrap(), ShapeType::Solid);
+        assert_eq!(
+            explore_unique(&model, &solid, ShapeType::Face)
+                .unwrap()
+                .len(),
+            6
+        );
+        let shell = explore_unique(&model, &solid, ShapeType::Shell)
+            .unwrap()
+            .remove(0);
+        assert!(crate::is_shell_closed(&model, &shell).unwrap());
+        let (bottom, top) = (4.0 * a * a, 4.0 * b * b);
+        let expected = h / 3.0 * (bottom + top + (bottom * top).sqrt());
+        let measured =
+            crate::volume_properties(&model, &solid, ogeom_mesh::Deflection::default(), T)
+                .unwrap()
+                .mass;
+        assert!(
+            (measured - expected).abs() < expected * 1e-6,
+            "frustum volume {measured} against {expected}"
+        );
+        // A corner lifted off its wall's plane is refused.
+        let mut skewed = corners;
+        skewed[6] = Point::new(b, b + 0.5, h);
+        assert!(make_hexahedron(&mut model, skewed, T).is_err());
     }
 
     #[test]

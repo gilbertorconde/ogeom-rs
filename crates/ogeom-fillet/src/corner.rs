@@ -148,25 +148,28 @@ pub fn round_vertex(
         .map(|v| Direction::new(*v, tol))
         .collect::<OgeomResult<_>>()?;
 
-    // The corner block stands at the far corner — the vertex walked in by
-    // `radius` along all three edges — and spans back toward the vertex, so
-    // its frame's axes are the *negated* inward directions. Negating a
-    // right-handed triple as ordered gives a left-handed one; swapping two
-    // axes rights it, so the pair feeding the frame is chosen by the
-    // triple's own handedness.
-    let (first, second) = if d[0].vector().cross(d[1].vector()).dot(d[2].vector()) >= 0.0 {
-        (d[1], d[0])
+    // The corner block stands at the vertex and spans `radius` along each
+    // inward direction; the ball sits at the far corner — the vertex walked
+    // in by `radius` along all three edges — on the same axes. Both frames
+    // are right-handed on the inward triple as ordered, or on the first
+    // two swapped when that triple comes left-handed, so the block's third
+    // axis is always an inward direction and never its opposite. The ball
+    // then has a pole at one corner of the patch it leaves and its seam
+    // meridian out past the block through the first axis — the one
+    // placement of chart against patch that the boolean and the mesher
+    // both speak; a block spanning back from the far corner on reversed
+    // axes, with the ball on it, left a micron of sliver at that corner
+    // and a mesh pinched on it.
+    let first = if d[0].vector().cross(d[1].vector()).dot(d[2].vector()) >= 0.0 {
+        d[0]
     } else {
-        (d[0], d[1])
+        d[1]
     };
     let far = corner + (d[0].vector() + d[1].vector() + d[2].vector()) * radius;
-    let frame = Frame::new(far, d[2].reversed(), first.reversed(), tol)?;
-    debug_assert!(
-        frame.y().vector().dot(second.reversed().vector()).abs() > 0.99,
-        "the frame's derived axis is the remaining edge"
-    );
-    let block = ogeom_algo::make_box(model, frame, (radius, radius, radius), tol)?.shape;
-    let ball = ogeom_algo::make_sphere(model, frame, radius, tol)?.shape;
+    let block_frame = Frame::new(corner, d[2], first, tol)?;
+    let ball_frame = Frame::new(far, d[2], first, tol)?;
+    let block = ogeom_algo::make_box(model, block_frame, (radius, radius, radius), tol)?.shape;
+    let ball = ogeom_algo::make_sphere(model, ball_frame, radius, tol)?.shape;
     let tool = ogeom_bool::cut(model, &block, &ball, tol)?;
     let rounded = ogeom_bool::cut(model, solid, &tool.shape, tol)?;
     let mut built = Built {

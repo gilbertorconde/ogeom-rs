@@ -288,6 +288,79 @@ fn round_vertex_reproduces_the_b2_closed_form() {
     }
 }
 
+/// The corner tool at every corner of the box, the three fillets in a
+/// different order at each: the construction is the same whichever way the
+/// corner faces and whichever edge goes first. It was not — the tool's
+/// block face meets a band exactly along the arc that bounds it, and the
+/// paving read that section as outside the block face by a hair at some
+/// corners and inside at others, so the band split at some corners and
+/// stayed whole at the rest.
+#[test]
+fn round_vertex_rounds_the_corner_at_any_placement() {
+    let r = 3.0;
+    let expected = 784.0 + 51.75 * core::f64::consts::PI;
+    let fine = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
+    let mut failed: Vec<(usize, String)> = Vec::new();
+    for (ci, corner) in [
+        (0.0, 0.0, 0.0),
+        (10.0, 0.0, 0.0),
+        (0.0, 10.0, 0.0),
+        (10.0, 10.0, 0.0),
+        (0.0, 0.0, 10.0),
+        (10.0, 0.0, 10.0),
+        (0.0, 10.0, 10.0),
+        (10.0, 10.0, 10.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut model = Model::new();
+        let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let at = Point::new(corner.0, corner.1, corner.2);
+        let vertex = vertex_near(&model, &block, at);
+        // The three edges' midpoints, the order rotated by the corner.
+        let mut targets = [
+            Point::new(5.0, corner.1, corner.2),
+            Point::new(corner.0, 5.0, corner.2),
+            Point::new(corner.0, corner.1, 5.0),
+        ];
+        targets.rotate_left(ci % 3);
+        let mut solid = block;
+        for target in targets {
+            let edge = edge_near(&model, &solid, target);
+            solid = ogeom::fillet::fillet_edge(&mut model, &solid, &edge, r, T)
+                .unwrap_or_else(|e| panic!("fillet at corner {ci} near {target:?}: {e}"))
+                .shape;
+        }
+        let outcome = ogeom::fillet::round_vertex(&mut model, &solid, &vertex, r, T)
+            .map_err(|e| e.to_string())
+            .and_then(|rounded| {
+                if !ogeom::algo::check(&model, &rounded.shape, T)
+                    .unwrap()
+                    .is_valid()
+                {
+                    return Err("not a valid solid".to_string());
+                }
+                ogeom::algo::volume_properties(&model, &rounded.shape, fine, T)
+                    .map(|p| p.mass)
+                    .map_err(|e| e.to_string())
+            });
+        match outcome {
+            Ok(measured) => assert!(
+                (measured - expected).abs() / expected < 2e-3,
+                "corner {ci}: {measured} against {expected}"
+            ),
+            Err(e) => failed.push((ci, e)),
+        }
+    }
+    assert!(
+        failed.is_empty(),
+        "placements that did not round: {failed:?}"
+    );
+}
+
 /// The refusals name their families: a curved-edged corner and an oblique
 /// one both belong to the setback construction, and say so.
 #[test]

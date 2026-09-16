@@ -486,6 +486,91 @@ fn rescale(t: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
 }
 
 /// The pcurve's course over a sub-range of the *curve's* parameters.
+/// The stretches of `curve` over `crange` that lie along the edge `e`
+/// within the pair's honesty, as overlaps with the edge's own parameters at
+/// their ends — the measured twin of the intersector's closed-form
+/// coincidence, for a fitted curve on an exact one.
+fn measured_overlaps(
+    curve: &Curve,
+    crange: (f64, f64),
+    tolerance: f64,
+    e: &BoundaryEdge,
+    tol: Tolerances,
+) -> OgeomResult<Vec<ogeom_intersect::Overlap>> {
+    const SAMPLES: usize = 48;
+    let width = (tolerance.max(e.tolerance) * 2.0).max(tol.confusion() * 1e3);
+    let mut near: Vec<bool> = Vec::with_capacity(SAMPLES + 1);
+    for i in 0..=SAMPLES {
+        #[allow(clippy::cast_precision_loss)]
+        let t = crange.0 + (crange.1 - crange.0) * (i as f64) / (SAMPLES as f64);
+        let p = curve.point_at(t, tol)?;
+        near.push(distance_to_edge_curve(&e.curve, e.crange, p, tol)? <= width);
+    }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i <= SAMPLES {
+        if !near[i] {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < SAMPLES && near[i + 1] {
+            i += 1;
+        }
+        let end = i;
+        i += 1;
+        // Three samples along is a stretch; fewer is a crossing's blur.
+        if end - start < 2 {
+            continue;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let at = |k: usize| crange.0 + (crange.1 - crange.0) * (k as f64) / (SAMPLES as f64);
+        // Each end refined by bisection into the neighbouring sample gap.
+        let refine = |inside: f64, outside: f64| -> OgeomResult<f64> {
+            let (mut a, mut b) = (inside, outside);
+            for _ in 0..24 {
+                let m = f64::midpoint(a, b);
+                let p = curve.point_at(m, tol)?;
+                if distance_to_edge_curve(&e.curve, e.crange, p, tol)? <= width {
+                    a = m;
+                } else {
+                    b = m;
+                }
+            }
+            Ok(a)
+        };
+        let lo = if start == 0 {
+            at(0)
+        } else {
+            refine(at(start), at(start - 1))?
+        };
+        let hi = if end == SAMPLES {
+            at(SAMPLES)
+        } else {
+            refine(at(end), at(end + 1))?
+        };
+        if hi - lo <= tol.parametric() {
+            continue;
+        }
+        let on_edge = |t: f64| -> OgeomResult<f64> {
+            let p = curve.point_at(t, tol)?;
+            let foot = ogeom_algo::project_on_curve(&e.curve, p, 64, tol)?;
+            Ok(onto_range(foot.parameter, &e.curve, e.crange, tol))
+        };
+        if *DEBUG_WIRE {
+            eprintln!(
+                "CONTACT along edge {} measured over ({lo:.6}, {hi:.6}) within {width:.2e}",
+                e.node.index()
+            );
+        }
+        out.push(ogeom_intersect::Overlap {
+            on_a: (lo, hi),
+            on_b: (on_edge(lo)?, on_edge(hi)?),
+        });
+    }
+    Ok(out)
+}
+
 fn pcurve_polyline(
     pcurve: &PlanarCurve,
     prange: (f64, f64),
@@ -737,6 +822,11 @@ struct SectionPiece {
     /// splitting curve on the other, and only the face it duplicates leaves
     /// it out.
     hugs: [bool; 2],
+    /// Set when the piece was admitted by a hug — a split of the other face
+    /// along this edge of the hugging face: (edge node, target from A,
+    /// target face). Two sections hugging one edge onto one face are the
+    /// same split, kept once.
+    hug_key: Option<(ogeom_topo::TShapeId, bool, usize)>,
 }
 
 /// One boundary edge of one argument's face, lying in a face of the other
@@ -1251,12 +1341,12 @@ fn fill(
             // section leaves. Dropped from both, the plane keeps one region where
             // it has two, and the result does not close. So the exclusion is
             // recorded per face.
-            let mut along: [Vec<(f64, f64)>; 2] = [Vec::new(), Vec::new()];
+            let mut along: [Vec<(f64, f64, usize)>; 2] = [Vec::new(), Vec::new()];
             for (side, own) in [
                 (0_usize, &ga.faces[section.face_a]),
                 (1, &gb.faces[section.face_b]),
             ] {
-                for e in &own.edges {
+                for (ei, e) in own.edges.iter().enumerate() {
                     let found = intersect_curves(&section.curve, &e.curve, cc, tol)?;
                     for crossing in &found.crossings {
                         if crossing.gap > reach {
@@ -1406,7 +1496,7 @@ fn fill(
                         }
                         trim_ts.push(lo);
                         trim_ts.push(hi);
-                        along[side].push((lo, hi));
+                        along[side].push((lo, hi, ei));
                     }
                 }
             }
@@ -1419,9 +1509,9 @@ fn fill(
             // which read as stops would shatter the section and pave the
             // leg at each.
             hits.retain(|(side, _, _, on_a, _)| {
-                !along[*side]
-                    .iter()
-                    .any(|(lo, hi)| *on_a > lo + tol.parametric() && *on_a < hi - tol.parametric())
+                !along[*side].iter().any(|(lo, hi, _)| {
+                    *on_a > lo + tol.parametric() && *on_a < hi - tol.parametric()
+                })
             });
             let edge_hits: Vec<(ogeom_topo::TShapeId, f64, f64, f64)> = hits
                 .iter()
@@ -1538,7 +1628,8 @@ fn fill(
                 }
             }
 
-            let inside_both = |t: f64| -> OgeomResult<bool> {
+            // Whether the section at `t` lies inside each face's trim.
+            let inside_each = |t: f64| -> OgeomResult<[bool; 2]> {
                 let tf = if section.closed { fold(t, domain) } else { t };
                 let ua = fold_point_into_chart(
                     section.pc_a.point_at(tf, tol)?,
@@ -1556,7 +1647,7 @@ fn fill(
                     .iter()
                     .map(Vec::as_slice)
                     .collect();
-                Ok(inside_many(&la, ua) && inside_many(&lb, ub))
+                Ok([inside_many(&la, ua), inside_many(&lb, ub)])
             };
 
             for (lo, hi) in candidates {
@@ -1569,7 +1660,7 @@ fn fill(
                 } else {
                     mid
                 };
-                let held = inside_both(mid)?;
+                let held = inside_each(mid)?;
                 if *DEBUG_WIRE {
                     let tf = if section.closed {
                         fold(mid, domain)
@@ -1577,7 +1668,7 @@ fn fill(
                         mid
                     };
                     eprintln!(
-                        "PAVE s{si}: candidate ({lo:.6}, {hi:.6}) inside both {held} at a {:?} b {:?}",
+                        "PAVE s{si}: candidate ({lo:.6}, {hi:.6}) inside {held:?} at a {:?} b {:?}",
                         section
                             .pc_a
                             .point_at(tf, tol)
@@ -1590,44 +1681,73 @@ fn fill(
                             .map(|q| fold_point_into_chart(q, &gb.faces[section.face_b].surface))
                     );
                 }
-                if !held {
-                    continue;
-                }
                 // A section that runs along a boundary edge of a face splits
                 // nothing *there*: the split already exists as boundary. The
                 // analytic overlap detection above catches the same-support
                 // cases; this catches the rest — a fitted section tracing a
                 // boundary curve, a surface meeting another exactly at its own
                 // trim — by measurement rather than by recognising supports.
+                // The hug is asked before the trim: a section on a face's own
+                // edge reads inside or outside that face by a hair, and the
+                // corner tool's block face meets a band exactly along the arc
+                // that bounds it. On the hugging face it is boundary already;
+                // what matters is whether the *other* face holds it.
                 let mut hugs = [false; 2];
+                // The edges each side hugs — a rim already in pieces is
+                // several: they must split wherever the section does, and
+                // the section wherever they end, or the two faces walk
+                // different subdivisions of one curve.
+                let mut hugged: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
                 for (side, own, side_from_a, side_face) in [
                     (0_usize, &ga.faces[section.face_a], true, section.face_a),
                     (1, &gb.faces[section.face_b], false, section.face_b),
                 ] {
-                    if along[side]
+                    if let Some((_, _, ei)) = along[side]
                         .iter()
-                        .any(|(alo, ahi)| mid_folded >= *alo && mid_folded <= *ahi)
+                        .find(|(alo, ahi, _)| mid_folded >= *alo && mid_folded <= *ahi)
                     {
                         hugs[side] = true;
+                        hugged[side].push(*ei);
                         continue;
                     }
                     let mut all_near = true;
+                    let mut votes: Vec<usize> = vec![0; own.edges.len()];
                     for i in 0..=4 {
                         let t = lo + (hi - lo) * f64::from(i) / 4.0;
                         let tf = if section.closed { fold(t, domain) } else { t };
                         let at = section.curve.point_at(tf, tol)?;
-                        // Wider than the crossing filters on purpose: a
-                        // tangentially-traced curve wobbles about the boundary it
-                        // hugs by far more than a fit budget, and a genuine
-                        // section keeps a distance of feature scale, not microns.
-                        let width = reach.max(tol.confusion() * 1e3);
+                        // Wider than the crossing filters on purpose for a
+                        // fitted section: a tangentially-traced curve wobbles
+                        // about the boundary it hugs by far more than a fit
+                        // budget, and a genuine section keeps a distance of
+                        // feature scale, not microns. An exact section keeps
+                        // to the edge's own honesty: a plane's ellipse across
+                        // a band touches the band's rail tangentially, and
+                        // the stretch within a tenth of a millimetre of the
+                        // rail is the section, not the rail — read as a hug
+                        // it left the cap's crescent unable to close.
+                        let floor = if section.tolerance > 0.0 {
+                            tol.confusion() * 1e3
+                        } else {
+                            tol.confusion() * 10.0
+                        };
                         let mut near = false;
-                        for e in &own.edges {
-                            if distance_to_edge_curve(&e.curve, e.crange, at, tol)? <= width {
+                        for (ei, e) in own.edges.iter().enumerate() {
+                            let width = reach.max(floor).max(e.tolerance * 2.0);
+                            let d = distance_to_edge_curve(&e.curve, e.crange, at, tol)?;
+                            if d <= width {
+                                if *DEBUG_WIRE {
+                                    eprintln!(
+                                        "PAVE s{si}: side {side} sample {i} hugs edge {} at {d:.2e} (width {width:.2e})",
+                                        e.node.index()
+                                    );
+                                }
                                 near = true;
+                                votes[ei] += 1;
                                 break;
                             }
                         }
+                        let width = reach.max(floor);
                         // A contact edge is a strand on this face too — the other
                         // solid's boundary, carried into a chart they share — so a
                         // section tracing one would be the same curve twice, and
@@ -1639,7 +1759,9 @@ fn fill(
                                 if c.target_from_a != side_from_a || c.target_face != side_face {
                                     continue;
                                 }
-                                if distance_to_edge_curve(&c.curve, c.crange, at, tol)? <= width {
+                                if distance_to_edge_curve(&c.curve, c.crange, at, tol)?
+                                    <= width.max(c.tolerance * 2.0)
+                                {
                                     near = true;
                                     break;
                                 }
@@ -1651,9 +1773,57 @@ fn fill(
                         }
                     }
                     hugs[side] = all_near;
+                    if all_near {
+                        hugged[side].extend(
+                            votes
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, c)| **c > 0)
+                                .map(|(ei, _)| ei),
+                        );
+                    }
                 }
                 if *DEBUG_WIRE {
                     eprintln!("PAVE s{si}: candidate ({lo:.6}, {hi:.6}) hugs {hugs:?}");
+                }
+                // Inside both faces the piece is a section of both. Hugging
+                // one face's own edge while that face's trim reads it out —
+                // by a hair, on the edge — it is still the other face's
+                // split, and is admitted there, unless that edge is already
+                // carried onto the other face as a contact: then the split
+                // is laid down once already, and a section would lay it
+                // twice.
+                let mut hug_key: Option<(ogeom_topo::TShapeId, bool, usize)> = None;
+                let admitted = if held[0] && held[1] {
+                    true
+                } else if hugs[0] != hugs[1] {
+                    let hugging = usize::from(hugs[1]);
+                    let other = 1 - hugging;
+                    let (own, other_from_a, other_face) = if hugging == 0 {
+                        (&ga.faces[section.face_a], false, section.face_b)
+                    } else {
+                        (&gb.faces[section.face_b], true, section.face_a)
+                    };
+                    let carried = hugged[hugging].iter().any(|&ei| {
+                        contacts.iter().any(|c| {
+                            c.node == own.edges[ei].node
+                                && c.target_from_a == other_from_a
+                                && c.target_face == other_face
+                        })
+                    });
+                    if held[other] && !carried {
+                        hug_key = hugged[hugging]
+                            .first()
+                            .map(|&ei| (own.edges[ei].node, other_from_a, other_face));
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !admitted {
+                    continue;
                 }
                 if hugs[0] && hugs[1] {
                     // Boundary on both sides: the split exists twice over and
@@ -1702,6 +1872,57 @@ fn fill(
                     }
                 }
                 cuts.push(hi);
+                // A hugged edge's own ends are cuts of the section too: the
+                // edge may already be several pieces — a sphere's rim split
+                // at its chart seam — and the section must walk the same
+                // pieces, or the two faces never sew along it.
+                for side in 0..2 {
+                    if !hugs[side] {
+                        continue;
+                    }
+                    let own = if side == 0 {
+                        &ga.faces[section.face_a]
+                    } else {
+                        &gb.faces[section.face_b]
+                    };
+                    for &ei in &hugged[side] {
+                        let e = &own.edges[ei];
+                        for end in [e.crange.0, e.crange.1] {
+                            let p = e.curve.point_at(end, tol)?;
+                            let foot = ogeom_algo::project_on_curve(&section.curve, p, 64, tol)?;
+                            if *DEBUG_WIRE {
+                                eprintln!(
+                                    "PAVE s{si}: side {side} hugged edge {} end {end:.6} lands at {:.6} off {:.2e} against ({lo:.6}, {hi:.6})",
+                                    e.node.index(),
+                                    foot.parameter,
+                                    foot.distance
+                                );
+                            }
+                            if foot.distance > reach.max(tol.confusion() * 1e3) {
+                                continue;
+                            }
+                            let mut t = foot.parameter;
+                            if section.closed {
+                                let period = domain.1 - domain.0;
+                                while t < lo {
+                                    t += period;
+                                }
+                                while t - period >= lo {
+                                    t -= period;
+                                }
+                            }
+                            if t > lo + tol.parametric() && t < hi - tol.parametric() {
+                                if *DEBUG_WIRE {
+                                    eprintln!(
+                                        "PAVE s{si}: side {side} cut at {t:.6} where hugged edge {} ends",
+                                        e.node.index()
+                                    );
+                                }
+                                cuts.push(t);
+                            }
+                        }
+                    }
+                }
                 cuts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
                 // Cuts the section cannot tell apart are one cut: two
                 // crossings a few nanometres apart along it would leave a
@@ -1722,6 +1943,50 @@ fn fill(
                     }
                     cuts = kept;
                 }
+                // A hugged edge is boundary where this piece is section: it
+                // must split at the piece's interior cuts too, or the face
+                // that keeps the edge walks one long strand where its
+                // neighbour walks three, and the sew pairs none of them.
+                for side in 0..2 {
+                    if !hugs[side] {
+                        continue;
+                    }
+                    let own = if side == 0 {
+                        &ga.faces[section.face_a]
+                    } else {
+                        &gb.faces[section.face_b]
+                    };
+                    for &ei in &hugged[side] {
+                        let e = &own.edges[ei];
+                        // The piece's own ends as well as its interior cuts: a
+                        // stop against another face's edge is a split of the
+                        // hugged edge too, or the section's neighbour walks two
+                        // strands where the hugged edge's face walks one.
+                        for c in &cuts {
+                            let at = section.curve.point_at(fold(*c, domain), tol)?;
+                            let foot = ogeom_algo::project_on_curve(&e.curve, at, 64, tol)?;
+                            let on_e = onto_range(foot.parameter, &e.curve, e.crange, tol);
+                            if on_e <= e.crange.0.min(e.crange.1) + tol.parametric()
+                                || on_e >= e.crange.0.max(e.crange.1) - tol.parametric()
+                            {
+                                continue;
+                            }
+                            if *DEBUG_WIRE {
+                                eprintln!(
+                                    "PAVE s{si}: side {side} hugged edge {} paved at {on_e:.6} for the cut at {c:.6}",
+                                    e.node.index()
+                                );
+                            }
+                            paves.push((
+                                e.node,
+                                Pave {
+                                    t: on_e,
+                                    honesty: honest(section.tolerance, tol).max(foot.distance),
+                                },
+                            ));
+                        }
+                    }
+                }
                 for pair in cuts.windows(2) {
                     let (lo2, hi2) = (pair[0], pair[1]);
                     let from = section.curve.point_at(fold(lo2, domain), tol)?;
@@ -1734,17 +1999,20 @@ fn fill(
                             section: si,
                             range: (lo2, mid),
                             hugs,
+                            hug_key,
                         });
                         pieces.push(SectionPiece {
                             section: si,
                             range: (mid, hi2),
                             hugs,
+                            hug_key,
                         });
                     } else {
                         pieces.push(SectionPiece {
                             section: si,
                             range: (lo2, hi2),
                             hugs,
+                            hug_key,
                         });
                     }
                 }
@@ -1759,6 +2027,95 @@ fn fill(
             paves.entry(node).or_default().push(at);
         }
         pieces.extend(made);
+    }
+    // Two sections hugging onto one face along one line lay the same split
+    // down twice — a top face's trace and its band's, both along the rail
+    // they share, which need not be one edge node once a shell has been
+    // built — and a line met from both sides at once breaks the
+    // arrangement. Pieces of different sections admitted by a hug onto the
+    // same face, each lying on the other's curve, are one split, and the
+    // section covering the most of it speaks for it.
+    {
+        let width = tol.confusion() * 1e3;
+        let mut drop: Vec<usize> = Vec::new();
+        let hugged_onto: Vec<usize> = pieces
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.hug_key.is_some())
+            .map(|(i, _)| i)
+            .collect();
+        let mid_of = |p: &SectionPiece| -> OgeomResult<Point> {
+            let section = &sections[p.section];
+            let domain = section.curve.domain();
+            section.curve.point_at(
+                at_param(f64::midpoint(p.range.0, p.range.1), domain, section.closed),
+                tol,
+            )
+        };
+        let length_of = |p: &SectionPiece| -> OgeomResult<f64> {
+            let section = &sections[p.section];
+            let domain = section.curve.domain();
+            let a = section
+                .curve
+                .point_at(at_param(p.range.0, domain, section.closed), tol)?;
+            let b = section
+                .curve
+                .point_at(at_param(p.range.1, domain, section.closed), tol)?;
+            Ok(a.distance(b))
+        };
+        // A hug-admitted piece against every other piece kept on the same
+        // face: a section admitted the ordinary way, inside both faces,
+        // already speaks for the split, and the hug-admitted one yields
+        // to it; two hug-admitted ones yield to the longer.
+        for &x in &hugged_onto {
+            let px = &pieces[x];
+            let Some((_, target_from_a, target_face)) = px.hug_key else {
+                continue;
+            };
+            for (y, py) in pieces.iter().enumerate() {
+                if y == x || py.section == px.section || drop.contains(&x) || drop.contains(&y) {
+                    continue;
+                }
+                let sy = &sections[py.section];
+                let on_target = if target_from_a {
+                    sy.face_a == target_face && !py.hugs[0]
+                } else {
+                    sy.face_b == target_face && !py.hugs[1]
+                };
+                if !on_target {
+                    continue;
+                }
+                let sx = &sections[px.section];
+                let on_y = distance_to_edge_curve(&sy.curve, py.range, mid_of(px)?, tol)? <= width;
+                let on_x = distance_to_edge_curve(&sx.curve, px.range, mid_of(py)?, tol)? <= width;
+                if !(on_x && on_y) {
+                    continue;
+                }
+                let loser = if py.hug_key.is_some() && length_of(px)? > length_of(py)? {
+                    y
+                } else {
+                    x
+                };
+                if *DEBUG_WIRE {
+                    eprintln!(
+                        "PAVE: s{} and s{} split one face along one line; s{} speaks for it",
+                        px.section,
+                        py.section,
+                        pieces[if loser == x { y } else { x }].section
+                    );
+                }
+                drop.push(loser);
+                if loser == x {
+                    break;
+                }
+            }
+        }
+        let mut index = 0_usize;
+        pieces.retain(|_| {
+            let keep = !drop.contains(&index);
+            index += 1;
+            keep
+        });
     }
     // The audit's verdict. A dropped pair whose surfaces intersect is not a
     // filter bug — planes meet along an infinite line the paving then trims
@@ -1843,7 +2200,40 @@ fn fill(
             // splits nothing: it is already boundary on both sides —
             // identically stacked boxes are all such spans — and duplicating
             // it as a strand would cancel the boundary it copies.
-            for overlap in &found.overlaps {
+            // The intersector answers coincidence in closed form for the
+            // analytic pairs only; a fitted curve lying on an exact one —
+            // a marched sphere's rim on a wedge cap's arc — comes back as
+            // crossings or nothing. That span is measured instead: the
+            // stretch of the contact within the pair's honesty of the edge.
+            // An analytic overlap survives only where it lands inside the
+            // contact's own window; a trimmed circle written a turn up
+            // clips to nothing, and is then measured like a fitted one.
+            let survives = |overlap: &ogeom_intersect::Overlap| -> bool {
+                let (lo, hi) = if overlap.on_a.0 <= overlap.on_a.1 {
+                    overlap.on_a
+                } else {
+                    (overlap.on_a.1, overlap.on_a.0)
+                };
+                let carried = if contact.curve.is_periodic() {
+                    let (dlo, dhi) = contact.curve.domain();
+                    let period = dhi - dlo;
+                    let turn = ((contact.crange.0 - lo) / period).floor();
+                    [turn, turn + 1.0, turn - 1.0]
+                        .into_iter()
+                        .map(|k| (k.mul_add(period, lo), k.mul_add(period, hi)))
+                        .map(|(a, b)| b.min(contact.crange.1) - a.max(contact.crange.0))
+                        .fold(f64::NEG_INFINITY, f64::max)
+                } else {
+                    hi.min(contact.crange.1) - lo.max(contact.crange.0)
+                };
+                carried > tol.parametric()
+            };
+            let measured: Vec<ogeom_intersect::Overlap> = if found.overlaps.iter().any(survives) {
+                Vec::new()
+            } else {
+                measured_overlaps(&contact.curve, contact.crange, contact.tolerance, e, tol)?
+            };
+            for overlap in found.overlaps.iter().chain(measured.iter()) {
                 let ordered = |r: (f64, f64)| if r.0 <= r.1 { r } else { (r.1, r.0) };
                 let (lo, hi) = ordered(overlap.on_a);
                 // The overlap is between the two *curves*; what interferes is
@@ -1853,6 +2243,27 @@ fn fill(
                 // quarters of it — and paving at the turn's ends says nothing,
                 // where paving at the arc's ends is exactly the split the
                 // other side needs to sew against.
+                // A periodic curve's overlap is answered on its base turn;
+                // an edge written a turn up — a wedge cap's arc at 2π..2.5π
+                // — covers it only once the turn is carried across.
+                let (lo, hi) = if contact.curve.is_periodic() {
+                    let (dlo, dhi) = contact.curve.domain();
+                    let period = dhi - dlo;
+                    let turn = ((contact.crange.0 - lo) / period).floor();
+                    let mut best = (lo, hi);
+                    let mut best_span = f64::NEG_INFINITY;
+                    for k in [turn, turn + 1.0, turn - 1.0] {
+                        let cand = (k.mul_add(period, lo), k.mul_add(period, hi));
+                        let span = cand.1.min(contact.crange.1) - cand.0.max(contact.crange.0);
+                        if span > best_span {
+                            best_span = span;
+                            best = cand;
+                        }
+                    }
+                    best
+                } else {
+                    (lo, hi)
+                };
                 let (lo, hi) = (lo.max(contact.crange.0), hi.min(contact.crange.1));
                 if hi - lo <= tol.parametric() {
                     continue;
@@ -1862,6 +2273,13 @@ fn fill(
                         t,
                         honesty: contact.tolerance,
                     });
+                }
+                if *DEBUG_WIRE {
+                    eprintln!(
+                        "CONTACT c{ci} along edge {} over ({lo:.6}, {hi:.6}) of {:?}",
+                        e.node.index(),
+                        contact.crange
+                    );
                 }
                 contact_along[ci].push((lo, hi));
                 // The *target* edge splits where the shared stretch ends,
@@ -3225,7 +3643,57 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     keep
                 });
             }
-            let split = arrange_pieces(&strands, face_snap)?;
+            let split = match arrange_pieces(&strands, face_snap) {
+                Ok(split) => split,
+                Err(err) => {
+                    if *ARRANGE_DEBUG {
+                        eprintln!("ARRANGE from_a={from_a} fi={fi} failed: {err}");
+                        for (si, st) in strands.iter().enumerate() {
+                            let (a, b) = (st.polyline[0], st.polyline[st.polyline.len() - 1]);
+                            let describe = |curve: &Curve, range: (f64, f64)| -> String {
+                                let mid = curve
+                                    .point_at(f64::midpoint(range.0, range.1), tol)
+                                    .map(|p| format!("({:.4},{:.4},{:.4})", p.x, p.y, p.z))
+                                    .unwrap_or_default();
+                                match curve {
+                                    Curve::Circle(c) => format!(
+                                        "circle centre {:?} r {:.4} mid {mid}",
+                                        c.circle().centre(),
+                                        c.circle().radius()
+                                    ),
+                                    other => {
+                                        format!("{:?} mid {mid}", core::mem::discriminant(other))
+                                    }
+                                }
+                            };
+                            let geometry = match st.tag {
+                                Tag::Boundary { edge, range } => {
+                                    describe(&face.edges[edge].curve, range)
+                                }
+                                Tag::Contact { contact, range } => {
+                                    describe(&contacts[contact].curve, range)
+                                }
+                                _ => String::new(),
+                            };
+                            eprintln!("    {geometry}");
+                            eprintln!(
+                                "  strand {si} boundary={} {:?} {a:?} .. {b:?}",
+                                st.boundary,
+                                match st.tag {
+                                    Tag::Boundary { edge, range } =>
+                                        format!("Boundary e{edge} {range:?}"),
+                                    Tag::Contact { contact, range } =>
+                                        format!("Contact c{contact} {range:?}"),
+                                    Tag::Section { section, range } =>
+                                        format!("Section s{section} {range:?}"),
+                                    Tag::Pole { pole, range } => format!("Pole p{pole} {range:?}"),
+                                }
+                            );
+                        }
+                    }
+                    return Err(err);
+                }
+            };
             for piece in split {
                 // Where a piece stands is asked at its interior probes in
                 // turn. The first is the roomiest, and usually the only one
@@ -3895,6 +4363,43 @@ fn assemble_result(
                             "  open edge uses={occurrences} faces={users} {:?} range={range:?}: {a:?} -> {b:?}",
                             core::mem::discriminant(g)
                         );
+                        // Twins: other edges of the shell with the same ends,
+                        // which the sew should have found to be this edge.
+                        for other in ogeom_topo::explore_unique(model, shell, ShapeType::Edge)? {
+                            if other.node() == edge.node() {
+                                continue;
+                            }
+                            let Some(od) = model.node(&other).and_then(|n| n.data().as_edge())
+                            else {
+                                continue;
+                            };
+                            let Some(ogeom_topo::EdgeRepr::Curve3d {
+                                curve: oc,
+                                range: orange,
+                                ..
+                            }) = od.curve3d()
+                            else {
+                                continue;
+                            };
+                            let Some(og) = model.geometry().curve(*oc) else {
+                                continue;
+                            };
+                            let oa = og.point_at(orange.0, tol)?;
+                            let ob = og.point_at(orange.1, tol)?;
+                            let same = (oa.distance(a) <= 1e-3 && ob.distance(b) <= 1e-3)
+                                || (oa.distance(b) <= 1e-3 && ob.distance(a) <= 1e-3);
+                            if same {
+                                let om = og.point_at(f64::midpoint(orange.0, orange.1), tol)?;
+                                let m = g.point_at(f64::midpoint(range.0, range.1), tol)?;
+                                eprintln!(
+                                    "    twin {:?} range={orange:?} mid gap {:.2e} tol {:.2e} vs {:.2e}",
+                                    core::mem::discriminant(og),
+                                    om.distance(m),
+                                    od.tolerance.get(),
+                                    data.tolerance.get()
+                                );
+                            }
+                        }
                         for f in ogeom_topo::explore(model, shell, Filter::OfType(ShapeType::Face))?
                         {
                             let uses_it = ogeom_topo::explore_unique(model, &f, ShapeType::Edge)
