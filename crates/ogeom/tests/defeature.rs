@@ -231,3 +231,135 @@ fn two_separate_fillets_remove_in_one_call() {
         "both wounds close exactly: {volume} against 1000"
     );
 }
+
+/// Two blends meeting at a box corner — `fillet_edges` on two top edges,
+/// the later band trimmed against the earlier — removed in one call: each
+/// band recovers its own crease from its side planes, the two creases meet
+/// where one pierces the other's side, that corner is one vertex for both,
+/// and the box comes back to the last bit.
+#[test]
+fn two_meeting_fillets_remove_in_one_call() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let a = edge_near(&model, &block, Point::new(10.0, 20.0, 10.0));
+    let b = edge_near(&model, &block, Point::new(20.0, 10.0, 10.0));
+    let met = ogeom::fillet::fillet_edges(&mut model, &block, &[a, b], 2.0, T)
+        .unwrap()
+        .shape;
+    let bands: Vec<Shape> = explore_unique(&model, &met, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter(|f| {
+            let data = model.node(f).unwrap().data().as_face().unwrap();
+            matches!(
+                model.geometry().surface(data.surface),
+                Some(SurfaceGeometry::Cylinder(_))
+            )
+        })
+        .collect();
+    assert_eq!(bands.len(), 2);
+    let restored = ogeom::boolean::remove_faces(&mut model, &met, &bands, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &restored, T).unwrap().is_valid());
+    assert_eq!(
+        explore_unique(&model, &restored, ShapeType::Face)
+            .unwrap()
+            .len(),
+        6
+    );
+    assert!((volume(&model, &restored) - 4000.0).abs() < 1e-6);
+}
+
+/// The same corner blended one edge at a time: the second wedge's cap
+/// stands flush against the first band, and the feature is the two bands
+/// *and* that cap. The cap borders one wall and two removed faces; it
+/// joins its band's crease, whose end is then where the crease pierces the
+/// other band's side wall — the shared corner.
+#[test]
+fn two_flush_fillets_and_their_cap_remove_in_one_call() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let a = edge_near(&model, &block, Point::new(10.0, 20.0, 10.0));
+    let first = ogeom::fillet::fillet_edge(&mut model, &block, &a, 2.0, T)
+        .unwrap()
+        .shape;
+    let b = edge_near(&model, &first, Point::new(20.0, 10.0, 10.0));
+    let flush = ogeom::fillet::fillet_edge(&mut model, &first, &b, 2.0, T)
+        .unwrap()
+        .shape;
+    let faces = explore_unique(&model, &flush, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 9, "six walls, two bands, one cap");
+    let feature: Vec<Shape> = faces
+        .into_iter()
+        .filter(|f| {
+            let data = model.node(f).unwrap().data().as_face().unwrap();
+            matches!(
+                model.geometry().surface(data.surface),
+                Some(SurfaceGeometry::Cylinder(_))
+            ) || explore_unique(&model, f, ShapeType::Edge).unwrap().len() == 3
+        })
+        .collect();
+    assert_eq!(feature.len(), 3);
+    let restored = ogeom::boolean::remove_faces(&mut model, &flush, &feature, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &restored, T).unwrap().is_valid());
+    assert_eq!(
+        explore_unique(&model, &restored, ShapeType::Face)
+            .unwrap()
+            .len(),
+        6
+    );
+    assert!((volume(&model, &restored) - 4000.0).abs() < 1e-6);
+}
+
+/// The issue's own acceptance: two chamfers meeting at a box corner,
+/// removed in one call. One at a time they stand flush, the second's
+/// triangular cap against the first's plane; the feature is both chamfer
+/// planes and the cap.
+#[test]
+fn two_chamfers_meeting_at_a_corner_remove_in_one_call() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let a = edge_near(&model, &block, Point::new(10.0, 20.0, 10.0));
+    let first = ogeom::fillet::chamfer_edge(&mut model, &block, &a, 2.0, T)
+        .unwrap()
+        .shape;
+    let b = edge_near(&model, &first, Point::new(20.0, 10.0, 10.0));
+    let both = ogeom::fillet::chamfer_edge(&mut model, &first, &b, 2.0, T)
+        .unwrap()
+        .shape;
+    let faces = explore_unique(&model, &both, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 9, "six walls, two chamfer planes, one cap");
+    let feature: Vec<Shape> = faces
+        .into_iter()
+        .filter(|f| {
+            let data = model.node(f).unwrap().data().as_face().unwrap();
+            let Some(SurfaceGeometry::Plane(p)) = model.geometry().surface(data.surface) else {
+                return true;
+            };
+            let n = p.plane().normal().vector();
+            let off_axis = !(n.x.abs() > 0.999 || n.y.abs() > 0.999 || n.z.abs() > 0.999);
+            off_axis || explore_unique(&model, f, ShapeType::Edge).unwrap().len() == 3
+        })
+        .collect();
+    assert_eq!(feature.len(), 3);
+    let restored = ogeom::boolean::remove_faces(&mut model, &both, &feature, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &restored, T).unwrap().is_valid());
+    assert_eq!(
+        explore_unique(&model, &restored, ShapeType::Face)
+            .unwrap()
+            .len(),
+        6
+    );
+    assert!((volume(&model, &restored) - 4000.0).abs() < 1e-6);
+}

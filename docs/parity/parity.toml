@@ -384,11 +384,14 @@ verdict = "partial"
 restriction = """Inner-loop features — bores, bosses, pockets whose rim is a
 surviving face's inner wire — remove in full generality: wire surgery, no
 re-intersection, the block back to the last bit. Band features — fillets and
-chamfers along an edge — close for any number of *separate* bands in one
-call, each running straight through with two end faces or wrapping with
-none; a rebuilt face whose surface has no closed-form pcurves fits them
-by projection, tolerances widened by the measured offset. Bands meeting
-at corners stay refused by name."""
+chamfers along an edge — close for any number of bands in one call, each
+running straight through with two end faces or wrapping with none, and
+bands meeting at a corner close together: each recovers its own crease,
+the corner is where one crease pierces the other's side, and a wedge's
+flush cap named with its band folds into the band's crease; a rebuilt
+face whose surface has no closed-form pcurves fits them by projection,
+tolerances widened by the measured offset. A band whose wound needs a
+neighbour to meet itself stays refused by name."""
 claims = ["BRepAlgoAPI_Defeaturing", "BOPAlgo_RemoveFeatures"]
 symbols = ["ogeom_bool::remove_faces"]
 tests = ["crates/ogeom/tests/defeature.rs"]
