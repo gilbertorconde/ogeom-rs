@@ -251,7 +251,14 @@ pub fn round_vertex(
     ];
     let mut outcome: Option<Built> = None;
     let mut last: Option<ogeom_core::OgeomError> = None;
-    for order in LABELLINGS {
+    // Forensics: one labelling only, by index, for the boolean's benefit.
+    let forced: Option<usize> = std::env::var("OGEOM_CORNER_LABELLING")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    for (index, order) in LABELLINGS.into_iter().enumerate() {
+        if forced.is_some_and(|f| f != index) {
+            continue;
+        }
         match attempt(model, order) {
             Ok(built) => {
                 outcome = Some(built);

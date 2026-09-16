@@ -896,6 +896,26 @@ fn general_3d(
         crossings = merged;
     }
 
+    // Every crossing owns the valley it sits in: how far along the first
+    // curve the second stays within the caller's gap. A transversal crossing
+    // leaves the gap within a gap's length; a tangential one — a line
+    // touching a fitted rim that wobbles about its circle by the fit's
+    // budget — stays inside for the root of gap times radius on either
+    // side, and the polish lands on whichever wobble's floor it found. The
+    // consumer placing a vertex there owns that much doubt, which the
+    // spread of several polished crossings only stated when there were
+    // several.
+    // A transversal crossing's valley is a gap or two long and says nothing
+    // a consumer does not know; only a valley clearly longer than the gap
+    // is stated, so a stated reach keeps meaning a touch.
+    let gap = options.gap.max(tol.confusion());
+    for c in &mut crossings {
+        let valley = valley_extent_3d(a, b, &sb, c, gap, tol);
+        if valley > gap * 8.0 {
+            c.reach = c.reach.max(valley);
+        }
+    }
+
     // Stretches where the first curve stays within the gap of the second
     // are shared support, not a row of crossings. A fitted section tracing
     // the arc it was cut along wobbles about it by less than the gap and
@@ -1212,6 +1232,111 @@ fn segments_cross_2d(a: (Point2, Point2), b: (Point2, Point2)) -> Option<(f64, f
         return None;
     }
     Some((t, s))
+}
+
+/// The distance from `p` to the curve `b`, through its samples and a local
+/// polish on the nearest segment's parameter span.
+fn distance_to_curve_3d(b: &Curve, sb: &Sampled<Point>, p: Point, tol: Tolerances) -> f64 {
+    let mut best = (0_usize, f64::INFINITY);
+    for i in 1..sb.points.len() {
+        let (q0, q1) = (sb.points[i - 1], sb.points[i]);
+        let d = q1 - q0;
+        let len2 = d.dot(d);
+        let f = if len2 <= f64::MIN_POSITIVE {
+            0.0
+        } else {
+            ((p - q0).dot(d) / len2).clamp(0.0, 1.0)
+        };
+        let dist = p.distance(q0 + d * f);
+        if dist < best.1 {
+            best = (i, dist);
+        }
+    }
+    if best.0 == 0 {
+        return best.1;
+    }
+    let (mut lo, mut hi) = (sb.parameters[best.0 - 1], sb.parameters[best.0]);
+    let at = |t: f64| -> f64 { b.point_at(t, tol).map_or(f64::INFINITY, |q| q.distance(p)) };
+    // Golden-section on the segment's span: the distance is unimodal there
+    // at any sampling that resolved the curve at all.
+    let phi = 0.5 * (3.0 - 5.0_f64.sqrt());
+    let (mut x1, mut x2) = (lo + phi * (hi - lo), hi - phi * (hi - lo));
+    let (mut f1, mut f2) = (at(x1), at(x2));
+    for _ in 0..48 {
+        if f1 < f2 {
+            hi = x2;
+            x2 = x1;
+            f2 = f1;
+            x1 = lo + phi * (hi - lo);
+            f1 = at(x1);
+        } else {
+            lo = x1;
+            x1 = x2;
+            f1 = f2;
+            x2 = hi - phi * (hi - lo);
+            f2 = at(x2);
+        }
+    }
+    f1.min(f2).min(best.1)
+}
+
+/// How far from a crossing, along the first curve, the second curve stays
+/// within `gap`: the larger of the two directions, in space.
+fn valley_extent_3d(
+    a: &Curve,
+    b: &Curve,
+    sb: &Sampled<Point>,
+    crossing: &Crossing<Point>,
+    gap: f64,
+    tol: Tolerances,
+) -> f64 {
+    let (lo, hi) = a.domain();
+    let span = hi - lo;
+    if span <= 0.0 {
+        return 0.0;
+    }
+    let mut extent = 0.0_f64;
+    for direction in [-1.0, 1.0] {
+        let inside = |t: f64| -> bool {
+            if t < lo || t > hi {
+                return false;
+            }
+            a.point_at(t, tol)
+                .is_ok_and(|q| distance_to_curve_3d(b, sb, q, tol) <= gap)
+        };
+        let mut step = span * 1e-6;
+        let mut last_in = crossing.on_a;
+        let mut first_out: Option<f64> = None;
+        while step <= span {
+            let t = crossing.on_a + direction * step;
+            if inside(t) {
+                last_in = t;
+                step *= 2.0;
+            } else {
+                first_out = Some(t);
+                break;
+            }
+        }
+        let edge = match first_out {
+            Some(mut out) => {
+                let mut r#in = last_in;
+                for _ in 0..30 {
+                    let mid = f64::midpoint(r#in, out);
+                    if inside(mid) {
+                        r#in = mid;
+                    } else {
+                        out = mid;
+                    }
+                }
+                r#in
+            }
+            None => last_in,
+        };
+        if let Ok(q) = a.point_at(edge, tol) {
+            extent = extent.max(q.distance(crossing.point));
+        }
+    }
+    extent
 }
 
 /// The closest approach of two spatial segments, as fractions and a distance.

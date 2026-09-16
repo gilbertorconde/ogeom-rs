@@ -90,6 +90,10 @@ struct BoundaryEdge {
     /// earlier junction recorded there, which the arrangement's node snap
     /// on this face must reach.
     ends_tolerance: f64,
+    /// Each end vertex in space with its own recorded radius: a vertex that
+    /// owns a span is a junction of this boolean too, and every strand end
+    /// inside it names it.
+    ends: [(Point, f64); 2],
 }
 
 /// A pole: an edge that bounds a face in parameter space and collapses to
@@ -240,6 +244,21 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
                 .iter()
                 .filter_map(|v| model.node(v).and_then(|n| n.data().as_vertex()))
                 .fold(0.0_f64, |acc, d| acc.max(d.tolerance.get()));
+            // Each end's own vertex, matched to the curve's ends by position:
+            // the edge's vertex order and its curve's direction need not
+            // agree once the edge is reversed in its wire.
+            let ends = {
+                let (a, b) = (world.point_at(range.0, tol)?, world.point_at(range.1, tol)?);
+                let mut ends = [(a, tol.confusion()), (b, tol.confusion())];
+                for v in model.children_of(&edge)? {
+                    if let Some(d) = model.node(&v).and_then(|n| n.data().as_vertex()) {
+                        let at = v.transform(model.datums())?.apply(d.point);
+                        let k = usize::from(at.distance(b) < at.distance(a));
+                        ends[k].1 = ends[k].1.max(d.tolerance.get());
+                    }
+                }
+                ends
+            };
             edges.push(BoundaryEdge {
                 node: edge.node(),
                 curve: world,
@@ -249,6 +268,7 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
                 other_side,
                 tolerance: edge_data.tolerance.get(),
                 ends_tolerance,
+                ends,
             });
         }
         if edges.is_empty() {
@@ -1438,9 +1458,10 @@ fn fill(
                         }
                         if *DEBUG_WIRE {
                             eprintln!(
-                                "PAVE s{si}: side {side} edge {} crossing at {on_a:.6} (edge {on_b:.6}) gap {:.2e} at {:?}",
+                                "PAVE s{si}: side {side} edge {} crossing at {on_a:.6} (edge {on_b:.6}) gap {:.2e} reach {:.2e} honesty {honesty:.2e} at {:?}",
                                 e.node.index(),
                                 crossing.gap,
+                                crossing.reach,
                                 crossing.point
                             );
                         }
@@ -2757,6 +2778,63 @@ struct Junction {
     reach: f64,
 }
 
+/// Junctions whose balls overlap, merged transitively into one junction
+/// each: at the members' centroid, reaching as far as the farthest member's
+/// own reach extends from it.
+fn merge_junctions(junctions: Vec<Junction>) -> Vec<Junction> {
+    let n = junctions.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for i in 0..n {
+        for j in (i + 1)..n {
+            if junctions[i].at.distance(junctions[j].at) <= junctions[i].reach + junctions[j].reach
+            {
+                let (ri, rj) = (root(&mut parent, i), root(&mut parent, j));
+                if ri != rj {
+                    parent[rj] = ri;
+                }
+            }
+        }
+    }
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut of_root: Vec<Option<usize>> = vec![None; n];
+    for i in 0..n {
+        let r = root(&mut parent, i);
+        match of_root[r] {
+            Some(g) => groups[g].push(i),
+            None => {
+                of_root[r] = Some(groups.len());
+                groups.push(vec![i]);
+            }
+        }
+    }
+    groups
+        .into_iter()
+        .map(|members| {
+            if members.len() == 1 {
+                return junctions[members[0]];
+            }
+            let mut sum = ogeom_math::Vector::ZERO;
+            for &m in &members {
+                sum += junctions[m].at - Point::ORIGIN;
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let at = Point::ORIGIN + sum / (members.len() as f64);
+            let reach = members
+                .iter()
+                .map(|&m| at.distance(junctions[m].at) + junctions[m].reach)
+                .fold(0.0_f64, f64::max);
+            Junction { at, reach }
+        })
+        .collect()
+}
+
 /// The junctions the paves describe more than once, or more loosely than
 /// the edge itself, per edge in face order.
 fn pave_junctions(
@@ -3187,6 +3265,28 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         fill(&ga, &gb, false, tol)?;
     let mut junctions = pave_junctions(&ga, &gb, &paves, tol)?;
     junctions.extend(hugs);
+    for face in ga.faces.iter().chain(gb.faces.iter()) {
+        // An input vertex that owns a span — the corner an earlier boolean
+        // welded three rims into, each ending a fraction of a micron from
+        // the others — is a junction here as well: the rebuild's positional
+        // weld reaches only a few honesties, and minted separately those
+        // ends stand as three vertices with hairlines between them.
+        for e in &face.edges {
+            for (at, radius) in e.ends {
+                if radius > tol.confusion() * 10.0 {
+                    junctions.push(Junction { at, reach: radius });
+                }
+            }
+        }
+    }
+    // Junctions whose balls overlap are one junction: two pave clusters a
+    // fraction of a micron apart at a corner where rims meet, each owning
+    // a span that reaches into the other's, would weld a strand end to
+    // whichever covers it first, and the corner would stand as two
+    // vertices with a hairline between them — kept on one face, dropped
+    // on another. Merged, the corner is one vertex whose reach covers
+    // every member's span, on every face alike.
+    junctions = merge_junctions(junctions);
     if *DEBUG_WIRE {
         for j in &junctions {
             eprintln!("JUNCTION at {:?} reach {:.3e}", j.at, j.reach);
@@ -4057,6 +4157,35 @@ fn build_piece(
                 cache.push((key_edge, key_kind, range, shape.clone()));
                 shape
             };
+            // A piece whose two ends welded to one vertex and whose whole
+            // length lies within the vertex's reach is that vertex's dust —
+            // a rim's last fraction of a micron before a pole corner — and
+            // no edge of the wire; a closed edge on one vertex, a full
+            // circle, reaches far from it and stays.
+            if !matches!(traversal.tag, Tag::Pole { .. })
+                && let Some((v0, v1)) = ogeom_algo::edge_vertices(rebuild.model, &built)?
+                && v0.node() == v1.node()
+                && let Some(vd) = rebuild
+                    .model
+                    .node(&v0)
+                    .and_then(|n| n.data().as_vertex())
+                    .map(|d| (d.point, d.tolerance.get()))
+                && let Some(ed) = rebuild.model.node(&built).and_then(|n| n.data().as_edge())
+                && let Some(ogeom_topo::EdgeRepr::Curve3d {
+                    curve, range: r3, ..
+                }) = ed.curve3d()
+                && let Some(g) = rebuild.model.geometry().curve(*curve)
+                && g.point_at(f64::midpoint(r3.0, r3.1), tol)?.distance(vd.0)
+                    <= vd.1.max(tol.confusion() * 1e4)
+            {
+                if *DEBUG_WIRE {
+                    eprintln!(
+                        "DUST piece closing on one vertex at {:?} dropped from piece from_a={} face={}",
+                        vd.0, piece.from_a, piece.face
+                    );
+                }
+                continue;
+            }
             edges.push(if traversal.reversed {
                 built.reversed()
             } else {
@@ -4071,6 +4200,30 @@ fn build_piece(
                         "WIRE FAIL piece from_a={} face={}",
                         piece.from_a, piece.face
                     );
+                    for built in &edges {
+                        if let Some((a, b)) = ogeom_algo::edge_vertices(rebuild.model, built)? {
+                            let at = |v: &Shape| {
+                                rebuild
+                                    .model
+                                    .node(v)
+                                    .and_then(|n| n.data().as_vertex())
+                                    .map(|d| (d.point, d.tolerance.get()))
+                            };
+                            eprintln!(
+                                "   built {:?}{}: v{} {:?} -> v{} {:?}",
+                                built.node(),
+                                if built.orientation() == ogeom_topo::Orientation::Reversed {
+                                    " rev"
+                                } else {
+                                    ""
+                                },
+                                a.node().index(),
+                                at(&a),
+                                b.node().index(),
+                                at(&b)
+                            );
+                        }
+                    }
                     for t in ring {
                         let tag = match &t.tag {
                             Tag::Boundary { edge, range } => format!(
