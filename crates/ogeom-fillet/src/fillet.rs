@@ -779,7 +779,25 @@ fn refind_edges(
 ) -> OgeomResult<Vec<Shape>> {
     use ogeom_geom::Curve3d as _;
     use ogeom_topo::ShapeType;
-    let (curve, _) = edge_curve(model, edge, tol)?;
+    let (curve, range) = edge_curve(model, edge, tol)?;
+    // The edge's own stretch of its curve, for a candidate to lie within:
+    // the wall's bottom edge is two pieces either side of a scoop, on one
+    // line, and asking for the left one must not blend the right.
+    let within = |t: f64| -> bool {
+        let slack = (range.1 - range.0).abs() * 1e-3;
+        let t = if curve.is_periodic() {
+            let (lo, hi) = curve.domain();
+            let period = hi - lo;
+            if period > 0.0 {
+                range.0 + (t - range.0).rem_euclid(period)
+            } else {
+                t
+            }
+        } else {
+            t
+        };
+        t >= range.0.min(range.1) - slack && t <= range.0.max(range.1) + slack
+    };
     let mut matches: Vec<Shape> = Vec::new();
     for candidate in ogeom_topo::explore_unique(model, solid, ShapeType::Edge)? {
         if candidate.is_same(edge) {
@@ -793,7 +811,9 @@ fn refind_edges(
             let t = c_range.0 + (c_range.1 - c_range.0) * f64::from(i) / 2.0;
             let p = c_curve.point_at(t, tol)?;
             let projected = ogeom_algo::project_on_curve(&curve, p, 64, tol)?;
-            if projected.distance > tol.confusion() * 100.0 {
+            if projected.distance > tol.confusion() * 100.0
+                || (i == 1 && !within(projected.parameter))
+            {
                 all_on = false;
                 break;
             }

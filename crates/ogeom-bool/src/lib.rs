@@ -2814,6 +2814,315 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
 
     ogeom_core::progress::stage("boolean: split");
     let mut pieces: Vec<FacePiece> = Vec::new();
+    // Every face's strands, before any face is arranged: the dust decision
+    // — a piece shorter than its face's snap collapses to one node — must
+    // be one decision per shared edge piece, and a sub-piece of one edge
+    // lies in several charts, each with its own snap and its own metric.
+    // A band's rail hugging a wedge's cylinder for a quarter of a micron
+    // is dust in the wall's chart and a strand in the cylinder's, and the
+    // sew then finds the cylinder's piece used once.
+    let strands_of = |from_a: bool,
+                      fi: usize,
+                      face: &GFace|
+     -> OgeomResult<(Vec<Strand<Tag>>, f64)> {
+        let mut strands: Vec<Strand<Tag>> = Vec::new();
+        for (ei, e) in face.edges.iter().enumerate() {
+            let mut stops = vec![e.crange.0];
+            if let Some(ts) = paves.get(&e.node) {
+                // Paves the edge itself cannot tell apart are one
+                // junction, and the cluster's first pave speaks for it.
+                stops.extend(
+                    cluster_paves(&e.curve, e.crange, e.tolerance, ts, tol)?
+                        .iter()
+                        .map(|c| c.t),
+                );
+            }
+            stops.push(e.crange.1);
+            // A closed boundary edge — a cap's full circle — needs two
+            // distinct endpoints per strand.
+            let closed_edge = e
+                .curve
+                .point_at(e.crange.0, tol)?
+                .distance(e.curve.point_at(e.crange.1, tol)?)
+                <= tol.confusion();
+            if closed_edge && stops.len() == 2 {
+                stops.insert(1, f64::midpoint(e.crange.0, e.crange.1));
+            }
+            for pair in stops.windows(2) {
+                let sub = (pair[0], pair[1]);
+                if sub.1 - sub.0 <= tol.parametric() {
+                    continue;
+                }
+                strands.push(Strand {
+                    polyline: pcurve_polyline(&e.pcurve, e.prange, e.crange, sub, tol)?,
+                    tag: Tag::Boundary {
+                        edge: ei,
+                        range: sub,
+                    },
+                    boundary: true,
+                });
+                if let Some((other_pc, orange)) = &e.other_side {
+                    strands.push(Strand {
+                        polyline: pcurve_polyline(other_pc, *orange, e.crange, sub, tol)?,
+                        tag: Tag::Boundary {
+                            edge: ei,
+                            range: sub,
+                        },
+                        boundary: true,
+                    });
+                }
+            }
+        }
+        for sp in &section_pieces {
+            let section = &sections[sp.section];
+            let (belongs, pcurve) = if from_a {
+                (section.face_a == fi && !sp.hugs[0], &section.pc_a)
+            } else {
+                (section.face_b == fi && !sp.hugs[1], &section.pc_b)
+            };
+            if !belongs {
+                continue;
+            }
+            let domain = section.curve.domain();
+            let sub = if section.closed {
+                (
+                    fold(sp.range.0, domain),
+                    sp.range.1 - sp.range.0 + fold(sp.range.0, domain),
+                )
+            } else {
+                sp.range
+            };
+            // The pcurve shares the curve's parameterization; sampling
+            // uses folded parameters for periodic curves.
+            let count = 32;
+            let mut line = Vec::with_capacity(count + 1);
+            for i in 0..=count {
+                #[allow(clippy::cast_precision_loss)]
+                let t = sub.0 + (sub.1 - sub.0) * i as f64 / count as f64;
+                let tf = if section.closed { fold(t, domain) } else { t };
+                line.push(pcurve.point_at(tf, tol)?);
+            }
+            // Folding the parameter can tear the sampled polyline at the
+            // period; unwrap it pointwise, then bring the whole strand
+            // into the chart with one shift.
+            unwrap_polyline(&mut line, &face.surface);
+            fold_into_chart(&mut line, &face.surface);
+            strands.push(Strand {
+                polyline: line,
+                tag: Tag::Section {
+                    section: sp.section,
+                    range: sp.range,
+                },
+                boundary: false,
+            });
+        }
+        // The poles, after the sections, because a section can end *on*
+        // a pole — a plane through a ball's axis cuts it exactly there —
+        // and the pole has to be cut where that happens or the two meet
+        // at no shared node and the arrangement sees a dangling section.
+        for (pi, pole) in face.poles.iter().enumerate() {
+            let mut stops = vec![pole.prange.0, pole.prange.1];
+            if let PlanarCurve::Line(line) = &pole.pcurve {
+                let axis = line.axis();
+                for strand in &strands {
+                    if strand.boundary {
+                        continue;
+                    }
+                    for end in [strand.polyline.first(), strand.polyline.last()]
+                        .into_iter()
+                        .flatten()
+                    {
+                        let along = (*end - axis.location).dot(axis.direction.vector());
+                        let foot = axis.point_at(along);
+                        if foot.distance(*end) <= PARAM_SNAP
+                            && along > pole.prange.0 + PARAM_SNAP
+                            && along < pole.prange.1 - PARAM_SNAP
+                        {
+                            stops.push(along);
+                        }
+                    }
+                }
+            }
+            stops.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+            stops.dedup_by(|a, b| (*a - *b).abs() <= PARAM_SNAP);
+            for pair in stops.windows(2) {
+                let sub = (pair[0], pair[1]);
+                strands.push(Strand {
+                    polyline: pcurve_polyline(&pole.pcurve, pole.prange, pole.prange, sub, tol)?,
+                    tag: Tag::Pole {
+                        pole: pi,
+                        range: sub,
+                    },
+                    boundary: true,
+                });
+            }
+        }
+        for (ci, contact) in contacts.iter().enumerate() {
+            if contact.target_from_a != from_a || contact.target_face != fi {
+                continue;
+            }
+            // The owner's paves split its edge; the contact strands split
+            // at the same parameters, so the sub-edges rebuilt from both
+            // sides are the same edges and sew shared.
+            let mut stops = vec![contact.crange.0];
+            if let Some(ts) = paves.get(&contact.node) {
+                stops.extend(
+                    cluster_paves(&contact.curve, contact.crange, contact.tolerance, ts, tol)?
+                        .iter()
+                        .map(|c| c.t),
+                );
+            }
+            stops.push(contact.crange.1);
+            let closed_contact = contact
+                .curve
+                .point_at(contact.crange.0, tol)?
+                .distance(contact.curve.point_at(contact.crange.1, tol)?)
+                <= tol.confusion();
+            if closed_contact && stops.len() == 2 {
+                stops.insert(1, f64::midpoint(contact.crange.0, contact.crange.1));
+            }
+            for pair in stops.windows(2) {
+                let sub = (pair[0], pair[1]);
+                if sub.1 - sub.0 <= tol.parametric() {
+                    continue;
+                }
+                let mid_t = f64::midpoint(sub.0, sub.1);
+                if contact_along[ci]
+                    .iter()
+                    .any(|(lo, hi)| mid_t >= *lo && mid_t <= *hi)
+                {
+                    // Already boundary on both sides.
+                    if *DEBUG_STRANDS {
+                        eprintln!("CONTACT c{ci} {sub:?} on fi={fi}: along boundary, skipped");
+                    }
+                    continue;
+                }
+                // Keep only what lies inside this face's trim; the rest
+                // of the owner's boundary splits nothing here.
+                let mut line =
+                    pcurve_polyline(&contact.pcurve, contact.prange, contact.crange, sub, tol)?;
+                unwrap_polyline(&mut line, &face.surface);
+                fold_into_chart(&mut line, &face.surface);
+                let mid = interior_of(&line);
+                let boundary_lines: Vec<&[Point2]> = strands
+                    .iter()
+                    .filter(|st| st.boundary)
+                    .map(|st| st.polyline.as_slice())
+                    .collect();
+                if !inside_many_slanted(&boundary_lines, mid) {
+                    if *DEBUG_STRANDS {
+                        eprintln!(
+                            "CONTACT c{ci} {sub:?} on fi={fi}: outside the trim at {mid:?}, skipped"
+                        );
+                    }
+                    continue;
+                }
+                strands.push(Strand {
+                    polyline: line,
+                    tag: Tag::Contact {
+                        contact: ci,
+                        range: sub,
+                    },
+                    boundary: false,
+                });
+            }
+        }
+
+        // A tolerant contact's chart image meets the boundary it paved
+        // only as closely as its own slop allows; the arrangement's node
+        // weld reaches that far on this face, or the strand dangles a
+        // few microns from the junction it belongs to.
+        // A fitted section that hugs one of this face's edges leaves it
+        // at the hug's far end by up to the hug's own width; its strand
+        // must still find the edge's node there.
+        let face_snap = contacts
+            .iter()
+            .filter(|c| c.target_from_a == from_a && c.target_face == fi)
+            .fold(PARAM_SNAP, |acc, c| acc.max(c.tolerance * 2.0))
+            // An edge's end lands in the chart within its vertex's own
+            // recorded doubt plus its own image's: a projected pcurve is
+            // honest to the edge's tolerance, and the vertex it ends at
+            // was welded to some earlier gap.
+            .max(face.edges.iter().fold(0.0_f64, |acc, e| {
+                acc.max(e.tolerance * 2.0)
+                    .max(e.ends_tolerance + e.tolerance)
+            }))
+            .max(
+                if sections.iter().any(|s| {
+                    s.tolerance > 0.0
+                        && if from_a {
+                            s.face_a == fi
+                        } else {
+                            s.face_b == fi
+                        }
+                }) {
+                    tol.confusion() * 1e3
+                } else {
+                    0.0
+                },
+            );
+        if *DEBUG_STRANDS {
+            eprintln!(
+                "FACE-SNAP from_a={from_a} fi={fi}: snap {face_snap:.3e} edges {:?}",
+                face.edges
+                    .iter()
+                    .map(|e| (
+                        format!("{:.2e}", e.tolerance),
+                        format!("{:.2e}", e.ends_tolerance)
+                    ))
+                    .collect::<Vec<_>>()
+            );
+            for (si, st) in strands.iter().enumerate() {
+                let tag = match st.tag {
+                    Tag::Boundary { edge, range } => format!("Boundary e{edge} {range:?}"),
+                    Tag::Contact { contact, range } => format!("Contact c{contact} {range:?}"),
+                    Tag::Section { section, range } => format!("Section s{section} {range:?}"),
+                    Tag::Pole { pole, range } => format!("Pole p{pole} {range:?}"),
+                };
+                let (a, b) = (st.polyline[0], st.polyline[st.polyline.len() - 1]);
+                eprintln!(
+                    "STRAND from_a={from_a} fi={fi} {si}: boundary={} {tag} pts={} {a:?} .. {b:?}",
+                    st.boundary,
+                    st.polyline.len()
+                );
+            }
+        }
+        Ok((strands, face_snap))
+    };
+    let chart_length =
+        |line: &[Point2]| -> f64 { line.windows(2).map(|w| w[0].distance(w[1])).sum::<f64>() };
+    let node_of = |face: &GFace, tag: &Tag| -> Option<(ogeom_topo::TShapeId, (f64, f64))> {
+        match tag {
+            Tag::Boundary { edge, range } => Some((face.edges[*edge].node, *range)),
+            Tag::Contact { contact, range } => Some((contacts[*contact].node, *range)),
+            _ => None,
+        }
+    };
+    /// A face's strands and its snap, waiting to be arranged.
+    type Prepared = Option<(Vec<Strand<Tag>>, f64)>;
+    let mut prepared: [Vec<Prepared>; 2] = [Vec::new(), Vec::new()];
+    let mut dust: Vec<(ogeom_topo::TShapeId, (f64, f64))> = Vec::new();
+    for (side, solid, from_a) in [(0_usize, &ga, true), (1, &gb, false)] {
+        for (fi, face) in solid.faces.iter().enumerate() {
+            ogeom_core::progress::checkpoint()?;
+            let (strands, snap) = strands_of(from_a, fi, face)?;
+            for st in &strands {
+                if st.polyline.len() >= 2
+                    && chart_length(&st.polyline) <= snap
+                    && let Some(key) = node_of(face, &st.tag)
+                {
+                    dust.push(key);
+                }
+            }
+            prepared[side].push(Some((strands, snap)));
+        }
+    }
+    let same_key = |a: &(ogeom_topo::TShapeId, (f64, f64)),
+                    b: &(ogeom_topo::TShapeId, (f64, f64))| {
+        a.0 == b.0
+            && (a.1.0 - b.1.0).abs() <= tol.parametric()
+            && (a.1.1 - b.1.1).abs() <= tol.parametric()
+    };
     for (from_a, own, other) in [(true, &ga, &gb.solid), (false, &gb, &ga.solid)] {
         // The other solid's boundary, prepared once for the whole side. It is
         // asked once per face piece, and what it costs to prepare — every
@@ -2823,265 +3132,98 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         let boundary = ogeom_algo::SolidBoundary::of(model, other, tol.confusion() * 1e4, tol)?;
         for (fi, face) in own.faces.iter().enumerate() {
             ogeom_core::progress::checkpoint()?;
-            let mut strands: Vec<Strand<Tag>> = Vec::new();
-            for (ei, e) in face.edges.iter().enumerate() {
-                let mut stops = vec![e.crange.0];
-                if let Some(ts) = paves.get(&e.node) {
-                    // Paves the edge itself cannot tell apart are one
-                    // junction, and the cluster's first pave speaks for it.
-                    stops.extend(
-                        cluster_paves(&e.curve, e.crange, e.tolerance, ts, tol)?
-                            .iter()
-                            .map(|c| c.t),
-                    );
-                }
-                stops.push(e.crange.1);
-                // A closed boundary edge — a cap's full circle — needs two
-                // distinct endpoints per strand.
-                let closed_edge = e
-                    .curve
-                    .point_at(e.crange.0, tol)?
-                    .distance(e.curve.point_at(e.crange.1, tol)?)
-                    <= tol.confusion();
-                if closed_edge && stops.len() == 2 {
-                    stops.insert(1, f64::midpoint(e.crange.0, e.crange.1));
-                }
-                for pair in stops.windows(2) {
-                    let sub = (pair[0], pair[1]);
-                    if sub.1 - sub.0 <= tol.parametric() {
-                        continue;
-                    }
-                    strands.push(Strand {
-                        polyline: pcurve_polyline(&e.pcurve, e.prange, e.crange, sub, tol)?,
-                        tag: Tag::Boundary {
-                            edge: ei,
-                            range: sub,
-                        },
-                        boundary: true,
-                    });
-                    if let Some((other_pc, orange)) = &e.other_side {
-                        strands.push(Strand {
-                            polyline: pcurve_polyline(other_pc, *orange, e.crange, sub, tol)?,
-                            tag: Tag::Boundary {
-                                edge: ei,
-                                range: sub,
-                            },
-                            boundary: true,
-                        });
-                    }
-                }
-            }
-            for sp in &section_pieces {
-                let section = &sections[sp.section];
-                let (belongs, pcurve) = if from_a {
-                    (section.face_a == fi && !sp.hugs[0], &section.pc_a)
-                } else {
-                    (section.face_b == fi && !sp.hugs[1], &section.pc_b)
-                };
-                if !belongs {
-                    continue;
-                }
-                let domain = section.curve.domain();
-                let sub = if section.closed {
-                    (
-                        fold(sp.range.0, domain),
-                        sp.range.1 - sp.range.0 + fold(sp.range.0, domain),
-                    )
-                } else {
-                    sp.range
-                };
-                // The pcurve shares the curve's parameterization; sampling
-                // uses folded parameters for periodic curves.
-                let count = 32;
-                let mut line = Vec::with_capacity(count + 1);
-                for i in 0..=count {
-                    #[allow(clippy::cast_precision_loss)]
-                    let t = sub.0 + (sub.1 - sub.0) * i as f64 / count as f64;
-                    let tf = if section.closed { fold(t, domain) } else { t };
-                    line.push(pcurve.point_at(tf, tol)?);
-                }
-                // Folding the parameter can tear the sampled polyline at the
-                // period; unwrap it pointwise, then bring the whole strand
-                // into the chart with one shift.
-                unwrap_polyline(&mut line, &face.surface);
-                fold_into_chart(&mut line, &face.surface);
-                strands.push(Strand {
-                    polyline: line,
-                    tag: Tag::Section {
-                        section: sp.section,
-                        range: sp.range,
-                    },
-                    boundary: false,
-                });
-            }
-            // The poles, after the sections, because a section can end *on*
-            // a pole — a plane through a ball's axis cuts it exactly there —
-            // and the pole has to be cut where that happens or the two meet
-            // at no shared node and the arrangement sees a dangling section.
-            for (pi, pole) in face.poles.iter().enumerate() {
-                let mut stops = vec![pole.prange.0, pole.prange.1];
-                if let PlanarCurve::Line(line) = &pole.pcurve {
-                    let axis = line.axis();
-                    for strand in &strands {
-                        if strand.boundary {
-                            continue;
-                        }
-                        for end in [strand.polyline.first(), strand.polyline.last()]
-                            .into_iter()
-                            .flatten()
-                        {
-                            let along = (*end - axis.location).dot(axis.direction.vector());
-                            let foot = axis.point_at(along);
-                            if foot.distance(*end) <= PARAM_SNAP
-                                && along > pole.prange.0 + PARAM_SNAP
-                                && along < pole.prange.1 - PARAM_SNAP
-                            {
-                                stops.push(along);
-                            }
-                        }
-                    }
-                }
-                stops.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-                stops.dedup_by(|a, b| (*a - *b).abs() <= PARAM_SNAP);
-                for pair in stops.windows(2) {
-                    let sub = (pair[0], pair[1]);
-                    strands.push(Strand {
-                        polyline: pcurve_polyline(
-                            &pole.pcurve,
-                            pole.prange,
-                            pole.prange,
-                            sub,
-                            tol,
-                        )?,
-                        tag: Tag::Pole {
-                            pole: pi,
-                            range: sub,
-                        },
-                        boundary: true,
-                    });
-                }
-            }
-            for (ci, contact) in contacts.iter().enumerate() {
-                if contact.target_from_a != from_a || contact.target_face != fi {
-                    continue;
-                }
-                // The owner's paves split its edge; the contact strands split
-                // at the same parameters, so the sub-edges rebuilt from both
-                // sides are the same edges and sew shared.
-                let mut stops = vec![contact.crange.0];
-                if let Some(ts) = paves.get(&contact.node) {
-                    stops.extend(
-                        cluster_paves(&contact.curve, contact.crange, contact.tolerance, ts, tol)?
-                            .iter()
-                            .map(|c| c.t),
-                    );
-                }
-                stops.push(contact.crange.1);
-                let closed_contact = contact
-                    .curve
-                    .point_at(contact.crange.0, tol)?
-                    .distance(contact.curve.point_at(contact.crange.1, tol)?)
-                    <= tol.confusion();
-                if closed_contact && stops.len() == 2 {
-                    stops.insert(1, f64::midpoint(contact.crange.0, contact.crange.1));
-                }
-                for pair in stops.windows(2) {
-                    let sub = (pair[0], pair[1]);
-                    if sub.1 - sub.0 <= tol.parametric() {
-                        continue;
-                    }
-                    let mid_t = f64::midpoint(sub.0, sub.1);
-                    if contact_along[ci]
-                        .iter()
-                        .any(|(lo, hi)| mid_t >= *lo && mid_t <= *hi)
-                    {
-                        // Already boundary on both sides.
-                        continue;
-                    }
-                    // Keep only what lies inside this face's trim; the rest
-                    // of the owner's boundary splits nothing here.
-                    let mut line =
-                        pcurve_polyline(&contact.pcurve, contact.prange, contact.crange, sub, tol)?;
-                    unwrap_polyline(&mut line, &face.surface);
-                    fold_into_chart(&mut line, &face.surface);
-                    let mid = interior_of(&line);
-                    let boundary_lines: Vec<&[Point2]> = strands
-                        .iter()
-                        .filter(|st| st.boundary)
-                        .map(|st| st.polyline.as_slice())
-                        .collect();
-                    if !inside_many_slanted(&boundary_lines, mid) {
-                        continue;
-                    }
-                    strands.push(Strand {
-                        polyline: line,
-                        tag: Tag::Contact {
-                            contact: ci,
-                            range: sub,
-                        },
-                        boundary: false,
-                    });
-                }
-            }
-
-            // A tolerant contact's chart image meets the boundary it paved
-            // only as closely as its own slop allows; the arrangement's node
-            // weld reaches that far on this face, or the strand dangles a
-            // few microns from the junction it belongs to.
-            // A fitted section that hugs one of this face's edges leaves it
-            // at the hug's far end by up to the hug's own width; its strand
-            // must still find the edge's node there.
-            let face_snap = contacts
+            let Some((mut strands, face_snap)) = prepared[usize::from(!from_a)][fi].take() else {
+                ogeom_bail!(Construction, "a face was prepared twice");
+            };
+            // A piece some other chart already collapsed collapses here too:
+            // its ends become one node, every neighbour meeting them moves
+            // onto it, and one junction owns the span in space so the
+            // rebuilt vertices agree on every face.
+            let forced: Vec<usize> = strands
                 .iter()
-                .filter(|c| c.target_from_a == from_a && c.target_face == fi)
-                .fold(PARAM_SNAP, |acc, c| acc.max(c.tolerance * 2.0))
-                // An edge's end lands in the chart within its vertex's own
-                // recorded doubt plus its own image's: a projected pcurve is
-                // honest to the edge's tolerance, and the vertex it ends at
-                // was welded to some earlier gap.
-                .max(face.edges.iter().fold(0.0_f64, |acc, e| {
-                    acc.max(e.tolerance * 2.0)
-                        .max(e.ends_tolerance + e.tolerance)
-                }))
-                .max(
-                    if sections.iter().any(|s| {
-                        s.tolerance > 0.0
-                            && if from_a {
-                                s.face_a == fi
-                            } else {
-                                s.face_b == fi
-                            }
-                    }) {
-                        tol.confusion() * 1e3
-                    } else {
-                        0.0
-                    },
-                );
-            if *DEBUG_STRANDS {
-                eprintln!(
-                    "FACE-SNAP from_a={from_a} fi={fi}: snap {face_snap:.3e} edges {:?}",
-                    face.edges
-                        .iter()
-                        .map(|e| (
-                            format!("{:.2e}", e.tolerance),
-                            format!("{:.2e}", e.ends_tolerance)
-                        ))
-                        .collect::<Vec<_>>()
-                );
-                for (si, st) in strands.iter().enumerate() {
-                    let tag = match st.tag {
-                        Tag::Boundary { edge, range } => format!("Boundary e{edge} {range:?}"),
-                        Tag::Contact { contact, range } => format!("Contact c{contact} {range:?}"),
-                        Tag::Section { section, range } => format!("Section s{section} {range:?}"),
-                        Tag::Pole { pole, range } => format!("Pole p{pole} {range:?}"),
-                    };
-                    let (a, b) = (st.polyline[0], st.polyline[st.polyline.len() - 1]);
-                    eprintln!(
-                        "STRAND from_a={from_a} fi={fi} {si}: boundary={} {tag} pts={} {a:?} .. {b:?}",
-                        st.boundary,
-                        st.polyline.len()
-                    );
+                .enumerate()
+                .filter(|(_, st)| {
+                    st.polyline.len() >= 2
+                        && chart_length(&st.polyline) > face_snap
+                        && node_of(face, &st.tag)
+                            .is_some_and(|k| dust.iter().any(|d| same_key(d, &k)))
+                })
+                .map(|(i, _)| i)
+                .collect();
+            if !forced.is_empty() {
+                let mut reps: Vec<(Point2, usize)> = Vec::new();
+                let canon = |p: Point2, reps: &mut Vec<(Point2, usize)>| -> usize {
+                    match reps.iter().position(|(q, _)| q.distance(p) <= face_snap) {
+                        Some(i) => i,
+                        None => {
+                            reps.push((p, reps.len()));
+                            reps.len() - 1
+                        }
+                    }
+                };
+                fn root(reps: &mut [(Point2, usize)], mut i: usize) -> usize {
+                    while reps[i].1 != i {
+                        reps[i].1 = reps[reps[i].1].1;
+                        i = reps[i].1;
+                    }
+                    i
                 }
+                for &i in &forced {
+                    let st = &strands[i];
+                    let a = canon(st.polyline[0], &mut reps);
+                    let b = canon(st.polyline[st.polyline.len() - 1], &mut reps);
+                    let (ra, rb) = (root(&mut reps, a), root(&mut reps, b));
+                    if ra != rb {
+                        reps[rb].1 = ra;
+                    }
+                    let (from, to) = match &st.tag {
+                        Tag::Boundary { edge, range } => {
+                            let e = &face.edges[*edge];
+                            (
+                                e.curve.point_at(range.0, tol)?,
+                                e.curve.point_at(range.1, tol)?,
+                            )
+                        }
+                        Tag::Contact { contact, range } => {
+                            let c = &contacts[*contact];
+                            (
+                                c.curve.point_at(range.0, tol)?,
+                                c.curve.point_at(range.1, tol)?,
+                            )
+                        }
+                        _ => continue,
+                    };
+                    if *DEBUG_STRANDS {
+                        eprintln!(
+                            "DUST from_a={from_a} fi={fi}: strand {i} collapses with its partners, {from:?} -> {to:?}"
+                        );
+                    }
+                    junctions.push(Junction {
+                        at: from.midpoint(to),
+                        reach: from.distance(to) / 2.0 + tol.confusion() * 1e2,
+                    });
+                }
+                for (i, st) in strands.iter_mut().enumerate() {
+                    if forced.contains(&i) {
+                        continue;
+                    }
+                    let last = st.polyline.len() - 1;
+                    for end in [0, last] {
+                        if let Some(k) = reps
+                            .iter()
+                            .position(|(q, _)| q.distance(st.polyline[end]) <= face_snap)
+                        {
+                            let r = root(&mut reps, k);
+                            st.polyline[end] = reps[r].0;
+                        }
+                    }
+                }
+                let mut index = 0_usize;
+                strands.retain(|_| {
+                    let keep = !forced.contains(&index);
+                    index += 1;
+                    keep
+                });
             }
             let split = arrange_pieces(&strands, face_snap)?;
             for piece in split {
@@ -3753,6 +3895,26 @@ fn assemble_result(
                             "  open edge uses={occurrences} faces={users} {:?} range={range:?}: {a:?} -> {b:?}",
                             core::mem::discriminant(g)
                         );
+                        for f in ogeom_topo::explore(model, shell, Filter::OfType(ShapeType::Face))?
+                        {
+                            let uses_it = ogeom_topo::explore_unique(model, &f, ShapeType::Edge)
+                                .map(|es| es.iter().any(|e2| e2.node() == edge.node()))
+                                .unwrap_or(false);
+                            if !uses_it {
+                                continue;
+                            }
+                            if let Some(ogeom_topo::NodeData::Face(fd)) =
+                                model.node(&f).map(|n| n.data())
+                                && let Some(sg) = model.geometry().surface(fd.surface)
+                            {
+                                let bound = shape_bounds(model, &f, tol)?;
+                                eprintln!(
+                                    "    used by face on {:?} bound {:?}",
+                                    core::mem::discriminant(sg),
+                                    bound
+                                );
+                            }
+                        }
                     }
                 }
             }

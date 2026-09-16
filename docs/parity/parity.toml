@@ -1045,11 +1045,12 @@ own plane, and two such blends meet cap to cap along the shared arc, both \
 caps consumed, in either order. What is owed now: hosts beyond planes and \
 cylinders (cone, sphere, torus chart inversions), the equal-radius \
 crossing whose seam pinches at tangent poles; and of the corner family, \
-the N>3 setback vertex, and half of the curved-seat corner: through \
-`fillet_edges` a marched blend meets a straight one that went before it, \
-its run-out walking on under the straight band, but a straight blend \
-meeting a marched one that went before it still dies in the boolean on a \
-sliver where its section hugs the fitted band's edge on one face alone."""
+the N>3 setback vertex. The curved-seat corner is closed in either order: \
+through `fillet_edges` a marched blend and a straight one meet at their \
+corners, the later's run-out walking on under the earlier band, and the \
+boolean decides once per shared edge piece whether it is dust — a sub-piece \
+of one edge lies in several charts, each with its own snap — so a sliver \
+one chart collapses collapses in every chart."""
 claims = [
     "BRepFilletAPI_MakeFillet", "BRepFilletAPI_LocalOperation",
     "ChFi3d", "ChFi3d_*", "ChFiDS_*", "ChFiKPart_*",
