@@ -1,6 +1,7 @@
 //! From parsed exchange structure to a living model.
 //!
-//! The reader walks every `MANIFOLD_SOLID_BREP` and rebuilds it bottom-up:
+//! The reader walks every `MANIFOLD_SOLID_BREP` and every
+//! `SHELL_BASED_SURFACE_MODEL` and rebuilds them bottom-up:
 //! points, placements, curves and surfaces into geometry; vertices, edges,
 //! loops, faces and shells into topology, shared exactly as the file shares
 //! them — a vertex referenced by eight edges is one vertex here too, which is
@@ -91,7 +92,7 @@ pub struct UntrimmedFace {
     pub face: Shape,
 }
 
-/// A read exchange file: the model, the solids found, and the report.
+/// A read exchange file: the model, the bodies found, and the report.
 #[derive(Debug)]
 pub struct StepImport {
     /// The document everything was built into: the model, plus the file's
@@ -99,6 +100,14 @@ pub struct StepImport {
     pub document: ogeom_doc::Document,
     /// One shape per `MANIFOLD_SOLID_BREP`, in file order.
     pub solids: Vec<Shape>,
+    /// One shape per `SHELL_BASED_SURFACE_MODEL`, in file order: its shell,
+    /// or a compound of its shells when it names several.
+    ///
+    /// A surface body is what a modeller exports for a part built from faces
+    /// rather than from a solid. It stays a shell here even when it happens
+    /// to close: the file did not call it a solid, and the document carries
+    /// it under its product exactly as the file placed it.
+    pub shells: Vec<Shape>,
     /// What happened along the way.
     pub report: StepReport,
 }
@@ -142,21 +151,37 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
     reader.angle_scale = reader.angle_unit_scale();
 
     let mut solids = Vec::new();
-    let mut by_msb: HashMap<u64, Shape> = HashMap::new();
-    let mut ids: Vec<u64> = exchange
+    let mut shells = Vec::new();
+    let mut by_item: HashMap<u64, Shape> = HashMap::new();
+    // Solids and surface models, one walk in file order; a body is a body
+    // to the progress bar whichever kind it is.
+    let mut ids: Vec<(u64, bool)> = exchange
         .data
         .iter()
-        .filter(|(_, inst)| inst.part("MANIFOLD_SOLID_BREP").is_some())
-        .map(|(id, _)| *id)
+        .filter_map(|(id, inst)| {
+            if inst.part("MANIFOLD_SOLID_BREP").is_some() {
+                Some((*id, true))
+            } else if inst.part("SHELL_BASED_SURFACE_MODEL").is_some() {
+                Some((*id, false))
+            } else {
+                None
+            }
+        })
         .collect();
     ids.sort_unstable();
     let total = ids.len() as u64;
-    for (done, id) in ids.into_iter().enumerate() {
+    for (done, (id, is_solid)) in ids.into_iter().enumerate() {
         ogeom_core::progress::checkpoint()?;
         ogeom_core::progress::stage_at("step: solid", done as u64 + 1, total);
-        let solid = reader.solid(id)?;
-        by_msb.insert(id, solid.clone());
-        solids.push(solid);
+        if is_solid {
+            let solid = reader.solid(id)?;
+            by_item.insert(id, solid.clone());
+            solids.push(solid);
+        } else {
+            let shell = reader.surface_model(id)?;
+            by_item.insert(id, shell.clone());
+            shells.push(shell);
+        }
     }
     // The tallies fold into the summary, largest first, ties by kind so the
     // order is the file's and not the map's.
@@ -185,13 +210,14 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
             });
         }
     }
-    if solids.is_empty() {
+    if solids.is_empty() && shells.is_empty() {
         ogeom_bail!(
             Construction,
-            "the exchange file contains no MANIFOLD_SOLID_BREP to read"
+            "the exchange file contains no MANIFOLD_SOLID_BREP or \
+             SHELL_BASED_SURFACE_MODEL to read"
         );
     }
-    let document = reader.document(&by_msb, &solids)?;
+    let document = reader.document(&by_item, &solids, &shells)?;
 
     // Everything never visited, counted by its leading keyword.
     for (id, instance) in &exchange.data {
@@ -211,6 +237,7 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
     Ok(StepImport {
         document,
         solids,
+        shells,
         report: reader.report,
     })
 }
@@ -1542,12 +1569,58 @@ impl Reader<'_> {
     }
 
     /// The solid a `MANIFOLD_SOLID_BREP` names: its shell's faces, sewn.
-    ///
-    /// (The comment that stood here described a fitted pcurve, which is not
-    /// what this builds; it had been copied from elsewhere.)
     fn solid(&mut self, id: u64) -> OgeomResult<Shape> {
         let args = self.args(id, "MANIFOLD_SOLID_BREP")?;
         let shell_id = args.get(1).and_then(Arg::reference).unwrap_or(0);
+        let Some(shell) = self.shell(shell_id)? else {
+            ogeom_bail!(Construction, "#{id}: a solid with no readable faces");
+        };
+        if !ogeom_algo::is_shell_closed(&self.model, &shell)? {
+            self.report.warnings.push(format!(
+                "#{id}: the shell does not close as read; measures needing an \
+                 inside will refuse it"
+            ));
+        }
+        Ok(make_solid(&mut self.model, std::slice::from_ref(&shell))?.shape)
+    }
+
+    /// The shape a `SHELL_BASED_SURFACE_MODEL` names: each of its shells
+    /// sewn from its faces, a compound of them when there are several.
+    ///
+    /// A surface body is what a modeller exports for a part built from
+    /// faces rather than from a solid — a motor coupler drawn as
+    /// seventy-three single-face bodies is a real case — and a reader that
+    /// walks only `MANIFOLD_SOLID_BREP` leaves such a part invisible. The
+    /// shells stay shells: the file did not call them solids, and a closed
+    /// one is still the file's surface model, not this reader's promotion.
+    fn surface_model(&mut self, id: u64) -> OgeomResult<Shape> {
+        let args = self.args(id, "SHELL_BASED_SURFACE_MODEL")?;
+        let shell_ids: Vec<u64> = args
+            .get(1)
+            .and_then(Arg::list)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(Arg::reference)
+            .collect();
+        let mut shells = Vec::new();
+        for shell_id in shell_ids {
+            if let Some(shell) = self.shell(shell_id)? {
+                shells.push(shell);
+            }
+        }
+        match shells.len() {
+            0 => ogeom_bail!(
+                Construction,
+                "#{id}: a surface model with no readable faces"
+            ),
+            1 => Ok(shells.remove(0)),
+            _ => Ok(ogeom_algo::build::make_compound(&mut self.model, &shells)?.shape),
+        }
+    }
+
+    /// The faces of a `CLOSED_SHELL` or `OPEN_SHELL`, sewn; `None` when not
+    /// one of them could be read.
+    fn shell(&mut self, shell_id: u64) -> OgeomResult<Option<Shape>> {
         let shell_instance = self.instance(shell_id)?;
         let shell_args = shell_instance
             .part("CLOSED_SHELL")
@@ -1569,16 +1642,9 @@ impl Reader<'_> {
             }
         }
         if faces.is_empty() {
-            ogeom_bail!(Construction, "#{id}: a solid with no readable faces");
+            return Ok(None);
         }
-        let shell = make_shell(&mut self.model, &faces)?.shape;
-        if !ogeom_algo::is_shell_closed(&self.model, &shell)? {
-            self.report.warnings.push(format!(
-                "#{id}: the shell does not close as read; measures needing an \
-                 inside will refuse it"
-            ));
-        }
-        Ok(make_solid(&mut self.model, std::slice::from_ref(&shell))?.shape)
+        Ok(Some(make_shell(&mut self.model, &faces)?.shape))
     }
 
     // --- product structure, names, colours -----------------------------------
@@ -1592,13 +1658,14 @@ impl Reader<'_> {
     /// mangled product tree should not take it down.
     fn document(
         &mut self,
-        by_msb: &HashMap<u64, Shape>,
+        by_item: &HashMap<u64, Shape>,
         solids: &[Shape],
+        shells: &[Shape],
     ) -> OgeomResult<ogeom_doc::Document> {
         // The graph is walked before the model moves, because frames scale
         // through the reader's own unit handling.
-        let structure = self.product_structure(by_msb);
-        let colours = self.colours(by_msb);
+        let structure = self.product_structure(by_item);
+        let colours = self.colours(by_item);
         let pmi = self.pmi_of();
 
         let mut document = ogeom_doc::Document::over(std::mem::take(&mut self.model));
@@ -1607,6 +1674,9 @@ impl Reader<'_> {
             None => {
                 for (i, solid) in solids.iter().enumerate() {
                     document.add_part(format!("solid-{i}"), solid.clone());
+                }
+                for (i, shell) in shells.iter().enumerate() {
+                    document.add_part(format!("shell-{i}"), shell.clone());
                 }
             }
         }
@@ -1621,7 +1691,7 @@ impl Reader<'_> {
     }
 
     /// The file's product graph, or `None` when it has none worth the name.
-    fn product_structure(&mut self, by_msb: &HashMap<u64, Shape>) -> Option<Vec<PdEntry>> {
+    fn product_structure(&mut self, by_item: &HashMap<u64, Shape>) -> Option<Vec<PdEntry>> {
         // PRODUCT_DEFINITION -> name, via formation and product.
         let mut pds: Vec<u64> = self
             .exchange
@@ -1706,7 +1776,7 @@ impl Reader<'_> {
                 reps.extend(linked.get(&sr).into_iter().flatten().copied());
                 for rep in reps {
                     if let Some(items) = self.representation_items(rep) {
-                        shapes.extend(items.iter().filter_map(|item| by_msb.get(item).cloned()));
+                        shapes.extend(items.iter().filter_map(|item| by_item.get(item).cloned()));
                     }
                 }
             }
@@ -1941,7 +2011,7 @@ impl Reader<'_> {
     }
 
     /// Colours from styled items, keyed to the shapes they style.
-    fn colours(&mut self, by_msb: &HashMap<u64, Shape>) -> Vec<(Shape, ogeom_doc::Colour)> {
+    fn colours(&mut self, by_item: &HashMap<u64, Shape>) -> Vec<(Shape, ogeom_doc::Colour)> {
         let mut styled: Vec<u64> = self
             .exchange
             .data
@@ -1972,7 +2042,7 @@ impl Reader<'_> {
             let Some(item) = args.get(2).and_then(Arg::reference) else {
                 continue;
             };
-            let Some(shape) = by_msb.get(&item).or_else(|| self.faces.get(&item)) else {
+            let Some(shape) = by_item.get(&item).or_else(|| self.faces.get(&item)) else {
                 continue;
             };
             let styles: Vec<u64> = args

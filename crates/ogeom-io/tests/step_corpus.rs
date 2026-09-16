@@ -466,3 +466,45 @@ fn two_oblique_rims_on_a_sphere_bound_a_face_not_a_band() {
     }
     assert_eq!(heads, 1, "one button head on the screw");
 }
+
+/// A part exported as faces — `SHELL_BASED_SURFACE_MODEL` bodies, one open
+/// shell of one face each — reads as shells under its product, every face
+/// meshing, nothing of it left in the skipped table.
+#[test]
+fn a_surface_model_reads_as_shells_under_its_product() {
+    let text = corpus("nema17_coupler_faces.step");
+    let import = ogeom_io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    assert!(import.solids.is_empty(), "the file names no solid");
+    assert_eq!(import.shells.len(), 6, "six surface bodies");
+    for shell in &import.shells {
+        assert_eq!(model.kind_of(shell).unwrap(), ogeom_topo::ShapeType::Shell);
+        assert!(!ogeom_algo::is_shell_closed(model, shell).unwrap());
+    }
+    for keyword in ["SHELL_BASED_SURFACE_MODEL", "OPEN_SHELL", "ADVANCED_FACE"] {
+        assert!(
+            !import.report.skipped.contains_key(keyword),
+            "{keyword} was read"
+        );
+    }
+
+    let (_, coupler) = import
+        .document
+        .products()
+        .find(|(_, p)| p.name == "NEMA17_Coupler")
+        .expect("the product the file names");
+    let ogeom_doc::ProductKind::Part { shape } = &coupler.kind else {
+        panic!("a part");
+    };
+    let faces = ogeom_topo::explore(
+        model,
+        shape,
+        ogeom_topo::Filter::OfType(ogeom_topo::ShapeType::Face),
+    )
+    .unwrap();
+    assert_eq!(faces.len(), 6, "every body's face is under the product");
+    for face in &faces {
+        ogeom_mesh::triangulate(model, face, ogeom_mesh::Deflection::default(), T)
+            .expect("a surface body's face meshes like any other");
+    }
+}

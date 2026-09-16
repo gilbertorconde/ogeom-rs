@@ -14,7 +14,10 @@ Both directions, document-level:
 ```
 
 Assemblies with instancing, names, colours, semantic and presentation
-PMI, datum systems and saved views all survive the trip. `read_step`
+PMI, datum systems and saved views all survive the trip. Bodies come
+back as `solids` and, for a part a modeller exported as faces rather
+than as a solid, as `shells` — a surface model stays the shell the file
+made it, under its product like any other body. `read_step`
 returns a `StepImport` whose `report` lists, by name, every entity the
 reader met and did not translate — the file's inventory of what was and
 was not understood, instead of a silent partial import.

@@ -46,3 +46,13 @@ a sphere whose chart runs along z, nested loops in the chart rather than
 parallels of it. The reproducer for a two-ring periodic face that is a
 face on its own bounds, not a band missing its seam (issue #37's
 assembly-side half).
+
+## nema17_coupler_faces.step
+
+Six of the seventy-three single-face surface bodies a NEMA 17 motor
+coupler was exported as, extracted standalone from the same community
+printer assembly as the M5x16 screws: `SHELL_BASED_SURFACE_MODEL` over an
+`OPEN_SHELL` of one `ADVANCED_FACE` each — two planes, two cylinders, two
+tori — hung off one product's shape representation. The reproducer for a
+part the file never calls a solid: a reader that walks only
+`MANIFOLD_SOLID_BREP` leaves it invisible.
