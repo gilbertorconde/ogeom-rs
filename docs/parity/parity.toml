@@ -1042,8 +1042,9 @@ own plane, and two such blends meet cap to cap along the shared arc, both \
 caps consumed, in either order. What is owed now: hosts beyond planes and \
 cylinders (cone, sphere, torus chart inversions), the equal-radius \
 crossing whose seam pinches at tangent poles; and of the corner family, \
-two blends meeting at a corner where distinct creases meet, and the N>3 \
-setback vertex."""
+the curved-seat corner (two marched blends meeting where distinct creases \
+meet — the straight seats meet through `fillet_edges`, the later band \
+trimmed against the earlier) and the N>3 setback vertex."""
 claims = [
     "BRepFilletAPI_MakeFillet", "BRepFilletAPI_LocalOperation",
     "ChFi3d", "ChFi3d_*", "ChFiDS_*", "ChFiKPart_*",

@@ -1375,7 +1375,7 @@ fn open_runout_wedge(
 /// Whether the crease ends at `at` because the solid does — its end vertex
 /// there belongs to a third face — rather than continuing as another edge
 /// on the same two hosts past a split.
-fn crease_terminates_at(
+pub(crate) fn crease_terminates_at(
     model: &Model,
     solid: &Shape,
     edge: &Shape,
@@ -1418,6 +1418,83 @@ fn crease_terminates_at(
         }
     }
     Ok(true)
+}
+
+/// Whether a face other than the hosts meets the crease's end at `at`
+/// *tangentially* to a host — a neighbouring blend's band, which is
+/// tangent to the host it rides. Material under such a face is the
+/// neighbour's rounding, not a step: a blend meeting it runs on through
+/// it and the cut trims the two bands against each other.
+pub(crate) fn neighbour_blend_at(
+    model: &Model,
+    solid: &Shape,
+    host_faces: [&Shape; 2],
+    at: Point,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let host_normals: Vec<Vector> = host_faces
+        .iter()
+        .filter_map(|f| face_normal_near(model, f, at, tol).ok().flatten())
+        .collect();
+    for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+        if host_faces.iter().any(|h| h.is_same(&face)) {
+            continue;
+        }
+        let touches = explore(model, &face, Filter::OfType(ShapeType::Vertex))?
+            .iter()
+            .any(|v| {
+                model
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex().cloned())
+                    .and_then(|d| v.transform(model.datums()).ok().map(|t| t.apply(d.point)))
+                    .is_some_and(|p| p.distance(at) <= tol.confusion() * 1e3)
+            });
+        if !touches {
+            continue;
+        }
+        let Some(normal) = face_normal_near(model, &face, at, tol)? else {
+            continue;
+        };
+        if host_normals
+            .iter()
+            .any(|h| h.cross(normal).magnitude() <= 1e-2)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// A face's surface normal (either sign) at the point of it nearest `at`.
+fn face_normal_near(
+    model: &Model,
+    face: &Shape,
+    at: Point,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vector>> {
+    use ogeom_geom::Surface as _;
+    let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
+        return Ok(None);
+    };
+    let Some(stored) = model.geometry().surface(data.surface) else {
+        return Ok(None);
+    };
+    let surface = {
+        use ogeom_geom::Transformable as _;
+        stored.transformed(&face.transform(model.datums())?, tol)?
+    };
+    let projection = ogeom_algo::project_on_surface(&surface, at, 24, tol)?;
+    if projection.distance > tol.confusion() * 1e3 {
+        return Ok(None);
+    }
+    let (u, v) = projection.parameters;
+    let (du, dv) = surface.d1_at(u, v, tol)?;
+    let n = du.cross(dv);
+    let m = n.magnitude();
+    if m <= tol.angular() {
+        return Ok(None);
+    }
+    Ok(Some(n / m))
 }
 
 /// The host's own curve in a cap's section plane, from the crease vertex to

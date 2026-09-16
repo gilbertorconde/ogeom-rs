@@ -408,6 +408,77 @@ fn an_open_seat_runs_out_through_the_wall() {
     );
 }
 
+/// Two straight edges of a box meeting at a corner, blended together:
+/// the later seat runs on through the earlier band and the cut trims the
+/// two bands against each other. Each wedge removes (1 − π/4) r² per unit
+/// length; the corner cell where both wedges reach is counted once, and
+/// what both remove there is the cell outside both cylinders,
+/// r³ (5/3 − π/2). One edge at a time stops flush instead, and keeps a
+/// cap at the corner — the state the corner tool is built for.
+#[test]
+fn two_blends_meeting_at_a_corner_trim_each_other() {
+    let (l, r) = (20.0_f64, 2.0_f64);
+    let pi = core::f64::consts::PI;
+    let want =
+        l * l * 10.0 - (2.0 * (1.0 - pi / 4.0) * r * r * l - r * r * r * (5.0 / 3.0 - pi / 2.0));
+
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (l, l, 10.0), T)
+        .unwrap()
+        .shape;
+    let a = edge_near(&model, &block, Point::new(10.0, 20.0, 10.0));
+    let b = edge_near(&model, &block, Point::new(20.0, 10.0, 10.0));
+    let met = ogeom::fillet::fillet_edges(&mut model, &block, &[a.clone(), b.clone()], r, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &met, T).unwrap().is_valid());
+    assert_eq!(
+        explore_unique(&model, &met, ShapeType::Face).unwrap().len(),
+        8,
+        "six walls and two bands, no cap between them"
+    );
+    let mut previous = f64::INFINITY;
+    for chord in [1e-3, 1e-4] {
+        let fine = ogeom::mesh::Deflection::with_chord(chord).unwrap();
+        let measured = ogeom::algo::volume_properties(&model, &met, fine, T)
+            .unwrap()
+            .mass;
+        let error = (measured - want).abs() / want;
+        assert!(
+            error < previous,
+            "refining brings it closer: {measured} vs {want}"
+        );
+        assert!(
+            error < chord * 2.0,
+            "two meeting blends against the closed form at chord {chord}: {measured} vs {want}"
+        );
+        previous = error;
+    }
+
+    // One edge at a time: the second stops flush at the first band, and
+    // the corner cell keeps the material the meeting would have rounded.
+    let first = ogeom::fillet::fillet_edge(&mut model, &block, &a, r, T).unwrap();
+    let b_again = edge_near(&model, &first.shape, Point::new(20.0, 10.0, 10.0));
+    let flush = ogeom::fillet::fillet_edge(&mut model, &first.shape, &b_again, r, T)
+        .unwrap()
+        .shape;
+    assert_eq!(
+        explore_unique(&model, &flush, ShapeType::Face)
+            .unwrap()
+            .len(),
+        9,
+        "flush: the second wedge's cap stands at the first band"
+    );
+    let fine = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
+    let flush_volume = ogeom::algo::volume_properties(&model, &flush, fine, T)
+        .unwrap()
+        .mass;
+    assert!(
+        flush_volume > want + 0.5,
+        "the flush corner keeps material the meeting removes"
+    );
+}
+
 #[test]
 fn two_seam_split_blends_meet_cap_to_cap_in_either_order() {
     // The top crease is split by the drum's seam into two arcs sharing a

@@ -46,13 +46,43 @@ pub fn fillet_edge(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    fillet_edge_meeting(model, solid, edge, radius, None, tol)
+}
+
+/// An edge of a multi-edge request, by its ends: where each end stands and
+/// which way the edge leaves it, so a later edge can tell a chain mate from
+/// a corner mate at a shared vertex.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Mate {
+    /// `(point, unit tangent leaving the point along the edge)` per end.
+    pub ends: [(Point, Vector); 2],
+}
+
+/// [`fillet_edge`], with the straight seat told what else was asked for.
+///
+/// One edge at a time stops flush against whatever it ends on: that is the
+/// state the corner tool (`round_vertex`) is built for, three flush blends
+/// and a vertex. Edges asked for together meet: where one of them ends at
+/// a vertex another leaves *tangentially*, the two are a chain and their
+/// caps stand flush in one plane; where it ends against the band of one
+/// that left the vertex some other way, the later seat runs on through
+/// that band and the cut trims the two against each other — two fillets
+/// meeting at a corner.
+fn fillet_edge_meeting(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius: f64,
+    mates: Option<(usize, &[Mate])>,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
     }
     let (curve, crange) = edge_curve(model, edge, tol)?;
     let closed = ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
     match curve {
-        Curve::Line(_) => planar_fillet(model, solid, edge, radius, tol),
+        Curve::Line(_) => planar_fillet(model, solid, edge, radius, mates, tol),
         Curve::Circle(c) if closed => revolved_fillet(model, solid, edge, &c, radius, tol),
         Curve::Circle(c) => {
             // An open arc is two different seats: a piece a boolean split
@@ -98,9 +128,15 @@ pub fn fillet_edge(
 ///
 /// At a tangent junction the neighbouring wedges' end caps stand in one
 /// plane with one cross-section, and the boolean's same-domain resolution
-/// melts them — the blends join without a seam face between them. Junctions
-/// that are not tangent leave the wedges' caps standing, which is the honest
-/// picture of a corner no single ball rolls around.
+/// melts them — the blends join without a seam face between them. Where
+/// two straight edges of the chain meet at a corner, the later seat runs
+/// on through the earlier blend's band and the cut trims the two bands
+/// against each other along their own intersection: two fillets meeting
+/// at a corner, the way one edge at a time ([`fillet_edge`]) deliberately
+/// does not, since the flush-ended state is what the corner tool
+/// ([`round_vertex`](crate::round_vertex)) is built for. Other junctions
+/// leave the wedges' caps standing, which is the honest picture of a
+/// corner no single ball rolls around.
 ///
 /// # Errors
 ///
@@ -117,8 +153,28 @@ pub fn fillet_edges(
     if edges.is_empty() {
         ogeom_bail!(Construction, "a chain of no edges rounds nothing");
     }
+    use ogeom_geom::Curve3d as _;
+    let mates: Vec<Mate> = edges
+        .iter()
+        .map(|e| -> OgeomResult<Mate> {
+            let (curve, range) = edge_curve(model, e, tol)?;
+            let end_of = |t: f64, leaving: f64| -> OgeomResult<(Point, Vector)> {
+                let d = curve.d1_at(t, tol)?;
+                let m = d.magnitude();
+                let unit = if m > tol.confusion() {
+                    d / m
+                } else {
+                    Vector::ZERO
+                };
+                Ok((curve.point_at(t, tol)?, unit * leaving))
+            };
+            Ok(Mate {
+                ends: [end_of(range.0, 1.0)?, end_of(range.1, -1.0)?],
+            })
+        })
+        .collect::<OgeomResult<_>>()?;
     let mut built: Option<Built> = None;
-    for edge in edges {
+    for (index, edge) in edges.iter().enumerate() {
         let (current, target) = match &built {
             None => (solid.clone(), edge.clone()),
             Some(b) => {
@@ -142,7 +198,8 @@ pub fn fillet_edges(
                 }
             }
         };
-        let mut step = fillet_edge(model, &current, &target, radius, tol)?;
+        let mut step =
+            fillet_edge_meeting(model, &current, &target, radius, Some((index, &mates)), tol)?;
         // The blend consumed the re-found stand-in; the caller's edge is
         // the same fact under its original name.
         if !target.is_same(edge) {
@@ -415,9 +472,87 @@ fn planar_fillet(
     solid: &Shape,
     edge: &Shape,
     radius: f64,
+    mates: Option<(usize, &[Mate])>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    let seat = planar_seat(model, solid, edge, tol)?;
+    let mut seat = planar_seat(model, solid, edge, tol)?;
+    // A straight seat asked to meet runs out. Where the edge ends against
+    // a neighbouring blend — a band tangent to one of the hosts at the end
+    // vertex — the material past the end is that blend's own rounding, and
+    // the seat carries on through it until the ball has left the solid; the
+    // cut then trims the two bands against each other along their own
+    // intersection, which is what two fillets meeting at a corner are. At
+    // a plain wall the cap already stands in the wall's own plane and
+    // stays; at a step the seat stops where the edge does.
+    for end in [true, false] {
+        let Some((index, mates)) = mates else {
+            break;
+        };
+        let at = if end { seat.start } else { seat.end };
+        let outward = if end { -seat.along } else { seat.along };
+        // A mate leaving this vertex the way this edge arrives is a chain
+        // mate: the caps stand flush and the melt joins the blends.
+        let chain = mates.iter().enumerate().any(|(i, mate)| {
+            i != index
+                && mate.ends.iter().any(|(p, leaving)| {
+                    p.distance(at) <= tol.confusion() * 1e3
+                        && leaving.cross(outward).magnitude() <= 1e-2
+                        && leaving.dot(outward) > 0.0
+                })
+        });
+        if chain {
+            continue;
+        }
+        let hosts = [&seat.faces[0], &seat.faces[1]];
+        if !crate::marched::crease_terminates_at(model, solid, edge, hosts, at, tol)?
+            || !crate::marched::neighbour_blend_at(model, solid, hosts, at, tol)?
+        {
+            continue;
+        }
+        // The ball's centre line, a radius in from both hosts.
+        let a = seat.leg(0, tol)? * if seat.convex { 1.0 } else { -1.0 };
+        let b = seat.leg(1, tol)? * if seat.convex { 1.0 } else { -1.0 };
+        let bisector = {
+            let u = a + b;
+            let m = u.magnitude();
+            if m <= tol.angular() {
+                continue;
+            }
+            u / m
+        };
+        let depth = seat.normals[0].dot(bisector).abs();
+        if depth <= tol.angular() {
+            continue;
+        }
+        let centre_at = |s: f64| at + outward * s + bisector * (radius / depth);
+        let deflection = ogeom_mesh::Deflection {
+            chord: (radius * 1e-2).max(tol.confusion() * 1e3),
+            ..ogeom_mesh::Deflection::default()
+        };
+        let step = radius / 8.0;
+        let mut reach: Option<f64> = None;
+        for k in 1..=32 {
+            let s = step * f64::from(k);
+            let inside =
+                ogeom_algo::classify_in_solid(model, solid, centre_at(s), deflection, tol)?
+                    == ogeom_algo::Containment::In;
+            if inside != seat.convex {
+                reach = Some(s + radius * 0.25);
+                break;
+            }
+        }
+        if std::env::var_os("OGEOM_DEBUG_RUNOUT").is_some() {
+            eprintln!("RUNOUT straight seat end {end}: reach {reach:?}");
+        }
+        let Some(reach) = reach else {
+            continue;
+        };
+        if end {
+            seat.start -= seat.along * reach;
+        } else {
+            seat.end += seat.along * reach;
+        }
+    }
     seated_fillet(model, solid, &seat, radius, Some(edge), tol)
 }
 
