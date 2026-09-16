@@ -128,6 +128,47 @@ pub fn make_box(
     box_like(model, &corner_points, tol)
 }
 
+/// A parallelepiped: the solid spanned at `origin` by three edge vectors.
+///
+/// A box whose edges need not be square to each other — a corner tool's
+/// block at an oblique vertex, a sheared block to stand one on. The three
+/// vectors may come in either handedness; the layout is wound so the faces
+/// look outward whichever way they came.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
+/// vector is not finite or the three are coplanar.
+pub fn make_parallelepiped(
+    model: &mut Model,
+    origin: Point,
+    edges: [ogeom_math::Vector; 3],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let volume = edges[0].cross(edges[1]).dot(edges[2]);
+    if !volume.is_finite() || volume.abs() <= tol.confusion() {
+        ogeom_bail!(
+            Construction,
+            "a parallelepiped needs three edges that span a volume"
+        );
+    }
+    let [a, b, c] = if volume > 0.0 {
+        edges
+    } else {
+        [edges[1], edges[0], edges[2]]
+    };
+    model.begin_operation();
+    let corner_points: Vec<Point> = CORNERS
+        .iter()
+        .map(|&(i, j, k)| {
+            #[allow(clippy::cast_precision_loss)]
+            let at = origin + a * (i as f64) + b * (j as f64) + c * (k as f64);
+            at
+        })
+        .collect();
+    box_like(model, &corner_points, tol)
+}
+
 /// Build a solid from eight corners laid out like [`CORNERS`], with the six
 /// faces of [`FACES`].
 ///
@@ -1294,6 +1335,79 @@ mod tests {
             );
             assert!(data.curve3d().is_some());
         }
+    }
+
+    #[test]
+    fn a_parallelepiped_spans_its_triple_product_in_either_handedness() {
+        use ogeom_math::Vector;
+        let edges = [
+            Vector::new(10.0, 0.0, 0.0),
+            Vector::new(3.0, 10.0, 0.0),
+            Vector::new(2.0, 1.0, 10.0),
+        ];
+        for order in [[0, 1, 2], [1, 0, 2]] {
+            let mut model = Model::new();
+            let spanned = [edges[order[0]], edges[order[1]], edges[order[2]]];
+            let solid = make_parallelepiped(&mut model, Point::new(1.0, 2.0, 3.0), spanned, T)
+                .unwrap()
+                .shape;
+            assert_eq!(model.kind_of(&solid).unwrap(), ShapeType::Solid);
+            let faces = explore_unique(&model, &solid, ShapeType::Face).unwrap();
+            assert_eq!(faces.len(), 6);
+            assert_eq!(
+                explore_unique(&model, &solid, ShapeType::Edge)
+                    .unwrap()
+                    .len(),
+                12
+            );
+            assert_eq!(
+                explore_unique(&model, &solid, ShapeType::Vertex)
+                    .unwrap()
+                    .len(),
+                8
+            );
+            let shell = explore_unique(&model, &solid, ShapeType::Shell)
+                .unwrap()
+                .remove(0);
+            assert!(crate::is_shell_closed(&model, &shell).unwrap());
+            // Every face looks outward: the solid's outward normals at the
+            // face centroids point away from the block's own centre.
+            let centre = Point::new(1.0, 2.0, 3.0) + (edges[0] + edges[1] + edges[2]) * 0.5;
+            for face in &faces {
+                let corners: Vec<Point> = explore_unique(&model, face, ShapeType::Vertex)
+                    .unwrap()
+                    .iter()
+                    .map(|v| model.node(v).unwrap().data().as_vertex().unwrap().point)
+                    .collect();
+                let mut mid = ogeom_math::Vector::ZERO;
+                for c in &corners {
+                    mid += c.to_vector();
+                }
+                let mid = Point::ORIGIN + mid * 0.25;
+                let data = model.node(face).unwrap().data().as_face().unwrap().clone();
+                let Some(ogeom_geom::SurfaceGeometry::Plane(plane)) =
+                    model.geometry().surface(data.surface)
+                else {
+                    panic!("a parallelepiped's faces are planes");
+                };
+                let mut normal = plane.plane().normal().vector();
+                if face.orientation() == ogeom_topo::Orientation::Reversed {
+                    normal = -normal;
+                }
+                assert!(normal.dot(mid - centre) > 0.0, "a face looks outward");
+            }
+        }
+        let mut model = Model::new();
+        assert!(
+            make_parallelepiped(
+                &mut model,
+                Point::ORIGIN,
+                [edges[0], edges[1], edges[0] + edges[1]],
+                T
+            )
+            .is_err(),
+            "coplanar edges span no volume"
+        );
     }
 
     #[test]

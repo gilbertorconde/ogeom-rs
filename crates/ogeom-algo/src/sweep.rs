@@ -49,6 +49,9 @@ pub mod roles {
     pub const SWEEP_RAIL: Role = Role::op_defined(23);
 }
 
+/// A map from the extrusion's chart to a canonical surface's own.
+type ChartMap = Box<dyn Fn((f64, f64)) -> (f64, f64)>;
+
 /// Extrude a shape along `vector`.
 ///
 /// A face becomes a solid, a wire becomes a shell, an edge becomes a face. The
@@ -623,28 +626,47 @@ fn prism_over_edge(
     // the travel — so every pcurve below serves either surface unchanged.
     // Naming the plane it actually made is what lets the boolean's
     // same-domain resolution meet a prism wall as the plane it is.
+    // The chart the pcurves below are written in is the extrusion's — `u`
+    // the curve's own parameter, `v` the travel — and a canonical surface
+    // whose chart differs carries a map from that chart to its own. A line
+    // swept square to itself makes a plane whose chart *is* the
+    // extrusion's; swept obliquely it makes a plane still, with the
+    // extrusion's chart sheared onto the plane's orthonormal one, and every
+    // pcurve below is a straight line between chart points, which a shear
+    // keeps straight.
+    let mut chart: ChartMap = Box::new(|p| p);
     let canonical: Option<ogeom_geom::SurfaceGeometry> = if let ogeom_geom::Curve::Line(line) =
         &geometry
-        && line.axis().direction.vector().dot(vector).abs() <= tol.angular() * travel
+        && let Ok(normal) =
+            ogeom_math::Direction::new(line.axis().direction.vector().cross(vector), tol)
     {
-        // Chart identity needs the travel perpendicular to the line; an
-        // oblique sweep's plane exists too, but with a sheared chart the
-        // pcurves below would no longer describe.
         let axis = line.axis();
-        let normal = ogeom_math::Direction::new(axis.direction.vector().cross(vector), tol).ok();
-        normal
-            .map(|n| -> OgeomResult<ogeom_geom::SurfaceGeometry> {
-                let frame = ogeom_math::Frame::new(axis.location, n, axis.direction, tol)?;
-                let plane = ogeom_math::Plane::new(frame);
-                let margin = (hi - lo).abs().max(travel) * 0.1 + 1.0;
-                Ok(ogeom_geom::PlaneSurface::over(
-                    plane,
-                    (lo.min(hi) - margin, lo.max(hi) + margin),
-                    (-margin, travel + margin),
-                )?
-                .into())
-            })
-            .transpose()?
+        let frame = ogeom_math::Frame::new(axis.location, normal, axis.direction, tol)?;
+        let plane = ogeom_math::Plane::new(frame);
+        // The extrusion's `v` is a distance along the unit travel; on the
+        // plane it moves `shear` along the line and `rise` across it per
+        // unit of that distance.
+        let along = axis.direction.vector();
+        let across = frame.y().vector();
+        let (shear, rise) = (
+            direction.vector().dot(along),
+            direction.vector().dot(across),
+        );
+        if shear.abs() > tol.angular() {
+            chart = Box::new(move |(u, v): (f64, f64)| (u + v * shear, v * rise));
+        }
+        let margin = (hi - lo).abs().max(travel) * 0.1 + 1.0;
+        let (u_lo, u_hi) = (lo.min(hi), lo.max(hi));
+        let u_min = u_lo + travel * shear.min(0.0);
+        let u_max = u_hi + travel * shear.max(0.0);
+        Some(
+            ogeom_geom::PlaneSurface::over(
+                plane,
+                (u_min - margin, u_max + margin),
+                (-margin, travel * rise + margin),
+            )?
+            .into(),
+        )
     } else if let ogeom_geom::Curve::Circle(c) = &geometry
         && !c.is_reversed()
         && c.circle().frame().z().vector().dot(direction.vector()) >= 1.0 - tol.angular()
@@ -692,8 +714,22 @@ fn prism_over_edge(
     let start_rail = rail(model, rails, edge, displacement, vector, false, tol)?;
     let end_rail = rail(model, rails, edge, displacement, vector, true, tol)?;
 
-    pcurve(model, &bottom, surface, (lo, 0.0), (hi, 0.0), tol)?;
-    pcurve(model, &top, surface, (lo, travel), (hi, travel), tol)?;
+    pcurve(
+        model,
+        &bottom,
+        surface,
+        chart((lo, 0.0)),
+        chart((hi, 0.0)),
+        tol,
+    )?;
+    pcurve(
+        model,
+        &top,
+        surface,
+        chart((lo, travel)),
+        chart((hi, travel)),
+        tol,
+    )?;
     if start_rail.is_same(&end_rail) {
         // A closed profile edge — a full circle — starts and ends at one
         // vertex, so its two rails are one edge appearing at both `u = lo` and
@@ -706,8 +742,8 @@ fn prism_over_edge(
             model,
             &start_rail,
             surface,
-            ((u_end, 0.0), (u_end, travel)),
-            ((u_start, 0.0), (u_start, travel)),
+            (chart((u_end, 0.0)), chart((u_end, travel))),
+            (chart((u_start, 0.0)), chart((u_start, travel))),
             tol,
         )?;
     } else {
@@ -715,16 +751,16 @@ fn prism_over_edge(
             model,
             &start_rail,
             surface,
-            (u_start, 0.0),
-            (u_start, travel),
+            chart((u_start, 0.0)),
+            chart((u_start, travel)),
             tol,
         )?;
         pcurve(
             model,
             &end_rail,
             surface,
-            (u_end, 0.0),
-            (u_end, travel),
+            chart((u_end, 0.0)),
+            chart((u_end, travel)),
             tol,
         )?;
     }
@@ -1792,6 +1828,73 @@ mod tests {
     /// A square face in the xy plane, one unit on a side from the origin.
     fn square(model: &mut Model, side: f64) -> Shape {
         box_face(model, side, crate::primitive::roles::FACE_MAX_Z)
+    }
+
+    #[test]
+    fn a_segment_swept_obliquely_makes_a_plane_with_a_sheared_chart() {
+        // A line swept along a vector leaning off its perpendicular still
+        // sweeps a plane; the extrusion's chart is sheared onto the plane's
+        // own, and the four corners land where the sweep puts them.
+        use ogeom_geom::Curve3d as _;
+        let mut model = Model::new();
+        let (a, b) = (Point::new(0.0, 0.0, 0.0), Point::new(10.0, 0.0, 0.0));
+        let va = crate::make_vertex(&mut model, a).shape;
+        let vb = crate::make_vertex(&mut model, b).shape;
+        let edge = crate::make_edge_between(
+            &mut model,
+            ogeom_geom::LineCurve::segment(a, b, T).unwrap().into(),
+            (0.0, 10.0),
+            &va,
+            &vb,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let lean = Vector::new(2.0, 0.0, 5.0);
+        let face = make_prism(&mut model, &edge, lean, T).unwrap().shape;
+        let data = model.node(&face).unwrap().data().as_face().unwrap().clone();
+        let surface = model.geometry().surface(data.surface).unwrap().clone();
+        assert!(
+            matches!(surface, ogeom_geom::SurfaceGeometry::Plane(_)),
+            "an oblique sweep of a line is a plane"
+        );
+        // Every edge's pcurve on the plane evaluates to the edge's own
+        // points: the sheared chart describes.
+        use ogeom_geom::Surface as _;
+        for e in explore_unique(&model, &face, ShapeType::Edge).unwrap() {
+            let ed = model.node(&e).unwrap().data().as_edge().unwrap().clone();
+            let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = ed.curve3d() else {
+                panic!("an edge has a curve");
+            };
+            let world = model
+                .geometry()
+                .curve(*curve)
+                .unwrap()
+                .clone()
+                .transformed(&e.transform(model.datums()).unwrap(), T)
+                .unwrap();
+            let Some(ogeom_topo::EdgeRepr::PCurve {
+                curve: pc,
+                range: prange,
+                ..
+            }) = ed.pcurve_for(data.surface, e.location())
+            else {
+                panic!("an edge has a pcurve on the face");
+            };
+            let planar = model.geometry().pcurve(*pc).unwrap();
+            for k in 0..=4 {
+                let f = f64::from(k) / 4.0;
+                let t = range.0 + (range.1 - range.0) * f;
+                let u = prange.0 + (prange.1 - prange.0) * f;
+                let on_curve = world.point_at(t, T).unwrap();
+                let q = ogeom_geom::Curve2d::point_at(planar, u, T).unwrap();
+                let on_surface = surface.point_at(q.x, q.y, T).unwrap();
+                assert!(
+                    on_curve.distance(on_surface) < 1e-9,
+                    "pcurve and curve agree: {on_curve:?} vs {on_surface:?}"
+                );
+            }
+        }
     }
 
     #[test]
