@@ -616,6 +616,95 @@ struct TangentRec {
 }
 
 /// One kept sub-range of one section.
+/// A strand's tolerance as a junction may trust it: a fitted section whose
+/// trace failed reports a budget of metres, and a weld that believed it
+/// would join every vertex of the model. Nothing this pipeline fits is
+/// honestly looser than ten thousand confusions.
+fn honest(tolerance: f64, tol: Tolerances) -> f64 {
+    tolerance.min(tol.confusion() * 1e4)
+}
+
+/// One split an edge is asked for, with how honestly it can be placed.
+#[derive(Debug, Clone, Copy)]
+struct Pave {
+    /// The parameter on the edge's curve.
+    t: f64,
+    /// How far the strand that asked for it may honestly sit from the exact
+    /// junction: its own tolerance, and its tangential doubt where the
+    /// crossing was a touch.
+    honesty: f64,
+}
+
+/// Paves the edge cannot tell apart, as one junction each.
+///
+/// A tolerant rail meeting a wedge's faces near one corner collects a
+/// cluster of crossings inside its own stated radius, and a fitted section
+/// and a fitted contact asking for the same corner land a few microns
+/// apart. Split at each, the edge shatters into dust no weld downstream can
+/// rejoin. So consecutive paves whose gap along the edge in space is within
+/// the edge's honesty or either pave's own are one cluster, its first pave
+/// speaking for it.
+#[derive(Debug, Clone, Copy)]
+struct PaveCluster {
+    /// The representative parameter: the cluster's first pave.
+    t: f64,
+    /// Where it sits.
+    at: Point,
+    /// How far the cluster's members reach from the representative.
+    span: f64,
+    /// The loosest honesty among the members.
+    honesty: f64,
+    /// How many paves the cluster holds.
+    members: usize,
+}
+
+fn cluster_paves(
+    curve: &Curve,
+    crange: (f64, f64),
+    edge_tolerance: f64,
+    paves: &[Pave],
+    tol: Tolerances,
+) -> OgeomResult<Vec<PaveCluster>> {
+    let mut ts: Vec<Pave> = paves
+        .iter()
+        .copied()
+        .filter(|p| p.t > crange.0 + tol.parametric() && p.t < crange.1 - tol.parametric())
+        .collect();
+    ts.sort_by(|x, y| x.t.partial_cmp(&y.t).unwrap_or(core::cmp::Ordering::Equal));
+    ts.dedup_by(|x, y| {
+        if (x.t - y.t).abs() <= tol.parametric() {
+            y.honesty = y.honesty.max(x.honesty);
+            true
+        } else {
+            false
+        }
+    });
+    let floor = edge_tolerance.max(tol.confusion() * 10.0);
+    let mut clusters: Vec<PaveCluster> = Vec::new();
+    let mut prev: Option<(Point, f64)> = None;
+    for pave in ts {
+        let at = curve.point_at(pave.t, tol)?;
+        let joined = prev.is_some_and(|(held, honesty): (Point, f64)| {
+            held.distance(at) <= floor.max(honesty).max(pave.honesty)
+        });
+        if joined && let Some(cluster) = clusters.last_mut() {
+            cluster.span = cluster.span.max(cluster.at.distance(at));
+            cluster.honesty = cluster.honesty.max(pave.honesty);
+            cluster.members += 1;
+        } else {
+            clusters.push(PaveCluster {
+                t: pave.t,
+                at,
+                span: 0.0,
+                honesty: pave.honesty,
+                members: 1,
+            });
+        }
+        prev = Some((at, pave.honesty));
+    }
+    Ok(clusters)
+}
+
 #[derive(Clone)]
 struct SectionPiece {
     section: usize,
@@ -868,9 +957,10 @@ fn fill(
     Vec<ContactRec>,
     Vec<TangentRec>,
     Vec<Vec<(f64, f64)>>,
-    std::collections::HashMap<ogeom_topo::TShapeId, Vec<f64>>,
+    std::collections::HashMap<ogeom_topo::TShapeId, Vec<Pave>>,
     Vec<Vec<usize>>,
     Vec<Vec<usize>>,
+    Vec<Junction>,
 )> {
     use ogeom_intersect::{
         CurveCurveOptions, IntersectOptions, SurfaceIntersection, intersect_curves,
@@ -1078,6 +1168,7 @@ fn fill(
                 lines.push(pcurve_polyline(other, *orange, e.crange, e.crange, tol)?);
             }
         }
+        weld_outline_ends(&mut lines, outline_snap(face, tol));
         Ok(lines)
     };
     let mut outlines_a = Vec::new();
@@ -1091,7 +1182,7 @@ fn fill(
 
     // Crossings of each section with the boundary edges of both its faces,
     // and with every other section sharing a face.
-    let mut paves: std::collections::HashMap<ogeom_topo::TShapeId, Vec<f64>> =
+    let mut paves: std::collections::HashMap<ogeom_topo::TShapeId, Vec<Pave>> =
         std::collections::HashMap::new();
     let mut pieces: Vec<SectionPiece> = Vec::new();
     // Each section's paving depends only on the sections and the two
@@ -1099,12 +1190,19 @@ fn fill(
     // section reads. So the measuring runs in parallel and the accumulating
     // runs afterwards in section order — the same split `tessellate` uses,
     // and the same reason: nothing about scheduling can reach the answer.
-    type SectionWork = (Vec<(ogeom_topo::TShapeId, f64)>, Vec<SectionPiece>);
-    let paved: Vec<OgeomResult<SectionWork>> =
-        ogeom_core::parallel::map_ordered(&sections, |si, section: &SectionRec| {
+    type SectionWork = (
+        Vec<(ogeom_topo::TShapeId, Pave)>,
+        Vec<SectionPiece>,
+        Vec<Junction>,
+    );
+    let mut hug_junctions: Vec<Junction> = Vec::new();
+    let paved: Vec<OgeomResult<SectionWork>> = ogeom_core::parallel::map_ordered(
+        &sections,
+        |si, section: &SectionRec| {
             ogeom_core::progress::checkpoint()?;
-            let mut paves: Vec<(ogeom_topo::TShapeId, f64)> = Vec::new();
+            let mut paves: Vec<(ogeom_topo::TShapeId, Pave)> = Vec::new();
             let mut pieces: Vec<SectionPiece> = Vec::new();
+            let mut junctions: Vec<Junction> = Vec::new();
             // A fitted section meets an edge within its own budget, not within
             // rounding.
             let reach = tol.confusion().max(section.tolerance * 2.0);
@@ -1114,7 +1212,9 @@ fn fill(
             };
             let domain = section.curve.domain();
             let mut trim_ts: Vec<f64> = Vec::new();
-            let mut edge_hits: Vec<(ogeom_topo::TShapeId, f64, f64)> = Vec::new();
+            // Crossings with boundary edges: side, edge, parameter on the
+            // edge, parameter on the section, and how honestly the stop sits.
+            let mut hits: Vec<(usize, ogeom_topo::TShapeId, f64, f64, f64)> = Vec::new();
             // Spans of the section running *along* a boundary edge. The split
             // such a span would make already exists as boundary — stacked boxes'
             // perpendicular side planes meet exactly at the boxes' own edges —
@@ -1139,7 +1239,8 @@ fn fill(
                         if crossing.gap > reach {
                             continue;
                         }
-                        let on_b = onto_range(crossing.on_b, &e.curve, e.crange, tol);
+                        let mut on_b = onto_range(crossing.on_b, &e.curve, e.crange, tol);
+                        let mut honesty = honest(section.tolerance, tol);
                         // A crossing at a boundary edge's own end *is* that end's
                         // vertex, exactly. The stop the section keeps must be the
                         // vertex's parameter on the section — the meet of two
@@ -1155,17 +1256,78 @@ fn fill(
                         let weld = reach.max(tol.confusion() * 1e2);
                         for end in [e.crange.0, e.crange.1] {
                             let vertex = e.curve.point_at(end, tol)?;
-                            if vertex.distance(crossing.point) <= weld {
+                            if vertex.distance(crossing.point) <= weld + crossing.reach {
                                 let snapped =
                                     ogeom_algo::project_on_curve(&section.curve, vertex, 64, tol)?;
-                                if snapped.distance <= weld {
+                                if snapped.distance <= weld + crossing.reach {
                                     on_a = snapped.parameter;
                                 }
                                 break;
                             }
                         }
-                        trim_ts.push(on_a);
-                        edge_hits.push((e.node, on_b, on_a));
+                        // A touch at the section's own end *is* the end. A
+                        // band's section through a wall meets the wall's drum
+                        // edge tangentially where the band is tangent to the
+                        // drum, and the touch of two fitted curves at a
+                        // shallow angle wanders along them by far more than
+                        // their honesty; but the section stops there because
+                        // it leaves its own face, and that stop is the
+                        // junction — the crossing takes the end's parameter
+                        // and the edge splits under the end itself.
+                        let touch = crossing.reach > 0.0
+                            || tangential(
+                                &section.curve,
+                                crossing.on_a,
+                                &e.curve,
+                                crossing.on_b,
+                                tol,
+                            )?;
+                        if touch {
+                            let half = (domain.1 - domain.0) * 0.5;
+                            for end in [domain.0, domain.1] {
+                                if (crossing.on_a - end).abs() > half {
+                                    continue;
+                                }
+                                let tip = section
+                                    .curve
+                                    .point_at(at_param(end, domain, section.closed), tol)?;
+                                if crossing.reach > 0.0
+                                    && tip.distance(crossing.point) > crossing.reach + weld
+                                {
+                                    continue;
+                                }
+                                // The tip stands where the marcher left the
+                                // other face — on a fitted rail, to the rail's
+                                // own honesty — so the edge is asked at the
+                                // hug width, not the section's.
+                                let foot = ogeom_algo::project_on_curve(&e.curve, tip, 64, tol)?;
+                                let width =
+                                    (crossing.reach + honest(weld, tol)).max(tol.confusion() * 1e3);
+                                if *DEBUG_WIRE {
+                                    eprintln!(
+                                        "PAVE s{si}: touch on edge {} at {:.6}: tip {:.3e} off the edge, width {width:.2e}",
+                                        e.node.index(),
+                                        crossing.on_a,
+                                        foot.distance
+                                    );
+                                }
+                                if foot.distance <= width {
+                                    on_a = end;
+                                    on_b = onto_range(foot.parameter, &e.curve, e.crange, tol);
+                                    honesty = honesty.max(foot.distance);
+                                }
+                                break;
+                            }
+                        }
+                        if *DEBUG_WIRE {
+                            eprintln!(
+                                "PAVE s{si}: side {side} edge {} crossing at {on_a:.6} (edge {on_b:.6}) gap {:.2e} at {:?}",
+                                e.node.index(),
+                                crossing.gap,
+                                crossing.point
+                            );
+                        }
+                        hits.push((side, e.node, on_b, on_a, honesty));
                     }
                     for overlap in &found.overlaps {
                         // The curves overlap; what is *boundary* is the stretch
@@ -1178,12 +1340,67 @@ fn fill(
                         else {
                             continue;
                         };
+                        if *DEBUG_WIRE {
+                            eprintln!("PAVE s{si}: side {side} overlap ({lo:.6}, {hi:.6})");
+                        }
+                        // The edge splits where the shared stretch ends, as
+                        // the section does: the stretch itself is the edge's
+                        // to carry, and the section's next piece must meet
+                        // the edge at a vertex the edge actually has. A band
+                        // meeting a wall tangentially to the wall's own top
+                        // edge hugs it for a few microns from their corner;
+                        // without the split at the hug's far end the section
+                        // dangles there and is pruned, and the wall never
+                        // splits.
+                        // The section leaves the edge at the hug's end by
+                        // what the hug allowed, which no single strand's
+                        // honesty covers: that junction owns the gap.
+                        for t in [lo, hi] {
+                            let at = section
+                                .curve
+                                .point_at(at_param(t, domain, section.closed), tol)?;
+                            let foot = ogeom_algo::project_on_curve(&e.curve, at, 64, tol)?;
+                            if foot.distance <= reach.max(tol.confusion() * 1e3) {
+                                let on_b = onto_range(foot.parameter, &e.curve, e.crange, tol);
+                                hits.push((
+                                    side,
+                                    e.node,
+                                    on_b,
+                                    t,
+                                    honest(section.tolerance, tol).max(foot.distance),
+                                ));
+                                if foot.distance > tol.confusion() * 1e2 {
+                                    junctions.push(Junction {
+                                        at: foot.point,
+                                        reach: foot.distance + tol.confusion() * 1e2,
+                                    });
+                                }
+                            }
+                        }
                         trim_ts.push(lo);
                         trim_ts.push(hi);
                         along[side].push((lo, hi));
                     }
                 }
             }
+            // Inside a stretch the section runs along one of a face's edges,
+            // that face's other edges cannot genuinely cross it — a boundary
+            // is a simple loop, and they meet the hugged edge only at its
+            // ends, which the stretch's own ends already stop at. What the
+            // sampler reports there is the tangential dust of a leg touching
+            // the arc it ends on: thirty near-crossings inside a micron,
+            // which read as stops would shatter the section and pave the
+            // leg at each.
+            hits.retain(|(side, _, _, on_a, _)| {
+                !along[*side]
+                    .iter()
+                    .any(|(lo, hi)| *on_a > lo + tol.parametric() && *on_a < hi - tol.parametric())
+            });
+            let edge_hits: Vec<(ogeom_topo::TShapeId, f64, f64, f64)> = hits
+                .iter()
+                .map(|(_, node, on_b, on_a, honesty)| (*node, *on_b, *on_a, *honesty))
+                .collect();
+            trim_ts.extend(hits.iter().map(|(_, _, _, on_a, _)| *on_a));
             let mut cross_ts: Vec<f64> = Vec::new();
             for (sj, other) in sections.iter().enumerate() {
                 if sj == si {
@@ -1199,9 +1416,46 @@ fn fill(
                 };
                 let found = intersect_curves(&section.curve, &other.curve, cc2, tol)?;
                 for crossing in &found.crossings {
-                    if crossing.gap <= both {
-                        cross_ts.push(crossing.on_a);
+                    if crossing.gap > both {
+                        continue;
                     }
+                    let mut at = crossing.on_a;
+                    // A touch at this section's end is the end, as against an
+                    // edge: two sections through one wall from a band and
+                    // the leg it is tangent to touch where the band's ends.
+                    let touch = crossing.reach > 0.0
+                        || tangential(
+                            &section.curve,
+                            crossing.on_a,
+                            &other.curve,
+                            crossing.on_b,
+                            tol,
+                        )?;
+                    if touch {
+                        let half = (domain.1 - domain.0) * 0.5;
+                        for end in [domain.0, domain.1] {
+                            if (crossing.on_a - end).abs() > half {
+                                continue;
+                            }
+                            let tip = section
+                                .curve
+                                .point_at(at_param(end, domain, section.closed), tol)?;
+                            let foot = ogeom_algo::project_on_curve(&other.curve, tip, 64, tol)?;
+                            let width =
+                                (crossing.reach + honest(both, tol)).max(tol.confusion() * 1e3);
+                            if foot.distance <= width {
+                                at = end;
+                            }
+                            break;
+                        }
+                    }
+                    if *DEBUG_WIRE {
+                        eprintln!(
+                            "PAVE s{si}: cross s{sj} at {at:.6} gap {:.2e}",
+                            crossing.gap
+                        );
+                    }
+                    cross_ts.push(at);
                 }
             }
 
@@ -1270,7 +1524,28 @@ fn fill(
                 } else {
                     mid
                 };
-                if !inside_both(mid)? {
+                let held = inside_both(mid)?;
+                if *DEBUG_WIRE {
+                    let tf = if section.closed {
+                        fold(mid, domain)
+                    } else {
+                        mid
+                    };
+                    eprintln!(
+                        "PAVE s{si}: candidate ({lo:.6}, {hi:.6}) inside both {held} at a {:?} b {:?}",
+                        section
+                            .pc_a
+                            .point_at(tf, tol)
+                            .ok()
+                            .map(|q| fold_point_into_chart(q, &ga.faces[section.face_a].surface)),
+                        section
+                            .pc_b
+                            .point_at(tf, tol)
+                            .ok()
+                            .map(|q| fold_point_into_chart(q, &gb.faces[section.face_b].surface))
+                    );
+                }
+                if !held {
                     continue;
                 }
                 // A section that runs along a boundary edge of a face splits
@@ -1332,6 +1607,9 @@ fn fill(
                     }
                     hugs[side] = all_near;
                 }
+                if *DEBUG_WIRE {
+                    eprintln!("PAVE s{si}: candidate ({lo:.6}, {hi:.6}) hugs {hugs:?}");
+                }
                 if hugs[0] && hugs[1] {
                     // Boundary on both sides: the split exists twice over and
                     // adding it a third time would cancel what it copies.
@@ -1339,7 +1617,7 @@ fn fill(
                 }
                 // Keep the paves that end a kept interval: those are where edges
                 // genuinely split.
-                for (node, on_edge, on_section) in &edge_hits {
+                for (node, on_edge, on_section, honesty) in &edge_hits {
                     let s = *on_section;
                     let near = |x: f64| {
                         (s - x).abs() <= tol.parametric()
@@ -1347,7 +1625,13 @@ fn fill(
                                 && ((s + (domain.1 - domain.0)) - x).abs() <= tol.parametric())
                     };
                     if near(lo) || near(hi) {
-                        paves.push((*node, *on_edge));
+                        paves.push((
+                            *node,
+                            Pave {
+                                t: *on_edge,
+                                honesty: *honesty,
+                            },
+                        ));
                     }
                 }
                 // Split at section/section crossings inside the kept interval,
@@ -1401,10 +1685,12 @@ fn fill(
                     }
                 }
             }
-            Ok((paves, pieces))
-        });
+            Ok((paves, pieces, junctions))
+        },
+    );
     for work in paved {
-        let (found, made) = work?;
+        let (found, made, hugged) = work?;
+        hug_junctions.extend(hugged);
         for (node, at) in found {
             paves.entry(node).or_default().push(at);
         }
@@ -1476,10 +1762,17 @@ fn fill(
                 if tangential(&contact.curve, crossing.on_a, &e.curve, crossing.on_b, tol)? {
                     continue;
                 }
-                paves.entry(contact.node).or_default().push(crossing.on_a);
+                let honesty = honest(contact.tolerance, tol).max(crossing.reach);
+                paves.entry(contact.node).or_default().push(Pave {
+                    t: crossing.on_a,
+                    honesty,
+                });
                 let on_b = onto_range(crossing.on_b, &e.curve, e.crange, tol);
                 if on_b > e.crange.0 + tol.parametric() && on_b < e.crange.1 - tol.parametric() {
-                    paves.entry(e.node).or_default().push(on_b);
+                    paves
+                        .entry(e.node)
+                        .or_default()
+                        .push(Pave { t: on_b, honesty });
                 }
             }
             // A span of the contact running along a target boundary edge
@@ -1500,8 +1793,12 @@ fn fill(
                 if hi - lo <= tol.parametric() {
                     continue;
                 }
-                paves.entry(contact.node).or_default().push(lo);
-                paves.entry(contact.node).or_default().push(hi);
+                for t in [lo, hi] {
+                    paves.entry(contact.node).or_default().push(Pave {
+                        t,
+                        honesty: contact.tolerance,
+                    });
+                }
                 contact_along[ci].push((lo, hi));
                 // The *target* edge splits where the shared stretch ends,
                 // exactly as the contact does. Without this, the face across
@@ -1531,7 +1828,10 @@ fn fill(
                     // edge actually is.
                     let t = if periodic { fold(t, target_domain) } else { t };
                     if t > e.crange.0 + tol.parametric() && t < e.crange.1 - tol.parametric() {
-                        paves.entry(e.node).or_default().push(t);
+                        paves.entry(e.node).or_default().push(Pave {
+                            t,
+                            honesty: contact.tolerance,
+                        });
                     }
                 }
             }
@@ -1553,6 +1853,7 @@ fn fill(
         paves,
         same_a,
         same_b,
+        hug_junctions,
     ))
 }
 
@@ -1926,6 +2227,66 @@ struct GeneralFused {
     /// are carried for the consumers that want the contact itself.
     tangents: Vec<TangentRec>,
     pieces: Vec<FacePiece>,
+    /// Junctions several paves describe, each resolved once for every
+    /// strand that ends in it.
+    junctions: Vec<Junction>,
+}
+
+/// One junction the paving found several times over.
+///
+/// A tolerant rail meeting a wedge's faces near one corner collects a
+/// cluster of crossings inside its own stated radius — each face's section
+/// stops at its own crossing with the rail, and the crossings sit a few
+/// tenths of a micron to a few hundred apart along it. The rail's strands
+/// split once per cluster, at its first pave; the sections' ends still name
+/// their own crossings; and the two descriptions of the junction can sit
+/// apart by the cluster's whole span, which no single strand's honesty
+/// covers. So the junction is one vertex standing at the first pave, owning
+/// the span the paves disagree by, and every strand end inside that span
+/// names it, whichever pave its own trim stopped at.
+#[derive(Debug, Clone, Copy)]
+struct Junction {
+    /// Where the cluster's first pave sits.
+    at: Point,
+    /// How far a strand end may sit from `at` and still be this junction:
+    /// the cluster's span plus the rail's own reach.
+    reach: f64,
+}
+
+/// The junctions the paves describe more than once, or more loosely than
+/// the edge itself, per edge in face order.
+fn pave_junctions(
+    ga: &GSolid,
+    gb: &GSolid,
+    paves: &std::collections::HashMap<ogeom_topo::TShapeId, Vec<Pave>>,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Junction>> {
+    let mut seen: Vec<ogeom_topo::TShapeId> = Vec::new();
+    let mut junctions = Vec::new();
+    for e in ga
+        .faces
+        .iter()
+        .chain(gb.faces.iter())
+        .flat_map(|f| f.edges.iter())
+    {
+        if seen.contains(&e.node) {
+            continue;
+        }
+        seen.push(e.node);
+        let Some(ts) = paves.get(&e.node) else {
+            continue;
+        };
+        let floor = e.tolerance.max(tol.confusion() * 10.0);
+        for cluster in cluster_paves(&e.curve, e.crange, e.tolerance, ts, tol)? {
+            if cluster.members > 1 || cluster.honesty > tol.confusion() * 1e2 {
+                junctions.push(Junction {
+                    at: cluster.at,
+                    reach: cluster.span + cluster.honesty.max(floor),
+                });
+            }
+        }
+    }
+    Ok(junctions)
 }
 
 /// The face's outward normal at a chart point: the surface's, flipped when
@@ -1943,6 +2304,80 @@ fn outward_normal(face: &GFace, at: Point2, tol: Tolerances) -> OgeomResult<ogeo
 
 /// The chart point of a world point lying on a planar face, if it lands
 /// inside the face's trim.
+/// How far apart two of a face's edges may honestly end in its chart: the
+/// loosest edge's tolerance, or the hug width where an edge is a fitted
+/// section that once ran along another before parting from it.
+fn outline_snap(face: &GFace, tol: Tolerances) -> f64 {
+    face.edges
+        .iter()
+        .fold(tol.confusion() * 1e2, |acc, e| acc.max(e.tolerance * 2.0))
+        .max(
+            if face.edges.iter().any(|e| e.tolerance > tol.confusion()) {
+                tol.confusion() * 1e3
+            } else {
+                0.0
+            },
+        )
+}
+
+/// Close the gaps between a face's outline polylines.
+///
+/// The edges are polylined one by one, and where two of them meet at a
+/// vertex that owns some tolerance — a fitted section's end welded to the
+/// edge it hugged, a few dozen microns off — their polylines stop that far
+/// apart. A ray cast for containment slips through such a gap, and a probe
+/// standing inside the face within a hug's width of the seam reads as
+/// outside. Ends within `snap` of another polyline's end are made one
+/// point, so the outline is closed exactly as the topology says it is.
+fn weld_outline_ends(lines: &mut [Vec<Point2>], snap: f64) {
+    if snap <= 0.0 {
+        return;
+    }
+    // Every polyline end, as (line, is its last point, where).
+    let ends: Vec<(usize, bool, Point2)> = lines
+        .iter()
+        .enumerate()
+        .flat_map(|(i, line)| {
+            let first = line.first().map(|p| (i, false, *p));
+            let last = line.last().map(|p| (i, true, *p));
+            first.into_iter().chain(last)
+        })
+        .collect();
+    // Each end moves onto the nearest other end within reach that sorts
+    // before it, so a matched pair lands on one point rather than trading
+    // places.
+    let mut moves: Vec<(usize, bool, Point2)> = Vec::new();
+    for &(i, end_i, p) in &ends {
+        let nearest = ends
+            .iter()
+            // Ends closer than the parametric snap already meet for every
+            // purpose here, and moving one by rounding noise takes a probe
+            // that stands exactly on a chart's seam off it.
+            .filter(|&&(j, end_j, q)| {
+                let d = p.distance(q);
+                (j, end_j) < (i, end_i) && j != i && d > PARAM_SNAP && d <= snap
+            })
+            .min_by(|a, b| {
+                p.distance(a.2)
+                    .partial_cmp(&p.distance(b.2))
+                    .unwrap_or(core::cmp::Ordering::Equal)
+            });
+        if let Some(&(_, _, q)) = nearest {
+            moves.push((i, end_i, q));
+        }
+    }
+    for (i, end_i, q) in moves {
+        let slot = if end_i {
+            lines[i].last_mut()
+        } else {
+            lines[i].first_mut()
+        };
+        if let Some(p) = slot {
+            *p = q;
+        }
+    }
+}
+
 fn chart_point_of(face: &GFace, p: Point, tol: Tolerances) -> Option<Point2> {
     // Closed-form inversion for the analytic surfaces: the same-domain
     // resolution asks "where does this probe sit in the partner's chart", and
@@ -2004,16 +2439,26 @@ fn chart_point_of(face: &GFace, p: Point, tol: Tolerances) -> Option<Point2> {
             lines.push(pcurve_polyline(other, *orange, e.crange, e.crange, tol).ok()?);
         }
     }
+    weld_outline_ends(&mut lines, outline_snap(face, tol));
     let borrowed: Vec<&[Point2]> = lines.iter().map(Vec::as_slice).collect();
     // The face's boundary polylines are unwrapped — a winding ring may span
-    // any one period's window, not necessarily the chart's canonical one —
-    // so the probe is asked at every period image that could land inside.
+    // any one period's window, not necessarily the chart's canonical one,
+    // and a wire chained onto one branch of the chart may sit whole periods
+    // away from it — so the probe is carried to the outline's own branch
+    // first, and asked at the neighbouring images as well.
     let mut shifts = vec![0.0];
     if face.surface.is_periodic_u() {
         let ((ua, ub), _) = face.surface.domain();
         if ub > ua {
-            shifts.push(ub - ua);
-            shifts.push(ua - ub);
+            let period = ub - ua;
+            let (sum, count) = lines
+                .iter()
+                .flatten()
+                .fold((0.0_f64, 0_usize), |(s, n), q| (s + q.x, n + 1));
+            #[allow(clippy::cast_precision_loss)]
+            let centre = if count > 0 { sum / count as f64 } else { at.x };
+            let home = ((centre - at.x) / period).round() * period;
+            shifts = vec![home, home + period, home - period];
         }
     }
     for shift in shifts {
@@ -2147,6 +2592,8 @@ fn mark_covered_coincidences(ga: &GSolid, pieces: &mut [FacePiece], tol: Toleran
 /// precondition falsifiable (issue #12). Costs one branch per pair when off.
 static AUDIT_BOUNDS: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("OGEOM_BOOL_AUDIT_BOUNDS").is_ok());
+static DEBUG_WIRE: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("OGEOM_DEBUG_WIRE").is_ok());
 static DEBUG_STRANDS: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("OGEOM_DEBUG_STRANDS").is_ok());
 static ARRANGE_DEBUG: std::sync::LazyLock<bool> =
@@ -2232,8 +2679,61 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     let ga = gather(model, a, tol)?;
     let gb = gather(model, b, tol)?;
     ogeom_core::progress::stage("boolean: intersect");
-    let (sections, section_pieces, contacts, tangents, contact_along, paves, same_a, same_b) =
+    let (sections, section_pieces, contacts, tangents, contact_along, paves, same_a, same_b, hugs) =
         fill(&ga, &gb, false, tol)?;
+    let mut junctions = pave_junctions(&ga, &gb, &paves, tol)?;
+    junctions.extend(hugs);
+    if *DEBUG_WIRE {
+        for j in &junctions {
+            eprintln!("JUNCTION at {:?} reach {:.3e}", j.at, j.reach);
+        }
+        let kind = |sf: &SurfaceGeometry| match sf {
+            SurfaceGeometry::Plane(_) => "plane",
+            SurfaceGeometry::Cylinder(_) => "cyl",
+            SurfaceGeometry::BSpline(_) => "bspline",
+            _ => "other",
+        };
+        for (si, sec) in sections.iter().enumerate() {
+            let fa = &ga.faces[sec.face_a];
+            let fb = &gb.faces[sec.face_b];
+            let d = sec.curve.domain();
+            let mut worst_a: f64 = 0.0;
+            let mut worst_b: f64 = 0.0;
+            let mut len = 0.0;
+            let mut prev: Option<Point> = None;
+            for i in 0..=32 {
+                let t = d.0 + (d.1 - d.0) * f64::from(i) / 32.0;
+                let at = sec.curve.point_at(t, tol)?;
+                if let Some(p) = prev {
+                    len += p.distance(at);
+                }
+                prev = Some(at);
+                let near = |f: &GFace| -> OgeomResult<f64> {
+                    let mut best = f64::INFINITY;
+                    for e in &f.edges {
+                        best = best.min(distance_to_edge_curve(&e.curve, e.crange, at, tol)?);
+                    }
+                    Ok(best)
+                };
+                worst_a = worst_a.max(near(fa)?);
+                worst_b = worst_b.max(near(fb)?);
+            }
+            let pieces = section_pieces.iter().filter(|p| p.section == si).count();
+            eprintln!(
+                "SECTION s{si} a{}({}) x b{}({}) tol {:.2e} closed {} len {:.4} pieces {pieces} hug-dist a {:.3e} b {:.3e}",
+                sec.face_a,
+                kind(&fa.surface),
+                sec.face_b,
+                kind(&fb.surface),
+                sec.tolerance,
+                sec.closed,
+                len,
+                worst_a,
+                worst_b
+            );
+        }
+        eprintln!("TANGENTS {}  CONTACTS {}", tangents.len(), contacts.len());
+    }
     // The strict audit: fill again with every pair admitted and demand the
     // same kept material. The production result above is always the
     // filtered run — under audit too — so the audit compares rather than
@@ -2263,36 +2763,13 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             for (ei, e) in face.edges.iter().enumerate() {
                 let mut stops = vec![e.crange.0];
                 if let Some(ts) = paves.get(&e.node) {
-                    let mut ts: Vec<f64> = ts
-                        .iter()
-                        .copied()
-                        .filter(|t| {
-                            *t > e.crange.0 + tol.parametric() && *t < e.crange.1 - tol.parametric()
-                        })
-                        .collect();
-                    ts.sort_by(|x, y| x.partial_cmp(y).unwrap_or(core::cmp::Ordering::Equal));
-                    ts.dedup_by(|x, y| (*x - *y).abs() <= tol.parametric());
                     // Paves the edge itself cannot tell apart are one
-                    // junction. A tolerant rail meeting several of a wedge's
-                    // faces near one corner collects a cluster of crossings
-                    // inside its own stated radius; split at each, the edge
-                    // shatters into dust no weld downstream can rejoin. The
-                    // first of each cluster speaks for it, measured along
-                    // the curve in space, at the edge's own honesty.
-                    let reach = e.tolerance.max(tol.confusion() * 10.0);
-                    let mut kept: Vec<f64> = Vec::with_capacity(ts.len());
-                    let mut prev_at: Option<Point> = None;
-                    for t in ts {
-                        let at = e.curve.point_at(t, tol)?;
-                        // Cluster by gap: a new junction starts where the
-                        // spacing first exceeds the edge's honesty, and the
-                        // cluster's first pave speaks for all of it.
-                        if prev_at.is_none_or(|held: Point| held.distance(at) > reach) {
-                            kept.push(t);
-                        }
-                        prev_at = Some(at);
-                    }
-                    stops.extend(kept);
+                    // junction, and the cluster's first pave speaks for it.
+                    stops.extend(
+                        cluster_paves(&e.curve, e.crange, e.tolerance, ts, tol)?
+                            .iter()
+                            .map(|c| c.t),
+                    );
                 }
                 stops.push(e.crange.1);
                 // A closed boundary edge — a cap's full circle — needs two
@@ -2429,17 +2906,11 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 // sides are the same edges and sew shared.
                 let mut stops = vec![contact.crange.0];
                 if let Some(ts) = paves.get(&contact.node) {
-                    let mut ts: Vec<f64> = ts
-                        .iter()
-                        .copied()
-                        .filter(|t| {
-                            *t > contact.crange.0 + tol.parametric()
-                                && *t < contact.crange.1 - tol.parametric()
-                        })
-                        .collect();
-                    ts.sort_by(|x, y| x.partial_cmp(y).unwrap_or(core::cmp::Ordering::Equal));
-                    ts.dedup_by(|x, y| (*x - *y).abs() <= tol.parametric());
-                    stops.extend(ts);
+                    stops.extend(
+                        cluster_paves(&contact.curve, contact.crange, contact.tolerance, ts, tol)?
+                            .iter()
+                            .map(|c| c.t),
+                    );
                 }
                 stops.push(contact.crange.1);
                 let closed_contact = contact
@@ -2493,6 +2964,9 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             // only as closely as its own slop allows; the arrangement's node
             // weld reaches that far on this face, or the strand dangles a
             // few microns from the junction it belongs to.
+            // A fitted section that hugs one of this face's edges leaves it
+            // at the hug's far end by up to the hug's own width; its strand
+            // must still find the edge's node there.
             let face_snap = contacts
                 .iter()
                 .filter(|c| c.target_from_a == from_a && c.target_face == fi)
@@ -2501,6 +2975,20 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     face.edges
                         .iter()
                         .fold(0.0_f64, |acc, e| acc.max(e.tolerance * 2.0)),
+                )
+                .max(
+                    if sections.iter().any(|s| {
+                        s.tolerance > 0.0
+                            && if from_a {
+                                s.face_a == fi
+                            } else {
+                                s.face_b == fi
+                            }
+                    }) {
+                        tol.confusion() * 1e3
+                    } else {
+                        0.0
+                    },
                 );
             if *DEBUG_STRANDS {
                 for (si, st) in strands.iter().enumerate() {
@@ -2622,6 +3110,12 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                                 }
                                 Containment::On => {}
                             }
+                            if *DEBUG_WIRE {
+                                eprintln!(
+                                    "ON-CONTACT piece of {} face {fi} probe {probe:?} partners {partners:?}",
+                                    if from_a { "A" } else { "B" }
+                                );
+                            }
                             ogeom_bail!(
                                 NotDone,
                                 "a piece lies on the other solid's boundary \
@@ -2675,6 +3169,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         contacts,
         tangents,
         pieces,
+        junctions,
     })
 }
 
@@ -2692,12 +3187,54 @@ struct Rebuild<'m> {
     vertices: Vec<(Point, Shape)>,
     /// How far two honest descriptions of one junction may sit apart: a
     /// hundred confusions as the floor, widened to twice the loosest contact
-    /// edge's own tolerance when a fitted rail took part in the melt.
+    /// edge's or fitted section's own tolerance when one took part.
     weld: f64,
+    /// The paving's junctions, each minted as a vertex the first time a
+    /// strand end lands inside it.
+    junctions: Vec<(Junction, Option<Shape>)>,
 }
 
 impl Rebuild<'_> {
     fn vertex(&mut self, p: Point, tol: Tolerances) -> Shape {
+        // A junction several paves described is one vertex owning the span
+        // they disagree by, and every strand end inside it names that
+        // vertex, whichever pave its own trim stopped at.
+        // The rim is as generous as the positional weld below: two strand
+        // ends a weld apart must not fall on opposite sides of it.
+        let slack = self.weld.max(tol.confusion() * 1e2);
+        if *DEBUG_WIRE {
+            eprintln!("VERTEX ask {p:?}");
+        }
+        if let Some(slot) = self
+            .junctions
+            .iter()
+            .position(|(j, _)| j.at.distance(p) <= j.reach + slack)
+        {
+            let junction = self.junctions[slot].0;
+            let shape = match &self.junctions[slot].1 {
+                Some(shape) => shape.clone(),
+                None => {
+                    let shape = make_vertex(self.model, junction.at).shape;
+                    self.junctions[slot].1 = Some(shape.clone());
+                    self.vertices.push((junction.at, shape.clone()));
+                    shape
+                }
+            };
+            // The junction owns its span, and an end welded in from the rim
+            // widens it by what it actually sat off by, as any weld does.
+            let gap = junction.at.distance(p);
+            if let Some(node) = self.model.node_mut(&shape)
+                && let ogeom_topo::NodeData::Vertex(data) = node.data_mut()
+            {
+                // A confusion of slack past the measured gap: an edge built
+                // against this vertex measures the same gap through its own
+                // rounding, and a tolerance equal to it fails by an ulp.
+                data.tolerance = data
+                    .tolerance
+                    .widen_to(junction.reach.max(gap) + tol.confusion());
+            }
+            return shape;
+        }
         // The weld reach covers what the inputs may honestly disagree by: a
         // boundary curve that is itself a fitted intersection from an
         // earlier boolean carries a couple of microns of slop, and two
@@ -2804,7 +3341,37 @@ fn build_piece(
                 built
             });
         }
-        wires.push(make_wire(rebuild.model, &edges, tol)?.shape);
+        let wire = match make_wire(rebuild.model, &edges, tol) {
+            Ok(w) => w.shape,
+            Err(e) => {
+                if *DEBUG_WIRE {
+                    eprintln!(
+                        "WIRE FAIL piece from_a={} face={}",
+                        piece.from_a, piece.face
+                    );
+                    for t in ring {
+                        let tag = match &t.tag {
+                            Tag::Boundary { edge, range } => format!(
+                                "Boundary e{edge} {range:?} tol {:.2e}",
+                                face.edges[*edge].tolerance
+                            ),
+                            Tag::Contact { contact, range } => format!(
+                                "Contact c{contact} {range:?} tol {:.2e}",
+                                fused.contacts[*contact].tolerance
+                            ),
+                            Tag::Section { section, range } => format!(
+                                "Section s{section} {range:?} tol {:.2e}",
+                                fused.sections[*section].tolerance
+                            ),
+                            Tag::Pole { pole, range } => format!("Pole p{pole} {range:?}"),
+                        };
+                        eprintln!("   {tag} reversed={}", t.reversed);
+                    }
+                }
+                return Err(e);
+            }
+        };
+        wires.push(wire);
     }
     let built = make_face_on(rebuild.model, surface_id, &wires, tol)?.shape;
     Ok(
@@ -3033,7 +3600,10 @@ fn assemble_result(
         weld: fused
             .contacts
             .iter()
-            .fold(0.0_f64, |acc, c| acc.max(c.tolerance * 2.0)),
+            .map(|c| c.tolerance)
+            .chain(fused.sections.iter().map(|s| s.tolerance))
+            .fold(0.0_f64, |acc, t| acc.max(honest(t, tol) * 2.0)),
+        junctions: fused.junctions.iter().map(|j| (*j, None)).collect(),
     };
     let mut faces = Vec::new();
     let mut kept_sources: Vec<Shape> = Vec::new();

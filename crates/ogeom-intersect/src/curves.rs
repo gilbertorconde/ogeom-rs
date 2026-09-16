@@ -52,6 +52,12 @@ pub struct Crossing<P> {
     /// two curves generically miss and "crossing" means passing within the
     /// caller's tolerance.
     pub gap: f64,
+    /// How far along the curves this contact could honestly sit: zero for a
+    /// transversal crossing, the length of the touching run where the curves
+    /// meet tangentially — there the closest approach is anywhere in a
+    /// valley the width of the gap, and a consumer placing a vertex at it
+    /// owns that much doubt.
+    pub reach: f64,
 }
 
 /// A stretch where two curves share their support.
@@ -70,10 +76,15 @@ pub struct CurveIntersection<P> {
     pub crossings: Vec<Crossing<P>>,
     /// Stretches of shared support.
     ///
-    /// Only the analytic same-support cases are detected — collinear lines,
-    /// arcs of one circle. Two free-form curves tracing the same path come
-    /// back as whatever isolated crossings the sampling finds, and that limit
-    /// is stated here rather than discovered downstream.
+    /// The analytic same-support cases — collinear lines, arcs of one
+    /// circle — come back exactly. In space, the sampling path also reports
+    /// a stretch along which the first curve's samples stay within the gap
+    /// of the second, its ends bisected to parametric resolution and its
+    /// correspondence stated by those ends alone: a fitted section tracing
+    /// the arc it was cut along is one overlap, not a row of crossings. A
+    /// stretch shorter than two samples of the first curve is still read as
+    /// whatever crossings the sampling finds; in the plane, only the
+    /// analytic cases are detected.
     pub overlaps: Vec<Overlap>,
 }
 
@@ -513,6 +524,7 @@ fn line_line_2d(
             on_b: s,
             point: oa + da * t,
             gap: 0.0,
+            reach: 0.0,
         }],
         overlaps: Vec::new(),
     }
@@ -559,6 +571,7 @@ fn line_circle_2d(
             on_b,
             point: p,
             gap: 0.0,
+            reach: 0.0,
         });
     }
     sort_crossings(&mut crossings);
@@ -608,6 +621,7 @@ fn circle_circle_2d(
                 on_b: t,
                 point: p,
                 gap: 0.0,
+                reach: 0.0,
             });
         }
     };
@@ -708,6 +722,7 @@ fn line_line_3d(
             on_b: s,
             point: pa,
             gap,
+            reach: 0.0,
         }],
         overlaps: Vec::new(),
     }
@@ -823,10 +838,233 @@ fn general_3d(
         }
     }
     sort_crossings(&mut crossings);
+
+    // A tangential contact is one crossing, however many the polish
+    // returns. Where two curves touch, the stationarity conditions go flat
+    // along the contact — every seed converges somewhere in a valley the
+    // width of the gap — and an arc ending on the line it is tangent to
+    // comes back as thirty crossings inside a micron or two. Consecutive
+    // crossings with the first curve staying within the gap of the second
+    // all the way between them are the same contact, and the nearest
+    // approach among them speaks for it.
+    if crossings.len() > 1 {
+        let mut merged: Vec<Crossing<Point>> = Vec::with_capacity(crossings.len());
+        let mut run_start: Option<Point> = None;
+        for c in crossings {
+            if let Some(last) = merged.last_mut()
+                && contact_between_3d(a, b, last, &c, options, tol)
+            {
+                let start = run_start.get_or_insert(last.point);
+                let reach = start.distance(c.point).max(last.reach);
+                if c.gap < last.gap {
+                    *last = c;
+                }
+                last.reach = reach;
+                continue;
+            }
+            run_start = None;
+            merged.push(c);
+        }
+        // A touch astride the first curve's period seam comes back as a
+        // crossing at each end of the parameter range; the two are one
+        // contact as well.
+        if merged.len() > 1 && a.is_periodic() {
+            let (lo, hi) = a.domain();
+            let (first, last) = (merged[0], merged[merged.len() - 1]);
+            let wrapped = Crossing {
+                on_a: first.on_a + (hi - lo),
+                ..first
+            };
+            if contact_between_3d(a, b, &last, &wrapped, options, tol) {
+                let reach = last
+                    .reach
+                    .max(first.reach)
+                    .max(last.point.distance(first.point));
+                let keep = if first.gap <= last.gap {
+                    0
+                } else {
+                    merged.len() - 1
+                };
+                merged[keep].reach = reach;
+                if keep == 0 {
+                    merged.pop();
+                } else {
+                    merged.remove(0);
+                }
+            }
+        }
+        crossings = merged;
+    }
+
+    // Stretches where the first curve stays within the gap of the second
+    // are shared support, not a row of crossings. A fitted section tracing
+    // the arc it was cut along wobbles about it by less than the gap and
+    // "crosses" it at every wobble; read as crossings, those shatter the
+    // curve into hundreds of pieces and pave the edge at each. So every
+    // sample of the first curve asks its foot on the second, a run of
+    // consecutive samples within the gap is an overlap with its ends
+    // bisected to parametric resolution, and the crossings inside it are
+    // the overlap's, not the caller's.
+    let overlaps = shared_support_3d(a, b, &sa, &sb, options, tol);
+    if !overlaps.is_empty() {
+        crossings.retain(|c| {
+            !overlaps.iter().any(|o| {
+                let (lo, hi) = order(o.on_a.0, o.on_a.1);
+                c.on_a >= lo - tol.parametric() && c.on_a <= hi + tol.parametric()
+            })
+        });
+    }
     Ok(CurveIntersection {
         crossings,
-        overlaps: Vec::new(),
+        overlaps,
     })
+}
+
+/// Whether the first curve stays within the gap of the second all the way
+/// from one crossing to the next — three stations between them, each foot
+/// seeded from the crossings' own parameters.
+fn contact_between_3d(
+    a: &Curve,
+    b: &Curve,
+    from: &Crossing<Point>,
+    to: &Crossing<Point>,
+    options: CurveCurveOptions,
+    tol: Tolerances,
+) -> bool {
+    if (to.on_a - from.on_a).abs() <= tol.parametric() {
+        return true;
+    }
+    (1..=3).all(|k| {
+        let f = f64::from(k) / 4.0;
+        let t = from.on_a + (to.on_a - from.on_a) * f;
+        let seed = from.on_b + (to.on_b - from.on_b) * f;
+        a.point_at(t, tol)
+            .ok()
+            .and_then(|p| foot_on_3d(b, p, seed, tol))
+            .is_some_and(|(_, gap)| gap <= options.gap)
+    })
+}
+
+/// Runs of the first curve's samples whose feet on the second lie within
+/// the gap, each bisected to its parametric ends.
+fn shared_support_3d(
+    a: &Curve,
+    b: &Curve,
+    sa: &Sampled<Point>,
+    sb: &Sampled<Point>,
+    options: CurveCurveOptions,
+    tol: Tolerances,
+) -> Vec<Overlap> {
+    // The foot of a point on the second curve, seeded from the sampled
+    // polyline's nearest segment.
+    let foot = |p: Point| -> Option<(f64, f64)> {
+        let mut seed = (f64::INFINITY, 0.0);
+        for j in 1..sb.points.len() {
+            let (_, tb, gap) = segments_approach_3d((p, p), (sb.points[j - 1], sb.points[j]));
+            if gap < seed.0 {
+                seed = (
+                    gap,
+                    sb.parameters[j - 1] + (sb.parameters[j] - sb.parameters[j - 1]) * tb,
+                );
+            }
+        }
+        if !seed.0.is_finite() {
+            return None;
+        }
+        foot_on_3d(b, p, seed.1, tol)
+    };
+    let hugs = |t: f64| -> Option<(f64, f64)> {
+        let p = a.point_at(t, tol).ok()?;
+        let (s, gap) = foot(p)?;
+        (gap <= options.gap).then_some((s, gap))
+    };
+    let feet: Vec<Option<(f64, f64)>> = sa.points.iter().map(|p| foot(*p)).collect();
+    let within = |i: usize| feet[i].is_some_and(|(_, gap)| gap <= options.gap);
+
+    let mut overlaps = Vec::new();
+    let mut i = 0;
+    while i < sa.points.len() {
+        if !within(i) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i + 1 < sa.points.len() && within(i + 1) {
+            i += 1;
+        }
+        let end = i;
+        i += 1;
+        if end == start {
+            continue;
+        }
+        // The run's ends: where the samples stop hugging, bisected between
+        // the last inside sample and the first outside one.
+        let refine = |inside: usize, outside: Option<usize>| -> (f64, f64) {
+            let (mut t_in, s_in) = (sa.parameters[inside], feet[inside].map_or(0.0, |f| f.0));
+            let Some(out) = outside else {
+                return (t_in, s_in);
+            };
+            let mut s_at = s_in;
+            let mut t_out = sa.parameters[out];
+            for _ in 0..48 {
+                if (t_out - t_in).abs() <= tol.parametric() {
+                    break;
+                }
+                let mid = f64::midpoint(t_in, t_out);
+                match hugs(mid) {
+                    Some((s, _)) => {
+                        t_in = mid;
+                        s_at = s;
+                    }
+                    None => t_out = mid,
+                }
+            }
+            (t_in, s_at)
+        };
+        let (lo_a, lo_b) = refine(start, start.checked_sub(1));
+        let (hi_a, hi_b) = refine(end, (end + 1 < sa.points.len()).then_some(end + 1));
+        if hi_a - lo_a <= tol.parametric() || (hi_b - lo_b).abs() <= tol.parametric() {
+            continue;
+        }
+        overlaps.push(Overlap {
+            on_a: (lo_a, hi_a),
+            on_b: (lo_b, hi_b),
+        });
+    }
+    overlaps
+}
+
+/// Newton on the foot-point condition `(c(s) - p) . c'(s) = 0` from a seed,
+/// clamped to the curve's domain; the parameter and the distance there.
+fn foot_on_3d(curve: &Curve, p: Point, seed: f64, tol: Tolerances) -> Option<(f64, f64)> {
+    let mut s = clamp_3d(curve, seed);
+    let mut best = (s, curve.point_at(s, tol).ok()?.distance(p));
+    for _ in 0..30 {
+        let d = curve.derivatives_at(s, 2, tol).ok()?;
+        let zero = ogeom_math::Vector::ZERO;
+        let (c, d1, d2) = (
+            d.first().copied().unwrap_or(zero),
+            d.get(1).copied().unwrap_or(zero),
+            d.get(2).copied().unwrap_or(zero),
+        );
+        let gap = c - (p - Point::ORIGIN);
+        let g = gap.dot(d1);
+        let dg = d1.dot(d1) + gap.dot(d2);
+        if dg.abs() <= f64::MIN_POSITIVE {
+            break;
+        }
+        let next = clamp_3d(curve, s - g / dg);
+        let dist = curve.point_at(next, tol).ok()?.distance(p);
+        let moved = (next - s).abs();
+        s = next;
+        if dist < best.1 {
+            best = (s, dist);
+        }
+        if moved <= tol.parametric() {
+            break;
+        }
+    }
+    Some(best)
 }
 
 /// Newton on `c1(t) - c2(s) = 0` in the plane.
@@ -871,6 +1109,7 @@ fn polish_2d(
         on_b: s,
         point: pa,
         gap,
+        reach: 0.0,
     })
 }
 
@@ -930,6 +1169,7 @@ fn polish_3d(
         on_b: s,
         point: pa,
         gap,
+        reach: 0.0,
     })
 }
 
@@ -1335,6 +1575,69 @@ mod tests {
                 .into();
         let shared = intersect_curves(&a, &collinear, CurveCurveOptions::default(), T).unwrap();
         assert_eq!(shared.overlaps.len(), 1);
+    }
+
+    #[test]
+    fn a_fitted_curve_tracing_an_arc_is_one_overlap_not_a_row_of_crossings() {
+        // A spline fitted along a circle's arc sits within its fit budget
+        // of the circle everywhere, and "crosses" it at every wobble. The
+        // sampling path reports the stretch as one overlap and keeps no
+        // crossing inside it — read as crossings, a section tracing the arc
+        // it was cut along shattered into hundreds of pieces.
+        let circle: Curve = CircleCurve::new(Circle::new(Frame::WORLD, 4.0, T).unwrap()).into();
+        let points: Vec<Point> = (0..=40)
+            .map(|i| {
+                let a = 0.2 + 1.0 * f64::from(i) / 40.0;
+                Point::new(4.0 * a.cos(), 4.0 * a.sin(), 0.0)
+            })
+            .collect();
+        let fitted: Curve = ogeom_geom::fit::fit_points(&points, 3, 1e-7, T)
+            .unwrap()
+            .curve
+            .into();
+        let options = CurveCurveOptions {
+            gap: 1e-5,
+            ..CurveCurveOptions::default()
+        };
+        let found = intersect_curves(&fitted, &circle, options, T).unwrap();
+        assert_eq!(found.overlaps.len(), 1, "one shared stretch: {found:?}");
+        let (lo, hi) = found.overlaps[0].on_a;
+        let (fa, fb) = fitted.domain();
+        assert!(
+            lo - fa < 1e-3 && fb - hi < 1e-3,
+            "the whole fit runs along the circle"
+        );
+        assert!(
+            found.crossings.is_empty(),
+            "no crossing survives inside the overlap: {:?}",
+            found.crossings
+        );
+    }
+
+    #[test]
+    fn an_arc_ending_tangent_to_a_line_is_one_crossing_with_its_reach() {
+        // A circle and its tangent line touch at one point, but the
+        // stationarity conditions go flat along the touch and every seed
+        // converges somewhere in a valley the width of the gap. One contact
+        // comes back, at the touch, owning the valley's length as its reach.
+        let circle: Curve = CircleCurve::new(Circle::new(Frame::WORLD, 4.0, T).unwrap()).into();
+        let line: Curve =
+            LineCurve::segment(Point::new(4.0, -3.0, 0.0), Point::new(4.0, 3.0, 0.0), T)
+                .unwrap()
+                .into();
+        let options = CurveCurveOptions {
+            gap: 1e-5,
+            ..CurveCurveOptions::default()
+        };
+        let found = intersect_curves(&circle, &line, options, T).unwrap();
+        assert_eq!(found.crossings.len(), 1, "one touch: {:?}", found.crossings);
+        let touch = found.crossings[0];
+        assert!(
+            touch.point.distance(Point::new(4.0, 0.0, 0.0)) < 2e-2,
+            "{touch:?}"
+        );
+        assert!(touch.reach < 5e-2, "the valley is short: {touch:?}");
+        assert!(found.overlaps.is_empty());
     }
 
     #[test]

@@ -325,18 +325,22 @@ fn grooved_block(model: &mut Model) -> Shape {
 }
 
 #[test]
-fn an_open_seat_ends_in_run_out_caps() {
+fn an_open_seat_runs_out_through_the_wall() {
     // The bottom crease of the grooved block is an ellipse arc that meets
-    // the box wall at both ends: an open seat. The marched band is trimmed
-    // to the edge's own window and capped in each end section's own plane —
-    // material comes off, the blend rides both hosts tangentially, and the
-    // caps stand square to the band, which is what a run-out is.
+    // the box wall at both ends: an open seat. The band runs on past each
+    // end until the ball has left the solid, and the cut trims it against
+    // the wall — material comes off, the blend rides both hosts
+    // tangentially, and it ends on the wall itself, not on a cap standing
+    // short of it with a sliver of sharp crease behind.
     let mut model = Model::new();
     let grooved = grooved_block(&mut model);
     let before =
         ogeom::algo::volume_properties(&model, &grooved, ogeom::mesh::Deflection::default(), T)
             .unwrap()
             .mass;
+    let faces_before = explore_unique(&model, &grooved, ShapeType::Face)
+        .unwrap()
+        .len();
     let arc = edge_near(&model, &grooved, Point::new(10.0, 14.84, 0.0));
     let built = ogeom::fillet::fillet_edge(&mut model, &grooved, &arc, 1.0, T).unwrap();
     let after =
@@ -348,9 +352,17 @@ fn an_open_seat_ends_in_run_out_caps() {
         removed > 1.0 && removed < before * 0.05,
         "a run-out fillet removes a sliver, not a bite: {removed}"
     );
+    // One new face — the band — and no caps: both ends are the wall's.
+    assert_eq!(
+        explore_unique(&model, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len(),
+        faces_before + 1,
+        "the band is the only face the blend adds"
+    );
 
     // The blend face is the fitted band; its rails ride the hosts
-    // tangentially and its end arcs stand square in the caps.
+    // tangentially and every other edge of it lies on the wall.
     use ogeom::topo::NodeData;
     let blend = explore_unique(&model, &built.shape, ShapeType::Face)
         .unwrap()
@@ -367,19 +379,86 @@ fn an_open_seat_ends_in_run_out_caps() {
         .expect("the fitted band is a face of the result");
     let contacts = ogeom::fillet::analyse_blend(&model, &built.shape, &blend, 15, T).unwrap();
     let mut smooth = 0;
-    let mut square = 0;
+    let mut on_wall = 0;
     for c in &contacts {
         assert!(c.gap < 1e-3, "a contact stands off its edge: {}", c.gap);
         if c.tangency_error < 5e-3 {
             smooth += 1;
-        } else if (c.tangency_error - core::f64::consts::FRAC_PI_2).abs() < 1e-3 {
-            square += 1;
+            continue;
         }
+        let NodeData::Face(d) = model.node(&c.neighbour).unwrap().data() else {
+            panic!("a neighbour is a face");
+        };
+        let Some(ogeom::geom::SurfaceGeometry::Plane(plane)) = model.geometry().surface(d.surface)
+        else {
+            panic!("a non-tangent neighbour of the band is the wall, a plane");
+        };
+        let wall = plane.plane();
+        assert!(
+            wall.normal().vector().y.abs() > 0.999
+                && wall.distance_to(Point::new(0.0, 20.0, 0.0)).abs() < 1e-9,
+            "the band's other edges lie on the y=20 wall"
+        );
+        on_wall += 1;
     }
-    assert_eq!(
-        (smooth, square),
-        (2, 2),
-        "two tangent rails and two square caps: {contacts:?}"
+    assert_eq!(smooth, 2, "two tangent rails: {contacts:?}");
+    assert!(
+        on_wall >= 2,
+        "the band ends on the wall at both ends: {contacts:?}"
+    );
+}
+
+#[test]
+fn two_seam_split_blends_meet_cap_to_cap_in_either_order() {
+    // The top crease is split by the drum's seam into two arcs sharing a
+    // vertex mid-scoop. Each rounds as a capped blend ending in the arc's
+    // own section plane at the seam vertex; the second blend's cap meets
+    // the first's in that plane, the two bands meet along the shared arc,
+    // and both caps are consumed. Whichever arc goes first, the result is
+    // the same closed solid with two bands and no cap.
+    let mut volumes = Vec::new();
+    for order in [
+        [Point::new(7.3, 7.7, 10.0), Point::new(12.7, 7.7, 10.0)],
+        [Point::new(12.7, 7.7, 10.0), Point::new(7.3, 7.7, 10.0)],
+    ] {
+        let mut model = Model::new();
+        let grooved = grooved_block(&mut model);
+        let faces_before = explore_unique(&model, &grooved, ShapeType::Face)
+            .unwrap()
+            .len();
+        let before =
+            ogeom::algo::volume_properties(&model, &grooved, ogeom::mesh::Deflection::default(), T)
+                .unwrap()
+                .mass;
+        let first_arc = edge_near(&model, &grooved, order[0]);
+        let first = ogeom::fillet::fillet_edge(&mut model, &grooved, &first_arc, 1.0, T).unwrap();
+        let second_arc = edge_near(&model, &first.shape, order[1]);
+        let second =
+            ogeom::fillet::fillet_edge(&mut model, &first.shape, &second_arc, 1.0, T).unwrap();
+        for shell in explore_unique(&model, &second.shape, ShapeType::Shell).unwrap() {
+            assert!(ogeom::algo::is_shell_closed(&model, &shell).unwrap());
+        }
+        assert_eq!(
+            explore_unique(&model, &second.shape, ShapeType::Face)
+                .unwrap()
+                .len(),
+            faces_before + 2,
+            "two bands, no caps"
+        );
+        let after = ogeom::algo::volume_properties(
+            &model,
+            &second.shape,
+            ogeom::mesh::Deflection::default(),
+            T,
+        )
+        .unwrap()
+        .mass;
+        assert!(after < before && after > before * 0.9);
+        volumes.push(after);
+    }
+    assert!(
+        (volumes[0] - volumes[1]).abs() < 1e-2,
+        "the order does not change the solid: {volumes:?}"
     );
 }
 

@@ -110,7 +110,11 @@ pub(crate) fn marched_fillet(
         };
         hosts.push((face, surface, sign));
     }
-    let [(face_first, first, sign_first), (_, second, sign_second)] = hosts.as_slice() else {
+    let [
+        (face_first, first, sign_first),
+        (face_second, second, sign_second),
+    ] = hosts.as_slice()
+    else {
         ogeom_bail!(
             Construction,
             "a marched fillet needs an edge shared by exactly two faces, \
@@ -118,7 +122,7 @@ pub(crate) fn marched_fillet(
             hosts.len()
         );
     };
-    let face_first = face_first.clone();
+    let (face_first, face_second) = (face_first.clone(), face_second.clone());
     let (first, second) = (first.clone(), second.clone());
     let (sign_first, sign_second) = (*sign_first, *sign_second);
 
@@ -281,6 +285,7 @@ pub(crate) fn marched_fillet(
             &guide,
             edge_range,
             [(&first, sign_first), (&second, sign_second)],
+            [&face_first, &face_second],
             radius,
             convex,
             tol,
@@ -660,6 +665,7 @@ fn open_runout_wedge(
     guide: &Curve,
     edge_range: (f64, f64),
     hosts: [(&SurfaceGeometry, f64); 2],
+    host_faces: [&Shape; 2],
     radius: f64,
     convex: bool,
     tol: Tolerances,
@@ -728,12 +734,148 @@ fn open_runout_wedge(
             let k = ((mid_run - (w0 + span / 2.0)) / period).round();
             w0 += k * period;
         }
-        let w1 = w0 + span;
+        let mut w1 = w0 + span;
+        // Where the crease *terminates* at the solid's own boundary — its end
+        // vertex belongs to a third face, not to a continuation of the seat
+        // past a seam split — the blend runs out through the wall: the band
+        // carries on past the window until the ball's contacts have left
+        // both host faces, and the cut trims the wedge against whatever the
+        // crease ended on. Capped in its own arc plane at the crease's end
+        // instead, the wedge stops short of the wall by the plane's slant
+        // and leaves a sliver of sharp crease between cap and wall — the
+        // remnant a second fillet then has to meet.
+        if std::env::var_os("OGEOM_DEBUG_RUNOUT").is_some() {
+            eprintln!(
+                "RUNOUT start: edge_range {edge_range:?} w0 {w0:.5} w1 {w1:.5} run {:.5}..{:.5} guide domain {:?}",
+                blend.along[0],
+                blend.along[blend.len() - 1],
+                guide.domain()
+            );
+        }
+        for end in [true, false] {
+            // The window may stand a period past a periodic guide's stored
+            // domain; the point is the same turn either way.
+            let at = {
+                let mut w = if end { w0 } else { w1 };
+                if guide.is_periodic() {
+                    let (lo, hi) = guide.domain();
+                    w = lo + (w - lo).rem_euclid(hi - lo);
+                }
+                guide.point_at(w, tol)?
+            };
+            let terminates = crease_terminates_at(model, solid, edge, host_faces, at, tol)?;
+            if std::env::var_os("OGEOM_DEBUG_RUNOUT").is_some() {
+                eprintln!("RUNOUT end {end} at {at:?} terminates {terminates}");
+            }
+            if !terminates {
+                continue;
+            }
+            // Where the ball's contacts stand against the host faces past
+            // the window: `Out` of both is clear of the solid, `On` either
+            // is a neighbouring blend's own rail — the seat goes on under
+            // that blend, which a cap in the section's own plane meets.
+            let standing = |i: usize| -> OgeomResult<(bool, bool)> {
+                let deflection = ogeom_mesh::Deflection {
+                    chord: (radius * 1e-3).max(tol.confusion() * 1e2),
+                    ..ogeom_mesh::Deflection::default()
+                };
+                let first = ogeom_algo::classify_on_face(
+                    model,
+                    host_faces[0],
+                    blend.touch_first[i],
+                    deflection,
+                    tol,
+                )?;
+                let second = ogeom_algo::classify_on_face(
+                    model,
+                    host_faces[1],
+                    blend.touch_second[i],
+                    deflection,
+                    tol,
+                )?;
+                use ogeom_algo::Containment as C;
+                Ok((
+                    first == C::Out && second == C::Out,
+                    first == C::On || second == C::On,
+                ))
+            };
+            let n = blend.len();
+            // Stations outside the window, nearest the window first. The
+            // first clear one is where the wedge has left the solid; the
+            // run-out carries on a radius further so the wall crosses the
+            // band well inside it — a crossing a hair from the band's end
+            // is one the intersector's seeding can miss — and the run's own
+            // end is the honest stop where the walker quit first.
+            let outside: Vec<usize> = if end {
+                (0..n).rev().filter(|&i| blend.along[i] < w0).collect()
+            } else {
+                (0..n).filter(|&i| blend.along[i] > w1).collect()
+            };
+            let mut cleared: Option<Point> = None;
+            // A contact standing on a host's boundary for one station is
+            // the contact crossing a wall's edge; standing there station
+            // after station, it is riding a neighbouring blend's rail.
+            let mut on_since: Option<Point> = None;
+            for i in outside {
+                let Some(from) = cleared else {
+                    let (is_clear, on_edge) = standing(i)?;
+                    if on_edge {
+                        let since = *on_since.get_or_insert(blend.spine[i]);
+                        if blend.spine[i].distance(since) > radius * 0.05 {
+                            break;
+                        }
+                    } else {
+                        on_since = None;
+                    }
+                    if is_clear {
+                        // Clear of the host faces is not clear of the solid.
+                        // Past a seam vertex whose other half is blended
+                        // already, the hosts are cut away too, yet the ball
+                        // still sits in the material there: the seat goes
+                        // on under the neighbouring blend, which is exactly
+                        // where a cap in the section's own plane meets it.
+                        // Only a ball that has left the material altogether
+                        // — a convex seat's, past a wall — runs out.
+                        let deflection = ogeom_mesh::Deflection {
+                            chord: (radius * 1e-2).max(tol.confusion() * 1e3),
+                            ..ogeom_mesh::Deflection::default()
+                        };
+                        let inside = ogeom_algo::classify_in_solid(
+                            model,
+                            solid,
+                            blend.spine[i],
+                            deflection,
+                            tol,
+                        )? == ogeom_algo::Containment::In;
+                        if inside == convex {
+                            break;
+                        }
+                        cleared = Some(blend.spine[i]);
+                    }
+                    continue;
+                };
+                if end {
+                    w0 = blend.along[i];
+                } else {
+                    w1 = blend.along[i];
+                }
+                if blend.spine[i].distance(from) >= radius {
+                    break;
+                }
+            }
+        }
         // Only cap at an end the march actually reached past; where it
         // stopped short — the true seat ended first — the walker's own last
         // station is the honest end.
         let cap0 = blend.along[0] < w0;
         let cap1 = blend.along[blend.len() - 1] > w1;
+        if std::env::var_os("OGEOM_DEBUG_RUNOUT").is_some() {
+            eprintln!(
+                "RUNOUT edge_range {edge_range:?} window ({w0:.5}, {w1:.5}) run {:.5}..{:.5} cap0 {cap0} cap1 {cap1}",
+                blend.along[0],
+                blend.along[blend.len() - 1]
+            );
+        }
         let mut keep_from = 0;
         let mut keep_to = blend.len();
         for (i, t) in blend.along.iter().enumerate() {
@@ -1228,6 +1370,54 @@ fn open_runout_wedge(
         cap1,
     ];
     apply_wedge(model, solid, Some(edge), &faces, additive, tol)
+}
+
+/// Whether the crease ends at `at` because the solid does — its end vertex
+/// there belongs to a third face — rather than continuing as another edge
+/// on the same two hosts past a split.
+fn crease_terminates_at(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    host_faces: [&Shape; 2],
+    at: Point,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+        return Ok(true);
+    };
+    let point_of = |v: &Shape| -> OgeomResult<Point> {
+        let Some(data) = model.node(v).and_then(|n| n.data().as_vertex().cloned()) else {
+            ogeom_bail!(Construction, "vertex node holds no point");
+        };
+        Ok(v.transform(model.datums())?.apply(data.point))
+    };
+    let vertex = if point_of(&a)?.distance(at) <= point_of(&b)?.distance(at) {
+        a
+    } else {
+        b
+    };
+    let _ = tol;
+    for other in explore(model, solid, Filter::OfType(ShapeType::Edge))? {
+        if other.is_same(edge) {
+            continue;
+        }
+        let shares = ogeom_algo::edge_vertices(model, &other)?
+            .is_some_and(|(x, y)| x.is_same(&vertex) || y.is_same(&vertex));
+        if !shares {
+            continue;
+        }
+        // The crease continues where another edge on both hosts leaves the
+        // vertex.
+        let on_both = host_faces.iter().all(|face| {
+            explore(model, face, Filter::OfType(ShapeType::Edge))
+                .is_ok_and(|edges| edges.iter().any(|e| e.is_same(&other)))
+        });
+        if on_both {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// The host's own curve in a cap's section plane, from the crease vertex to

@@ -187,9 +187,13 @@ pub fn seeds(
                 continue;
             };
             // One seed per branch, not one per cell it passes through. The
-            // spacing is the grid's, since two distinct branches closer than
-            // that were never going to be told apart by this sampling anyway.
-            let apart = span(a).max(span(b)) / f64::from(u32::try_from(options.grid).unwrap_or(1));
+            // spacing is the *finer* surface's grid: two distinct branches
+            // closer than that were never going to be told apart by this
+            // sampling anyway, while the coarser surface's cells say nothing
+            // about how far apart branches can be — a plane's clamped domain
+            // spans a million units, and its cell would merge every branch
+            // through a blend into one.
+            let apart = span(a).min(span(b)) / f64::from(u32::try_from(options.grid).unwrap_or(1));
             if found
                 .iter()
                 .any(|c| c.point.distance(contact.point) <= apart)
@@ -1389,6 +1393,57 @@ mod tests {
             .iter()
             .map(|p| off(a, *p).abs().max(off(b, *p).abs()))
             .fold(0.0_f64, f64::max)
+    }
+
+    #[test]
+    fn a_plane_through_a_bent_strip_seeds_both_branches() {
+        // A cubic strip bent into an arch crosses a level plane twice. The
+        // plane's domain is the unbounded one a face carries, and its
+        // sampling cells span a million units; merging seeds at *its*
+        // spacing would call the two crossings one branch and trace only
+        // one of them. Seeds merge at the finer surface's spacing instead.
+        use ogeom_geom::BSplineSurface;
+        use ogeom_math::{ControlGrid, KnotVector};
+        let mut points = Vec::new();
+        for i in 0..7 {
+            let a = core::f64::consts::PI * f64::from(i) / 6.0;
+            for j in 0..2 {
+                points.push(Point::new(2.0 * a.cos(), f64::from(j), 2.0 * a.sin()));
+            }
+        }
+        let grid = ControlGrid::new(points, 7, 2).unwrap();
+        let strip: SurfaceGeometry = BSplineSurface::new(
+            KnotVector::clamped_uniform(3, 7).unwrap(),
+            KnotVector::clamped_uniform(1, 2).unwrap(),
+            &grid,
+            T,
+        )
+        .unwrap()
+        .into();
+        let level: SurfaceGeometry = PlaneSurface::over(
+            Plane::through(Point::new(0.0, 0.0, 1.0), Direction::Z),
+            (-1.0e9, 1.0e9),
+            (-1.0e9, 1.0e9),
+        )
+        .unwrap()
+        .into();
+        let options = Marching {
+            chord: 1e-5,
+            ..Marching::default()
+        };
+        let found = branches(&strip, &level, options, T).unwrap();
+        assert_eq!(
+            found.len(),
+            2,
+            "the arch crosses the level twice: {}",
+            found.len()
+        );
+        for branch in &found {
+            assert!(!branch.closed());
+            for p in &branch.points {
+                assert!((p.z - 1.0).abs() < 1e-4, "on the level: {p:?}");
+            }
+        }
     }
 
     #[test]

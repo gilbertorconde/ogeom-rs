@@ -1034,14 +1034,16 @@ docs/PLAN.md §B (B2) with §A (A6) behind it. The marched fillet carries the \
 rolling ball to topology on seats no closed form speaks — a fitted seam \
 between two analytic walls, a conic seat re-opened to its full loop — with \
 the blend fitted through the ball's own arcs and the legs melting on the \
-hosts' exact surfaces. An open seat — a crease arc that meets a wall or a \
-seam — ends in run-out caps: the band trimmed to the edge's own window, \
-capped square in each end section's own plane. What is owed now: hosts \
-beyond planes and cylinders (cone, sphere, torus chart inversions), the \
-equal-radius crossing whose seam pinches at tangent poles, run-out wedges \
-whose caps land edge-on against the solid (the boolean refuses the \
-contact); and of the corner family, the two-blend meeting and the N>3 \
-setback vertex remain."""
+hosts' exact surfaces. An open seat runs out: where the crease ends at a \
+wall the band runs on until the ball has left the solid and the cut trims \
+it against the wall; where it ends at a split — a seam vertex, or a \
+neighbouring blend's own rail — the band is capped in the end section's \
+own plane, and two such blends meet cap to cap along the shared arc, both \
+caps consumed, in either order. What is owed now: hosts beyond planes and \
+cylinders (cone, sphere, torus chart inversions), the equal-radius \
+crossing whose seam pinches at tangent poles; and of the corner family, \
+two blends meeting at a corner where distinct creases meet, and the N>3 \
+setback vertex."""
 claims = [
     "BRepFilletAPI_MakeFillet", "BRepFilletAPI_LocalOperation",
     "ChFi3d", "ChFi3d_*", "ChFiDS_*", "ChFiKPart_*",
