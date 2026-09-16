@@ -262,7 +262,7 @@ pub fn hatch(outline: &[Vec<Point2>], spacing: f64, angle: f64) -> Vec<(Point2, 
             }
         }
         crossings.sort_by(|p, q| p.partial_cmp(q).unwrap_or(core::cmp::Ordering::Equal));
-        for pair in crossings.chunks_exact(2) {
+        for pair in crossings.as_chunks::<2>().0 {
             if pair[1] - pair[0] > f64::EPSILON {
                 out.push((back(Point2::new(pair[0], y)), back(Point2::new(pair[1], y))));
             }

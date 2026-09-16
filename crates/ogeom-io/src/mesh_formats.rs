@@ -1213,7 +1213,9 @@ fn read_primitive(
     }
     let positions: Vec<Point> = positions_raw
         .values
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|v| placement.point(Point::new(v[0], v[1], v[2])))
         .collect();
 
@@ -1233,7 +1235,9 @@ fn read_primitive(
                 );
             }
             raw.values
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .map(|v| placement.normal(Vector::new(v[0], v[1], v[2])))
                 .collect()
         }
@@ -1269,7 +1273,9 @@ fn read_primitive(
         }
     };
     let triangles: Vec<[u32; 3]> = indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| [c[0], c[1], c[2]])
         .collect();
     if triangles.is_empty() {

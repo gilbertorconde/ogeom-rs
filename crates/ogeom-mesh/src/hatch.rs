@@ -90,7 +90,7 @@ pub fn hatch_face(
             }
         }
         crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-        for pair in crossings.chunks_exact(2) {
+        for pair in crossings.as_chunks::<2>().0 {
             if pair[1] - pair[0] > tol.parametric() {
                 out.push([
                     back(Point2::new(pair[0], level)),

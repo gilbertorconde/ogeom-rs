@@ -526,7 +526,7 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
             }
         }
         crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-        for pair in crossings.chunks_exact(2) {
+        for pair in crossings.as_chunks::<2>().0 {
             let width = pair[1] - pair[0];
             if width > snap {
                 candidates.push((width, Point2::new(f64::midpoint(pair[0], pair[1]), level)));
