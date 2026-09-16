@@ -427,6 +427,8 @@ symbols = [
 ]
 tests = [
     "crates/ogeom-algo/src/measure.rs::projecting_onto_a_circle_finds_the_nearest_of_many_minima",
+    "crates/ogeom-algo/src/measure.rs::a_point_on_a_long_flanks_outer_helix_projects_to_its_own_turn",
+    "crates/ogeom-algo/src/measure.rs::a_point_past_a_bound_lands_on_the_bound_not_on_its_seed",
 ]
 
 [[capability]]

@@ -763,26 +763,199 @@ pub fn project_on_surface(
     tol: Tolerances,
 ) -> OgeomResult<SurfaceProjection> {
     let ((ua, ub), (va, vb)) = surface.domain();
-    let steps = samples.max(4);
+    let (steps_u, steps_v) = seed_steps(surface, samples);
 
-    let mut best = (ua, va, f64::INFINITY);
-    for i in 0..=steps {
-        for j in 0..=steps {
+    let mut scan = Scan::default();
+    for i in 0..=steps_u {
+        let mut row = Row::with_capacity(steps_v + 1);
+        for j in 0..=steps_v {
             #[allow(clippy::cast_precision_loss)]
             let (u, v) = (
-                ua + (ub - ua) * (i as f64 / steps as f64),
-                va + (vb - va) * (j as f64 / steps as f64),
+                ua + (ub - ua) * (i as f64 / steps_u as f64),
+                va + (vb - va) * (j as f64 / steps_v as f64),
             );
-            if let Ok(p) = surface.point_at(u, v, tol) {
-                let d = p.square_distance(target);
-                if d < best.2 {
-                    best = (u, v, d);
-                }
+            let d = surface
+                .point_at(u, v, tol)
+                .map_or(f64::INFINITY, |p| p.square_distance(target));
+            row.push((u, v, d));
+        }
+        scan.push_row(row);
+    }
+
+    scan.finish().refine(surface, target, tol)
+}
+
+/// One row of a seed scan: `(u, v, square distance)` per cell, a gap where
+/// the surface would not evaluate.
+type Row = smallvec::SmallVec<[(f64, f64, f64); 64]>;
+
+/// A seed scan that keeps the grid's local minima, row by row.
+///
+/// Three rows are enough to know whether a cell of the middle one beats
+/// its eight neighbours, so the scan never holds the grid — a projection
+/// onto a thread flank seeds thousands of cells, and a caller projecting
+/// every sample of an edge would pay that grid each time.
+#[derive(Debug, Default)]
+struct Scan {
+    before: Option<Row>,
+    last: Option<Row>,
+    rows: usize,
+    starts: Starts,
+}
+
+impl Scan {
+    /// Take the next row; the previous row's minima are now decidable.
+    fn push_row(&mut self, row: Row) {
+        if let Some(last) = self.last.take() {
+            self.starts
+                .minima(self.rows - 1, self.before.as_ref(), &last, Some(&row));
+            self.before = Some(last);
+        }
+        self.last = Some(row);
+        self.rows += 1;
+    }
+
+    /// The last row's minima, then the picks.
+    fn finish(mut self) -> Starts {
+        if let Some(last) = self.last.take() {
+            self.starts
+                .minima(self.rows - 1, self.before.as_ref(), &last, None);
+        }
+        self.starts
+    }
+}
+
+/// The few best basins of a grid scan.
+///
+/// The nearest seed is not always in the right basin. A helical flank
+/// stacks its turns a pitch apart, and where the pitch is shorter than the
+/// chord between neighbouring seeds, a seed on the turn above sits nearer
+/// the target than the seed a half-span along the right turn; Newton then
+/// converges faithfully on the wrong turn. So a scan keeps a handful of
+/// candidates, one per basin — a cell that beats its eight neighbours —
+/// and the refinement runs from each, nearest first, until one lands.
+#[derive(Debug, Default, Clone, Copy)]
+struct Starts {
+    /// Nearest first.
+    picks: [Option<Pick>; 4],
+}
+
+/// One basin of a seed scan.
+#[derive(Debug, Clone, Copy)]
+struct Pick {
+    /// The grid cell the seed came from.
+    cell: (usize, usize),
+    /// The seed's parameters.
+    at: (f64, f64),
+    /// The seed's square distance to the target.
+    d: f64,
+}
+
+impl Starts {
+    /// Offer every cell of `row` (the grid's row `r`) that is no farther
+    /// than any of its neighbours in the three rows around it.
+    fn minima(&mut self, r: usize, before: Option<&Row>, row: &Row, after: Option<&Row>) {
+        for (j, &(u, v, d)) in row.iter().enumerate() {
+            if !d.is_finite() {
+                continue;
             }
+            let lo = j.saturating_sub(1);
+            let hi = (j + 1).min(row.len() - 1);
+            let beaten = |cells: &Row| cells[lo..=hi].iter().any(|c| c.2 < d);
+            if beaten(row) || before.is_some_and(beaten) || after.is_some_and(beaten) {
+                continue;
+            }
+            self.offer((r, j), (u, v), d);
         }
     }
 
-    refine_foot(surface, target, (best.0, best.1), tol)
+    /// Consider a seed; it displaces an adjacent pick it beats, or the
+    /// worst pick when it is nearer, and otherwise fills a free slot.
+    fn offer(&mut self, cell: (usize, usize), at: (f64, f64), d: f64) {
+        if !d.is_finite() {
+            return;
+        }
+        let pick = Pick { cell, at, d };
+        let adjacent = |a: (usize, usize)| a.0.abs_diff(cell.0) <= 1 && a.1.abs_diff(cell.1) <= 1;
+        if let Some(slot) = self
+            .picks
+            .iter()
+            .position(|p| p.is_some_and(|p| adjacent(p.cell)))
+        {
+            if self.picks[slot].is_some_and(|p| d < p.d) {
+                self.picks[slot] = Some(pick);
+                self.settle();
+            }
+            return;
+        }
+        if let Some(slot) = self.picks.iter().position(Option::is_none) {
+            self.picks[slot] = Some(pick);
+            self.settle();
+        } else if self.picks[3].is_some_and(|p| d < p.d) {
+            self.picks[3] = Some(pick);
+            self.settle();
+        }
+    }
+
+    /// Nearest first; a tie keeps the earlier pick.
+    fn settle(&mut self) {
+        self.picks.sort_by(|a, b| match (a, b) {
+            (Some(a), Some(b)) => a.d.total_cmp(&b.d),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+    }
+
+    /// Newton from each pick, nearest first, keeping the closest foot; a
+    /// foot within confusion ends the search, since nothing beats it.
+    fn refine(
+        self,
+        surface: &SurfaceGeometry,
+        target: Point,
+        tol: Tolerances,
+    ) -> OgeomResult<SurfaceProjection> {
+        let ((ua, _), (va, _)) = surface.domain();
+        let mut best: Option<SurfaceProjection> = None;
+        for pick in self.picks.iter().flatten() {
+            let found = refine_foot(surface, target, pick.at, tol)?;
+            let better = best.as_ref().is_none_or(|b| found.distance < b.distance);
+            if better {
+                let done = found.distance <= tol.confusion();
+                best = Some(found);
+                if done {
+                    break;
+                }
+            }
+        }
+        match best {
+            Some(found) => Ok(found),
+            None => refine_foot(surface, target, (ua, va), tol),
+        }
+    }
+}
+
+/// How finely to seed a projection in each direction: the caller's count,
+/// raised to the surface's own span count where the surface has more.
+///
+/// A fitted surface can carry hundreds of knot spans in one direction — a
+/// thread flank swept two hundred turns down a lead screw has 1261 — and a
+/// grid of sixteen or ninety-six seeds lands turns away from the nearest
+/// point, where Newton converges faithfully onto the wrong flank. The seed
+/// grid is the surface's business: one seed per span at least, each
+/// direction on its own count, capped where a surface is pathological.
+fn seed_steps(surface: &SurfaceGeometry, samples: usize) -> (usize, usize) {
+    const CAP: usize = 4096;
+    let base = samples.max(4);
+    match surface {
+        SurfaceGeometry::BSpline(b) => (
+            base.max(b.u_knots().distinct().len().saturating_sub(1))
+                .min(CAP),
+            base.max(b.v_knots().distinct().len().saturating_sub(1))
+                .min(CAP),
+        ),
+        _ => (base, base),
+    }
 }
 
 /// A surface's seeding grid, built once and asked many times.
@@ -795,7 +968,9 @@ pub fn project_on_surface(
 /// the bit, at a fraction of the evaluations.
 #[derive(Debug, Clone)]
 pub struct SurfaceSeeds {
-    seeds: Vec<(f64, f64, Point)>,
+    /// `(parameters, point)` per cell, row by row; a gap where the surface
+    /// would not evaluate.
+    rows: Vec<Vec<(f64, f64, Option<Point>)>>,
 }
 
 impl SurfaceSeeds {
@@ -808,21 +983,21 @@ impl SurfaceSeeds {
     pub fn over(surface: &SurfaceGeometry, samples: usize, tol: Tolerances) -> OgeomResult<Self> {
         use ogeom_geom::Surface as _;
         let ((ua, ub), (va, vb)) = surface.domain();
-        let steps = samples.max(4);
-        let mut seeds = Vec::with_capacity((steps + 1) * (steps + 1));
-        for i in 0..=steps {
-            for j in 0..=steps {
+        let (steps_u, steps_v) = seed_steps(surface, samples);
+        let mut rows = Vec::with_capacity(steps_u + 1);
+        for i in 0..=steps_u {
+            let mut row = Vec::with_capacity(steps_v + 1);
+            for j in 0..=steps_v {
                 #[allow(clippy::cast_precision_loss)]
                 let (u, v) = (
-                    ua + (ub - ua) * (i as f64 / steps as f64),
-                    va + (vb - va) * (j as f64 / steps as f64),
+                    ua + (ub - ua) * (i as f64 / steps_u as f64),
+                    va + (vb - va) * (j as f64 / steps_v as f64),
                 );
-                if let Ok(p) = surface.point_at(u, v, tol) {
-                    seeds.push((u, v, p));
-                }
+                row.push((u, v, surface.point_at(u, v, tol).ok()));
             }
+            rows.push(row);
         }
-        Ok(Self { seeds })
+        Ok(Self { rows })
     }
 
     /// Project `target`, seeded from the stored grid — bit-identical to
@@ -837,16 +1012,17 @@ impl SurfaceSeeds {
         target: Point,
         tol: Tolerances,
     ) -> OgeomResult<SurfaceProjection> {
-        use ogeom_geom::Surface as _;
-        let ((ua, _), (va, _)) = surface.domain();
-        let mut best = (ua, va, f64::INFINITY);
-        for (u, v, p) in &self.seeds {
-            let d = p.square_distance(target);
-            if d < best.2 {
-                best = (*u, *v, d);
-            }
+        let mut scan = Scan::default();
+        for row in &self.rows {
+            scan.push_row(
+                row.iter()
+                    .map(|&(u, v, p)| {
+                        (u, v, p.map_or(f64::INFINITY, |p| p.square_distance(target)))
+                    })
+                    .collect(),
+            );
         }
-        refine_foot(surface, target, (best.0, best.1), tol)
+        scan.finish().refine(surface, target, tol)
     }
 }
 
@@ -878,31 +1054,52 @@ pub fn project_on_surface_from(
 }
 
 /// Newton on the foot-point conditions from a starting parameter pair.
+///
+/// The iteration is box-constrained: the parameters never leave the
+/// surface's domain. A periodic direction wraps; a bounded one clamps, and a
+/// coordinate held against its bound by the step is pinned there while the
+/// other one keeps solving on its own. Without that, every edge that runs
+/// along a face's boundary — the outer helix of a thread flank sits exactly
+/// on the flank's `u` bound — pushes the unconstrained foot a hair outside
+/// the domain, and a solver that then rejects the whole answer hands back
+/// its seed, turns away from the true foot.
+///
+/// The line search damps on the distance itself, which is the quantity a
+/// projection minimises, so an iterate that stops improving is the answer
+/// rather than a failure.
 fn refine_foot(
     surface: &SurfaceGeometry,
     target: Point,
     start: (f64, f64),
     tol: Tolerances,
 ) -> OgeomResult<SurfaceProjection> {
-    let best = (
-        start.0,
-        start.1,
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let periodic = (surface.is_periodic_u(), surface.is_periodic_v());
+    let inside = |t: f64, a: f64, b: f64, wraps: bool| -> f64 {
+        if wraps {
+            a + (t - a).rem_euclid(b - a)
+        } else {
+            t.clamp(a, b)
+        }
+    };
+    let square_distance = |u: f64, v: f64| -> f64 {
         surface
-            .point_at(start.0, start.1, tol)
-            .map_or(f64::INFINITY, |p| p.square_distance(target)),
+            .point_at(u, v, tol)
+            .map_or(f64::INFINITY, |p| p.square_distance(target))
+    };
+
+    let mut x = (
+        inside(start.0, ua, ub, periodic.0),
+        inside(start.1, va, vb, periodic.1),
     );
-    // The foot point conditions: (S - target) . Su = 0 and (S - target) . Sv = 0.
-    // Allocation-free on purpose: this is the innermost loop of every
-    // projection, and the fixed two-unknown Newton spends nothing per step.
-    let residual = |x: [f64; 2]| {
-        let (u, v) = (x[0], x[1]);
-        // One evaluation, not three. This closure wants the point and every
-        // derivative at the same place, and a tensor-product patch charges
-        // full price for each accessor asked separately. Every value here
-        // comes from that one evaluation, so they are consistent with each
-        // other, which is what a Newton step needs.
-        let Ok(jet) = surface.jet_at(u, v, tol) else {
-            return ([0.0, 0.0], [[1.0, 0.0], [0.0, 1.0]]);
+    let mut best = (x.0, x.1, square_distance(x.0, x.1));
+
+    for _ in 0..60 {
+        // One evaluation, not three. Every value here comes from the same
+        // jet, so they are consistent with each other, which is what a
+        // Newton step needs.
+        let Ok(jet) = surface.jet_at(x.0, x.1, tol) else {
+            break;
         };
         let ogeom_geom::SurfaceJet {
             point: p,
@@ -913,50 +1110,113 @@ fn refine_foot(
             d2v,
         } = jet;
         let gap = p - target;
-        (
-            [gap.dot(du), gap.dot(dv)],
-            [
-                [du.dot(du) + gap.dot(d2u), du.dot(dv) + gap.dot(duv)],
-                [du.dot(dv) + gap.dot(duv), dv.dot(dv) + gap.dot(d2v)],
-            ],
-        )
-    };
+        // The foot point conditions: (S - target) . Su = 0 and (S - target) . Sv = 0.
+        let r = [gap.dot(du), gap.dot(dv)];
+        let j = [
+            [du.dot(du) + gap.dot(d2u), du.dot(dv) + gap.dot(duv)],
+            [du.dot(dv) + gap.dot(duv), dv.dot(dv) + gap.dot(d2v)],
+        ];
 
-    let refined = solve::newton_system_2(
-        residual,
-        [best.0, best.1],
-        solve::Criteria {
-            residual: tol.confusion(),
-            step: tol.parametric(),
-            max_iterations: 60,
-        },
-    );
+        // A bounded coordinate sitting on its bound with the residual pushing
+        // it further out is pinned: its condition cannot be met inside the
+        // domain, and it drops out of the system.
+        let pinned = |t: f64, a: f64, b: f64, wraps: bool, push: f64| -> bool {
+            !wraps && ((t <= a && push < 0.0) || (t >= b && push > 0.0))
+        };
+        // The residual is the gradient of the half square distance, so the
+        // descent pushes against it.
+        let pin_u = pinned(x.0, ua, ub, periodic.0, -r[0]);
+        let pin_v = pinned(x.1, va, vb, periodic.1, -r[1]);
 
-    let (u, v) = match refined {
-        Ok((value, _, convergence, _)) if convergence.is_converged() => {
-            let (u, v) = (value[0], value[1]);
-            // Newton is free to wander outside the domain; a foot point that
-            // left it is not a foot point of this surface.
-            match surface.normalize_parameters(u, v, tol) {
-                Ok(inside)
-                    if surface
-                        .point_at(inside.0, inside.1, tol)
-                        .is_ok_and(|p| p.square_distance(target) <= best.2) =>
-                {
-                    inside
-                }
-                _ => (best.0, best.1),
-            }
+        let free_norm = match (pin_u, pin_v) {
+            (true, true) => 0.0,
+            (true, false) => r[1].abs(),
+            (false, true) => r[0].abs(),
+            (false, false) => r[0].hypot(r[1]),
+        };
+        if free_norm <= tol.confusion() {
+            break;
         }
-        _ => (best.0, best.1),
-    };
 
-    let point = surface.point_at(u, v, tol)?;
+        let delta = match (pin_u, pin_v) {
+            (true, true) => break,
+            (true, false) => {
+                if j[1][1].abs() <= f64::EPSILON {
+                    break;
+                }
+                [0.0, r[1] / j[1][1]]
+            }
+            (false, true) => {
+                if j[0][0].abs() <= f64::EPSILON {
+                    break;
+                }
+                [r[0] / j[0][0], 0.0]
+            }
+            (false, false) => {
+                let Some(d) = solve_2x2(j, r) else {
+                    break;
+                };
+                d
+            }
+        };
+        if !delta[0].is_finite() || !delta[1].is_finite() {
+            break;
+        }
+
+        // Damping: halve until the distance actually falls. Each candidate is
+        // put back inside the domain first, so a step aimed past a bound
+        // becomes a step to it.
+        let mut scale = 1.0;
+        let mut accepted = None;
+        for _ in 0..30 {
+            let candidate = (
+                inside(delta[0].mul_add(-scale, x.0), ua, ub, periodic.0),
+                inside(delta[1].mul_add(-scale, x.1), va, vb, periodic.1),
+            );
+            let d = square_distance(candidate.0, candidate.1);
+            if d < best.2 {
+                accepted = Some((candidate, d));
+                break;
+            }
+            scale *= 0.5;
+        }
+        let Some((next, d)) = accepted else {
+            break;
+        };
+        let step = (next.0 - x.0).hypot(next.1 - x.1);
+        x = next;
+        best = (x.0, x.1, d);
+        if step <= tol.parametric() {
+            break;
+        }
+    }
+
+    let point = surface.point_at(best.0, best.1, tol)?;
     Ok(SurfaceProjection {
-        parameters: (u, v),
+        parameters: (best.0, best.1),
         point,
         distance: point.distance(target),
     })
+}
+
+/// `j * d = r` for a two-by-two system, `None` when it is singular.
+fn solve_2x2(j: [[f64; 2]; 2], r: [f64; 2]) -> Option<[f64; 2]> {
+    let (row0, row1, rhs0, rhs1) = if j[0][0].abs() >= j[1][0].abs() {
+        (j[0], j[1], r[0], r[1])
+    } else {
+        (j[1], j[0], r[1], r[0])
+    };
+    if row0[0].abs() <= f64::EPSILON * (row1[0].abs() + row0[1].abs()).max(1.0) {
+        return None;
+    }
+    let factor = row1[0] / row0[0];
+    let denom = factor.mul_add(-row0[1], row1[1]);
+    if denom.abs() <= f64::EPSILON * row0[1].abs().max(1.0) {
+        return None;
+    }
+    let d1 = factor.mul_add(-rhs0, rhs1) / denom;
+    let d0 = d1.mul_add(-row0[1], rhs0) / row0[0];
+    Some([d0, d1])
 }
 
 /// The nearest point on a planar curve to a point in the same parameter space.
@@ -1578,6 +1838,68 @@ mod tests {
         assert_relative_eq!(u, 3.0, epsilon = 1e-6);
         assert!(point.is_equal(Point2::new(3.0, 0.0), T));
         assert_relative_eq!(distance, 4.0, epsilon = 1e-9);
+    }
+
+    /// A thread flank: a cubic strip from radius 3 to 4, swept `turns`
+    /// times round the axis at 1.5 mm per turn, one control column per
+    /// radian. The stack of turns sits a pitch apart, closer than the
+    /// chord between neighbouring columns.
+    fn helical_flank(turns: usize) -> SurfaceGeometry {
+        use ogeom_geom::BSplineSurface;
+        use ogeom_math::ControlGrid;
+        let columns = turns * 7;
+        let mut points = Vec::with_capacity(4 * columns);
+        for i in 0..4 {
+            let r = 3.0 + f64::from(i) / 3.0;
+            for j in 0..columns {
+                #[allow(clippy::cast_precision_loss)]
+                let a = j as f64;
+                points.push(Point::new(
+                    r * a.cos(),
+                    r * a.sin(),
+                    a * 1.5 / std::f64::consts::TAU,
+                ));
+            }
+        }
+        let grid = ControlGrid::new(points, 4, columns).unwrap();
+        let u_knots = KnotVector::clamped_uniform(3, 4).unwrap();
+        let v_knots = KnotVector::clamped_uniform(3, columns).unwrap();
+        SurfaceGeometry::BSpline(BSplineSurface::new(u_knots, v_knots, &grid, T).unwrap())
+    }
+
+    #[test]
+    fn a_point_on_a_long_flanks_outer_helix_projects_to_its_own_turn() {
+        use ogeom_geom::Surface as _;
+        let flank = helical_flank(200);
+        let ((_, ub), (va, vb)) = flank.domain();
+        // Along the outer bound, well inside the stack of turns, and again
+        // at the flank's end where the foot has nowhere to run past.
+        for v in [va + (vb - va) * 0.617, vb - 0.4] {
+            let on = flank.point_at(ub, v, T).unwrap();
+            let foot = project_on_surface(&flank, on, 24, T).unwrap();
+            assert!(foot.distance < 1e-9, "at v={v}: {} off", foot.distance);
+            assert_relative_eq!(foot.parameters.0, ub, epsilon = 1e-9);
+            assert_relative_eq!(foot.parameters.1, v, epsilon = 1e-6);
+            let seeded = SurfaceSeeds::over(&flank, 24, T).unwrap();
+            let again = seeded.project(&flank, on, T).unwrap();
+            assert_eq!(again.parameters, foot.parameters);
+        }
+    }
+
+    #[test]
+    fn a_point_past_a_bound_lands_on_the_bound_not_on_its_seed() {
+        use ogeom_geom::Surface as _;
+        let flank = helical_flank(3);
+        let ((_, ub), (va, vb)) = flank.domain();
+        let v = va + (vb - va) * 0.37;
+        let jet = flank.jet_at(ub, v, T).unwrap();
+        // A hair outside the outer bound: the unconstrained foot leaves the
+        // domain, the constrained one is the bound point itself.
+        let target = jet.point + jet.du.normalized(T).unwrap() * 0.01;
+        let foot = project_on_surface(&flank, target, 24, T).unwrap();
+        assert_relative_eq!(foot.parameters.0, ub, epsilon = 1e-12);
+        assert_relative_eq!(foot.parameters.1, v, epsilon = 1e-5);
+        assert!(foot.distance < 0.0101, "{} off", foot.distance);
     }
 }
 
