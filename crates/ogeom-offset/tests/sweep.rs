@@ -990,11 +990,14 @@ fn an_l_spine_mitres_its_corner_and_the_runs_share_the_ring() {
     );
 }
 
+/// A quarter arc meeting a straight leg at a right angle, swept by a square:
+/// the curved wall ends where its generators cross the straight leg's, not
+/// on a mitre plane. The closed form is the plane slice's area times the
+/// square's height: the quarter annulus, the leg's rectangle, less their
+/// overlap under the outer arc, plus the inner corner the two extensions
+/// fill between them.
 #[test]
-fn a_corner_against_a_curved_leg_is_refused_by_name() {
-    // The mitre is exact only where the leg is straight: a ruled wall
-    // between end rings *is* the trimmed prism. Against an arc it is not,
-    // and the refusal says so.
+fn a_corner_against_a_curved_leg_meets_it_on_its_generators() {
     let mut model = ogeom_topo::Model::new();
     let r = 20.0;
     // A quarter arc ending at (0, 20), then a straight leg heading +x —
@@ -1028,9 +1031,25 @@ fn a_corner_against_a_curved_leg_is_refused_by_name() {
         .unwrap()
         .shape;
     let profile = square_profile(&mut model, a, ogeom_math::Vector::Y, 4.0);
-    let err =
-        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap_err();
-    assert!(err.to_string().contains("mitre"), "{err}");
+    let result =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let (ro, ri, half) = (r + 2.0, r - 2.0, 2.0);
+    let annulus = core::f64::consts::FRAC_PI_4 * (ro * ro - ri * ri);
+    let leg = 2.0 * half * 20.0;
+    // ∫₀^half (√(ro² − x²) − r) dx: the arc's material already inside the leg.
+    let overlap =
+        half * (ro * ro - half * half).sqrt() / 2.0 + ro * ro / 2.0 * (half / ro).asin() - r * half;
+    // The inner corner between the arc's straight run-on and the leg's
+    // run-back: a `half` by `half` square.
+    let fill = half * half;
+    let expected = (annulus + leg - overlap + fill) * 2.0 * half;
+    let measured = volume(&model, &result.shape);
+    assert!(
+        (measured - expected).abs() < expected * 5e-3,
+        "curved-leg corner volume {measured} against {expected}"
+    );
 }
 
 /// A skinned loft ends at a point: circles narrowing to an apex, the apex
@@ -1526,5 +1545,292 @@ fn a_holed_profile_rounds_a_mitred_ring() {
     assert!(
         (measured - exact).abs() < exact * 1e-3,
         "holed mitred ring volume {measured} against {exact}"
+    );
+}
+
+/// A round profile of radius `radius` centred at `centre`, square to
+/// `tangent`, as a one-edge wire.
+fn circle_profile(
+    model: &mut ogeom_topo::Model,
+    centre: Point,
+    tangent: ogeom_math::Vector,
+    radius: f64,
+) -> ogeom_topo::Shape {
+    let normal = ogeom_math::Direction::new(tangent, T).unwrap();
+    let section = Circle::new(
+        Frame::new(centre, normal, ogeom_math::Direction::Z, T).unwrap(),
+        radius,
+        T,
+    )
+    .unwrap();
+    let curve: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(section).into();
+    let domain = curve.domain();
+    let edge = ogeom_algo::make_edge(model, curve, domain, T)
+        .unwrap()
+        .shape;
+    ogeom_algo::make_wire(model, std::slice::from_ref(&edge), T)
+        .unwrap()
+        .shape
+}
+
+/// An arc of radius `r` about `centre` in the xy plane between the angles
+/// `(t0, t1)`, on the vertices `va` at `t0` and `vb` at `t1`.
+fn arc_between(
+    model: &mut ogeom_topo::Model,
+    centre: Point,
+    r: f64,
+    (t0, t1): (f64, f64),
+    va: &ogeom_topo::Shape,
+    vb: &ogeom_topo::Shape,
+) -> ogeom_topo::Shape {
+    let frame = Frame::new(
+        centre,
+        ogeom_math::Direction::Z,
+        ogeom_math::Direction::X,
+        T,
+    )
+    .unwrap();
+    let curve: ogeom_geom::Curve =
+        ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(frame, r, T).unwrap()).into();
+    ogeom_algo::make_edge_between(model, curve, (t0, t1), va, vb, T)
+        .unwrap()
+        .shape
+}
+
+/// Simpson's rule over `[a, b]` in `n` (even) steps.
+fn simpson(a: f64, b: f64, n: usize, f: impl Fn(f64) -> f64) -> f64 {
+    #[allow(clippy::cast_precision_loss)]
+    let h = (b - a) / (n as f64);
+    let mut sum = f(a) + f(b);
+    for i in 1..n {
+        #[allow(clippy::cast_precision_loss)]
+        let x = a + h * (i as f64);
+        sum += f(x) * if i % 2 == 1 { 4.0 } else { 2.0 };
+    }
+    sum * h / 3.0
+}
+
+/// The plane slice of a quarter-arc leg of radius `r` about the origin
+/// meeting a straight leg up `+y` from `(0, r)`, for a profile of
+/// half-width `w` across the turn: the quarter annulus, the leg's
+/// rectangle of length `leg`, less their overlap under the outer arc,
+/// plus the inner corner the two run-ons fill.
+fn arc_then_leg_slice(r: f64, w: f64, leg: f64) -> f64 {
+    let ro = r + w;
+    let annulus = core::f64::consts::FRAC_PI_4 * (ro * ro - (r - w) * (r - w));
+    let overlap = w * (ro * ro - w * w).sqrt() / 2.0 + ro * ro / 2.0 * (w / ro).asin() - r * w;
+    annulus + 2.0 * w * leg - overlap + w * w
+}
+
+/// The round profile through the same corner: every slice of the tube is
+/// the square's slice at that height's half-width, integrated.
+#[test]
+fn a_round_profile_meets_a_curved_leg_corner_on_its_generators() {
+    let mut model = ogeom_topo::Model::new();
+    let r = 20.0;
+    let a = Point::new(r, 0.0, 0.0);
+    let b = Point::new(0.0, r, 0.0);
+    let c = Point::new(0.0, r + 20.0, 0.0);
+    let va = ogeom_algo::make_vertex(&mut model, a).shape;
+    let vb = ogeom_algo::make_vertex(&mut model, b).shape;
+    let vc = ogeom_algo::make_vertex(&mut model, c).shape;
+    let arc = arc_between(
+        &mut model,
+        Point::ORIGIN,
+        r,
+        (0.0, core::f64::consts::FRAC_PI_2),
+        &va,
+        &vb,
+    );
+    let lcurve = ogeom_geom::Curve::Line(ogeom_geom::LineCurve::segment(b, c, T).unwrap());
+    let ldomain = ogeom_geom::Curve3d::domain(&lcurve);
+    let leg = ogeom_algo::make_edge_between(&mut model, lcurve, ldomain, &vb, &vc, T)
+        .unwrap()
+        .shape;
+    let spine = ogeom_algo::make_wire(&mut model, &[arc, leg], T)
+        .unwrap()
+        .shape;
+    let profile = circle_profile(&mut model, a, ogeom_math::Vector::Y, 2.0);
+    let result =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let expected = simpson(-2.0, 2.0, 4000, |z| {
+        let w = (4.0 - z * z).max(0.0).sqrt();
+        arc_then_leg_slice(r, w, 20.0)
+    });
+    let measured = volume(&model, &result.shape);
+    assert!(
+        (measured - expected).abs() < expected * 1e-2,
+        "round curved-leg corner volume {measured} against {expected}"
+    );
+}
+
+/// Two arcs meeting at a right angle: the corner turns from a bend one way
+/// into a bend the other, and both legs' skins end on the crossing of
+/// their generators. The slice is the union of the two quarter annuli and
+/// the inner corner their run-ons fill, integrated by the width of that
+/// union at each height.
+#[test]
+fn two_curved_legs_meet_at_a_corner_on_their_generators() {
+    let mut model = ogeom_topo::Model::new();
+    let r = 20.0;
+    let a = Point::new(r, 0.0, 0.0);
+    let b = Point::new(0.0, r, 0.0);
+    let d = Point::new(r, 2.0 * r, 0.0);
+    let centre2 = Point::new(r, r, 0.0);
+    let va = ogeom_algo::make_vertex(&mut model, a).shape;
+    let vb = ogeom_algo::make_vertex(&mut model, b).shape;
+    let vd = ogeom_algo::make_vertex(&mut model, d).shape;
+    let arc1 = arc_between(
+        &mut model,
+        Point::ORIGIN,
+        r,
+        (0.0, core::f64::consts::FRAC_PI_2),
+        &va,
+        &vb,
+    );
+    // About (r, r) from angle π at b back to π/2 at d: travelled against
+    // its parameter, heading +y out of the corner.
+    let arc2 = arc_between(
+        &mut model,
+        centre2,
+        r,
+        (core::f64::consts::FRAC_PI_2, core::f64::consts::PI),
+        &vd,
+        &vb,
+    );
+    let spine = ogeom_algo::make_wire(&mut model, &[arc1, arc2.reversed()], T)
+        .unwrap()
+        .shape;
+    let profile = square_profile(&mut model, a, ogeom_math::Vector::Y, 4.0);
+    let result =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // The union's width at height y: the first annulus's span (x ≥ 0), the
+    // second's (x ≤ r), and the corner fill, merged.
+    let w = 2.0;
+    let width = |y: f64| -> f64 {
+        let mut spans: Vec<(f64, f64)> = Vec::new();
+        let (ro, ri) = (r + w, r - w);
+        if (0.0..=ro).contains(&y) {
+            let lo = (ri * ri - y * y).max(0.0).sqrt();
+            let hi = (ro * ro - y * y).sqrt();
+            spans.push((lo, hi));
+        }
+        let e = y - r;
+        if (0.0..=ro).contains(&e) {
+            let lo = r - (ro * ro - e * e).sqrt();
+            let hi = r - (ri * ri - e * e).max(0.0).sqrt();
+            spans.push((lo, hi));
+        }
+        if (r - w..=r).contains(&y) {
+            spans.push((-w, 0.0));
+        }
+        spans.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap());
+        let mut total = 0.0;
+        let mut reach = f64::NEG_INFINITY;
+        for (lo, hi) in spans {
+            let lo = lo.max(reach);
+            if hi > lo {
+                total += hi - lo;
+                reach = hi;
+            }
+        }
+        total
+    };
+    let area = simpson(0.0, 2.0 * r + w, 40000, width);
+    let expected = area * 2.0 * w;
+    let measured = volume(&model, &result.shape);
+    assert!(
+        (measured - expected).abs() < expected * 5e-3,
+        "arc-to-arc corner volume {measured} against {expected}"
+    );
+}
+
+/// A D-shaped ring — a semicircle closed by its diameter — swept by a
+/// square: both corners stand between the arc and the straight leg, one of
+/// them the wrap. Each corner's slice is the arc's inner overlap with the
+/// leg and the outer corner the run-ons fill.
+#[test]
+fn a_d_shaped_ring_corners_its_curved_leg_at_both_ends() {
+    let mut model = ogeom_topo::Model::new();
+    let r = 20.0;
+    let a = Point::new(r, 0.0, 0.0);
+    let b = Point::new(-r, 0.0, 0.0);
+    let va = ogeom_algo::make_vertex(&mut model, a).shape;
+    let vb = ogeom_algo::make_vertex(&mut model, b).shape;
+    let arc = arc_between(
+        &mut model,
+        Point::ORIGIN,
+        r,
+        (0.0, core::f64::consts::PI),
+        &va,
+        &vb,
+    );
+    let lcurve = ogeom_geom::Curve::Line(ogeom_geom::LineCurve::segment(b, a, T).unwrap());
+    let ldomain = ogeom_geom::Curve3d::domain(&lcurve);
+    let leg = ogeom_algo::make_edge_between(&mut model, lcurve, ldomain, &vb, &va, T)
+        .unwrap()
+        .shape;
+    let spine = ogeom_algo::make_wire(&mut model, &[arc, leg], T)
+        .unwrap()
+        .shape;
+    let profile = square_profile(&mut model, a, ogeom_math::Vector::Y, 4.0);
+    let result =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let w = 2.0;
+    let (ro, ri) = (r + w, r - w);
+    let annulus = core::f64::consts::FRAC_PI_2 * (ro * ro - ri * ri);
+    let leg_area = 2.0 * w * 2.0 * r;
+    // ∫₀^w (r − √(ri² − y²)) dy: the arc's material already inside the leg
+    // at one corner.
+    let overlap = r * w - (w * (ri * ri - w * w).sqrt() / 2.0 + ri * ri / 2.0 * (w / ri).asin());
+    let expected = (annulus + leg_area - 2.0 * overlap + 2.0 * w * w) * 2.0 * w;
+    let measured = volume(&model, &result.shape);
+    assert!(
+        (measured - expected).abs() < expected * 5e-3,
+        "D ring volume {measured} against {expected}"
+    );
+}
+
+/// A corner that turns a curved leg out of its own plane: the two legs'
+/// generators for one profile point are skew and never meet, and the sweep
+/// says so by name instead of sewing a gap.
+#[test]
+fn a_skew_corner_against_a_curved_leg_is_refused_by_name() {
+    let mut model = ogeom_topo::Model::new();
+    let r = 20.0;
+    let a = Point::new(r, 0.0, 0.0);
+    let b = Point::new(0.0, r, 0.0);
+    let c = Point::new(0.0, r, 20.0);
+    let va = ogeom_algo::make_vertex(&mut model, a).shape;
+    let vb = ogeom_algo::make_vertex(&mut model, b).shape;
+    let vc = ogeom_algo::make_vertex(&mut model, c).shape;
+    let arc = arc_between(
+        &mut model,
+        Point::ORIGIN,
+        r,
+        (0.0, core::f64::consts::FRAC_PI_2),
+        &va,
+        &vb,
+    );
+    let lcurve = ogeom_geom::Curve::Line(ogeom_geom::LineCurve::segment(b, c, T).unwrap());
+    let ldomain = ogeom_geom::Curve3d::domain(&lcurve);
+    let leg = ogeom_algo::make_edge_between(&mut model, lcurve, ldomain, &vb, &vc, T)
+        .unwrap()
+        .shape;
+    let spine = ogeom_algo::make_wire(&mut model, &[arc, leg], T)
+        .unwrap()
+        .shape;
+    let profile = square_profile(&mut model, a, ogeom_math::Vector::Y, 4.0);
+    let err =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap_err();
+    assert!(
+        err.to_string().contains("skew corner against a curved leg"),
+        "{err}"
     );
 }

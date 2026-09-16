@@ -536,6 +536,7 @@ struct SkinnedWall {
 fn skinned_wall(
     model: &mut Model,
     rows: &[Vec<Point>],
+    shared: (Option<&Shape>, Option<&Shape>),
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<SkinnedWall> {
@@ -586,8 +587,26 @@ fn skinned_wall(
     let surface_geo: SurfaceGeometry = surface.into();
     let surface_id = model.geometry_mut().add_surface(surface_geo.clone());
 
-    let ring0 = make_edge(model, border_v(0)?, u_dom, tol)?.shape;
-    let ring1 = make_edge(model, border_v(l - 1)?, u_dom, tol)?.shape;
+    // An end ring the neighbouring wall already built is adopted, not
+    // refitted (see `adopt_border`).
+    let slack = fitted.error + tol.confusion();
+    let ring_of = |model: &mut Model,
+                   j: usize,
+                   given: Option<&Shape>|
+     -> OgeomResult<(Shape, ogeom_geom::Curve)> {
+        match given {
+            Some(edge) => {
+                adopt_border(model, edge, &surface_geo, slack, tol)?;
+                Ok((edge.clone(), spine_curve_of(model, edge)?.0))
+            }
+            None => {
+                let curve = border_v(j)?;
+                Ok((make_edge(model, curve.clone(), u_dom, tol)?.shape, curve))
+            }
+        }
+    };
+    let (ring0, curve0) = ring_of(model, 0, shared.0)?;
+    let (ring1, curve1) = ring_of(model, l - 1, shared.1)?;
     let anchor0 = ogeom_algo::edge_vertices(model, &ring0)?
         .map(|(a, _)| a)
         .ok_or_else(|| ogeom_core::ogeom_err!(Construction, "a skinned ring has no vertex"))?;
@@ -679,8 +698,8 @@ fn skinned_wall(
         face: wall,
         ring0,
         ring1,
-        curve0: border_v(0)?,
-        curve1: border_v(l - 1)?,
+        curve0,
+        curve1,
         u_dom,
     })
 }
@@ -848,6 +867,35 @@ fn skinned_ring_strip(
     Ok((face, rail0, rail1))
 }
 
+/// A border edge the neighbouring skin built from its own fit, adopted by
+/// this skin: the edge widens to how far it honestly sits from `surface`
+/// plus this fit's own slack, its vertices with it. Two independent fits of
+/// one row can disagree by more than either fit's own error, and one edge
+/// cannot disagree with itself.
+fn adopt_border(
+    model: &mut Model,
+    edge: &Shape,
+    surface: &SurfaceGeometry,
+    slack: f64,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let (curve, range) = spine_curve_of(model, edge)?;
+    let mut off: f64 = 0.0;
+    for step in 0..=32 {
+        #[allow(clippy::cast_precision_loss)]
+        let t = range.0 + (range.1 - range.0) * (step as f64) / 32.0;
+        let p = curve.point_at(t, tol)?;
+        off = off.max(ogeom_algo::project_on_surface(surface, p, 16, tol)?.distance);
+    }
+    model.widen(edge, ogeom_core::Tolerance::new(off + slack)?)?;
+    if let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? {
+        for v in [&a, &b] {
+            model.widen(v, ogeom_core::Tolerance::new(off + slack)?)?;
+        }
+    }
+    Ok(())
+}
+
 /// A solid skinned over a grid of section samples: [`skinned_wall`] with a
 /// planar cap over each end ring.
 fn skinned_solid(
@@ -857,7 +905,7 @@ fn skinned_solid(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    let wall = skinned_wall(model, rows, tolerance, tol)?;
+    let wall = skinned_wall(model, rows, (None, None), tolerance, tol)?;
     let u_dom = wall.u_dom;
 
     let cap = |model: &mut Model,
@@ -1605,16 +1653,24 @@ struct SkinnedStrip {
     bottom: Shape,
     /// The border along the last station, from `corners.2` to `corners.3`.
     top: Shape,
+    /// The rail along the profile edge's start, from `corners.0` to `corners.2`.
+    rail0: Shape,
+    /// The rail along the profile edge's end, from `corners.1` to `corners.3`.
+    rail1: Shape,
 }
 
 /// Skin an open grid of samples — stations by profile-edge samples — into
 /// one strip. `corners` are the caller's vertices at (first station, edge
 /// start), (first, end), (last, start), (last, end), shared with the
-/// neighbouring strips so the wires chain.
+/// neighbouring strips so the wires chain. `shared` are borders a
+/// neighbouring strip already built — bottom, top, start rail, end rail —
+/// adopted as they are (see `adopt_border`).
+#[allow(clippy::too_many_arguments, reason = "one strip, spelled out")]
 fn skinned_strip(
     model: &mut Model,
     rows: &[Vec<Point>],
     corners: (&Shape, &Shape, &Shape, &Shape),
+    shared: [Option<&Shape>; 4],
     outward_hint: Point,
     hole: bool,
     tolerance: f64,
@@ -1660,10 +1716,27 @@ fn skinned_strip(
     let surface_id = model.geometry_mut().add_surface(surface_geo.clone());
 
     let (c00, c10, c01, c11) = corners;
-    let bottom = make_edge_between(model, u_curve(0)?, u_dom, c00, c10, tol)?.shape;
-    let top = make_edge_between(model, u_curve(l - 1)?, u_dom, c01, c11, tol)?.shape;
-    let rail0 = make_edge_between(model, v_curve(0)?, v_dom, c00, c01, tol)?.shape;
-    let rail1 = make_edge_between(model, v_curve(k - 1)?, v_dom, c10, c11, tol)?.shape;
+    // A border the neighbouring strip already built is adopted, not
+    // refitted (see `adopt_border`).
+    let border = |model: &mut Model,
+                  given: Option<&Shape>,
+                  curve: ogeom_geom::Curve,
+                  range: (f64, f64),
+                  from: &Shape,
+                  to: &Shape|
+     -> OgeomResult<Shape> {
+        match given {
+            Some(edge) => {
+                adopt_border(model, edge, &surface_geo, error + tol.confusion(), tol)?;
+                Ok(edge.clone())
+            }
+            None => Ok(make_edge_between(model, curve, range, from, to, tol)?.shape),
+        }
+    };
+    let bottom = border(model, shared[0], u_curve(0)?, u_dom, c00, c10)?;
+    let top = border(model, shared[1], u_curve(l - 1)?, u_dom, c01, c11)?;
+    let rail0 = border(model, shared[2], v_curve(0)?, v_dom, c00, c01)?;
+    let rail1 = border(model, shared[3], v_curve(k - 1)?, v_dom, c10, c11)?;
 
     let row_line = |v: f64| -> OgeomResult<ogeom_geom::PlanarCurve> {
         Ok(Line2d::over(
@@ -1742,7 +1815,13 @@ fn skinned_strip(
     } else {
         face.reversed()
     };
-    Ok(SkinnedStrip { face, bottom, top })
+    Ok(SkinnedStrip {
+        face,
+        bottom,
+        top,
+        rail0,
+        rail1,
+    })
 }
 
 /// Loft a solid through many closed planar sections, skinned smoothly.
@@ -1982,6 +2061,8 @@ pub fn make_pipe_skinned(
         stations.push(SpineStation {
             at: p,
             tangent: d / m,
+            edge: 0,
+            t,
         });
     }
     let normals = rmf_normals(&stations);
@@ -2014,6 +2095,10 @@ struct SpineStation {
     at: Point,
     /// The unit tangent, in the direction of travel.
     tangent: Vector,
+    /// The spine edge this station stands on, by position in the spine.
+    edge: usize,
+    /// The station's parameter on that edge's curve.
+    t: f64,
 }
 
 /// One profile wire's closed shell round the spine: smooth wires skin as a
@@ -2192,18 +2277,162 @@ fn rmf_normals(stations: &[SpineStation]) -> Vec<Vector> {
             normals.push(n - b * (2.0 * n.dot(b)));
             continue;
         }
-        let nl = n - v1 * (2.0 / c1 * v1.dot(n));
-        let tl = t0 - v1 * (2.0 / c1 * v1.dot(t0));
-        let v2 = t1 - tl;
-        let c2 = v2.dot(v2);
-        let next = if c2 > 1e-20 {
-            nl - v2 * (2.0 / c2 * v2.dot(nl))
-        } else {
-            nl
-        };
-        normals.push(next / next.magnitude());
+        normals.push(rmf_step(p0, t0, n, p1, t1));
     }
     normals
+}
+
+/// One rotation-minimizing step: the normal `n0` at `(p0, t0)` carried to
+/// `(p1, t1)` by double reflection. No travel means no change.
+fn rmf_step(p0: Point, t0: Vector, n0: Vector, p1: Point, t1: Vector) -> Vector {
+    let v1 = p1 - p0;
+    let c1 = v1.dot(v1);
+    if c1 <= 1e-20 {
+        return n0;
+    }
+    let nl = n0 - v1 * (2.0 / c1 * v1.dot(n0));
+    let tl = t0 - v1 * (2.0 / c1 * v1.dot(t0));
+    let v2 = t1 - tl;
+    let c2 = v2.dot(v2);
+    let next = if c2 > 1e-20 {
+        nl - v2 * (2.0 / c2 * v2.dot(nl))
+    } else {
+        nl
+    };
+    next / next.magnitude()
+}
+
+/// A leg's generators, evaluated anywhere: the spine's own curve between
+/// stations with the rotation-minimizing normal carried one step from the
+/// station behind, and a straight extension past either end in the end
+/// frame — the surface a mitre trims against. Parameters are station
+/// indices; a unit beyond an end is one station spacing.
+struct SpineWalk<'a> {
+    /// Each spine edge's curve, range and whether it is travelled reversed.
+    curves: Vec<(ogeom_geom::Curve, (f64, f64), bool)>,
+    stations: &'a [SpineStation],
+    normals: &'a [Vector],
+}
+
+/// Where two legs' generators for one profile point meet at a corner: the
+/// point, each leg's parameter, and how far the two generators actually
+/// miss each other — zero when the corner turns in the plane.
+struct CornerJoin {
+    at: Point,
+    s1: f64,
+    s2: f64,
+    gap: f64,
+}
+
+impl SpineWalk<'_> {
+    /// The spine point, unit tangent and frame normal at `s` within the run
+    /// `(rs, re)`.
+    fn frame_at(
+        &self,
+        s: f64,
+        (rs, re): (usize, usize),
+        tol: Tolerances,
+    ) -> OgeomResult<(Point, Vector, Vector)> {
+        let st = self.stations;
+        let at = |i: usize| (st[i].at, st[i].tangent, self.normals[i]);
+        #[allow(clippy::cast_precision_loss)]
+        let (rsf, ref_) = (rs as f64, re as f64);
+        if s <= rsf {
+            let (p, t, n) = at(rs);
+            let h = st[rs].at.distance(st[(rs + 1).min(re)].at);
+            return Ok((p + t * ((s - rsf) * h), t, n));
+        }
+        if s >= ref_ {
+            let (p, t, n) = at(re);
+            let h = st[re].at.distance(st[re.saturating_sub(1).max(rs)].at);
+            return Ok((p + t * ((s - ref_) * h), t, n));
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let j = s.floor() as usize;
+        #[allow(clippy::cast_precision_loss)]
+        let f = s - j as f64;
+        if f <= 0.0 {
+            return Ok(at(j));
+        }
+        let (curve, range, reversed) = &self.curves[st[j + 1].edge];
+        let t_from = if st[j].edge == st[j + 1].edge {
+            st[j].t
+        } else if *reversed {
+            range.1
+        } else {
+            range.0
+        };
+        let t = t_from + (st[j + 1].t - t_from) * f;
+        let p = curve.point_at(t, tol)?;
+        let d = curve.d1_at(t, tol)?;
+        let m = d.magnitude();
+        if m <= tol.confusion() {
+            ogeom_bail!(Construction, "the spine is degenerate at {t}");
+        }
+        let tangent = if *reversed { -(d / m) } else { d / m };
+        let n = rmf_step(st[j].at, st[j].tangent, self.normals[j], p, tangent);
+        Ok((p, tangent, n))
+    }
+
+    /// The generator of profile point `(a, b)` at `s` within the run.
+    fn generator(
+        &self,
+        s: f64,
+        run: (usize, usize),
+        (a, b): (f64, f64),
+        tol: Tolerances,
+    ) -> OgeomResult<Point> {
+        let (p, t, x) = self.frame_at(s, run, tol)?;
+        let y = t.cross(x);
+        Ok(p + x * a + y * b)
+    }
+
+    /// Where the generators of one profile point on the leg `before` and
+    /// the leg `after` a corner meet: Gauss–Newton on both parameters from
+    /// the corner itself, minimising the distance between the two.
+    fn join(
+        &self,
+        before: (usize, usize),
+        after: (usize, usize),
+        ab: (f64, f64),
+        tol: Tolerances,
+    ) -> OgeomResult<CornerJoin> {
+        const STEP: f64 = 1e-4;
+        #[allow(clippy::cast_precision_loss)]
+        let (mut s1, mut s2) = (before.1 as f64, after.0 as f64);
+        for _ in 0..60 {
+            let g1 = self.generator(s1, before, ab, tol)?;
+            let g2 = self.generator(s2, after, ab, tol)?;
+            let f = g1 - g2;
+            let d1 = (self.generator(s1 + STEP, before, ab, tol)?
+                - self.generator(s1 - STEP, before, ab, tol)?)
+                / (2.0 * STEP);
+            let d2 = (self.generator(s2 + STEP, after, ab, tol)?
+                - self.generator(s2 - STEP, after, ab, tol)?)
+                / (2.0 * STEP);
+            let (a11, a12, a22) = (d1.dot(d1), -d1.dot(d2), d2.dot(d2));
+            let (b1, b2) = (-f.dot(d1), f.dot(d2));
+            let det = a11 * a22 - a12 * a12;
+            if det.abs() <= 1e-30 {
+                break;
+            }
+            let e1 = (b1 * a22 - a12 * b2) / det;
+            let e2 = (a11 * b2 - a12 * b1) / det;
+            s1 += e1;
+            s2 += e2;
+            if e1.abs().max(e2.abs()) <= 1e-12 {
+                break;
+            }
+        }
+        let g1 = self.generator(s1, before, ab, tol)?;
+        let g2 = self.generator(s2, after, ab, tol)?;
+        Ok(CornerJoin {
+            at: g1.midpoint(g2),
+            s1,
+            s2,
+            gap: g1.distance(g2),
+        })
+    }
 }
 
 /// Sweep a planar profile — a wire, or a face whose holes ride along —
@@ -2218,13 +2447,20 @@ fn rmf_normals(stations: &[SpineStation]) -> Vec<Vector> {
 /// own turning, the skin holds every transported section to `tolerance`,
 /// and the caps sit perpendicular to the spine's ends, holes and all.
 ///
+/// A sharp corner is mitred. Between straight legs the mitre is a plane and
+/// each wall is sheared onto it; where a leg is curved the two legs' walls
+/// end on the crossing of their generators — each profile point's own path
+/// down either leg, run straight on past the corner — which is exact where
+/// the corner turns in the leg's plane.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
 /// profile is not planar, leans along the spine, or does not sit at the
-/// spine's start; if the spine is closed (the loop-back is the closed-skin
-/// milestone — docs/PARITY.md, offset.sweeps); or if `frenet` is asked of a
-/// spine that never bends.
+/// spine's start; if `frenet` is asked of a spine that never bends, or of a
+/// cornered one; if a corner turns a curved leg out of its plane, so the
+/// generators miss each other; or if a leg is shorter than its corner's
+/// reach.
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if the skin
 /// cannot reach the tolerance.
 pub fn make_pipe_shell(
@@ -2347,32 +2583,100 @@ pub fn make_pipe_shell(
         out.push((start, stations.len() - 1));
         out
     };
-    // A mitred end is a *shear*: the honest wall is the run's own surface
-    // trimmed by the mitre plane, which for a straight leg is exactly the
-    // ruled skin between its two end rings. A curved leg's trim is not a
-    // loft of its rows, so a corner against one stays refused by name.
+    // A mitred end between straight legs is a *shear*: the honest wall is
+    // the run's own surface trimmed by the mitre plane, which for a
+    // straight leg is exactly the ruled skin between its two end rings.
     let straight = |rs: usize, re: usize| -> bool {
         let t0 = stations[rs].tangent;
         (rs..=re).all(|i| stations[i].tangent.cross(t0).magnitude() <= tol.angular())
     };
-    for &(rs, re) in &runs {
-        if (mitre[rs].is_some() || mitre[re].is_some()) && !straight(rs, re) {
+    // Every corner as the pair of runs it stands between, the wrap
+    // included, and whether either leg is curved. A curved leg's trim is
+    // not a loft of its rows: the two legs' generators for one profile
+    // point are followed — the leg's own curve, run straight on past the
+    // corner — to where they meet, and each wall ends on that crossing.
+    // Where the corner turns in the plane the crossing is exact; a skew
+    // corner's generators miss each other, and that miss is refused.
+    struct CornerPair {
+        before: (usize, usize),
+        after: (usize, usize),
+        curved: bool,
+    }
+    let corner_pairs: Vec<CornerPair> = {
+        let mut out = Vec::new();
+        for pair in runs.windows(2) {
+            out.push(CornerPair {
+                before: pair[0],
+                after: pair[1],
+                curved: !straight(pair[0].0, pair[0].1) || !straight(pair[1].0, pair[1].1),
+            });
+        }
+        if ring && runs.len() > 1 {
+            let (before, after) = (runs[runs.len() - 1], runs[0]);
+            out.push(CornerPair {
+                before,
+                after,
+                curved: !straight(before.0, before.1) || !straight(after.0, after.1),
+            });
+        }
+        out
+    };
+    let curves: Vec<(ogeom_geom::Curve, (f64, f64), bool)> = {
+        let edges: Vec<Shape> = match model.kind_of(spine)? {
+            ShapeType::Edge => vec![spine.clone()],
+            _ => model.ordered_children_of(spine)?,
+        };
+        let mut out = Vec::with_capacity(edges.len());
+        for edge in &edges {
+            let (curve, range) = spine_curve_of(model, edge)?;
+            out.push((
+                curve,
+                range,
+                edge.orientation() == ogeom_topo::Orientation::Reversed,
+            ));
+        }
+        out
+    };
+    let walk = SpineWalk {
+        curves,
+        stations: &stations,
+        normals: &normals,
+    };
+    let join_reach = tolerance.max(tol.confusion() * 100.0);
+    let curved_join = |pair: &CornerPair, ab: (f64, f64)| -> OgeomResult<CornerJoin> {
+        let join = walk.join(pair.before, pair.after, ab, tol)?;
+        if join.gap > join_reach {
             ogeom_bail!(
                 Construction,
-                "a sharp corner against a curved leg is still owed its \
-                 mitre; straight legs mitre exactly — docs/PARITY.md, \
-                 offset.sweeps"
+                "a skew corner against a curved leg is still owed its frame \
+                 law: the legs' generators miss by {} — docs/PARITY.md, \
+                 offset.sweeps",
+                join.gap
             );
         }
-    }
-    // The stations a run's skin actually interpolates: a straight run is
-    // its two end rings, ruled — the trimmed prism itself.
-    let run_stations = |rs: usize, re: usize| -> Vec<usize> {
-        if straight(rs, re) {
-            vec![rs, re]
-        } else {
-            (rs..=re).collect()
-        }
+        Ok(join)
+    };
+    // Across a curved corner the two legs' skins share the join row as one
+    // edge: a run adopts the previous run's end row at its start, and the
+    // last run of a cornered ring adopts the first run's start row at its
+    // end.
+    let shares_start = |ri: usize| -> bool {
+        ri > 0
+            && corner_pairs
+                .iter()
+                .any(|pair| pair.curved && pair.after == runs[ri])
+    };
+    let shares_end = |ri: usize| -> bool {
+        ring && ri + 1 == runs.len()
+            && corner_pairs
+                .iter()
+                .any(|pair| pair.curved && pair.before == runs[ri] && pair.after == runs[0])
+    };
+    // The curved corner a station is a twin of, if any.
+    let curved_at = |i: usize| -> Option<&CornerPair> {
+        corner_pairs
+            .iter()
+            .find(|pair| pair.curved && (pair.before.1 == i || pair.after.0 == i))
     };
 
     // The profile's loops: a face contributes every wire, holes included;
@@ -2415,18 +2719,152 @@ pub fn make_pipe_shell(
     let y0 = t0.cross(x0);
     let origin = stations[0].at;
     let flat = |p: Point| -> (f64, f64) { ((p - origin).dot(x0), (p - origin).dot(y0)) };
-    let place = |i: usize, (a, b): (f64, f64)| -> Point {
+    let place = |i: usize, (a, b): (f64, f64)| -> OgeomResult<Point> {
+        if let Some(pair) = curved_at(i) {
+            return Ok(curved_join(pair, (a, b))?.at);
+        }
         let x = normals[i];
         let y = stations[i].tangent.cross(x);
         let p = stations[i].at + x * a + y * b;
-        match mitre[i] {
+        Ok(match mitre[i] {
             Some((corner, n)) => {
                 let t = stations[i].tangent;
                 p + t * ((corner - p).dot(n) / t.dot(n))
             }
             None => p,
-        }
+        })
     };
+    // The rows a run's skin interpolates. A straight run is its two end
+    // rings, ruled — the trimmed prism itself, whether an end is sheared
+    // onto a mitre plane or stands on a curved corner's crossing. A curved
+    // run is its stations, except that a stretch at a curved corner is
+    // re-rowed: each row runs along the generators from the last plain
+    // station to the crossing, so the skin is the leg's own surface up to
+    // the join and nothing past it.
+    let run_rows =
+        |(rs, re): (usize, usize), flat_row: &[(f64, f64)]| -> OgeomResult<Vec<Vec<Point>>> {
+            let run = (rs, re);
+            let joins_at = |at_start: bool| -> OgeomResult<Option<Vec<CornerJoin>>> {
+                let pair = corner_pairs.iter().find(|pair| {
+                    pair.curved
+                        && if at_start {
+                            pair.after == run
+                        } else {
+                            pair.before == run
+                        }
+                });
+                let Some(pair) = pair else {
+                    return Ok(None);
+                };
+                let mut out = Vec::with_capacity(flat_row.len());
+                for ab in flat_row {
+                    out.push(curved_join(pair, *ab)?);
+                }
+                Ok(Some(out))
+            };
+            let (start, end) = (joins_at(true)?, joins_at(false)?);
+            #[allow(clippy::cast_precision_loss)]
+            let (rsf, ref_) = (rs as f64, re as f64);
+            let short = || {
+                ogeom_bail!(
+                    Construction,
+                    "a leg is shorter than its corner's reach; the mitre would \
+                 run off its far end"
+                )
+            };
+            let mut rows: Vec<Vec<Point>> = Vec::new();
+            if straight(rs, re) {
+                if start
+                    .as_ref()
+                    .is_some_and(|js| js.iter().any(|j| j.s2 >= ref_ - 0.5))
+                    || end
+                        .as_ref()
+                        .is_some_and(|js| js.iter().any(|j| j.s1 <= rsf + 0.5))
+                {
+                    return short();
+                }
+                for (at_start, joins) in [(true, &start), (false, &end)] {
+                    rows.push(match joins {
+                        Some(js) => js.iter().map(|j| j.at).collect(),
+                        None => {
+                            let i = if at_start { rs } else { re };
+                            flat_row
+                                .iter()
+                                .map(|ab| place(i, *ab))
+                                .collect::<OgeomResult<Vec<Point>>>()?
+                        }
+                    });
+                }
+                return Ok(rows);
+            }
+            if start.is_none() && end.is_none() {
+                for i in rs..=re {
+                    rows.push(
+                        flat_row
+                            .iter()
+                            .map(|ab| place(i, *ab))
+                            .collect::<OgeomResult<Vec<Point>>>()?,
+                    );
+                }
+                return Ok(rows);
+            }
+            // A curved run with a crossing at either end is re-rowed whole:
+            // every column runs its own generator from its start to its end,
+            // sampled at the same fractions, so the grid's shared parameter is
+            // honest for every column — a stretch skewed only near the corner
+            // would pace each column differently and the fit would fight it.
+            if start
+                .as_ref()
+                .is_some_and(|js| js.iter().any(|j| j.s2 >= ref_ - 0.5))
+                || end
+                    .as_ref()
+                    .is_some_and(|js| js.iter().any(|j| j.s1 <= rsf + 0.5))
+            {
+                return short();
+            }
+            // Each column at equal fractions of its own arc length: the grid's
+            // parameter is one for all columns, and a column's pace differs
+            // between the leg's curve and its straight extension, so the
+            // fractions are taken along the generator, not along its parameter.
+            let steps = re - rs;
+            let fine = steps * 8;
+            let mut columns: Vec<Vec<Point>> = Vec::with_capacity(flat_row.len());
+            for (k, ab) in flat_row.iter().enumerate() {
+                let lo = start.as_ref().map_or(rsf, |js| js[k].s2);
+                let hi = end.as_ref().map_or(ref_, |js| js[k].s1);
+                let mut along: Vec<(f64, f64)> = Vec::with_capacity(fine + 1);
+                let mut prev: Option<Point> = None;
+                let mut length = 0.0;
+                for i in 0..=fine {
+                    #[allow(clippy::cast_precision_loss)]
+                    let sp = lo + (hi - lo) * (i as f64) / (fine as f64);
+                    let p = walk.generator(sp, run, *ab, tol)?;
+                    if let Some(q) = prev {
+                        length += q.distance(p);
+                    }
+                    along.push((length, sp));
+                    prev = Some(p);
+                }
+                let mut column = Vec::with_capacity(steps + 1);
+                for i in 0..=steps {
+                    #[allow(clippy::cast_precision_loss)]
+                    let target = length * (i as f64) / (steps as f64);
+                    let at = along.partition_point(|(l, _)| *l < target).clamp(1, fine);
+                    let ((l0, s0), (l1, s1)) = (along[at - 1], along[at]);
+                    let f = if l1 > l0 {
+                        ((target - l0) / (l1 - l0)).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    column.push(walk.generator(s0 + (s1 - s0) * f, run, *ab, tol)?);
+                }
+                columns.push(column);
+            }
+            for i in 0..=steps {
+                rows.push(columns.iter().map(|c| c[i]).collect());
+            }
+            Ok(rows)
+        };
     let last = stations.len() - 1;
 
     enum LoopWall {
@@ -2457,12 +2895,11 @@ pub fn make_pipe_shell(
             // mitred ring, where the sew joins them.
             let mut ring0: Option<Shape> = None;
             let mut ring1: Option<Shape> = None;
-            for &(rs, re) in &runs {
-                let rows: Vec<Vec<Point>> = run_stations(rs, re)
-                    .into_iter()
-                    .map(|i| flat_row.iter().map(|ab| place(i, *ab)).collect())
-                    .collect();
-                let wall = skinned_wall(model, &rows, tolerance, tol)?;
+            for (ri, &(rs, re)) in runs.iter().enumerate() {
+                let rows = run_rows((rs, re), &flat_row)?;
+                let shared_start = shares_start(ri).then_some(()).and(ring1.as_ref());
+                let shared_end = shares_end(ri).then_some(()).and(ring0.as_ref());
+                let wall = skinned_wall(model, &rows, (shared_start, shared_end), tolerance, tol)?;
                 faces.push(if hole {
                     wall.face.reversed()
                 } else {
@@ -2495,11 +2932,12 @@ pub fn make_pipe_shell(
                 };
                 corner_flat.push(flat(data.point));
             }
-            let make_corners = |model: &mut Model, station: usize| -> Vec<Shape> {
-                corner_flat
-                    .iter()
-                    .map(|ab| ogeom_algo::make_vertex(model, place(station, *ab)).shape)
-                    .collect()
+            let make_corners = |model: &mut Model, station: usize| -> OgeomResult<Vec<Shape>> {
+                let mut out = Vec::with_capacity(corner_flat.len());
+                for ab in &corner_flat {
+                    out.push(ogeom_algo::make_vertex(model, place(station, *ab)?).shape);
+                }
+                Ok(out)
             };
             // Corner vertex sets at every run boundary; a kink's twin
             // stations land on the same mitred points, so both runs take
@@ -2515,9 +2953,9 @@ pub fn make_pipe_shell(
                 // than sewn hoping.
                 let mut worst = 0.0_f64;
                 for ab in &corner_flat {
-                    worst = worst.max(place(last, *ab).distance(place(0, *ab)));
+                    worst = worst.max(place(last, *ab)?.distance(place(0, *ab)?));
                     for &k in &kinks {
-                        worst = worst.max(place(k, *ab).distance(place(k + 1, *ab)));
+                        worst = worst.max(place(k, *ab)?.distance(place(k + 1, *ab)?));
                     }
                 }
                 if worst > tolerance.max(tol.confusion() * 100.0) {
@@ -2528,7 +2966,7 @@ pub fn make_pipe_shell(
                          is still owed — docs/PARITY.md, offset.sweeps"
                     );
                 }
-                let set = make_corners(model, 0);
+                let set = make_corners(model, 0)?;
                 if worst > tol.confusion() {
                     for v in &set {
                         model.widen(v, ogeom_core::Tolerance::new(worst * 2.0)?)?;
@@ -2537,11 +2975,11 @@ pub fn make_pipe_shell(
                 corners_at[0] = Some(set.clone());
                 corners_at[last] = Some(set);
             } else {
-                corners_at[0] = Some(make_corners(model, 0));
-                corners_at[last] = Some(make_corners(model, last));
+                corners_at[0] = Some(make_corners(model, 0)?);
+                corners_at[last] = Some(make_corners(model, last)?);
             }
             for &k in &kinks {
-                let set = make_corners(model, k);
+                let set = make_corners(model, k)?;
                 corners_at[k] = Some(set.clone());
                 corners_at[k + 1] = Some(set);
             }
@@ -2561,6 +2999,10 @@ pub fn make_pipe_shell(
 
             let mut bottoms = Vec::with_capacity(count);
             let mut tops = Vec::with_capacity(count);
+            // Per run: the first strip's start rail, for the last strip to
+            // close the loop on, and the previous strip's end rail, for
+            // the next to start from — one edge for both, never two fits.
+            let mut run_rails: Vec<(Option<Shape>, Option<Shape>)> = vec![(None, None); runs.len()];
             for (ei, edge) in edges.iter().enumerate() {
                 let (curve, range) = spine_curve_of(model, edge)?;
                 let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
@@ -2579,11 +3021,10 @@ pub fn make_pipe_shell(
                 let next = (ei + 1) % count;
                 let mut bottom: Option<Shape> = None;
                 let mut top: Option<Shape> = None;
-                for &(rs, re) in &runs {
-                    let rows: Vec<Vec<Point>> = run_stations(rs, re)
-                        .into_iter()
-                        .map(|i| flat_row.iter().map(|ab| place(i, *ab)).collect())
-                        .collect();
+                for (ri, &(rs, re)) in runs.iter().enumerate() {
+                    let rows = run_rows((rs, re), &flat_row)?;
+                    let shared_start = shares_start(ri).then_some(()).and(top.as_ref());
+                    let shared_end = shares_end(ri).then_some(()).and(bottom.as_ref());
                     let mid_i = usize::midpoint(rs, re);
                     let hint = {
                         let x = normals[mid_i];
@@ -2593,15 +3034,36 @@ pub fn make_pipe_shell(
                     let (Some(from), Some(to)) = (&corners_at[rs], &corners_at[re]) else {
                         ogeom_bail!(Construction, "a run boundary has no corners");
                     };
+                    let (first_rail0, prev_rail1) = run_rails[ri].clone();
+                    let shared_rail0 = if ei > 0 { prev_rail1 } else { None };
+                    let shared_rail1 = if ei + 1 == count && count > 1 {
+                        first_rail0.clone()
+                    } else {
+                        None
+                    };
                     let strip = skinned_strip(
                         model,
                         &rows,
                         (&from[ei], &from[next], &to[ei], &to[next]),
+                        [
+                            shared_start,
+                            shared_end,
+                            shared_rail0.as_ref(),
+                            shared_rail1.as_ref(),
+                        ],
                         hint,
                         hole,
                         tolerance,
                         tol,
                     )?;
+                    run_rails[ri] = (
+                        if ei == 0 {
+                            Some(strip.rail0.clone())
+                        } else {
+                            first_rail0
+                        },
+                        Some(strip.rail1.clone()),
+                    );
                     faces.push(strip.face.clone());
                     if bottom.is_none() {
                         bottom = Some(strip.bottom);
@@ -2731,6 +3193,25 @@ pub fn make_pipe_shell(
         make_solid(model, &shells)?
     } else {
         if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
+            if std::env::var_os("OGEOM_DEBUG_SWEEP").is_some() {
+                eprintln!(
+                    "SWEEP: {} shells, {} free edges from {} faces",
+                    sewn.shells.len(),
+                    sewn.free_edges.len(),
+                    faces.len()
+                );
+                for edge in &sewn.free_edges {
+                    let (curve, range) = spine_curve_of(model, edge)?;
+                    let a = curve.point_at(range.0, tol)?;
+                    let b = curve.point_at(range.1, tol)?;
+                    let m = curve.point_at(f64::midpoint(range.0, range.1), tol)?;
+                    let t = model.tolerance_of(edge)?.map_or(0.0, |t| t.get());
+                    eprintln!(
+                        "  free ({:.3},{:.3},{:.3}) -> ({:.3},{:.3},{:.3}) via ({:.3},{:.3},{:.3}) tol {t:.2e}",
+                        a.x, a.y, a.z, b.x, b.y, b.z, m.x, m.y, m.z
+                    );
+                }
+            }
             ogeom_bail!(Construction, "the pipe shell did not close");
         }
         make_solid(model, std::slice::from_ref(&sewn.shells[0]))?
@@ -2913,7 +3394,7 @@ fn shell_stations(model: &Model, spine: &Shape, tol: Tolerances) -> OgeomResult<
         ogeom_bail!(Construction, "the spine has no edge to run along");
     }
     let mut stations: Vec<SpineStation> = Vec::new();
-    for edge in &edges {
+    for (ei, edge) in edges.iter().enumerate() {
         let (curve, range) = {
             let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
                 ogeom_bail!(Construction, "a spine edge holds no data");
@@ -2974,7 +3455,12 @@ fn shell_stations(model: &Model, spine: &Shape, tol: Tolerances) -> OgeomResult<
             }
             // A station coincident with the last but heading elsewhere is a
             // *corner*: both stations stay, a twin pair the sweep mitres.
-            stations.push(SpineStation { at: p, tangent });
+            stations.push(SpineStation {
+                at: p,
+                tangent,
+                edge: ei,
+                t,
+            });
         }
     }
     if stations.len() < 2 {

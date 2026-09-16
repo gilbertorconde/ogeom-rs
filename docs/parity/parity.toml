@@ -1132,8 +1132,10 @@ every corner loop one rail shared by the two strips meeting there. A \
 ring seamed mid-leg butts its two half-legs on the seam's own ring, and \
 a skew-cornered ring closes on its mitres: the frame is reflected across \
 each mitre plane, the loop's holonomy spread along the legs as a twist. \
-Nothing on the loop is owed; a corner against a curved leg on an open \
-spine still is."""
+A corner against a curved leg — on an open spine or a ring — ends both \
+walls on the crossing of their generators, exact where the corner turns \
+in the leg's plane; a skew corner against a curved leg is still owed \
+its frame law."""
 claims = [
     "BRepOffsetAPI_MakePipe", "BRepOffsetAPI_MakePipeShell",
     "BRepOffsetAPI_MakeEvolved", "BRepSweep_*", "BRepFill", "BRepFill_*",
