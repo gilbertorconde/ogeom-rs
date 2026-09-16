@@ -683,48 +683,50 @@ pub fn project_on_curve(
             .map_or(f64::INFINITY, |p| p.square_distance(target))
     };
 
-    // Coarse scan for the best bracket.
-    let mut best = (a, distance_at(a));
-    let mut best_index = 0_usize;
-    for i in 1..=steps {
-        #[allow(clippy::cast_precision_loss)]
-        let u = a + (b - a) * (i as f64 / steps as f64);
-        let d = distance_at(u);
-        if d < best.1 {
-            best = (u, d);
-            best_index = i;
+    // Coarse scan, then every local minimum of it refined, not only the
+    // best sample's bracket: the nearest sample and the nearest point need
+    // not share a bracket. A short stretch of a long fitted curve, seen
+    // from its own middle, puts the three samples nearest to it — the
+    // stretch's two ends and the curve's far end, if the curve closes — at
+    // the same distance to within rounding, and the one that wins by a
+    // hair may bracket nothing. The samples are cheap; the brackets that
+    // dip are few.
+    #[allow(clippy::cast_precision_loss)]
+    let at = |i: usize| a + (b - a) * (i as f64 / steps as f64);
+    let scanned: Vec<f64> = (0..=steps).map(|i| distance_at(at(i))).collect();
+    let mut best = (a, scanned[0]);
+    for i in 0..=steps {
+        let dips = (i == 0 || scanned[i] <= scanned[i - 1])
+            && (i == steps || scanned[i] <= scanned[i + 1]);
+        if !dips {
+            continue;
+        }
+        let (lo, hi) = (at(i.saturating_sub(1)), at((i + 1).min(steps)));
+        let mut candidate = (at(i), scanned[i]);
+        if hi > lo {
+            let refined = solve::minimize(
+                distance_at,
+                lo,
+                hi,
+                solve::Criteria {
+                    residual: 0.0,
+                    step: tol.parametric(),
+                    max_iterations: 100,
+                },
+            )?;
+            // The refinement may land marginally worse than the sample if
+            // the bracket was already at the boundary; keep whichever is
+            // actually nearer rather than trusting the method.
+            let d = distance_at(refined.value);
+            if d <= candidate.1 {
+                candidate = (refined.value, d);
+            }
+        }
+        if candidate.1 < best.1 {
+            best = candidate;
         }
     }
-
-    // Refine inside the neighbouring samples, where the minimum must lie.
-    #[allow(clippy::cast_precision_loss)]
-    let width = (b - a) / steps as f64;
-    let lo = (best.0 - width).max(a);
-    let hi = (best.0 + width).min(b);
-    let _ = best_index;
-
-    let parameter = if hi > lo {
-        let refined = solve::minimize(
-            distance_at,
-            lo,
-            hi,
-            solve::Criteria {
-                residual: 0.0,
-                step: tol.parametric(),
-                max_iterations: 100,
-            },
-        )?;
-        // The refinement may land marginally worse than the sample if the
-        // bracket was already at the boundary; keep whichever is actually
-        // nearer rather than trusting the method.
-        if distance_at(refined.value) <= best.1 {
-            refined.value
-        } else {
-            best.0
-        }
-    } else {
-        best.0
-    };
+    let parameter = best.0;
 
     let point = curve.point_at(parameter, tol)?;
     Ok(Projection {

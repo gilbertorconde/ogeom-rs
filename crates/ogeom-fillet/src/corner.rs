@@ -4,7 +4,7 @@
 
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
-use ogeom_math::{Direction, Frame, Vector};
+use ogeom_math::{Direction, Frame, Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType};
 
 /// Round a solid's vertex with a ball of `radius`.
@@ -21,12 +21,13 @@ use ogeom_topo::{Model, Shape, ShapeType};
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
 /// vertex is not a vertex of the solid; if it is not trihedral — exactly
-/// three edges must meet it; if the three edges do not leave it mutually
-/// orthogonal and straight, which is the corner this tool speaks (the
-/// oblique and curved-edged corners are the N-support setback's, still
-/// owed — docs/PARITY.md, fillet.edge-blends); or if the corner turns out
-/// concave, where a ball adds material instead of shedding it and a tool
-/// built from a cut cannot say so.
+/// three planes must pass through it (a curved-edged corner is the
+/// N-support setback's, still owed — docs/PARITY.md, fillet.edge-blends);
+/// or if the corner turns out concave, where a ball adds material instead
+/// of shedding it and a tool built from a cut cannot say so. The corner
+/// may be oblique: the block is then the hexahedron bounded by the host
+/// planes and the three planes through the ball's centre square to the
+/// edges.
 pub fn round_vertex(
     model: &mut Model,
     solid: &Shape,
@@ -89,43 +90,64 @@ pub fn round_vertex(
             normals.len()
         );
     }
-    for (i, j) in [(0, 1), (0, 2), (1, 2)] {
-        if normals[i].dot(normals[j]).abs()
-            > normals[i].magnitude() * normals[j].magnitude() * tol.angular() * 10.0
-        {
-            ogeom_bail!(
-                Construction,
-                "the faces meet this vertex obliquely; the oblique corner is \
-                 the N-support setback's, still owed — docs/PARITY.md, \
-                 fillet.edge-blends"
-            );
-        }
+    // The corner's own axes: each edge is the meet of two of the planes,
+    // so its direction is their normals' cross product, signed to point
+    // from the vertex into the solid. Three planes that do not span are no
+    // corner.
+    let span = normals[0].cross(normals[1]).dot(normals[2]).abs();
+    if span <= tol.angular() * 10.0 {
+        ogeom_bail!(
+            Construction,
+            "the three planes through this vertex do not span a corner"
+        );
     }
-    let n: Vec<Direction> = normals
-        .iter()
-        .map(|v| Direction::new(*v, tol))
-        .collect::<OgeomResult<_>>()?;
-
-    // The block spans *into* the solid: each plane normal, signed so a probe
-    // just inside the would-be block lands inside the solid. The boundary is
-    // asked once per sign choice; the corner that answers to none of them is
-    // concave or stranger, and this construction cannot round it.
+    let edge_of = |i: usize, j: usize| -> OgeomResult<Direction> {
+        Direction::new(normals[i].cross(normals[j]), tol)
+    };
+    let axes = [edge_of(1, 2)?, edge_of(2, 0)?, edge_of(0, 1)?];
+    // Which way along each edge the material lies: the ball's centre — the
+    // point a radius in from all three planes — sits inside the solid for
+    // exactly one of the eight sign choices on a convex corner. It is
+    // probed rather than derived from the faces' orientations because the
+    // vertex may already be consumed: after three fillets the tip is gone,
+    // but the shrunk planes still say where the material was.
     let boundary = ogeom_algo::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol)?;
-    // The probe's stand-off is chosen for the corner this tool follows: on a
-    // solid whose edges are already filleted at `radius`, material near the
-    // corner survives only past the fillet prisms (per-axis offset over
-    // r/√2) and within the coming ball's reach (under r). 0.85r sits in
-    // that band at every radius, and trivially inside a sharp corner.
-    let probe = radius * 0.85;
-    let mut inward: Option<[Vector; 3]> = None;
+    let centre_for = |dirs: [Vector; 3]| -> Option<Point> {
+        // Inward plane normals: each signed toward the diagonal.
+        let diagonal = dirs[0] + dirs[1] + dirs[2];
+        let m: Vec<Vector> = normals
+            .iter()
+            .map(|n| if n.dot(diagonal) >= 0.0 { *n } else { -*n })
+            .collect();
+        // Solve m_k · (c − corner) = radius for c.
+        let det = m[0].cross(m[1]).dot(m[2]);
+        if det.abs() <= 1e-12 {
+            return None;
+        }
+        let rhs = Vector::new(radius, radius, radius);
+        let col = |k: usize| -> f64 {
+            let mut a = [m[0], m[1], m[2]];
+            for (r, row) in a.iter_mut().enumerate() {
+                let v = [row.x, row.y, row.z];
+                let mut w = v;
+                w[k] = [rhs.x, rhs.y, rhs.z][r];
+                *row = Vector::new(w[0], w[1], w[2]);
+            }
+            a[0].cross(a[1]).dot(a[2]) / det
+        };
+        Some(corner + Vector::new(col(0), col(1), col(2)))
+    };
+    let mut inward: Option<([Vector; 3], Point)> = None;
     for signs in 0..8_u8 {
         let cand = [
-            n[0].vector() * if signs & 1 == 0 { 1.0 } else { -1.0 },
-            n[1].vector() * if signs & 2 == 0 { 1.0 } else { -1.0 },
-            n[2].vector() * if signs & 4 == 0 { 1.0 } else { -1.0 },
+            axes[0].vector() * if signs & 1 == 0 { 1.0 } else { -1.0 },
+            axes[1].vector() * if signs & 2 == 0 { 1.0 } else { -1.0 },
+            axes[2].vector() * if signs & 4 == 0 { 1.0 } else { -1.0 },
         ];
-        let at = corner + (cand[0] + cand[1] + cand[2]) * probe;
-        if boundary.holds(model, at, tol)? == ogeom_algo::Containment::In {
+        let Some(centre) = centre_for(cand) else {
+            continue;
+        };
+        if boundary.holds(model, centre, tol)? == ogeom_algo::Containment::In {
             if inward.is_some() {
                 ogeom_bail!(
                     Construction,
@@ -133,10 +155,10 @@ pub fn round_vertex(
                      simple trihedral this tool speaks"
                 );
             }
-            inward = Some(cand);
+            inward = Some((cand, centre));
         }
     }
-    let Some(inward) = inward else {
+    let Some((inward, far)) = inward else {
         ogeom_bail!(
             Construction,
             "no side of this corner holds material; a concave vertex gains a \
@@ -148,34 +170,105 @@ pub fn round_vertex(
         .map(|v| Direction::new(*v, tol))
         .collect::<OgeomResult<_>>()?;
 
-    // The corner block stands at the vertex and spans `radius` along each
-    // inward direction; the ball sits at the far corner — the vertex walked
-    // in by `radius` along all three edges — on the same axes. Both frames
-    // are right-handed on the inward triple as ordered, or on the first
-    // two swapped when that triple comes left-handed, so the block's third
-    // axis is always an inward direction and never its opposite. The ball
-    // then has a pole at one corner of the patch it leaves and its seam
-    // meridian out past the block through the first axis — the one
-    // placement of chart against patch that the boolean and the mesher
-    // both speak; a block spanning back from the far corner on reversed
-    // axes, with the ball on it, left a micron of sliver at that corner
-    // and a mesh pinched on it.
-    let first = if d[0].vector().cross(d[1].vector()).dot(d[2].vector()) >= 0.0 {
-        d[0]
-    } else {
-        d[1]
+    // The block: the corner bounded by its three host planes and, through
+    // the ball's centre, the three planes square to its edges — where each
+    // band's circle and the ball's own rim coincide, so the cut ends the
+    // band and starts the patch on one curve. On a square corner it is the
+    // box of side `radius`; on an oblique one a hexahedron whose planar
+    // faces `make_hexahedron` checks. Its corners: the vertex, the foot of
+    // each edge on its cutting plane, on each host plane the point square
+    // to both of that plane's edges, and the centre itself.
+    //
+    // The ball on the corner's axes: a pole at one corner of the patch it
+    // leaves and its seam meridian out past the block through the first
+    // edge — the pole axis is the inward normal of the host plane holding
+    // the first two edges, the third edge itself on a square corner.
+    //
+    // Which edge is first, second and third is the tool's labelling, and
+    // the solid it builds is the same for all six. The boolean is not yet
+    // indifferent to it: the charts the block's faces and the ball wear
+    // decide where a rim is exact and where fitted, where a seam falls
+    // against a patch arc, and at an oblique corner five of the six
+    // labellings still die in the cut in five different ways. So the tool
+    // is offered on each labelling in turn and the first that closes
+    // stands — every one of them is the same exact construction — and the
+    // corner is refused by name only when none does. A failed attempt's
+    // nodes stay in the model unreferenced, under their own operation.
+    // The boolean closing all six is owed (docs/PARITY.md,
+    // fillet.edge-blends).
+    let attempt = |model: &mut Model, order: [usize; 3]| -> OgeomResult<Built> {
+        let d = [d[order[0]], d[order[1]], d[order[2]]];
+        let along =
+            |k: usize| -> Point { corner + d[k].vector() * (far - corner).dot(d[k].vector()) };
+        let on_plane = |i: usize, j: usize| -> OgeomResult<Point> {
+            let (ei, ej) = (d[i].vector(), d[j].vector());
+            let rhs = [(far - corner).dot(ei), (far - corner).dot(ej)];
+            let m = [[ei.dot(ei), ej.dot(ei)], [ei.dot(ej), ej.dot(ej)]];
+            let det = m[0][0].mul_add(m[1][1], -(m[0][1] * m[1][0]));
+            if det.abs() <= 1e-12 {
+                ogeom_bail!(Construction, "two edges of this corner are parallel");
+            }
+            let alpha = rhs[0].mul_add(m[1][1], -(m[0][1] * rhs[1])) / det;
+            let beta = m[0][0].mul_add(rhs[1], -(rhs[0] * m[1][0])) / det;
+            Ok(corner + ei * alpha + ej * beta)
+        };
+        let corners = [
+            corner,
+            along(0),
+            on_plane(0, 1)?,
+            along(1),
+            along(2),
+            on_plane(0, 2)?,
+            far,
+            on_plane(1, 2)?,
+        ];
+        model.begin_operation();
+        let block = ogeom_algo::make_hexahedron(model, corners, tol)?.shape;
+        let ball_frame = {
+            let plane_normal = d[0].vector().cross(d[1].vector());
+            let z = if plane_normal.dot(d[2].vector()) >= 0.0 {
+                plane_normal
+            } else {
+                -plane_normal
+            };
+            Frame::new(far, Direction::new(z, tol)?, d[0], tol)?
+        };
+        let ball = ogeom_algo::make_sphere(model, ball_frame, radius, tol)?.shape;
+        let tool = ogeom_bool::cut(model, &block, &ball, tol)?;
+        let rounded = ogeom_bool::cut(model, solid, &tool.shape, tol)?;
+        Ok(Built {
+            shape: rounded.shape,
+            history: tool.history.then(&rounded.history),
+        })
     };
-    let far = corner + (d[0].vector() + d[1].vector() + d[2].vector()) * radius;
-    let block_frame = Frame::new(corner, d[2], first, tol)?;
-    let ball_frame = Frame::new(far, d[2], first, tol)?;
-    let block = ogeom_algo::make_box(model, block_frame, (radius, radius, radius), tol)?.shape;
-    let ball = ogeom_algo::make_sphere(model, ball_frame, radius, tol)?.shape;
-    let tool = ogeom_bool::cut(model, &block, &ball, tol)?;
-    let rounded = ogeom_bool::cut(model, solid, &tool.shape, tol)?;
-    let mut built = Built {
-        shape: rounded.shape,
-        history: tool.history.then(&rounded.history),
+    const LABELLINGS: [[usize; 3]; 6] = [
+        [0, 1, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+        [0, 2, 1],
+        [2, 1, 0],
+    ];
+    let mut outcome: Option<Built> = None;
+    let mut last: Option<ogeom_core::OgeomError> = None;
+    for order in LABELLINGS {
+        match attempt(model, order) {
+            Ok(built) => {
+                outcome = Some(built);
+                break;
+            }
+            Err(err) => last = Some(err),
+        }
+    }
+    let Some(rounded) = outcome else {
+        ogeom_bail!(
+            NotDone,
+            "the corner tool's cut closed on none of the corner's six \
+             labellings; the last said: {}",
+            last.map_or_else(String::new, |e| e.to_string())
+        );
     };
+    let mut built = rounded;
     built.history.modify(vertex, built.shape.clone());
     Ok(built)
 }

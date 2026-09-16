@@ -227,6 +227,12 @@ pub trait Curve3d {
             return Ok(a + (u - a).rem_euclid(period));
         }
         if !u.is_finite() || u < a - tol.parametric() || u > b + tol.parametric() {
+            if std::env::var_os("OGEOM_DEBUG_DOMAIN").is_some() {
+                eprintln!(
+                    "DOMAIN {u} outside [{a}, {b}]:\n{}",
+                    std::backtrace::Backtrace::force_capture()
+                );
+            }
             return Err(ogeom_core::ogeom_err!(
                 Domain,
                 "parameter {u} outside curve domain [{a}, {b}]"

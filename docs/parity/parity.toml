@@ -1045,7 +1045,13 @@ own plane, and two such blends meet cap to cap along the shared arc, both \
 caps consumed, in either order. What is owed now: hosts beyond planes and \
 cylinders (cone, sphere, torus chart inversions), the equal-radius \
 crossing whose seam pinches at tangent poles; and of the corner family, \
-the N>3 setback vertex. The curved-seat corner is closed in either order: \
+the N>3 setback vertex and the curved-edged corner. The corner tool rounds \
+a square or an oblique trihedral corner — its block the hexahedron bounded \
+by the host planes and the three planes through the ball's centre square \
+to the edges — offered on each of the corner's six labellings in turn, the \
+first that closes standing: the boolean's indifference to that labelling \
+is owed, five of the six dying in the cut at an oblique corner. The \
+curved-seat corner is closed in either order: \
 through `fillet_edges` a marched blend and a straight one meet at their \
 corners, the later's run-out walking on under the earlier band, and the \
 boolean decides once per shared edge piece whether it is dust — a sub-piece \

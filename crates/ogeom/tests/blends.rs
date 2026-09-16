@@ -361,6 +361,76 @@ fn round_vertex_rounds_the_corner_at_any_placement() {
     );
 }
 
+/// An oblique corner: a sheared block's origin vertex, its three edges
+/// filleted one after another, then the corner tool. The block is the
+/// hexahedron bounded by the host planes and the three planes through the
+/// ball's centre square to the edges; the patch it leaves meets its three
+/// bands and three walls tangentially, and the caps at the corner are
+/// consumed while the caps at the edges' far ends stand.
+#[test]
+fn round_vertex_rounds_an_oblique_corner() {
+    use ogeom::math::Vector;
+    let mut model = Model::new();
+    let r = 2.0;
+    let (a, b, c) = (
+        Vector::new(20.0, 0.0, 0.0),
+        Vector::new(6.0, 20.0, 0.0),
+        Vector::new(3.6, 6.0, 20.0),
+    );
+    let block = ogeom::algo::make_parallelepiped(&mut model, Point::ORIGIN, [a, b, c], T)
+        .unwrap()
+        .shape;
+    let vertex = vertex_near(&model, &block, Point::ORIGIN);
+    let mut solid = block;
+    for edge_vector in [a, b, c] {
+        let edge = edge_near(&model, &solid, Point::ORIGIN + edge_vector * 0.5);
+        solid = ogeom::fillet::fillet_edge(&mut model, &solid, &edge, r, T)
+            .unwrap()
+            .shape;
+    }
+    let fine = ogeom::mesh::Deflection::with_chord(2e-3).unwrap();
+    let before = ogeom::algo::volume_properties(&model, &solid, fine, T)
+        .unwrap()
+        .mass;
+    let rounded = ogeom::fillet::round_vertex(&mut model, &solid, &vertex, r, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &rounded, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // Six walls, three bands, the three far caps, and the patch.
+    let faces = explore_unique(&model, &rounded, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 13, "walls, bands, far caps and the patch");
+    let patch = faces
+        .iter()
+        .find(|f| {
+            let ogeom::topo::NodeData::Face(data) = model.node(f).unwrap().data() else {
+                return false;
+            };
+            matches!(
+                model.geometry().surface(data.surface),
+                Some(ogeom::geom::SurfaceGeometry::Sphere(_))
+            )
+        })
+        .expect("the corner's spherical patch");
+    let contacts = ogeom::fillet::analyse_blend(&model, &rounded, patch, 15, T).unwrap();
+    assert!(!contacts.is_empty());
+    for contact in &contacts {
+        assert!(
+            contact.gap < 1e-3 && contact.tangency_error < 5e-3,
+            "the patch meets its neighbour tangentially: gap {} tangency {}",
+            contact.gap,
+            contact.tangency_error
+        );
+    }
+    let after = ogeom::algo::volume_properties(&model, &rounded, fine, T)
+        .unwrap()
+        .mass;
+    assert!(
+        after < before && before - after < r * r * r,
+        "the corner sheds its spike and no more: {before} -> {after}"
+    );
+}
+
 /// The refusals name their families: a curved-edged corner and an oblique
 /// one both belong to the setback construction, and say so.
 #[test]

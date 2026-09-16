@@ -140,7 +140,16 @@ pub fn analyse_blend(
                     let uv = ogeom_geom::Curve2d::point_at(pcurve, pt, tol)?;
                     worst_gap =
                         worst_gap.max(surface.point_at(uv.x, uv.y, tol)?.distance(on_curve));
-                    normals.push(surface.normal_at(uv.x, uv.y, tol)?.vector());
+                    // A station on a chart's pole — a corner patch's own
+                    // corner sits on the ball's pole by construction — has
+                    // no normal from the chart; the stations beside it say
+                    // what the join does there.
+                    if let Ok(normal) = surface.normal_at(uv.x, uv.y, tol) {
+                        normals.push(normal.vector());
+                    }
+                }
+                if normals.len() < 2 {
+                    continue;
                 }
                 // Orientation is the topology's business, not the join's:
                 // two faces meeting smoothly may still be wound opposite

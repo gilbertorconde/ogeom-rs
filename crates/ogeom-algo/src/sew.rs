@@ -254,7 +254,7 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
             if merged.contains_key(&catalogue[j].0) {
                 continue;
             }
-            let Some(flipped) = catalogue[i].1.same_as(&catalogue[j].1, tol) else {
+            let Some(flipped) = catalogue[i].1.same_as(&catalogue[j].1, tol)? else {
                 continue;
             };
             // The survivor now answers for both descriptions of the edge,
@@ -262,7 +262,7 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
             // that matched within their stated widths may still disagree by
             // more than a fresh vertex's tolerance, and the disagreement is
             // recorded where the data model records it.
-            let (kept_fp, dropped_fp) = (catalogue[i].1, catalogue[j].1);
+            let (kept_fp, dropped_fp) = (catalogue[i].1.clone(), catalogue[j].1.clone());
             let survivor = Shape::of(catalogue[i].0);
             let ends = if flipped {
                 [
@@ -311,6 +311,15 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
     // annotated before sewing decided which twin survives. The pcurve is
     // consumed by *proportional* same-parameter mapping, so reversing its
     // traversal exactly is swapping the stored range's ends.
+    //
+    // Nor is it copying when the two edges describe one curve at different
+    // paces — a fitted rim against the exact circle it traces, which the
+    // match admits by asking each middle to lie on the other's stretch. The
+    // dropped edge's pcurve is same-parameter with the *dropped* curve; on
+    // the survivor's parameter it drifts along the edge, and a face walks
+    // its boundary off the vertex it shares. Such a pcurve is refitted at
+    // the survivor's own parameters: the survivor's point at each, found
+    // on the dropped curve, read through the pcurve into the chart.
     for (dropped, (kept, flipped)) in merged.clone() {
         let carried: Vec<EdgeRepr> = model
             .node_by_id(dropped)
@@ -327,14 +336,22 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
             continue;
         }
         let survivor = Shape::of(kept);
+        let paced = repaced_carry(
+            model,
+            &Shape::of(dropped),
+            &survivor,
+            flipped,
+            &carried,
+            tol,
+        )?;
         let Some(node) = model.node_mut(&survivor) else {
             ogeom_bail!(Dangling, "an edge is not in this model");
         };
         let NodeData::Edge(data) = node.data_mut() else {
             ogeom_bail!(Construction, "edge node holds no edge data");
         };
-        for repr in carried {
-            data.add(if flipped { reversed_repr(repr) } else { repr });
+        for repr in paced {
+            data.add(repr);
         }
     }
 
@@ -430,6 +447,175 @@ fn merge_vertices(
     Ok(out)
 }
 
+/// The dropped edge's parametric representations as the survivor carries
+/// them: reversed when the merge flipped, and refitted at the survivor's
+/// parameters when the two curves pace one stretch differently. Two edges
+/// on one curve object, or on curves whose middle parameters land within
+/// the pair's honesty of each other, are carried as they are.
+fn repaced_carry(
+    model: &mut Model,
+    dropped: &Shape,
+    survivor: &Shape,
+    flipped: bool,
+    carried: &[EdgeRepr],
+    tol: Tolerances,
+) -> OgeomResult<Vec<EdgeRepr>> {
+    let as_is = || -> Vec<EdgeRepr> {
+        carried
+            .iter()
+            .cloned()
+            .map(|r| if flipped { reversed_repr(r) } else { r })
+            .collect()
+    };
+    let (Some(dropped_fp), Some(kept_fp)) = (
+        fingerprint(&*model, dropped, tol)?,
+        fingerprint(&*model, survivor, tol)?,
+    ) else {
+        return Ok(as_is());
+    };
+    let reach = tol.confusion().max(dropped_fp.width).max(kept_fp.width);
+    if dropped_fp.middle.distance(kept_fp.middle) <= reach {
+        if std::env::var_os("OGEOM_DEBUG_SEW").is_some() {
+            eprintln!(
+                "SEW carry as is: flipped {flipped}, middles {:.2e} apart, kept {:?} {:?} dropped {:?} {:?}",
+                dropped_fp.middle.distance(kept_fp.middle),
+                kept_fp.start,
+                kept_fp.end,
+                dropped_fp.start,
+                dropped_fp.end
+            );
+        }
+        return Ok(as_is());
+    }
+    const SAMPLES: usize = 24;
+    let (klo, khi) = (kept_fp.range.0, kept_fp.range.1);
+    let mut out = Vec::with_capacity(carried.len());
+    let mut pending: Vec<(
+        ogeom_topo::SurfaceId,
+        ogeom_topo::Location,
+        ogeom_geom::PlanarCurve,
+        (f64, f64),
+    )> = Vec::new();
+    for repr in carried {
+        let EdgeRepr::PCurve {
+            curve: pc_id,
+            surface,
+            location,
+            range: prange,
+        } = repr
+        else {
+            out.push(if flipped {
+                reversed_repr(repr.clone())
+            } else {
+                repr.clone()
+            });
+            continue;
+        };
+        let Some(pcurve) = model.geometry().pcurve(*pc_id) else {
+            ogeom_bail!(Dangling, "pcurve is not in this model");
+        };
+        let periods = model.geometry().surface(*surface).map(|sg| {
+            use ogeom_geom::Surface as _;
+            let ((ua, ub), (va, vb)) = sg.domain();
+            (
+                if sg.is_periodic_u() { ub - ua } else { 0.0 },
+                if sg.is_periodic_v() { vb - va } else { 0.0 },
+            )
+        });
+        let (dlo, dhi) = (dropped_fp.range.0, dropped_fp.range.1);
+        let mut params = Vec::with_capacity(SAMPLES + 1);
+        let mut image: Vec<ogeom_math::Point2> = Vec::with_capacity(SAMPLES + 1);
+        for k in 0..=SAMPLES {
+            #[allow(clippy::cast_precision_loss)]
+            let t = klo + (khi - klo) * (k as f64) / (SAMPLES as f64);
+            let p = kept_fp.curve.point_at(t, tol)?;
+            let foot = crate::project_on_curve(&dropped_fp.curve, p, 64, tol)?;
+            // The foot's parameter on the dropped curve, then through the
+            // proportional map onto the pcurve's own window. On a curve that
+            // closes on itself the foot may come back a turn away from the
+            // stretch — a rim's last piece, seen from its own points, sits
+            // at the start of the loop as much as at its end — and is
+            // carried across the turn before it is clamped.
+            let (lo, hi) = (dlo.min(dhi), dlo.max(dhi));
+            let (da, db) = dropped_fp.curve.domain();
+            let turn = db - da;
+            let mut s = foot.parameter;
+            if turn > 0.0 {
+                if s < lo - tol.parametric() && s + turn <= hi + tol.parametric() {
+                    s += turn;
+                } else if s > hi + tol.parametric() && s - turn >= lo - tol.parametric() {
+                    s -= turn;
+                }
+            }
+            let s = s.clamp(lo, hi);
+            let pt = if (dhi - dlo).abs() <= f64::MIN_POSITIVE {
+                prange.0
+            } else {
+                prange.0 + (prange.1 - prange.0) * (s - dlo) / (dhi - dlo)
+            };
+            let mut uv = ogeom_geom::Curve2d::point_at(pcurve, pt, tol)?;
+            if let (Some((pu, pv)), Some(prev)) = (periods, image.last()) {
+                for (coord, period, before) in [(&mut uv.x, pu, prev.x), (&mut uv.y, pv, prev.y)] {
+                    if period > 0.0 {
+                        while *coord - before > period / 2.0 {
+                            *coord -= period;
+                        }
+                        while before - *coord > period / 2.0 {
+                            *coord += period;
+                        }
+                    }
+                }
+            }
+            params.push(t);
+            image.push(uv);
+        }
+        let fitted =
+            ogeom_geom::fit::fit_points_2d_at(&params, &image, 3, tol.confusion() * 10.0, tol)?;
+        if std::env::var_os("OGEOM_DEBUG_SEW").is_some() {
+            use ogeom_geom::Surface as _;
+            let mut worst_sample = 0.0_f64;
+            let mut worst_fit = 0.0_f64;
+            if let Some(sg) = model.geometry().surface(*surface) {
+                for (t, uv) in params.iter().zip(&image) {
+                    let p = kept_fp.curve.point_at(*t, tol)?;
+                    worst_sample = worst_sample.max(sg.point_at(uv.x, uv.y, tol)?.distance(p));
+                    let f = ogeom_geom::Curve2d::point_at(&fitted.curve, *t, tol)?;
+                    worst_fit = worst_fit.max(sg.point_at(f.x, f.y, tol)?.distance(p));
+                }
+            }
+            eprintln!(
+                "SEW refit: samples off surface by {worst_sample:.2e}, fit off by {worst_fit:.2e} (fit error {:.2e} met {}) domain {:?} over ({klo:.4}, {khi:.4}); dropped range {:?}",
+                fitted.error,
+                fitted.met,
+                ogeom_geom::Curve2d::domain(&fitted.curve),
+                dropped_fp.range
+            );
+        }
+        if !fitted.met || fitted.error > reach.max(tol.confusion() * 1e3) {
+            // A refit that misses its budget is no description of the edge;
+            // the pcurve is carried as it came, its drift along the edge and
+            // all, rather than replaced by a worse one.
+            out.push(if flipped {
+                reversed_repr(repr.clone())
+            } else {
+                repr.clone()
+            });
+            continue;
+        }
+        pending.push((*surface, location.clone(), fitted.curve.into(), (klo, khi)));
+    }
+    for (surface, location, planar, range) in pending {
+        let curve = model.geometry_mut().add_pcurve(planar);
+        out.push(EdgeRepr::PCurve {
+            curve,
+            surface,
+            location,
+            range,
+        });
+    }
+    Ok(out)
+}
+
 /// A parametric representation running the other way.
 ///
 /// The consumers map a 3D-curve parameter onto the stored range
@@ -515,11 +701,15 @@ fn rebuild_edges(
 }
 
 /// What decides whether two edges are the same edge.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Fingerprint {
     start: Point,
     middle: Point,
     end: Point,
+    /// The edge's curve in space and the stretch it covers, for the middle
+    /// of another edge to be asked whether it lies on this one.
+    curve: ogeom_geom::Curve,
+    range: (f64, f64),
     /// How far this edge's own stated tolerances let it stray: the widest of
     /// the edge's and its vertices'. An edge whose junction was welded across
     /// a recorded gap carries that gap here, and the comparison honours it —
@@ -528,23 +718,70 @@ struct Fingerprint {
 }
 
 impl Fingerprint {
+    /// How far `p` sits from this edge's own stretch of its curve.
+    fn off(&self, p: Point, tol: Tolerances) -> OgeomResult<f64> {
+        let foot = crate::project_on_curve(&self.curve, p, 64, tol)?;
+        let (lo, hi) = (
+            self.range.0.min(self.range.1),
+            self.range.0.max(self.range.1),
+        );
+        let mut t = foot.parameter;
+        if self.curve.is_periodic() {
+            let (dlo, dhi) = self.curve.domain();
+            let period = dhi - dlo;
+            if period > 0.0 {
+                t = lo + (t - lo).rem_euclid(period);
+            }
+        }
+        if t >= lo - tol.parametric() && t <= hi + tol.parametric() {
+            return Ok(foot.distance);
+        }
+        Ok(p.distance(self.start).min(p.distance(self.end)))
+    }
+
     /// Whether two edges coincide, and if so whether the second runs backwards.
-    fn same_as(&self, other: &Self, tol: Tolerances) -> Option<bool> {
+    fn same_as(&self, other: &Self, tol: Tolerances) -> OgeomResult<Option<bool>> {
         let reach = tol.confusion().max(self.width).max(other.width);
         let near = |a: Point, b: Point| a.distance(b) <= reach;
         // The midpoint is not a nicety. Two arcs between the same pair of
         // vertices — the two halves of a circle — agree at both ends and are
         // not the same edge, and merging them would fuse a shape to itself.
-        if !near(self.middle, other.middle) {
-            return None;
+        // Two descriptions of one curve need not agree on where its middle
+        // *parameter* falls — a fitted rim against the exact circle it
+        // traces paces itself differently — so each middle is asked to lie
+        // on the other's stretch instead, which the far half of a circle
+        // still fails.
+        if !near(self.middle, other.middle)
+            && !(other.off(self.middle, tol)? <= reach && self.off(other.middle, tol)? <= reach)
+        {
+            if std::env::var_os("OGEOM_DEBUG_SEW").is_some()
+                && ((near(self.start, other.start) && near(self.end, other.end))
+                    || (near(self.start, other.end) && near(self.end, other.start)))
+            {
+                let foot = crate::project_on_curve(&other.curve, self.middle, 64, tol)?;
+                eprintln!(
+                    "SEW near miss: ends agree within {reach:.2e}, middles off {:.2e} / {:.2e} (widths {:.2e}, {:.2e}) at {:?}; foot on other at {:.6} (range {:?}, domain {:?}, periodic {}) distance {:.2e}",
+                    other.off(self.middle, tol)?,
+                    self.off(other.middle, tol)?,
+                    self.width,
+                    other.width,
+                    self.middle,
+                    foot.parameter,
+                    other.range,
+                    other.curve.domain(),
+                    other.curve.is_periodic(),
+                    foot.distance
+                );
+            }
+            return Ok(None);
         }
         if near(self.start, other.start) && near(self.end, other.end) {
-            return Some(false);
+            return Ok(Some(false));
         }
         if near(self.start, other.end) && near(self.end, other.start) {
-            return Some(true);
+            return Ok(Some(true));
         }
-        None
+        Ok(None)
     }
 }
 
@@ -568,10 +805,13 @@ fn fingerprint(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomResult<Opti
             width = width.max(v.tolerance.get());
         }
     }
+    use ogeom_geom::Transformable as _;
     Ok(Some(Fingerprint {
         start: placement.apply(geometry.point_at(range.0, tol)?),
         middle: placement.apply(geometry.point_at(f64::midpoint(range.0, range.1), tol)?),
         end: placement.apply(geometry.point_at(range.1, tol)?),
+        curve: geometry.clone().transformed(&placement, tol)?,
+        range: *range,
         width,
     }))
 }
@@ -615,7 +855,40 @@ fn rebuild_face(
                 None => ring.push(edge),
             }
         }
-        wires.push(make_wire(model, &ring, tol)?.shape);
+        let wire = match make_wire(model, &ring, tol) {
+            Ok(w) => w.shape,
+            Err(e) => {
+                if std::env::var_os("OGEOM_DEBUG_SEW").is_some() {
+                    eprintln!("SEW WIRE FAIL: {e}");
+                    for edge in &ring {
+                        if let Some((a, b)) = edge_vertices(model, edge)? {
+                            let (pa, pb) = (placed(model, &a)?, placed(model, &b)?);
+                            let fp = fingerprint(model, edge, tol)?;
+                            eprintln!(
+                                "   edge {:?}{} ({:.5},{:.5},{:.5}) v{} -> ({:.5},{:.5},{:.5}) v{} width {:.2e}",
+                                edge.node(),
+                                if edge.orientation() == ogeom_topo::Orientation::Reversed {
+                                    " rev"
+                                } else {
+                                    ""
+                                },
+                                pa.x,
+                                pa.y,
+                                pa.z,
+                                a.node().index(),
+                                pb.x,
+                                pb.y,
+                                pb.z,
+                                b.node().index(),
+                                fp.map_or(0.0, |f| f.width)
+                            );
+                        }
+                    }
+                }
+                return Err(e);
+            }
+        };
+        wires.push(wire);
     }
     if !touched {
         return Ok(face.clone());
@@ -966,10 +1239,10 @@ mod tests {
         let a = fingerprint(&model, &upper, T).unwrap().unwrap();
         let b = fingerprint(&model, &lower, T).unwrap().unwrap();
         assert!(
-            a.same_as(&b, T).is_none(),
+            a.same_as(&b, T).unwrap().is_none(),
             "two different arcs were called the same edge"
         );
-        assert!(a.same_as(&a, T) == Some(false));
+        assert!(a.same_as(&a, T).unwrap() == Some(false));
     }
 
     #[test]
@@ -997,7 +1270,7 @@ mod tests {
         let pa = fingerprint(&model, &a, T).unwrap().unwrap();
         let pb = fingerprint(&model, &b, T).unwrap().unwrap();
         assert_eq!(
-            pa.same_as(&pb, T),
+            pa.same_as(&pb, T).unwrap(),
             Some(true),
             "the same edge, running the other way"
         );

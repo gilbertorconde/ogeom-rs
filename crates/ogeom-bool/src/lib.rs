@@ -1742,9 +1742,14 @@ fn fill(
                                         e.node.index()
                                     );
                                 }
+                                // Every edge within reach is hugged, not the
+                                // first found: where three rims converge on
+                                // a pole corner all three come within a
+                                // micron of the section, and the one it
+                                // actually runs along must not lose its
+                                // vote to a neighbour listed before it.
                                 near = true;
                                 votes[ei] += 1;
-                                break;
                             }
                         }
                         let width = reach.max(floor);
@@ -1965,6 +1970,13 @@ fn fill(
                         for c in &cuts {
                             let at = section.curve.point_at(fold(*c, domain), tol)?;
                             let foot = ogeom_algo::project_on_curve(&e.curve, at, 64, tol)?;
+                            // A cut off the edge — past the stretch the
+                            // section hugs, on a neighbouring edge — is no
+                            // split of it; stated as one with its distance
+                            // for honesty it seeds a junction a feature wide.
+                            if foot.distance > reach.max(tol.confusion() * 1e3) {
+                                continue;
+                            }
                             let on_e = onto_range(foot.parameter, &e.curve, e.crange, tol);
                             if on_e <= e.crange.0.min(e.crange.1) + tol.parametric()
                                 || on_e >= e.crange.0.max(e.crange.1) - tol.parametric()
@@ -2086,8 +2098,18 @@ fn fill(
                     continue;
                 }
                 let sx = &sections[px.section];
-                let on_y = distance_to_edge_curve(&sy.curve, py.range, mid_of(px)?, tol)? <= width;
-                let on_x = distance_to_edge_curve(&sx.curve, px.range, mid_of(py)?, tol)? <= width;
+                // A closed section's pieces are ranged past its domain end
+                // and folded on use; the distance helper samples the range
+                // it is given, so it is given the folded one.
+                let stretch = |section: &SectionRec, range: (f64, f64)| -> (f64, f64) {
+                    folded_range(range, section.curve.domain(), section.closed)
+                };
+                let on_y =
+                    distance_to_edge_curve(&sy.curve, stretch(sy, py.range), mid_of(px)?, tol)?
+                        <= width;
+                let on_x =
+                    distance_to_edge_curve(&sx.curve, stretch(sx, px.range), mid_of(py)?, tol)?
+                        <= width;
                 if !(on_x && on_y) {
                     continue;
                 }
@@ -4417,6 +4439,46 @@ fn assemble_result(
                                     "    used by face on {:?} bound {:?}",
                                     core::mem::discriminant(sg),
                                     bound
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            if *ARRANGE_DEBUG {
+                use ogeom_geom::Curve3d as _;
+                for f in ogeom_topo::explore(model, shell, Filter::OfType(ShapeType::Face))? {
+                    let Some(ogeom_topo::NodeData::Face(fd)) = model.node(&f).map(|n| n.data())
+                    else {
+                        continue;
+                    };
+                    let Some(sg) = model.geometry().surface(fd.surface) else {
+                        continue;
+                    };
+                    let edges = ogeom_topo::explore_unique(model, &f, ShapeType::Edge)?;
+                    eprintln!(
+                        "  face {:?} with {} edges",
+                        core::mem::discriminant(sg),
+                        edges.len()
+                    );
+                    if matches!(sg, SurfaceGeometry::Sphere(_)) {
+                        for e in &edges {
+                            if let Some(ed) = model.node(e).and_then(|n| n.data().as_edge())
+                                && let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) =
+                                    ed.curve3d()
+                                && let Some(g) = model.geometry().curve(*curve)
+                            {
+                                let a = g.point_at(range.0, tol)?;
+                                let b = g.point_at(range.1, tol)?;
+                                eprintln!(
+                                    "    sphere edge {:?} ({:.4},{:.4},{:.4}) -> ({:.4},{:.4},{:.4})",
+                                    core::mem::discriminant(g),
+                                    a.x,
+                                    a.y,
+                                    a.z,
+                                    b.x,
+                                    b.y,
+                                    b.z
                                 );
                             }
                         }
