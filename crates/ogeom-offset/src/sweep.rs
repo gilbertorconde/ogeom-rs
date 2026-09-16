@@ -694,9 +694,10 @@ fn skinned_ring_strip(
     model: &mut Model,
     rows: &[Vec<Point>],
     outward_hint: Point,
+    shared: [Option<&Shape>; 2],
     tolerance: f64,
     tol: Tolerances,
-) -> OgeomResult<Shape> {
+) -> OgeomResult<(Shape, Shape, Shape)> {
     use ogeom_geom::Surface as _;
     // The loop: first row repeated at the end, as the closed fit demands.
     let mut looped: Vec<Vec<Point>> = rows.to_vec();
@@ -742,16 +743,38 @@ fn skinned_ring_strip(
     let surface_geo: SurfaceGeometry = surface.into();
     let surface_id = model.geometry_mut().add_surface(surface_geo.clone());
 
-    let rail0 = make_edge(model, rail_curve(0)?, v_dom, tol)?.shape;
-    let rail1 = make_edge(model, rail_curve(k - 1)?, v_dom, tol)?.shape;
-    // Neighbouring strips fit the shared corner loop independently; the
-    // rails agree only within the fits' own honesty, and the sew can only
-    // join what the tolerances admit. Every border widens to the error the
-    // fit reported — skinned_strip's own discipline.
+    // A corner loop shared with the neighbouring strip is one edge for
+    // both: the neighbour built it from its own fit, and this strip's
+    // border is another fit of the same loop, so the edge widens to how
+    // far it honestly sits from this surface. Two independent fits of one
+    // loop can disagree by more than either fit's own error, which is what
+    // the sew refused under a frame that turns fast — and one edge cannot
+    // disagree with itself.
     let slack = fitted.error + tol.confusion();
-    for edge in [&rail0, &rail1] {
-        model.widen(edge, ogeom_core::Tolerance::new(slack)?)?;
-    }
+    let rail_of = |model: &mut Model, i: usize, given: Option<&Shape>| -> OgeomResult<Shape> {
+        let Some(edge) = given else {
+            let edge = make_edge(model, rail_curve(i)?, v_dom, tol)?.shape;
+            model.widen(&edge, ogeom_core::Tolerance::new(slack)?)?;
+            return Ok(edge);
+        };
+        let (curve, range) = spine_curve_of(model, edge)?;
+        let mut off: f64 = 0.0;
+        for step in 0..=32 {
+            #[allow(clippy::cast_precision_loss)]
+            let t = range.0 + (range.1 - range.0) * (step as f64) / 32.0;
+            let p = curve.point_at(t, tol)?;
+            off = off.max(ogeom_algo::project_on_surface(&surface_geo, p, 16, tol)?.distance);
+        }
+        model.widen(edge, ogeom_core::Tolerance::new(off + slack)?)?;
+        if let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? {
+            for v in [&a, &b] {
+                model.widen(v, ogeom_core::Tolerance::new(off + slack)?)?;
+            }
+        }
+        Ok(edge.clone())
+    };
+    let rail0 = rail_of(model, 0, shared[0])?;
+    let rail1 = rail_of(model, k - 1, shared[1])?;
     let anchor0 = ogeom_algo::edge_vertices(model, &rail0)?
         .map(|(a, _)| a)
         .ok_or_else(|| ogeom_core::ogeom_err!(Construction, "a strip rail has no vertex"))?;
@@ -817,11 +840,12 @@ fn skinned_ring_strip(
     let mid_v = f64::midpoint(v_dom.0, v_dom.1);
     let s_mid = surface_geo.point_at(mid_u, mid_v, tol)?;
     let (du, dv) = surface_geo.d1_at(mid_u, mid_v, tol)?;
-    Ok(if du.cross(dv).dot(s_mid - outward_hint) >= 0.0 {
+    let face = if du.cross(dv).dot(s_mid - outward_hint) >= 0.0 {
         face
     } else {
         face.reversed()
-    })
+    };
+    Ok((face, rail0, rail1))
 }
 
 /// A solid skinned over a grid of section samples: [`skinned_wall`] with a
@@ -2020,7 +2044,10 @@ fn closed_loop_shell(
         // centroid. The hint is the station the strip's midpoint rides.
         let mid_station = stations[stations.len() / 2].at;
         let mut faces = Vec::with_capacity(edges.len());
-        for edge in edges {
+        // Each corner loop is one rail edge shared by the two strips that
+        // meet along it, the wrap included.
+        let mut rails: Vec<Option<Shape>> = vec![None; edges.len()];
+        for (index, edge) in edges.iter().enumerate() {
             let (curve, range) = spine_curve_of(model, edge)?;
             let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
             let mut flat_row: Vec<(f64, f64)> = Vec::with_capacity(ALONG_EDGE + 1);
@@ -2048,16 +2075,57 @@ fn closed_loop_shell(
                         .collect()
                 })
                 .collect();
-            faces.push(skinned_ring_strip(
+            let next = (index + 1) % edges.len();
+            let shared = [rails[index].clone(), rails[next].clone()];
+            let (face, rail0, rail1) = skinned_ring_strip(
                 model,
                 &rows,
                 mid_station,
+                [shared[0].as_ref(), shared[1].as_ref()],
                 tolerance,
                 tol,
-            )?);
+            )?;
+            rails[index] = Some(rail0);
+            rails[next] = Some(rail1);
+            faces.push(face);
         }
         let sewn = sew(model, &faces, tol)?;
         if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
+            if std::env::var_os("OGEOM_DEBUG_RING").is_some() {
+                use ogeom_geom::Curve3d as _;
+                eprintln!(
+                    "RING: {} shells from {} strips",
+                    sewn.shells.len(),
+                    faces.len()
+                );
+                for shell in &sewn.shells {
+                    for edge in ogeom_topo::explore_unique(model, shell, ShapeType::Edge)? {
+                        let mut uses = 0;
+                        for f in explore(model, shell, Filter::OfType(ShapeType::Face))? {
+                            for w in model.children_of(&f)? {
+                                for e in model.children_of(&w)? {
+                                    if e.node() == edge.node() {
+                                        uses += 1;
+                                    }
+                                }
+                            }
+                        }
+                        if uses == 1
+                            && let Some(d) = model.node(&edge).and_then(|n| n.data().as_edge())
+                            && let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) =
+                                d.curve3d()
+                            && let Some(g) = model.geometry().curve(*curve)
+                        {
+                            eprintln!(
+                                "RING open edge tol {:.2e}: {:?} -> {:?}",
+                                d.tolerance.get(),
+                                g.point_at(range.0, tol)?,
+                                g.point_at(range.1, tol)?
+                            );
+                        }
+                    }
+                }
+            }
             ogeom_bail!(Construction, "the faceted ring did not close");
         }
         return Ok(sewn.shells[0].clone());
@@ -2757,21 +2825,17 @@ fn closed_pipe_shell(
     // holonomy; the Frenet law owes it too, because straight stretches
     // carry the frame through by continuation and the continuation is
     // path-dependent. One reconciliation serves both.
-    let mut normals: Vec<Vector> = {
+    let mut normals: Vec<Vector> = if frenet {
+        // The Frenet frame is the spine's own, single-valued round a loop:
+        // read with wrapped neighbours it closes on itself and owes no
+        // reconciliation. Read from a walk that visits the join twice it
+        // does not — the one-sided differences at the walk's two ends
+        // disagree with the interior, and the strips built on them miss
+        // each other at the join by that kink.
+        frenet_normals_closed(&stations, tol)?
+    } else {
         let mut extended = stations.clone();
         extended.push(stations[0]);
-        if frenet {
-            // Wired and measured: the Frenet frames reconcile at the join,
-            // but the faceted strips built on them refuse to close on the
-            // spines that would prove them. Refused until that is
-            // understood rather than shipped hoping.
-            ogeom_bail!(
-                Construction,
-                "the Frenet law on a closed spine is not carried yet; use \
-                 the rotation-minimizing default — docs/PARITY.md, \
-                 offset.sweeps"
-            );
-        }
         let carried = rmf_normals(&extended);
         let (n0, n_home) = (carried[0], carried[carried.len() - 1]);
         let twist = (n0.cross(n_home).dot(t0)).atan2(n0.dot(n_home));
@@ -2960,6 +3024,46 @@ fn frenet_normals(stations: &[SpineStation], tol: Tolerances) -> OgeomResult<Vec
             "a straight spine has no Frenet frame; use the \
              rotation-minimizing default"
         );
+    }
+    Ok(carried)
+}
+
+/// Frenet normals round a closed loop: each station's bend read from its
+/// neighbours across the join as well, so the field is periodic. A loop
+/// with a straight stretch carries the last bend's normal through it, as
+/// the open form does; a loop that never bends has no Frenet frame.
+fn frenet_normals_closed(stations: &[SpineStation], tol: Tolerances) -> OgeomResult<Vec<Vector>> {
+    let n = stations.len();
+    let mut normals: Vec<Option<Vector>> = Vec::with_capacity(n);
+    for i in 0..n {
+        let (before, after) = (&stations[(i + n - 1) % n], &stations[(i + 1) % n]);
+        let dt = after.tangent - before.tangent;
+        let t = stations[i].tangent;
+        let bend = dt - t * dt.dot(t);
+        let m = bend.magnitude();
+        normals.push(if m > tol.angular().max(1e-9) {
+            Some(bend / m)
+        } else {
+            None
+        });
+    }
+    let Some(first_bend) = normals.iter().position(Option::is_some) else {
+        ogeom_bail!(
+            Construction,
+            "a straight spine has no Frenet frame; use the \
+             rotation-minimizing default"
+        );
+    };
+    // Carry forward round the loop from the first bend, so a straight
+    // stretch anywhere takes the bend behind it.
+    let mut carried: Vec<Vector> = vec![Vector::new(0.0, 0.0, 0.0); n];
+    let mut last = normals[first_bend].unwrap_or_else(|| unreachable!());
+    for k in 0..n {
+        let i = (first_bend + k) % n;
+        if let Some(bend) = normals[i] {
+            last = bend;
+        }
+        carried[i] = last;
     }
     Ok(carried)
 }

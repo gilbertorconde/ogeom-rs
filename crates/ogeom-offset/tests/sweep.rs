@@ -1332,21 +1332,26 @@ fn a_faceted_ring_round_a_wavy_spine_closes_and_measures() {
     )
     .unwrap()
     .shape;
-    let built =
-        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 5e-3, T).unwrap();
-    assert!(
-        ogeom_algo::check(&model, &built.shape, T)
-            .unwrap()
-            .is_valid(),
-        "the wavy ring is a valid solid"
-    );
+    // Both frame laws: the rotation-minimizing frame with its holonomy
+    // paid off, and the Frenet frame, single-valued round the loop, its
+    // corner loops each one rail shared by the two strips meeting there.
     let area = 0.5 * 3.0 * 2.6;
     let expected = area * arc;
-    let measured = volume(&model, &built.shape);
-    assert!(
-        (measured - expected).abs() / expected < 0.02,
-        "wavy ring volume {measured} against A*L {expected}"
-    );
+    for frenet in [false, true] {
+        let built =
+            ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, frenet, 5e-3, T).unwrap();
+        assert!(
+            ogeom_algo::check(&model, &built.shape, T)
+                .unwrap()
+                .is_valid(),
+            "the wavy ring is a valid solid (frenet {frenet})"
+        );
+        let measured = volume(&model, &built.shape);
+        assert!(
+            (measured - expected).abs() / expected < 0.02,
+            "wavy ring volume {measured} against A*L {expected} (frenet {frenet})"
+        );
+    }
 }
 
 #[test]

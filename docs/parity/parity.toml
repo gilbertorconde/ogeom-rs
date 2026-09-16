@@ -1124,8 +1124,10 @@ and all: the loop's holonomy paid off, a faceted profile skinned as one \
 C1-closed strip per facet, each hole a void tunnel of its own shell. A \
 sharp-cornered ring mitres exactly when its corners turn in the plane: \
 the wrap is one more mitre, the seam must stand on a corner, and the \
-planar Pappus volumes land to the last digit. What is owed on the loop: \
-the Frenet law, the skew-cornered ring whose parallel-carried frame \
+planar Pappus volumes land to the last digit. The Frenet law rides the \
+loop too — single-valued round it, so it owes no reconciliation — with \
+every corner loop one rail shared by the two strips meeting there. What \
+is owed on the loop: the skew-cornered ring whose parallel-carried frame \
 leaves the far tangent's plane, and the ring seamed mid-leg. The code's \
 refusals point here."""
 claims = [
