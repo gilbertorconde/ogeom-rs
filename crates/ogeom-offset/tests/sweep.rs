@@ -1389,7 +1389,11 @@ fn a_mitred_square_ring_measures_pappus_exactly() {
 }
 
 #[test]
-fn a_cornered_ring_seamed_mid_leg_refuses_by_name() {
+fn a_cornered_ring_seamed_mid_leg_measures_pappus() {
+    // The wire's seam stands halfway along a leg rather than on a corner:
+    // the wrap's mitre plane is the leg's own cross-section, and the two
+    // halves of that leg butt together on the seam's ring. Exactly the
+    // corner-seamed ring's volume, with that leg in two pieces.
     let mut model = ogeom_topo::Model::new();
     let spine = ogeom_algo::make_polygon(
         &mut model,
@@ -1411,12 +1415,25 @@ fn a_cornered_ring_seamed_mid_leg_refuses_by_name() {
         ogeom_math::Vector::new(1.0, 0.0, 0.0),
         4.0,
     );
-    let err = ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-4, T)
-        .unwrap_err()
-        .to_string();
+    let built =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-4, T).unwrap();
     assert!(
-        err.contains("seam at one of its own corners"),
-        "the mid-leg seam names itself: {err}"
+        ogeom_algo::check(&model, &built.shape, T)
+            .unwrap()
+            .is_valid(),
+        "the mid-leg-seamed ring is a valid solid"
+    );
+    let measured = volume(&model, &built.shape);
+    assert!(
+        (measured - 1920.0).abs() < 1e-6,
+        "mid-leg seam: {measured} against Pappus' 1920"
+    );
+    assert_eq!(
+        ogeom_topo::explore_unique(&model, &built.shape, ogeom_topo::ShapeType::Face)
+            .unwrap()
+            .len(),
+        20,
+        "four legs of four walls, the seamed leg in two pieces"
     );
 }
 

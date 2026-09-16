@@ -2241,20 +2241,13 @@ pub fn make_pipe_shell(
     if ring && kinks.is_empty() {
         return closed_pipe_shell(model, profile, spine, stations, frenet, tolerance, tol);
     }
-    if ring {
-        // The cornered ring closes at its own wrap: the wire's seam must
-        // stand on a corner, so the wrap is one more mitre and every run
-        // between corners is an ordinary mitred leg.
-        let (t_in, t_out) = (stations[stations.len() - 1].tangent, stations[0].tangent);
-        if t_in.cross(t_out).magnitude() <= tol.angular() && t_in.dot(t_out) > 0.0 {
-            ogeom_bail!(
-                Construction,
-                "a cornered ring must seam at one of its own corners; \
-                 re-anchor the spine wire there — docs/PARITY.md, \
-                 offset.sweeps"
-            );
-        }
-    }
+    // The cornered ring closes at its own wrap. Seamed on a corner, the
+    // wrap is one more mitre; seamed mid-leg, the wrap's "mitre" plane is
+    // the leg's own cross-section — both twin tangents are the leg's — and
+    // the shear onto it moves nothing, so the two halves of that leg butt
+    // together on the seam's own ring, coplanar walls meeting on it. The
+    // solid is exact either way; the mid-leg seam merely leaves its leg in
+    // two pieces.
     if frenet && !kinks.is_empty() {
         ogeom_bail!(
             Construction,
