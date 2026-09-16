@@ -369,7 +369,10 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
     let mut history = History::new();
     let mut rebuilt = Vec::with_capacity(faces.len());
     for face in faces {
-        let sewn = rebuild_face(model, face, &substitution, tol)?;
+        let Some(sewn) = rebuild_face(model, face, &substitution, tol)? else {
+            history.delete(face);
+            continue;
+        };
         model.set_derived(&sewn, std::slice::from_ref(face), roles::SEWN_FACE)?;
         history.modify(face, sewn.clone());
         rebuilt.push(sewn);
@@ -830,7 +833,7 @@ fn rebuild_face(
     face: &Shape,
     merged: &HashMap<TShapeId, (TShapeId, bool)>,
     tol: Tolerances,
-) -> OgeomResult<Shape> {
+) -> OgeomResult<Option<Shape>> {
     let Some(data) = model.node(face).and_then(|n| n.data().as_face()).cloned() else {
         ogeom_bail!(Construction, "expected a face");
     };
@@ -854,6 +857,17 @@ fn rebuild_face(
                 }
                 None => ring.push(edge),
             }
+        }
+        // A ring that merging collapsed onto one edge, walked out and back,
+        // bounds no area: the sliver between two coincident strands that the
+        // sew has just found to be one edge. Such a ring is dropped, and a
+        // face whose outer ring it was with it.
+        let one_edge = !ring.is_empty() && ring.iter().all(|e| e.node() == ring[0].node());
+        if one_edge && ring.len() >= 2 {
+            if wires.is_empty() {
+                return Ok(None);
+            }
+            continue;
         }
         let wire = match make_wire(model, &ring, tol) {
             Ok(w) => w.shape,
@@ -891,13 +905,48 @@ fn rebuild_face(
         wires.push(wire);
     }
     if !touched {
-        return Ok(face.clone());
+        return Ok(Some(face.clone()));
     }
-    let sewn = make_face_on(model, data.surface, &wires, tol)?.shape;
+    if wires.is_empty() {
+        return Ok(None);
+    }
+    let sewn = match make_face_on(model, data.surface, &wires, tol) {
+        Ok(built) => built.shape,
+        Err(e) => {
+            if std::env::var_os("OGEOM_DEBUG_SEW").is_some() {
+                eprintln!("SEW FACE FAIL: {e}");
+                for (wi, wire) in wires.iter().enumerate() {
+                    for edge in model.ordered_children_of(wire)? {
+                        if let Some((a, b)) = edge_vertices(model, &edge)? {
+                            let (pa, pb) = (placed(model, &a)?, placed(model, &b)?);
+                            eprintln!(
+                                "   wire {wi} edge {:?}{} ({:.5},{:.5},{:.5}) v{} -> ({:.5},{:.5},{:.5}) v{}",
+                                edge.node(),
+                                if edge.orientation() == ogeom_topo::Orientation::Reversed {
+                                    " rev"
+                                } else {
+                                    ""
+                                },
+                                pa.x,
+                                pa.y,
+                                pa.z,
+                                a.node().index(),
+                                pb.x,
+                                pb.y,
+                                pb.z,
+                                b.node().index()
+                            );
+                        }
+                    }
+                }
+            }
+            return Err(e);
+        }
+    };
     Ok(if face.orientation() == Orientation::Reversed {
-        sewn.reversed()
+        Some(sewn.reversed())
     } else {
-        sewn
+        Some(sewn)
     })
 }
 

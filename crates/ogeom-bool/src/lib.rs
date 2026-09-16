@@ -1220,7 +1220,41 @@ fn fill(
                             }
                             continue;
                         }
-                        match (sc.on_a, sc.on_b) {
+                        // A section can be no longer than a turn round the
+                        // faces it cuts: a marched trace that wandered off
+                        // beside a chart's pole came back twenty-five times
+                        // the circle it stood for, faithfully fitted. That
+                        // is no section, and is refused by name.
+                        if !sc.exact {
+                            use ogeom_geom::Curve3d as _;
+                            let (lo, hi) = sc.curve.domain();
+                            let mut length = 0.0_f64;
+                            let mut last: Option<Point> = None;
+                            for k in 0..=64 {
+                                let t = lo + (hi - lo) * f64::from(k) / 64.0;
+                                let p = sc.curve.point_at(t, tol)?;
+                                if let Some(q) = last {
+                                    length += q.distance(p);
+                                }
+                                last = Some(p);
+                            }
+                            let turn = 4.0 * fa.bound.diagonal().max(fb.bound.diagonal());
+                            if *DEBUG_WIRE {
+                                eprintln!(
+                                    "SECTION CHECK faces {ia}/{ib} exact {} closed {} length {length:.4} turn {turn:.4} tol {:.2e}",
+                                    sc.exact, sc.closed, sc.tolerance
+                                );
+                            }
+                            if length > turn {
+                                ogeom_bail!(
+                                    NotDone,
+                                    "a marched section of length {length} runs beyond a turn \
+                                     round the faces it cuts ({turn}); its trace wandered \
+                                     beside a chart's pole — docs/PARITY.md, bool.booleans"
+                                );
+                            }
+                        }
+                        match (sc.on_a.clone(), sc.on_b.clone()) {
                             (Some(pa), Some(pb)) => sections.push(SectionRec {
                                 curve: sc.curve,
                                 pc_a: pa,
@@ -1255,7 +1289,39 @@ fn fill(
                                     continue;
                                 }
                                 // An exact curve whose projection has no
-                                // closed form: march the pair instead, so
+                                // closed form keeps its exactness and has
+                                // its chart image fitted: the curve's own
+                                // points inverted on the surface, read in
+                                // the chart, fitted at the curve's own
+                                // parameters — a plane's circle passing
+                                // beside a sphere chart's pole, whose image
+                                // swings fast but is a curve all the same.
+                                // Marching the pair, which follows, wandered
+                                // beside the pole in both ways there are.
+                                let image = |surface: &SurfaceGeometry,
+                                             have: Option<&PlanarCurve>|
+                                 -> OgeomResult<Option<(PlanarCurve, f64)>> {
+                                    if let Some(pc) = have {
+                                        return Ok(Some((pc.clone(), 0.0)));
+                                    }
+                                    fitted_image(&sc.curve, surface, options.tolerance, tol)
+                                };
+                                if let (Some((pa, ea)), Some((pb, eb))) = (
+                                    image(&fa.surface, sc.on_a.as_ref())?,
+                                    image(&fb.surface, sc.on_b.as_ref())?,
+                                ) {
+                                    sections.push(SectionRec {
+                                        curve: sc.curve,
+                                        pc_a: pa,
+                                        pc_b: pb,
+                                        face_a: ia,
+                                        face_b: ib,
+                                        closed: sc.closed,
+                                        tolerance: ea.max(eb),
+                                    });
+                                    continue;
+                                }
+                                // No image fits: march the pair instead, so
                                 // curve and pcurves are fitted *together*.
                                 let shared = if admitted {
                                     fa.bound.intersection(&fb.bound)
@@ -1271,10 +1337,59 @@ fn fill(
                                     &options,
                                     tol,
                                 )? {
+                                    // The same two refusals the intersector's
+                                    // own marched sections meet: a fit a
+                                    // thousand chords off its trace, and a
+                                    // trace longer than a turn round the
+                                    // faces. A plane's circle passing beside
+                                    // a sphere chart's pole marched both ways
+                                    // here — a section six tenths of a
+                                    // millimetre off, a section twenty-five
+                                    // laps long — and stated as data they
+                                    // welded the tool into a point.
+                                    let budget =
+                                        (options.marching.chord * 1e3).max(options.tolerance * 1e3);
+                                    if fitted.fit_error > budget {
+                                        ogeom_bail!(
+                                            NotDone,
+                                            "a marched section's fit misses its trace by {} \
+                                             against a chord of {}; a branch passing beside a \
+                                             chart's pole fits nothing yet — docs/PARITY.md, \
+                                             boolean.general",
+                                            fitted.fit_error,
+                                            options.marching.chord
+                                        );
+                                    }
+                                    let curve: Curve = fitted.curve.into();
+                                    let length = {
+                                        use ogeom_geom::Curve3d as _;
+                                        let (lo, hi) = curve.domain();
+                                        let mut length = 0.0_f64;
+                                        let mut last: Option<Point> = None;
+                                        for k in 0..=64 {
+                                            let t = lo + (hi - lo) * f64::from(k) / 64.0;
+                                            let p = curve.point_at(t, tol)?;
+                                            if let Some(q) = last {
+                                                length += q.distance(p);
+                                            }
+                                            last = Some(p);
+                                        }
+                                        length
+                                    };
+                                    let turn = 4.0 * fa.bound.diagonal().max(fb.bound.diagonal());
+                                    if length > turn {
+                                        ogeom_bail!(
+                                            NotDone,
+                                            "a marched section of length {length} runs beyond a \
+                                             turn round the faces it cuts ({turn}); its trace \
+                                             wandered beside a chart's pole — docs/PARITY.md, \
+                                             boolean.general"
+                                        );
+                                    }
                                     sections.push(SectionRec {
-                                        closed: fitted.curve.is_closed(tol),
+                                        closed: curve.is_closed(tol),
                                         tolerance: options.marching.chord + fitted.fit_error,
-                                        curve: fitted.curve.into(),
+                                        curve,
                                         pc_a: fitted.on_a.into(),
                                         pc_b: fitted.on_b.into(),
                                         face_a: ia,
@@ -2814,25 +2929,38 @@ fn merge_junctions(junctions: Vec<Junction>) -> Vec<Junction> {
             }
         }
     }
-    groups
-        .into_iter()
-        .map(|members| {
-            if members.len() == 1 {
-                return junctions[members[0]];
-            }
-            let mut sum = ogeom_math::Vector::ZERO;
-            for &m in &members {
-                sum += junctions[m].at - Point::ORIGIN;
-            }
-            #[allow(clippy::cast_precision_loss)]
-            let at = Point::ORIGIN + sum / (members.len() as f64);
-            let reach = members
-                .iter()
-                .map(|&m| at.distance(junctions[m].at) + junctions[m].reach)
-                .fold(0.0_f64, f64::max);
-            Junction { at, reach }
-        })
-        .collect()
+    // A group is one junction only while it stays a junction's size: a
+    // chain of overlapping balls along an edge would otherwise merge into
+    // one reaching the chain's length, and the rebuild would weld the edge
+    // into a point. A group reaching beyond four of its widest member stays
+    // as it was.
+    let mut out = Vec::with_capacity(groups.len());
+    for members in groups {
+        if members.len() == 1 {
+            out.push(junctions[members[0]]);
+            continue;
+        }
+        let mut sum = ogeom_math::Vector::ZERO;
+        for &m in &members {
+            sum += junctions[m].at - Point::ORIGIN;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let at = Point::ORIGIN + sum / (members.len() as f64);
+        let reach = members
+            .iter()
+            .map(|&m| at.distance(junctions[m].at) + junctions[m].reach)
+            .fold(0.0_f64, f64::max);
+        let widest = members
+            .iter()
+            .map(|&m| junctions[m].reach)
+            .fold(0.0_f64, f64::max);
+        if reach > widest * 4.0 {
+            out.extend(members.iter().map(|&m| junctions[m]));
+        } else {
+            out.push(Junction { at, reach });
+        }
+    }
+    out
 }
 
 /// The junctions the paves describe more than once, or more loosely than
@@ -3065,6 +3193,195 @@ fn tangential(a: &Curve, ta: f64, b: &Curve, tb: f64, tol: Tolerances) -> OgeomR
     Ok(da.cross(db).magnitude() / (ma * mb) < 2e-2)
 }
 
+/// The chart image of an exact curve on a surface, fitted at the curve's
+/// own parameters from its points inverted on the surface, with the
+/// distance the image honestly sits off the curve — or nothing, when the
+/// fit misses its budget by more than a chart's swing beside a pole allows.
+fn fitted_image(
+    curve: &Curve,
+    surface: &SurfaceGeometry,
+    budget: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<(PlanarCurve, f64)>> {
+    use ogeom_geom::Surface as _;
+    const SAMPLES: usize = 96;
+    let (lo, hi) = curve.domain();
+    if !hi.is_finite() || !lo.is_finite() || hi <= lo {
+        return Ok(None);
+    }
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let periods = (
+        if surface.is_periodic_u() {
+            ub - ua
+        } else {
+            0.0
+        },
+        if surface.is_periodic_v() {
+            vb - va
+        } else {
+            0.0
+        },
+    );
+    // The image sampled where it moves: beside a pole a circle's image
+    // swings half a turn within a hair of arc, and a uniform sampling puts
+    // one point in the swing. Between any two samples whose images sit
+    // further apart than a small step of the chart a sample is added, until
+    // the image is walked at that step or the budget of samples is spent.
+    let invert = |t: f64, guess: Option<(f64, f64)>| -> OgeomResult<Option<((f64, f64), f64)>> {
+        let p = curve.point_at(t, tol)?;
+        // A plane's image is its frame's own coordinates, exact and
+        // unbounded: the face's chart window is a trim, not a limit on
+        // where the curve may be read, and a projection clamped to it puts
+        // the circle's far side off the surface by the window's shortfall.
+        if let SurfaceGeometry::Plane(plane) = surface {
+            let local = plane.plane().frame().to_local(p);
+            let back = plane
+                .plane()
+                .frame()
+                .to_world(ogeom_math::Point::new(local.x, local.y, 0.0));
+            return Ok(Some(((local.x, local.y), back.distance(p))));
+        }
+        // A sphere's image is its frame's longitude and latitude, exact
+        // where the projection's Newton cannot refine beside a pole and
+        // hands back a coarse scan sample instead; the reading is checked
+        // round the trip and left to the projection if the chart's
+        // convention is not this one.
+        if let SurfaceGeometry::Sphere(ball) = surface {
+            let frame = ball.sphere().frame();
+            let local = frame.to_local(p);
+            let flat = local.x.hypot(local.y);
+            // Kept a hair inside the poles: a spline fitted through points
+            // on the pole itself overshoots it between them, and the chart
+            // refuses a latitude past its end.
+            let half = core::f64::consts::FRAC_PI_2 - 1e-6;
+            let v = local.z.atan2(flat).clamp(-half, half);
+            let u = local.y.atan2(local.x).rem_euclid(core::f64::consts::TAU);
+            let back = surface.point_at(u, v, tol)?;
+            if back.distance(p) <= budget.max(tol.confusion() * 1e2) {
+                return Ok(Some(((u, v), back.distance(p))));
+            }
+        }
+        let mut foot = match guess {
+            Some(g) => ogeom_algo::project_on_surface_from(surface, p, g, tol)?,
+            None => ogeom_algo::project_on_surface(surface, p, 24, tol)?,
+        };
+        if foot.distance > budget.max(tol.confusion() * 1e2) && guess.is_some() {
+            foot = ogeom_algo::project_on_surface(surface, p, 48, tol)?;
+        }
+        if foot.distance > budget.max(tol.confusion() * 1e2) {
+            if *DEBUG_WIRE {
+                eprintln!(
+                    "IMAGE FIT: a point sits {:.2e} off the surface; no image",
+                    foot.distance
+                );
+            }
+            return Ok(None);
+        }
+        Ok(Some((foot.parameters, foot.distance)))
+    };
+    let unwrap = |uv: (f64, f64), before: Option<Point2>| -> Point2 {
+        let mut uv = Point2::new(uv.0, uv.1);
+        if let Some(prev) = before {
+            for (coord, period, before) in [
+                (&mut uv.x, periods.0, prev.x),
+                (&mut uv.y, periods.1, prev.y),
+            ] {
+                if period > 0.0 {
+                    while *coord - before > period / 2.0 {
+                        *coord -= period;
+                    }
+                    while before - *coord > period / 2.0 {
+                        *coord += period;
+                    }
+                }
+            }
+        }
+        uv
+    };
+    let mut samples: Vec<(f64, Point2)> = Vec::with_capacity(SAMPLES + 1);
+    let mut guess: Option<(f64, f64)> = None;
+    for k in 0..=SAMPLES {
+        #[allow(clippy::cast_precision_loss)]
+        let t = lo + (hi - lo) * (k as f64) / (SAMPLES as f64);
+        let Some((uv, _)) = invert(t, guess)? else {
+            return Ok(None);
+        };
+        guess = Some(uv);
+        let before = samples.last().map(|(_, p)| *p);
+        samples.push((t, unwrap(uv, before)));
+    }
+    let step = {
+        let (su, sv) = (
+            if periods.0 > 0.0 { periods.0 } else { ub - ua },
+            if periods.1 > 0.0 { periods.1 } else { vb - va },
+        );
+        su.min(sv) * 0.01
+    };
+    const CAP: usize = 4096;
+    let mut refined = true;
+    while refined && samples.len() < CAP {
+        refined = false;
+        let mut next: Vec<(f64, Point2)> = Vec::with_capacity(samples.len() * 2);
+        for pair in samples.windows(2) {
+            let ((t0, p0), (t1, p1)) = (pair[0], pair[1]);
+            next.push((t0, p0));
+            if p0.distance(p1) > step && t1 - t0 > (hi - lo) * 1e-7 && next.len() < CAP {
+                let tm = f64::midpoint(t0, t1);
+                let Some((uv, _)) = invert(tm, Some((p0.x, p0.y)))? else {
+                    return Ok(None);
+                };
+                next.push((tm, unwrap(uv, Some(p0))));
+                refined = true;
+            }
+        }
+        next.push(samples[samples.len() - 1]);
+        samples = next;
+    }
+    let params: Vec<f64> = samples.iter().map(|(t, _)| *t).collect();
+    let image: Vec<Point2> = samples.iter().map(|(_, p)| *p).collect();
+    let fitted =
+        ogeom_geom::fit::fit_points_2d_at(&params, &image, 3, tol.confusion() * 10.0, tol)?;
+    let planar: PlanarCurve = fitted.curve.into();
+    // The honest error is in space: the surface read through the image
+    // against the curve itself, between the samples as well as at them.
+    // Checked at the samples and between each pair of them: where the
+    // image swings the samples are dense, and a uniform check would step
+    // over the swing and read the fit as honest.
+    // An image that leaves the chart between its samples — a spline
+    // overshooting the pole it was fitted up to — is no image either.
+    let mut off = 0.0_f64;
+    let mut checks: Vec<f64> = Vec::with_capacity(params.len() * 2);
+    for pair in params.windows(2) {
+        checks.push(pair[0]);
+        checks.push(f64::midpoint(pair[0], pair[1]));
+    }
+    if let Some(&t) = params.last() {
+        checks.push(t);
+    }
+    for t in checks {
+        let uv = planar.point_at(t, tol)?;
+        let Ok(on_surface) = surface.point_at(uv.x, uv.y, tol) else {
+            if *DEBUG_WIRE {
+                eprintln!("IMAGE FIT: the image leaves the chart at {uv:?}; no image");
+            }
+            return Ok(None);
+        };
+        off = off.max(on_surface.distance(curve.point_at(t, tol)?));
+    }
+    if *DEBUG_WIRE {
+        eprintln!(
+            "IMAGE FIT: image off the curve by {off:.2e} against {:.2e} (fit error {:.2e} met {})",
+            budget.max(tol.confusion() * 1e3),
+            fitted.error,
+            fitted.met
+        );
+    }
+    if off > budget.max(tol.confusion() * 1e3) {
+        return Ok(None);
+    }
+    Ok(Some((planar, off)))
+}
+
 /// The distance from a point to a bounded edge curve, through a sampling
 /// fine enough for the along-boundary question it answers.
 fn distance_to_edge_curve(
@@ -3264,6 +3581,14 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     let (sections, section_pieces, contacts, tangents, contact_along, paves, same_a, same_b, hugs) =
         fill(&ga, &gb, false, tol)?;
     let mut junctions = pave_junctions(&ga, &gb, &paves, tol)?;
+    if *DEBUG_WIRE {
+        for j in &junctions {
+            eprintln!("JUNCTION from paves at {:?} reach {:.3e}", j.at, j.reach);
+        }
+        for j in &hugs {
+            eprintln!("JUNCTION from hugs at {:?} reach {:.3e}", j.at, j.reach);
+        }
+    }
     junctions.extend(hugs);
     for face in ga.faces.iter().chain(gb.faces.iter()) {
         // An input vertex that owns a span — the corner an earlier boolean
@@ -3274,6 +3599,9 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         for e in &face.edges {
             for (at, radius) in e.ends {
                 if radius > tol.confusion() * 10.0 {
+                    if *DEBUG_WIRE {
+                        eprintln!("JUNCTION from vertex at {at:?} radius {radius:.3e}");
+                    }
                     junctions.push(Junction { at, reach: radius });
                 }
             }
@@ -3631,17 +3959,27 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     };
     let chart_length =
         |line: &[Point2]| -> f64 { line.windows(2).map(|w| w[0].distance(w[1])).sum::<f64>() };
-    let node_of = |face: &GFace, tag: &Tag| -> Option<(ogeom_topo::TShapeId, (f64, f64))> {
+    // The identity of a piece across faces: a boundary or contact piece by
+    // its edge node, a section piece by its section — the same section is
+    // split the same way on both faces it cuts, and a piece that is dust
+    // in a sphere's chart at the pole must be dust on the plane it also
+    // lies in.
+    let node_of = |face: &GFace, tag: &Tag| -> Option<(usize, usize, (f64, f64))> {
         match tag {
-            Tag::Boundary { edge, range } => Some((face.edges[*edge].node, *range)),
-            Tag::Contact { contact, range } => Some((contacts[*contact].node, *range)),
-            _ => None,
+            Tag::Boundary { edge, range } => {
+                Some((0, face.edges[*edge].node.index() as usize, *range))
+            }
+            Tag::Contact { contact, range } => {
+                Some((1, contacts[*contact].node.index() as usize, *range))
+            }
+            Tag::Section { section, range } => Some((2, *section, *range)),
+            Tag::Pole { .. } => None,
         }
     };
     /// A face's strands and its snap, waiting to be arranged.
     type Prepared = Option<(Vec<Strand<Tag>>, f64)>;
     let mut prepared: [Vec<Prepared>; 2] = [Vec::new(), Vec::new()];
-    let mut dust: Vec<(ogeom_topo::TShapeId, (f64, f64))> = Vec::new();
+    let mut dust: Vec<(usize, usize, (f64, f64))> = Vec::new();
     for (side, solid, from_a) in [(0_usize, &ga, true), (1, &gb, false)] {
         for (fi, face) in solid.faces.iter().enumerate() {
             ogeom_core::progress::checkpoint()?;
@@ -3657,11 +3995,11 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             prepared[side].push(Some((strands, snap)));
         }
     }
-    let same_key = |a: &(ogeom_topo::TShapeId, (f64, f64)),
-                    b: &(ogeom_topo::TShapeId, (f64, f64))| {
+    let same_key = |a: &(usize, usize, (f64, f64)), b: &(usize, usize, (f64, f64))| {
         a.0 == b.0
-            && (a.1.0 - b.1.0).abs() <= tol.parametric()
-            && (a.1.1 - b.1.1).abs() <= tol.parametric()
+            && a.1 == b.1
+            && (a.2.0 - b.2.0).abs() <= tol.parametric()
+            && (a.2.1 - b.2.1).abs() <= tol.parametric()
     };
     for (from_a, own, other) in [(true, &ga, &gb.solid), (false, &gb, &ga.solid)] {
         // The other solid's boundary, prepared once for the whole side. It is
@@ -3731,7 +4069,17 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                                 c.curve.point_at(range.1, tol)?,
                             )
                         }
-                        _ => continue,
+                        Tag::Section { section, range } => {
+                            let sec = &sections[*section];
+                            let domain = sec.curve.domain();
+                            (
+                                sec.curve
+                                    .point_at(at_param(range.0, domain, sec.closed), tol)?,
+                                sec.curve
+                                    .point_at(at_param(range.1, domain, sec.closed), tol)?,
+                            )
+                        }
+                        Tag::Pole { .. } => continue,
                     };
                     if *DEBUG_STRANDS {
                         eprintln!(
@@ -4248,7 +4596,44 @@ fn build_piece(
         };
         wires.push(wire);
     }
-    let built = make_face_on(rebuild.model, surface_id, &wires, tol)?.shape;
+    let built = match make_face_on(rebuild.model, surface_id, &wires, tol) {
+        Ok(b) => b.shape,
+        Err(e) => {
+            if *DEBUG_WIRE {
+                eprintln!(
+                    "FACE FAIL piece from_a={} face={}: {e}",
+                    piece.from_a, piece.face
+                );
+                for (wi, wire) in wires.iter().enumerate() {
+                    for edge in rebuild.model.ordered_children_of(wire)? {
+                        if let Some((a, b)) = ogeom_algo::edge_vertices(rebuild.model, &edge)? {
+                            let at = |v: &Shape| {
+                                rebuild
+                                    .model
+                                    .node(v)
+                                    .and_then(|n| n.data().as_vertex())
+                                    .map(|d| d.point)
+                            };
+                            eprintln!(
+                                "   wire {wi} edge {:?}{}: v{} {:?} -> v{} {:?}",
+                                edge.node(),
+                                if edge.orientation() == ogeom_topo::Orientation::Reversed {
+                                    " rev"
+                                } else {
+                                    ""
+                                },
+                                a.node().index(),
+                                at(&a),
+                                b.node().index(),
+                                at(&b)
+                            );
+                        }
+                    }
+                }
+            }
+            return Err(e);
+        }
+    };
     Ok(
         if face.face.orientation() == ogeom_topo::Orientation::Reversed {
             built.reversed()

@@ -896,26 +896,6 @@ fn general_3d(
         crossings = merged;
     }
 
-    // Every crossing owns the valley it sits in: how far along the first
-    // curve the second stays within the caller's gap. A transversal crossing
-    // leaves the gap within a gap's length; a tangential one — a line
-    // touching a fitted rim that wobbles about its circle by the fit's
-    // budget — stays inside for the root of gap times radius on either
-    // side, and the polish lands on whichever wobble's floor it found. The
-    // consumer placing a vertex there owns that much doubt, which the
-    // spread of several polished crossings only stated when there were
-    // several.
-    // A transversal crossing's valley is a gap or two long and says nothing
-    // a consumer does not know; only a valley clearly longer than the gap
-    // is stated, so a stated reach keeps meaning a touch.
-    let gap = options.gap.max(tol.confusion());
-    for c in &mut crossings {
-        let valley = valley_extent_3d(a, b, &sb, c, gap, tol);
-        if valley > gap * 8.0 {
-            c.reach = c.reach.max(valley);
-        }
-    }
-
     // Stretches where the first curve stays within the gap of the second
     // are shared support, not a row of crossings. A fitted section tracing
     // the arc it was cut along wobbles about it by less than the gap and
@@ -933,6 +913,34 @@ fn general_3d(
                 c.on_a >= lo - tol.parametric() && c.on_a <= hi + tol.parametric()
             })
         });
+    }
+    // Every surviving crossing owns the valley it sits in: how far along the
+    // first curve the second stays within the caller's gap. A transversal
+    // crossing leaves the gap within a gap's length and says nothing; a
+    // tangential one — a line touching a fitted rim that wobbles about its
+    // circle by the fit's budget — stays inside for the root of gap times
+    // radius on either side, and the polish lands on whichever wobble's
+    // floor it found. The consumer placing a vertex there owns that much
+    // doubt, which the spread of several polished crossings only stated
+    // when there were several. A valley longer than a tangency's — the
+    // radius being at most the shorter curve's length — is a shared stretch
+    // the overlap pass speaks for, not a crossing's to own.
+    let gap = options.gap.max(tol.confusion());
+    let extent = {
+        let along = |s: &Sampled<Point>| {
+            s.points
+                .windows(2)
+                .map(|w| w[0].distance(w[1]))
+                .sum::<f64>()
+        };
+        along(&sa).min(along(&sb))
+    };
+    let cap = 4.0 * (gap * extent).sqrt();
+    for c in &mut crossings {
+        let valley = valley_extent_3d(a, b, &sb, c, gap, tol);
+        if valley > gap * 8.0 && valley <= cap {
+            c.reach = c.reach.max(valley);
+        }
     }
     Ok(CurveIntersection {
         crossings,

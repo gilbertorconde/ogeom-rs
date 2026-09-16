@@ -414,7 +414,9 @@ fn marched(
         // imported part's ragged pair can trace branches nothing fits, and
         // those sections fall outside every trim downstream. Only a trace
         // cut off by the point budget, refused above, states a curve that
-        // is not there.
+        // is not there. (A boolean marching an *exact* pair whose image has
+        // no closed form holds its own marched sections to a budget, in
+        // its own fallback, where a miss is a miss.)
         let fitted = approximate_branch(a, b, branch, options.tolerance, tol)?;
         out.push(SectionCurve {
             curve: fitted.curve.into(),

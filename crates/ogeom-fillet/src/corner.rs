@@ -235,6 +235,27 @@ pub fn round_vertex(
         };
         let ball = ogeom_algo::make_sphere(model, ball_frame, radius, tol)?.shape;
         let tool = ogeom_bool::cut(model, &block, &ball, tol)?;
+        if std::env::var_os("OGEOM_DEBUG_CORNER").is_some() {
+            let faces = ogeom_topo::explore_unique(model, &tool.shape, ShapeType::Face)?;
+            let kinds: Vec<String> = faces
+                .iter()
+                .map(|f| {
+                    let kind = model
+                        .node(f)
+                        .and_then(|n| n.data().as_face())
+                        .and_then(|d| model.geometry().surface(d.surface))
+                        .map_or("?", |sg| match sg {
+                            ogeom_geom::SurfaceGeometry::Plane(_) => "plane",
+                            ogeom_geom::SurfaceGeometry::Sphere(_) => "sphere",
+                            _ => "other",
+                        });
+                    let edges = ogeom_topo::explore_unique(model, f, ShapeType::Edge)
+                        .map_or(0, |e| e.len());
+                    format!("{kind}/{edges}")
+                })
+                .collect();
+            eprintln!("CORNER tool for {order:?}: {} faces {kinds:?}", faces.len());
+        }
         let rounded = ogeom_bool::cut(model, solid, &tool.shape, tol)?;
         Ok(Built {
             shape: rounded.shape,
