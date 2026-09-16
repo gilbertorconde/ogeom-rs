@@ -36,3 +36,13 @@ classic primitives — spherical button head, cylindrical shank, conical
 chamfers — with the head's sphere zone slit along a meridian that sits at
 the chart's own seam: the minimal reproducer for a doubly-used edge that
 is a slit, not a period-wrapping seam.
+
+## m5x16_bhcs_loops.step
+
+The same M5x16 button-head cap screw as `m5x16_bhcs.step`, one body, but
+extracted after the reader stopped slitting it: the head's sphere zone
+keeps the file's own two closed rims — circles cut square to the screw on
+a sphere whose chart runs along z, nested loops in the chart rather than
+parallels of it. The reproducer for a two-ring periodic face that is a
+face on its own bounds, not a band missing its seam (issue #37's
+assembly-side half).

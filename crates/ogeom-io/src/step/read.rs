@@ -1138,6 +1138,12 @@ impl Reader<'_> {
             && surface.is_periodic_u()
             && let [(e_lo, _v_lo), (e_hi, _v_hi)] =
                 closed_ring_edges(&self.model, &wires)?.as_slice()
+            // Only rings that are parallels of the surface make a band.
+            // Two closed circles that merely lie on it — a button head's
+            // rims, square to the screw on a sphere whose chart runs along
+            // z — bound a legitimate face on their own, nested loops in the
+            // chart, and take the ordinary path below without a word.
+            && ogeom_algo::rings_are_parallels(&self.model, &surface, &[e_lo, e_hi], self.tol)?
         {
             {
                 // The band construction is ogeom-algo's make_revolution_band —

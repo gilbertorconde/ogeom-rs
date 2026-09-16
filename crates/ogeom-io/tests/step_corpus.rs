@@ -378,3 +378,91 @@ fn a_slit_sphere_zone_meshes_its_own_region_not_the_complement() {
     }
     assert!(checked > 10, "the screw has faces to check: {checked}");
 }
+
+#[test]
+fn two_oblique_rims_on_a_sphere_bound_a_face_not_a_band() {
+    // Issue #37, the assembly-side half: the button head's sphere zone is
+    // bounded by two closed circles cut square to the screw, while the
+    // sphere's chart runs along z. They lie on the sphere but are not its
+    // parallels, and the reader used to synthesise a band between them —
+    // a phantom meridian slit and a latitude-line pcurve per rim that the
+    // rims never follow, meshing the sphere's complement. Now they bound
+    // the face on their own: two wires, no seam, and every triangle at sag
+    // distance from the surface at its own chart centre.
+    use ogeom_geom::{Surface as _, Transformable as _};
+    use ogeom_topo::{EdgeRepr, Filter, NodeData, ShapeType, explore};
+    let text = corpus("m5x16_bhcs_loops.step");
+    let import = ogeom_io::step::read_step(&text, T).unwrap();
+    assert!(
+        !import
+            .report
+            .warnings
+            .iter()
+            .any(|w| w.contains("no seam could be synthesised")),
+        "the reader must not warn about a face that is whole on its own bounds"
+    );
+    let model = import.document.model();
+    let mut heads = 0;
+    for face in explore(model, &import.solids[0], Filter::OfType(ShapeType::Face)).unwrap() {
+        let NodeData::Face(d) = model.node(&face).unwrap().data() else {
+            continue;
+        };
+        let Some(stored) = model.geometry().surface(d.surface) else {
+            continue;
+        };
+        if !matches!(stored, ogeom_geom::SurfaceGeometry::Sphere(_)) {
+            continue;
+        }
+        heads += 1;
+        assert_eq!(
+            model.ordered_children_of(&face).unwrap().len(),
+            2,
+            "the head keeps its two rims as two wires"
+        );
+        for e in explore(model, &face, Filter::OfType(ShapeType::Edge)).unwrap() {
+            let NodeData::Edge(ed) = model.node(&e).unwrap().data() else {
+                continue;
+            };
+            assert!(
+                !matches!(
+                    ed.pcurve_for(d.surface, e.location()),
+                    Some(EdgeRepr::Seam { .. })
+                ),
+                "no slit was manufactured"
+            );
+        }
+        let surface = stored
+            .clone()
+            .transformed(&face.transform(model.datums()).unwrap(), T)
+            .unwrap();
+        let mesh = ogeom_mesh::triangulate_face(model, &face, ogeom_mesh::Deflection::default(), T)
+            .unwrap();
+        let mut worst = 0.0_f64;
+        for t in &mesh.triangles {
+            let [a, b, c] = [
+                mesh.positions[t[0] as usize],
+                mesh.positions[t[1] as usize],
+                mesh.positions[t[2] as usize],
+            ];
+            let mid = ogeom_math::Point::from_vector(
+                (a.to_vector() + b.to_vector() + c.to_vector()) / 3.0,
+            );
+            let mu = (mesh.parameters[t[0] as usize].0
+                + mesh.parameters[t[1] as usize].0
+                + mesh.parameters[t[2] as usize].0)
+                / 3.0;
+            let mv = (mesh.parameters[t[0] as usize].1
+                + mesh.parameters[t[1] as usize].1
+                + mesh.parameters[t[2] as usize].1)
+                / 3.0;
+            if let Ok(on) = surface.point_at(mu, mv, T) {
+                worst = worst.max(on.distance(mid));
+            }
+        }
+        assert!(
+            worst < 0.2,
+            "the head's triangles sit on its own zone: {worst} mm"
+        );
+    }
+    assert_eq!(heads, 1, "one button head on the screw");
+}

@@ -862,6 +862,84 @@ pub fn attach_seam(
     Ok(())
 }
 
+/// Whether a circle is a *parallel* of a revolved surface — its axis the
+/// revolution axis, its centre on it — rather than a circle that merely
+/// lies on the surface.
+fn circle_is_parallel_of(
+    circle: ogeom_math::Circle,
+    surface: &ogeom_geom::SurfaceGeometry,
+    axis_z: ogeom_math::Vector,
+    tol: Tolerances,
+) -> bool {
+    if circle.frame().z().vector().cross(axis_z).magnitude() > tol.angular() {
+        return false;
+    }
+    match surface_axis_origin(surface) {
+        Some(origin) => {
+            let off = circle.centre() - origin;
+            let radial = off - axis_z * off.dot(axis_z);
+            radial.magnitude() <= tol.confusion() * 10.0
+        }
+        None => true,
+    }
+}
+
+/// Whether two closed ring edges are parallels of `surface`, so that
+/// [`make_revolution_band`] can build a band between them. A reader asks
+/// this first: a periodic face bounded by two closed circles that are *not*
+/// parallels — a button head's rims, square to the screw on a sphere whose
+/// chart runs along z — is a legitimate face on its own bounds, not a band
+/// missing its seam, and deserves no warning.
+///
+/// # Errors
+///
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if an edge is
+/// not in the model.
+pub fn rings_are_parallels(
+    model: &Model,
+    surface: &ogeom_geom::SurfaceGeometry,
+    rings: &[&Shape],
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let Some(axis_z) = surface_iso_axis(surface) else {
+        return Ok(false);
+    };
+    for ring in rings {
+        let Some(node) = model.node(ring) else {
+            ogeom_bail!(Dangling, "edge is not in this model");
+        };
+        let Some(data) = node.data().as_edge() else {
+            return Ok(false);
+        };
+        if data.degenerate {
+            continue;
+        }
+        let Some(EdgeRepr::Curve3d { curve, .. }) = data.curve3d() else {
+            return Ok(false);
+        };
+        let Some(ogeom_geom::Curve::Circle(c)) = model.geometry().curve(*curve) else {
+            return Ok(false);
+        };
+        if !circle_is_parallel_of(c.circle(), surface, axis_z, tol) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// A point on the revolution axis of an analytic surface, where one is
+/// stated: the frame origin of a cylinder, cone or torus, a sphere's centre.
+fn surface_axis_origin(surface: &ogeom_geom::SurfaceGeometry) -> Option<Point> {
+    use ogeom_geom::SurfaceGeometry as S;
+    match surface {
+        S::Cylinder(c) => Some(c.cylinder().frame().origin()),
+        S::Cone(c) => Some(c.cone().frame().origin()),
+        S::Sphere(s) => Some(s.sphere().centre()),
+        S::Torus(t) => Some(t.torus().frame().origin()),
+        _ => None,
+    }
+}
+
 /// Build the face of a revolution band: two closed rings joined by a
 /// synthesised seam, pcurves attached window-coherently.
 ///
@@ -984,6 +1062,21 @@ pub fn make_revolution_band(
         let ogeom_geom::Curve::Circle(c) = &curve else {
             ogeom_bail!(Construction, "a band ring is not a circle");
         };
+        // A ring of *this* surface is a parallel: its axis the revolution
+        // axis, its centre on it. A circle merely lying on the surface —
+        // a button head's rim, cut square to the screw while the sphere's
+        // chart runs along z — is a closed loop in the chart, not a row of
+        // it, and building a band on it would hand every rim a latitude
+        // line it never follows. Refused here, so a reader falls through to
+        // the face's own bounds, which triangulate as the nested loops they
+        // are.
+        if !circle_is_parallel_of(c.circle(), surface, axis_z, tol) {
+            ogeom_bail!(
+                Construction,
+                "a band ring is a circle on the surface but not a parallel \
+                 of it; its axis or centre is off the revolution axis"
+            );
+        }
         let winding = c.circle().frame().z().vector().dot(axis_z).signum();
         let row = match analytic_chart_of(surface, at) {
             Some(uv) => uv.y,
@@ -2558,6 +2651,57 @@ mod band_tests {
             core::f64::consts::PI * 2.0 * 2.0 * core::f64::consts::SQRT_2,
             max_relative = 1e-2
         );
+    }
+
+    #[test]
+    fn a_ring_square_to_the_axis_is_not_a_band_ring() {
+        // A button head: a sphere whose chart runs along z, bounded by two
+        // circles cut square to the screw along x. Each lies on the sphere
+        // and is closed, but neither is a parallel — building a band on
+        // them hands every rim a latitude line it never follows. Refused,
+        // and the reader's question answers the same.
+        let mut model = Model::new();
+        let sphere = ogeom_math::Sphere::centred(Point::ORIGIN, 5.0, T).unwrap();
+        let surface: SurfaceGeometry = ogeom_geom::SphereSurface::new(sphere).into();
+        // Rims in planes x = 3 and x = 4: radii 4 and 3, axis along x.
+        let rim_at = |model: &mut Model, x: f64| {
+            let frame = Frame::new(
+                Point::new(x, 0.0, 0.0),
+                ogeom_math::Direction::X,
+                ogeom_math::Direction::Z,
+                T,
+            )
+            .unwrap();
+            ring(model, frame, (25.0 - x * x).sqrt())
+        };
+        let lo = rim_at(&mut model, 3.0);
+        let hi = rim_at(&mut model, 4.0);
+        assert!(!crate::rings_are_parallels(&model, &surface, &[&lo, &hi], T).unwrap());
+        assert!(make_revolution_band(&mut model, &surface, &lo, &hi, T).is_err());
+        // The genuine article still passes: parallels of the same sphere.
+        let p_lo = ring(
+            &mut model,
+            Frame::new(
+                Point::new(0.0, 0.0, 3.0),
+                ogeom_math::Direction::Z,
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap(),
+            4.0,
+        );
+        let p_hi = ring(
+            &mut model,
+            Frame::new(
+                Point::new(0.0, 0.0, 4.0),
+                ogeom_math::Direction::Z,
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap(),
+            3.0,
+        );
+        assert!(crate::rings_are_parallels(&model, &surface, &[&p_lo, &p_hi], T).unwrap());
     }
 
     #[test]
