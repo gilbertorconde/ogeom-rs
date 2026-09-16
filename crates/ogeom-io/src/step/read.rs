@@ -1232,6 +1232,10 @@ impl Reader<'_> {
             }
         }
 
+        // Every wire's images on one branch of a periodic chart: a file's
+        // pcurves, or fits of them, answer in whatever phase they like, and
+        // a hole loop straddling a drum's seam arrives half on each branch.
+        ogeom_algo::chain_wire_branches(&mut self.model, surface_id, &wires, self.tol)?;
         let built = make_face_on(&mut self.model, surface_id, &wires, self.tol)?.shape;
         let shape = if face_forward {
             built

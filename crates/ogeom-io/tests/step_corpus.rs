@@ -508,3 +508,56 @@ fn a_surface_model_reads_as_shells_under_its_product() {
             .expect("a surface body's face meshes like any other");
     }
 }
+
+/// A hole loop straddling a drum's seam: its two edges' pcurves arrive on
+/// different branches of the chart, and read as they come the loop never
+/// closes and the hole is drawn but not cut. Chained onto one branch it
+/// cuts: no mesh vertex lands inside the hole.
+#[test]
+fn a_hole_across_the_chart_seam_is_cut_from_the_face() {
+    use ogeom_geom::Curve3d as _;
+    let text = corpus("nema17_coupler_hole.step");
+    let import = ogeom_io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let shell = &import.shells[0];
+    let face = ogeom_topo::explore(
+        model,
+        shell,
+        ogeom_topo::Filter::OfType(ogeom_topo::ShapeType::Face),
+    )
+    .unwrap()
+    .remove(0);
+    let wires = model.ordered_children_of(&face).unwrap();
+    assert_eq!(wires.len(), 2, "the wall and its hole");
+    // The hole's centre and reach, from its own edges.
+    let mut points = Vec::new();
+    for edge in model.ordered_children_of(&wires[1]).unwrap() {
+        let data = model.node(&edge).unwrap().data().as_edge().unwrap().clone();
+        let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            panic!("a hole edge has a curve");
+        };
+        let curve = model.geometry().curve(*curve).unwrap();
+        for k in 0..=16 {
+            let t = range.0 + (range.1 - range.0) * f64::from(k) / 16.0;
+            points.push(curve.point_at(t, T).unwrap());
+        }
+    }
+    let mut sum = ogeom_math::Vector::ZERO;
+    for p in &points {
+        sum += p.to_vector();
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let centre = ogeom_math::Point::ORIGIN + sum * (1.0 / points.len() as f64);
+    let reach = points
+        .iter()
+        .map(|p| p.distance(centre))
+        .fold(f64::INFINITY, f64::min);
+    assert!(reach > 1.0, "a real hole: {reach}");
+    let mesh = ogeom_mesh::triangulate(model, &face, ogeom_mesh::Deflection::default(), T).unwrap();
+    let inside = mesh
+        .positions
+        .iter()
+        .filter(|v| v.distance(centre) < reach * 0.7)
+        .count();
+    assert_eq!(inside, 0, "the hole is cut: no mesh vertex inside it");
+}

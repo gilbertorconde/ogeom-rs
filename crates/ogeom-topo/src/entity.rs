@@ -94,6 +94,12 @@ impl GeometryStore {
         self.pcurves.get(id)
     }
 
+    /// A pcurve, for rewriting in place: an image shifted by whole periods
+    /// onto its neighbour's branch is the same curve on the same edge.
+    pub fn pcurve_mut(&mut self, id: PCurveId) -> Option<&mut PlanarCurve> {
+        self.pcurves.get_mut(id)
+    }
+
     /// The surface behind `id`.
     #[must_use]
     pub fn surface(&self, id: SurfaceId) -> Option<&SurfaceGeometry> {

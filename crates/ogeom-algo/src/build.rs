@@ -617,6 +617,161 @@ pub fn make_face_with_pcurves(
     Ok(built)
 }
 
+/// Put a face's wires on one branch of a periodic chart.
+///
+/// An exchange file's pcurves, or a fit of them, answer with whatever
+/// phase the inversion likes: a hole loop that straddles a drum's seam
+/// comes back half on each branch — a loop that never closes in the chart,
+/// which no mesher can cut — and a slitted wall's outer wire hops branches
+/// at every slit. Walked in each wire's own order, an image whose start
+/// misses the previous traversal's end by close to a whole period is
+/// shifted by that period; a miss of half a period is a pole, where two
+/// meridians meet at one point with no edge between them, and is left
+/// alone. A seam representation carries both branches by design: the
+/// walk passes through it on the side the occurrence uses and moves
+/// nothing. Every wire after the first is then carried whole onto the
+/// first wire's branch, so rims, slits and holes all read in one chart.
+/// The images are rewritten in place (`GeometryStore::pcurve_mut`), once
+/// each — a slit uses one image twice.
+///
+/// # Errors
+///
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if a wire or
+/// edge is not in this model.
+pub fn chain_wire_branches(
+    model: &mut Model,
+    surface: ogeom_topo::SurfaceId,
+    wires: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    use ogeom_geom::Curve2d as _;
+    use ogeom_geom::Surface as _;
+    let Some(geometry) = model.geometry().surface(surface) else {
+        ogeom_bail!(Dangling, "surface is not in this model");
+    };
+    let ((ua, ub), (va, vb)) = geometry.domain();
+    let u_period = geometry.is_periodic_u().then_some(ub - ua);
+    let v_period = geometry.is_periodic_v().then_some(vb - va);
+    if u_period.is_none() && v_period.is_none() {
+        return Ok(());
+    }
+    // A whole number of periods, when the gap is within a quarter period
+    // of one; nothing for a pole's half-period hop.
+    let whole = |gap: f64, period: Option<f64>| -> f64 {
+        period.map_or(0.0, |p| {
+            let k = (gap / p).round();
+            if k != 0.0 && (gap - k * p).abs() <= p * 0.25 {
+                k * p
+            } else {
+                0.0
+            }
+        })
+    };
+    // A wire's images in traversal order: the pcurve to move (none for a
+    // seam), its start and end in the edge's own direction.
+    type Image = (
+        Option<ogeom_topo::PCurveId>,
+        ogeom_math::Point2,
+        ogeom_math::Point2,
+    );
+    let images = |model: &Model, wire: &Shape| -> OgeomResult<Vec<Image>> {
+        let mut out = Vec::new();
+        for edge in model.ordered_children_of(wire)? {
+            let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+                ogeom_bail!(Dangling, "edge is not in this model");
+            };
+            let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+            let (id, movable, range) = match data.pcurve_for(surface, edge.location()) {
+                Some(EdgeRepr::PCurve { curve, range, .. }) => (*curve, true, *range),
+                Some(EdgeRepr::Seam {
+                    forward,
+                    reversed: back,
+                    range,
+                    ..
+                }) => (if reversed { *back } else { *forward }, false, *range),
+                _ => continue,
+            };
+            let Some(planar) = model.geometry().pcurve(id) else {
+                ogeom_bail!(Dangling, "pcurve is not in this model");
+            };
+            let (t_start, t_end) = if reversed {
+                (range.1, range.0)
+            } else {
+                (range.0, range.1)
+            };
+            out.push((
+                movable.then_some(id),
+                planar.point_at(t_start, tol)?,
+                planar.point_at(t_end, tol)?,
+            ));
+        }
+        Ok(out)
+    };
+    let mut first_centre: Option<ogeom_math::Point2> = None;
+    for wire in wires {
+        let wire_images = images(model, wire)?;
+        if wire_images.is_empty() {
+            continue;
+        }
+        // The chain, dry: each image's shift so its start meets the
+        // previous end, an image already placed taking its earlier shift.
+        let mut shifts: Vec<(ogeom_topo::PCurveId, ogeom_math::Vector2)> = Vec::new();
+        let mut prev_end: Option<ogeom_math::Point2> = None;
+        let mut lo = ogeom_math::Point2::new(f64::INFINITY, f64::INFINITY);
+        let mut hi = ogeom_math::Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for (id, start, end) in &wire_images {
+            let shift = match id {
+                None => ogeom_math::Vector2::new(0.0, 0.0),
+                Some(id) => match shifts.iter().find(|(seen, _)| seen == id) {
+                    Some((_, s)) => *s,
+                    None => {
+                        let s = prev_end.map_or(ogeom_math::Vector2::new(0.0, 0.0), |prev| {
+                            ogeom_math::Vector2::new(
+                                whole(prev.x - start.x, u_period),
+                                whole(prev.y - start.y, v_period),
+                            )
+                        });
+                        shifts.push((*id, s));
+                        s
+                    }
+                },
+            };
+            let (s, e) = (*start + shift, *end + shift);
+            for p in [s, e] {
+                lo = ogeom_math::Point2::new(lo.x.min(p.x), lo.y.min(p.y));
+                hi = ogeom_math::Point2::new(hi.x.max(p.x), hi.y.max(p.y));
+            }
+            prev_end = Some(e);
+        }
+        // Then the whole wire onto the first wire's branch.
+        let centre = ogeom_math::Point2::new(f64::midpoint(lo.x, hi.x), f64::midpoint(lo.y, hi.y));
+        let carry = match first_centre {
+            None => {
+                first_centre = Some(centre);
+                ogeom_math::Vector2::new(0.0, 0.0)
+            }
+            Some(first) => ogeom_math::Vector2::new(
+                u_period.map_or(0.0, |p| ((first.x - centre.x) / p).round() * p),
+                v_period.map_or(0.0, |p| ((first.y - centre.y) / p).round() * p),
+            ),
+        };
+        for (id, shift) in shifts {
+            let total = shift + carry;
+            if total.x == 0.0 && total.y == 0.0 {
+                continue;
+            }
+            let Some(planar) = model.geometry().pcurve(id) else {
+                ogeom_bail!(Dangling, "pcurve is not in this model");
+            };
+            let shifted = planar.transformed(&ogeom_math::Transform2::translation(total), tol)?;
+            if let Some(slot) = model.geometry_mut().pcurve_mut(id) {
+                *slot = shifted;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Build a face covering the whole of `surface`, with no trimming.
 ///
 /// # Errors

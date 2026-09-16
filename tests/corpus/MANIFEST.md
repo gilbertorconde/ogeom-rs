@@ -56,3 +56,11 @@ printer assembly as the M5x16 screws: `SHELL_BASED_SURFACE_MODEL` over an
 tori — hung off one product's shape representation. The reproducer for a
 part the file never calls a solid: a reader that walks only
 `MANIFOLD_SOLID_BREP` leaves it invisible.
+
+## nema17_coupler_hole.step
+
+One more of the same coupler's surface bodies: a half-cylinder wall with
+a two-edge hole loop straddling the drum's chart seam. The reproducer for
+a hole whose two halves arrive on different branches of a periodic chart
+— a loop that never closes in the chart and a hole the mesher draws but
+cannot cut.
