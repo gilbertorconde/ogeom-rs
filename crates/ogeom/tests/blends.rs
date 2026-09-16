@@ -479,6 +479,40 @@ fn two_blends_meeting_at_a_corner_trim_each_other() {
     );
 }
 
+/// A straight seat and a marched one meeting at two corners: the box's
+/// bottom edge along the wall, and the grooved block's elliptical crease
+/// that runs out through that wall across it. Asked for together, the
+/// straight blend goes first and the marched blend's run-out then walks on
+/// under it until the ball has left the material, the cut trimming the two
+/// bands against each other at both corners.
+#[test]
+fn a_marched_blend_meets_a_straight_blend_at_its_corners() {
+    let mut model = Model::new();
+    let grooved = grooved_block(&mut model);
+    let before =
+        ogeom::algo::volume_properties(&model, &grooved, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    let faces_before = explore_unique(&model, &grooved, ShapeType::Face)
+        .unwrap()
+        .len();
+    let wall_edge = edge_near(&model, &grooved, Point::new(2.0, 20.0, 0.0));
+    let crease = edge_near(&model, &grooved, Point::new(10.0, 14.84, 0.0));
+    let met = ogeom::fillet::fillet_edges(&mut model, &grooved, &[wall_edge, crease], 1.0, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &met, T).unwrap().is_valid());
+    assert_eq!(
+        explore_unique(&model, &met, ShapeType::Face).unwrap().len(),
+        faces_before + 2,
+        "two bands, no cap between them"
+    );
+    let after = ogeom::algo::volume_properties(&model, &met, ogeom::mesh::Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!(after < before && after > before * 0.9);
+}
+
 #[test]
 fn two_seam_split_blends_meet_cap_to_cap_in_either_order() {
     // The top crease is split by the drum's seam into two arcs sharing a

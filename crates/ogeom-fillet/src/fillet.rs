@@ -119,7 +119,7 @@ fn fillet_edge_meeting(
                 revolved_arc_fillet(model, solid, edge, &c, radius, tol)
             }
         }
-        _ => crate::marched::marched_fillet(model, solid, edge, radius, tol),
+        _ => crate::marched::marched_fillet(model, solid, edge, radius, mates, tol),
     }
 }
 
@@ -175,43 +175,57 @@ pub fn fillet_edges(
         .collect::<OgeomResult<_>>()?;
     let mut built: Option<Built> = None;
     for (index, edge) in edges.iter().enumerate() {
-        let (current, target) = match &built {
-            None => (solid.clone(), edge.clone()),
+        // The edge as it stands on the current solid: itself on the first
+        // step, and afterwards whatever the earlier blends left of it — one
+        // re-found stand-in, or the pieces a blend running out across it
+        // split it into, each of which is a seat of its own ending against
+        // that blend's band, which is exactly the corner it then meets.
+        let (current, targets): (Shape, Vec<Shape>) = match &built {
+            None => (solid.clone(), vec![edge.clone()]),
             Some(b) => {
                 let traced = b.history.trace(edge);
-                match traced {
-                    [] => ogeom_bail!(
+                if traced.is_empty() {
+                    ogeom_bail!(
                         Construction,
                         "an earlier blend in the chain consumed this edge; \
                          the chain's members interfere"
-                    ),
-                    [one] => {
-                        let found = refind_edge(model, &b.shape, one, tol)?;
-                        (b.shape.clone(), found)
-                    }
-                    _ => ogeom_bail!(
-                        Construction,
-                        "an earlier blend in the chain split this edge into \
-                         {} pieces; the chain's members interfere",
-                        traced.len()
-                    ),
+                    );
                 }
+                let mut found = Vec::with_capacity(traced.len());
+                for one in traced {
+                    found.extend(refind_edges(model, &b.shape, one, tol)?);
+                }
+                (b.shape.clone(), found)
             }
         };
-        let mut step =
-            fillet_edge_meeting(model, &current, &target, radius, Some((index, &mates)), tol)?;
-        // The blend consumed the re-found stand-in; the caller's edge is
-        // the same fact under its original name.
-        if !target.is_same(edge) {
-            step.history.delete(edge);
+        let mut current = current;
+        for target in &targets {
+            // Each piece's blend replaces the solid; the next piece is
+            // re-found on what that blend left.
+            let live = refind_edges(model, &current, target, tol)?;
+            let [target] = live.as_slice() else {
+                ogeom_bail!(
+                    Construction,
+                    "a blend in the chain split a piece of a later edge again; \
+                     the chain's members interfere"
+                );
+            };
+            let mut step =
+                fillet_edge_meeting(model, &current, target, radius, Some((index, &mates)), tol)?;
+            // The blend consumed the re-found stand-in; the caller's edge is
+            // the same fact under its original name.
+            if !target.is_same(edge) {
+                step.history.delete(edge);
+            }
+            current = step.shape.clone();
+            built = Some(match built {
+                None => step,
+                Some(prev) => Built {
+                    shape: step.shape.clone(),
+                    history: prev.history.then(&step.history),
+                },
+            });
         }
-        built = Some(match built {
-            None => step,
-            Some(prev) => Built {
-                shape: step.shape.clone(),
-                history: prev.history.then(&step.history),
-            },
-        });
     }
     Ok(built.unwrap_or_else(|| unreachable!()))
 }
@@ -753,17 +767,23 @@ fn revolved_fillet(
 ///
 /// A boolean rebuilds every face it splits with fresh edges and its history
 /// speaks of faces, not of them — so a chain's later edge is re-found by
-/// geometry: the solid's edge whose own samples all lie on the sought
-/// edge's curve. A trimmed survivor qualifies; that is exactly the part of
-/// the edge still there to blend.
-fn refind_edge(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomResult<Shape> {
+/// geometry: the solid's edges whose own samples all lie on the sought
+/// edge's curve. A trimmed survivor qualifies, and so does each piece an
+/// earlier blend running out across the edge left of it; every one is a
+/// part of the edge still there to blend.
+fn refind_edges(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Shape>> {
     use ogeom_geom::Curve3d as _;
     use ogeom_topo::ShapeType;
     let (curve, _) = edge_curve(model, edge, tol)?;
     let mut matches: Vec<Shape> = Vec::new();
     for candidate in ogeom_topo::explore_unique(model, solid, ShapeType::Edge)? {
         if candidate.is_same(edge) {
-            return Ok(candidate);
+            return Ok(vec![candidate]);
         }
         let Ok((c_curve, c_range)) = edge_curve(model, &candidate, tol) else {
             continue;
@@ -782,20 +802,14 @@ fn refind_edge(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> O
             matches.push(candidate);
         }
     }
-    match matches.as_slice() {
-        [one] => Ok(one.clone()),
-        [] => ogeom_bail!(
+    if matches.is_empty() {
+        ogeom_bail!(
             Construction,
             "an earlier blend in the chain consumed this edge; the chain's \
              members interfere"
-        ),
-        _ => ogeom_bail!(
-            Construction,
-            "an earlier blend in the chain split this edge into {} pieces; \
-             the chain's members interfere",
-            matches.len()
-        ),
+        );
     }
+    Ok(matches)
 }
 
 /// The rim fillet over an arc of the rim rather than its whole turn.

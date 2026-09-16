@@ -86,6 +86,10 @@ struct BoundaryEdge {
     /// carry a few dozen microns of construction slop, and every filter that
     /// compares this edge's curve against exact geometry widens by it.
     tolerance: f64,
+    /// The looser of the edge's two end vertices' own radii: the doubt an
+    /// earlier junction recorded there, which the arrangement's node snap
+    /// on this face must reach.
+    ends_tolerance: f64,
 }
 
 /// A pole: an edge that bounds a face in parameter space and collapses to
@@ -231,6 +235,11 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
                          that face's parameter space"
                     ),
                 };
+            let ends_tolerance = model
+                .children_of(&edge)?
+                .iter()
+                .filter_map(|v| model.node(v).and_then(|n| n.data().as_vertex()))
+                .fold(0.0_f64, |acc, d| acc.max(d.tolerance.get()));
             edges.push(BoundaryEdge {
                 node: edge.node(),
                 curve: world,
@@ -239,6 +248,7 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
                 prange,
                 other_side,
                 tolerance: edge_data.tolerance.get(),
+                ends_tolerance,
             });
         }
         if edges.is_empty() {
@@ -680,10 +690,23 @@ fn cluster_paves(
         }
     });
     let floor = edge_tolerance.max(tol.confusion() * 10.0);
+    // A pave within the edge's honesty of its own end *is* the end: split
+    // there, the sliver between them is dust one face keeps and the
+    // face across the edge drops, and the sew finds it used once.
+    let ends = [
+        curve.point_at(crange.0, tol)?,
+        curve.point_at(crange.1, tol)?,
+    ];
     let mut clusters: Vec<PaveCluster> = Vec::new();
     let mut prev: Option<(Point, f64)> = None;
     for pave in ts {
         let at = curve.point_at(pave.t, tol)?;
+        if ends
+            .iter()
+            .any(|e| e.distance(at) <= floor.max(pave.honesty))
+        {
+            continue;
+        }
         let joined = prev.is_some_and(|(held, honesty): (Point, f64)| {
             held.distance(at) <= floor.max(honesty).max(pave.honesty)
         });
@@ -1252,8 +1275,12 @@ fn fill(
                         // own: the boundary curve may be a fitted intersection
                         // from an earlier boolean carrying a couple of microns
                         // of wobble, and a stop that misses the vertex by that
-                        // much gapes the rebuilt wire by the same.
-                        let weld = reach.max(tol.confusion() * 1e2);
+                        // much gapes the rebuilt wire by the same. A fitted
+                        // section's stop misses by its own honesty once more
+                        // — the trace is off the true crossing by that, and
+                        // the crossing found against the edge by that again.
+                        let weld =
+                            (reach + honest(section.tolerance, tol)).max(tol.confusion() * 1e2);
                         for end in [e.crange.0, e.crange.1] {
                             let vertex = e.curve.point_at(end, tol)?;
                             if vertex.distance(crossing.point) <= weld + crossing.reach {
@@ -1463,6 +1490,24 @@ fn fill(
             // sits inside both faces' trims.
             trim_ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
             trim_ts.dedup_by(|a, b| (*a - *b).abs() <= tol.parametric());
+            // Stops the section cannot tell apart are one stop: two
+            // crossings a few nanometres apart along it would make an
+            // interval of dust that one face keeps and the other drops.
+            {
+                let floor = (honest(section.tolerance, tol) * 3.0).max(tol.confusion() * 10.0);
+                let mut kept: Vec<f64> = Vec::with_capacity(trim_ts.len());
+                let mut held: Option<Point> = None;
+                for t in &trim_ts {
+                    let at = section
+                        .curve
+                        .point_at(at_param(*t, domain, section.closed), tol)?;
+                    if held.is_none_or(|h: Point| h.distance(at) > floor) {
+                        kept.push(*t);
+                        held = Some(at);
+                    }
+                }
+                trim_ts = kept;
+            }
             let mut candidates: Vec<(f64, f64)> = Vec::new();
             if section.closed {
                 let period = domain.1 - domain.0;
@@ -1658,6 +1703,25 @@ fn fill(
                 }
                 cuts.push(hi);
                 cuts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+                // Cuts the section cannot tell apart are one cut: two
+                // crossings a few nanometres apart along it would leave a
+                // piece of dust one face keeps and the other drops. The
+                // interval's own ends stay.
+                {
+                    let floor = (honest(section.tolerance, tol) * 3.0).max(tol.confusion() * 10.0);
+                    let mut kept: Vec<f64> = Vec::with_capacity(cuts.len());
+                    let mut held: Option<Point> = None;
+                    for (index, c) in cuts.iter().enumerate() {
+                        let at = section.curve.point_at(fold(*c, domain), tol)?;
+                        let last = index + 1 == cuts.len();
+                        if index == 0 || last || held.is_none_or(|h: Point| h.distance(at) > floor)
+                        {
+                            kept.push(*c);
+                            held = Some(at);
+                        }
+                    }
+                    cuts = kept;
+                }
                 for pair in cuts.windows(2) {
                     let (lo2, hi2) = (pair[0], pair[1]);
                     let from = section.curve.point_at(fold(lo2, domain), tol)?;
@@ -2971,11 +3035,14 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 .iter()
                 .filter(|c| c.target_from_a == from_a && c.target_face == fi)
                 .fold(PARAM_SNAP, |acc, c| acc.max(c.tolerance * 2.0))
-                .max(
-                    face.edges
-                        .iter()
-                        .fold(0.0_f64, |acc, e| acc.max(e.tolerance * 2.0)),
-                )
+                // An edge's end lands in the chart within its vertex's own
+                // recorded doubt plus its own image's: a projected pcurve is
+                // honest to the edge's tolerance, and the vertex it ends at
+                // was welded to some earlier gap.
+                .max(face.edges.iter().fold(0.0_f64, |acc, e| {
+                    acc.max(e.tolerance * 2.0)
+                        .max(e.ends_tolerance + e.tolerance)
+                }))
                 .max(
                     if sections.iter().any(|s| {
                         s.tolerance > 0.0
@@ -2991,6 +3058,16 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     },
                 );
             if *DEBUG_STRANDS {
+                eprintln!(
+                    "FACE-SNAP from_a={from_a} fi={fi}: snap {face_snap:.3e} edges {:?}",
+                    face.edges
+                        .iter()
+                        .map(|e| (
+                            format!("{:.2e}", e.tolerance),
+                            format!("{:.2e}", e.ends_tolerance)
+                        ))
+                        .collect::<Vec<_>>()
+                );
                 for (si, st) in strands.iter().enumerate() {
                     let tag = match st.tag {
                         Tag::Boundary { edge, range } => format!("Boundary e{edge} {range:?}"),
@@ -3186,8 +3263,9 @@ struct Rebuild<'m> {
     /// vertex, not merely coincide there.
     vertices: Vec<(Point, Shape)>,
     /// How far two honest descriptions of one junction may sit apart: a
-    /// hundred confusions as the floor, widened to twice the loosest contact
-    /// edge's or fitted section's own tolerance when one took part.
+    /// hundred confusions as the floor, widened to three times the loosest
+    /// contact edge's or fitted section's own tolerance when one took part
+    /// — the strand's own, the crossing's, and the edge's it stopped on.
     weld: f64,
     /// The paving's junctions, each minted as a vertex the first time a
     /// strand end lands inside it.
@@ -3317,6 +3395,18 @@ fn build_piece(
             let near = |a: (f64, f64), b: (f64, f64)| {
                 (a.0 - b.0).abs() <= tol.parametric() && (a.1 - b.1).abs() <= tol.parametric()
             };
+            if *DEBUG_WIRE && (range.1 - range.0).abs() < 1e-4 {
+                let kind = match &traversal.tag {
+                    Tag::Boundary { .. } => "boundary",
+                    Tag::Section { .. } => "section",
+                    Tag::Contact { .. } => "contact",
+                    Tag::Pole { .. } => "pole",
+                };
+                eprintln!(
+                    "DUST {kind} {key_edge} range {range:?} in piece from_a={} face={}",
+                    piece.from_a, piece.face
+                );
+            }
             let built = if let Some((.., shape)) = cache
                 .iter()
                 .find(|(k, s, r, _)| *k == key_edge && *s == key_kind && near(*r, range))
@@ -3602,7 +3692,7 @@ fn assemble_result(
             .iter()
             .map(|c| c.tolerance)
             .chain(fused.sections.iter().map(|s| s.tolerance))
-            .fold(0.0_f64, |acc, t| acc.max(honest(t, tol) * 2.0)),
+            .fold(0.0_f64, |acc, t| acc.max(honest(t, tol) * 3.0)),
         junctions: fused.junctions.iter().map(|j| (*j, None)).collect(),
     };
     let mut faces = Vec::new();

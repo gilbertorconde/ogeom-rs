@@ -36,6 +36,7 @@ pub(crate) fn marched_fillet(
     solid: &Shape,
     edge: &Shape,
     radius: f64,
+    mates: Option<(usize, &[crate::fillet::Mate])>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let (stored_guide, edge_range) = edge_curve(model, edge, tol)?;
@@ -286,6 +287,7 @@ pub(crate) fn marched_fillet(
             edge_range,
             [(&first, sign_first), (&second, sign_second)],
             [&face_first, &face_second],
+            mates,
             radius,
             convex,
             tol,
@@ -666,6 +668,7 @@ fn open_runout_wedge(
     edge_range: (f64, f64),
     hosts: [(&SurfaceGeometry, f64); 2],
     host_faces: [&Shape; 2],
+    mates: Option<(usize, &[crate::fillet::Mate])>,
     radius: f64,
     convex: bool,
     tol: Tolerances,
@@ -770,6 +773,60 @@ fn open_runout_wedge(
             if !terminates {
                 continue;
             }
+            // A mate of the same request ending at this vertex some way
+            // other than tangentially is a corner mate: the band runs on
+            // through that blend until the ball has left the material, and
+            // the cut trims the two against each other. A chain mate,
+            // leaving the vertex the way this crease arrives, is a junction
+            // the caps close flush.
+            let outward_here = {
+                let d = guide.d1_at(
+                    {
+                        let mut w = if end { w0 } else { w1 };
+                        if guide.is_periodic() {
+                            let (lo, hi) = guide.domain();
+                            w = lo + (w - lo).rem_euclid(hi - lo);
+                        }
+                        w
+                    },
+                    tol,
+                )?;
+                let m = d.magnitude();
+                let unit = if m > tol.confusion() {
+                    d / m
+                } else {
+                    Vector::ZERO
+                };
+                if end { -unit } else { unit }
+            };
+            let (chain_mate, corner_mate) = match mates {
+                None => (false, false),
+                Some((index, mates)) => {
+                    let mut chain = false;
+                    let mut corner = false;
+                    for (i, mate) in mates.iter().enumerate() {
+                        if i == index {
+                            continue;
+                        }
+                        for (p, leaving) in &mate.ends {
+                            if p.distance(at) > tol.confusion() * 1e3 {
+                                continue;
+                            }
+                            if leaving.cross(outward_here).magnitude() <= 1e-2
+                                && leaving.dot(outward_here) > 0.0
+                            {
+                                chain = true;
+                            } else {
+                                corner = true;
+                            }
+                        }
+                    }
+                    (chain, corner && !chain)
+                }
+            };
+            if chain_mate {
+                continue;
+            }
             // Where the ball's contacts stand against the host faces past
             // the window: `Out` of both is clear of the solid, `On` either
             // is a neighbouring blend's own rail — the seat goes on under
@@ -847,8 +904,12 @@ fn open_runout_wedge(
                             deflection,
                             tol,
                         )? == ogeom_algo::Containment::In;
-                        if inside == convex {
+                        if inside == convex && !corner_mate {
                             break;
+                        }
+                        if inside == convex {
+                            // Under the corner mate's blend still: walk on.
+                            continue;
                         }
                         cleared = Some(blend.spine[i]);
                     }
