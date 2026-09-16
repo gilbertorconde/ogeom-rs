@@ -1438,10 +1438,13 @@ fn a_cornered_ring_seamed_mid_leg_measures_pappus() {
 }
 
 #[test]
-fn a_skew_cornered_ring_refuses_by_name() {
-    // Corners with genuine out-of-plane turn: the parallel-carried frame
-    // leaves the far tangent's plane and the sheared sections no longer
-    // meet on their mitres. Refused, not sewn hoping.
+fn a_skew_cornered_ring_closes_on_its_mitres() {
+    // Corners with genuine out-of-plane turn. The frame reflected across
+    // each mitre plane lands both sheared sections on one ring, the
+    // loop's holonomy is spread along the legs as a twist — each straight
+    // leg a ruled skin between its two end rings — and the ring closes as
+    // a valid solid whose volume sits near area times perimeter, the
+    // twist alone bending it away from Pappus.
     let mut model = ogeom_topo::Model::new();
     let pts = [
         ogeom_math::Point::new(0.0, 0.0, 0.0),
@@ -1455,12 +1458,22 @@ fn a_skew_cornered_ring_refuses_by_name() {
         .unwrap()
         .shape;
     let profile = square_profile(&mut model, pts[0], pts[1] - pts[0], 4.0);
-    let err = ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-4, T)
-        .unwrap_err()
-        .to_string();
+    let built =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap();
     assert!(
-        err.contains("skew-cornered ring"),
-        "the skew ring names itself: {err}"
+        ogeom_algo::check(&model, &built.shape, T)
+            .unwrap()
+            .is_valid(),
+        "the skew ring is a valid solid"
+    );
+    let perimeter: f64 = (0..pts.len())
+        .map(|i| pts[i].distance(pts[(i + 1) % pts.len()]))
+        .sum();
+    let expected = 16.0 * perimeter;
+    let measured = volume(&model, &built.shape);
+    assert!(
+        (measured - expected).abs() / expected < 0.03,
+        "skew ring volume {measured} against A*L {expected}"
     );
 }
 

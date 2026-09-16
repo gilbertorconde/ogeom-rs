@@ -2174,9 +2174,22 @@ fn rmf_normals(stations: &[SpineStation]) -> Vec<Vector> {
         let c1 = v1.dot(v1);
         if c1 <= 1e-20 {
             // A corner's twin station: no travel to reflect through. The
-            // normal carries straight across, which is exactly the parallel
-            // transport a mitred joint's mirror symmetry needs.
-            normals.push(n);
+            // normal is reflected across the corner's mitre plane instead —
+            // for a vector square to the incoming tangent that is exactly
+            // the parallel transport about the corner's own axis, and the
+            // mirror symmetry is what lands both legs' sheared sections on
+            // one ring. A planar corner's normal lies in the mitre plane
+            // already and carries straight across; a skew corner's does
+            // not, and carrying it unchanged is what left the far leg's
+            // section off the mitre.
+            let bisector = t0 + t1;
+            let m = bisector.magnitude();
+            if m <= 1e-12 {
+                normals.push(n);
+                continue;
+            }
+            let b = bisector / m;
+            normals.push(n - b * (2.0 * n.dot(b)));
             continue;
         }
         let nl = n - v1 * (2.0 / c1 * v1.dot(n));

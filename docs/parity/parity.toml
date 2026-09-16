@@ -1127,9 +1127,11 @@ the wrap is one more mitre, the seam must stand on a corner, and the \
 planar Pappus volumes land to the last digit. The Frenet law rides the \
 loop too — single-valued round it, so it owes no reconciliation — with \
 every corner loop one rail shared by the two strips meeting there. A \
-ring seamed mid-leg butts its two half-legs on the seam's own ring. What \
-is owed on the loop: the skew-cornered ring whose parallel-carried frame \
-leaves the far tangent's plane. The code's refusal points here."""
+ring seamed mid-leg butts its two half-legs on the seam's own ring, and \
+a skew-cornered ring closes on its mitres: the frame is reflected across \
+each mitre plane, the loop's holonomy spread along the legs as a twist. \
+Nothing on the loop is owed; a corner against a curved leg on an open \
+spine still is."""
 claims = [
     "BRepOffsetAPI_MakePipe", "BRepOffsetAPI_MakePipeShell",
     "BRepOffsetAPI_MakeEvolved", "BRepSweep_*", "BRepFill", "BRepFill_*",
