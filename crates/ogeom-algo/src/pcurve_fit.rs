@@ -211,6 +211,7 @@ pub fn fit_projected_pcurve_capped(
             }
         }
     }
+    slide_into_chart(&mut trace, spans, ((ua, ub), (va, vb)));
     // Where the chart collapses — a sphere's pole, a cone's apex — the
     // u of a sample is atan2 of noise: the point determines no angle.
     // The *arc* does: a smooth curve through the pole approaches it at
@@ -325,9 +326,119 @@ pub fn fit_projected_pcurve_capped(
     ))
 }
 
+/// Slide a trace back into its chart by whole turns.
+///
+/// Unwrapped for continuity, a trace can end up a whole turn outside the
+/// chart it belongs to: a projection that starts near one edge of a closed
+/// chart and walks off it keeps walking, and the surface then refuses to be
+/// evaluated where its own trim lies — a face of the Voron assembly whose
+/// fitted v ran to −2.5π on a chart that stops at −π, and drew as a hole.
+///
+/// A rigid shift keeps the trace exactly as continuous as the unwrap left
+/// it and can only move it inward. One that genuinely spans more than a
+/// turn has nowhere to go and is left alone; one that fits nowhere whole
+/// takes the turn that centres it, which is the nearest thing to inside
+/// there is.
+fn slide_into_chart(
+    trace: &mut [ogeom_math::Point2],
+    spans: (f64, f64),
+    domain: ((f64, f64), (f64, f64)),
+) {
+    let ((ua, ub), (va, vb)) = domain;
+    for (across, span, lo, hi) in [(true, spans.0, ua, ub), (false, spans.1, va, vb)] {
+        if span <= 0.0 {
+            continue;
+        }
+        let read = |uv: &ogeom_math::Point2| if across { uv.x } else { uv.y };
+        let (mut least, mut most) = (f64::INFINITY, f64::NEG_INFINITY);
+        for uv in trace.iter() {
+            least = least.min(read(uv));
+            most = most.max(read(uv));
+        }
+        if !(least.is_finite() && most.is_finite()) || most - least > span {
+            continue;
+        }
+        let turns = {
+            let up = ((lo - least) / span).ceil();
+            let down = ((hi - most) / span).floor();
+            if up <= down {
+                // Somewhere it fits whole; the nearest such turn.
+                up.max(down.min(0.0))
+            } else {
+                (f64::midpoint(lo, hi) - f64::midpoint(least, most)) / span
+            }
+        };
+        let turns = if turns.is_finite() {
+            turns.round()
+        } else {
+            0.0
+        };
+        if turns == 0.0 {
+            continue;
+        }
+        for uv in trace.iter_mut() {
+            if across {
+                uv.x += turns * span;
+            } else {
+                uv.y += turns * span;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "test code")]
+    use ogeom_math::Point2;
+
+    /// A trace unwrapped clean off its chart is slid back by whole turns.
+    ///
+    /// The Voron assembly has a face whose fitted `v` ran from −2.5π to
+    /// −π on a chart that stops at −π: continuous, outside, and the surface
+    /// refuses to be asked about it, so the face drew as a hole.
+    #[test]
+    fn a_trace_that_walked_off_its_chart_is_slid_back() {
+        let pi = core::f64::consts::PI;
+        let chart = ((0.0, 1.0), (-pi, pi));
+        let turn = (0.0, 2.0 * pi);
+
+        // A whole turn below: slid up, and as continuous as it was.
+        let mut trace = vec![
+            Point2::new(0.5, -2.5 * pi),
+            Point2::new(0.5, -2.0 * pi),
+            Point2::new(0.5, -1.5 * pi),
+        ];
+        super::slide_into_chart(&mut trace, turn, chart);
+        assert!(
+            trace.iter().all(|at| at.y >= -pi && at.y <= pi),
+            "slid into the chart: {trace:?}"
+        );
+        for pair in trace.windows(2) {
+            assert!(
+                (pair[1].y - pair[0].y - 0.5 * pi).abs() < 1e-12,
+                "and rigidly"
+            );
+        }
+
+        // Already inside: untouched.
+        let mut held = vec![Point2::new(0.5, -1.0), Point2::new(0.5, 1.0)];
+        let was = held.clone();
+        super::slide_into_chart(&mut held, turn, chart);
+        assert_eq!(held, was);
+
+        // Wider than a turn: nowhere to slide to, and left alone.
+        let mut wide = vec![Point2::new(0.5, -4.0 * pi), Point2::new(0.5, 0.0)];
+        let was = wide.clone();
+        super::slide_into_chart(&mut wide, turn, chart);
+        assert_eq!(wide, was);
+
+        // An axis that does not close is not slid on at all.
+        let mut across = vec![Point2::new(9.0, 0.0), Point2::new(9.5, 0.0)];
+        let was = across.clone();
+        super::slide_into_chart(&mut across, (0.0, 2.0 * pi), chart);
+        assert_eq!(across, was);
+    }
+
     use super::*;
     use ogeom_core::Tolerances;
     use ogeom_geom::{CircleCurve, CylinderSurface};
