@@ -639,3 +639,45 @@ END-ISO-10303-21;
         assert!(!mesh.triangles.is_empty());
     }
 }
+
+/// A trim on a sliver patch stays in its own chart.
+///
+/// The Voron 2.4 assembly carries a degree 3×3 patch whose `u` direction is
+/// degenerate the whole way across: `du` is exactly zero along `v = 0` and
+/// four ten-thousandths at the far edge — a sliver four microns wide and a
+/// tenth of a millimetre long. The projector answered `u = 0` at the first
+/// sample and `u = 1` at every other, the fit swung across the chart to
+/// join them, and its control points were dragged back into the window by
+/// seven hundred and sixty-seven chart units, which the reader reported as
+/// millimetres of mesh error on a face a tenth of a millimetre across.
+///
+/// Every `u` on such a patch describes the same points to within the
+/// sliver's own width, so the trace takes one of them and the fit stays put.
+#[test]
+fn a_sliver_patch_s_trim_stays_in_its_chart() {
+    let text = corpus("spline_face_fit_runs_away.step");
+    let import = ogeom_io::read_step(&text, T).unwrap();
+    for w in &import.report.warnings {
+        eprintln!("REPORT warn: {w}");
+    }
+    let short: Vec<&String> = import
+        .report
+        .warnings
+        .iter()
+        .filter(|w| w.contains("pcurve fit stopped"))
+        .collect();
+    assert!(short.is_empty(), "the trims fit: {short:?}");
+
+    // And the face is still there, drawn where it belongs.
+    let model = import.document.model();
+    let faces =
+        ogeom_topo::explore_unique(model, &import.solids[0], ogeom_topo::ShapeType::Face).unwrap();
+    let mesh =
+        ogeom_mesh::triangulate(model, &faces[0], ogeom_mesh::Deflection::default(), T).unwrap();
+    assert!(!mesh.triangles.is_empty(), "the sliver meshes");
+    let bounds = ogeom_algo::shape_bounds(model, &import.solids[0], T).unwrap();
+    assert!(
+        bounds.diagonal() < 1.0,
+        "and stays a tenth of a millimetre across: {bounds:?}"
+    );
+}

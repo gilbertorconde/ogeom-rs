@@ -64,3 +64,12 @@ a two-edge hole loop straddling the drum's chart seam. The reproducer for
 a hole whose two halves arrive on different branches of a periodic chart
 — a loop that never closes in the chart and a hole the mesher draws but
 cannot cut.
+
+## spline_face_fit_runs_away.step
+
+Sixty entities, the transitive closure of `#1740258` from the Voron 2.4 r2
+assembly with a shell and a solid wrapped round it so the reader yields
+something: a degree 3×3 patch whose `u` direction is degenerate the whole
+way across — a sliver four microns wide and a tenth of a millimetre long —
+and the three spline trims that bound it. The reproducer for a fit with no
+sound sample to lean on (issue #41).

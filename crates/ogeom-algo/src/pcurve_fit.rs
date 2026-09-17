@@ -6,10 +6,14 @@
 //! it does not — a spline surface, mostly — the pcurve is *fitted at the
 //! curve's own parameters*: sample the edge, project each sample into the
 //! chart, fit the trace with the parameters held fixed, so the same-parameter
-//! law holds by construction and the reported error is the true chart
-//! deviation. This honours the standing decision that an exact curve never
-//! carries a fitted pcurve silently: the fit's error is returned, and the
-//! callers widen tolerances and warn with it.
+//! law holds by construction. This honours the standing decision that an
+//! exact curve never carries a fitted pcurve silently: the fit's error is
+//! returned, and the callers widen tolerances and warn with it. That error
+//! is reported as a *length*, in the model's own units: the fitted pcurve is
+//! walked through the surface and compared against the trace it was fitted
+//! to. A chart's units are whatever the file chose, and no single scale
+//! converts them — one Voron patch spans four microns across its `u` and ten
+//! millimetres along its `v`.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
@@ -17,9 +21,9 @@ use ogeom_geom::Surface as _;
 use ogeom_geom::{Curve, PlanarCurve, SurfaceGeometry};
 use ogeom_math::Point;
 
-/// The fitted pcurve, its fit error, whether the target was met, the worst
-/// distance any sample sat from the surface, and the slop warning to record
-/// when that distance is large enough to say out loud.
+/// The fitted pcurve, its fit error as a length, whether the target was met,
+/// the worst distance any sample sat from the surface, and the slop warning
+/// to record when that distance is large enough to say out loud.
 pub type FittedPcurve = OgeomResult<(PlanarCurve, f64, bool, f64, Option<String>)>;
 
 pub(crate) fn chart_of(surface: &SurfaceGeometry, p: Point) -> Option<ogeom_math::Point2> {
@@ -79,7 +83,7 @@ pub fn fit_projected_pcurve(
 /// The reader draws its line at a millimetre — below it is a file's own
 /// slop, above it a wrong pairing — but a *healer* acts on instruction, and
 /// the instruction carries the cap. Returns the fitted pcurve, the fit's
-/// reached error, whether it met its target, the worst measured
+/// reached error as a length, whether it met its target, the worst measured
 /// edge-to-surface offset, and the slop note when that offset is worth
 /// saying out loud.
 ///
@@ -96,11 +100,10 @@ pub fn fit_projected_pcurve_capped(
     tol: Tolerances,
 ) -> FittedPcurve {
     const SAMPLES: usize = 96;
-    let mut worst_off = 0.0_f64;
     let mut parameters = Vec::with_capacity(SAMPLES + 1);
     let mut trace = Vec::with_capacity(SAMPLES + 1);
-    let mut space_run = 0.0;
-    let mut parameter_run = 0.0;
+    let mut points = Vec::with_capacity(SAMPLES + 1);
+    let mut offs = Vec::with_capacity(SAMPLES + 1);
     let mut previous: Option<(Point, ogeom_math::Point2)> = None;
     for i in 0..=SAMPLES {
         #[allow(clippy::cast_precision_loss)]
@@ -148,29 +151,35 @@ pub fn fit_projected_pcurve_capped(
                 }
             }
         };
-        // The cap separates a file's own slop from an edge paired with
-        // the wrong surface. Slop is routinely a micron or two, but real
-        // community exports carry as much as 0.34 mm (issue #15) — while a
-        // wrong pairing misses by the distance between two different
-        // surfaces of the body, whole millimetres. One millimetre stands
-        // between the worst slop observed and the smallest wrong pairing
-        // plausible. Slop inside the cap is accepted and *recorded*: the
-        // edge's tolerance is widened to cover it, so the model says what
-        // it knows instead of refusing to triangulate.
-        if off > cap {
-            ogeom_bail!(
-                Construction,
-                "the edge sits {off:.2e} from the surface it should bound"
-            );
-        }
-        worst_off = worst_off.max(off);
-        if let Some((lp, luv)) = previous {
-            space_run += p.distance(lp);
-            parameter_run += uv.distance(luv);
-        }
         previous = Some((p, uv));
         parameters.push(t);
         trace.push(uv);
+        points.push(p);
+        offs.push(off);
+    }
+    retry_stalled(surface, &points, &mut trace, &mut offs, tol);
+    // The cap separates a file's own slop from an edge paired with the
+    // wrong surface. Slop is routinely a micron or two, but real community
+    // exports carry as much as 0.34 mm (issue #15) — while a wrong pairing
+    // misses by the distance between two different surfaces of the body,
+    // whole millimetres. One millimetre stands between the worst slop
+    // observed and the smallest wrong pairing plausible. Slop inside the
+    // cap is accepted and *recorded*: the edge's tolerance is widened to
+    // cover it, so the model says what it knows instead of refusing to
+    // triangulate. Judged after the retry, so a projection that stalled
+    // cannot refuse an edge that is actually on its surface.
+    let worst_off = offs.iter().copied().fold(0.0_f64, f64::max);
+    if worst_off > cap {
+        ogeom_bail!(
+            Construction,
+            "the edge sits {worst_off:.2e} from the surface it should bound"
+        );
+    }
+    let mut space_run = 0.0;
+    let mut parameter_run = 0.0;
+    for i in 1..trace.len() {
+        space_run += points[i].distance(points[i - 1]);
+        parameter_run += trace[i].distance(trace[i - 1]);
     }
     // A trace on a periodic chart may cross the seam mid-edge; unwrap it
     // pointwise so the fit sees a continuous curve. Closure, not
@@ -227,7 +236,22 @@ pub fn fit_projected_pcurve_capped(
                 .is_ok_and(|(du, dv)| du.magnitude() < dv.magnitude() * 1e-3)
         })
         .collect();
-    if weak.iter().any(|w| *w) && weak.iter().filter(|w| !**w).count() >= 2 {
+    if weak.iter().all(|w| *w) && !weak.is_empty() {
+        // Not a row that collapses but a whole patch that does: a sliver
+        // four microns wide and a tenth of a millimetre long, where `u` is
+        // noise everywhere and the projector answers 0 at one sample and 1
+        // at the next. A fit through that swings across the chart and its
+        // controls are dragged back by hundreds of units. Any `u` describes
+        // the same points to within the sliver's own width, so they all
+        // take one: the middle of what the projections claimed, which is
+        // the least arbitrary of the arbitrary answers.
+        let mut claimed: Vec<f64> = trace.iter().map(|uv| uv.x).collect();
+        claimed.sort_by(f64::total_cmp);
+        let held = claimed[claimed.len() / 2];
+        for uv in &mut trace {
+            uv.x = held;
+        }
+    } else if weak.iter().any(|w| *w) && weak.iter().filter(|w| !**w).count() >= 2 {
         let strong: Vec<usize> = (0..trace.len()).filter(|&i| !weak[i]).collect();
         let u_span = if surface.is_periodic_u() {
             ua.max(ub) - ua.min(ub)
@@ -274,9 +298,9 @@ pub fn fit_projected_pcurve_capped(
     // reader-built analytic with its enormous extents — refuses evaluation
     // a hair outside it. The control points clamp into the window on the
     // non-periodic axes: the curve lives in its controls' hull, so the
-    // clamp is a guarantee, and the distance it moved joins the reported
-    // error instead of being hidden. Periodic axes stay free — an unwrapped
-    // trace crosses the seam on purpose.
+    // clamp is a guarantee. Whatever the clamp cost is not hidden either —
+    // it is the clamped curve that is measured below. Periodic axes stay
+    // free: an unwrapped trace crosses the seam on purpose.
     let fitted = {
         let ((wa, wb), (va2, vb2)) = surface.domain();
         let clamp_u = !(surface.is_periodic_u() || surface.is_closed_u(tol));
@@ -301,8 +325,7 @@ pub fn fit_projected_pcurve_capped(
             if moved > 0.0 {
                 ogeom_geom::fit::Fitted {
                     curve: ogeom_geom::BSpline2d::new(knots, control, tol)?,
-                    error: fitted.error + moved,
-                    met: fitted.met && fitted.error + moved <= target,
+                    ..fitted
                 }
             } else {
                 fitted
@@ -311,19 +334,92 @@ pub fn fit_projected_pcurve_capped(
             fitted
         }
     };
+    // What the caller is told, as a length. The fitter reports its error
+    // in *chart* units, and a chart's units are whatever the file chose: one
+    // patch in the Voron assembly spans four microns across its `u` and ten
+    // millimetres along its `v`, so no single scale converts the one number
+    // into the other — a control point dragged back into that chart by the
+    // clamp read as seven hundred millimetres of mesh error, on a face a
+    // tenth of a millimetre across. So the fitted curve is walked instead,
+    // through the surface, against the trace it was fitted to: that
+    // difference is the fit's own and is measured where the mesh will be.
+    let mut error = 0.0_f64;
+    for (index, t) in parameters.iter().enumerate() {
+        let Ok(at) = ogeom_geom::Curve2d::point_at(&fitted.curve, *t, tol) else {
+            continue;
+        };
+        let (Ok(fitted_at), Ok(traced_at)) = (
+            surface.point_at(at.x, at.y, tol),
+            surface.point_at(trace[index].x, trace[index].y, tol),
+        ) else {
+            continue;
+        };
+        error = error.max(fitted_at.distance(traced_at));
+    }
+    let met = error <= tol.confusion() * 1e2;
     let slop = (worst_off > tol.confusion() * 1e3).then(|| {
         format!(
             "an edge sits up to {worst_off:.2e} from the surface it \
              bounds; the file's own slop, carried into the chart"
         )
     });
-    Ok((
-        fitted.curve.into(),
-        fitted.error,
-        fitted.met,
-        worst_off,
-        slop,
-    ))
+    Ok((fitted.curve.into(), error, met, worst_off, slop))
+}
+
+/// Re-project the samples a stalled projection left behind.
+///
+/// Where a chart collapses — a spline patch whose whole `v = 0` row is a
+/// single point — the projector has no direction to move in, and it answers
+/// with the pole's own parameters and the distance to it. Four consecutive
+/// samples of one Voron edge came back pinned to such a row, the last of
+/// them a tenth of a millimetre out; the reader repeated that as the file's
+/// own boundary slop, widened the edge to cover it, and the fitter tried to
+/// draw a curve through it. A sample that landed badly is retried from a
+/// neighbour that landed well — the same seeding the forward walk already
+/// trusts, run in both directions so a run of them unwinds from whichever
+/// end is sound. The retry is kept only when it lands closer, so it can
+/// never make an honest projection worse: a file's real slop is left alone.
+fn retry_stalled(
+    surface: &SurfaceGeometry,
+    points: &[Point],
+    trace: &mut [ogeom_math::Point2],
+    offs: &mut [f64],
+    tol: Tolerances,
+) {
+    let sound = tol.confusion() * 1e5;
+    if offs.iter().all(|off| *off <= sound) {
+        return;
+    }
+    for backwards in [true, false] {
+        let order: Vec<usize> = if backwards {
+            (0..offs.len()).rev().collect()
+        } else {
+            (0..offs.len()).collect()
+        };
+        for i in order {
+            if offs[i] <= sound {
+                continue;
+            }
+            let Some(j) = (if backwards {
+                i.checked_add(1)
+            } else {
+                i.checked_sub(1)
+            }) else {
+                continue;
+            };
+            if offs.get(j).is_none_or(|off| *off > sound) {
+                continue;
+            }
+            let seed = (trace[j].x, trace[j].y);
+            if let Ok(found) =
+                crate::measure::project_on_surface_from(surface, points[i], seed, tol)
+                && found.distance < offs[i]
+            {
+                trace[i] = ogeom_math::Point2::new(found.parameters.0, found.parameters.1);
+                offs[i] = found.distance;
+            }
+        }
+    }
 }
 
 /// Slide a trace back into its chart by whole turns.
@@ -445,6 +541,83 @@ mod tests {
     use ogeom_math::{Circle, Cylinder, Frame};
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// A sample the projector left at a pole is retried from its neighbour.
+    ///
+    /// The patch is `S(u, v) = v·C(u)`: its whole `v = 0` row is the origin,
+    /// so a projection that reaches the pole has no direction left to move
+    /// in and stops there, however far off it is. Seeding from the pole is
+    /// shown stuck first — that is the trap the forward walk falls into,
+    /// once per Voron edge that starts on such a row — and the retry from a
+    /// sound neighbour is shown to get out of it.
+    #[test]
+    fn a_sample_stalled_at_a_pole_is_retried_from_its_neighbour() {
+        use ogeom_geom::{BSplineSurface, Surface as _};
+        use ogeom_math::{ControlGrid, KnotVector};
+
+        let mut control = Vec::new();
+        for i in 0..4 {
+            let across = -1.0 + 2.0 * f64::from(i) / 3.0;
+            for j in 0..4 {
+                let out = f64::from(j) / 3.0;
+                control.push(Point::new(out, across * out, (0.5 + across * across) * out));
+            }
+        }
+        let grid = ControlGrid::new(control, 4, 4).unwrap();
+        let cone: SurfaceGeometry = BSplineSurface::new(
+            KnotVector::clamped_uniform(3, 4).unwrap(),
+            KnotVector::clamped_uniform(3, 4).unwrap(),
+            &grid,
+            T,
+        )
+        .unwrap()
+        .into();
+        assert!(
+            cone.d1_at(0.5, 0.0, T).unwrap().0.magnitude() < 1e-12,
+            "the v = 0 row is a pole"
+        );
+
+        let at = cone.point_at(1.0, 0.2, T).unwrap();
+        let stuck = crate::measure::project_on_surface_from(&cone, at, (0.0, 0.0), T).unwrap();
+        assert!(
+            stuck.distance > 0.1,
+            "a projection seeded at the pole stays there: {stuck:?}"
+        );
+
+        let mut trace = vec![
+            ogeom_math::Point2::new(0.0, 0.0),
+            ogeom_math::Point2::new(0.0, 0.0),
+            ogeom_math::Point2::new(1.0, 0.5),
+        ];
+        let points = vec![
+            cone.point_at(1.0, 0.1, T).unwrap(),
+            at,
+            cone.point_at(1.0, 0.5, T).unwrap(),
+        ];
+        let mut offs = vec![points[0].distance(Point::ORIGIN), stuck.distance, 0.0];
+        retry_stalled(&cone, &points, &mut trace, &mut offs, T);
+        for (index, off) in offs.iter().enumerate() {
+            assert!(
+                *off < T.confusion(),
+                "sample {index} found its surface: {off:.3e}"
+            );
+        }
+        assert!(
+            (trace[1].x - 1.0).abs() < 1e-6 && (trace[1].y - 0.2).abs() < 1e-6,
+            "and its own parameters: {:?}",
+            trace[1]
+        );
+
+        // An honest miss is not a stall: nothing lands closer, so the
+        // file's own slop survives the retry untouched.
+        let adrift = Point::new(0.0, 0.0, -0.5);
+        let mut honest = vec![trace[2], ogeom_math::Point2::new(1.0, 0.5)];
+        let was = honest.clone();
+        let mut misses = vec![0.0, 0.5];
+        retry_stalled(&cone, &[points[2], adrift], &mut honest, &mut misses, T);
+        assert_eq!(honest[1], was[1]);
+        assert!((misses[1] - 0.5).abs() < 1e-12);
+    }
 
     /// A boundary 0.3 mm off its surface fits, and says so.
     ///
