@@ -16,18 +16,8 @@ use ogeom::topo::{Model, Shape};
 
 const T: Tolerances = Tolerances::millimetres();
 
-/// Finely enough that the mesh is not the thing under test.
-///
-/// A solid built here is measured in closed form — its faces are analytic
-/// and their trims are rectangles and discs — while the one read back is
-/// meshed, because the reader re-derives each edge's range and leaves a
-/// bore wall's two rims on chart branches that do not chain (issue #38).
-/// At the default chord that difference is a tenth of a percent on a
-/// drilled block, which says nothing about the round trip; at this one it
-/// is a few parts in a hundred thousand, which is what the curved cases
-/// below are held to — still four orders inside the feature they test.
 fn volume(model: &Model, shape: &Shape) -> f64 {
-    ogeom::algo::volume_properties(model, shape, Deflection::with_chord(1e-3).unwrap(), T)
+    ogeom::algo::volume_properties(model, shape, Deflection::default(), T)
         .unwrap()
         .mass
 }
@@ -75,7 +65,7 @@ fn a_cylinder_round_trips_with_its_seam() {
     // refuse to tessellate at all, and one that miscounted the turn would
     // miss by a factor, not an epsilon.
     assert!(
-        (recovered - original).abs() < original * 1e-4,
+        (recovered - original).abs() < original * 1e-6,
         "{recovered} against {original}"
     );
 }
@@ -88,7 +78,7 @@ fn a_torus_round_trips_doubly_periodic() {
         .shape;
     let (original, recovered, _) = round_trip(model, solid);
     assert!(
-        (recovered - original).abs() < original * 1e-4,
+        (recovered - original).abs() < original * 1e-6,
         "{recovered} against {original}"
     );
 }
@@ -107,8 +97,13 @@ fn a_drilled_block_round_trips_through_its_boolean_faces() {
         .unwrap()
         .shape;
     let (original, recovered, _) = round_trip(model, solid);
+    // Issue #38's acceptance. The wall's rims come back chained — each
+    // image shifted by whole periods until its start meets the last one's
+    // end — so the chart is the rectangle it was, and the two solids
+    // tessellate the same way. They used to differ by a tenth of a percent
+    // at this chord, which was the mesh reading a torn chart.
     assert!(
-        (recovered - original).abs() < original * 1e-4,
+        (recovered - original).abs() < original * 1e-9,
         "{recovered} against {original}"
     );
 }
@@ -172,7 +167,7 @@ fn a_spline_walled_prism_round_trips_through_126_and_128() {
     .shape;
     let (original, recovered, _) = round_trip(model, solid);
     assert!(
-        (recovered - original).abs() < original * 1e-4,
+        (recovered - original).abs() < original * 1e-6,
         "{recovered} against {original}"
     );
 }
@@ -294,4 +289,135 @@ fn f5_a_closed_spline_wall_survives_both_formats() {
         (via_step - via_iges).abs() < original * 1e-9,
         "one fix, two readers: {via_step} vs {via_iges}"
     );
+}
+
+/// Every wire of a recovered face closes in its own chart, both formats.
+///
+/// A periodic chart offers a branch per turn, all describing the same
+/// points, and a reader that derives each edge's image on its own has no
+/// reason to pick one over another. A drilled block came back with its
+/// bore wall's two rims whole turns apart — the right circles, neither
+/// meeting the seam the wire closes on — and nothing downstream said so:
+/// the tessellator folds into the chart and copes, and the error showed up
+/// as a tenth of a percent of volume.
+///
+/// Both readers now slide each image by whole periods until its start
+/// meets where the last one ended, and this walks the result to say so.
+#[test]
+fn a_recovered_wire_closes_in_its_own_chart() {
+    use ogeom::geom::Curve2d as _;
+    use ogeom::topo::{EdgeRepr, Orientation, ShapeType, explore_unique};
+
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (30.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(15.0, 10.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let drill = ogeom::algo::make_cylinder(&mut model, frame, 4.0, 12.0, T)
+        .unwrap()
+        .shape;
+    let solid = ogeom::boolean::cut(&mut model, &block, &drill, T)
+        .unwrap()
+        .shape;
+    let mut document = ogeom::doc::Document::over(std::mem::take(&mut model));
+    document.add_part("part", solid);
+
+    let step = ogeom::io::read_step(&ogeom::io::write_step(&document, T).unwrap(), T).unwrap();
+    let iges = ogeom::io::read_iges(&ogeom::io::write_iges(&document, T).unwrap(), T).unwrap();
+    for (format, model, solid) in [
+        ("step", step.document.model(), &step.solids[0]),
+        ("iges", iges.document.model(), &iges.solids[0]),
+    ] {
+        let mut walls = 0;
+        for face in explore_unique(model, solid, ShapeType::Face).unwrap() {
+            let surface = model
+                .node(&face)
+                .and_then(|n| n.data().as_face())
+                .map(|d| d.surface)
+                .unwrap();
+            if matches!(
+                model.geometry().surface(surface),
+                Some(ogeom::geom::SurfaceGeometry::Cylinder(_))
+            ) {
+                walls += 1;
+            }
+            for wire in model.ordered_children_of(&face).unwrap() {
+                let mut first = None;
+                let mut previous: Option<ogeom::math::Point2> = None;
+                // Begun at an edge that is not the seam, so the first step
+                // has somewhere to continue from: which column a seam's
+                // occurrence takes is decided by the ring, as the
+                // tessellator decides it, and not by any flag.
+                let mut ring = model.ordered_children_of(&wire).unwrap();
+                if let Some(at) = ring.iter().position(|e| {
+                    let data = model.node(e).unwrap().data().as_edge().unwrap();
+                    !matches!(
+                        data.pcurve_for(surface, e.location()),
+                        Some(EdgeRepr::Seam { .. })
+                    )
+                }) {
+                    ring.rotate_left(at);
+                }
+                for edge in ring {
+                    let back = edge.orientation() == Orientation::Reversed;
+                    let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+                    let (image, range) = match data.pcurve_for(surface, edge.location()) {
+                        Some(EdgeRepr::PCurve { curve, range, .. }) => {
+                            (model.geometry().pcurve(*curve), *range)
+                        }
+                        // The column this occurrence takes: the one whose
+                        // oriented start continues where the walk has got to.
+                        Some(EdgeRepr::Seam {
+                            forward,
+                            reversed,
+                            range,
+                            ..
+                        }) => {
+                            let start = if back { range.1 } else { range.0 };
+                            let nearest = |id| {
+                                model
+                                    .geometry()
+                                    .pcurve(id)
+                                    .and_then(|pc| pc.point_at(start, T).ok())
+                                    .zip(previous)
+                                    .map_or(f64::INFINITY, |(at, previous)| previous.distance(at))
+                            };
+                            let id = if nearest(*forward) <= nearest(*reversed) {
+                                *forward
+                            } else {
+                                *reversed
+                            };
+                            (model.geometry().pcurve(id), *range)
+                        }
+                        _ => (None, (0.0, 0.0)),
+                    };
+                    let Some(image) = image else { continue };
+                    let (start, end) = if back {
+                        (range.1, range.0)
+                    } else {
+                        (range.0, range.1)
+                    };
+                    let at = image.point_at(start, T).unwrap();
+                    let leaves = image.point_at(end, T).unwrap();
+                    if let Some(previous) = previous {
+                        assert!(
+                            previous.distance(at) < 1e-6,
+                            "{format}: a wire jumps {} across its chart",
+                            previous.distance(at)
+                        );
+                    }
+                    first.get_or_insert(at);
+                    previous = Some(leaves);
+                }
+                if let (Some(first), Some(previous)) = (first, previous) {
+                    assert!(
+                        previous.distance(first) < 1e-6,
+                        "{format}: a wire does not close in its chart, by {}",
+                        previous.distance(first)
+                    );
+                }
+            }
+        }
+        assert_eq!(walls, 1, "{format}: the bore's wall came back");
+    }
 }

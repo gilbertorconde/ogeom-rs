@@ -34,6 +34,10 @@ use ogeom_math::{
 use ogeom_topo::{Location, Model, Shape};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+/// One use a bound makes of an edge: the edge as the loop walks it, the edge
+/// as it was built, the file's id for it, and the curve and range it carries.
+type BoundUse = (Shape, Shape, u64, Curve, (f64, f64));
+
 /// How far a plane or a cylinder read from a file extends past what anything
 /// in the file uses. A face's trim is its wires; the surface's domain is only
 /// the parameter window, and this one is generous without being unbounded.
@@ -1097,7 +1101,7 @@ impl Reader<'_> {
                 continue;
             }
             let loop_args = self.args(loop_id, "EDGE_LOOP")?;
-            let mut uses: Vec<(Shape, u64)> = Vec::new();
+            let mut uses: Vec<BoundUse> = Vec::new();
             for oe in loop_args.get(1).and_then(Arg::list).unwrap_or(&[]) {
                 let Some(oe_id) = oe.reference() else {
                     continue;
@@ -1125,25 +1129,13 @@ impl Reader<'_> {
                 } else {
                     shape.reversed()
                 };
-                uses.push((placed, edge_id));
-
-                if annotated.insert(edge_id) {
-                    self.attach_pcurves(
-                        id,
-                        edge_id,
-                        &shape,
-                        &curve,
-                        range,
-                        &surface,
-                        surface_id,
-                        edge_uses.get(&edge_id).copied().unwrap_or(1) > 1,
-                    )?;
-                }
+                uses.push((placed, shape, edge_id, curve, range));
             }
             if !bound_forward {
                 uses.reverse();
             }
-            let edges: Vec<Shape> = uses.into_iter().map(|(s, _)| s).collect();
+            self.chart_bound(id, &uses, &surface, surface_id, &edge_uses, &mut annotated)?;
+            let edges: Vec<Shape> = uses.into_iter().map(|(placed, ..)| placed).collect();
             if edges.is_empty() {
                 continue;
             }
@@ -1261,7 +1253,111 @@ impl Reader<'_> {
 
     /// Attach this face's pcurve — or both seam sides — to an edge.
     #[allow(clippy::too_many_arguments)]
-    fn attach_pcurves(
+    /// One use a bound makes of an edge: the edge as the loop walks it, the
+    /// edge as it was built, the file's id for it, and its curve and range.
+    /// One bound's images, chained around the face's chart.
+    ///
+    /// Each is derived on its own — the exact projection where the pair has
+    /// a closed form, the fitted one where it does not — and a periodic
+    /// chart then leaves a branch to choose. Chosen edge by edge the choice
+    /// is arbitrary and the wire comes apart: a drilled block's bore wall
+    /// reads back with one rim two whole turns from the other, both the
+    /// right circle and neither meeting the seam the wire closes on. So
+    /// each image after the first is slid by whole periods until its start
+    /// meets where the last one ended.
+    ///
+    /// A seam falls out of the same walk. The wire uses it twice, up one
+    /// column of the chart and down the other, and those columns are one
+    /// image a period apart — so the walk finds both, and the use that runs
+    /// forward is the forward side. Where it cannot, because the chart
+    /// closes without being periodic, the other column goes a chart's width
+    /// over as it always did.
+    fn chart_bound(
+        &mut self,
+        face_id: u64,
+        uses: &[BoundUse],
+        surface: &SurfaceGeometry,
+        surface_id: ogeom_topo::SurfaceId,
+        edge_uses: &HashMap<u64, usize>,
+        annotated: &mut HashSet<u64>,
+    ) -> OgeomResult<()> {
+        use ogeom_geom::Curve2d as _;
+        let mut images: HashMap<u64, PlanarCurve> = HashMap::new();
+        let mut sides: HashMap<u64, (Option<PlanarCurve>, Option<PlanarCurve>)> = HashMap::new();
+        let mut order: Vec<u64> = Vec::new();
+        let mut previous: Option<ogeom_math::Point2> = None;
+        for (placed, shape, edge_id, curve, range) in uses {
+            if !images.contains_key(edge_id) {
+                let Some(image) =
+                    self.image_for(face_id, *edge_id, shape, curve, *range, surface)?
+                else {
+                    continue;
+                };
+                images.insert(*edge_id, image);
+                order.push(*edge_id);
+            }
+            let Some(image) = images.get(edge_id).cloned() else {
+                continue;
+            };
+            let backwards = placed.orientation() == ogeom_topo::Orientation::Reversed;
+            let (start, end) = if backwards {
+                (range.1, range.0)
+            } else {
+                (range.0, range.1)
+            };
+            let image =
+                crate::pcurves::shifted_to_meet(&image, start, previous, surface, self.tol)?;
+            previous = Some(image.point_at(end, self.tol)?);
+            let walked = sides.entry(*edge_id).or_default();
+            if backwards {
+                walked.1 = Some(image);
+            } else {
+                walked.0 = Some(image);
+            }
+        }
+        for edge_id in order {
+            if !annotated.insert(edge_id) {
+                continue;
+            }
+            let Some((shape, range)) = uses
+                .iter()
+                .find(|(_, _, id, _, _)| *id == edge_id)
+                .map(|(_, shape, _, _, range)| (shape.clone(), *range))
+            else {
+                continue;
+            };
+            let Some(image) = images.get(&edge_id).cloned() else {
+                continue;
+            };
+            let walked = sides.remove(&edge_id).unwrap_or((None, None));
+            let seam = edge_uses.get(&edge_id).copied().unwrap_or(1) > 1;
+            let columns = match &walked {
+                (Some(forward), Some(reversed)) => {
+                    let at = forward.point_at(range.0, self.tol)?;
+                    let other = reversed.point_at(range.0, self.tol)?;
+                    (at.distance(other) > self.tol.confusion())
+                        .then(|| (forward.clone(), reversed.clone()))
+                }
+                _ => None,
+            };
+            match (seam, columns) {
+                (true, Some((forward, reversed))) => {
+                    self.record_columns(&shape, forward, reversed, surface_id, range)?;
+                }
+                (true, None) => {
+                    self.record_pcurve(&shape, image, surface_id, true, range)?;
+                }
+                (false, _) => {
+                    let (forward, reversed) = walked;
+                    let placed = forward.or(reversed).unwrap_or(image);
+                    self.record_pcurve(&shape, placed, surface_id, false, range)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn image_for(
         &mut self,
         face_id: u64,
         edge_id: u64,
@@ -1269,9 +1365,7 @@ impl Reader<'_> {
         curve: &Curve,
         range: (f64, f64),
         surface: &SurfaceGeometry,
-        surface_id: ogeom_topo::SurfaceId,
-        seam: bool,
-    ) -> OgeomResult<()> {
+    ) -> OgeomResult<Option<PlanarCurve>> {
         let widen = |p: PlanarCurve| -> PlanarCurve {
             // A line pcurve evaluates anywhere; its stated domain must still
             // cover the edge's range, which for a wrapped circle runs past
@@ -1291,7 +1385,7 @@ impl Reader<'_> {
         if let Some(prepared) = self.pcurves.remove(&(face_id, edge_id)) {
             match prepared {
                 PreparedPcurve::Exact(exact) => {
-                    return self.record_pcurve(edge, widen(exact), surface_id, seam, range);
+                    return Ok(Some(widen(exact)));
                 }
                 PreparedPcurve::Fitted {
                     curve: fitted,
@@ -1312,12 +1406,12 @@ impl Reader<'_> {
                     {
                         data.tolerance = data.tolerance.widen_to(worst_off + self.tol.confusion());
                     }
-                    return self.record_pcurve(edge, fitted, surface_id, seam, range);
+                    return Ok(Some(fitted));
                 }
                 PreparedPcurve::Refused(why) => {
                     self.report.warnings.push(why);
                     self.note_untrimmed(face_id);
-                    return Ok(());
+                    return Ok(None);
                 }
             }
         }
@@ -1357,12 +1451,12 @@ impl Reader<'_> {
                              surface ({e}); the face may not triangulate"
                             ));
                             self.note_untrimmed(face_id);
-                            return Ok(());
+                            return Ok(None);
                         }
                     }
                 }
             };
-        self.record_pcurve(edge, pcurve, surface_id, seam, range)
+        Ok(Some(pcurve))
     }
 
     /// Count one occurrence of a warning kind toward the summary.
@@ -1407,8 +1501,28 @@ impl Reader<'_> {
         }
     }
 
+    /// Attach a seam whose two columns the wire's own walk already found.
+    fn record_columns(
+        &mut self,
+        edge: &Shape,
+        forward: PlanarCurve,
+        reversed: PlanarCurve,
+        surface_id: ogeom_topo::SurfaceId,
+        range: (f64, f64),
+    ) -> OgeomResult<()> {
+        ogeom_algo::attach_seam(
+            &mut self.model,
+            edge,
+            forward,
+            reversed,
+            surface_id,
+            Location::identity(),
+            range,
+        )
+    }
+
     /// Attach a derived pcurve, seaming it where the edge bounds the chart
-    /// twice. The tail of `attach_pcurves`, shared with the prepared path.
+    /// twice and the walk could not say where its other column stands.
     fn record_pcurve(
         &mut self,
         edge: &Shape,

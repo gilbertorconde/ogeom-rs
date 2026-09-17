@@ -876,47 +876,166 @@ impl<'a> Reader<'a> {
             ogeom_algo::make_face_on(&mut self.model, surface_id, &wire_shapes, self.tol)?.shape;
 
         for edges in &wires {
-            let mut counts: HashMap<ogeom_topo::TShapeId, usize> = HashMap::new();
-            for edge in edges {
-                *counts.entry(edge.node()).or_default() += 1;
-            }
-            let mut attached: std::collections::HashSet<ogeom_topo::TShapeId> =
-                std::collections::HashSet::new();
-            for edge in edges {
-                if !attached.insert(edge.node()) {
-                    continue;
-                }
-                let (curve, range) = {
-                    let Some(data) = self.model.node(edge).and_then(|n| n.data().as_edge()) else {
-                        continue;
-                    };
-                    let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d()
-                    else {
-                        continue;
-                    };
-                    let Some(geometry) = self.model.geometry().curve(*curve) else {
-                        continue;
-                    };
-                    (geometry.clone(), *range)
-                };
-                let seam = counts.get(&edge.node()).copied().unwrap_or(0) > 1;
-                self.attach(edge, &curve, range, &surface, surface_id, seam)?;
-            }
+            self.chart_wire(edges, &surface, surface_id)?;
         }
         Ok(face)
     }
 
-    /// One edge's pcurve on one surface, exact or fitted, seam-aware — the
-    /// same policy the STEP reader applies, through the shared machinery.
-    fn attach(
+    /// One wire's pcurves, chained around the face's chart.
+    ///
+    /// Each edge's image is computed on its own — the exact projection where
+    /// the pair has a closed form, the fitted one where it does not — and a
+    /// periodic chart then has a branch to choose. Read one edge at a time
+    /// the choice is arbitrary, and the wire comes apart: a bore's wall
+    /// arrives with one rim written over `[−π, π]` and the other over
+    /// `[−π/2, 3π/2]`, both the right circle and neither meeting the seam
+    /// the wire closes on. So each image after the first is shifted by whole
+    /// periods until its start meets where the last one ended, which is the
+    /// rule `make_face_with_pcurves` follows for shapes this kernel builds
+    /// itself.
+    ///
+    /// A seam falls out of the same walk. The wire uses it twice, up one
+    /// column of the chart and down the other, and those columns *are* one
+    /// image a period apart — so the chaining produces both, and the use
+    /// that runs forward is the forward side.
+    fn chart_wire(
+        &mut self,
+        edges: &[Shape],
+        surface: &SurfaceGeometry,
+        surface_id: ogeom_topo::SurfaceId,
+    ) -> OgeomResult<()> {
+        use ogeom_geom::Curve2d as _;
+        let mut counts: HashMap<ogeom_topo::TShapeId, usize> = HashMap::new();
+        for edge in edges {
+            *counts.entry(edge.node()).or_default() += 1;
+        }
+        // One image per edge, however many times the wire walks it.
+        let mut images: HashMap<ogeom_topo::TShapeId, (ogeom_geom::PlanarCurve, (f64, f64))> =
+            HashMap::new();
+        // The sides each walk of it left, by the direction that walk ran.
+        let mut sides: HashMap<
+            ogeom_topo::TShapeId,
+            (
+                Option<ogeom_geom::PlanarCurve>,
+                Option<ogeom_geom::PlanarCurve>,
+            ),
+        > = HashMap::new();
+        let mut order: Vec<ogeom_topo::TShapeId> = Vec::new();
+        let mut previous: Option<ogeom_math::Point2> = None;
+        for edge in edges {
+            let (curve, range) = {
+                let Some(data) = self.model.node(edge).and_then(|n| n.data().as_edge()) else {
+                    continue;
+                };
+                let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d()
+                else {
+                    continue;
+                };
+                let Some(geometry) = self.model.geometry().curve(*curve) else {
+                    continue;
+                };
+                (geometry.clone(), *range)
+            };
+            if let std::collections::hash_map::Entry::Vacant(slot) = images.entry(edge.node()) {
+                let Some(image) = self.image_of(edge, &curve, range, surface)? else {
+                    continue;
+                };
+                slot.insert((image, range));
+                order.push(edge.node());
+            }
+            let Some((image, range)) = images.get(&edge.node()).cloned() else {
+                continue;
+            };
+            let backwards = edge.orientation() == ogeom_topo::Orientation::Reversed;
+            let (start, end) = if backwards {
+                (range.1, range.0)
+            } else {
+                (range.0, range.1)
+            };
+            let image =
+                crate::pcurves::shifted_to_meet(&image, start, previous, surface, self.tol)?;
+            previous = Some(image.point_at(end, self.tol)?);
+            let walked = sides.entry(edge.node()).or_default();
+            if backwards {
+                walked.1 = Some(image);
+            } else {
+                walked.0 = Some(image);
+            }
+        }
+        for node in order {
+            let Some((image, range)) = images.get(&node).cloned() else {
+                continue;
+            };
+            let Some(edge) = edges.iter().find(|e| e.node() == node) else {
+                continue;
+            };
+            let walked = sides.remove(&node).unwrap_or((None, None));
+            let seam = counts.get(&node).copied().unwrap_or(0) > 1;
+            let columns = match &walked {
+                (Some(forward), Some(reversed)) => {
+                    let at = forward.point_at(range.0, self.tol)?;
+                    let other = reversed.point_at(range.0, self.tol)?;
+                    (at.distance(other) > self.tol.confusion()).then_some((forward, reversed))
+                }
+                _ => None,
+            };
+            match (seam, columns) {
+                (true, Some((forward, reversed))) => {
+                    ogeom_algo::attach_seam(
+                        &mut self.model,
+                        edge,
+                        forward.clone(),
+                        reversed.clone(),
+                        surface_id,
+                        ogeom_topo::Location::identity(),
+                        range,
+                    )?;
+                }
+                // The walk left the seam's two uses in one place: the chart
+                // closes without being periodic — a skinned wall's is such a
+                // chart, clamped and closed — and there is no period to
+                // shift by. The other column goes a chart's width over,
+                // toward the middle, which is where it went before there
+                // was a walk to ask.
+                (true, None) => {
+                    let other = crate::pcurves::seam_other_side(&image, range, surface, self.tol)?;
+                    ogeom_algo::attach_seam(
+                        &mut self.model,
+                        edge,
+                        image,
+                        other,
+                        surface_id,
+                        ogeom_topo::Location::identity(),
+                        range,
+                    )?;
+                }
+                (false, _) => {
+                    let (forward, reversed) = walked;
+                    ogeom_algo::attach_pcurve(
+                        &mut self.model,
+                        edge,
+                        forward.or(reversed).unwrap_or(image),
+                        surface_id,
+                        ogeom_topo::Location::identity(),
+                        range,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// One edge's image on one surface, exact where the pair has a closed
+    /// form and fitted where it does not — the same policy the STEP reader
+    /// applies, through the shared machinery. Where the wire puts it on a
+    /// periodic chart is [`Self::chart_wire`]'s business.
+    fn image_of(
         &mut self,
         edge: &Shape,
         curve: &Curve,
         range: (f64, f64),
         surface: &SurfaceGeometry,
-        surface_id: ogeom_topo::SurfaceId,
-        seam: bool,
-    ) -> OgeomResult<()> {
+    ) -> OgeomResult<Option<ogeom_geom::PlanarCurve>> {
         use ogeom_geom::PlanarCurve;
         let widen = |p: PlanarCurve| -> PlanarCurve {
             if let PlanarCurve::Line(l) = &p {
@@ -928,7 +1047,7 @@ impl<'a> Reader<'a> {
             }
             p
         };
-        let pcurve = match ogeom_intersect::exact_pcurve_over(curve, range, surface, self.tol)
+        let found = match ogeom_intersect::exact_pcurve_over(curve, range, surface, self.tol)
             .map(widen)
         {
             Some(exact) => exact,
@@ -956,53 +1075,11 @@ impl<'a> Reader<'a> {
                         "no pcurve for an edge on this surface ({e}); the \
                          face may not triangulate"
                     ));
-                    return Ok(());
+                    return Ok(None);
                 }
             },
         };
-        if seam {
-            use ogeom_geom::Curve2d as _;
-            use ogeom_geom::Surface as _;
-            let ((ua, ub), (va, vb)) = surface.domain();
-            // The seam's other side lies one period over — in whichever
-            // chart direction the pcurve does *not* run. A doubly periodic
-            // face has two seams: the u-running one duplicates across v,
-            // the v-running one across u.
-            let a = pcurve.point_at(range.0, self.tol)?;
-            let b = pcurve.point_at(range.1, self.tol)?;
-            let runs_in_u = (b.x - a.x).abs() > (b.y - a.y).abs();
-            let mid = pcurve.point_at(f64::midpoint(range.0, range.1), self.tol)?;
-            let shift = if runs_in_u && surface.is_periodic_v() {
-                let span = vb - va;
-                let d = if mid.y - va < span * 0.5 { span } else { -span };
-                ogeom_math::Vector2::new(0.0, d)
-            } else {
-                let span = ub - ua;
-                let d = if mid.x - ua < span * 0.5 { span } else { -span };
-                ogeom_math::Vector2::new(d, 0.0)
-            };
-            let other =
-                pcurve.transformed(&ogeom_math::Transform2::translation(shift), self.tol)?;
-            ogeom_algo::attach_seam(
-                &mut self.model,
-                edge,
-                pcurve,
-                other,
-                surface_id,
-                ogeom_topo::Location::identity(),
-                range,
-            )?;
-        } else {
-            ogeom_algo::attach_pcurve(
-                &mut self.model,
-                edge,
-                pcurve,
-                surface_id,
-                ogeom_topo::Location::identity(),
-                range,
-            )?;
-        }
-        Ok(())
+        Ok(Some(found))
     }
 
     /// A manifold solid B-rep object: shell of faces of loops of edges.
