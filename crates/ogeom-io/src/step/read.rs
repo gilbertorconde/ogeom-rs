@@ -38,6 +38,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 /// as it was built, the file's id for it, and the curve and range it carries.
 type BoundUse = (Shape, Shape, u64, Curve, (f64, f64));
 
+/// How a point of space reads on a surface's unbounded directions, `None`
+/// where the direction has none to read.
+type ChartReading = dyn Fn(Point) -> (Option<f64>, Option<f64>);
+
 /// How far a plane or a cylinder read from a file extends past what anything
 /// in the file uses. A face's trim is its wires; the surface's domain is only
 /// the parameter window, and this one is generous without being unbounded.
@@ -1134,7 +1138,16 @@ impl Reader<'_> {
             if !bound_forward {
                 uses.reverse();
             }
-            self.chart_bound(id, &uses, &surface, surface_id, &edge_uses, &mut annotated)?;
+            // The window may have grown to hold this bound, and the images
+            // are derived on the surface as it now stands.
+            self.widen_window(surface_id, &uses)?;
+            let widened = self
+                .model
+                .geometry()
+                .surface(surface_id)
+                .cloned()
+                .unwrap_or_else(|| surface.clone());
+            self.chart_bound(id, &uses, &widened, surface_id, &edge_uses, &mut annotated)?;
             let edges: Vec<Shape> = uses.into_iter().map(|(placed, ..)| placed).collect();
             if edges.is_empty() {
                 continue;
@@ -1147,6 +1160,15 @@ impl Reader<'_> {
                 .push(format!("#{id}: a face with no readable bounds is skipped"));
             return Ok(None);
         }
+        // As the bounds left it: a window stretched to hold them is the
+        // surface every path below builds on, including the band, which
+        // registers the value it is handed rather than the one on record.
+        let surface = self
+            .model
+            .geometry()
+            .surface(surface_id)
+            .cloned()
+            .unwrap_or(surface);
 
         // A periodic face bound only by closed rings — a cylinder band
         // between two circles — arrives without a seam edge, which is a
@@ -1255,6 +1277,91 @@ impl Reader<'_> {
     #[allow(clippy::too_many_arguments)]
     /// One use a bound makes of an edge: the edge as the loop walks it, the
     /// edge as it was built, the file's id for it, and its curve and range.
+    /// Stretch a surface's parameter window to hold the edges that bound it.
+    ///
+    /// The window a reader gives a plane, a cylinder or a cone is a
+    /// convention: those surfaces are unbounded, and [`SURFACE_EXTENT`] is
+    /// a guess at how far past its own geometry a file will reach. A file
+    /// can falsify the guess — the Voron assembly places a cylinder's own
+    /// origin half a kilometre from the part it belongs to, so the trim's
+    /// height parameter runs to −5e5 where the window stopped at −1e5 —
+    /// and then the surface refuses to be evaluated where its own face
+    /// lies, and the face draws as a hole.
+    ///
+    /// So the window is measured rather than guessed: the edges' own
+    /// points, projected onto the surface's chart by the geometry that
+    /// defines it, with the guess kept as a floor. Widening is safe for a
+    /// surface other faces share, since a window only ever grows.
+    fn widen_window(
+        &mut self,
+        surface_id: ogeom_topo::SurfaceId,
+        uses: &[BoundUse],
+    ) -> OgeomResult<()> {
+        use ogeom_geom::Curve3d as _;
+        let Some(surface) = self.model.geometry().surface(surface_id).cloned() else {
+            return Ok(());
+        };
+        // Where each surface keeps its unbounded directions, and how a point
+        // of space reads on them.
+        let along: Box<ChartReading> = match &surface {
+            SurfaceGeometry::Plane(p) => {
+                let frame = p.plane().frame();
+                let (origin, x, y) = (frame.origin(), frame.x().vector(), frame.y().vector());
+                Box::new(move |at: Point| (Some((at - origin).dot(x)), Some((at - origin).dot(y))))
+            }
+            SurfaceGeometry::Cylinder(c) => {
+                let axis = c.cylinder().axis();
+                let (origin, direction) = (axis.location, axis.direction.vector());
+                Box::new(move |at: Point| (None, Some((at - origin).dot(direction))))
+            }
+            SurfaceGeometry::Cone(c) => {
+                let axis = c.cone().axis();
+                let (origin, direction) = (axis.location, axis.direction.vector());
+                Box::new(move |at: Point| (None, Some((at - origin).dot(direction))))
+            }
+            _ => return Ok(()),
+        };
+        const STATIONS: usize = 4;
+        let (mut ua, mut ub) = (-SURFACE_EXTENT, SURFACE_EXTENT);
+        let (mut va, mut vb) = (-SURFACE_EXTENT, SURFACE_EXTENT);
+        for (_, _, _, curve, range) in uses {
+            for step in 0..=STATIONS {
+                #[allow(clippy::cast_precision_loss)]
+                let t = range.0 + (range.1 - range.0) * (step as f64 / STATIONS as f64);
+                let Ok(at) = curve.point_at(t, self.tol) else {
+                    continue;
+                };
+                let (u, v) = along(at);
+                if let Some(u) = u {
+                    ua = ua.min(u);
+                    ub = ub.max(u);
+                }
+                if let Some(v) = v {
+                    va = va.min(v);
+                    vb = vb.max(v);
+                }
+            }
+        }
+        let ((was_u, was_v), grown) = (surface.domain(), (ub - ua) * 0.05);
+        if ua >= was_u.0 && ub <= was_u.1 && va >= was_v.0 && vb <= was_v.1 {
+            return Ok(());
+        }
+        let (u, v) = (
+            (ua.min(was_u.0) - grown, ub.max(was_u.1) + grown),
+            (va.min(was_v.0) - grown, vb.max(was_v.1) + grown),
+        );
+        let wider = match surface {
+            SurfaceGeometry::Plane(p) => PlaneSurface::over(p.plane(), u, v)?.into(),
+            SurfaceGeometry::Cylinder(c) => CylinderSurface::new(c.cylinder(), v)?.into(),
+            SurfaceGeometry::Cone(c) => ConeSurface::new(c.cone(), v)?.into(),
+            other => other,
+        };
+        if let Some(held) = self.model.geometry_mut().surface_mut(surface_id) {
+            *held = wider;
+        }
+        Ok(())
+    }
+
     /// One bound's images, chained around the face's chart.
     ///
     /// Each is derived on its own — the exact projection where the pair has

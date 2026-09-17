@@ -106,6 +106,13 @@ impl GeometryStore {
         self.surfaces.get(id)
     }
 
+    /// A surface, for rewriting in place: a plane or a cylinder widened to
+    /// hold the trims a file puts on it is the same surface, asked over a
+    /// wider window.
+    pub fn surface_mut(&mut self, id: SurfaceId) -> Option<&mut SurfaceGeometry> {
+        self.surfaces.get_mut(id)
+    }
+
     /// The cached triangulation behind `id`.
     #[must_use]
     pub fn triangulation(&self, id: TriangulationId) -> Option<&Triangulation> {

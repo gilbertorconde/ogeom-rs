@@ -561,3 +561,81 @@ fn a_hole_across_the_chart_seam_is_cut_from_the_face() {
         .count();
     assert_eq!(inside, 0, "the hole is cut: no mesh vertex inside it");
 }
+
+/// A surface whose own placement sits half a kilometre from the face it
+/// carries still gets a window wide enough to be asked about.
+///
+/// A plane, a cylinder and a cone are unbounded, so the window a reader
+/// gives them is a convention — generous, and a guess. A real assembly
+/// falsifies the guess: the Voron 2.4's STEP places a cylinder's origin at
+/// `z = 500000` and trims the face it carries near the world origin, so the
+/// trim's height parameter runs to −5e5 where the window stopped at −1e5.
+/// The surface then refused to be evaluated where its own face lies, and
+/// fifteen faces of that assembly drew as holes.
+///
+/// The window is measured from the edges that bound the surface now, with
+/// the convention kept as a floor.
+#[test]
+fn a_surface_placed_far_from_its_face_still_meshes() {
+    let text = r#"ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION((''),'2;1');
+FILE_NAME('far','2026-09-17',(''),(''),'','','');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));
+ENDSEC;
+DATA;
+#1=CARTESIAN_POINT('',(0.,0.,500000.));
+#2=DIRECTION('',(0.,0.,1.));
+#3=DIRECTION('',(1.,0.,0.));
+#4=AXIS2_PLACEMENT_3D('',#1,#2,#3);
+#5=CYLINDRICAL_SURFACE('',#4,3.5);
+#6=CARTESIAN_POINT('',(0.,0.,0.));
+#7=AXIS2_PLACEMENT_3D('',#6,#2,#3);
+#8=PLANE('',#7);
+#9=CARTESIAN_POINT('',(0.,0.,10.));
+#10=AXIS2_PLACEMENT_3D('',#9,#2,#3);
+#11=PLANE('',#10);
+#12=CIRCLE('',#7,3.5);
+#13=CIRCLE('',#10,3.5);
+#14=CARTESIAN_POINT('',(3.5,0.,0.));
+#15=VERTEX_POINT('',#14);
+#16=CARTESIAN_POINT('',(3.5,0.,10.));
+#17=VERTEX_POINT('',#16);
+#18=EDGE_CURVE('',#15,#15,#12,.T.);
+#19=EDGE_CURVE('',#17,#17,#13,.T.);
+#20=ORIENTED_EDGE('',*,*,#18,.T.);
+#21=EDGE_LOOP('',(#20));
+#22=FACE_OUTER_BOUND('',#21,.T.);
+#23=ORIENTED_EDGE('',*,*,#19,.T.);
+#24=EDGE_LOOP('',(#23));
+#25=FACE_BOUND('',#24,.T.);
+#26=ADVANCED_FACE('',(#22,#25),#5,.T.);
+#27=ORIENTED_EDGE('',*,*,#18,.F.);
+#28=EDGE_LOOP('',(#27));
+#29=FACE_OUTER_BOUND('',#28,.T.);
+#30=ADVANCED_FACE('',(#29),#8,.F.);
+#31=ORIENTED_EDGE('',*,*,#19,.F.);
+#32=EDGE_LOOP('',(#31));
+#33=FACE_OUTER_BOUND('',#32,.T.);
+#34=ADVANCED_FACE('',(#33),#11,.T.);
+#35=CLOSED_SHELL('',(#26,#30,#34));
+#36=MANIFOLD_SOLID_BREP('',#35);
+ENDSEC;
+END-ISO-10303-21;
+"#;
+    let import = ogeom_io::read_step(text, T).unwrap();
+    assert_eq!(import.solids.len(), 1);
+    let model = import.document.model();
+    let faces = ogeom_topo::explore(
+        model,
+        &import.solids[0],
+        ogeom_topo::Filter::OfType(ogeom_topo::ShapeType::Face),
+    )
+    .unwrap();
+    assert_eq!(faces.len(), 3, "a wall and two caps");
+    for face in &faces {
+        let mesh = ogeom_mesh::triangulate_face(model, face, ogeom_mesh::Deflection::default(), T)
+            .expect("every face of a far-placed surface meshes");
+        assert!(!mesh.triangles.is_empty());
+    }
+}
