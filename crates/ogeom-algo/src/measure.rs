@@ -1048,18 +1048,12 @@ pub fn project_on_surface(
     samples: usize,
     tol: Tolerances,
 ) -> OgeomResult<SurfaceProjection> {
-    let ((ua, ub), (va, vb)) = surface.domain();
-    let (steps_u, steps_v) = seed_steps(surface, samples);
+    let (us, vs) = seed_lines(surface, samples);
 
     let mut scan = Scan::default();
-    for i in 0..=steps_u {
-        let mut row = Row::with_capacity(steps_v + 1);
-        for j in 0..=steps_v {
-            #[allow(clippy::cast_precision_loss)]
-            let (u, v) = (
-                ua + (ub - ua) * (i as f64 / steps_u as f64),
-                va + (vb - va) * (j as f64 / steps_v as f64),
-            );
+    for &u in &us {
+        let mut row = Row::with_capacity(vs.len());
+        for &v in &vs {
             let d = surface
                 .point_at(u, v, tol)
                 .map_or(f64::INFINITY, |p| p.square_distance(target));
@@ -1221,27 +1215,64 @@ impl Starts {
     }
 }
 
-/// How finely to seed a projection in each direction: the caller's count,
-/// raised to the surface's own span count where the surface has more.
+/// Where to seed a projection in each direction.
 ///
 /// A fitted surface can carry hundreds of knot spans in one direction — a
 /// thread flank swept two hundred turns down a lead screw has 1261 — and a
 /// grid of sixteen or ninety-six seeds lands turns away from the nearest
-/// point, where Newton converges faithfully onto the wrong flank. The seed
-/// grid is the surface's business: one seed per span at least, each
-/// direction on its own count, capped where a surface is pathological.
-fn seed_steps(surface: &SurfaceGeometry, samples: usize) -> (usize, usize) {
+/// point, where Newton converges faithfully onto the wrong flank. So a
+/// patch is seeded *by its spans*, never by its domain: every span gets its
+/// share of the caller's budget, one seed at the least, and a span a
+/// thousand times wider than its neighbour gets no more for being wide.
+/// Everything else has a domain that means what it says, and is seeded
+/// evenly across it.
+fn seed_lines(surface: &SurfaceGeometry, samples: usize) -> (Vec<f64>, Vec<f64>) {
     const CAP: usize = 4096;
     let base = samples.max(4);
-    match surface {
-        SurfaceGeometry::BSpline(b) => (
-            base.max(b.u_knots().distinct().len().saturating_sub(1))
-                .min(CAP),
-            base.max(b.v_knots().distinct().len().saturating_sub(1))
-                .min(CAP),
-        ),
-        _ => (base, base),
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let SurfaceGeometry::BSpline(spline) = surface else {
+        return (spread(ua, ub, base), spread(va, vb, base));
+    };
+    // A patch's knots are where its shape is, and a file's knots are its
+    // own business: one Voron patch runs its `u` from −80 to 1 with every
+    // knot but the first inside the last unit, and its face occupies a
+    // tenth of that unit. A grid spread evenly over that domain puts one
+    // seed in the whole region the face lives in, and a projection seeded
+    // a knot span away lands wherever Newton takes it — four millimetres
+    // out, on an edge that sits on the surface. So the seeds follow the
+    // spans: each one gets its share, however wide the file made it.
+    (
+        per_span(&breaks(spline.u_knots()), base, CAP),
+        per_span(&breaks(spline.v_knots()), base, CAP),
+    )
+}
+
+/// `count + 1` parameters evenly across `[from, to]`.
+fn spread(from: f64, to: f64, count: usize) -> Vec<f64> {
+    #[allow(clippy::cast_precision_loss)]
+    (0..=count)
+        .map(|i| from + (to - from) * (i as f64 / count as f64))
+        .collect()
+}
+
+/// A knot vector's distinct values, without their multiplicities.
+fn breaks(knots: &ogeom_math::KnotVector) -> Vec<f64> {
+    knots.distinct().into_iter().map(|(at, _)| at).collect()
+}
+
+/// The budget shared out over the knot spans, ends included, once each.
+fn per_span(knots: &[f64], budget: usize, cap: usize) -> Vec<f64> {
+    let spans = knots.len().saturating_sub(1);
+    if spans == 0 {
+        return knots.to_vec();
     }
+    let each = (budget / spans).min(cap / spans).max(1);
+    let mut out = Vec::with_capacity(spans * each + 1);
+    for pair in knots.windows(2) {
+        out.extend(spread(pair[0], pair[1], each).into_iter().take(each));
+    }
+    out.push(knots[knots.len() - 1]);
+    out
 }
 
 /// A surface's seeding grid, built once and asked many times.
@@ -1268,17 +1299,11 @@ impl SurfaceSeeds {
     /// the grid exactly as the per-call version tolerates them.
     pub fn over(surface: &SurfaceGeometry, samples: usize, tol: Tolerances) -> OgeomResult<Self> {
         use ogeom_geom::Surface as _;
-        let ((ua, ub), (va, vb)) = surface.domain();
-        let (steps_u, steps_v) = seed_steps(surface, samples);
-        let mut rows = Vec::with_capacity(steps_u + 1);
-        for i in 0..=steps_u {
-            let mut row = Vec::with_capacity(steps_v + 1);
-            for j in 0..=steps_v {
-                #[allow(clippy::cast_precision_loss)]
-                let (u, v) = (
-                    ua + (ub - ua) * (i as f64 / steps_u as f64),
-                    va + (vb - va) * (j as f64 / steps_v as f64),
-                );
+        let (us, vs) = seed_lines(surface, samples);
+        let mut rows = Vec::with_capacity(us.len());
+        for &u in &us {
+            let mut row = Vec::with_capacity(vs.len());
+            for &v in &vs {
                 row.push((u, v, surface.point_at(u, v, tol).ok()));
             }
             rows.push(row);
