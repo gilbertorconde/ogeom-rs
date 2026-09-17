@@ -429,6 +429,31 @@ fn patch_bulge(
         | SurfaceGeometry::Extrusion(_) => return Ok(Aabb::EMPTY),
         SurfaceGeometry::Sphere(s) => s.sphere().frame(),
         SurfaceGeometry::Torus(t) => t.torus().frame(),
+        // A patch's whole net is honest and can still be useless. A patch
+        // whose `u` knots run from −80 to 1 and whose `v` run to 85 after
+        // four spans inside the first two carries a face in the last unit
+        // of each, and the whole net bounds it seven metres across — which
+        // is what a viewer frames a scene to, so the part it belongs to
+        // draws as a speck. The trim says which part of the net can matter.
+        SurfaceGeometry::BSpline(spline) => {
+            let Some(outline) = chart_outline(model, face, surface_id, tol)? else {
+                return Ok(surface_bounds(surface, tol).unwrap_or(Aabb::EMPTY));
+            };
+            let (mut ua, mut ub) = (f64::INFINITY, f64::NEG_INFINITY);
+            let (mut va, mut vb) = (f64::INFINITY, f64::NEG_INFINITY);
+            for ring in &outline {
+                for at in ring {
+                    ua = ua.min(at.x);
+                    ub = ub.max(at.x);
+                    va = va.min(at.y);
+                    vb = vb.max(at.y);
+                }
+            }
+            if !(ua.is_finite() && ub.is_finite() && va.is_finite() && vb.is_finite()) {
+                return Ok(surface_bounds(surface, tol).unwrap_or(Aabb::EMPTY));
+            }
+            return Ok(spline_hull_over(spline, (ua, ub), (va, vb), tol));
+        }
         _ => return Ok(surface_bounds(surface, tol).unwrap_or(Aabb::EMPTY)),
     };
     let Some(outline) = chart_outline(model, face, surface_id, tol)? else {
@@ -475,6 +500,82 @@ fn patch_bulge(
         }
     }
     Ok(out)
+}
+
+/// A patch's control hull over one rectangle of its chart.
+///
+/// The convex-hull property is *local*, but taking the control points whose
+/// support merely overlaps the rectangle is not enough on a real file: the
+/// patch above runs its `u` knots from −80 to 1, and the control
+/// points that shape the last unit also shape the eighty before it, so they
+/// sit a hundred and seventy millimetres from a part sixty across. The
+/// patch is cut down to the rectangle instead — knots raised to full
+/// multiplicity at each edge, which is what makes the control points either
+/// side independent — and the piece that remains carries its own net, tight
+/// around the only part of the surface the trim can reach.
+///
+/// A cut that cannot be made (an edge already at the domain's own end, or a
+/// multiplicity already full) leaves that direction whole, which is the
+/// bound this had before.
+fn spline_hull_over(
+    spline: &ogeom_geom::BSplineSurface,
+    u: (f64, f64),
+    v: (f64, f64),
+    tol: Tolerances,
+) -> Aabb {
+    let grid = spline.grid();
+    // One polygon along `u` per `v` column, cut down; then the same net
+    // read the other way and cut along `v`.
+    let columns: Vec<Vec<ogeom_math::Weighted<Point>>> = (0..grid.v_count())
+        .map(|j| (0..grid.u_count()).filter_map(|i| grid.get(i, j)).collect())
+        .collect();
+    let columns = cut_to(spline.u_knots(), columns, u, tol);
+    let Some(width) = columns.first().map(Vec::len) else {
+        return Aabb::EMPTY;
+    };
+    let rows: Vec<Vec<ogeom_math::Weighted<Point>>> = (0..width)
+        .map(|i| columns.iter().map(|column| column[i]).collect())
+        .collect();
+    let rows = cut_to(spline.v_knots(), rows, v, tol);
+    Aabb::of_points(
+        &rows
+            .iter()
+            .flat_map(|row| row.iter().map(|w| w.point()))
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Cut every control polygon of one direction down to `[a, b]`, together.
+///
+/// The polygons share a knot vector, so they are cut with the same value at
+/// the same multiplicity and come out the same length; a cut that refuses
+/// leaves all of them as they were.
+fn cut_to(
+    knots: &ogeom_math::KnotVector,
+    polygons: Vec<Vec<ogeom_math::Weighted<Point>>>,
+    (a, b): (f64, f64),
+    tol: Tolerances,
+) -> Vec<Vec<ogeom_math::Weighted<Point>>> {
+    let mut knots = knots.clone();
+    let mut polygons = polygons;
+    for (at, keep_right) in [(a, true), (b, false)] {
+        let mut cut = Vec::with_capacity(polygons.len());
+        let mut cut_knots = None;
+        for polygon in &polygons {
+            let Ok((left, right)) = ogeom_math::bspline::split(&knots, polygon, at, tol) else {
+                cut.clear();
+                break;
+            };
+            let (half_knots, points) = if keep_right { right } else { left };
+            cut_knots = Some(half_knots);
+            cut.push(points);
+        }
+        if let Some(half_knots) = cut_knots.filter(|_| cut.len() == polygons.len()) {
+            knots = half_knots;
+            polygons = cut;
+        }
+    }
+    polygons
 }
 
 /// A face's trim as polygons in its surface's chart, sampled from the
@@ -1234,7 +1335,7 @@ fn seed_lines(surface: &SurfaceGeometry, samples: usize) -> (Vec<f64>, Vec<f64>)
         return (spread(ua, ub, base), spread(va, vb, base));
     };
     // A patch's knots are where its shape is, and a file's knots are its
-    // own business: one Voron patch runs its `u` from −80 to 1 with every
+    // own business: one imported patch runs its `u` from −80 to 1 with every
     // knot but the first inside the last unit, and its face occupies a
     // tenth of that unit. A grid spread evenly over that domain puts one
     // seed in the whole region the face lives in, and a projection seeded
@@ -2149,6 +2250,63 @@ mod tests {
         assert_relative_eq!(u, 3.0, epsilon = 1e-6);
         assert!(point.is_equal(Point2::new(3.0, 0.0), T));
         assert_relative_eq!(distance, 4.0, epsilon = 1e-9);
+    }
+
+    /// A patch is bounded by the part of it the trim can reach.
+    ///
+    /// A real export carries a patch whose `u` knots run (−80, 0, 0.571, 1)
+    /// and whose `v` knots stop at 85 after four spans inside the first
+    /// two: one enormous span beside the spans that hold the shape. Its
+    /// face lives in the last unit of each, and the whole net bounded it
+    /// seven metres across — which is what a viewer frames a scene to, so
+    /// the part it belongs to drew as a speck.
+    ///
+    /// The control points are not near the surface they shape here: the one
+    /// at `u = −80` is a metre away, and it shapes the span next to the
+    /// trim as well as its own. Only cutting the patch down separates them.
+    #[test]
+    fn a_patch_is_bounded_by_the_piece_its_trim_can_reach() {
+        use ogeom_geom::BSplineSurface;
+        use ogeom_math::ControlGrid;
+        let far = Point::new(0.0, -1000.0, 0.0);
+        let grid = ControlGrid::new(
+            vec![
+                far,
+                Point::new(0.0, -1000.0, 1.0),
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(0.0, 0.0, 1.0),
+                Point::new(1.0, 0.0, 0.0),
+                Point::new(1.0, 0.0, 1.0),
+            ],
+            3,
+            2,
+        )
+        .unwrap();
+        let patch = BSplineSurface::new(
+            KnotVector::new(vec![-80.0, -80.0, 0.0, 1.0, 1.0], 1).unwrap(),
+            KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).unwrap(),
+            &grid,
+            T,
+        )
+        .unwrap();
+
+        // The whole net is honest and says nothing: a metre of bound on a
+        // patch whose last span is a millimetre across.
+        let whole = surface_bounds(&SurfaceGeometry::BSpline(patch.clone()), T).unwrap();
+        assert!(whole.low().unwrap().y < -999.0, "the net reaches a metre");
+
+        // Cut to the span the trim occupies, the far column is not in it.
+        let over = spline_hull_over(&patch, (0.0, 1.0), (0.0, 1.0), T);
+        let (low, high) = (over.low().unwrap(), over.high().unwrap());
+        assert_relative_eq!(low.y, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(low.x, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(high.x, 1.0, epsilon = 1e-12);
+        assert_relative_eq!(high.z, 1.0, epsilon = 1e-12);
+
+        // A rectangle that does reach into the far span keeps it: the
+        // cut narrows the bound, it does not pretend the patch is smaller.
+        let across = spline_hull_over(&patch, (-40.0, 1.0), (0.0, 1.0), T);
+        assert!(across.low().unwrap().y < -400.0, "half of it is still far");
     }
 
     /// A thread flank: a cubic strip from radius 3 to 4, swept `turns`
