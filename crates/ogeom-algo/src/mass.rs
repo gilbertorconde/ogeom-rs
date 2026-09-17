@@ -278,6 +278,7 @@ enum ExactFace {
         surface: ogeom_geom::SurfaceGeometry,
         rect: (f64, f64, f64, f64),
         sign: f64,
+        share: f64,
     },
     /// A full circular disc on a plane.
     Disc {
@@ -287,7 +288,37 @@ enum ExactFace {
         normal: Vector,
         radius: f64,
         sign: f64,
+        share: f64,
     },
+}
+
+impl ExactFace {
+    /// Whether this region is part of its face or taken out of it: `1` for
+    /// the outer boundary, `-1` for a hole. The volume integral could carry
+    /// it in the normal's sign, but the area integral takes a magnitude and
+    /// would hand a hole's area back as more face.
+    const fn share(&self) -> f64 {
+        match self {
+            Self::ChartRectangle { share, .. } | Self::Disc { share, .. } => *share,
+        }
+    }
+
+    /// How much of its chart the region covers, for telling a face's outer
+    /// boundary from its holes. A wire's place in the face's list does not
+    /// say which it is — a ring's annulus arrives inner ring first — and a
+    /// hole is inside the boundary it is a hole in, so it covers less.
+    fn chart_area(&self) -> f64 {
+        match self {
+            Self::Disc { radius, .. } => core::f64::consts::PI * radius * radius,
+            Self::ChartRectangle { rect, .. } => (rect.1 - rect.0) * (rect.3 - rect.2),
+        }
+    }
+
+    fn take_away(&mut self) {
+        match self {
+            Self::ChartRectangle { share, .. } | Self::Disc { share, .. } => *share = -1.0,
+        }
+    }
 }
 
 /// Mass properties integrated on the exact surfaces, when every face allows.
@@ -323,6 +354,10 @@ fn exact_volume_properties(
             }
         }
     }
+    // And the faces must agree with each other about which way is out.
+    if !flags_agree(model, shape, tol)? {
+        return Ok(None);
+    }
     // The divergence theorem needs a closed boundary; topology says whether
     // it has one. A shape with no shell at all — a bare face — has nothing
     // to close, and falls back to the mesh path, which refuses it properly.
@@ -344,7 +379,8 @@ fn exact_volume_properties(
     let mut first = Vector::ZERO;
     let mut second = Matrix3::ZERO;
     for face in &exact {
-        integrate_face(face, reference, tol, &mut |p, n_da| {
+        integrate_face(face, reference, tol, &mut |p, n_da, share| {
+            let n_da = n_da * share;
             let q = p - reference;
             mass += q.dot(n_da) / 3.0;
             first += Vector::new(
@@ -412,8 +448,8 @@ fn exact_surface_properties(
     let mut first = Vector::ZERO;
     let mut second = Matrix3::ZERO;
     for face in &exact {
-        integrate_face(face, reference, tol, &mut |p, n_da| {
-            let da = n_da.magnitude();
+        integrate_face(face, reference, tol, &mut |p, n_da, share| {
+            let da = n_da.magnitude() * share;
             let q = p - reference;
             mass += da;
             first += q * da;
@@ -451,8 +487,9 @@ fn integrate_face(
     face: &ExactFace,
     _reference: Point,
     tol: Tolerances,
-    contribute: &mut dyn FnMut(Point, Vector),
+    contribute: &mut dyn FnMut(Point, Vector, f64),
 ) -> OgeomResult<()> {
+    let share = face.share();
     use ogeom_geom::Surface as _;
     const QUARTER: f64 = core::f64::consts::FRAC_PI_2;
     match face {
@@ -490,7 +527,7 @@ fn integrate_face(
                         let sample = (|| -> OgeomResult<()> {
                             let p = surface.point_at(u, v, tol)?;
                             let (du, dv) = surface.d1_at(u, v, tol)?;
-                            contribute(p, du.cross(dv) * (sign * weight));
+                            contribute(p, du.cross(dv) * (sign * weight), share);
                             Ok(())
                         })();
                         if let Err(e) = sample {
@@ -526,7 +563,7 @@ fn integrate_face(
                         return;
                     }
                     let p = *centre + (*e1 * theta.cos() + *e2 * theta.sin()) * rho;
-                    contribute(p, *normal * (sign * rho * weight));
+                    contribute(p, *normal * (sign * rho * weight), share);
                 });
             }
             match failure {
@@ -647,19 +684,228 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
     };
 
     let wires = model.ordered_children_of(face)?;
-    // One wire, for now. A face with a hole in it is a region less a
-    // region and the integral would be their sum — a plate with a bore is a
-    // rectangle less a disc — but reading the holes means reading every
-    // face's flag for which way is out, and a part in the corpus has flags
-    // that disagree with each other. The tessellator repairs that and this
-    // cannot, so a holed face is left to the mesh; issue #39 carries it.
-    let [wire] = wires.as_slice() else {
+    // One region per wire, and the integral is their sum: a face's outer
+    // boundary carries its own sign and every inner one the opposite, which
+    // is what a hole *is* under the divergence theorem. So a plate with a
+    // bore is a rectangle less a disc, and a tube's end face a disc less a
+    // disc. Which wire is the boundary and which the holes is settled by
+    // the chart each covers: a hole is inside the boundary it is a hole in,
+    // so it covers less.
+    let mut regions = Vec::with_capacity(wires.len());
+    for wire in &wires {
+        let Some(region) = exact_wire(model, data, &placed, wire, sign, 1.0, tol)? else {
+            return Ok(None);
+        };
+        regions.push(region);
+    }
+    let Some(outer) = (0..regions.len()).max_by(|a, b| {
+        regions[*a]
+            .chart_area()
+            .total_cmp(&regions[*b].chart_area())
+    }) else {
         return Ok(None);
     };
-    let Some(region) = exact_wire(model, data, &placed, wire, sign, tol)? else {
+    for (index, region) in regions.iter_mut().enumerate() {
+        if index != outer {
+            region.take_away();
+        }
+    }
+    Ok(Some(regions))
+}
+
+/// Whether the faces agree with each other about which way is out.
+///
+/// The flag on a face is the only thing that says which side of its surface
+/// the material is on — no winding in this kernel says it, and the wires
+/// are wound however their builder wound them. But the flags can be asked
+/// *about each other*: an edge between two faces is walked by one of them
+/// with the material on its left and by the other with the material on its
+/// left too, so the two walks run opposite ways along it. Each face's walk
+/// is its outward normal crossed into the direction the material lies from
+/// the edge, and both of those are had for the asking — the normal from the
+/// flag, the material's direction from the chart, since a face's region
+/// lies around the middle of the boundary that encloses it.
+///
+/// A part in the corpus has a bore wall whose flag points into the solid.
+/// The tessellator repairs such a shell, flipping whichever side of the
+/// disagreement is in the minority, and the closed-form integral cannot —
+/// it would hand the bore back as material, a third of that part's volume.
+/// So where the flags disagree this says so and the mesh is asked instead.
+///
+/// An instanced solid says nothing here: one edge stands in several places
+/// and nothing in a name tells them apart, so its flags are taken as they
+/// come, which is what they were before there was anything to ask.
+fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<bool> {
+    use ogeom_geom::Curve2d as _;
+    use ogeom_geom::Surface as _;
+    let placed_at = ogeom_topo::Location::default();
+    let mut walks: std::collections::HashMap<
+        ogeom_topo::TShapeId,
+        Vec<(bool, ogeom_topo::TShapeId, bool)>,
+    > = std::collections::HashMap::new();
+    for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
+        if face.location() != &placed_at {
+            return Ok(true);
+        }
+        let Some(data) = model.node(&face).and_then(|n| n.data().as_face()).cloned() else {
+            return Ok(true);
+        };
+        let Some(surface) = model.geometry().surface(data.surface) else {
+            return Ok(true);
+        };
+        let placed = surface
+            .clone()
+            .transformed(&face.transform(model.datums())?, tol)?;
+        let flag = if face.orientation() == ogeom_topo::Orientation::Reversed {
+            -1.0
+        } else {
+            1.0
+        };
+        // Each wire's middle in the chart, and which wire is the boundary:
+        // the one covering the most of it, since a hole is inside what it
+        // is a hole in.
+        let wires = model.ordered_children_of(&face)?;
+        let mut middles: Vec<(ogeom_math::Point2, f64)> = Vec::with_capacity(wires.len());
+        let mut stations: Vec<Vec<(Shape, ogeom_math::Point2, f64)>> =
+            Vec::with_capacity(wires.len());
+        for wire in &wires {
+            let mut here = Vec::new();
+            let mut sum = ogeom_math::Vector2::new(0.0, 0.0);
+            let (mut lo, mut hi) = (
+                ogeom_math::Point2::new(f64::INFINITY, f64::INFINITY),
+                ogeom_math::Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+            );
+            for edge in model.ordered_children_of(wire)? {
+                if edge.location() != &placed_at {
+                    return Ok(true);
+                }
+                let Some(repr) = model
+                    .node(&edge)
+                    .and_then(|n| n.data().as_edge())
+                    .and_then(|d| d.pcurve_for(data.surface, edge.location()))
+                else {
+                    return Ok(true);
+                };
+                // A seam bounds its face twice, once down each column.
+                let sides: Vec<(ogeom_topo::PCurveId, (f64, f64))> = match repr {
+                    EdgeRepr::PCurve { curve, range, .. } => vec![(*curve, *range)],
+                    EdgeRepr::Seam {
+                        forward,
+                        reversed,
+                        range,
+                        ..
+                    } => vec![(*forward, *range), (*reversed, *range)],
+                    _ => return Ok(true),
+                };
+                for (id, range) in sides {
+                    let Some(pcurve) = model.geometry().pcurve(id) else {
+                        return Ok(true);
+                    };
+                    // Several stations along each edge, not one: a wire of
+                    // a single closed edge has its own midpoint for a
+                    // middle, and nothing lies from a point toward itself.
+                    const STATIONS: usize = 4;
+                    for step in 1..=STATIONS {
+                        #[allow(clippy::cast_precision_loss)]
+                        let t =
+                            range.0 + (range.1 - range.0) * (step as f64 / (STATIONS + 1) as f64);
+                        let at = pcurve.point_at(t, tol)?;
+                        sum += at.to_vector();
+                        lo = ogeom_math::Point2::new(lo.x.min(at.x), lo.y.min(at.y));
+                        hi = ogeom_math::Point2::new(hi.x.max(at.x), hi.y.max(at.y));
+                        here.push((edge.clone(), at, t));
+                    }
+                }
+            }
+            if here.is_empty() {
+                return Ok(true);
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let middle = ogeom_math::Point2::ORIGIN + sum / here.len() as f64;
+            middles.push((middle, (hi.x - lo.x) * (hi.y - lo.y)));
+            stations.push(here);
+        }
+        let Some(outer) = (0..middles.len()).max_by(|a, b| middles[*a].1.total_cmp(&middles[*b].1))
+        else {
+            return Ok(true);
+        };
+        for (index, here) in stations.into_iter().enumerate() {
+            let (middle, _) = middles[index];
+            for (edge, at, t) in here {
+                let (du, dv) = placed.d1_at(at.x, at.y, tol)?;
+                let raw = du.cross(dv);
+                if raw.magnitude() <= tol.angular() {
+                    return Ok(true);
+                }
+                let out = raw / raw.magnitude() * flag;
+                // Which way the material lies from this point of the
+                // boundary: toward the wire's middle for the face's outer
+                // wire, away from it for a hole.
+                let toward = middle - at;
+                let toward = if index == outer { toward } else { -toward };
+                let inward = du * toward.x + dv * toward.y;
+                if inward.magnitude() <= tol.angular() {
+                    return Ok(true);
+                }
+                let walk = out.cross(inward / inward.magnitude());
+                // Against the edge's own direction, so the two faces'
+                // answers can be compared without comparing vectors.
+                let Some(along) = edge_direction(model, &edge, t, tol)? else {
+                    return Ok(true);
+                };
+                walks.entry(edge.node()).or_default().push((
+                    walk.dot(along) > 0.0,
+                    face.node(),
+                    index == outer,
+                ));
+            }
+        }
+    }
+    if std::env::var_os("OGEOM_DEBUG_MASS").is_some() {
+        eprintln!("MASS flags_agree walked {} edges", walks.len());
+    }
+    for (edge, uses) in &walks {
+        // An edge one face walks twice is that face's own seam, however it
+        // is written down — a canonicalised drum keeps its as an ordinary
+        // pcurve used twice — and one face's seam says nothing about
+        // whether two faces agree.
+        if uses.iter().all(|(_, owner, _)| *owner == uses[0].1) {
+            continue;
+        }
+        let ahead = uses.iter().filter(|(ahead, ..)| *ahead).count();
+        if ahead * 2 != uses.len() {
+            if std::env::var_os("OGEOM_DEBUG_MASS").is_some() {
+                eprintln!("MASS edge {} is walked {uses:?}", edge.index());
+            }
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// An edge's own direction in space at the parameter `t` of its curve.
+fn edge_direction(
+    model: &Model,
+    edge: &Shape,
+    t: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vector>> {
+    use ogeom_geom::Curve3d as _;
+    use ogeom_geom::Transformable as _;
+    let Some(curve) = model
+        .node(edge)
+        .and_then(|n| n.data().as_edge())
+        .and_then(|d| match d.curve3d()? {
+            EdgeRepr::Curve3d { curve, .. } => Some(*curve),
+            _ => None,
+        })
+        .and_then(|id| model.geometry().curve(id).cloned())
+    else {
         return Ok(None);
     };
-    Ok(Some(vec![region]))
+    let curve = curve.transformed(&edge.transform(model.datums())?, tol)?;
+    let along = curve.d1_at(t, tol)?;
+    Ok((along.magnitude() > tol.angular()).then(|| along / along.magnitude()))
 }
 
 /// The region one of a face's wires bounds, read off its pcurves.
@@ -669,6 +915,7 @@ fn exact_wire(
     placed: &ogeom_geom::SurfaceGeometry,
     wire: &Shape,
     sign: f64,
+    share: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<ExactFace>> {
     use ogeom_geom::Surface as _;
@@ -815,6 +1062,7 @@ fn exact_wire(
             normal,
             radius,
             sign,
+            share,
         }));
     }
 
@@ -883,6 +1131,7 @@ fn exact_wire(
         surface: placed.clone(),
         rect: (u0, u1, v0, v1),
         sign,
+        share,
     }))
 }
 

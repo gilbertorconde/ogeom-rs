@@ -148,20 +148,15 @@ fn a_rim_blend_leaves_a_solid_that_is_still_weighed_exactly() {
     );
 }
 
-/// A face with a hole in it is left to the mesh, for now.
-///
-/// The integral would be a region less a region — a plate with a bore is a
-/// rectangle less a disc — and the arithmetic is easy. What is not is
-/// knowing which way each face looks: the closed-form integral reads each
-/// face's own flag, and a part in the corpus has flags that disagree with
-/// each other, which the tessellator repairs and this cannot. Taking them
-/// at their word made that part a third heavy, its bore counted as
-/// material, so a holed face waits on a way to tell a wrong flag from a
-/// right one. Issue #39 carries it.
+/// A face with a hole in it is a region less a region, and the integral is
+/// their sum: a plate with a bore is a rectangle less a disc, a tube's end
+/// face a disc less a disc. Both were meshed before, and a mesh of a
+/// circle is a polygon inscribed in it, so both came out heavy.
 #[test]
-fn a_face_with_a_hole_waits_for_the_mesh() {
+fn a_face_with_a_hole_is_weighed_in_closed_form() {
     let pi = core::f64::consts::PI;
     let mut model = Model::new();
+
     let plate = ogeom::algo::make_box(
         &mut model,
         Frame::new(Point::new(-10.0, -10.0, 0.0), Direction::Z, Direction::X, T).unwrap(),
@@ -177,14 +172,75 @@ fn a_face_with_a_hole_waits_for_the_mesh() {
     let bored = ogeom::boolean::cut(&mut model, &plate, &drill, T)
         .unwrap()
         .shape;
-    let measured =
-        ogeom::algo::volume_properties(&model, &bored, Deflection::with_chord(1e-4).unwrap(), T)
-            .unwrap();
-    assert!(measured.deflection > 0.0, "the mesh was asked");
+    let measured = weigh(&model, &bored, true);
     let want = 20.0 * 20.0 * 10.0 - pi * 16.0 * 10.0;
     assert!(
-        (measured.mass - want).abs() < want * 1e-4,
-        "and answers within its chord: {} against {want}",
-        measured.mass
+        (measured - want).abs() < 1e-8,
+        "a plate with a bore: {measured} against {want}"
     );
+
+    let outer = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 9.0, 4.0, T)
+        .unwrap()
+        .shape;
+    let bore = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 4.0, T)
+        .unwrap()
+        .shape;
+    let tube = ogeom::boolean::cut(&mut model, &outer, &bore, T)
+        .unwrap()
+        .shape;
+    let measured = weigh(&model, &tube, true);
+    let want = pi * (81.0 - 25.0) * 4.0;
+    assert!(
+        (measured - want).abs() < 1e-8,
+        "a tube: {measured} against {want}"
+    );
+}
+
+/// A shell whose faces disagree about which way is out is not weighed in
+/// closed form, however analytic its surfaces are.
+///
+/// The flag on a face is the only thing that says which side of its surface
+/// the material is on, and nothing in a shell makes the flags agree. They
+/// can be asked about each other, though: an edge between two faces is
+/// walked by each with its own material on its left, so the two walks run
+/// opposite ways along it. Where they do not, this hands the shape to the
+/// tessellator, which repairs such a shell by flipping whichever side of
+/// the disagreement is in the minority.
+///
+/// `nist_ftc_11_asme1_rb.stp` arrives exactly like this — its bore wall's
+/// flag points into the solid — and taking the flags at their word made it
+/// a third heavy, the bore counted as material.
+#[test]
+fn a_shell_whose_faces_disagree_is_left_to_the_mesh() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 6.0, 4.0), T)
+        .unwrap()
+        .shape;
+    let honest = ogeom::algo::volume_properties(&model, &block, Deflection::default(), T).unwrap();
+    assert_eq!(honest.deflection, 0.0, "a box is weighed exactly");
+    assert!((honest.mass - 240.0).abs() < 1e-9);
+
+    // Every face in turn, since which one is turned over decides how wrong
+    // believing it would be — and one of them is the plane the moments are
+    // measured from, where believing it costs nothing at all.
+    for which in 0..6 {
+        let mut faces =
+            ogeom::topo::explore_unique(&model, &block, ogeom::topo::ShapeType::Face).unwrap();
+        faces[which] = faces[which].clone().reversed();
+        let shell = ogeom::algo::make_shell(&mut model, &faces).unwrap().shape;
+        let turned = ogeom::algo::make_solid(&mut model, std::slice::from_ref(&shell))
+            .unwrap()
+            .shape;
+        let measured =
+            ogeom::algo::volume_properties(&model, &turned, Deflection::default(), T).unwrap();
+        assert!(
+            measured.deflection > 0.0,
+            "face {which} turned over: the mesh was asked instead"
+        );
+        assert!(
+            (measured.mass - 240.0).abs() < 1e-9,
+            "face {which} turned over: and it mends the flag, {}",
+            measured.mass
+        );
+    }
 }
