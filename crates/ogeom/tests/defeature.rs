@@ -363,3 +363,117 @@ fn two_chamfers_meeting_at_a_corner_remove_in_one_call() {
     );
     assert!((volume(&model, &restored) - 4000.0).abs() < 1e-6);
 }
+
+/// A rim blend's wound is the whole ring it took out of each neighbour,
+/// and it closes on the circle those neighbours meet along.
+///
+/// Three rims, each blended and then taken away again: a drum's top, where
+/// the cap's *whole outer boundary* was the wound and the cap must grow
+/// back; a bore's mouth in a plate, where the wound is an inner ring of
+/// the top and the whole bottom of the bore's wall; and a boss's seat,
+/// where the blend is additive and the wound sits between the plate's top
+/// and the post. Each comes back to the solid it was cut from, face for
+/// face and to the volume the mesh can measure.
+///
+/// This is the wound an earlier note called "a neighbour meeting itself".
+/// A whole ring taken out of a neighbour is closed one of two ways, and
+/// only the neighbours' surfaces say which: a bore's two mouths sit in
+/// faces that never meet, so the rings are dropped and the faces grow
+/// over them, while a rim blend's neighbours meet along the very circle
+/// it replaced. The wall's own seam then reaches that circle, which is
+/// where the circle is cut, and the seam extends to meet it.
+#[test]
+fn a_rim_blend_removes_and_its_rim_comes_back() {
+    for case in ["drum", "mouth", "boss"] {
+        let mut model = Model::new();
+        let r = 1.0;
+        let (sharp, rim_at) = match case {
+            "drum" => {
+                let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 10.0, T)
+                    .unwrap()
+                    .shape;
+                (drum, Point::new(0.0, 5.0, 10.0))
+            }
+            "mouth" => {
+                let block = ogeom::algo::make_box(
+                    &mut model,
+                    Frame::new(Point::new(-10.0, -10.0, 0.0), Direction::Z, Direction::X, T)
+                        .unwrap(),
+                    (20.0, 20.0, 10.0),
+                    T,
+                )
+                .unwrap()
+                .shape;
+                let seat =
+                    Frame::new(Point::new(0.0, 0.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+                let drill = ogeom::algo::make_cylinder(&mut model, seat, 4.0, 12.0, T)
+                    .unwrap()
+                    .shape;
+                let bored = ogeom::boolean::cut(&mut model, &block, &drill, T)
+                    .unwrap()
+                    .shape;
+                (bored, Point::new(0.0, 4.0, 10.0))
+            }
+            _ => {
+                let plate = ogeom::algo::make_box(
+                    &mut model,
+                    Frame::new(Point::new(-10.0, -10.0, 0.0), Direction::Z, Direction::X, T)
+                        .unwrap(),
+                    (20.0, 20.0, 5.0),
+                    T,
+                )
+                .unwrap()
+                .shape;
+                let seat =
+                    Frame::new(Point::new(0.0, 0.0, 5.0), Direction::Z, Direction::X, T).unwrap();
+                let post = ogeom::algo::make_cylinder(&mut model, seat, 4.0, 6.0, T)
+                    .unwrap()
+                    .shape;
+                let boss = ogeom::boolean::fuse(&mut model, &plate, &post, T)
+                    .unwrap()
+                    .shape;
+                (boss, Point::new(0.0, 4.0, 5.0))
+            }
+        };
+        // Measured off the mesh at a fine chord, because the blend's own
+        // boolean leaves the faces it did not touch split at their seams,
+        // and a solid whose discs are two arcs apiece no longer takes the
+        // exact integrator's path. The reach quoted below is the mesh's,
+        // and it is two orders finer than the feature being removed.
+        let fine = Deflection::with_chord(1e-4).unwrap();
+        let measure = |model: &Model, shape: &Shape| {
+            ogeom::algo::volume_properties(model, shape, fine, T)
+                .unwrap()
+                .mass
+        };
+        let was = measure(&model, &sharp);
+        let faces_before = explore_unique(&model, &sharp, ShapeType::Face)
+            .unwrap()
+            .len();
+
+        let rim = edge_near(&model, &sharp, rim_at);
+        let blended = ogeom::fillet::fillet_edge(&mut model, &sharp, &rim, r, T)
+            .unwrap_or_else(|e| panic!("{case}: {e}"))
+            .shape;
+        let band = faces_where(&model, &blended, |s| matches!(s, SurfaceGeometry::Torus(_)));
+        assert_eq!(band.len(), 1, "{case}: one toroidal band");
+
+        let back = ogeom::boolean::remove_faces(&mut model, &blended, &band, T)
+            .unwrap_or_else(|e| panic!("{case}: {e}"))
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &back, T).unwrap();
+        assert!(diagnosis.is_valid(), "{case}: {:?}", diagnosis.problems);
+        assert_eq!(
+            explore_unique(&model, &back, ShapeType::Face)
+                .unwrap()
+                .len(),
+            faces_before,
+            "{case}: the faces the feature interrupted are whole again"
+        );
+        let now = measure(&model, &back);
+        assert!(
+            (now - was).abs() < was * 1e-4,
+            "{case}: {now} against the solid it was cut from, {was}"
+        );
+    }
+}

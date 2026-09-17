@@ -390,8 +390,18 @@ bands meeting at a corner close together: each recovers its own crease,
 the corner is where one crease pierces the other's side, and a wedge's
 flush cap named with its band folds into the band's crease; a rebuilt
 face whose surface has no closed-form pcurves fits them by projection,
-tolerances widened by the measured offset. A band whose wound needs a
-neighbour to meet itself stays refused by name."""
+tolerances widened by the measured offset. A rim blend — a drum's top, a
+bore's mouth, a boss's seat — takes a whole ring out of its neighbours and
+closes on the circle they meet along: the neighbours' surfaces tell that
+wound from a bore's, whose faces never meet and whose rings are simply
+dropped, and a neighbour's own outer boundary may be the ring, so a drum's
+cap grows back to its rim. The wall's seam reaches the recovered circle,
+which is where it is cut and what the seam extends to meet. Wires are
+spliced in the face's own order, since a seam stands in its wire twice,
+and a gap that leaves and arrives at one vertex is wound the way the rim
+it replaces was. What stays refused by name: a wound whose sides meet in
+no curve, a removal that would leave a face with no boundary and no edge
+to grow to, and a gap the recovered edges do not bridge."""
 claims = ["BRepAlgoAPI_Defeaturing", "BOPAlgo_RemoveFeatures"]
 symbols = ["ogeom_bool::remove_faces"]
 tests = ["crates/ogeom/tests/defeature.rs"]
