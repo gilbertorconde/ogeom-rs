@@ -570,3 +570,63 @@ fn a_sheared_copy_sharing_a_plane_is_refused_as_the_same_domain_contact_it_is() 
         "still refusing by the name of a different configuration: {said}"
     );
 }
+
+/// A box cut from an L-bracket flush with the bracket's wall: the box's
+/// wall-side face lies on the wall's plane below the wall, and its edge on
+/// the end face runs along the line of that face's own edge up the wall,
+/// a length below it. The contact carried onto the end face was read as
+/// along that edge over the whole line, so the strip's side was never
+/// paved and the end face kept the strip. Three placements against the
+/// wall and one short of it, each to its exact volume.
+#[test]
+fn a_box_cut_flush_with_a_bracket_s_wall_paves_the_end_face() {
+    let bracket = |model: &mut Model| {
+        let block = ogeom::algo::make_box(model, Frame::WORLD, (2.0, 2.0, 2.0), T)
+            .unwrap()
+            .shape;
+        let seat = Frame::new(Point::new(1.0, -0.5, 1.0), Direction::Z, Direction::X, T).unwrap();
+        let notch = ogeom::algo::make_box(model, seat, (2.0, 3.0, 2.0), T)
+            .unwrap()
+            .shape;
+        ogeom::boolean::cut(model, &block, &notch, T).unwrap().shape
+    };
+    for (label, low, high) in [
+        (
+            "on the wall, the end and the leg's top",
+            [1.0, 0.0, 0.5],
+            [2.0, 0.5, 1.0],
+        ),
+        (
+            "on the wall and the end, below the top",
+            [1.0, 0.0, 0.3],
+            [2.0, 0.5, 0.8],
+        ),
+        ("through the wall", [0.8, 0.0, 0.5], [2.0, 0.5, 1.0]),
+        ("short of the wall", [1.2, 0.0, 0.5], [2.0, 0.5, 1.0]),
+    ] {
+        let mut model = Model::with_tolerances(T);
+        let l = bracket(&mut model);
+        let seat = Frame::new(
+            Point::new(low[0], low[1], low[2]),
+            Direction::Z,
+            Direction::X,
+            T,
+        )
+        .unwrap();
+        let size = (high[0] - low[0], high[1] - low[1], high[2] - low[2]);
+        let tool = ogeom::algo::make_box(&mut model, seat, size, T)
+            .unwrap()
+            .shape;
+        let cut = ogeom::boolean::cut(&mut model, &l, &tool, T)
+            .unwrap_or_else(|e| panic!("{label}: {e}"))
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &cut, T).unwrap();
+        assert!(diagnosis.is_valid(), "{label}: {:?}", diagnosis.problems);
+        // Every placement lies wholly within the bracket — through the
+        // wall too, the wall's material starting where the leg's top ends
+        // — so the tool takes exactly its own volume.
+        let want = 6.0 - size.0 * size.1 * size.2;
+        let got = volume(&model, &cut);
+        assert!((got - want).abs() < 1e-3, "{label}: {got} against {want}");
+    }
+}

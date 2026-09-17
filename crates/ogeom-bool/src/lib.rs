@@ -1874,8 +1874,9 @@ fn fill(
                             if d <= width {
                                 if *DEBUG_WIRE {
                                     eprintln!(
-                                        "PAVE s{si}: side {side} sample {i} hugs edge {} at {d:.2e} (width {width:.2e})",
-                                        e.node.index()
+                                        "PAVE s{si}: side {side} sample {i} hugs edge {} at {d:.2e} (width {width:.2e}) range {:?} point {at:?}",
+                                        e.node.index(),
+                                        e.crange
                                     );
                                 }
                                 // Every edge within reach is hugged, not the
@@ -2386,12 +2387,39 @@ fn fill(
                 };
                 carried > tol.parametric()
             };
-            let measured: Vec<ogeom_intersect::Overlap> = if found.overlaps.iter().any(survives) {
+            // The closed-form overlap is between the two *curves*; the
+            // stretch that is boundary is what the *edge* covers of it. A
+            // box cut from an L-bracket flush with the bracket's wall puts
+            // the box's wall-side edge on the line of the end face's own
+            // edge along the wall, a length below it: read as along that
+            // edge over the whole curve, the strip's side was never paved
+            // and the end face kept the strip. Clipped through the
+            // overlap's own correspondence so the carry below stays affine.
+            let clipped: Vec<ogeom_intersect::Overlap> = found
+                .overlaps
+                .iter()
+                .filter_map(|overlap| {
+                    let (lo, hi) = overlap_within(overlap, e.crange, &contact.curve, tol)?;
+                    let span = overlap.on_a.1 - overlap.on_a.0;
+                    if span.abs() <= f64::MIN_POSITIVE {
+                        return None;
+                    }
+                    let to_b = |t: f64| {
+                        overlap.on_b.0
+                            + (overlap.on_b.1 - overlap.on_b.0) * (t - overlap.on_a.0) / span
+                    };
+                    Some(ogeom_intersect::Overlap {
+                        on_a: (lo, hi),
+                        on_b: (to_b(lo), to_b(hi)),
+                    })
+                })
+                .collect();
+            let measured: Vec<ogeom_intersect::Overlap> = if clipped.iter().any(survives) {
                 Vec::new()
             } else {
                 measured_overlaps(&contact.curve, contact.crange, contact.tolerance, e, tol)?
             };
-            for overlap in found.overlaps.iter().chain(measured.iter()) {
+            for overlap in clipped.iter().chain(measured.iter()) {
                 let ordered = |r: (f64, f64)| if r.0 <= r.1 { r } else { (r.1, r.0) };
                 let (lo, hi) = ordered(overlap.on_a);
                 // The overlap is between the two *curves*; what interferes is

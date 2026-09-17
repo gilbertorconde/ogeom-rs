@@ -1042,7 +1042,11 @@ wall the band runs on until the ball has left the solid and the cut trims \
 it against the wall; where it ends at a split — a seam vertex, or a \
 neighbouring blend's own rail — the band is capped in the end section's \
 own plane, and two such blends meet cap to cap along the shared arc, both \
-caps consumed, in either order. What is owed now: hosts beyond planes and \
+caps consumed, in either order. An L-bracket's end rim blends over its \
+re-entrant band as one tangent chain — line, the band's own end arc, line \
+— the ball rolling on the concave cylinder between the lines, to the \
+closed form; the re-entrant edge and a convex one asked together are \
+still refused. What is owed now: hosts beyond planes and \
 cylinders (cone, sphere, torus chart inversions), the equal-radius \
 crossing whose seam pinches at tangent poles; and of the corner family, \
 the N-edged vertex whose faces no single ball touches and the curved-edged \

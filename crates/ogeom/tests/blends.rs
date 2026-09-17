@@ -829,6 +829,88 @@ fn two_blends_meeting_at_a_corner_trim_each_other() {
     );
 }
 
+/// An L-bracket's re-entrant blend against the end face's convex blends:
+/// the concave band first, then the rim of the end face — the leg's top
+/// edge, the concave band's own end arc, the wall's edge — blended as one
+/// tangent chain. The ball rolls along the two lines and, between them,
+/// on the concave cylinder: a quarter turn of a torus, whose volume
+/// Pappus gives as the cross-section's area times its centroid's path.
+/// Both blends measure against their closed forms at chord 1e-4.
+///
+/// The convex edge alone, ending at the re-entrant vertex, is the case
+/// that refused before the boolean clipped a contact's overlap to the
+/// edge it runs along: the band's flush end lands on the wall's plane,
+/// its side on the line of the end face's own edge up the wall, a length
+/// below it.
+#[test]
+fn a_rim_blend_rolls_over_the_bracket_s_concave_blend() {
+    let r = 0.5_f64;
+    let pi = core::f64::consts::PI;
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let seat = Frame::new(Point::new(1.0, -0.5, 1.0), Direction::Z, Direction::X, T).unwrap();
+    let notch = ogeom::algo::make_box(&mut model, seat, (2.0, 3.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let bracket = ogeom::boolean::cut(&mut model, &block, &notch, T)
+        .unwrap()
+        .shape;
+    let fine = ogeom::mesh::Deflection::with_chord(1e-4).unwrap();
+    let volume = |model: &Model, shape: &Shape| {
+        ogeom::algo::volume_properties(model, shape, fine, T)
+            .unwrap()
+            .mass
+    };
+    assert!((volume(&model, &bracket) - 6.0).abs() < 1e-3);
+
+    // The convex edge alone, ending at the re-entrant vertex.
+    let top = edge_near(&model, &bracket, Point::new(1.75, 0.0, 1.0));
+    let convex = ogeom::fillet::fillet_edge(&mut model, &bracket, &top, r, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &convex, T).unwrap().is_valid());
+    let want = 6.0 - (1.0 - pi / 4.0) * r * r;
+    assert!(
+        (volume(&model, &convex) - want).abs() < want * 2e-4,
+        "the convex band ends flush at the wall: {} vs {want}",
+        volume(&model, &convex)
+    );
+
+    // The re-entrant blend, then the rim over it.
+    let reentrant = edge_near(&model, &bracket, Point::new(1.0, 1.0, 1.0));
+    let concave = ogeom::fillet::fillet_edge(&mut model, &bracket, &reentrant, r, T)
+        .unwrap()
+        .shape;
+    let added = volume(&model, &concave) - 6.0;
+    let want_added = 2.0 * (1.0 - pi / 4.0) * r * r;
+    assert!(
+        (added - want_added).abs() < want_added * 2e-3,
+        "the concave band fills its corner: {added} vs {want_added}"
+    );
+    let arc_mid = 1.0 + r - r / core::f64::consts::SQRT_2;
+    let rim = [
+        edge_near(&model, &concave, Point::new(1.75, 0.0, 1.0)),
+        edge_near(&model, &concave, Point::new(arc_mid, 0.0, arc_mid)),
+        edge_near(&model, &concave, Point::new(1.0, 0.0, 1.75)),
+    ];
+    let rolled = ogeom::fillet::fillet_edges(&mut model, &concave, &rim, r, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &rolled, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let removed = volume(&model, &concave) - volume(&model, &rolled);
+    // Two straight runs of 1 − r each, and the torus quarter: area
+    // (1 − π/4) r² about the concave axis, centroid at r (11/6 − π/2) / (1 − π/4).
+    let want_removed = 2.0 * (1.0 - pi / 4.0) * r * r * (1.0 - r)
+        + (pi / 2.0) * (11.0 / 6.0 - pi / 2.0) * r * r * r;
+    assert!(
+        (removed - want_removed).abs() < want_removed * 2e-3,
+        "the rim blend rolls over the concave band: {removed} vs {want_removed}"
+    );
+}
+
 /// A straight seat and a marched one meeting at two corners: the box's
 /// bottom edge along the wall, and the grooved block's elliptical crease
 /// that runs out through that wall across it. In either order the later
