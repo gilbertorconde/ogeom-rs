@@ -119,6 +119,100 @@ fn a_hole_rim_gains_the_mirrored_toroidal_blend() {
     assert!(result.history.is_deleted(&edge));
 }
 
+/// The same mouth in a plate, drilled right through: the bore's rim rounded
+/// over where the drill was longer than the plate is thick.
+///
+/// The drill's length is the whole point. A bore exactly as deep as the
+/// plate leaves its mouth on the drill cylinder's own rim, and that circle
+/// starts where the wall's chart does; a deeper drill leaves it as a
+/// section, starting wherever the cut split it. The blend's wedge shares
+/// the wall with the plate, and the shared rim's image on that chart is a
+/// straight pcurve running from a quarter turn round to a quarter turn
+/// past the seam — which the boolean's tear remover, seeing two samples
+/// three quarters of a turn apart, read as a wrap and turned back on
+/// itself. The wall then never split, its strip inside the wedge survived,
+/// and the shell would not close.
+#[test]
+fn a_bore_mouth_in_a_plate_rounds_over_however_deep_the_drill() {
+    let pi = core::f64::consts::PI;
+    let (plate, bore, r) = (10.0_f64, 4.0_f64, 1.0_f64);
+    for deeper in [false, true] {
+        let mut model = ogeom_topo::Model::new();
+        let block = ogeom_algo::make_box(
+            &mut model,
+            Frame::new(
+                Point::new(-plate, -plate, 0.0),
+                ogeom_math::Direction::Z,
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap(),
+            (plate * 2.0, plate * 2.0, 10.0),
+            T,
+        )
+        .unwrap();
+        let (low, tall) = if deeper { (-1.0, 12.0) } else { (0.0, 10.0) };
+        let seat = Frame::new(
+            Point::new(0.0, 0.0, low),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let drill = ogeom_algo::make_cylinder(&mut model, seat, bore, tall, T).unwrap();
+        let holed = ogeom_bool::cut(&mut model, &block.shape, &drill.shape, T).unwrap();
+
+        // The mouth, asked for away from the wall's seam so the seam's own
+        // edge cannot answer instead.
+        let mouth = explore(&model, &holed.shape, Filter::OfType(ShapeType::Edge))
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                use ogeom_geom::Curve3d as _;
+                let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = model
+                    .node(e)
+                    .and_then(|n| n.data().as_edge())
+                    .and_then(ogeom_topo::EdgeData::curve3d)
+                else {
+                    return false;
+                };
+                let Some(c) = model.geometry().curve(*curve) else {
+                    return false;
+                };
+                (0..=8).all(|i| {
+                    let t = range.0 + (range.1 - range.0) * f64::from(i) / 8.0;
+                    c.point_at(t, T).is_ok_and(|p| {
+                        (p.z - 10.0).abs() < 1e-9 && (p.x.hypot(p.y) - bore).abs() < 1e-6
+                    })
+                })
+            })
+            .expect("the plate has its bore mouth");
+
+        let built = ogeom_fillet::fillet_edge(&mut model, &holed.shape, &mouth, r, T)
+            .unwrap_or_else(|e| panic!("drill deeper {deeper}: {e}"));
+        let diagnosis = ogeom_algo::check(&model, &built.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        assert_eq!(
+            explore(&model, &built.shape, Filter::OfType(ShapeType::Face))
+                .unwrap()
+                .len(),
+            8,
+            "drill deeper {deeper}: six walls, the bore and the band"
+        );
+        // Pappus over the mirrored meridian cusp at the bore's radius, the
+        // same figure the tube's rim answers to.
+        let removed = 2.0
+            * pi
+            * (bore * r * r + r * r * r / 2.0 - (bore + r) * pi * r * r / 4.0 + r * r * r / 3.0);
+        let want = plate * plate * 4.0 * 10.0 - pi * bore * bore * 10.0 - removed;
+        let got = volume(&model, &built.shape);
+        assert!(
+            (got - want).abs() < want * 1e-5,
+            "drill deeper {deeper}: {got} against {want}"
+        );
+    }
+}
+
 /// The base of a boss: the concave circular seat where a cylinder stands on
 /// a plate.
 #[test]

@@ -596,6 +596,7 @@ fn pcurve_polyline(
     prange: (f64, f64),
     crange: (f64, f64),
     sub: (f64, f64),
+    surface: &SurfaceGeometry,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Point2>> {
     let lo = rescale(sub.0, crange, prange);
@@ -603,7 +604,7 @@ fn pcurve_polyline(
     // Enough samples that the first step approximates the tangent and the
     // scanline interior test has a faithful outline. Straight pcurves get
     // two points; everything else a fixed fine sampling.
-    let count = match pcurve {
+    let mut count = match pcurve {
         PlanarCurve::Line(_) => 1,
         _ => {
             let span = (hi - lo).abs().max(SCAFFOLD_CHORD);
@@ -612,6 +613,27 @@ fn pcurve_polyline(
             n.clamp(8, 256)
         }
     };
+    // And never a step [`unwrap_polyline`] could read as a period jump. A
+    // straight pcurve is faithful at two points — a coaxial rim's image on
+    // a cylinder is exactly a line across the chart — but one that crosses
+    // more than half the turn looks to that reader like a wrap, and the
+    // strand comes back running the complementary way: a bore's mouth
+    // blended where the mouth circle starts anywhere but the wall's own
+    // seam. The chart's span decides the count, not the parameter's.
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let (first, last) = (pcurve.point_at(lo, tol)?, pcurve.point_at(hi, tol)?);
+    for (periodic, period, reach) in [
+        (surface.is_periodic_u(), ub - ua, (last.x - first.x).abs()),
+        (surface.is_periodic_v(), vb - va, (last.y - first.y).abs()),
+    ] {
+        if !periodic || period <= 0.0 || !reach.is_finite() {
+            continue;
+        }
+        let steps = (reach / (period / 3.0)).ceil();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let steps = steps.clamp(1.0, 4096.0) as usize;
+        count = count.max(steps);
+    }
     let mut out = Vec::with_capacity(count + 1);
     for i in 0..=count {
         #[allow(clippy::cast_precision_loss)]
@@ -660,7 +682,12 @@ fn contact_intervals(
         let mut lines = Vec::new();
         for e in &face.edges {
             lines.push(pcurve_polyline(
-                &e.pcurve, e.prange, e.crange, e.crange, tol,
+                &e.pcurve,
+                e.prange,
+                e.crange,
+                e.crange,
+                &face.surface,
+                tol,
             )?);
         }
         Ok(lines)
@@ -1410,10 +1437,22 @@ fn fill(
         let mut lines = Vec::new();
         for e in &face.edges {
             lines.push(pcurve_polyline(
-                &e.pcurve, e.prange, e.crange, e.crange, tol,
+                &e.pcurve,
+                e.prange,
+                e.crange,
+                e.crange,
+                &face.surface,
+                tol,
             )?);
             if let Some((other, orange)) = &e.other_side {
-                lines.push(pcurve_polyline(other, *orange, e.crange, e.crange, tol)?);
+                lines.push(pcurve_polyline(
+                    other,
+                    *orange,
+                    e.crange,
+                    e.crange,
+                    &face.surface,
+                    tol,
+                )?);
             }
         }
         weld_outline_ends(&mut lines, outline_snap(face, tol));
@@ -3172,11 +3211,15 @@ fn chart_point_of(face: &GFace, p: Point, tol: Tolerances) -> Option<Point2> {
     let at = fold_point_into_chart(raw, &face.surface);
     let mut lines: Vec<Vec<Point2>> = Vec::new();
     for e in &face.edges {
-        lines.push(pcurve_polyline(&e.pcurve, e.prange, e.crange, e.crange, tol).ok()?);
+        lines.push(
+            pcurve_polyline(&e.pcurve, e.prange, e.crange, e.crange, &face.surface, tol).ok()?,
+        );
         // A seam bounds the chart twice — once per column — and a trim test
         // that sees only one side reads half the band as outside.
         if let Some((other, orange)) = &e.other_side {
-            lines.push(pcurve_polyline(other, *orange, e.crange, e.crange, tol).ok()?);
+            lines.push(
+                pcurve_polyline(other, *orange, e.crange, e.crange, &face.surface, tol).ok()?,
+            );
         }
     }
     weld_outline_ends(&mut lines, outline_snap(face, tol));
@@ -3752,7 +3795,14 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     continue;
                 }
                 strands.push(Strand {
-                    polyline: pcurve_polyline(&e.pcurve, e.prange, e.crange, sub, tol)?,
+                    polyline: pcurve_polyline(
+                        &e.pcurve,
+                        e.prange,
+                        e.crange,
+                        sub,
+                        &face.surface,
+                        tol,
+                    )?,
                     tag: Tag::Boundary {
                         edge: ei,
                         range: sub,
@@ -3761,7 +3811,14 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 });
                 if let Some((other_pc, orange)) = &e.other_side {
                     strands.push(Strand {
-                        polyline: pcurve_polyline(other_pc, *orange, e.crange, sub, tol)?,
+                        polyline: pcurve_polyline(
+                            other_pc,
+                            *orange,
+                            e.crange,
+                            sub,
+                            &face.surface,
+                            tol,
+                        )?,
                         tag: Tag::Boundary {
                             edge: ei,
                             range: sub,
@@ -3846,7 +3903,14 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             for pair in stops.windows(2) {
                 let sub = (pair[0], pair[1]);
                 strands.push(Strand {
-                    polyline: pcurve_polyline(&pole.pcurve, pole.prange, pole.prange, sub, tol)?,
+                    polyline: pcurve_polyline(
+                        &pole.pcurve,
+                        pole.prange,
+                        pole.prange,
+                        sub,
+                        &face.surface,
+                        tol,
+                    )?,
                     tag: Tag::Pole {
                         pole: pi,
                         range: sub,
@@ -3897,8 +3961,14 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 }
                 // Keep only what lies inside this face's trim; the rest
                 // of the owner's boundary splits nothing here.
-                let mut line =
-                    pcurve_polyline(&contact.pcurve, contact.prange, contact.crange, sub, tol)?;
+                let mut line = pcurve_polyline(
+                    &contact.pcurve,
+                    contact.prange,
+                    contact.crange,
+                    sub,
+                    &face.surface,
+                    tol,
+                )?;
                 unwrap_polyline(&mut line, &face.surface);
                 fold_into_chart(&mut line, &face.surface);
                 let mid = interior_of(&line);
@@ -4335,6 +4405,22 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     }
     mark_covered_coincidences(&ga, &mut pieces, tol);
     if *ARRANGE_DEBUG {
+        for (fi, partners) in same_a.iter().enumerate() {
+            if !partners.is_empty() {
+                eprintln!("SAME a{fi} with b{partners:?}");
+            }
+        }
+        for (ci, contact) in contacts.iter().enumerate() {
+            eprintln!(
+                "CONTACT c{ci} onto {}{} over {:?} prange {:?} node {} pcurve {:?}",
+                if contact.target_from_a { "a" } else { "b" },
+                contact.target_face,
+                contact.crange,
+                contact.prange,
+                contact.node.index(),
+                contact.pcurve
+            );
+        }
         for (i, p) in pieces.iter().enumerate() {
             let own = if p.from_a {
                 &ga.faces[p.face]
