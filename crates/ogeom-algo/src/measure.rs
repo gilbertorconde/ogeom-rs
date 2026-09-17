@@ -113,6 +113,94 @@ pub fn curve_bounds(curve: &Curve, tol: Tolerances) -> OgeomResult<Aabb> {
     })
 }
 
+/// A guaranteed bound for the part of a curve an edge actually uses.
+///
+/// [`curve_bounds`] answers for the whole curve, which is the right answer
+/// to a different question: a line's carrier runs to the ends of the
+/// world, and an imported edge sits on a stretch of it a few millimetres
+/// long. Where the range can be honoured exactly it is — a segment is the
+/// hull of its two ends, an arc the hull of its ends and whichever of its
+/// frame's four extremes it sweeps past — and where it cannot, the whole
+/// curve's bound stands, which is still a bound.
+///
+/// # Errors
+///
+/// Whatever the curve reports when asked for a point.
+pub fn curve_bounds_over(curve: &Curve, range: (f64, f64), tol: Tolerances) -> OgeomResult<Aabb> {
+    use ogeom_geom::Curve3d as _;
+    Ok(match curve {
+        Curve::Line(_) => {
+            Aabb::of_corners(curve.point_at(range.0, tol)?, curve.point_at(range.1, tol)?)
+        }
+        Curve::Circle(c) => {
+            let circle = c.circle();
+            arc_bounds(
+                circle.centre(),
+                circle.frame(),
+                circle.radius(),
+                circle.radius(),
+                range,
+                curve,
+                tol,
+            )?
+        }
+        Curve::Ellipse(e) => {
+            let ellipse = e.ellipse();
+            arc_bounds(
+                ellipse.centre(),
+                ellipse.frame(),
+                ellipse.major_radius(),
+                ellipse.minor_radius(),
+                range,
+                curve,
+                tol,
+            )?
+        }
+        Curve::Offset(o) => curve_bounds_over(o.basis(), range, tol)?.expanded(o.distance().abs()),
+        Curve::Trimmed(t) => curve_bounds_over(t.basis(), range, tol)?,
+        _ => curve_bounds(curve, tol)?,
+    })
+}
+
+/// The hull of an arc's ends and the frame extremes it sweeps past.
+///
+/// A conic in its own frame reaches its extremes at the four quarter
+/// angles; an arc reaches only the ones inside it, and its ends otherwise.
+fn arc_bounds(
+    centre: Point,
+    frame: ogeom_math::Frame,
+    rx: f64,
+    ry: f64,
+    range: (f64, f64),
+    curve: &Curve,
+    tol: Tolerances,
+) -> OgeomResult<Aabb> {
+    use core::f64::consts::{PI, TAU};
+    use ogeom_geom::Curve3d as _;
+    let (lo, hi) = if range.0 <= range.1 {
+        (range.0, range.1)
+    } else {
+        (range.1, range.0)
+    };
+    if hi - lo >= TAU {
+        return Ok(frame_bounds(centre, frame, (rx, ry, 0.0)));
+    }
+    let mut out = Aabb::of_corners(curve.point_at(lo, tol)?, curve.point_at(hi, tol)?);
+    // Every quarter angle the arc runs through, counted from the turn its
+    // own start sits in.
+    let turns = (lo / TAU).floor();
+    for step in 0..=4 {
+        #[allow(clippy::cast_precision_loss)]
+        let at = turns.mul_add(TAU, step as f64 * PI / 2.0);
+        for angle in [at, at + TAU] {
+            if angle >= lo && angle <= hi {
+                out = out.with_point(curve.point_at(angle, tol)?);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// A guaranteed bound for a surface.
 ///
 /// # Errors
@@ -270,35 +358,36 @@ pub fn shape_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResul
         NodeData::Edge(e) => {
             let mut out = Aabb::EMPTY;
             for repr in &e.representations {
-                if let ogeom_topo::EdgeRepr::Curve3d { curve, .. } = repr
+                if let ogeom_topo::EdgeRepr::Curve3d { curve, range, .. } = repr
                     && let Some(geometry) = model.geometry().curve(*curve)
                 {
-                    out = out.union(&curve_bounds(geometry, tol)?);
+                    // Over the range the edge uses, not the curve's whole
+                    // carrier: an imported edge sits on a few millimetres of
+                    // a line that runs to the ends of the world.
+                    out = out.union(&curve_bounds_over(geometry, *range, tol)?);
                 }
             }
             out.transformed(&placement).expanded(e.tolerance.get())
         }
         NodeData::Face(f) => {
-            // A planar face lies inside its boundary's own hull, so its
-            // wires below say everything — an imported plane's carrier
-            // window can span kilometres and would drown every consumer. A
-            // curved face can bulge past its boundary — a dome past its
-            // equator — so those keep the whole surface's bound.
-            let planar = matches!(
-                model.geometry().surface(f.surface),
-                Some(ogeom_geom::SurfaceGeometry::Plane(_))
-            );
-            if planar && !model.children_of(shape)?.is_empty() {
-                Aabb::EMPTY
-            } else {
-                match model.geometry().surface(f.surface) {
-                    Some(surface) => surface_bounds(surface, tol)
-                        .unwrap_or(Aabb::EMPTY)
-                        .transformed(&placement)
-                        .expanded(f.tolerance.get()),
-                    None => Aabb::EMPTY,
+            // A face's boundary is bounded by the wires below it, so what
+            // the face itself has to add is only where its surface bulges
+            // past that boundary — a dome past its equator. A trimmed face
+            // whose carrier runs to the ends of the world must not bring
+            // the carrier: an imported plane's window spans kilometres, and
+            // a cylinder's height domain more, and either would drown every
+            // consumer that asks a body how big it is.
+            //
+            // A face with no boundary at all — a whole sphere, a natural
+            // face — has nothing below it and keeps its surface's bound.
+            let own = match model.geometry().surface(f.surface) {
+                Some(surface) if !model.children_of(shape)?.is_empty() => {
+                    patch_bulge(model, shape, surface, f.surface, tol)?
                 }
-            }
+                Some(surface) => surface_bounds(surface, tol).unwrap_or(Aabb::EMPTY),
+                None => Aabb::EMPTY,
+            };
+            own.transformed(&placement).expanded(f.tolerance.get())
         }
         NodeData::Container => Aabb::EMPTY,
     };
@@ -310,7 +399,202 @@ pub fn shape_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResul
     Ok(out)
 }
 
-/// A bound for a shape built only from its vertices.
+/// Where a face's surface reaches past the boundary that trims it.
+///
+/// A flat or ruled patch reaches nowhere: every one of its points lies on a
+/// straight line between two points of its own boundary, so the boundary's
+/// bound holds it and this adds nothing. A sphere's or a torus's does — the
+/// button head of a screw is a sphere zone whose apex is a bulge between
+/// its rims, three millimetres past the hull of every vertex it has — and
+/// for those the bulge is exactly where the surface reaches its own extreme
+/// along each axis, when that point lies inside the face's trim.
+///
+/// Anything else keeps its surface's whole bound, which is what it had
+/// before there was a better answer: a spline's control hull is finite and
+/// honest, and a revolution's or an extrusion's carrier is the only bound
+/// there is for it.
+fn patch_bulge(
+    model: &Model,
+    face: &Shape,
+    surface: &SurfaceGeometry,
+    surface_id: ogeom_topo::SurfaceId,
+    tol: Tolerances,
+) -> OgeomResult<Aabb> {
+    use ogeom_geom::Surface as _;
+    let frame = match surface {
+        // Flat, or ruled along a straight generator: the boundary says all.
+        SurfaceGeometry::Plane(_)
+        | SurfaceGeometry::Cylinder(_)
+        | SurfaceGeometry::Cone(_)
+        | SurfaceGeometry::Extrusion(_) => return Ok(Aabb::EMPTY),
+        SurfaceGeometry::Sphere(s) => s.sphere().frame(),
+        SurfaceGeometry::Torus(t) => t.torus().frame(),
+        _ => return Ok(surface_bounds(surface, tol).unwrap_or(Aabb::EMPTY)),
+    };
+    let Some(outline) = chart_outline(model, face, surface_id, tol)? else {
+        return Ok(surface_bounds(surface, tol).unwrap_or(Aabb::EMPTY));
+    };
+    // The turn the trim is written in, so a bulge can be folded into it.
+    let (mut ua, mut ub) = (f64::INFINITY, f64::NEG_INFINITY);
+    for ring in &outline {
+        for at in ring {
+            ua = ua.min(at.x);
+            ub = ub.max(at.x);
+        }
+    }
+    // Both surfaces read the same way: a ring about the frame's z whose
+    // radius falls off with `cos v`, lifted along z by `sin v`. So the
+    // extreme along a direction is one pair of angles, in closed form: the
+    // longitude facing that way, and the latitude that tilts toward it.
+    let (x, y, z) = (frame.x().vector(), frame.y().vector(), frame.z().vector());
+    let mut out = Aabb::EMPTY;
+    for direction in [
+        Vector::X,
+        -Vector::X,
+        Vector::Y,
+        -Vector::Y,
+        Vector::Z,
+        -Vector::Z,
+    ] {
+        let (a, b, c) = (x.dot(direction), y.dot(direction), z.dot(direction));
+        let sideways = a.hypot(b);
+        let u = b.atan2(a);
+        let v = c.atan2(sideways);
+        // Folded into the turn the trim is written in, then asked of the
+        // outline itself.
+        let turn = core::f64::consts::TAU;
+        let turns = ((ua - u) / turn).ceil();
+        let folded = turns.mul_add(turn, u);
+        let inside = (folded <= ub && inside_outline(&outline, ogeom_math::Point2::new(folded, v)))
+            || (surface.is_periodic_v()
+                && [-turn, turn].iter().any(|shift| {
+                    inside_outline(&outline, ogeom_math::Point2::new(folded, v + shift))
+                }));
+        if inside {
+            out = out.with_point(surface.point_at(u, v, tol)?);
+        }
+    }
+    Ok(out)
+}
+
+/// A face's trim as polygons in its surface's chart, sampled from the
+/// pcurves, which is what a trim is written as.
+///
+/// The rectangle they span is not the trim — a screw's button head is a cap
+/// of a sphere whose own axis is not the cap's, so its rim wanders across
+/// the chart and the box around it holds most of a hemisphere. What a bulge
+/// has to be asked is whether it stands inside the outline itself.
+fn chart_outline(
+    model: &Model,
+    face: &Shape,
+    surface_id: ogeom_topo::SurfaceId,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<Vec<ogeom_math::Point2>>>> {
+    use ogeom_geom::Curve2d as _;
+    const STATIONS: usize = 16;
+    let mut outline = Vec::new();
+    for wire in model.ordered_children_of(face)? {
+        let mut ring: Vec<ogeom_math::Point2> = Vec::new();
+        // In the wire's own order, because a polygon is a walk and not a
+        // bag of pieces. Which column a seam's occurrence takes is decided
+        // by the ring — the side whose start continues where the walk has
+        // got to — as the tessellator decides it, since no flag can.
+        for edge in model.ordered_children_of(&wire)? {
+            let Some(repr) = model
+                .node(&edge)
+                .and_then(|n| n.data().as_edge())
+                .and_then(|d| d.pcurve_for(surface_id, edge.location()))
+            else {
+                return Ok(None);
+            };
+            let backwards = edge.orientation() == ogeom_topo::Orientation::Reversed;
+            let (id, range) = match repr {
+                ogeom_topo::EdgeRepr::PCurve { curve, range, .. } => (*curve, *range),
+                ogeom_topo::EdgeRepr::Seam {
+                    forward,
+                    reversed,
+                    range,
+                    ..
+                } => {
+                    let start = if backwards { range.1 } else { range.0 };
+                    let reach = |id: ogeom_topo::PCurveId| -> f64 {
+                        let Some(pcurve) = model.geometry().pcurve(id) else {
+                            return f64::INFINITY;
+                        };
+                        let Ok(at) = pcurve.point_at(start, tol) else {
+                            return f64::INFINITY;
+                        };
+                        ring.last().map_or(0.0, |previous| previous.distance(at))
+                    };
+                    let take = if reach(*forward) <= reach(*reversed) {
+                        *forward
+                    } else {
+                        *reversed
+                    };
+                    (take, *range)
+                }
+                _ => return Ok(None),
+            };
+            let Some(pcurve) = model.geometry().pcurve(id) else {
+                return Ok(None);
+            };
+            let (from, to) = if backwards {
+                (range.1, range.0)
+            } else {
+                (range.0, range.1)
+            };
+            for step in 0..=STATIONS {
+                #[allow(clippy::cast_precision_loss)]
+                let t = from + (to - from) * (step as f64 / STATIONS as f64);
+                ring.push(pcurve.point_at(t, tol)?);
+            }
+        }
+        if ring.len() >= 3 {
+            outline.push(ring);
+        }
+    }
+    Ok((!outline.is_empty()).then_some(outline))
+}
+
+/// Whether a point of the chart stands inside an outline, by crossings.
+///
+/// Every ring counts, so a hole cancels the boundary it is a hole in, which
+/// is the even-odd rule and all a bulge needs of it.
+fn inside_outline(outline: &[Vec<ogeom_math::Point2>], at: ogeom_math::Point2) -> bool {
+    let mut crossings = 0_usize;
+    for ring in outline {
+        for pair in ring.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            if (a.y > at.y) == (b.y > at.y) {
+                continue;
+            }
+            let span = b.y - a.y;
+            if span.abs() <= f64::MIN_POSITIVE {
+                continue;
+            }
+            let x = (b.x - a.x).mul_add((at.y - a.y) / span, a.x);
+            if x > at.x {
+                crossings += 1;
+            }
+        }
+        // Rings arrive open — the sampling walks each edge — so the closing
+        // step is counted too.
+        if let (Some(first), Some(last)) = (ring.first(), ring.last())
+            && (first.y > at.y) != (last.y > at.y)
+        {
+            let span = first.y - last.y;
+            if span.abs() > f64::MIN_POSITIVE {
+                let x = (first.x - last.x).mul_add((at.y - last.y) / span, last.x);
+                if x > at.x {
+                    crossings += 1;
+                }
+            }
+        }
+    }
+    crossings % 2 == 1
+}
+
+/// A bound for a shape built only from its vertices./// A bound for a shape built only from its vertices.
 ///
 /// Tighter than [`shape_bounds`] for a solid whose faces sit on unbounded
 /// surfaces, and *not* a guarantee: a curved edge bulges past its own

@@ -134,3 +134,74 @@ fn an_imported_part_takes_a_boolean_cut() {
     .count();
     assert!(touched > 0, "faces of the imported part appear in history");
 }
+
+/// A body is bounded by what it is trimmed to, not by the carriers under it.
+///
+/// `shape_bounds` promised a guarantee and delivered the carriers: an
+/// imported plane reported its own window, which spans kilometres, and a
+/// cylinder its height domain. A consumer asking how big a screw is got a
+/// box a billion millimetres across and had to fall back to the hull of the
+/// topological vertices — which does not contain the body either, since a
+/// button head's apex is a bulge between its rims, three millimetres past
+/// every vertex the head has.
+///
+/// Two things were wrong. An edge reported the bound of its whole curve
+/// rather than of the range it uses, so a segment on a line that runs to
+/// the ends of the world reported the ends of the world. And a curved face
+/// reported its whole surface, when its boundary is bounded by the edges
+/// below it and all the face itself has to add is where its surface bulges
+/// past that boundary.
+#[test]
+fn a_body_is_bounded_by_what_it_is_trimmed_to() {
+    let deflection = ogeom::mesh::Deflection::default();
+    // The same screw in two encodings, five bodies in one and one in the
+    // other, and the second is where the figures below come from: an M5×16
+    // button head, 18.75 long over a head 9.5 across.
+    for (file, bodies) in [("m5x16_bhcs.step", 5), ("m5x16_bhcs_loops.step", 1)] {
+        let text = corpus(file);
+        let import = ogeom::io::read_step(&text, T).unwrap();
+        let model = import.document.model();
+        assert_eq!(import.solids.len(), bodies, "{file}: its bodies");
+        for (which, solid) in import.solids.iter().enumerate() {
+            let bounds = ogeom::algo::shape_bounds(model, solid, T).unwrap();
+            let mesh = ogeom::mesh::triangulate(model, solid, deflection, T).unwrap();
+            let mut hull = ogeom::math::Aabb::default();
+            for at in &mesh.positions {
+                hull = hull.with_point(*at);
+            }
+            assert!(
+                bounds.contains_box(&hull),
+                "{file} body {which}: the bound holds the mesh, {:?}..{:?} against {:?}..{:?}",
+                bounds.low(),
+                bounds.high(),
+                hull.low(),
+                hull.high()
+            );
+            // And holds little else. Where the bound stands proud of the mesh it
+            // is the mesh that is short — a chord across an arc falls inside it
+            // — so the margin is the chord's, either way round.
+            let (low, high) = (bounds.low().unwrap(), bounds.high().unwrap());
+            let (near, far) = (hull.low().unwrap(), hull.high().unwrap());
+            for (bound, meshed) in [
+                (low.x, near.x),
+                (low.y, near.y),
+                (low.z, near.z),
+                (high.x, far.x),
+                (high.y, far.y),
+                (high.z, far.z),
+            ] {
+                assert!(
+                    (bound - meshed).abs() <= deflection.chord,
+                    "{file} body {which}: the bound stands {} from the mesh",
+                    (bound - meshed).abs()
+                );
+            }
+            // The screw itself, and not the carriers under it.
+            let size = high - low;
+            assert!(
+                size.x < 20.0 && (size.y - 9.5).abs() < 0.1 && (size.z - 9.5).abs() < 0.1,
+                "{file} body {which}: an M5×16 button head, {size:?}"
+            );
+        }
+    }
+}
