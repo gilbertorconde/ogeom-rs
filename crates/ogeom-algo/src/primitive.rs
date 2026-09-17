@@ -233,6 +233,125 @@ pub fn make_hexahedron(
     box_like(model, &ordered, tol)
 }
 
+/// A convex solid from planar rings over shared points.
+///
+/// `rings` name the faces, each a loop of indices into `points` in either
+/// winding: the builder winds every ring outward itself, judged against the
+/// centroid of all the points, which is what makes the solid's convexity a
+/// requirement rather than a courtesy. Every ring must be planar, and every
+/// edge — a pair of consecutive points on a ring — must be shared by exactly
+/// two rings, or the shell would not close. The corner tool's block at an
+/// N-edged vertex is one: the N host planes and, through the ball's centre,
+/// the N planes square to the edges.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
+/// point is not finite, a ring names fewer than three points or a point out
+/// of range, a ring is not planar, an edge is not shared by exactly two
+/// rings, or the rings span no volume.
+pub fn make_polyhedron(
+    model: &mut Model,
+    points: &[Point],
+    rings: &[Vec<usize>],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if points.len() < 4 || rings.len() < 4 {
+        ogeom_bail!(
+            Construction,
+            "a polyhedron has at least four points and four faces"
+        );
+    }
+    if points
+        .iter()
+        .any(|p| !p.to_vector().magnitude().is_finite())
+    {
+        ogeom_bail!(Construction, "a polyhedron's point is not finite");
+    }
+    let mut centroid = ogeom_math::Vector::ZERO;
+    for p in points {
+        centroid += p.to_vector();
+    }
+    let centroid =
+        Point::ORIGIN + centroid / f64::from(u32::try_from(points.len()).unwrap_or(u32::MAX));
+    let mut wound: Vec<Vec<usize>> = Vec::with_capacity(rings.len());
+    let mut uses: std::collections::HashMap<(usize, usize), usize> =
+        std::collections::HashMap::new();
+    for ring in rings {
+        if ring.len() < 3 {
+            ogeom_bail!(
+                Construction,
+                "a polyhedron's face has fewer than three corners"
+            );
+        }
+        if ring.iter().any(|&i| i >= points.len()) {
+            ogeom_bail!(
+                Construction,
+                "a polyhedron's face names a point it does not have"
+            );
+        }
+        let [a, b, c] = [points[ring[0]], points[ring[1]], points[ring[2]]];
+        let n = (b - a).cross(c - b);
+        let m = n.magnitude();
+        if !m.is_finite() || m <= tol.confusion() {
+            ogeom_bail!(Construction, "a polyhedron's face has no area");
+        }
+        let n = n / m;
+        let mut mid = ogeom_math::Vector::ZERO;
+        for &i in ring {
+            let off = (points[i] - a).dot(n).abs();
+            if off > tol.confusion() * 10.0 {
+                ogeom_bail!(
+                    Construction,
+                    "a polyhedron's face is not planar; a corner sits {off} off"
+                );
+            }
+            mid += points[i].to_vector();
+        }
+        let mid = Point::ORIGIN + mid / f64::from(u32::try_from(ring.len()).unwrap_or(u32::MAX));
+        let outward = n.dot(mid - centroid) > 0.0;
+        // Reversed about its first point, so the ring's chart keeps the
+        // origin it was named with.
+        let ring: Vec<usize> = if outward {
+            ring.clone()
+        } else {
+            std::iter::once(ring[0])
+                .chain(ring[1..].iter().rev().copied())
+                .collect()
+        };
+        for step in 0..ring.len() {
+            let (from, to) = (ring[step], ring[(step + 1) % ring.len()]);
+            if from == to {
+                ogeom_bail!(Construction, "a polyhedron's face repeats a corner");
+            }
+            *uses.entry((from.min(to), from.max(to))).or_insert(0) += 1;
+        }
+        wound.push(ring);
+    }
+    if let Some((edge, count)) = uses.iter().find(|(_, count)| **count != 2) {
+        ogeom_bail!(
+            Construction,
+            "a polyhedron's edge {edge:?} is used by {count} faces, not two; the shell would not close"
+        );
+    }
+    // The volume by divergence over the outward rings: none, and the rings
+    // are flat or their windings disagree.
+    let mut volume = 0.0;
+    for ring in &wound {
+        let a = points[ring[0]];
+        for step in 1..ring.len() - 1 {
+            let (b, c) = (points[ring[step]], points[ring[step + 1]]);
+            volume += (a - centroid).dot((b - centroid).cross(c - centroid));
+        }
+    }
+    if volume.is_nan() || volume / 6.0 <= tol.confusion() {
+        ogeom_bail!(Construction, "a polyhedron's faces span no volume");
+    }
+    let borrowed: Vec<&[usize]> = wound.iter().map(Vec::as_slice).collect();
+    model.begin_operation();
+    faceted_solid(model, points, &borrowed, tol)
+}
+
 /// Build a solid from eight corners laid out like [`CORNERS`], with the six
 /// faces of [`FACES`].
 ///
@@ -1516,6 +1635,60 @@ mod tests {
         let mut skewed = corners;
         skewed[6] = Point::new(b, b + 0.5, h);
         assert!(make_hexahedron(&mut model, skewed, T).is_err());
+    }
+
+    /// A triangular prism from five rings named in mixed windings: the
+    /// builder winds them outward itself, the shell closes on nine shared
+    /// edges, and the volume is the prism's. A ring left out leaves edges
+    /// used once, and the open shell is refused before it is built.
+    #[test]
+    fn a_polyhedron_winds_its_rings_outward_and_closes() {
+        let mut model = Model::new();
+        let points = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(4.0, 0.0, 0.0),
+            Point::new(0.0, 3.0, 0.0),
+            Point::new(0.0, 0.0, 5.0),
+            Point::new(4.0, 0.0, 5.0),
+            Point::new(0.0, 3.0, 5.0),
+        ];
+        let rings = vec![
+            vec![0, 1, 2],    // bottom, wound inward
+            vec![3, 4, 5],    // top, wound outward
+            vec![0, 1, 4, 3], // the y = 0 wall, wound inward
+            vec![1, 2, 5, 4], // the slanted wall, wound outward
+            vec![0, 3, 5, 2], // the x = 0 wall, wound outward
+        ];
+        let solid = make_polyhedron(&mut model, &points, &rings, T)
+            .unwrap()
+            .shape;
+        assert_eq!(model.kind_of(&solid).unwrap(), ShapeType::Solid);
+        assert_eq!(
+            explore_unique(&model, &solid, ShapeType::Edge)
+                .unwrap()
+                .len(),
+            9
+        );
+        let shell = explore_unique(&model, &solid, ShapeType::Shell)
+            .unwrap()
+            .remove(0);
+        assert!(crate::is_shell_closed(&model, &shell).unwrap());
+        let expected = 0.5 * 4.0 * 3.0 * 5.0;
+        let measured =
+            crate::volume_properties(&model, &solid, ogeom_mesh::Deflection::default(), T)
+                .unwrap()
+                .mass;
+        assert!(
+            (measured - expected).abs() < expected * 1e-6,
+            "prism volume {measured} against {expected}"
+        );
+        // Four of the five rings leave three edges used once.
+        let open = make_polyhedron(&mut model, &points, &rings[..4], T);
+        assert!(open.is_err());
+        // A ring off its plane is refused.
+        let mut bent = points;
+        bent[4] = Point::new(4.0, 0.5, 5.0);
+        assert!(make_polyhedron(&mut model, &bent, &rings, T).is_err());
     }
 
     #[test]

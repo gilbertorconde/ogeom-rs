@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
-use ogeom::math::{Direction, Frame, Point};
+use ogeom::math::{Direction, Frame, Point, Vector};
 use ogeom::topo::{Model, Shape, ShapeType, explore_unique};
 
 const T: Tolerances = Tolerances::millimetres();
@@ -12,9 +12,16 @@ const T: Tolerances = Tolerances::millimetres();
 /// The edge of `shape` whose midpoint is nearest `near`.
 fn edge_near(model: &Model, shape: &Shape, near: Point) -> Shape {
     use ogeom::geom::Curve3d as _;
+    // A degenerate edge — a sphere's pole — has no curve and no midpoint.
     explore_unique(model, shape, ShapeType::Edge)
         .unwrap()
         .into_iter()
+        .filter(|e| {
+            model
+                .node(e)
+                .and_then(|n| n.data().as_edge())
+                .is_some_and(|d| d.curve3d().is_some())
+        })
         .min_by(|a, b| {
             let mid = |e: &Shape| {
                 let data = model.node(e).unwrap().data().as_edge().unwrap();
@@ -369,7 +376,6 @@ fn round_vertex_rounds_the_corner_at_any_placement() {
 /// consumed while the caps at the edges' far ends stand.
 #[test]
 fn round_vertex_rounds_an_oblique_corner() {
-    use ogeom::math::Vector;
     let mut model = Model::new();
     let r = 2.0;
     let (a, b, c) = (
@@ -428,6 +434,207 @@ fn round_vertex_rounds_an_oblique_corner() {
     assert!(
         after < before && before - after < r * r * r,
         "the corner sheds its spike and no more: {before} -> {after}"
+    );
+}
+
+/// The N-support setback at a square pyramid's apex: four planes through
+/// the vertex, one ball touching all four, and the corner tool's block a
+/// polyhedron of eight faces. The corner is cut first and the four edges
+/// then take their flush fillets one after another, each band ending on
+/// the ball's rim — the other order, four fillets and then the corner,
+/// dies at the third fillet, whose predecessors crash into each other at
+/// the apex. The corner's volume is measured against the closed form:
+/// the block, N pyramids of height `r` over the host quads, less the
+/// ball's sector, whose solid angle is the apex's angular defect.
+#[test]
+fn round_vertex_sets_back_a_four_edge_apex() {
+    let mut model = Model::new();
+    let r = 1.5;
+    let base_corners = [
+        Point::new(-10.0, -10.0, 0.0),
+        Point::new(10.0, -10.0, 0.0),
+        Point::new(10.0, 10.0, 0.0),
+        Point::new(-10.0, 10.0, 0.0),
+    ];
+    let apex = Point::new(0.0, 0.0, 15.0);
+    let base = ogeom::algo::make_polygon(&mut model, &base_corners, true, T)
+        .unwrap()
+        .shape;
+    let tip = ogeom::algo::make_vertex(&mut model, apex).shape;
+    let pyramid = ogeom::offset::make_loft(&mut model, &base, &tip, T)
+        .unwrap()
+        .shape;
+    let vertex = vertex_near(&model, &pyramid, apex);
+    let fine = ogeom::mesh::Deflection::with_chord(2e-3).unwrap();
+    let volume = |model: &Model, shape: &Shape| {
+        ogeom::algo::volume_properties(model, shape, fine, T)
+            .unwrap()
+            .mass
+    };
+    let before = volume(&model, &pyramid);
+
+    let rounded = ogeom::fillet::round_vertex(&mut model, &pyramid, &vertex, r, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &rounded, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    assert_eq!(
+        explore_unique(&model, &rounded, ShapeType::Face)
+            .unwrap()
+            .len(),
+        10,
+        "five walls, the patch and four flush ends"
+    );
+
+    // The closed form, from the pyramid's own geometry: inward normals of
+    // the four lateral planes, the ball's centre on the axis a radius in
+    // from each, the feet of the centre on the edges and its touch points
+    // on the planes.
+    let edges: [Vector; 4] =
+        std::array::from_fn(|k| (base_corners[k] - apex).normalized(T).unwrap());
+    let inward: [Vector; 4] = std::array::from_fn(|k| {
+        let n = (base_corners[(k + 1) % 4] - base_corners[k])
+            .cross(apex - base_corners[k])
+            .normalized(T)
+            .unwrap();
+        if n.dot(Point::ORIGIN - base_corners[k]) > 0.0 {
+            n
+        } else {
+            -n
+        }
+    });
+    let centre = apex + Vector::new(0.0, 0.0, r / inward[0].z);
+    for m in &inward {
+        assert!(
+            (m.dot(centre - apex) - r).abs() < 1e-9,
+            "one ball touches all four"
+        );
+    }
+    let foot = |k: usize| apex + edges[k] * (centre - apex).dot(edges[k]);
+    let touch = |k: usize| centre - inward[k] * r;
+    let mut block = 0.0;
+    let mut defect = core::f64::consts::TAU;
+    for k in 0..4 {
+        let (a, b, c, d) = (apex, foot(k), touch(k), foot((k + 1) % 4));
+        let area = 0.5 * ((b - a).cross(c - a).magnitude() + (c - a).cross(d - a).magnitude());
+        block += r * area / 3.0;
+        defect -= edges[k].dot(edges[(k + 1) % 4]).acos();
+    }
+    let expected = block - r * r * r * defect / 3.0;
+    let after_corner = volume(&model, &rounded);
+    let shed = before - after_corner;
+    assert!(
+        (shed - expected).abs() < expected * 5e-3,
+        "the apex sheds its block less the ball's sector: {shed} vs {expected}"
+    );
+
+    // The four flush fillets after the corner, each on the edge's remaining
+    // run, each shedding the same volume as the others.
+    let mut solid = rounded;
+    let mut shed_by_band = Vec::new();
+    for (k, base_corner) in base_corners.iter().enumerate() {
+        let edge = edge_near(&model, &solid, foot(k).midpoint(*base_corner));
+        let was = volume(&model, &solid);
+        solid = ogeom::fillet::fillet_edge(&mut model, &solid, &edge, r, T)
+            .unwrap()
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &solid, T).unwrap();
+        assert!(
+            diagnosis.is_valid(),
+            "after fillet {k}: {:?}",
+            diagnosis.problems
+        );
+        shed_by_band.push(was - volume(&model, &solid));
+    }
+    for (k, shed) in shed_by_band.iter().enumerate() {
+        assert!(
+            (shed - shed_by_band[0]).abs() < shed_by_band[0] * 1e-3,
+            "band {k} sheds what band 0 does: {shed} vs {}",
+            shed_by_band[0]
+        );
+    }
+    let faces = explore_unique(&model, &solid, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 10, "five walls, four bands and the patch");
+    // Every blend face — the patch and the four bands — meets each of its
+    // neighbours tangentially: the bands their walls and the patch, the
+    // patch its four bands.
+    let mut blends = 0;
+    for face in &faces {
+        let ogeom::topo::NodeData::Face(data) = model.node(face).unwrap().data() else {
+            continue;
+        };
+        if matches!(
+            model.geometry().surface(data.surface),
+            Some(ogeom::geom::SurfaceGeometry::Plane(_))
+        ) {
+            continue;
+        }
+        blends += 1;
+        let contacts = ogeom::fillet::analyse_blend(&model, &solid, face, 15, T).unwrap();
+        let mut tangent = 0;
+        for contact in &contacts {
+            // A band's flush run-out through the base is a cut, not a join:
+            // its edge lies in the base plane and meets it at an angle.
+            let on_base = explore_unique(&model, &contact.edge, ShapeType::Vertex)
+                .unwrap()
+                .iter()
+                .all(|v| {
+                    model
+                        .node(v)
+                        .unwrap()
+                        .data()
+                        .as_vertex()
+                        .unwrap()
+                        .point
+                        .z
+                        .abs()
+                        < 1e-6
+                });
+            if on_base {
+                continue;
+            }
+            tangent += 1;
+            assert!(
+                contact.gap < 1e-3 && contact.tangency_error < 5e-3,
+                "a blend meets its neighbour tangentially: gap {} tangency {}",
+                contact.gap,
+                contact.tangency_error
+            );
+        }
+        assert!(
+            tangent >= 3,
+            "a band meets two walls and the patch; the patch four bands"
+        );
+    }
+    assert_eq!(blends, 5, "the patch and four bands");
+}
+
+/// A rectangular pyramid's apex: four planes, two slopes, and no ball a
+/// radius in from all four at once. The tool refuses by name rather than
+/// seating a ball that touches two of the faces and cuts the other two.
+#[test]
+fn round_vertex_refuses_an_apex_no_ball_touches() {
+    let mut model = Model::new();
+    let base_corners = [
+        Point::new(-10.0, -5.0, 0.0),
+        Point::new(10.0, -5.0, 0.0),
+        Point::new(10.0, 5.0, 0.0),
+        Point::new(-10.0, 5.0, 0.0),
+    ];
+    let apex = Point::new(0.0, 0.0, 15.0);
+    let base = ogeom::algo::make_polygon(&mut model, &base_corners, true, T)
+        .unwrap()
+        .shape;
+    let tip = ogeom::algo::make_vertex(&mut model, apex).shape;
+    let pyramid = ogeom::offset::make_loft(&mut model, &base, &tip, T)
+        .unwrap()
+        .shape;
+    let vertex = vertex_near(&model, &pyramid, apex);
+    let err = ogeom::fillet::round_vertex(&mut model, &pyramid, &vertex, 1.5, T)
+        .expect_err("no ball touches all four faces");
+    assert!(
+        err.to_string().contains("share no tangent ball"),
+        "the refusal names the missing ball: {err}"
     );
 }
 

@@ -55,7 +55,7 @@ pub use medial::{MedialAxis, medial_axis};
 pub use place::{copied, transformed};
 pub use primitive::{
     make_box, make_cone, make_cylinder, make_half_space, make_hexahedron, make_parallelepiped,
-    make_sphere, make_torus, make_wedge,
+    make_polyhedron, make_sphere, make_torus, make_wedge,
 };
 pub use proximity::{ClosestPair, ShapeDistance, distance_between_shapes};
 pub use sew::{Sewn, make_wire_unordered, order_edges, sew};

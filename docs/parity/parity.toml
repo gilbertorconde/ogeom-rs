@@ -1045,12 +1045,18 @@ own plane, and two such blends meet cap to cap along the shared arc, both \
 caps consumed, in either order. What is owed now: hosts beyond planes and \
 cylinders (cone, sphere, torus chart inversions), the equal-radius \
 crossing whose seam pinches at tangent poles; and of the corner family, \
-the N>3 setback vertex and the curved-edged corner. The corner tool rounds \
-a square or an oblique trihedral corner — its block the hexahedron bounded \
-by the host planes and the three planes through the ball's centre square \
-to the edges — offered on each of the corner's six labellings in turn, the \
-first that closes standing: the boolean's indifference to that labelling \
-is owed, two of the six still dying in the cut at an oblique corner. The \
+the N-edged vertex whose faces no single ball touches and the curved-edged \
+corner. The corner tool rounds any planar vertex whose faces one ball \
+touches — a square or oblique trihedral corner, a square pyramid's \
+four-edged apex — its block the polyhedron of the N host planes and the N \
+planes through the ball's centre square to the edges, where each band's \
+rim and the ball's coincide; at more than three edges the corner goes \
+first and the flush fillets follow, since bands built before the corner \
+crash into each other at the apex. The tool is offered on each of the \
+corner's 2N labellings in turn, the first that closes standing: the \
+boolean's indifference to that labelling is owed, two of the six still \
+dying in the cut at an oblique corner, and which labellings close there \
+turning on the last bit of the ball's centre. The \
 curved-seat corner is closed in either order: \
 through `fillet_edges` a marched blend and a straight one meet at their \
 corners, the later's run-out walking on under the earlier band, and the \
@@ -1067,7 +1073,7 @@ symbols = [
     "ogeom_fillet::fillet_edge", "ogeom_fillet::fillet_edges",
     "ogeom_fillet::fillet_edge_variable",
     "ogeom_fillet::march_blend", "ogeom_fillet::blend_faces",
-    "ogeom_fillet::MarchedBlend",
+    "ogeom_fillet::MarchedBlend", "ogeom_fillet::round_vertex",
 ]
 tests = [
     "crates/ogeom/tests/blends.rs",
