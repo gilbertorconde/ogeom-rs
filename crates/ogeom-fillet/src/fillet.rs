@@ -138,6 +138,14 @@ fn fillet_edge_meeting(
 /// leave the wedges' caps standing, which is the honest picture of a
 /// corner no single ball rolls around.
 ///
+/// Only two blends that round the same way trim each other. A wedge's cut
+/// would eat a fill, and a fill cannot run on through a wedge's band, so
+/// where a convex edge meets a concave one — an L-bracket's front edge at
+/// its re-entrant edge — whichever is asked first takes the corner and the
+/// other stops flush against its rail. The two orders then land on
+/// different solids, each exact, because the corner is genuinely one
+/// rounding or the other and no ball rolls round both.
+///
 /// # Errors
 ///
 /// As [`fillet_edge`] per edge, and additionally if an earlier blend
@@ -519,7 +527,15 @@ fn planar_fillet(
         }
         let hosts = [&seat.faces[0], &seat.faces[1]];
         if !crate::marched::crease_terminates_at(model, solid, edge, hosts, at, tol)?
-            || !crate::marched::neighbour_blend_at(model, solid, hosts, at, tol)?
+            || !crate::marched::neighbour_blend_at(
+                model,
+                solid,
+                hosts,
+                at,
+                seat.convex,
+                radius,
+                tol,
+            )?
         {
             continue;
         }
@@ -771,6 +787,13 @@ fn revolved_fillet(
 /// edge's curve. A trimmed survivor qualifies, and so does each piece an
 /// earlier blend running out across the edge left of it; every one is a
 /// part of the edge still there to blend.
+///
+/// A corner, though, and not merely a line. An earlier blend's end cap can
+/// stand in one of the hosts' own planes and leave a fresh edge along the
+/// very line the sought one runs on — an L-bracket's front blend caps in
+/// the wall's plane, along the wall's own top line — and there the two
+/// faces are tangent: a seam across one flat, no corner to round, and no
+/// part of what was asked for.
 fn refind_edges(
     model: &Model,
     solid: &Shape,
@@ -818,9 +841,31 @@ fn refind_edges(
                 break;
             }
         }
-        if all_on && !matches.iter().any(|m| m.is_same(&candidate)) {
-            matches.push(candidate);
+        if !all_on || matches.iter().any(|m| m.is_same(&candidate)) {
+            continue;
         }
+        let mid = c_curve.point_at(f64::midpoint(c_range.0, c_range.1), tol)?;
+        let mut normals: Vec<Vector> = Vec::new();
+        for face in ogeom_topo::explore_unique(model, solid, ShapeType::Face)? {
+            let touches = ogeom_topo::explore_unique(model, &face, ShapeType::Edge)?
+                .iter()
+                .any(|e| crate::support::same_occurrence(model, e, &candidate, tol));
+            if let (true, Some(normal)) = (
+                touches,
+                crate::marched::face_normal_near(model, &face, mid, tol)?,
+            ) {
+                normals.push(normal);
+            }
+        }
+        // Two faces that agree on their normal there are one smooth
+        // surface; anything else the seat machinery speaks to in its own
+        // words.
+        if matches!(normals.as_slice(), [first, second]
+            if first.cross(*second).magnitude() <= 1e-2)
+        {
+            continue;
+        }
+        matches.push(candidate);
     }
     if matches.is_empty() {
         ogeom_bail!(

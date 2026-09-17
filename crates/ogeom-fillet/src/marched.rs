@@ -1482,15 +1482,25 @@ pub(crate) fn crease_terminates_at(
 }
 
 /// Whether a face other than the hosts meets the crease's end at `at`
-/// *tangentially* to a host — a neighbouring blend's band, which is
-/// tangent to the host it rides. Material under such a face is the
-/// neighbour's rounding, not a step: a blend meeting it runs on through
-/// it and the cut trims the two bands against each other.
+/// *tangentially* to a host, and rounds the way a seat of this `convex`
+/// does — a neighbouring blend's band, which is tangent to the host it
+/// rides. Material under such a face is the neighbour's rounding, not a
+/// step: a blend meeting it runs on through it and the cut trims the two
+/// bands against each other.
+///
+/// Only where the two round the same way. A convex blend's cut trims a
+/// convex band against its own, but a fill in a re-entrant corner is
+/// material that cut would eat — an L-bracket's front edge filleted after
+/// its re-entrant one ran the whole length of the leg and out the far side
+/// of the wall — and a fill cannot run on through a band either. `radius`
+/// sets the chord the band's own side is read over.
 pub(crate) fn neighbour_blend_at(
     model: &Model,
     solid: &Shape,
     host_faces: [&Shape; 2],
     at: Point,
+    convex: bool,
+    radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     let host_normals: Vec<Vector> = host_faces
@@ -1519,6 +1529,7 @@ pub(crate) fn neighbour_blend_at(
         if host_normals
             .iter()
             .any(|h| h.cross(normal).magnitude() <= 1e-2)
+            && band_rounds_out_near(model, &face, at, radius * 0.5, tol)? == Some(convex)
         {
             return Ok(true);
         }
@@ -1526,8 +1537,105 @@ pub(crate) fn neighbour_blend_at(
     Ok(false)
 }
 
+/// Which way a face rounds where it comes nearest `at`.
+///
+/// `Some(true)` for a band whose material bulges out — a chord between two
+/// of its points sinks below the surface, into the solid — and
+/// `Some(false)` for one that fills a re-entrant corner, where the chord
+/// stands proud of it. `None` for a face flat over `step` at `at`, which
+/// has no side to be on, or one whose normal cannot be read there.
+///
+/// Which side is out is the face's own orientation over its surface's
+/// normal, the same reading [`ogeom_algo::face_normal`] takes, so nothing
+/// is classified and no ray is cast.
+fn band_rounds_out_near(
+    model: &Model,
+    face: &Shape,
+    at: Point,
+    step: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<bool>> {
+    use ogeom_geom::Surface as _;
+    let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
+        return Ok(None);
+    };
+    let Some(stored) = model.geometry().surface(data.surface) else {
+        return Ok(None);
+    };
+    let surface = {
+        use ogeom_geom::Transformable as _;
+        stored.transformed(&face.transform(model.datums())?, tol)?
+    };
+    let projection = ogeom_algo::project_on_surface(&surface, at, 24, tol)?;
+    if projection.distance > tol.confusion() * 1e3 {
+        return Ok(None);
+    }
+    let (u, v) = projection.parameters;
+    let outward_sign = if face.orientation() == ogeom_topo::Orientation::Reversed {
+        -1.0
+    } else {
+        1.0
+    };
+    let ((ulo, uhi), (vlo, vhi)) = surface.domain();
+    // The sagitta of a short chord each way across the surface, the larger
+    // of the two answering: a plane has neither, and on a band the way
+    // across it dwarfs the way along.
+    let mut sagitta = 0.0_f64;
+    for across in [true, false] {
+        let (du, dv) = surface.d1_at(u, v, tol)?;
+        let length = if across { du } else { dv }.magnitude();
+        if length <= tol.angular() {
+            continue;
+        }
+        let (lo, hi, here) = if across { (ulo, uhi, u) } else { (vlo, vhi, v) };
+        let span = hi - lo;
+        let mut half = step / length;
+        if span.is_finite() && half * 2.0 > span {
+            half = span * 0.5;
+        }
+        if half <= tol.parametric() {
+            continue;
+        }
+        // The chord's own middle, slid inside the domain: at a patch's
+        // corner — which is where a band's rail ends, and so where this is
+        // asked — a chord centred on the projection falls half off the
+        // surface, and a band read as flat is a band run on through.
+        let mut middle = here;
+        if lo.is_finite() {
+            middle = middle.max(lo + half);
+        }
+        if hi.is_finite() {
+            middle = middle.min(hi - half);
+        }
+        let at_parameter = |t: f64| -> (f64, f64) { if across { (t, v) } else { (u, t) } };
+        let ends = [middle - half, middle, middle + half]
+            .map(at_parameter)
+            .map(|(a, b)| surface.point_at(a, b, tol));
+        let [Ok(low), Ok(mid), Ok(high)] = ends else {
+            continue;
+        };
+        let (mdu, mdv) = {
+            let (a, b) = at_parameter(middle);
+            surface.d1_at(a, b, tol)?
+        };
+        let raw = mdu.cross(mdv);
+        let magnitude = raw.magnitude();
+        if magnitude <= tol.angular() {
+            continue;
+        }
+        let found = (low.midpoint(high) - mid).dot(raw / magnitude * outward_sign);
+        if found.abs() > sagitta.abs() {
+            sagitta = found;
+        }
+    }
+    if sagitta.abs() <= tol.confusion() * 10.0 {
+        return Ok(None);
+    }
+    Ok(Some(sagitta < 0.0))
+}
+
 /// A face's surface normal (either sign) at the point of it nearest `at`.
-fn face_normal_near(
+pub(crate) fn face_normal_near(
     model: &Model,
     face: &Shape,
     at: Point,

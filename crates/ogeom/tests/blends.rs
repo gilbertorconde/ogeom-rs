@@ -829,6 +829,19 @@ fn two_blends_meeting_at_a_corner_trim_each_other() {
     );
 }
 
+/// An L: a 2 mm cube with the quarter above `z = 1` and beyond `x = 1`
+/// taken out, so its re-entrant edge runs along `y` at `(1, 1)`.
+fn l_bracket(model: &mut Model) -> Shape {
+    let block = ogeom::algo::make_box(model, Frame::WORLD, (2.0, 2.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let seat = Frame::new(Point::new(1.0, -0.5, 1.0), Direction::Z, Direction::X, T).unwrap();
+    let notch = ogeom::algo::make_box(model, seat, (2.0, 3.0, 2.0), T)
+        .unwrap()
+        .shape;
+    ogeom::boolean::cut(model, &block, &notch, T).unwrap().shape
+}
+
 /// An L-bracket's re-entrant blend against the end face's convex blends:
 /// the concave band first, then the rim of the end face — the leg's top
 /// edge, the concave band's own end arc, the wall's edge — blended as one
@@ -847,16 +860,7 @@ fn a_rim_blend_rolls_over_the_bracket_s_concave_blend() {
     let r = 0.5_f64;
     let pi = core::f64::consts::PI;
     let mut model = Model::new();
-    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T)
-        .unwrap()
-        .shape;
-    let seat = Frame::new(Point::new(1.0, -0.5, 1.0), Direction::Z, Direction::X, T).unwrap();
-    let notch = ogeom::algo::make_box(&mut model, seat, (2.0, 3.0, 2.0), T)
-        .unwrap()
-        .shape;
-    let bracket = ogeom::boolean::cut(&mut model, &block, &notch, T)
-        .unwrap()
-        .shape;
+    let bracket = l_bracket(&mut model);
     let fine = ogeom::mesh::Deflection::with_chord(1e-4).unwrap();
     let volume = |model: &Model, shape: &Shape| {
         ogeom::algo::volume_properties(model, shape, fine, T)
@@ -1087,4 +1091,74 @@ fn vertex_near(model: &Model, shape: &Shape, near: Point) -> Shape {
                 .unwrap()
         })
         .unwrap()
+}
+
+/// The bracket's re-entrant edge and the leg's front edge asked together,
+/// both ways round. They meet at a corner, and neither runs on through the
+/// other's band: a wedge's cut would eat a fill, and a fill cannot run on
+/// through a wedge's band, so whichever is asked first takes the corner
+/// and the other stops flush against its rail. The two orders therefore
+/// land on different solids — which is the honest picture of a corner no
+/// single ball rolls around — and each is its own closed form: the fill
+/// over the length the other blend leaves it, the wedge over what is left
+/// of its own edge.
+///
+/// Before the run-on knew to ask which way a neighbour's band rounds, the
+/// wedge ran the whole length of the leg and out the far side of the wall.
+#[test]
+fn a_fill_and_a_wedge_asked_together_stop_at_each_other() {
+    let r = 0.5_f64;
+    let pi = core::f64::consts::PI;
+    // What either blend moves per unit of its length, the wedge out and the
+    // fill in: the square corner less the ball's quarter.
+    let per_length = (1.0 - pi / 4.0) * r * r;
+    let fine = ogeom::mesh::Deflection::with_chord(1e-4).unwrap();
+    let mut volumes = Vec::new();
+    for fill_first in [true, false] {
+        let mut model = Model::new();
+        let bracket = l_bracket(&mut model);
+        let fill = edge_near(&model, &bracket, Point::new(1.0, 1.0, 1.0));
+        let wedge = edge_near(&model, &bracket, Point::new(1.75, 0.0, 1.0));
+        let asked = if fill_first {
+            [fill, wedge]
+        } else {
+            [wedge, fill]
+        };
+        let built = ogeom::fillet::fillet_edges(&mut model, &bracket, &asked, r, T)
+            .unwrap()
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &built, T).unwrap();
+        assert!(
+            diagnosis.is_valid(),
+            "fill first {fill_first}: {:?}",
+            diagnosis.problems
+        );
+        assert_eq!(
+            explore_unique(&model, &built, ShapeType::Face)
+                .unwrap()
+                .len(),
+            13,
+            "fill first {fill_first}: six walls, two bands, and the ends they stop on"
+        );
+        // Asked first, the fill runs the leg's whole depth and the wedge
+        // then has the length its rail leaves; asked second, the fill
+        // starts where the wedge's own rail crosses the re-entrant edge.
+        let want = if fill_first {
+            6.0 + per_length * 2.0 - per_length * (1.0 - r)
+        } else {
+            6.0 - per_length + per_length * (2.0 - r)
+        };
+        let got = ogeom::algo::volume_properties(&model, &built, fine, T)
+            .unwrap()
+            .mass;
+        assert!(
+            (got - want).abs() < 1e-3,
+            "fill first {fill_first}: {got} against {want}"
+        );
+        volumes.push(got);
+    }
+    assert!(
+        (volumes[0] - volumes[1]).abs() > 1e-2,
+        "the orders round different corners: {volumes:?}"
+    );
 }
