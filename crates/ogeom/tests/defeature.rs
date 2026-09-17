@@ -375,6 +375,9 @@ fn two_chamfers_meeting_at_a_corner_remove_in_one_call() {
 /// and the post. Each comes back to the solid it was cut from, face for
 /// face and to the volume the mesh can measure.
 ///
+/// Each with a fillet and with a chamfer, since the wound is the same
+/// whether the band is a torus or a cone.
+///
 /// This is the wound an earlier note called "a neighbour meeting itself".
 /// A whole ring taken out of a neighbour is closed one of two ways, and
 /// only the neighbours' surfaces say which: a bore's two mouths sit in
@@ -384,7 +387,14 @@ fn two_chamfers_meeting_at_a_corner_remove_in_one_call() {
 /// where the circle is cut, and the seam extends to meet it.
 #[test]
 fn a_rim_blend_removes_and_its_rim_comes_back() {
-    for case in ["drum", "mouth", "boss"] {
+    for (case, bevel) in [
+        ("drum", false),
+        ("drum", true),
+        ("mouth", false),
+        ("mouth", true),
+        ("boss", false),
+        ("boss", true),
+    ] {
         let mut model = Model::new();
         let r = 1.0;
         let (sharp, rim_at) = match case {
@@ -452,28 +462,43 @@ fn a_rim_blend_removes_and_its_rim_comes_back() {
             .len();
 
         let rim = edge_near(&model, &sharp, rim_at);
-        let blended = ogeom::fillet::fillet_edge(&mut model, &sharp, &rim, r, T)
-            .unwrap_or_else(|e| panic!("{case}: {e}"))
+        let made = if bevel {
+            ogeom::fillet::chamfer_edge(&mut model, &sharp, &rim, r, T)
+        } else {
+            ogeom::fillet::fillet_edge(&mut model, &sharp, &rim, r, T)
+        };
+        let blended = made
+            .unwrap_or_else(|e| panic!("{case} bevel {bevel}: {e}"))
             .shape;
-        let band = faces_where(&model, &blended, |s| matches!(s, SurfaceGeometry::Torus(_)));
-        assert_eq!(band.len(), 1, "{case}: one toroidal band");
+        let band = faces_where(&model, &blended, |s| {
+            if bevel {
+                matches!(s, SurfaceGeometry::Cone(_))
+            } else {
+                matches!(s, SurfaceGeometry::Torus(_))
+            }
+        });
+        assert_eq!(band.len(), 1, "{case} bevel {bevel}: one band");
 
         let back = ogeom::boolean::remove_faces(&mut model, &blended, &band, T)
-            .unwrap_or_else(|e| panic!("{case}: {e}"))
+            .unwrap_or_else(|e| panic!("{case} bevel {bevel}: {e}"))
             .shape;
         let diagnosis = ogeom::algo::check(&model, &back, T).unwrap();
-        assert!(diagnosis.is_valid(), "{case}: {:?}", diagnosis.problems);
+        assert!(
+            diagnosis.is_valid(),
+            "{case} bevel {bevel}: {:?}",
+            diagnosis.problems
+        );
         assert_eq!(
             explore_unique(&model, &back, ShapeType::Face)
                 .unwrap()
                 .len(),
             faces_before,
-            "{case}: the faces the feature interrupted are whole again"
+            "{case} bevel {bevel}: the faces the feature interrupted are whole again"
         );
         let now = measure(&model, &back);
         assert!(
             (now - was).abs() < was * 1e-4,
-            "{case}: {now} against the solid it was cut from, {was}"
+            "{case} bevel {bevel}: {now} against the solid it was cut from, {was}"
         );
     }
 }

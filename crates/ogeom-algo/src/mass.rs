@@ -312,7 +312,15 @@ fn exact_volume_properties(
     for face in &faces {
         match exact_face(model, face, tol)? {
             Some(found) => exact.push(found),
-            None => return Ok(None),
+            None => {
+                if std::env::var_os("OGEOM_DEBUG_MASS").is_some() {
+                    eprintln!(
+                        "MASS face {} is not exactly integrable",
+                        face.node().index()
+                    );
+                }
+                return Ok(None);
+            }
         }
     }
     // The divergence theorem needs a closed boundary; topology says whether
@@ -635,7 +643,7 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
     }
     // Gather each boundary edge's chart segments on this face.
     let mut segments: Vec<(ogeom_math::Point2, ogeom_math::Point2)> = Vec::new();
-    let mut circle: Option<ogeom_geom::Circle2d> = None;
+    let mut circle: Option<(ogeom_geom::Circle2d, f64)> = None;
     let mut pieces = 0_usize;
     // A seam bounds the face twice; its two chart sides are gathered once.
     let mut seams_seen: Vec<ogeom_topo::TShapeId> = Vec::new();
@@ -660,17 +668,36 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
                         segments.push((a, b));
                     }
                     ogeom_geom::PlanarCurve::Circle(arc) => {
-                        // A full circle bounding the whole wire: the disc.
-                        if (range.1 - range.0 - core::f64::consts::TAU).abs() > 1e-9 {
-                            return Ok(None);
+                        // One circle's arcs, however many pieces the
+                        // boundary arrives in. A boolean splits a closed rim
+                        // to give the arrangement's walker somewhere to
+                        // start — even a rim it never touched — and the disc
+                        // those arcs bound is the same disc the whole turn
+                        // bounded. The spans are summed and the total asked
+                        // for a turn, so a fan of arcs that does not close
+                        // is still no disc.
+                        let span = (range.1 - range.0).abs();
+                        match &mut circle {
+                            None => circle = Some((*arc, span)),
+                            Some((held, total)) => {
+                                let (a, b) = (held.circle(), arc.circle());
+                                if a.centre().distance(b.centre()) > tol.confusion()
+                                    || (a.radius() - b.radius()).abs() > tol.confusion()
+                                {
+                                    return Ok(None);
+                                }
+                                *total += span;
+                            }
                         }
-                        circle = Some(*arc);
                     }
                     _ => return Ok(None),
                 }
             }
             EdgeRepr::Seam {
-                forward, reversed, ..
+                forward,
+                reversed,
+                range,
+                ..
             } => {
                 use ogeom_geom::Curve2d as _;
                 if seams_seen.contains(&edge.node()) {
@@ -688,11 +715,14 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
                 }
                 // The seam's two sides are the rectangle's left and right
                 // columns; their endpoints join the pool like any segment.
+                // Over the *edge's* range and not the pcurve's domain: a
+                // boolean that cuts the top off a drum leaves the wall's
+                // seam carrying the whole original column, and a chart
+                // whose hull reaches past its own rim is no rectangle.
                 for id in [forward, reversed] {
                     if let Some(pcurve) = model.geometry().pcurve(*id) {
-                        let (lo, hi) = pcurve.domain();
-                        let a = pcurve.point_at(lo, tol)?;
-                        let b = pcurve.point_at(hi, tol)?;
+                        let a = pcurve.point_at(range.0, tol)?;
+                        let b = pcurve.point_at(range.1, tol)?;
                         segments.push((a, b));
                     }
                 }
@@ -701,9 +731,13 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
         }
     }
 
-    if let Some(arc) = circle {
-        // The disc: one circular ring, nothing else, on a plane.
-        if pieces != 1 {
+    if let Some((arc, span)) = circle {
+        // The disc: one circle's arcs and nothing else, closing a turn, on
+        // a plane.
+        let _ = pieces;
+        if !segments.is_empty()
+            || (span - core::f64::consts::TAU).abs() > tol.parametric().max(1e-9)
+        {
             return Ok(None);
         }
         let ogeom_geom::SurfaceGeometry::Plane(plane) = &placed else {
