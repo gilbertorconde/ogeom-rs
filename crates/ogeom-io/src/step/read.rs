@@ -1285,7 +1285,7 @@ impl Reader<'_> {
     /// The window a reader gives a plane, a cylinder or a cone is a
     /// convention: those surfaces are unbounded, and [`SURFACE_EXTENT`] is
     /// a guess at how far past its own geometry a file will reach. A file
-    /// can falsify the guess — the Voron assembly places a cylinder's own
+    /// can falsify the guess — a real assembly places a cylinder's own
     /// origin half a kilometre from the part it belongs to, so the trim's
     /// height parameter runs to −5e5 where the window stopped at −1e5 —
     /// and then the surface refuses to be evaluated where its own face
@@ -1802,9 +1802,9 @@ impl Reader<'_> {
     /// `MANIFOLD_SOLID_BREP`, so its first two attributes are the name and
     /// the outer shell, and a third names the shells that bound the voids.
     /// A reader matching on the leading keyword alone does not see it, and
-    /// the part simply vanishes: three bodies of the Voron 2.4 assembly,
-    /// the Stealthburner's printed housing among them, drew as nothing at
-    /// all. The voids join the solid as shells of their own, oriented as
+    /// the part simply vanishes — a printed housing with six cavities in
+    /// it read as no body at all, its thirteen hundred faces with it. The
+    /// voids join the solid as shells of their own, oriented as
     /// the file orients them, so every normal points away from the
     /// material — out of the body on the outside, into the cavity within.
     fn solid(&mut self, id: u64) -> OgeomResult<Shape> {

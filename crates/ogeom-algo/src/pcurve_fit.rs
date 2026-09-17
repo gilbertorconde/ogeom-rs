@@ -12,7 +12,7 @@
 //! is reported as a *length*, in the model's own units: the fitted pcurve is
 //! walked through the surface and compared against the trace it was fitted
 //! to. A chart's units are whatever the file chose, and no single scale
-//! converts them — one Voron patch spans four microns across its `u` and ten
+//! converts them: a patch can span four microns across its `u` and ten
 //! millimetres along its `v`.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -336,7 +336,7 @@ pub fn fit_projected_pcurve_capped(
     };
     // What the caller is told, as a length. The fitter reports its error
     // in *chart* units, and a chart's units are whatever the file chose: one
-    // patch in the Voron assembly spans four microns across its `u` and ten
+    // patch met in the wild spans four microns across its `u` and ten
     // millimetres along its `v`, so no single scale converts the one number
     // into the other — a control point dragged back into that chart by the
     // clamp read as seven hundred millimetres of mesh error, on a face a
@@ -371,7 +371,7 @@ pub fn fit_projected_pcurve_capped(
 /// Where a chart collapses — a spline patch whose whole `v = 0` row is a
 /// single point — the projector has no direction to move in, and it answers
 /// with the pole's own parameters and the distance to it. Four consecutive
-/// samples of one Voron edge came back pinned to such a row, the last of
+/// samples of one imported edge came back pinned to such a row, the last of
 /// them a tenth of a millimetre out; the reader repeated that as the file's
 /// own boundary slop, widened the edge to cover it, and the fitter tried to
 /// draw a curve through it. A sample that landed badly is retried from a
@@ -427,7 +427,7 @@ fn retry_stalled(
 /// Unwrapped for continuity, a trace can end up a whole turn outside the
 /// chart it belongs to: a projection that starts near one edge of a closed
 /// chart and walks off it keeps walking, and the surface then refuses to be
-/// evaluated where its own trim lies — a face of the Voron assembly whose
+/// evaluated where its own trim lies — an imported face whose
 /// fitted v ran to −2.5π on a chart that stops at −π, and drew as a hole.
 ///
 /// A rigid shift keeps the trace exactly as continuous as the unwrap left
@@ -489,7 +489,7 @@ mod tests {
 
     /// A trace unwrapped clean off its chart is slid back by whole turns.
     ///
-    /// The Voron assembly has a face whose fitted `v` ran from −2.5π to
+    /// A real assembly has a face whose fitted `v` ran from −2.5π to
     /// −π on a chart that stops at −π: continuous, outside, and the surface
     /// refuses to be asked about it, so the face drew as a hole.
     #[test]
@@ -548,7 +548,7 @@ mod tests {
     /// so a projection that reaches the pole has no direction left to move
     /// in and stops there, however far off it is. Seeding from the pole is
     /// shown stuck first — that is the trap the forward walk falls into,
-    /// once per Voron edge that starts on such a row — and the retry from a
+    /// once per imported edge that starts on such a row — and the retry from a
     /// sound neighbour is shown to get out of it.
     #[test]
     fn a_sample_stalled_at_a_pole_is_retried_from_its_neighbour() {

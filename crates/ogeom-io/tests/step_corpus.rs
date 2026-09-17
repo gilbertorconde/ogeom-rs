@@ -567,11 +567,11 @@ fn a_hole_across_the_chart_seam_is_cut_from_the_face() {
 ///
 /// A plane, a cylinder and a cone are unbounded, so the window a reader
 /// gives them is a convention — generous, and a guess. A real assembly
-/// falsifies the guess: the Voron 2.4's STEP places a cylinder's origin at
-/// `z = 500000` and trims the face it carries near the world origin, so the
-/// trim's height parameter runs to −5e5 where the window stopped at −1e5.
-/// The surface then refused to be evaluated where its own face lies, and
-/// fifteen faces of that assembly drew as holes.
+/// falsifies the guess: a community printer assembly places a cylinder's
+/// origin at `z = 500000` and trims the face it carries near the world
+/// origin, so the trim's height parameter runs to −5e5 where the window
+/// stopped at −1e5. The surface then refused to be evaluated where its own
+/// face lies, and fifteen faces of that assembly drew as holes.
 ///
 /// The window is measured from the edges that bound the surface now, with
 /// the convention kept as a floor.
@@ -642,8 +642,8 @@ END-ISO-10303-21;
 
 /// A trim on a sliver patch stays in its own chart.
 ///
-/// The Voron 2.4 assembly carries a degree 3×3 patch whose `u` direction is
-/// degenerate the whole way across: `du` is exactly zero along `v = 0` and
+/// The fixture is a degree 3×3 patch whose `u` direction is degenerate the
+/// whole way across: `du` is exactly zero along `v = 0` and
 /// four ten-thousandths at the far edge — a sliver four microns wide and a
 /// tenth of a millimetre long. The projector answered `u = 0` at the first
 /// sample and `u = 1` at every other, the fit swung across the chart to
@@ -687,9 +687,9 @@ fn a_sliver_patch_s_trim_stays_in_its_chart() {
 /// `BREP_WITH_VOIDS` is a subtype of `MANIFOLD_SOLID_BREP` — same name and
 /// outer shell in the same two places, plus the shells that bound its
 /// voids — so a file writes it under its own keyword and a reader matching
-/// on the leading keyword alone never sees it. Three bodies of the Voron
-/// 2.4 assembly are written that way, the Stealthburner's printed housing
-/// among them, and all three were simply absent from the import.
+/// on the leading keyword alone never sees it. Three bodies of a community
+/// printer assembly are written that way — a printed housing with six
+/// cavities among them — and all three were simply absent from the import.
 ///
 /// The cavity arrives as an `ORIENTED_CLOSED_SHELL` pointing the other way
 /// round, which is what makes the volume come out as the difference rather
