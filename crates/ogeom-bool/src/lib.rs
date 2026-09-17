@@ -2462,9 +2462,11 @@ fn fill(
                 }
                 if *DEBUG_WIRE {
                     eprintln!(
-                        "CONTACT c{ci} along edge {} over ({lo:.6}, {hi:.6}) of {:?}",
+                        "CONTACT c{ci} along edge {} over ({lo:.6}, {hi:.6}) of {:?}: {:?} .. {:?}",
                         e.node.index(),
-                        contact.crange
+                        contact.crange,
+                        contact.curve.point_at(lo, tol).ok(),
+                        contact.curve.point_at(hi, tol).ok()
                     );
                 }
                 contact_along[ci].push((lo, hi));
@@ -4169,7 +4171,13 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                                     describe(&face.edges[edge].curve, range)
                                 }
                                 Tag::Contact { contact, range } => {
-                                    describe(&contacts[contact].curve, range)
+                                    format!(
+                                        "{} window {:?} along {:?} node {}",
+                                        describe(&contacts[contact].curve, range),
+                                        contacts[contact].crange,
+                                        contact_along[contact],
+                                        contacts[contact].node.index()
+                                    )
                                 }
                                 _ => String::new(),
                             };

@@ -501,7 +501,12 @@ fn line_line_2d(
             crossings: Vec::new(),
             overlaps: vec![Overlap {
                 on_a: (lo, hi),
-                on_b: order(back(lo), back(hi)),
+                // Paired end to end with `on_a`, not sorted: two lines written in
+                // opposite directions run `on_b` backwards, and a consumer
+                // carrying a stretch across by the correspondence — the
+                // boolean clipping a contact to the edge it runs along —
+                // reads a sorted pair as the reflected stretch.
+                on_b: (back(lo), back(hi)),
             }],
         };
     }
@@ -694,7 +699,12 @@ fn line_line_3d(
             crossings: Vec::new(),
             overlaps: vec![Overlap {
                 on_a: (lo, hi),
-                on_b: order(back(lo), back(hi)),
+                // Paired end to end with `on_a`, not sorted: two lines written in
+                // opposite directions run `on_b` backwards, and a consumer
+                // carrying a stretch across by the correspondence — the
+                // boolean clipping a contact to the edge it runs along —
+                // reads a sorted pair as the reflected stretch.
+                on_b: (back(lo), back(hi)),
             }],
         };
     }
