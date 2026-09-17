@@ -681,3 +681,42 @@ fn a_sliver_patch_s_trim_stays_in_its_chart() {
         "and stays a tenth of a millimetre across: {bounds:?}"
     );
 }
+
+/// A solid with a cavity is read, cavity and all.
+///
+/// `BREP_WITH_VOIDS` is a subtype of `MANIFOLD_SOLID_BREP` — same name and
+/// outer shell in the same two places, plus the shells that bound its
+/// voids — so a file writes it under its own keyword and a reader matching
+/// on the leading keyword alone never sees it. Three bodies of the Voron
+/// 2.4 assembly are written that way, the Stealthburner's printed housing
+/// among them, and all three were simply absent from the import.
+///
+/// The cavity arrives as an `ORIENTED_CLOSED_SHELL` pointing the other way
+/// round, which is what makes the volume come out as the difference rather
+/// than the sum.
+#[test]
+fn a_solid_with_a_cavity_keeps_its_cavity() {
+    let text = corpus("box_with_a_cavity.step");
+    let import = ogeom_io::read_step(&text, T).unwrap();
+    assert_eq!(import.solids.len(), 1, "the voided solid is a solid");
+
+    let model = import.document.model();
+    let solid = &import.solids[0];
+    let shells = ogeom_topo::explore_unique(model, solid, ogeom_topo::ShapeType::Shell).unwrap();
+    assert_eq!(shells.len(), 2, "the hull and the cavity");
+    let faces = ogeom_topo::explore_unique(model, solid, ogeom_topo::ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 12, "six walls each");
+
+    // A 10 mm cube with a 4 mm cube taken out of its middle: the cavity is
+    // subtracted, not added, and the centroid stays at the centre.
+    let props =
+        ogeom_algo::volume_properties(model, solid, ogeom_mesh::Deflection::default(), T).unwrap();
+    assert!(
+        (props.mass - 936.0).abs() < 1e-6,
+        "1000 less 64: {}",
+        props.mass
+    );
+    for axis in [props.centre.x, props.centre.y, props.centre.z] {
+        assert!((axis - 5.0).abs() < 1e-6, "centred: {axis}");
+    }
+}

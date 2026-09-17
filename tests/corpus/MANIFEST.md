@@ -73,3 +73,14 @@ something: a degree 3×3 patch whose `u` direction is degenerate the whole
 way across — a sliver four microns wide and a tenth of a millimetre long —
 and the three spline trims that bound it. The reproducer for a fit with no
 sound sample to lean on (issue #41).
+
+## box_with_a_cavity.step
+
+Authored for this project (generated, then committed): a 10 mm cube with a
+4 mm cube hollowed out of its middle, written the way a real exporter
+writes one — `BREP_WITH_VOIDS` over an outer `CLOSED_SHELL` and an
+`ORIENTED_CLOSED_SHELL` naming the cavity the other way round. The
+reproducer for a solid a reader matching on `MANIFOLD_SOLID_BREP` alone
+never sees: three bodies of the Voron 2.4 assembly, the Stealthburner's
+printed housing among them, are written this way and drew as nothing at
+all. Its volume is exactly 1000 − 64 = 936 mm³, which is the assertion.

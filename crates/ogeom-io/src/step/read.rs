@@ -1,7 +1,8 @@
 //! From parsed exchange structure to a living model.
 //!
-//! The reader walks every `MANIFOLD_SOLID_BREP` and every
-//! `SHELL_BASED_SURFACE_MODEL` and rebuilds them bottom-up:
+//! The reader walks every `MANIFOLD_SOLID_BREP` — `BREP_WITH_VOIDS` is one,
+//! by subtype — and every `SHELL_BASED_SURFACE_MODEL`, and rebuilds them
+//! bottom-up:
 //! points, placements, curves and surfaces into geometry; vertices, edges,
 //! loops, faces and shells into topology, shared exactly as the file shares
 //! them — a vertex referenced by eight edges is one vertex here too, which is
@@ -106,7 +107,8 @@ pub struct StepImport {
     /// The document everything was built into: the model, plus the file's
     /// product structure, names and colours.
     pub document: ogeom_doc::Document,
-    /// One shape per `MANIFOLD_SOLID_BREP`, in file order.
+    /// One shape per `MANIFOLD_SOLID_BREP` — `BREP_WITH_VOIDS` included,
+    /// its cavities among its shells — in file order.
     pub solids: Vec<Shape>,
     /// One shape per `SHELL_BASED_SURFACE_MODEL`, in file order: its shell,
     /// or a compound of its shells when it names several.
@@ -167,7 +169,8 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         .data
         .iter()
         .filter_map(|(id, inst)| {
-            if inst.part("MANIFOLD_SOLID_BREP").is_some() {
+            if inst.part("MANIFOLD_SOLID_BREP").is_some() || inst.part("BREP_WITH_VOIDS").is_some()
+            {
                 Some((*id, true))
             } else if inst.part("SHELL_BASED_SURFACE_MODEL").is_some() {
                 Some((*id, false))
@@ -221,8 +224,8 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
     if solids.is_empty() && shells.is_empty() {
         ogeom_bail!(
             Construction,
-            "the exchange file contains no MANIFOLD_SOLID_BREP or \
-             SHELL_BASED_SURFACE_MODEL to read"
+            "the exchange file contains no MANIFOLD_SOLID_BREP, \
+             BREP_WITH_VOIDS or SHELL_BASED_SURFACE_MODEL to read"
         );
     }
     let document = reader.document(&by_item, &solids, &shells)?;
@@ -1794,8 +1797,23 @@ impl Reader<'_> {
     }
 
     /// The solid a `MANIFOLD_SOLID_BREP` names: its shell's faces, sewn.
+    ///
+    /// `BREP_WITH_VOIDS` is the same entity with cavities — a subtype of
+    /// `MANIFOLD_SOLID_BREP`, so its first two attributes are the name and
+    /// the outer shell, and a third names the shells that bound the voids.
+    /// A reader matching on the leading keyword alone does not see it, and
+    /// the part simply vanishes: three bodies of the Voron 2.4 assembly,
+    /// the Stealthburner's printed housing among them, drew as nothing at
+    /// all. The voids join the solid as shells of their own, oriented as
+    /// the file orients them, so every normal points away from the
+    /// material — out of the body on the outside, into the cavity within.
     fn solid(&mut self, id: u64) -> OgeomResult<Shape> {
-        let args = self.args(id, "MANIFOLD_SOLID_BREP")?;
+        let instance = self.instance(id)?;
+        let args = instance
+            .part("MANIFOLD_SOLID_BREP")
+            .or_else(|| instance.part("BREP_WITH_VOIDS"))
+            .ok_or_else(|| ogeom_core::ogeom_err!(Construction, "#{id} is not a solid"))?
+            .to_vec();
         let shell_id = args.get(1).and_then(Arg::reference).unwrap_or(0);
         let Some(shell) = self.shell(shell_id)? else {
             ogeom_bail!(Construction, "#{id}: a solid with no readable faces");
@@ -1806,7 +1824,28 @@ impl Reader<'_> {
                  inside will refuse it"
             ));
         }
-        Ok(make_solid(&mut self.model, std::slice::from_ref(&shell))?.shape)
+        let mut shells = vec![shell];
+        for void_id in args
+            .get(2)
+            .and_then(Arg::list)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(Arg::reference)
+            .collect::<Vec<u64>>()
+        {
+            match self.shell(void_id) {
+                Ok(Some(void)) => shells.push(void),
+                Ok(None) => self.report.warnings.push(format!(
+                    "#{id}: void shell #{void_id} has no readable faces; the \
+                     cavity is missing from the solid"
+                )),
+                Err(refusal) => self.report.warnings.push(format!(
+                    "#{id}: void shell #{void_id} could not be read ({refusal}); \
+                     the cavity is missing from the solid"
+                )),
+            }
+        }
+        Ok(make_solid(&mut self.model, &shells)?.shape)
     }
 
     /// The shape a `SHELL_BASED_SURFACE_MODEL` names: each of its shells
@@ -1845,8 +1884,24 @@ impl Reader<'_> {
 
     /// The faces of a `CLOSED_SHELL` or `OPEN_SHELL`, sewn; `None` when not
     /// one of them could be read.
+    ///
+    /// An `ORIENTED_CLOSED_SHELL` is a use of another shell the other way
+    /// round — how a solid's voids are named — and resolves to that shell,
+    /// reversed when the use says so.
     fn shell(&mut self, shell_id: u64) -> OgeomResult<Option<Shape>> {
         let shell_instance = self.instance(shell_id)?;
+        if let Some(oriented) = shell_instance
+            .part("ORIENTED_CLOSED_SHELL")
+            .map(<[Arg]>::to_vec)
+        {
+            let Some(base) = oriented.get(2).and_then(Arg::reference) else {
+                ogeom_bail!(Construction, "#{shell_id}: an oriented shell names none");
+            };
+            let forward = !oriented.get(3).is_some_and(|a| a.is_enum("F"));
+            return Ok(self
+                .shell(base)?
+                .map(|shell| if forward { shell } else { shell.reversed() }));
+        }
         let shell_args = shell_instance
             .part("CLOSED_SHELL")
             .or_else(|| shell_instance.part("OPEN_SHELL"))
