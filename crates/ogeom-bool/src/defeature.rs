@@ -231,7 +231,8 @@ pub fn remove_faces(
             };
             // The kept wires carry their edges, and the edges their pcurves
             // for this very surface: nothing to recompute.
-            ogeom_algo::make_face_on(model, data.surface, &kept_wires, tol)?.shape
+            let built = ogeom_algo::make_face_on(model, data.surface, &kept_wires, tol)?.shape;
+            orient_like(&face, built)
         };
         history.modify(&face, new_face.clone());
         rebuilt.push(new_face);
@@ -939,7 +940,21 @@ fn rebuild_interrupted(
         }
         wires.push(chained);
     }
-    Ok(ogeom_algo::make_face_with_pcurves(model, surface, &wires, tol)?.shape)
+    let built = ogeom_algo::make_face_with_pcurves(model, surface, &wires, tol)?.shape;
+    // The face's own side of its surface, carried over. A rebuilt face is
+    // born forward, and a bore's wall is not: the mesher reads the wires'
+    // winding and forgives it, but the exact integrator reads the flag and
+    // hands back the bore as material.
+    Ok(orient_like(face, built))
+}
+
+/// A rebuilt face put back on the side of its surface the old one was on.
+fn orient_like(was: &Shape, built: Shape) -> Shape {
+    if was.orientation() == ogeom_topo::Orientation::Reversed {
+        built.reversed()
+    } else {
+        built
+    }
 }
 
 /// Points along an edge, in the direction this use of it runs.

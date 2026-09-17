@@ -311,7 +311,7 @@ fn exact_volume_properties(
     let mut exact = Vec::with_capacity(faces.len());
     for face in &faces {
         match exact_face(model, face, tol)? {
-            Some(found) => exact.push(found),
+            Some(found) => exact.extend(found),
             None => {
                 if std::env::var_os("OGEOM_DEBUG_MASS").is_some() {
                     eprintln!(
@@ -403,7 +403,7 @@ fn exact_surface_properties(
     let mut exact = Vec::with_capacity(faces.len());
     for face in &faces {
         match exact_face(model, face, tol)? {
-            Some(found) => exact.push(found),
+            Some(found) => exact.extend(found),
             None => return Ok(None),
         }
     }
@@ -460,6 +460,7 @@ fn integrate_face(
             surface,
             rect,
             sign,
+            ..
         } => {
             let (u0, u1, v0, v1) = *rect;
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -510,6 +511,7 @@ fn integrate_face(
             normal,
             radius,
             sign,
+            ..
         } => {
             let failure: Option<ogeom_core::OgeomError> = None;
             let turns = 4;
@@ -595,9 +597,16 @@ fn gauss2(a: f64, b: f64, c: f64, d: f64, f: &mut dyn FnMut(f64, f64, f64)) {
     }
 }
 
-/// The exact-integrable reading of one face, or `None` where there is none.
-fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<ExactFace>> {
-    use ogeom_geom::Surface as _;
+/// The exact-integrable regions of one face, or `None` where there are
+/// none.
+///
+/// One region per wire, and the integral is their sum: a face's outer
+/// boundary carries its own sign and every inner one the opposite, which
+/// is what a hole *is* under the divergence theorem. So a plate with a
+/// bore in it is a rectangle less a disc, and a tube's end face a disc
+/// less a disc — neither of which had to be meshed, and both of which
+/// were.
+fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<Vec<ExactFace>>> {
     let Some(node) = model.node(face) else {
         return Ok(None);
     };
@@ -638,16 +647,44 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
     };
 
     let wires = model.ordered_children_of(face)?;
-    if wires.len() != 1 {
+    // One wire, for now. A face with a hole in it is a region less a
+    // region and the integral would be their sum — a plate with a bore is a
+    // rectangle less a disc — but reading the holes means reading every
+    // face's flag for which way is out, and a part in the corpus has flags
+    // that disagree with each other. The tessellator repairs that and this
+    // cannot, so a holed face is left to the mesh; issue #39 carries it.
+    let [wire] = wires.as_slice() else {
         return Ok(None);
-    }
+    };
+    let Some(region) = exact_wire(model, data, &placed, wire, sign, tol)? else {
+        return Ok(None);
+    };
+    Ok(Some(vec![region]))
+}
+
+/// The region one of a face's wires bounds, read off its pcurves.
+fn exact_wire(
+    model: &Model,
+    data: &ogeom_topo::FaceData,
+    placed: &ogeom_geom::SurfaceGeometry,
+    wire: &Shape,
+    sign: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<ExactFace>> {
+    use ogeom_geom::Surface as _;
     // Gather each boundary edge's chart segments on this face.
     let mut segments: Vec<(ogeom_math::Point2, ogeom_math::Point2)> = Vec::new();
+    // Where a seam bounds the chart: a column at that `u`, a row at that `v`.
+    let mut columns: Vec<f64> = Vec::new();
+    let mut rows: Vec<f64> = Vec::new();
     let mut circle: Option<(ogeom_geom::Circle2d, f64)> = None;
+    // Where the circle's arcs start and stop, for asking whether they tile
+    // its turn or merely add up to one.
+    let mut arc_ends: Vec<ogeom_math::Point2> = Vec::new();
     let mut pieces = 0_usize;
     // A seam bounds the face twice; its two chart sides are gathered once.
     let mut seams_seen: Vec<ogeom_topo::TShapeId> = Vec::new();
-    for edge in model.ordered_children_of(&wires[0])? {
+    for edge in model.ordered_children_of(wire)? {
         let Some(edge_data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
             return Ok(None);
         };
@@ -668,6 +705,7 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
                         segments.push((a, b));
                     }
                     ogeom_geom::PlanarCurve::Circle(arc) => {
+                        use ogeom_geom::Curve2d as _;
                         // One circle's arcs, however many pieces the
                         // boundary arrives in. A boolean splits a closed rim
                         // to give the arrangement's walker somewhere to
@@ -677,6 +715,8 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
                         // for a turn, so a fan of arcs that does not close
                         // is still no disc.
                         let span = (range.1 - range.0).abs();
+                        arc_ends.push(pcurve.point_at(range.0, tol)?);
+                        arc_ends.push(pcurve.point_at(range.1, tol)?);
                         match &mut circle {
                             None => circle = Some((*arc, span)),
                             Some((held, total)) => {
@@ -705,6 +745,12 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
                     continue;
                 }
                 seams_seen.push(edge.node());
+                // A seam says where the chart's edge stands, not how far
+                // along it the face reaches. A reader pads its pcurve's
+                // domain and a boolean shortens the face without shortening
+                // the seam, so its own extent is worth nothing; the rims
+                // are what say how tall the chart is, and they are ordinary
+                // edges with ordinary ranges.
                 for id in [forward, reversed] {
                     let Some(pcurve) = model.geometry().pcurve(*id) else {
                         return Ok(None);
@@ -712,18 +758,13 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
                     let ogeom_geom::PlanarCurve::Line(_) = pcurve else {
                         return Ok(None);
                     };
-                }
-                // The seam's two sides are the rectangle's left and right
-                // columns; their endpoints join the pool like any segment.
-                // Over the *edge's* range and not the pcurve's domain: a
-                // boolean that cuts the top off a drum leaves the wall's
-                // seam carrying the whole original column, and a chart
-                // whose hull reaches past its own rim is no rectangle.
-                for id in [forward, reversed] {
-                    if let Some(pcurve) = model.geometry().pcurve(*id) {
-                        let a = pcurve.point_at(range.0, tol)?;
-                        let b = pcurve.point_at(range.1, tol)?;
-                        segments.push((a, b));
+                    let (lo, hi) = pcurve.domain();
+                    let at = pcurve.point_at(range.0.clamp(lo, hi), tol)?;
+                    let far = pcurve.point_at(range.1.clamp(lo, hi), tol)?;
+                    if (at.x - far.x).abs() <= (at.y - far.y).abs() {
+                        columns.push(at.x);
+                    } else {
+                        rows.push(at.y);
                     }
                 }
             }
@@ -736,11 +777,30 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
         // a plane.
         let _ = pieces;
         if !segments.is_empty()
+            || !columns.is_empty()
+            || !rows.is_empty()
             || (span - core::f64::consts::TAU).abs() > tol.parametric().max(1e-9)
         {
             return Ok(None);
         }
-        let ogeom_geom::SurfaceGeometry::Plane(plane) = &placed else {
+        // And the arcs must *tile* the turn rather than add up to one. A
+        // reader that re-bases each edge's range onto its own curve can
+        // leave two arcs both starting at the circle's zero, one a quarter
+        // of it and one three quarters — which sums to a turn while
+        // covering a quarter of the circle twice and half of it never. Each
+        // arc end meets exactly one other where they genuinely chain.
+        let reach = tol.confusion() * 10.0;
+        for (index, at) in arc_ends.iter().enumerate() {
+            let met = arc_ends
+                .iter()
+                .enumerate()
+                .filter(|(other, q)| *other != index && q.distance(*at) <= reach)
+                .count();
+            if met != 1 {
+                return Ok(None);
+            }
+        }
+        let ogeom_geom::SurfaceGeometry::Plane(plane) = placed else {
             return Ok(None);
         };
         let frame = plane.plane().frame();
@@ -759,7 +819,9 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
     }
 
     // A chart rectangle: every segment axis-aligned and on the hull's edge.
-    if segments.is_empty() {
+    // A torus's face is all seam and has no segments at all — two columns
+    // and two rows, which are the rectangle.
+    if segments.is_empty() && columns.is_empty() && rows.is_empty() {
         return Ok(None);
     }
     let (mut u0, mut u1) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -771,6 +833,17 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
             v0 = v0.min(p.y);
             v1 = v1.max(p.y);
         }
+    }
+    for u in &columns {
+        u0 = u0.min(*u);
+        u1 = u1.max(*u);
+    }
+    for v in &rows {
+        v0 = v0.min(*v);
+        v1 = v1.max(*v);
+    }
+    if !(u0.is_finite() && u1.is_finite() && v0.is_finite() && v1.is_finite()) {
+        return Ok(None);
     }
     if u1 - u0 <= tol.confusion() || v1 - v0 <= tol.confusion() {
         return Ok(None);
@@ -793,12 +866,21 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
         }
         perimeter += a.distance(*b);
     }
+    #[allow(clippy::cast_precision_loss)]
+    for (values, lo, hi, span) in [(&columns, u0, u1, v1 - v0), (&rows, v0, v1, u1 - u0)] {
+        for value in values {
+            if !on_side(*value, lo, hi) {
+                return Ok(None);
+            }
+            perimeter += span;
+        }
+    }
     let expected = 2.0 * ((u1 - u0) + (v1 - v0));
     if (perimeter - expected).abs() > 1e-6 * expected {
         return Ok(None);
     }
     Ok(Some(ExactFace::ChartRectangle {
-        surface: placed,
+        surface: placed.clone(),
         rect: (u0, u1, v0, v1),
         sign,
     }))

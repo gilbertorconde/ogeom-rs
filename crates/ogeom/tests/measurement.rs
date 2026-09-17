@@ -147,3 +147,44 @@ fn a_rim_blend_leaves_a_solid_that_is_still_weighed_exactly() {
         "the drum less the wedge its rim shed: {mass} against {want}"
     );
 }
+
+/// A face with a hole in it is left to the mesh, for now.
+///
+/// The integral would be a region less a region — a plate with a bore is a
+/// rectangle less a disc — and the arithmetic is easy. What is not is
+/// knowing which way each face looks: the closed-form integral reads each
+/// face's own flag, and a part in the corpus has flags that disagree with
+/// each other, which the tessellator repairs and this cannot. Taking them
+/// at their word made that part a third heavy, its bore counted as
+/// material, so a holed face waits on a way to tell a wrong flag from a
+/// right one. Issue #39 carries it.
+#[test]
+fn a_face_with_a_hole_waits_for_the_mesh() {
+    let pi = core::f64::consts::PI;
+    let mut model = Model::new();
+    let plate = ogeom::algo::make_box(
+        &mut model,
+        Frame::new(Point::new(-10.0, -10.0, 0.0), Direction::Z, Direction::X, T).unwrap(),
+        (20.0, 20.0, 10.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let seat = Frame::new(Point::new(0.0, 0.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let drill = ogeom::algo::make_cylinder(&mut model, seat, 4.0, 12.0, T)
+        .unwrap()
+        .shape;
+    let bored = ogeom::boolean::cut(&mut model, &plate, &drill, T)
+        .unwrap()
+        .shape;
+    let measured =
+        ogeom::algo::volume_properties(&model, &bored, Deflection::with_chord(1e-4).unwrap(), T)
+            .unwrap();
+    assert!(measured.deflection > 0.0, "the mesh was asked");
+    let want = 20.0 * 20.0 * 10.0 - pi * 16.0 * 10.0;
+    assert!(
+        (measured.mass - want).abs() < want * 1e-4,
+        "and answers within its chord: {} against {want}",
+        measured.mass
+    );
+}
