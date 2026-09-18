@@ -34,6 +34,35 @@ jobs:
       - name: Check
         run: ./tools/check.sh
 
+  # `rust-version` in the workspace manifest is a promise to anyone who
+  # depends on these crates, and an unverified promise is just a number. The
+  # toolchain is read *from that field* rather than pinned here, so the two
+  # cannot drift apart: raise the manifest and this job raises with it.
+  msrv:
+    name: the declared MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the declared MSRV
+        id: msrv
+        run: |
+          version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          test -n "$version" || { echo "no rust-version in Cargo.toml"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "declared MSRV: $version"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Checking, not testing: the question is whether the oldest supported
+      # compiler can build the workspace, and `stable` already runs the suite.
+      - name: Check
+        run: cargo check --workspace --all-targets
+
   deny:
     name: licenses / advisories
     runs-on: ubuntu-latest

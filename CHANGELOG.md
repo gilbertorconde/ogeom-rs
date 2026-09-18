@@ -1,0 +1,67 @@
+# Changelog
+
+The fifteen library crates are one kernel and move together: they share a
+version, and an entry here covers all of them. `tools/` is not published and
+is not recorded here.
+
+Dates are the release date. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
+[semantic versioning](https://semver.org/), which before 1.0 means a minor
+bump may break the API and a patch bump may not.
+
+## [Unreleased]
+
+## [0.1.0] — 2026-09-18
+
+First public release.
+
+### Added
+
+- **Geometry.** Parametric curves and surfaces in two and three dimensions —
+  lines, conics, B-splines rational and not, extrusions, revolutions, offsets
+  and trims — behind adaptor traits, on a B-spline substrate with knot
+  insertion, splitting, degree elevation and Bézier decomposition.
+- **Topology.** One shared B-rep model: geometry and topology in arenas, a
+  shape a cheap handle into them, the same node placed, mirrored or instanced
+  many times without being copied. Per-entity tolerances, location chains,
+  orientation composed through the tree, and edges carrying a list of
+  representations rather than one curve.
+- **Construction and measurement.** Primitives, polyhedra, sewing, shape
+  validity, mass properties exactly where a closed form exists and from the
+  mesh otherwise, bounds, projection and classification.
+- **Booleans.** A general fuse with the filters over it — union, difference,
+  intersection, section — plus defeaturing over the same machinery.
+- **Blends.** Constant and variable radius fillets and chamfers on single
+  edges, tangent chains and full rims, closed forms where they exist and a
+  marched rolling ball where they do not, and the corner where three blends
+  meet.
+- **Offsets and sweeps.** Offsetting, shelling, sweeping along spines open and
+  closed, lofting through sections, and draft.
+- **Tessellation.** Edge discretization to chord and angular tolerances, and
+  constrained Delaunay triangulation per face in its own chart.
+- **Healing.** Validity diagnosis, sewing, reanchoring periodic rings, and
+  instructed fixes for trims a reader refused and boundaries sitting off the
+  surface they bound.
+- **Drawings.** Hidden line removal, sections and hatching.
+- **Documents.** Assemblies and product structure, appearance, PMI, saved
+  views, transactions and persistence.
+- **Exchange.** STEP and IGES in both directions — STEP carrying assemblies,
+  colours, semantic PMI and saved views — plus the native format, `.brep`,
+  STL, DXF, glTF, OBJ, PLY, VRML and 3MF.
+
+### Known restrictions
+
+This release is measured against 97 named capabilities in
+`docs/PARITY.md`, and the ledger is part of the build: 66 are covered, 16
+carry a stated restriction, 9 diverge by design, 5 do not apply and 1 is
+unreviewed. `tools/check.sh` fails if the audit and the code drift apart.
+The `partial` rows say exactly what each one does not do; the largest are
+blend hosts beyond planes and cylinders, the general N-edged setback vertex,
+shape healing's wire reordering and small-feature removal, the medial axis
+beyond convex polygons, and the IGES entities listed as refused by name.
+
+Nothing here is a silent gap. A capability that is not implemented refuses
+by name rather than returning an answer it cannot stand behind.
+
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/gilbertorconde/ogeom-rs/releases/tag/v0.1.0
