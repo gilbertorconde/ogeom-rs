@@ -100,21 +100,49 @@ impl Triangulation {
             .sum()
     }
 
-    /// Whether every triangle edge is shared by exactly two triangles.
+    /// Whether every triangle edge is crossed as often one way as the other.
     ///
     /// The mesh equivalent of a closed shell, and the precondition for
-    /// [`Triangulation::volume`] meaning anything.
+    /// [`Triangulation::volume`] meaning anything. It is exactly what the
+    /// divergence theorem needs: the surface has no boundary, and it is
+    /// wound consistently, so each triangle's contribution cancels against
+    /// its neighbours' except over the region enclosed.
+    ///
+    /// Counting *directed* edges rather than undirected ones is what makes
+    /// this the right question, and it is stricter and looser than the
+    /// obvious test in the two different ways that matter.
+    ///
+    /// Stricter: two triangles sharing an edge and winding the *same* way
+    /// round it traverse it twice in the same direction. The edge is used
+    /// twice, so a count of uses calls it closed, and the volume that comes
+    /// out is wrong because one of the two faces is inside out.
+    ///
+    /// Looser: an edge may legitimately carry four triangles. Where two
+    /// faces meet along a short edge that discretizes into several segments,
+    /// each can fill the sliver between the polyline and its own chord, and
+    /// the chord then belongs to both — four triangles round one edge, two
+    /// crossing each way. There is no hole there and the volume is right;
+    /// demanding exactly two refuses a mesh for being non-manifold when
+    /// nothing was asked about manifoldness. Sixty-four bodies of one real
+    /// assembly were refused that way, forty-four of them for this alone.
+    ///
+    /// This also agrees with the topology side at last:
+    /// [`is_shell_closed`](../../ogeom_algo/fn.is_shell_closed.html) counts an
+    /// edge's uses and accepts any even number, and the two halves of the
+    /// kernel should not mean different things by the same word.
     #[must_use]
     pub fn is_closed(&self) -> bool {
         use std::collections::HashMap;
-        let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+        let mut balance: HashMap<(u32, u32), i64> = HashMap::new();
         for t in &self.triangles {
             for i in 0..3 {
                 let (a, b) = (t[i], t[(i + 1) % 3]);
-                *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+                // One key per undirected edge; the direction decides the sign.
+                let (key, step) = if a <= b { ((a, b), 1) } else { ((b, a), -1) };
+                *balance.entry(key).or_default() += step;
             }
         }
-        !uses.is_empty() && uses.values().all(|&n| n == 2)
+        !balance.is_empty() && balance.values().all(|&n| n == 0)
     }
 
     /// Weld only the mesh's *border* vertices, within `reach`.
@@ -410,6 +438,79 @@ mod tests {
         assert_relative_eq!(mesh.volume(), 0.0);
         assert!(!mesh.is_closed(), "nothing is not closed");
         assert!(mesh.bounds().is_empty());
+    }
+
+    /// A mesh of four corner positions, with whatever triangles are given.
+    fn over(points: &[Point], triangles: &[[u32; 3]]) -> Triangulation {
+        let mut mesh = Triangulation::new();
+        for p in points {
+            mesh.positions.push(*p);
+            mesh.normals.push(Vector::Z);
+            mesh.parameters.push((0.0, 0.0));
+        }
+        mesh.triangles.extend_from_slice(triangles);
+        mesh
+    }
+
+    /// Closure is a question about direction, not about how many.
+    ///
+    /// Counting an edge's uses answers the wrong question twice over: it
+    /// calls a mesh with one face inside out closed, and it calls a mesh
+    /// with four triangles round one edge open. Neither is what the
+    /// divergence theorem asks, which is only that the surface have no
+    /// boundary and wind one way.
+    #[test]
+    fn a_closed_mesh_is_one_crossed_as_often_each_way() {
+        let corners = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(0.0, 1.0, 0.0),
+            Point::new(0.0, 0.0, 1.0),
+        ];
+        // A tetrahedron, every face wound outward.
+        let solid = over(&corners, &[[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]);
+        assert!(solid.is_closed(), "a tetrahedron closes");
+        assert!(solid.volume() > 0.0, "and wound outward");
+
+        // One face turned over. Every edge is still used exactly twice, so
+        // counting uses calls this closed; two of its edges are now crossed
+        // the same way twice, and the volume it gives is wrong.
+        let mut flipped = solid.clone();
+        flipped.triangles[3] = [1, 3, 2];
+        assert!(
+            !flipped.is_closed(),
+            "a face inside out is not a closed mesh"
+        );
+
+        // A hole: one face dropped. Three edges are crossed once.
+        let mut holed = solid.clone();
+        holed.triangles.pop();
+        assert!(!holed.is_closed(), "three edges left dangling");
+
+        // Two tetrahedra sharing the edge 0-1, each closed and outward. The
+        // shared edge carries four triangles, two crossing each way. It is
+        // not a manifold and it is certainly closed, and its volume is both
+        // halves — which is the case a count of uses refuses and the one a
+        // real assembly produces where two faces fill a sliver with the same
+        // chord.
+        let mut pair = solid.clone();
+        let mirrored = Point::new(0.0, -1.0, 0.0);
+        #[allow(clippy::cast_possible_truncation)]
+        let m = pair.positions.len() as u32;
+        pair.positions.push(mirrored);
+        pair.normals.push(Vector::Z);
+        pair.parameters.push((0.0, 0.0));
+        let apex = 3;
+        pair.triangles
+            .extend_from_slice(&[[0, 1, m], [0, m, apex], [0, apex, 1], [1, apex, m]]);
+        let four = pair
+            .triangles
+            .iter()
+            .flat_map(|t| (0..3).map(move |i| (t[i], t[(i + 1) % 3])))
+            .filter(|(a, b)| (*a == 0 && *b == 1) || (*a == 1 && *b == 0))
+            .count();
+        assert_eq!(four, 4, "the shared edge carries four triangles");
+        assert!(pair.is_closed(), "and the pair is still closed");
     }
 
     #[test]
