@@ -30,7 +30,7 @@ use ogeom_geom::{
 };
 use ogeom_math::{
     Axis, Circle, Cone, Cylinder, Direction, Ellipse, Frame, KnotVector, Plane, Point, Sphere,
-    Torus, Transform, Transform2, Vector, Vector2,
+    Torus, Transform, Vector,
 };
 use ogeom_topo::{Location, Model, Shape};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1645,14 +1645,9 @@ impl Reader<'_> {
             let Some(surface) = self.model.geometry().surface(surface_id).cloned() else {
                 ogeom_bail!(Dangling, "the surface is not in this model");
             };
-            let ((ua, ub), _) = surface.domain();
-            let span = ub - ua;
             // One side is where the projection landed; the other is one
-            // period over, whichever way stays within the chart.
-            let mid = pcurve.point_at(f64::midpoint(range.0, range.1), self.tol)?;
-            let shift = if mid.x - ua < span * 0.5 { span } else { -span };
-            let other =
-                pcurve.transformed(&Transform2::translation(Vector2::new(shift, 0.0)), self.tol)?;
+            // period over, along the axis the surface actually closes on.
+            let other = crate::pcurves::seam_other_side(&pcurve, range, &surface, self.tol)?;
             ogeom_algo::attach_seam(
                 &mut self.model,
                 edge,
