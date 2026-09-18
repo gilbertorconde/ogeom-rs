@@ -130,3 +130,33 @@ wrong solid does not throw; it corrupts a document six operations later. So:
   either way: the record is what stops the question being re-litigated.
 - Public items are documented. `missing_docs` is a warning and CI runs with
   `-D warnings`.
+
+## Releasing
+
+The fifteen library crates under `crates/` publish together, at one version,
+from `[workspace.package]`. The three crates under `tools/` carry
+`publish = false`: their audience is this repository.
+
+```sh
+cargo publish --dry-run --workspace   # packages, verifies and orders, uploads nothing
+cargo publish --workspace             # the same, for real
+```
+
+Cargo works out the order from the dependency graph, so the fifteen go up in
+one command. Three things about the arrangement are worth knowing before
+changing it:
+
+- **Versions move together.** Every crate inherits `version.workspace`, and
+  the internal requirements in `[workspace.dependencies]` are pinned to the
+  same number. Bump both, or the workspace stops resolving — and bump
+  `outside/Cargo.toml`'s requirements with them, since that workspace depends
+  on these crates by version.
+- **`ogeom-mesh` dev-depends on `ogeom-algo` by path alone.** `ogeom-algo`
+  builds on `ogeom-mesh`, so a version requirement there is a cycle no
+  registry can resolve. Cargo drops a path-only dev-dependency from the
+  published manifest, which is what makes the cycle this repository's business
+  and nobody else's. Do not "tidy" it to `.workspace = true`.
+- **The corpus does not ship.** `tests/corpus/` sits at the repository root,
+  outside every package, and the suites that read it are named in each crate's
+  `exclude`. A published tarball carries only tests it can actually run; the
+  repository and `tools/check.sh` still run all of them.

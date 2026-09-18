@@ -7,12 +7,16 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# Not published: a benchmark harness for the kernel's own hot paths, whose
+# audience is this repository.
+publish = false
+
 [[bin]]
 name = "ogeom-bench"
 path = "src/main.rs"
 
 [dependencies]
-ogeom = { path = "../../crates/ogeom", version = "0.0.0" }
+ogeom = { path = "../../crates/ogeom", version = "0.1.0" }
 
 [lints]
 workspace = true

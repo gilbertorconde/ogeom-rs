@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# Not published: a debug renderer for making a wrong result visible, whose
+# audience is this repository.
+publish = false
+
 [dependencies]
 ogeom-core.workspace = true
 ogeom-math.workspace = true

@@ -27,3 +27,6 @@ Cargo.lock.orig
 
 # The rendered book; `docs/book/src` is the source, this is build output.
 /docs/book/book
+
+# Scratch notes and captured tool output; never committed.
+WARNS.txt

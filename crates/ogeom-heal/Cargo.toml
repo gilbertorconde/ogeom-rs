@@ -6,6 +6,19 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# The published tarball carries only what it can run. These suites read the
+# shared corpus under `tests/corpus/` at the repository root, which is outside
+# every package and stays there: it is 4.9 MB of real exchange files, and
+# copying it into each crate that reads it would ship it several times over.
+# The repository still runs them, and `tools/check.sh` still gates on them.
+exclude = [
+    "tests/reanchor_corpus.rs",
+]
 
 [dependencies]
 nalgebra.workspace = true
