@@ -84,3 +84,14 @@ reproducer for a solid a reader matching on `MANIFOLD_SOLID_BREP` alone
 never sees: three bodies of a community printer assembly are written this
 way, and every one of them read as nothing at all. Its volume is exactly
 1000 − 64 = 936 mm³, which is the assertion.
+
+## sliver_face_falls_apart.step
+
+One face extracted standalone from a community printer assembly, with a
+shell and a solid wrapped round it so the reader yields something: a
+quarter-arc forty-five millimetres long and eighteen microns wide, between
+two nearly concentric circles. At a tenth of a millimetre the sagitta of
+each bounding arc is twenty-nine microns — wider than the region — so the
+inner polyline crosses the outer one, and the triangulator answers with
+sixteen triangles in fifteen disconnected pieces. The reproducer for a
+boundary drawn too coarsely to be a boundary.

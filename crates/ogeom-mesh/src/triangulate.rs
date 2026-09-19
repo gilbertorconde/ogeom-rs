@@ -52,6 +52,36 @@ pub fn triangulate_face(
     deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<Triangulation> {
+    triangulate_with(model, face, deflection, None, tol)
+}
+
+/// One face, with the finer edge chords the whole shape agreed on.
+///
+/// `None` means this face is being meshed on its own and may work out its
+/// own: alone it has no neighbour to disagree with.
+fn triangulate_with(
+    model: &Model,
+    face: &Shape,
+    deflection: Deflection,
+    finer: Option<&EdgeChords>,
+    tol: Tolerances,
+) -> OgeomResult<Triangulation> {
+    Ok(triangulate_reporting(model, face, deflection, finer, tol)?.0)
+}
+
+/// One face, and whether the rings it was built from crossed themselves.
+///
+/// The flag is how the shape-wide pass learns which faces need their edges
+/// drawn finer without building every face's rings twice: the rings are
+/// already in hand here, and the sweep over them is the only extra cost a
+/// face that does not cross ever pays.
+fn triangulate_reporting(
+    model: &Model,
+    face: &Shape,
+    deflection: Deflection,
+    finer: Option<&EdgeChords>,
+    tol: Tolerances,
+) -> OgeomResult<(Triangulation, bool)> {
     deflection.validate()?;
     if model.kind_of(face)? != ShapeType::Face {
         ogeom_bail!(Construction, "expected a face");
@@ -67,8 +97,33 @@ pub fn triangulate_face(
     };
     let placement = face.transform(model.datums())?;
 
-    let (uv, anchors, met) = trimming_rings(model, face, data.surface, surface, deflection, tol)?;
+    let own;
+    let finer = match finer {
+        Some(shared) => shared,
+        None => {
+            own = face_chords(model, face, data.surface, surface, deflection, tol)?;
+            &own
+        }
+    };
+    let (uv, anchors, met) =
+        trimming_rings(model, face, data.surface, surface, deflection, finer, tol)?;
     let planar = triangulate_region(&uv, surface, deflection, tol)?;
+
+    // Whether the triangulator was handed a region at all, asked of what it
+    // returned rather than of what it was given. A well-formed triangulation
+    // over `b` boundary points in `w` rings has at least `b + 2w - 4`
+    // triangles — exactly that where no interior point is added, more where
+    // refinement adds them. Fewer is not a coarse answer, it is a different
+    // shape: the boundary crossed itself and what came back is disconnected
+    // fragments with holes between them.
+    //
+    // Counting is why it is asked this way round. Sweeping the rings for a
+    // crossing is the direct question and costs a sort and an active list
+    // per face; measured over a hundred thousand faces it was the whole of
+    // an eighteen per cent regression, to catch four bodies. The count is
+    // already in hand and exact for the failure that matters.
+    let boundary: usize = uv.iter().map(Vec::len).sum();
+    let crossed = planar.triangles.len() + 4 < boundary + 2 * uv.len();
 
     // Boundary vertices take their positions from their edges' own curves —
     // the shared authority — keyed by their exact parameter-space bits.
@@ -122,7 +177,7 @@ pub fn triangulate_face(
         .into_iter()
         .map(|t| if flip { [t[0], t[2], t[1]] } else { t })
         .collect();
-    Ok(mesh)
+    Ok((mesh, crossed))
 }
 
 /// Triangulate every face below a shape, welded into one mesh.
@@ -144,11 +199,78 @@ pub fn triangulate(
     let faces: Vec<Shape> =
         ogeom_topo::explore(model, shape, ogeom_topo::Filter::OfType(ShapeType::Face))?;
     let read_model: &Model = model;
-    let computed: Vec<OgeomResult<Triangulation>> =
+
+    // Meshed once at the caller's deflection, each face saying whether the
+    // rings it was drawn from crossed themselves. Nearly none do, and those
+    // faces are finished: the only cost they carry is one sweep over a ring
+    // that had to be built anyway.
+    // `Some(&nothing)`, not `None`: a face left to itself refines its own
+    // edges, which is right when it is meshed alone and wrong here, where
+    // its neighbours must be told to refine the same ones. Phase one draws
+    // every face at exactly what the caller asked and reports what crossed.
+    let nothing = EdgeChords::new();
+    let first: Vec<OgeomResult<(Triangulation, bool)>> =
         ogeom_core::parallel::map_ordered(&faces, |_, face| {
             ogeom_core::progress::checkpoint()?;
-            triangulate_face(read_model, face, deflection, tol)
+            triangulate_reporting(read_model, face, deflection, Some(&nothing), tol)
         });
+    let mut computed: Vec<OgeomResult<Triangulation>> = Vec::with_capacity(faces.len());
+    let mut crossed: Vec<usize> = Vec::new();
+    for (index, one) in first.into_iter().enumerate() {
+        match one {
+            Ok((mesh, false)) => computed.push(Ok(mesh)),
+            Ok((mesh, true)) => {
+                crossed.push(index);
+                computed.push(Ok(mesh));
+            }
+            Err(e) => computed.push(Err(e)),
+        }
+    }
+
+    // A face whose boundary crossed itself needs its edges drawn finer —
+    // and so does every face that shares one of them, or the two sides of
+    // that edge arrive with a different number of points, which is a worse
+    // crack than the sliver the refinement was for. Only those faces are
+    // drawn again.
+    if !crossed.is_empty() {
+        let mut finer = EdgeChords::new();
+        for &index in &crossed {
+            let face = &faces[index];
+            let Some(node) = read_model.node(face) else {
+                continue;
+            };
+            let NodeData::Face(data) = node.data() else {
+                continue;
+            };
+            let Some(surface) = read_model.geometry().surface(data.surface) else {
+                continue;
+            };
+            for (edge, chord) in
+                face_chords(read_model, face, data.surface, surface, deflection, tol)?
+            {
+                let held = finer.entry(edge).or_insert(chord);
+                *held = held.min(chord);
+            }
+        }
+        let again: Vec<usize> = (0..faces.len())
+            .filter(|&i| {
+                ogeom_topo::explore(
+                    model,
+                    &faces[i],
+                    ogeom_topo::Filter::OfType(ShapeType::Edge),
+                )
+                .is_ok_and(|es| es.iter().any(|e| finer.contains_key(&e.node().index())))
+            })
+            .collect();
+        let redone: Vec<OgeomResult<Triangulation>> =
+            ogeom_core::parallel::map_ordered(&again, |_, &index| {
+                ogeom_core::progress::checkpoint()?;
+                triangulate_with(read_model, &faces[index], deflection, Some(&finer), tol)
+            });
+        for (index, one) in again.into_iter().zip(redone) {
+            computed[index] = one;
+        }
+    }
 
     let mut mesh = Triangulation::new();
     let mut pieces: Vec<(usize, usize)> = Vec::with_capacity(faces.len());
@@ -371,13 +493,79 @@ pub fn face_boundary(
         ogeom_bail!(Dangling, "face refers to a surface not in this model");
     };
 
-    Ok(trimming_rings(model, face, data.surface, surface, deflection, tol)?.0)
+    Ok(trimming_rings(
+        model,
+        face,
+        data.surface,
+        surface,
+        deflection,
+        &EdgeChords::new(),
+        tol,
+    )?
+    .0)
 }
 
 /// The rings bounding a face in parameter space, and whether every boundary
 /// edge met its deflection.
 /// Boundary rings with, per ring vertex, the 3D anchor its edge's own curve
 /// provides — `None` where an edge has no 3D curve to defer to.
+/// The chord each edge must be drawn with, where the caller's is too coarse.
+///
+/// Keyed by the edge's node, so both faces bounding it look the same value
+/// up and sample it identically. Absent means the caller's own chord.
+type EdgeChords = std::collections::HashMap<u32, f64>;
+
+/// How many times a face's boundary may be redrawn finer before its
+/// crossing is taken to be something the chord cannot fix.
+///
+/// Six halvings is a chord sixty-four times tighter than asked. A sliver
+/// still crossing itself there is degenerate in a way refinement does not
+/// reach — two boundaries genuinely on top of one another — and drawing it
+/// a seventh time only spends longer to say so.
+const REFINEMENTS: usize = 6;
+
+/// What one face needs its own edges drawn with.
+///
+/// A face narrower than the chord error its boundary is drawn with has a
+/// boundary that crosses *itself*. One body of a real assembly carries a
+/// quarter-arc sliver forty-five millimetres long and eighteen microns
+/// wide: at a tenth of a millimetre the sagitta of each bounding arc is
+/// twenty-nine microns, so the inner polyline bulges straight through the
+/// outer one, and what reaches the triangulator is not a region at all. It
+/// answered with sixteen triangles in fifteen disconnected pieces, and the
+/// holes between them were what stopped the body meshing closed.
+///
+/// The deflection a caller asks for bounds how far the mesh may sit from
+/// the surface; it is not a licence to hand the triangulator a polygon that
+/// crosses itself. Refining *lowers* that error, so this never breaks the
+/// caller's bound.
+///
+/// Only this face's own edges are named, and only when they need it.
+fn face_chords(
+    model: &Model,
+    face: &Shape,
+    id: ogeom_topo::SurfaceId,
+    surface: &SurfaceGeometry,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<EdgeChords> {
+    let mut finer = EdgeChords::new();
+    let mut chord = deflection.chord;
+    for _ in 0..=REFINEMENTS {
+        let (rings, _, _) = trimming_rings(model, face, id, surface, deflection, &finer, tol)?;
+        let planar = triangulate_region(&rings, surface, deflection, tol)?;
+        let boundary: usize = rings.iter().map(Vec::len).sum();
+        if planar.triangles.len() + 4 >= boundary + 2 * rings.len() {
+            break;
+        }
+        chord *= 0.5;
+        for edge in ogeom_topo::explore(model, face, ogeom_topo::Filter::OfType(ShapeType::Edge))? {
+            finer.insert(edge.node().index(), chord);
+        }
+    }
+    Ok(finer)
+}
+
 type RingsWithAnchors = (Vec<Vec<Point2>>, Vec<Vec<Option<Point>>>, bool);
 
 /// One walked ring: chart points, anchors, deflection honesty, the ambiguous
@@ -396,6 +584,7 @@ fn trimming_rings(
     id: ogeom_topo::SurfaceId,
     surface: &SurfaceGeometry,
     deflection: Deflection,
+    finer: &EdgeChords,
     tol: Tolerances,
 ) -> OgeomResult<RingsWithAnchors> {
     let mut rings = Vec::new();
@@ -405,7 +594,7 @@ fn trimming_rings(
     let mut met = true;
     for wire in model.ordered_children_of(face)? {
         let (ring, anchors, ring_met, folds, ties) =
-            boundary_ring(model, &wire, id, deflection, tol)?;
+            boundary_ring(model, &wire, id, deflection, finer, tol)?;
         met &= ring_met;
         if ring.len() >= 3 {
             rings.push(ring);
@@ -629,6 +818,7 @@ fn boundary_ring(
     wire: &Shape,
     surface: ogeom_topo::SurfaceId,
     deflection: Deflection,
+    finer: &EdgeChords,
     tol: Tolerances,
 ) -> OgeomResult<WalkedRing> {
     let mut ring: Vec<Point2> = Vec::new();
@@ -743,7 +933,17 @@ fn boundary_ring(
         // so its points are the positions both faces use, and the weld is a
         // matter of identity rather than luck.
         let mut edge_anchors: Vec<Option<Point>> = Vec::new();
-        let samples = match sample_parameters(model, data, deflection, tol)? {
+        // An edge drawn finer is drawn finer for *every* face that bounds
+        // it, which is the whole point: the two sides must agree point for
+        // point or the weld has nothing to join.
+        let along = match finer.get(&edge.node().index()) {
+            Some(chord) => Deflection {
+                chord: *chord,
+                ..deflection
+            },
+            None => deflection,
+        };
+        let samples = match sample_parameters(model, data, along, tol)? {
             Some((parameters, edge_met)) => {
                 met &= edge_met;
                 if let Some(EdgeRepr::Curve3d { curve, .. }) = data.curve3d()

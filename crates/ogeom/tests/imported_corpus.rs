@@ -205,3 +205,56 @@ fn a_body_is_bounded_by_what_it_is_trimmed_to() {
         }
     }
 }
+
+/// A sliver's boundary is drawn finely enough to be a boundary.
+///
+/// The face is a quarter-arc forty-five millimetres long and eighteen
+/// microns wide, between two nearly concentric circles, lifted out of a
+/// community printer assembly. At the default tenth of a millimetre the
+/// sagitta of each bounding arc is twenty-nine microns — wider than the
+/// region itself — so the inner polyline crosses the outer one and what
+/// reaches the triangulator is not a region. It answered with sixteen
+/// triangles in fifteen disconnected pieces, and the holes between them
+/// were what kept the body it belongs to from meshing closed.
+///
+/// `V - E + F` is the test because it is the question: one for a disc,
+/// `1 - holes` for a face with inner loops, and anything else means the
+/// pieces are not joined. Fifteen is fifteen fragments.
+#[test]
+fn a_sliver_face_is_drawn_fine_enough_to_triangulate_whole() {
+    use std::collections::HashMap;
+    let text = corpus("sliver_face_falls_apart.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let faces = explore_unique(model, &import.solids[0], ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 1, "the fixture is the one face");
+
+    let wires = model.ordered_children_of(&faces[0]).unwrap().len();
+    let mesh =
+        ogeom::mesh::triangulate_face(model, &faces[0], ogeom::mesh::Deflection::default(), T)
+            .unwrap();
+    let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+    for t in &mesh.triangles {
+        for i in 0..3 {
+            let (a, b) = (t[i], t[(i + 1) % 3]);
+            *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    let euler = mesh.positions.len() as i64 - uses.len() as i64 + mesh.triangles.len() as i64;
+    assert_eq!(
+        euler,
+        2 - wires as i64,
+        "one connected piece, not {} of them: {} verts, {} tris",
+        euler,
+        mesh.positions.len(),
+        mesh.triangles.len()
+    );
+
+    // And drawn finer than asked, which is the point: the caller's chord
+    // would have crossed the boundary with itself.
+    assert!(
+        mesh.triangles.len() >= 32,
+        "refined past the caller's chord: {} triangles",
+        mesh.triangles.len()
+    );
+}
