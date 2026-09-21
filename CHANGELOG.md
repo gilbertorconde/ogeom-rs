@@ -11,6 +11,46 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Meshing a real assembly closed.** 1,499 of 1,563 solids meshed
+  watertight before; 1,562 do now, and none refuse. Six causes, each with a
+  fixture cut from the file that showed it:
+  - `Triangulation::is_closed` counted an edge's uses and wanted exactly
+    two. It now requires every edge to be crossed as often each way, which
+    is what the divergence theorem needs — it catches a face wound inside
+    out (which counting passed) and accepts four triangles round one edge
+    (which counting refused).
+  - A face narrower than the chord error its boundary is drawn with had a
+    boundary that crossed itself; the triangulator returned fragments. The
+    boundary is redrawn finer, keyed to the edge so both faces sharing it
+    agree.
+  - A run along a cone's apex row was dropped when its rulings stood
+    exactly a quarter turn apart. Whether a gap is an apex run is decided
+    by its width and by whether its chart midpoint lifts to the shared
+    vertex, not by a fraction of the period.
+  - A chart direction was called degenerate by ratio to the other
+    direction, so a densely parameterised `v` made every `u` look weak and
+    two half-millimetre edges fitted as a point. It is judged by what
+    crossing the whole span moves, in length.
+  - Ring folding across a chart's join engaged on periodicity only; a
+    B-spline tube that closes without repeating never folded. Closure is
+    the test now, folded rings are slid back into the domain, and
+    `Surface` evaluation wraps a parameter past a closed join instead of
+    refusing it.
+  - An inner loop thinner than a micron — arcs out, fitted splines back —
+    is a slit, not a hole, and is no longer handed to the triangulator.
+- **`triangulate_face` drew every face twice** since the sliver refinement
+  landed. It draws once, and again only where the first came up short.
+  Face by face, the assembly above meshes in 9.4 s where it took 18.6.
+
+### Changed
+
+- `BSplineSurface` settles whether its net closes at construction, so
+  evaluation past a closed join costs what evaluation inside costs.
+- CI verifies the declared `rust-version` on every push, reading it from
+  the manifest so the two cannot drift.
+
 ## [0.1.0] — 2026-09-18
 
 First public release.
