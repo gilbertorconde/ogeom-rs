@@ -60,6 +60,20 @@ bump may break the API and a patch bump may not.
   from the ring's coordinates rather than its span, so a cylinder whose
   axis point the file placed half a metre away had every honest cell
   called a hair. Fixture cut from the file that showed it.
+- **At a coarser angular deflection, three more ways a face came apart**,
+  each with a fixture cut from the file that showed it:
+  - A boundary drawn coarsely enough to cross itself and enclose *nothing*
+    — an annulus narrower than its rims' sag — was refused, where one that
+    enclosed fragments was drawn again with finer edges. Empty is short
+    too; a face is refused only when finer edges still enclose nothing.
+  - The sag repair inserted a sliver's centre that was its own apex to the
+    last bits, round after round, each a hair on the last; the degenerate
+    filter dropped the hairs and left a hole. A repair point that lands on
+    a vertex already there is not inserted.
+  - A grid point that fell exactly on a boundary segment running
+    diagonally across the chart was inserted and split that constraint on
+    one face alone — a T-junction against the face across the edge. Grid
+    points on the boundary stay out.
 - **`triangulate_face` drew every face twice** since the sliver refinement
   landed. It draws once, and again only where the first came up short.
   Face by face, the assembly above meshes in 9.4 s where it took 18.6.

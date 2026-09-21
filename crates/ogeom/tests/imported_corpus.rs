@@ -544,3 +544,103 @@ fn a_chart_far_from_its_origin_is_not_degenerate() {
         mesh.triangles.len()
     );
 }
+
+/// Half a radian of angular deflection: what a viewer that keeps a circle
+/// at thirteen segments asks for, and coarser than the default's eleven
+/// degrees.
+fn half_a_radian() -> ogeom::mesh::Deflection {
+    ogeom::mesh::Deflection {
+        angular: 0.5,
+        ..ogeom::mesh::Deflection::default()
+    }
+}
+
+/// `V - E + F` of a face's mesh, counting each undirected edge once.
+fn euler_of(mesh: &ogeom::topo::Triangulation) -> i64 {
+    use std::collections::HashMap;
+    let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+    for t in &mesh.triangles {
+        for i in 0..3 {
+            let (a, b) = (t[i], t[(i + 1) % 3]);
+            *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    mesh.positions.len() as i64 - uses.len() as i64 + mesh.triangles.len() as i64
+}
+
+/// An annulus narrower than its rims' sag is drawn finer, not refused.
+///
+/// Forty microns wide between rims of 2.845 and 2.805 mm: at half a radian
+/// each rim is a sixteen-gon sagging fifty-five microns, the two polygons
+/// cross, and the first pass encloses nothing. A first pass that came back
+/// in *fragments* was already drawn again with finer edges; one that came
+/// back *empty* was refused before it could be. Empty is short too.
+#[test]
+fn an_annulus_narrower_than_its_rims_sag_is_drawn_finer() {
+    let text = corpus("annulus_narrower_than_its_rims_sag.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let faces = explore_unique(model, &import.solids[0], ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 1, "the fixture is the one face");
+    let mesh = ogeom::mesh::triangulate_face(model, &faces[0], half_a_radian(), T)
+        .expect("drawn finer, not refused");
+    assert_eq!(euler_of(&mesh), 0, "one hole: an annulus");
+    let area: f64 = mesh
+        .triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+            (b - a).cross(c - a).magnitude() * 0.5
+        })
+        .sum();
+    // π · (2.8448² − 2.8054²), less what the inscribed polygons leave out.
+    assert!(
+        (area - 0.699).abs() < 0.03,
+        "the annulus's own area: {area:.4} over {} triangles",
+        mesh.triangles.len()
+    );
+}
+
+/// A repair point that lands on a vertex already there is not inserted.
+///
+/// A turned part with a three-edged B-spline patch whose bottom row
+/// collapses to a point. Meshed whole at half a radian, three grid points
+/// on that patch sit on a diagonal, the middle one a rounding off the
+/// line, and the sliver they make has its centre at that middle point to
+/// the last bits. The sag repair inserted the centre, round after round,
+/// each a hair on the last; the degenerate filter dropped the hairs and
+/// left a hole, and the solid was open by six edges.
+#[test]
+fn a_sliver_on_a_diagonal_of_the_grid_leaves_the_solid_closed() {
+    let text = corpus("sliver_on_a_diagonal_of_the_grid.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let mesh = ogeom::mesh::triangulate(model, &import.solids[0], half_a_radian(), T).unwrap();
+    assert!(
+        mesh.is_closed(),
+        "a hole where the hairs were: {} triangles",
+        mesh.triangles.len()
+    );
+}
+
+/// A grid point on a boundary segment is not inserted.
+///
+/// A turned part with a B-spline patch and the torus across one of its
+/// edges, an edge that runs diagonally across the patch's chart. Meshed
+/// whole at half a radian, a grid point falls exactly on that segment —
+/// the midpoint of two grid corners the ring joins — and even-odd counting
+/// calls it inside; inserted, it split the constraint on the patch alone,
+/// and the torus was drawn to the unsplit edge: a T-junction, and the
+/// solid open by six edges.
+#[test]
+fn a_grid_point_on_a_diagonal_boundary_leaves_the_solid_closed() {
+    let text = corpus("grid_point_on_a_diagonal_boundary.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let mesh = ogeom::mesh::triangulate(model, &import.solids[0], half_a_radian(), T).unwrap();
+    assert!(
+        mesh.is_closed(),
+        "a T-junction on the patch's edge: {} triangles",
+        mesh.triangles.len()
+    );
+}

@@ -148,3 +148,39 @@ reproducer for a degenerate-triangle scale taken from where the ring sits
 rather than how far it reaches: at that scale a quarter of a chart unit
 was "degenerate", every cell of a finer grid was, and the face drew as
 two triangles.
+
+## annulus_narrower_than_its_rims_sag.step
+
+One face extracted standalone from a community printer assembly, with a
+shell and a solid wrapped round it so the reader yields something: a
+plane annulus forty microns wide between rims of 2.845 and 2.805 mm. At
+half a radian of angular deflection each rim is a sixteen-gon sagging
+fifty-five microns, the two polygons cross, and the boundary encloses
+nothing. The reproducer for an empty first pass refused outright instead
+of drawn again finer, as a first pass that came back in fragments is.
+
+## sliver_on_a_diagonal_of_the_grid.step
+
+One solid extracted standalone from a community printer assembly: a
+turned part of a hundred and fifty faces, among them a three-edged
+B-spline patch whose bottom row collapses to a point. Meshed whole at
+half a radian, three grid points on that patch sit on a diagonal, the
+middle one a rounding off the line, and the sliver they make has its
+centre at that middle point to the last bits; the sag repair inserted the
+centre round after round, each a hair on the last, and the degenerate
+filter dropped the hairs and left a hole. The reproducer for a repair
+point that lands on a vertex already there. The whole solid, because the
+grid that lines up is the one the solid's own edge refinement produces,
+and the patch alone does not.
+
+## grid_point_on_a_diagonal_boundary.step
+
+One solid extracted standalone from a community printer assembly: a
+turned part of two hundred and fifty faces, among them a B-spline patch
+and the torus across one of its edges, an edge that runs diagonally
+across the patch's chart. Meshed whole at half a radian, a grid point
+falls exactly on that segment — the midpoint of two grid corners the ring
+joins — and even-odd counting calls it inside; inserted, it split the
+constraint on the patch alone, and the torus was drawn to the unsplit
+edge. The reproducer for a T-junction born inside one face. The whole
+solid, for the same reason as the one above.

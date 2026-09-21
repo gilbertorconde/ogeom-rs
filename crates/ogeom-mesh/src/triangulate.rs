@@ -74,7 +74,14 @@ fn triangulate_with(
     finer: Option<&EdgeChords>,
     tol: Tolerances,
 ) -> OgeomResult<Triangulation> {
-    Ok(triangulate_reporting(model, face, deflection, finer, tol)?.0)
+    let (mesh, _) = triangulate_reporting(model, face, deflection, finer, tol)?;
+    if mesh.triangles.is_empty() {
+        ogeom_bail!(
+            NotDone,
+            "the face's boundary enclosed no triangulable region"
+        );
+    }
+    Ok(mesh)
 }
 
 /// One face, and whether the rings it was built from crossed themselves.
@@ -1728,12 +1735,30 @@ fn triangulate_region_inner(
             if worst.is_empty() {
                 break;
             }
+            let mut inserted = 0usize;
             for point in worst {
+                // A centre that lands on a vertex already there is not a new
+                // point. A sliver whose apex sits on its own base — three
+                // grid points on a diagonal, the middle one a rounding off
+                // the line — has its centre at that apex to the last bits,
+                // and inserting it breeds a hair a few ulps wide, whose
+                // centre is the same point again: round after round, a
+                // stack of hairs the degenerate filter then drops, and a
+                // hole in the face where they were.
+                if lands_on_the_mesh(&cdt, point, extent * 1e-9) {
+                    continue;
+                }
                 cdt.insert(mitigate_underflow(point)).map_err(|e| {
                     ogeom_core::ogeom_err!(NotDone, "refinement insertion failed: {e}")
                 })?;
+                inserted += 1;
             }
-            if *MESH_DEBUG_REFINE && cdt.num_vertices() > 500 {
+            if inserted == 0 {
+                // Everything that sagged was a hair on a vertex; another
+                // round would find the same hairs.
+                break;
+            }
+            if *MESH_DEBUG_REFINE {
                 eprintln!(
                     "ROUND {rounds_run}: +{} vertices",
                     cdt.num_vertices() - before
@@ -1803,12 +1828,12 @@ fn triangulate_region_inner(
             triangles.len()
         );
     }
-    if triangles.is_empty() {
-        ogeom_bail!(
-            NotDone,
-            "the face's boundary enclosed no triangulable region"
-        );
-    }
+    // No triangles is not refused here: a boundary drawn coarsely enough
+    // to cross itself can enclose nothing at all — an annulus narrower
+    // than the sag of its rims' polygons, two arcs a hair apart — and the
+    // caller's answer to a crossing is to draw the edges finer and ask
+    // again. Empty counts as short; only a face still empty after that is
+    // refused, by [`triangulate_with`].
     Ok(PlanarMesh {
         parameters,
         triangles,
@@ -1852,6 +1877,9 @@ fn add_interior_points(
     let (Some(low), Some(high)) = (bound.low(), bound.high()) else {
         return Ok(());
     };
+    // Within this of a boundary vertex or segment is on it: a hair's width
+    // at the chart's scale, the same reach the repair pass keeps.
+    let reach = (high.x - low.x).max(high.y - low.y).max(1.0) * 1e-9;
 
     // The v resolution has to hold everywhere the region reaches, so its sag is
     // the worst over a spread of u probes rather than the sag along one line.
@@ -1947,11 +1975,64 @@ fn add_interior_points(
             if !inside_region(rings, Point2::new(u, v)) {
                 continue;
             }
-            cdt.insert(mitigate_underflow(SpadePoint::new(u, v)))
+            // Inside, and not *on* the boundary: a grid point can fall
+            // exactly on a ring segment that runs diagonally across the
+            // chart — the midpoint of two grid corners the ring happens to
+            // join — and even-odd counting calls it inside. Inserted, it
+            // splits that constraint on this face alone, and the face
+            // across the edge is drawn to the unsplit segment.
+            let point = SpadePoint::new(u, v);
+            if lands_on_the_mesh(cdt, point, reach) {
+                continue;
+            }
+            cdt.insert(mitigate_underflow(point))
                 .map_err(|e| ogeom_core::ogeom_err!(NotDone, "interior insertion failed: {e}"))?;
         }
     }
     Ok(())
+}
+
+/// Whether `point` sits within `reach` of a vertex the triangulation has,
+/// or of one of its constraint edges.
+///
+/// Asked of whatever the point lands on — a vertex, an edge's two ends, a
+/// face's three corners and whichever of its sides are constraints —
+/// which is where anything that close must be. A point on a vertex is not
+/// a new point; a point on a constraint would split it, and a boundary
+/// split on one face only is a crack against the face across it.
+fn lands_on_the_mesh(
+    cdt: &ConstrainedDelaunayTriangulation<SpadePoint<f64>>,
+    point: SpadePoint<f64>,
+    reach: f64,
+) -> bool {
+    use spade::PositionInTriangulation as At;
+    let near = |v: SpadePoint<f64>| (v.x - point.x).hypot(v.y - point.y) <= reach;
+    let along = |a: SpadePoint<f64>, b: SpadePoint<f64>| {
+        // Distance to the segment `a..b`.
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 > 0.0 {
+            (((point.x - a.x) * dx + (point.y - a.y) * dy) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (a.x + t * dx - point.x).hypot(a.y + t * dy - point.y) <= reach
+    };
+    match cdt.locate(point) {
+        At::OnVertex(_) => true,
+        At::OnEdge(edge) => {
+            let edge = cdt.directed_edge(edge);
+            edge.is_constraint_edge() || edge.vertices().iter().any(|v| near(v.position()))
+        }
+        At::OnFace(face) => {
+            let face = cdt.face(face);
+            face.vertices().iter().any(|v| near(v.position()))
+                || face.adjacent_edges().iter().any(|e| {
+                    e.is_constraint_edge() && along(e.from().position(), e.to().position())
+                })
+        }
+        At::OutsideOfConvexHull(_) | At::NoTriangulation => false,
+    }
 }
 
 /// How many column widths a grid cell may be tall before rows are added.
