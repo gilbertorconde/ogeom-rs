@@ -644,3 +644,66 @@ fn a_grid_point_on_a_diagonal_boundary_leaves_the_solid_closed() {
         mesh.triangles.len()
     );
 }
+
+/// A crossing the boundary alone can tell of.
+///
+/// A cylinder wall with six slanted slots, each slot's two sides different
+/// curves between the same two points. At half a radian the two sides'
+/// polylines cross, and the face drew with two holes more than it has —
+/// `V - E + F` of −7 for a face with six holes, which is −5. The count of
+/// triangles against boundary points saw nothing: the crossing cost a
+/// handful of triangles and the face's hundreds of interior points buried
+/// the difference. The boundary is now triangulated on its own first,
+/// where the count is exact, and the slots' edges are drawn finer.
+#[test]
+fn a_crossing_is_told_by_the_boundary_alone() {
+    let text = corpus("slots_cross_at_half_a_radian.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let faces = explore_unique(model, &import.solids[0], ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 1, "the fixture is the one face");
+    assert_eq!(
+        model.ordered_children_of(&faces[0]).unwrap().len(),
+        7,
+        "six slots"
+    );
+    let mesh = ogeom::mesh::triangulate_face(model, &faces[0], half_a_radian(), T).unwrap();
+    assert_eq!(
+        euler_of(&mesh),
+        1 - 6,
+        "six holes, not eight: {} verts, {} tris",
+        mesh.positions.len(),
+        mesh.triangles.len()
+    );
+}
+
+/// A spike on the boundary bounds nothing and is not drawn.
+///
+/// A plane whose wire runs out along an edge to a point and straight back
+/// over the same curve. Kept, the spike triangulated to two hairs — one
+/// vertex and one triangle more than a boundary that encloses a region
+/// has — and the face was two pieces by count. Stripped before the
+/// triangulation, the face is one.
+#[test]
+fn a_spike_on_the_boundary_is_stripped() {
+    let text = corpus("a_spike_on_the_boundary.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let faces = explore_unique(model, &import.solids[0], ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 1, "the fixture is the one face");
+    let mesh =
+        ogeom::mesh::triangulate_face(model, &faces[0], ogeom::mesh::Deflection::default(), T)
+            .unwrap();
+    assert_eq!(
+        euler_of(&mesh),
+        1,
+        "one piece: {} verts, {} tris",
+        mesh.positions.len(),
+        mesh.triangles.len()
+    );
+    assert!(
+        mesh.positions.len() <= 12,
+        "the spike's tip is not a vertex: {} verts",
+        mesh.positions.len()
+    );
+}

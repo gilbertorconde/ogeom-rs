@@ -56,11 +56,21 @@ pub fn triangulate_face(
     // came back short — the same shape as the whole-shape path, so a caller
     // meshing face by face pays for one triangulation per face, not two.
     let nothing = EdgeChords::new();
-    let (mesh, crossed) = triangulate_reporting(model, face, deflection, Some(&nothing), tol)?;
-    if !crossed {
+    let (mesh, verdict) = triangulate_reporting(model, face, deflection, Some(&nothing), tol)?;
+    if verdict != Verdict::Short {
         return Ok(mesh);
     }
     triangulate_with(model, face, deflection, None, tol)
+}
+
+/// What one pass over a face found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+    /// The boundary enclosed a region and it was drawn.
+    Whole,
+    /// The boundary crossed itself: what came back is fragments, or nothing.
+    /// The edges want drawing finer.
+    Short,
 }
 
 /// One face, with the finer edge chords the whole shape agreed on.
@@ -74,8 +84,8 @@ fn triangulate_with(
     finer: Option<&EdgeChords>,
     tol: Tolerances,
 ) -> OgeomResult<Triangulation> {
-    let (mesh, _) = triangulate_reporting(model, face, deflection, finer, tol)?;
-    if mesh.triangles.is_empty() {
+    let (mesh, verdict) = triangulate_reporting(model, face, deflection, finer, tol)?;
+    if verdict == Verdict::Short && mesh.triangles.is_empty() {
         ogeom_bail!(
             NotDone,
             "the face's boundary enclosed no triangulable region"
@@ -96,7 +106,7 @@ fn triangulate_reporting(
     deflection: Deflection,
     finer: Option<&EdgeChords>,
     tol: Tolerances,
-) -> OgeomResult<(Triangulation, bool)> {
+) -> OgeomResult<(Triangulation, Verdict)> {
     deflection.validate()?;
     if model.kind_of(face)? != ShapeType::Face {
         ogeom_bail!(Construction, "expected a face");
@@ -121,8 +131,11 @@ fn triangulate_reporting(
         }
     };
     let phase = std::time::Instant::now();
-    let (uv, anchors, met) =
-        trimming_rings(model, face, data.surface, surface, deflection, finer, tol)?;
+    let Trimming {
+        rings: uv,
+        anchors,
+        met,
+    } = trimming_rings(model, face, data.surface, surface, deflection, finer, tol)?;
     let rings_ms = phase.elapsed().as_secs_f64() * 1e3;
     let phase = std::time::Instant::now();
     let planar = triangulate_region(&uv, surface, deflection, tol)?;
@@ -142,8 +155,23 @@ fn triangulate_reporting(
     // per face; measured over a hundred thousand faces it was the whole of
     // an eighteen per cent regression, to catch four bodies. The count is
     // already in hand and exact for the failure that matters.
+    //
+    // That count is exact only before interior points go in; over a face
+    // that takes hundreds of them, a crossing that costs a handful of
+    // triangles is lost in the total. So the region also counts its own
+    // triangles the moment the boundary is in and nothing else — where the
+    // number is exactly `b + 2w - 4` for a boundary that encloses a region
+    // and anything else for one that crosses.
     let boundary: usize = uv.iter().map(Vec::len).sum();
-    let crossed = planar.triangles.len() + 4 < boundary + 2 * uv.len();
+    let crossed = planar.crossed || planar.triangles.len() + 4 < boundary + 2 * uv.len();
+    if *MESH_DEBUG_REFINE {
+        eprintln!(
+            "SHORT {} triangles against {boundary} boundary points in {} rings: crossed {crossed} (boundary pass {})",
+            planar.triangles.len(),
+            uv.len(),
+            planar.crossed
+        );
+    }
 
     // Boundary vertices take their positions from their edges' own curves —
     // the shared authority — keyed by their exact parameter-space bits.
@@ -205,7 +233,14 @@ fn triangulate_reporting(
         .into_iter()
         .map(|t| if flip { [t[0], t[2], t[1]] } else { t })
         .collect();
-    Ok((mesh, crossed))
+    Ok((
+        mesh,
+        if crossed {
+            Verdict::Short
+        } else {
+            Verdict::Whole
+        },
+    ))
 }
 
 /// Triangulate every face below a shape, welded into one mesh.
@@ -237,7 +272,7 @@ pub fn triangulate(
     // its neighbours must be told to refine the same ones. Phase one draws
     // every face at exactly what the caller asked and reports what crossed.
     let nothing = EdgeChords::new();
-    let first: Vec<OgeomResult<(Triangulation, bool)>> =
+    let first: Vec<OgeomResult<(Triangulation, Verdict)>> =
         ogeom_core::parallel::map_ordered(&faces, |_, face| {
             ogeom_core::progress::checkpoint()?;
             triangulate_reporting(read_model, face, deflection, Some(&nothing), tol)
@@ -246,11 +281,11 @@ pub fn triangulate(
     let mut crossed: Vec<usize> = Vec::new();
     for (index, one) in first.into_iter().enumerate() {
         match one {
-            Ok((mesh, false)) => computed.push(Ok(mesh)),
-            Ok((mesh, true)) => {
+            Ok((mesh, Verdict::Short)) => {
                 crossed.push(index);
                 computed.push(Ok(mesh));
             }
+            Ok((mesh, Verdict::Whole)) => computed.push(Ok(mesh)),
             Err(e) => computed.push(Err(e)),
         }
     }
@@ -537,7 +572,7 @@ pub fn face_boundary(
         &EdgeChords::new(),
         tol,
     )?
-    .0)
+    .rings)
 }
 
 /// The rings bounding a face in parameter space, and whether every boundary
@@ -587,10 +622,10 @@ fn face_chords(
     let mut finer = EdgeChords::new();
     let mut chord = deflection.chord;
     for _ in 0..=REFINEMENTS {
-        let (rings, _, _) = trimming_rings(model, face, id, surface, deflection, &finer, tol)?;
+        let rings = trimming_rings(model, face, id, surface, deflection, &finer, tol)?.rings;
         let planar = triangulate_region(&rings, surface, deflection, tol)?;
         let boundary: usize = rings.iter().map(Vec::len).sum();
-        if planar.triangles.len() + 4 >= boundary + 2 * rings.len() {
+        if !planar.crossed && planar.triangles.len() + 4 >= boundary + 2 * rings.len() {
             break;
         }
         chord *= 0.5;
@@ -601,7 +636,17 @@ fn face_chords(
     Ok(finer)
 }
 
-type RingsWithAnchors = (Vec<Vec<Point2>>, Vec<Vec<Option<Point>>>, bool);
+/// A face's trimming rings, walked, folded and cleaned.
+struct Trimming {
+    /// The outer ring first, then the holes, each closed without a repeated
+    /// closing point.
+    rings: Vec<Vec<Point2>>,
+    /// Each ring point's position in space where its edge's own curve put
+    /// it, `None` where it was made up.
+    anchors: Vec<Vec<Option<Point>>>,
+    /// Whether every edge's polyline honoured the deflection.
+    met: bool,
+}
 
 /// One walked ring: chart points, anchors, deflection honesty, the ambiguous
 /// whole-period folds taken, and the half-period ties left undecided.
@@ -621,7 +666,7 @@ fn trimming_rings(
     deflection: Deflection,
     finer: &EdgeChords,
     tol: Tolerances,
-) -> OgeomResult<RingsWithAnchors> {
+) -> OgeomResult<Trimming> {
     let mut rings = Vec::new();
     let mut ring_anchors = Vec::new();
     let mut ring_folds: Vec<Vec<(usize, f64)>> = Vec::new();
@@ -855,6 +900,23 @@ fn trimming_rings(
             }
         }
     }
+    // A run out along an edge and straight back along it — a ring that
+    // reads `p, q, p` — is a spike into the region that bounds nothing:
+    // the file's way of drawing a slit of no width at all on the face's
+    // own boundary. It triangulates to two hairs and one vertex too many,
+    // which is one triangle more than a boundary that encloses a region
+    // has, and it is not a crossing. Off it comes, out to in, until the
+    // ring reverses nowhere.
+    // And two consecutive points a millionth of the ring's size apart are
+    // one point: the end of the last edge and the start of the first, each
+    // where its own curve put the shared vertex, a file's slop apart. Kept
+    // both, the second sits on the first's next segment to the last bit,
+    // and a constraint through a vertex is one the triangulation refuses.
+    for (ring, anchors) in rings.iter_mut().zip(ring_anchors.iter_mut()) {
+        let reach = chart_reach(ring);
+        merge_near_duplicates(ring, anchors, reach);
+        remove_spikes(ring, anchors, reach);
+    }
     rings.retain(|r| r.len() >= 3);
     ring_anchors.retain(|a| a.len() >= 3);
 
@@ -911,7 +973,88 @@ fn trimming_rings(
         ring_anchors.push(vec![None; ring.len()]);
         rings.push(ring);
     }
-    Ok((rings, ring_anchors, met))
+    Ok(Trimming {
+        rings,
+        anchors: ring_anchors,
+        met,
+    })
+}
+
+/// Within this of each other, two chart points of a ring are one point: a
+/// millionth of the ring's extent, well under any feature and well over
+/// the slop two edges leave at the vertex they share.
+fn chart_reach(ring: &[Point2]) -> f64 {
+    let (mut lo, mut hi) = (
+        Point2::new(f64::INFINITY, f64::INFINITY),
+        Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+    );
+    for p in ring {
+        lo = Point2::new(lo.x.min(p.x), lo.y.min(p.y));
+        hi = Point2::new(hi.x.max(p.x), hi.y.max(p.y));
+    }
+    let extent = (hi.x - lo.x).max(hi.y - lo.y);
+    if extent.is_finite() && extent > 0.0 {
+        extent * 1e-6
+    } else {
+        0.0
+    }
+}
+
+/// Merge consecutive ring points within `reach` of each other,
+/// cyclically; the earlier point and its anchor stay.
+fn merge_near_duplicates(ring: &mut Vec<Point2>, anchors: &mut Vec<Option<Point>>, reach: f64) {
+    if ring.len() < 2 || anchors.len() != ring.len() || reach <= 0.0 {
+        return;
+    }
+    let mut i = 0;
+    while i < ring.len() && ring.len() >= 2 {
+        let next = (i + 1) % ring.len();
+        let (p, q) = (ring[i], ring[next]);
+        if (p.x - q.x).hypot(p.y - q.y) <= reach {
+            // The later point goes — the last one when the ring's end
+            // repeats its start — and the earlier is looked at again, in
+            // case it now sits next to another near-duplicate.
+            if next == 0 {
+                ring.remove(i);
+                anchors.remove(i);
+                break;
+            }
+            ring.remove(next);
+            anchors.remove(next);
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// Strip every `p, q, p` from a ring — a point stepped out to and straight
+/// back from, the two `p` within `reach` of each other — with its anchors,
+/// until none is left. Cyclic: the ring's last point is its first's
+/// neighbour.
+fn remove_spikes(ring: &mut Vec<Point2>, anchors: &mut Vec<Option<Point>>, reach: f64) {
+    loop {
+        let n = ring.len();
+        if n < 3 || anchors.len() != n {
+            return;
+        }
+        let Some(tip) = (0..n).find(|&i| {
+            let (before, after) = (ring[(i + n - 1) % n], ring[(i + 1) % n]);
+            (before.x - after.x).hypot(before.y - after.y) <= reach
+        }) else {
+            return;
+        };
+        // The tip and one of its two identical neighbours go.
+        let neighbour = (tip + 1) % n;
+        let (first, second) = if tip < neighbour {
+            (neighbour, tip)
+        } else {
+            (tip, neighbour)
+        };
+        ring.remove(first);
+        anchors.remove(first);
+        ring.remove(second);
+        anchors.remove(second);
+    }
 }
 
 /// Whether a surface is periodic in `u` alone — the charts on which a wound
@@ -1365,7 +1508,38 @@ fn boundary_ring(
     if ring.len() > 2
         && let (Some(first), Some(last)) = (ring.first().copied(), ring.last().copied())
     {
-        if first.is_equal(last, tol) {
+        // Equal in the chart, or the same vertex in space: the last edge's
+        // curve ends where the first edge's begins to within the file's
+        // slop — up to ten microns in a real assembly, recorded on the
+        // vertex as its widened tolerance. Kept as two points, the ring
+        // closes with a fold back over its own first segment, a crossing
+        // a fraction of a micron deep that the triangulation refuses as a
+        // constraint and the face is then drawn six times finer for.
+        // The same vertex in space is not enough on its own: a ring that
+        // winds a periodic chart ends a whole period from where it began
+        // and lifts to the same point, and that closing is a seam, not
+        // slop. Close in the chart too — within a thousandth of the ring's
+        // own extent — or the ring is left to the winding rule below.
+        let extent = ring.iter().fold(
+            (
+                Point2::new(f64::INFINITY, f64::INFINITY),
+                Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+            ),
+            |(lo, hi), p| {
+                (
+                    Point2::new(lo.x.min(p.x), lo.y.min(p.y)),
+                    Point2::new(hi.x.max(p.x), hi.y.max(p.y)),
+                )
+            },
+        );
+        let extent = (extent.1.x - extent.0.x).max(extent.1.y - extent.0.y);
+        let near_in_chart = (first.x - last.x).hypot(first.y - last.y) <= extent * 1e-3;
+        let same_vertex = near_in_chart
+            && match (anchors.first(), anchors.last()) {
+                (Some(Some(a)), Some(Some(b))) => a.distance(*b) <= tol.confusion() * 1e5,
+                _ => false,
+            };
+        if first.is_equal(last, tol) || same_vertex {
             ring.pop();
             anchors.pop();
         } else if let Some(geometry) = model.geometry().surface(surface) {
@@ -1560,6 +1734,9 @@ struct PlanarMesh {
     parameters: Vec<(f64, f64)>,
     /// Triangles as indices into `parameters`.
     triangles: Vec<[u32; 3]>,
+    /// The boundary alone did not triangulate to the count a boundary that
+    /// encloses a region gives: it crosses itself somewhere.
+    crossed: bool,
 }
 
 /// Triangulate a region in parameter space, given its boundary rings.
@@ -1618,6 +1795,7 @@ fn triangulate_region_inner(
     let mut cdt: ConstrainedDelaunayTriangulation<SpadePoint<f64>> =
         ConstrainedDelaunayTriangulation::new();
     let sub = std::time::Instant::now();
+    let mut refused_total = 0usize;
 
     // The boundary edges are constraints, so the triangulation respects the
     // trimming rather than spanning across a hole.
@@ -1632,12 +1810,64 @@ fn triangulate_region_inner(
                 .map_err(|e| ogeom_core::ogeom_err!(NotDone, "boundary insertion failed: {e}"))?;
             ring_handles.push(handle);
         }
+        let mut refused = 0usize;
+        let mut same = 0usize;
         for i in 0..ring_handles.len() {
             let (a, b) = (ring_handles[i], ring_handles[(i + 1) % ring_handles.len()]);
-            if a != b && cdt.can_add_constraint(a, b) {
+            if a == b {
+                same += 1;
+            } else if cdt.can_add_constraint(a, b) {
                 cdt.add_constraint(a, b);
+            } else {
+                refused += 1;
+                if *MESH_DEBUG_REFINE {
+                    let n = ring.len();
+                    let partners: Vec<usize> = (0..n)
+                        .filter(|&j| j != i && j != (i + 1) % n && j != (i + n - 1) % n)
+                        .filter(|&j| {
+                            segments_cross(ring[i], ring[(i + 1) % n], ring[j], ring[(j + 1) % n])
+                        })
+                        .collect();
+                    let len = ring[i].distance(ring[(i + 1) % n]);
+                    eprintln!(
+                        "REFUSED segment {i} of {n} (chart length {len:.3e}) crosses {partners:?}"
+                    );
+                    for j in [(i + n - 1) % n, i, (i + 1) % n, (i + 2) % n, (i + 3) % n] {
+                        eprintln!("   ring[{j}] = ({:.12}, {:.12})", ring[j].x, ring[j].y);
+                    }
+                }
             }
         }
+        if *MESH_DEBUG_REFINE && (refused > 0 || same > 0) {
+            eprintln!(
+                "CONSTRAINTS ring of {}: {refused} refused, {same} zero-length",
+                ring.len()
+            );
+        }
+        refused_total += refused;
+    }
+
+    // With the boundary in and nothing else, a boundary that encloses a
+    // region triangulates to exactly `b + 2w - 4` triangles inside it, `b`
+    // its distinct vertices and `w` its rings — the count any triangulation
+    // of a polygon with holes has. One that crosses itself gives another
+    // number: a segment refused as a constraint, a lobe wound the wrong
+    // way. Asked here, before interior points bury the difference.
+    let bands = RingBands::over(rings);
+    // A segment the triangulation refused as a constraint crossed one
+    // already there; that alone is the answer.
+    let crossed = refused_total > 0
+        || inside_by_parity(&cdt)
+            .is_none_or(|inside| inside + 4 != cdt.num_vertices() + 2 * rings.len());
+    if *MESH_DEBUG_REFINE && crossed {
+        let points: usize = rings.iter().map(Vec::len).sum();
+        eprintln!(
+            "PARITY inside {:?} vertices {} points {points} rings {} inner faces {}",
+            inside_by_parity(&cdt),
+            cdt.num_vertices(),
+            rings.len(),
+            cdt.num_inner_faces()
+        );
     }
 
     // Interior points where the surface bends away from the flat triangle. A
@@ -1687,7 +1917,6 @@ fn triangulate_region_inner(
     // The rings do not change while the mesh is refined, so the containment
     // test they answer is indexed once and reused by every round below and by
     // the output pass.
-    let bands = RingBands::over(rings);
     if !matches!(surface.kind(), ogeom_geom::SurfaceKind::Plane) {
         for _ in 0..REFINEMENT_ROUNDS {
             rounds_run += 1;
@@ -1837,6 +2066,7 @@ fn triangulate_region_inner(
     Ok(PlanarMesh {
         parameters,
         triangles,
+        crossed,
     })
 }
 
@@ -1990,6 +2220,73 @@ fn add_interior_points(
         }
     }
     Ok(())
+}
+
+/// Whether segments `a..b` and `c..d` cross properly: at a point interior
+/// to both, neither touching the other's end.
+fn segments_cross(a: Point2, b: Point2, c: Point2, d: Point2) -> bool {
+    let orient =
+        |p: Point2, q: Point2, r: Point2| (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+    let (o1, o2) = (orient(a, b, c), orient(a, b, d));
+    let (o3, o4) = (orient(c, d, a), orient(c, d, b));
+    o1 != 0.0
+        && o2 != 0.0
+        && o3 != 0.0
+        && o4 != 0.0
+        && (o1 > 0.0) != (o2 > 0.0)
+        && (o3 > 0.0) != (o4 > 0.0)
+}
+
+/// How many of the triangulation's faces lie inside its constraints, told
+/// by parity rather than by geometry.
+///
+/// Walking from a face on the convex hull, which is outside, every
+/// constraint edge crossed flips inside for outside. Asked of the
+/// triangulation of a boundary and nothing else, this is exact where the
+/// even-odd test of a triangle's centre is not: a sliver face triangulates
+/// to hairs whose centres sit on the boundary to the last bit, and which
+/// side rounding puts them is a coin toss. `None` when the walk reaches a
+/// face both ways with different answers — the constraints do not enclose
+/// consistently, which is a crossing by another name.
+fn inside_by_parity(cdt: &ConstrainedDelaunayTriangulation<SpadePoint<f64>>) -> Option<usize> {
+    use std::collections::HashMap;
+    let mut parity: HashMap<spade::handles::FixedFaceHandle<spade::handles::InnerTag>, bool> =
+        HashMap::with_capacity(cdt.num_inner_faces());
+    let mut queue = Vec::new();
+    for hull in cdt.convex_hull() {
+        // The hull edge's far side is the outer face; its near side is a
+        // face of the triangulation, outside unless the hull edge itself
+        // is a boundary.
+        let Some(face) = hull.rev().face().as_inner() else {
+            continue;
+        };
+        let inside = hull.is_constraint_edge();
+        match parity.get(&face.fix()) {
+            Some(&known) if known != inside => return None,
+            Some(_) => {}
+            None => {
+                parity.insert(face.fix(), inside);
+                queue.push((face.fix(), inside));
+            }
+        }
+    }
+    while let Some((face, inside)) = queue.pop() {
+        for edge in cdt.face(face).adjacent_edges() {
+            let Some(next) = edge.rev().face().as_inner() else {
+                continue;
+            };
+            let next_inside = inside != edge.is_constraint_edge();
+            match parity.get(&next.fix()) {
+                Some(&known) if known != next_inside => return None,
+                Some(_) => {}
+                None => {
+                    parity.insert(next.fix(), next_inside);
+                    queue.push((next.fix(), next_inside));
+                }
+            }
+        }
+    }
+    Some(parity.values().filter(|&&inside| inside).count())
 }
 
 /// Whether `point` sits within `reach` of a vertex the triangulation has,
@@ -3029,6 +3326,42 @@ mod predicate_tests {
             |a, b, _| (b - a).abs(),
         );
         assert_eq!(same, fine);
+    }
+
+    /// A ring's slop-duplicates and spikes come off before it is
+    /// triangulated.
+    #[test]
+    fn a_ring_is_cleaned_of_duplicates_and_spikes() {
+        let p = |x: f64, y: f64| Point2::new(x, y);
+        // A square whose closing point repeats its first a hair off, and
+        // whose right side steps out to a point and straight back.
+        let mut ring = vec![
+            p(0.0, 0.0),
+            p(10.0, 0.0),
+            p(10.0, 5.0),
+            p(10.2, 5.0),
+            p(10.0, 5.0 + 1e-9),
+            p(10.0, 10.0),
+            p(0.0, 10.0),
+            p(1e-9, 1e-9),
+        ];
+        let mut anchors = vec![None; ring.len()];
+        let reach = chart_reach(&ring);
+        merge_near_duplicates(&mut ring, &mut anchors, reach);
+        assert_eq!(ring.len(), 7, "the closing duplicate is gone: {ring:?}");
+        remove_spikes(&mut ring, &mut anchors, reach);
+        assert_eq!(
+            ring,
+            vec![
+                p(0.0, 0.0),
+                p(10.0, 0.0),
+                p(10.0, 5.0),
+                p(10.0, 10.0),
+                p(0.0, 10.0)
+            ],
+            "the spike is gone and the ring is the square with a point on one side"
+        );
+        assert_eq!(anchors.len(), ring.len());
     }
 
     #[test]

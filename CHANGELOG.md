@@ -74,6 +74,20 @@ bump may break the API and a patch bump may not.
     diagonally across the chart was inserted and split that constraint on
     one face alone — a T-junction against the face across the edge. Grid
     points on the boundary stay out.
+- **A crossing buried under interior points, a spike, and slop at the
+  closing vertex.** Whether a face's boundary crossed itself was read
+  from the count of triangles against boundary points, which over a face
+  with hundreds of interior points misses a crossing that costs a
+  handful; a slotted cylinder wall drew with two holes more than it has.
+  The boundary is triangulated on its own first, where the count is
+  exact and told by constraint parity rather than by where a hair's
+  centre rounds to. What that exposed: a ring that runs out along an edge
+  and straight back is a spike that bounds nothing and comes off; and a
+  ring whose last point is its first a file's slop away — the two edges'
+  own ends of the vertex they share — closed with a fold over its first
+  segment, a crossing a fraction of a micron deep. Merged, every solid in
+  the real assembly meshes watertight at the default deflection, 1,563 of
+  1,563; at half a radian, 1,562.
 - **`triangulate_face` drew every face twice** since the sliver refinement
   landed. It draws once, and again only where the first came up short.
   Face by face, the assembly above meshes in 9.4 s where it took 18.6.

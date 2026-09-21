@@ -184,3 +184,26 @@ joins — and even-odd counting calls it inside; inserted, it split the
 constraint on the patch alone, and the torus was drawn to the unsplit
 edge. The reproducer for a T-junction born inside one face. The whole
 solid, for the same reason as the one above.
+
+## slots_cross_at_half_a_radian.step
+
+One face extracted standalone from a community printer assembly, with a
+shell and a solid wrapped round it so the reader yields something: a
+cylinder wall with six slanted slots through it, each slot's two sides
+different curves between the same two points. At half a radian of angular
+deflection the two sides' polylines cross, and the face — with hundreds
+of interior points — drew with two holes more than it has, while the
+count of triangles against boundary points that was meant to catch a
+crossing saw nothing: the crossing cost a handful of triangles and the
+interior points buried the difference. The reproducer for a crossing that
+only the boundary, triangulated on its own, can be asked about.
+
+## a_spike_on_the_boundary.step
+
+One face extracted standalone from a community printer assembly, with a
+shell and a solid wrapped round it so the reader yields something: a
+plane whose one wire runs out along an edge to a point and straight back
+along a second edge over the same curve — a spike into the face that
+bounds nothing. It triangulated to two hairs and one triangle too many,
+and read as a crossing by the exact count. The reproducer for a spike
+stripped from a ring before it is triangulated.
