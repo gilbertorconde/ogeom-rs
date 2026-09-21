@@ -38,7 +38,7 @@ usage: ogeom-cli <command> [args]
   cone      <base-radius> <top-radius> <height>
   torus     <major-radius> <minor-radius>
   wedge     <dx> <dy> <dz> <top-dx> <top-dy>
-  census    <file.step> [--deflection <chord>]
+  census    <file.step> [--deflection <chord>] [--angular <degrees>]
 
 `census` reads a STEP file, meshes every solid in it and says which came
 out watertight, which came out open and which the mesher refused, each
@@ -104,6 +104,13 @@ fn census(args: &[String]) -> Result<(), String> {
             "--deflection" => {
                 let value = rest.next().ok_or("--deflection needs a chord")?;
                 deflection.chord = value.parse().map_err(|_| format!("not a chord: {value}"))?;
+            }
+            "--angular" => {
+                let value = rest.next().ok_or("--angular needs degrees")?;
+                let degrees: f64 = value
+                    .parse()
+                    .map_err(|_| format!("not an angle: {value}"))?;
+                deflection.angular = degrees.to_radians();
             }
             other => return Err(format!("unknown option '{other}'")),
         }
