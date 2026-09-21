@@ -11,6 +11,7 @@
 //! answer; one that prints the answer *and* what is wrong with the shape it
 //! came from teaches you when not to.
 
+use std::collections::HashMap;
 use std::process::ExitCode;
 
 use ogeom::{
@@ -19,10 +20,10 @@ use ogeom::{
         make_torus, make_wedge, surface_properties, volume_properties,
     },
     core::{OgeomResult, Tolerances, ogeom_err},
-    io::{Encoding, native, write as write_stl},
+    io::{Encoding, native, read_step, write as write_stl},
     math::Frame,
     mesh::{Deflection, triangulate},
-    topo::{Model, Shape, ShapeType, explore_unique},
+    topo::{Model, Shape, ShapeType, Triangulation, explore_unique},
 };
 
 const TOL: Tolerances = Tolerances::millimetres();
@@ -37,6 +38,12 @@ usage: ogeom-cli <command> [args]
   cone      <base-radius> <top-radius> <height>
   torus     <major-radius> <minor-radius>
   wedge     <dx> <dy> <dz> <top-dx> <top-dy>
+  census    <file.step> [--deflection <chord>]
+
+`census` reads a STEP file, meshes every solid in it and says which came
+out watertight, which came out open and which the mesher refused, each
+by its product name; one line per solid that is not watertight and a
+count at the end.
 
 Every shape command accepts, after its dimensions:
   --deflection <chord>   how finely to tessellate (default 0.1)
@@ -63,6 +70,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Some(name) if SHAPES.contains(&name) => run(name, &args[1..]),
+        Some("census") => census(&args[1..]),
         Some(other) => {
             eprintln!("ogeom-cli: unknown command '{other}'");
             eprint!("{USAGE}");
@@ -77,6 +85,94 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Mesh every solid in a STEP file and say which are not watertight.
+///
+/// Watertight is [`Triangulation::is_closed`]: every edge crossed as often
+/// each way. A solid that is not is reported with how many of its edges
+/// are unbalanced, which is roughly how many triangles are missing or
+/// wound wrong; a solid the mesher refused is reported with its error.
+fn census(args: &[String]) -> Result<(), String> {
+    let Some(path) = args.first() else {
+        return Err("census takes a STEP file".to_string());
+    };
+    let mut deflection = Deflection::default();
+    let mut rest = args[1..].iter();
+    while let Some(flag) = rest.next() {
+        match flag.as_str() {
+            "--deflection" => {
+                let value = rest.next().ok_or("--deflection needs a chord")?;
+                deflection.chord = value.parse().map_err(|_| format!("not a chord: {value}"))?;
+            }
+            other => return Err(format!("unknown option '{other}'")),
+        }
+    }
+
+    let started = std::time::Instant::now();
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let import = read_step(&text, TOL).map_err(|e| e.to_string())?;
+    let read_time = started.elapsed();
+    let model = import.document.model();
+
+    // Each solid by the name the file gives its product, where it has one.
+    let mut names: HashMap<usize, String> = HashMap::new();
+    for (id, product) in import.document.products() {
+        for occurrence in import
+            .document
+            .occurrences_of(id)
+            .map_err(|e| e.to_string())?
+        {
+            if let Some(i) = import
+                .solids
+                .iter()
+                .position(|s| s.node() == occurrence.shape.node())
+            {
+                names.entry(i).or_insert_with(|| product.name.clone());
+            }
+        }
+    }
+
+    let meshing = std::time::Instant::now();
+    let (mut closed, mut open, mut refused) = (0, 0, 0);
+    for (i, solid) in import.solids.iter().enumerate() {
+        let name = names.get(&i).map_or("", String::as_str);
+        match triangulate(model, solid, deflection, TOL) {
+            Ok(mesh) if mesh.is_closed() => closed += 1,
+            Ok(mesh) => {
+                open += 1;
+                println!(
+                    "open    #{i} {} unbalanced edges  {name}",
+                    unbalanced_edges(&mesh)
+                );
+            }
+            Err(why) => {
+                refused += 1;
+                println!("refused #{i} {why}  {name}");
+            }
+        }
+    }
+    println!(
+        "{} solids: {closed} watertight, {open} open, {refused} refused (read {:.1}s, meshed {:.1}s)",
+        import.solids.len(),
+        read_time.as_secs_f64(),
+        meshing.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
+/// How many of a mesh's edges are crossed more often one way than the
+/// other — zero exactly when the mesh is closed.
+fn unbalanced_edges(mesh: &Triangulation) -> usize {
+    let mut balance: HashMap<(u32, u32), i64> = HashMap::new();
+    for t in &mesh.triangles {
+        for i in 0..3 {
+            let (a, b) = (t[i], t[(i + 1) % 3]);
+            let (key, step) = if a <= b { ((a, b), 1) } else { ((b, a), -1) };
+            *balance.entry(key).or_default() += step;
+        }
+    }
+    balance.values().filter(|&&n| n != 0).count()
 }
 
 /// The options that follow a shape's dimensions.
