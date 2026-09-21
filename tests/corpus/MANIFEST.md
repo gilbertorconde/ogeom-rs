@@ -115,3 +115,13 @@ whose trim crosses the join twice. The reproducer for a ring that must
 fold across a *closed* chart's join — a fold that engaged on periodicity
 alone never fired, the ring jumped the width of the chart twice, and the
 face drew as six pieces.
+
+## slit_loops_are_not_holes.step
+
+One face extracted standalone from a community printer assembly, with a
+shell and a solid wrapped round it so the reader yields something: a plane
+with twenty inner loops, five of which are slits — out along two arcs and
+back along two splines fitted to the same arcs, three millimetres long and
+a fifth of a micron wide, enclosing nothing. The reproducer for an inner
+loop that is not a hole: read as one, the triangulator drew the face with
+twelve holes it does not have.

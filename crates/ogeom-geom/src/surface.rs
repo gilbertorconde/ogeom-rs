@@ -1309,6 +1309,61 @@ impl From<TrimmedSurface> for SurfaceGeometry {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    /// A surface that closes on itself evaluates past its join as a
+    /// periodic one would.
+    ///
+    /// A clamped tube whose first and last control columns coincide has
+    /// the same points at both ends of `u` and repeats nowhere. A ring that
+    /// runs right round it spans exactly a period, so wherever it is slid
+    /// some of it lies past the end — and refusing there stopped three real
+    /// bodies from meshing. A parameter a period past the end names a point
+    /// the surface has, and is answered with it.
+    #[test]
+    fn a_closed_surface_wraps_a_parameter_past_its_join() {
+        use crate::Surface as _;
+        use ogeom_math::{ControlGrid, KnotVector, Point};
+        let ring = [
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(0.0, 1.0, 0.0),
+            Point::new(-1.0, 0.0, 0.0),
+            Point::new(0.0, -1.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+        ];
+        let mut control = Vec::new();
+        for p in &ring {
+            for z in [0.0, 5.0] {
+                control.push(Point::new(p.x, p.y, z));
+            }
+        }
+        let tube = BSplineSurface::new(
+            KnotVector::new(vec![0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0], 1).unwrap(),
+            KnotVector::clamped_uniform(1, 2).unwrap(),
+            &ControlGrid::new(control, 5, 2).unwrap(),
+            T,
+        )
+        .unwrap();
+        assert!(
+            tube.is_closed_u(T) && !tube.is_periodic_u(),
+            "closed, not periodic"
+        );
+        let inside = tube.point_at(0.3, 0.5, T).unwrap();
+        let past = tube.point_at(1.3, 0.5, T).unwrap();
+        let before = tube.point_at(-0.7, 0.5, T).unwrap();
+        assert!(
+            inside.is_equal(past, T),
+            "a period past the end: {inside:?} vs {past:?}"
+        );
+        assert!(
+            inside.is_equal(before, T),
+            "a period before the start: {inside:?} vs {before:?}"
+        );
+        // Along `v` the tube is open, and past its end is still past it.
+        assert!(
+            tube.point_at(0.3, 1.5, T).is_err(),
+            "an open direction still refuses"
+        );
+    }
+
     use super::*;
     use crate::curve::{CircleCurve, LineCurve};
     use approx::assert_relative_eq;

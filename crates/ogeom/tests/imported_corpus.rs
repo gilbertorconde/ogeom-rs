@@ -370,3 +370,47 @@ fn a_ring_folds_across_a_closed_chart_s_join() {
         "the face's own area, not the pieces' overlap: {area:.2}"
     );
 }
+
+/// An inner loop thinner than a micron is a slit, not a hole.
+///
+/// The face is a plane with twenty inner loops. Fifteen are holes. Five run
+/// out along two arcs and back along two splines fitted to the same arcs —
+/// three millimetres long, a fifth of a micron wide, enclosing nothing —
+/// and read as holes they are a tangle the triangulator cannot classify:
+/// it drew the face with thirty-two holes. Measured in space, they are
+/// slits, and dropped; the fifteen real holes stay.
+///
+/// `V - E + F` is `1 - holes` for a face with inner loops: fifteen holes
+/// give −14. Thirty-two gave −31.
+#[test]
+fn a_slit_loop_is_not_a_hole() {
+    use std::collections::HashMap;
+    let text = corpus("slit_loops_are_not_holes.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let faces = explore_unique(model, &import.solids[0], ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 1, "the fixture is the one face");
+    assert_eq!(
+        model.ordered_children_of(&faces[0]).unwrap().len(),
+        21,
+        "twenty inner loops as read"
+    );
+    let mesh =
+        ogeom::mesh::triangulate_face(model, &faces[0], ogeom::mesh::Deflection::default(), T)
+            .unwrap();
+    let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+    for t in &mesh.triangles {
+        for i in 0..3 {
+            let (a, b) = (t[i], t[(i + 1) % 3]);
+            *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    let euler = mesh.positions.len() as i64 - uses.len() as i64 + mesh.triangles.len() as i64;
+    assert_eq!(
+        euler,
+        1 - 15,
+        "fifteen holes, not thirty-two: {} verts, {} tris",
+        mesh.positions.len(),
+        mesh.triangles.len()
+    );
+}

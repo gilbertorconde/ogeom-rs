@@ -823,6 +823,52 @@ fn trimming_rings(
     rings.retain(|r| r.len() >= 3);
     ring_anchors.retain(|a| a.len() >= 3);
 
+    // An inner ring thinner than a micron is a slit, not a hole. A real file
+    // draws one by running out along two arcs and back along two splines
+    // fitted to the same arcs: a loop three millimetres long and a fifth of
+    // a micron wide, enclosing nothing, which the triangulator can only
+    // read as a tangle — one face carrying five of them drew with twelve
+    // holes it does not have. Measured in space through the ring's own
+    // anchors, so a chart's units do not enter into it; a ring not anchored
+    // end to end is left alone, and so is the outer ring, whatever its
+    // width, since a face that is itself a slit is a different question.
+    // The thinnest real feature in the assembly that showed this is twenty
+    // microns across, twenty times the cutoff.
+    if rings.len() > 1 {
+        let chart_area = |ring: &[Point2]| -> f64 {
+            let mut a = 0.0;
+            for i in 0..ring.len() {
+                let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
+                a += p.x * q.y - q.x * p.y;
+            }
+            a.abs()
+        };
+        let outer = (0..rings.len())
+            .max_by(|&i, &j| chart_area(&rings[i]).total_cmp(&chart_area(&rings[j])))
+            .unwrap_or(0);
+        let width = |anchors: &[Option<Point>]| -> Option<f64> {
+            let pts: Option<Vec<Point>> = anchors.iter().copied().collect();
+            let pts = pts?;
+            let mut normal = Vector::ZERO;
+            let mut perimeter = 0.0;
+            for i in 0..pts.len() {
+                let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+                normal += a.to_vector().cross(b.to_vector());
+                perimeter += a.distance(b);
+            }
+            (perimeter > 0.0).then(|| normal.magnitude() * 0.5 / perimeter)
+        };
+        let keep: Vec<bool> = (0..rings.len())
+            .map(|i| {
+                i == outer || width(&ring_anchors[i]).is_none_or(|w| w >= tol.confusion() * 1e4)
+            })
+            .collect();
+        let mut it = keep.iter();
+        rings.retain(|_| *it.next().unwrap_or(&true));
+        let mut it = keep.iter();
+        ring_anchors.retain(|_| *it.next().unwrap_or(&true));
+    }
+
     if rings.is_empty() {
         // A face with no wires covers its surface's whole domain, so the domain
         // rectangle is the boundary.
