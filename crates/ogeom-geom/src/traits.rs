@@ -443,29 +443,63 @@ pub trait Surface {
     }
 
     /// Bring `(u, v)` into the domain, wrapping in whichever directions are
-    /// periodic.
+    /// periodic — or closed.
+    ///
+    /// A surface that merely closes on itself — a clamped B-spline tube
+    /// whose first and last control columns coincide — has the same points
+    /// at both ends of its domain exactly as a periodic one does, and a
+    /// parameter a whole period past the end names a point it has. A face
+    /// whose trim runs right round such a tube has a ring that straddles
+    /// the join whichever way it is slid, so somewhere it is asked past the
+    /// end; refusing there stopped three bodies of one assembly from
+    /// meshing at all. Closure is consulted only once a parameter is
+    /// actually outside, so the common case pays nothing for it.
     ///
     /// # Errors
     ///
     /// [`OgeomError::Domain`](ogeom_core::OgeomError::Domain) if a parameter is outside
-    /// a non-periodic direction's domain by more than `tol.parametric()`.
+    /// a direction's domain by more than `tol.parametric()` and that
+    /// direction neither repeats nor closes.
     fn normalize_parameters(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<(f64, f64)> {
         let ((ua, ub), (va, vb)) = self.domain();
-        let fix = |t: f64, a: f64, b: f64, periodic: bool, name: &str| -> OgeomResult<f64> {
+        let fix = |t: f64,
+                   a: f64,
+                   b: f64,
+                   periodic: bool,
+                   closed: &dyn Fn() -> bool,
+                   name: &str|
+         -> OgeomResult<f64> {
             if periodic {
                 return Ok(a + (t - a).rem_euclid(b - a));
             }
-            if !t.is_finite() || t < a - tol.parametric() || t > b + tol.parametric() {
-                return Err(ogeom_core::ogeom_err!(
-                    Domain,
-                    "{name} parameter {t} outside [{a}, {b}]"
-                ));
+            if t.is_finite() && t >= a - tol.parametric() && t <= b + tol.parametric() {
+                return Ok(t.clamp(a, b));
             }
-            Ok(t.clamp(a, b))
+            if t.is_finite() && b > a && closed() {
+                return Ok(a + (t - a).rem_euclid(b - a));
+            }
+            Err(ogeom_core::ogeom_err!(
+                Domain,
+                "{name} parameter {t} outside [{a}, {b}]"
+            ))
         };
         Ok((
-            fix(u, ua, ub, self.is_periodic_u(), "u")?,
-            fix(v, va, vb, self.is_periodic_v(), "v")?,
+            fix(
+                u,
+                ua,
+                ub,
+                self.is_periodic_u(),
+                &|| self.is_closed_u(tol),
+                "u",
+            )?,
+            fix(
+                v,
+                va,
+                vb,
+                self.is_periodic_v(),
+                &|| self.is_closed_v(tol),
+                "v",
+            )?,
         ))
     }
 }

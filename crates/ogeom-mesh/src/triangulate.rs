@@ -749,6 +749,61 @@ fn trimming_rings(
         *ring = kept_ring;
         *anchors = kept_anchors;
     }
+    // Folded across a join, a ring on a *closed* surface can come to rest a
+    // whole period outside the domain. A periodic surface would not mind —
+    // it wraps — but a surface that merely closes on itself evaluates only
+    // where its knots are, and refuses everywhere else; three bodies of one
+    // assembly stopped meshing that way, every point of one ring a turn
+    // past the end. The fold kept the ring continuous, which is the part
+    // that matters, and a rigid slide by whole periods keeps it so: the
+    // same points on the surface, named inside the chart.
+    {
+        use ogeom_geom::Surface as _;
+        let ((ua, ub), (va, vb)) = surface.domain();
+        let slides = [
+            (!surface.is_periodic_u() && surface.is_closed_u(tol), ua, ub),
+            (!surface.is_periodic_v() && surface.is_closed_v(tol), va, vb),
+        ];
+        for (across, (closed, lo, hi)) in [true, false].into_iter().zip(slides) {
+            if !closed || hi <= lo {
+                continue;
+            }
+            let span = hi - lo;
+            for ring in &mut rings {
+                let read = |p: &Point2| if across { p.x } else { p.y };
+                let (least, most) = ring
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
+                        (a.min(read(p)), b.max(read(p)))
+                    });
+                if !(least.is_finite() && most.is_finite()) || most - least > span * (1.0 + 1e-9) {
+                    continue;
+                }
+                // A hair past the end is fit noise, not a period: the knots
+                // take it, and rounding it up to a whole turn would carry the
+                // ring a period the wrong way — which is exactly what it did
+                // to the face this was written for, before the slack.
+                let slack = span * 1e-6;
+                let turns = if least < lo - slack {
+                    ((lo - least) / span).ceil()
+                } else if most > hi + slack {
+                    -((most - hi) / span).ceil()
+                } else {
+                    0.0
+                };
+                if turns == 0.0 {
+                    continue;
+                }
+                for p in ring.iter_mut() {
+                    if across {
+                        p.x += turns * span;
+                    } else {
+                        p.y += turns * span;
+                    }
+                }
+            }
+        }
+    }
     if *MESH_DEBUG {
         for (i, (ring, anchors)) in rings.iter().zip(&ring_anchors).enumerate() {
             eprintln!("DBG ring {i}: {} points", ring.len());
@@ -1077,7 +1132,7 @@ fn boundary_ring(
             // ring over nothing. The record decides instead: land exactly a
             // period from the first walk, on the side the ring occupies.
             let prior = seam.and_then(|_| seam_walked.get(&edge.node())).copied();
-            if geometry.is_periodic_u() && (ub - ua) > 0.0 {
+            if (geometry.is_periodic_u() || geometry.is_closed_u(tol)) && (ub - ua) > 0.0 {
                 let span = ub - ua;
                 let gap = last.x - first.x;
                 shift.x = whole_periods(gap, span);
@@ -1124,7 +1179,7 @@ fn boundary_ring(
                     }
                 }
             }
-            if geometry.is_periodic_v() && (vb - va) > 0.0 {
+            if (geometry.is_periodic_v() || geometry.is_closed_v(tol)) && (vb - va) > 0.0 {
                 let span = vb - va;
                 shift.y = whole_periods(last.y - first.y, span);
                 if seam == Some(false)

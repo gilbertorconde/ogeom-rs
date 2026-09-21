@@ -105,3 +105,13 @@ standing exactly a quarter turn apart. The run between them along the
 apex row is boundary the ring needs — dropping its far end cuts the corner
 through the face and loses the triangle at the apex. The reproducer for a
 degenerate row that a quarter-period test read as no row at all.
+
+## closed_tube_face_crosses_its_join.step
+
+One face extracted standalone from a community printer assembly, with a
+shell and a solid wrapped round it so the reader yields something: a face
+on a B-spline tube that closes on itself in `u` without being periodic,
+whose trim crosses the join twice. The reproducer for a ring that must
+fold across a *closed* chart's join — a fold that engaged on periodicity
+alone never fired, the ring jumped the width of the chart twice, and the
+face drew as six pieces.

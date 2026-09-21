@@ -320,3 +320,53 @@ fn a_cone_s_apex_run_is_kept_at_a_quarter_turn() {
         "both rulings reach the apex row: {at_apex} vertices there"
     );
 }
+
+/// A ring folds across a closed chart's join, periodic or not.
+///
+/// The face lies on a B-spline tube that closes on itself in `u` — the
+/// same points at `u = 0` and `u = 1` — without being periodic, and its
+/// trim crosses that join twice. Walking the ring, the fold onto the branch
+/// that continues it engaged on periodicity alone, so on this surface it
+/// never fired: consecutive edges' images stood a whole chart apart, the
+/// ring jumped the width of the chart twice, and the triangulator drew six
+/// pieces. Closure, not periodicity, is the test — the same distinction the
+/// projected-fit unwrap learned — and folded, the face is one piece.
+#[test]
+fn a_ring_folds_across_a_closed_chart_s_join() {
+    use std::collections::HashMap;
+    let text = corpus("closed_tube_face_crosses_its_join.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let faces = explore_unique(model, &import.solids[0], ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 1, "the fixture is the one face");
+    let mesh =
+        ogeom::mesh::triangulate_face(model, &faces[0], ogeom::mesh::Deflection::default(), T)
+            .unwrap();
+    let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+    for t in &mesh.triangles {
+        for i in 0..3 {
+            let (a, b) = (t[i], t[(i + 1) % 3]);
+            *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    let euler = mesh.positions.len() as i64 - uses.len() as i64 + mesh.triangles.len() as i64;
+    assert_eq!(
+        euler,
+        1,
+        "one piece, not six: {} verts, {} tris",
+        mesh.positions.len(),
+        mesh.triangles.len()
+    );
+    let area: f64 = mesh
+        .triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+            (b - a).cross(c - a).magnitude() * 0.5
+        })
+        .sum();
+    assert!(
+        (area - 106.5).abs() < 1.0,
+        "the face's own area, not the pieces' overlap: {area:.2}"
+    );
+}
