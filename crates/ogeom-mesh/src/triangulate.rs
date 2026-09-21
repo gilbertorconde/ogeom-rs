@@ -52,6 +52,14 @@ pub fn triangulate_face(
     deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<Triangulation> {
+    // One pass at the caller's chord, and a second only where the first
+    // came back short — the same shape as the whole-shape path, so a caller
+    // meshing face by face pays for one triangulation per face, not two.
+    let nothing = EdgeChords::new();
+    let (mesh, crossed) = triangulate_reporting(model, face, deflection, Some(&nothing), tol)?;
+    if !crossed {
+        return Ok(mesh);
+    }
     triangulate_with(model, face, deflection, None, tol)
 }
 
@@ -105,9 +113,14 @@ fn triangulate_reporting(
             &own
         }
     };
+    let phase = std::time::Instant::now();
     let (uv, anchors, met) =
         trimming_rings(model, face, data.surface, surface, deflection, finer, tol)?;
+    let rings_ms = phase.elapsed().as_secs_f64() * 1e3;
+    let phase = std::time::Instant::now();
     let planar = triangulate_region(&uv, surface, deflection, tol)?;
+    let region_ms = phase.elapsed().as_secs_f64() * 1e3;
+    let phase = std::time::Instant::now();
 
     // Whether the triangulator was handed a region at all, asked of what it
     // returned rather than of what it was given. A well-formed triangulation
@@ -163,6 +176,14 @@ fn triangulate_reporting(
         mesh.positions.push(point);
         mesh.normals.push(if flip { -normal } else { normal });
         mesh.parameters.push((u, v));
+    }
+    if *MESH_DEBUG_REFINE && (rings_ms + region_ms) > 50.0 {
+        eprintln!(
+            "PHASE rings {rings_ms:.0}ms region {region_ms:.0}ms lift {:.0}ms  ({} ring points, {} tris)",
+            phase.elapsed().as_secs_f64() * 1e3,
+            uv.iter().map(Vec::len).sum::<usize>(),
+            planar.triangles.len()
+        );
     }
     if *MESH_DEBUG {
         eprintln!(
@@ -232,6 +253,13 @@ pub fn triangulate(
     // that edge arrive with a different number of points, which is a worse
     // crack than the sliver the refinement was for. Only those faces are
     // drawn again.
+    if *MESH_DEBUG_REFINE && !crossed.is_empty() {
+        eprintln!(
+            "REFINE {} of {} faces came up short",
+            crossed.len(),
+            faces.len()
+        );
+    }
     if !crossed.is_empty() {
         let mut finer = EdgeChords::new();
         for &index in &crossed {
@@ -948,6 +976,20 @@ fn boundary_ring(
     // Half-period jumps whose side could not be decided when walked.
     let mut ties: Vec<usize> = Vec::new();
     let mut met = true;
+    // Whether each chart direction comes back on itself — periodic, or
+    // closed without repeating. Asked once here: closure on a spline is a
+    // walk down a control column, and asking it at every edge of every face
+    // of a hundred-thousand-face assembly was a tenth of the meshing time.
+    let (wraps_u, wraps_v) = model
+        .geometry()
+        .surface(surface)
+        .map_or((false, false), |g| {
+            use ogeom_geom::Surface as _;
+            (
+                g.is_periodic_u() || g.is_closed_u(tol),
+                g.is_periodic_v() || g.is_closed_v(tol),
+            )
+        });
 
     // Start the walk off a seam if the wire allows it: a seam's side is
     // chosen by continuity with the point already walked to, and continuity
@@ -1178,7 +1220,7 @@ fn boundary_ring(
             // ring over nothing. The record decides instead: land exactly a
             // period from the first walk, on the side the ring occupies.
             let prior = seam.and_then(|_| seam_walked.get(&edge.node())).copied();
-            if (geometry.is_periodic_u() || geometry.is_closed_u(tol)) && (ub - ua) > 0.0 {
+            if wraps_u && (ub - ua) > 0.0 {
                 let span = ub - ua;
                 let gap = last.x - first.x;
                 shift.x = whole_periods(gap, span);
@@ -1225,7 +1267,7 @@ fn boundary_ring(
                     }
                 }
             }
-            if (geometry.is_periodic_v() || geometry.is_closed_v(tol)) && (vb - va) > 0.0 {
+            if wraps_v && (vb - va) > 0.0 {
                 let span = vb - va;
                 shift.y = whole_periods(last.y - first.y, span);
                 if seam == Some(false)
@@ -1281,9 +1323,8 @@ fn boundary_ring(
             model.geometry().surface(surface).is_some_and(|geometry| {
                 use ogeom_geom::Surface as _;
                 let ((ua, ub), (va, vb)) = geometry.domain();
-                let wide = (geometry.is_periodic_u()
-                    && (last.x - first.x).abs() > (ub - ua) * 1e-3)
-                    || (geometry.is_periodic_v() && (last.y - first.y).abs() > (vb - va) * 1e-3);
+                let wide = (wraps_u && (last.x - first.x).abs() > (ub - ua) * 1e-3)
+                    || (wraps_v && (last.y - first.y).abs() > (vb - va) * 1e-3);
                 if !wide {
                     return false;
                 }
@@ -1569,6 +1610,7 @@ fn triangulate_region_inner(
 ) -> OgeomResult<PlanarMesh> {
     let mut cdt: ConstrainedDelaunayTriangulation<SpadePoint<f64>> =
         ConstrainedDelaunayTriangulation::new();
+    let sub = std::time::Instant::now();
 
     // The boundary edges are constraints, so the triangulation respects the
     // trimming rather than spanning across a hole.
@@ -1594,7 +1636,13 @@ fn triangulate_region_inner(
     // Interior points where the surface bends away from the flat triangle. A
     // planar face needs none, which is why this is driven by measured
     // deflection rather than by a fixed grid.
+    let boundary_ms = sub.elapsed().as_secs_f64() * 1e3;
+    let sub = std::time::Instant::now();
     add_interior_points(&mut cdt, rings, surface, deflection, tol)?;
+    let interior_ms = sub.elapsed().as_secs_f64() * 1e3;
+    let interior_points = cdt.num_vertices();
+    let sub = std::time::Instant::now();
+    let mut rounds_run = 0usize;
 
     // The scale a degenerate chart triangle is measured against.
     let extent = rings
@@ -1623,6 +1671,7 @@ fn triangulate_region_inner(
     let bands = RingBands::over(rings);
     if !matches!(surface.kind(), ogeom_geom::SurfaceKind::Plane) {
         for _ in 0..REFINEMENT_ROUNDS {
+            rounds_run += 1;
             let mut worst: Vec<SpadePoint<f64>> = Vec::new();
             for triangle in cdt.inner_faces() {
                 let vertices = triangle.vertices();
@@ -1674,6 +1723,13 @@ fn triangulate_region_inner(
         }
     }
 
+    let refine_ms = sub.elapsed().as_secs_f64() * 1e3;
+    if *MESH_DEBUG_REFINE && boundary_ms + interior_ms + refine_ms > 50.0 {
+        eprintln!(
+            "SUB boundary {boundary_ms:.0}ms interior {interior_ms:.0}ms ({interior_points} verts) refine {refine_ms:.0}ms ({rounds_run} rounds, {} verts)",
+            cdt.num_vertices()
+        );
+    }
     let mut parameters = Vec::new();
     let mut index_of = std::collections::HashMap::new();
     for (i, vertex) in cdt.vertices().enumerate() {
@@ -1920,6 +1976,10 @@ fn crosses_odd_times<P: Predicates>(ring: &[Point2], p: Point2) -> bool {
 ///
 /// `env::var` takes a process-wide lock and allocates its answer, and this was
 /// asked once per face — on an imported assembly, once per face of every part.
+/// Whether to report, per shape, how many faces were drawn again finer.
+static MESH_DEBUG_REFINE: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("OGEOM_MESH_DEBUG_REFINE").is_ok());
+
 static MESH_DEBUG: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("OGEOM_MESH_DEBUG").is_ok());
 

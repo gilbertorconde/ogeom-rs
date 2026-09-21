@@ -97,6 +97,12 @@ pub struct BSplineSurface {
     v_knots: KnotVector,
     grid: ControlGrid<Weighted<Point>>,
     rational: bool,
+    /// Whether the net's first and last columns, and rows, coincide —
+    /// settled once here, because a parameter past the end of a closed
+    /// direction is wrapped rather than refused, and asking the net at
+    /// every such evaluation walked a control column millions of times
+    /// over one face.
+    closed: (bool, bool),
 }
 
 /// A curve revolved about an axis.
@@ -310,11 +316,34 @@ impl BSplineSurface {
             .points()
             .iter()
             .any(|w| (w.weight - first).abs() > 1e-12 * first.abs());
+        let closed = (
+            Self::net_closed_u(&grid, Tolerances::millimetres()),
+            Self::net_closed_v(&grid, Tolerances::millimetres()),
+        );
         Ok(Self {
             u_knots,
             v_knots,
             grid,
             rational,
+            closed,
+        })
+    }
+
+    /// Whether the net's first and last columns coincide, within `tol`.
+    fn net_closed_u(grid: &ControlGrid<Weighted<Point>>, tol: Tolerances) -> bool {
+        let last = grid.u_count() - 1;
+        (0..grid.v_count()).all(|j| match (grid.get(0, j), grid.get(last, j)) {
+            (Some(a), Some(b)) => a.point().is_equal(b.point(), tol),
+            _ => false,
+        })
+    }
+
+    /// Whether the net's first and last rows coincide, within `tol`.
+    fn net_closed_v(grid: &ControlGrid<Weighted<Point>>, tol: Tolerances) -> bool {
+        let last = grid.v_count() - 1;
+        (0..grid.u_count()).all(|i| match (grid.get(i, 0), grid.get(i, last)) {
+            (Some(a), Some(b)) => a.point().is_equal(b.point(), tol),
+            _ => false,
         })
     }
 
@@ -931,19 +960,13 @@ impl Surface for BSplineSurface {
     }
 
     fn is_closed_u(&self, tol: Tolerances) -> bool {
-        let last = self.grid.u_count() - 1;
-        (0..self.grid.v_count()).all(|j| match (self.grid.get(0, j), self.grid.get(last, j)) {
-            (Some(a), Some(b)) => a.point().is_equal(b.point(), tol),
-            _ => false,
-        })
+        // Settled at construction; the walk is repeated only where the net
+        // was not closed then and a coarser tolerance might say otherwise.
+        self.closed.0 || Self::net_closed_u(&self.grid, tol)
     }
 
     fn is_closed_v(&self, tol: Tolerances) -> bool {
-        let last = self.grid.v_count() - 1;
-        (0..self.grid.u_count()).all(|i| match (self.grid.get(i, 0), self.grid.get(i, last)) {
-            (Some(a), Some(b)) => a.point().is_equal(b.point(), tol),
-            _ => false,
-        })
+        self.closed.1 || Self::net_closed_v(&self.grid, tol)
     }
 
     fn is_periodic_u(&self) -> bool {

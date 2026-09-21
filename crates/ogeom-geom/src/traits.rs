@@ -461,45 +461,70 @@ pub trait Surface {
     /// a direction's domain by more than `tol.parametric()` and that
     /// direction neither repeats nor closes.
     fn normalize_parameters(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<(f64, f64)> {
+        // Every evaluation of every surface passes through here, so the
+        // in-range path is kept to the two comparisons it always was, and
+        // everything rarer — wrapping a periodic direction, wrapping a
+        // closed one, refusing — lives out of line. Folding the rare cases
+        // into one closure with a `&dyn Fn` for closure cost a tenth of an
+        // assembly's meshing time, measured, for nothing on the common path.
         let ((ua, ub), (va, vb)) = self.domain();
-        let fix = |t: f64,
-                   a: f64,
-                   b: f64,
-                   periodic: bool,
-                   closed: &dyn Fn() -> bool,
-                   name: &str|
-         -> OgeomResult<f64> {
-            if periodic {
-                return Ok(a + (t - a).rem_euclid(b - a));
-            }
-            if t.is_finite() && t >= a - tol.parametric() && t <= b + tol.parametric() {
-                return Ok(t.clamp(a, b));
-            }
-            if t.is_finite() && b > a && closed() {
-                return Ok(a + (t - a).rem_euclid(b - a));
-            }
-            Err(ogeom_core::ogeom_err!(
-                Domain,
-                "{name} parameter {t} outside [{a}, {b}]"
-            ))
+        let slack = tol.parametric();
+        let u = if u >= ua - slack && u <= ub + slack && !self.is_periodic_u() {
+            u.clamp(ua, ub)
+        } else {
+            self.parameter_outside(u, ua, ub, self.is_periodic_u(), true, tol)?
         };
-        Ok((
-            fix(
-                u,
-                ua,
-                ub,
-                self.is_periodic_u(),
-                &|| self.is_closed_u(tol),
-                "u",
-            )?,
-            fix(
-                v,
-                va,
-                vb,
-                self.is_periodic_v(),
-                &|| self.is_closed_v(tol),
-                "v",
-            )?,
+        let v = if v >= va - slack && v <= vb + slack && !self.is_periodic_v() {
+            v.clamp(va, vb)
+        } else {
+            self.parameter_outside(v, va, vb, self.is_periodic_v(), false, tol)?
+        };
+        Ok((u, v))
+    }
+
+    /// A parameter outside its domain, or on a periodic direction: wrapped
+    /// where the direction repeats or closes on itself, refused otherwise.
+    ///
+    /// A surface that merely closes on itself — a clamped B-spline tube
+    /// whose first and last control columns coincide — has the same points
+    /// at both ends of its domain exactly as a periodic one does, and a
+    /// parameter a whole period past the end names a point it has. A face
+    /// whose trim runs right round such a tube has a ring that straddles
+    /// the join whichever way it is slid, so somewhere it is asked past the
+    /// end; refusing there stopped three bodies of one assembly from
+    /// meshing at all. Closure is consulted only here, once a parameter is
+    /// actually outside.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Domain`](ogeom_core::OgeomError::Domain) if the parameter is
+    /// outside by more than `tol.parametric()` and the direction neither
+    /// repeats nor closes.
+    #[cold]
+    fn parameter_outside(
+        &self,
+        t: f64,
+        a: f64,
+        b: f64,
+        periodic: bool,
+        across: bool,
+        tol: Tolerances,
+    ) -> OgeomResult<f64> {
+        if periodic {
+            return Ok(a + (t - a).rem_euclid(b - a));
+        }
+        let closed = if across {
+            self.is_closed_u(tol)
+        } else {
+            self.is_closed_v(tol)
+        };
+        if t.is_finite() && b > a && closed {
+            return Ok(a + (t - a).rem_euclid(b - a));
+        }
+        Err(ogeom_core::ogeom_err!(
+            Domain,
+            "{} parameter {t} outside [{a}, {b}]",
+            if across { "u" } else { "v" }
         ))
     }
 }
