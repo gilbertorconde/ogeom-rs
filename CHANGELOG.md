@@ -47,6 +47,19 @@ bump may break the API and a patch bump may not.
   Grid cells are held to a bounded aspect: rows close enough, measured
   through the surface, that no triangle reaches across more than a few
   columns. Fewer triangles on the bore than before, not more.
+- **A bore's inside was coarser than its rims.** Edges are discretized
+  to the chord *and* the angular deflection; the interior grid was held
+  to the chord alone. A viewer scaling its chord to a body's size gave a
+  long extrusion's bore thirteen-sided rims and a seven-sided inside. Grid
+  cells are held to the normal's turn as well now, so a surface's inside
+  is as round as its boundary. At the default angular deflection this is
+  more triangles on every curved face — the default was always what the
+  edges were drawn to.
+- **A face whose chart sat far from its origin drew as two triangles.**
+  The scale a degenerate chart triangle was measured against was taken
+  from the ring's coordinates rather than its span, so a cylinder whose
+  axis point the file placed half a metre away had every honest cell
+  called a hair. Fixture cut from the file that showed it.
 - **`triangulate_face` drew every face twice** since the sliver refinement
   landed. It draws once, and again only where the first came up short.
   Face by face, the assembly above meshes in 9.4 s where it took 18.6.

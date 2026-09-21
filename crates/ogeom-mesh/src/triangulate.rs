@@ -1520,12 +1520,12 @@ fn domain_ring(surface: &SurfaceGeometry, deflection: Deflection, tol: Tolerance
 
     let along_u = |v: f64| {
         refine_direction(ua, ub, deflection.chord, |a, b| {
-            sag_between(surface, (a, v), (b, v), tol)
+            cell_error(surface, (a, v), (b, v), deflection, tol)
         })
     };
     let along_v = |u: f64| {
         refine_direction(va, vb, deflection.chord, |a, b| {
-            sag_between(surface, (u, a), (u, b), tol)
+            cell_error(surface, (u, a), (u, b), deflection, tol)
         })
     };
 
@@ -1644,14 +1644,26 @@ fn triangulate_region_inner(
     let sub = std::time::Instant::now();
     let mut rounds_run = 0usize;
 
-    // The scale a degenerate chart triangle is measured against.
-    let extent = rings
-        .iter()
-        .flatten()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
-            (lo.min(p.x.min(p.y)), hi.max(p.x.max(p.y)))
-        });
-    let degenerate_area = ((extent.1 - extent.0).max(1.0)).powi(2) * 1e-12;
+    // The scale a degenerate chart triangle is measured against: the
+    // region's own span, the longer way. Its *position* is not its size —
+    // a face on a cylinder whose axis point sits half a metre away has
+    // `v` near −500 000 and a span of twenty, and a scale taken from where
+    // the ring sits rather than how far it reaches would call every honest
+    // cell a hair.
+    let (lo, hi) = rings.iter().flatten().fold(
+        (
+            Point2::new(f64::INFINITY, f64::INFINITY),
+            Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+        ),
+        |(lo, hi), p| {
+            (
+                Point2::new(lo.x.min(p.x), lo.y.min(p.y)),
+                Point2::new(hi.x.max(p.x), hi.y.max(p.y)),
+            )
+        },
+    );
+    let extent = (hi.x - lo.x).max(hi.y - lo.y);
+    let degenerate_area = extent.max(1.0).powi(2) * 1e-12;
 
     // The grid rows guarantee the deflection along their own lines, but a
     // hole in the face punches a gap through a row, and where the surface is
@@ -1746,13 +1758,16 @@ fn triangulate_region_inner(
     }
 
     let mut triangles = Vec::new();
+    let (mut dbg_total, mut dbg_outside, mut dbg_degenerate) = (0usize, 0usize, 0usize);
     for triangle in cdt.inner_faces() {
+        dbg_total += 1;
         let vertices = triangle.vertices();
         let centre = triangle.center();
         // A constrained Delaunay covers the convex hull of its input, so
         // triangles outside the trimmed region — across a concavity, or inside
         // a hole — have to be discarded. Winding tells them apart.
         if !bands.holds(Point2::new(centre.x, centre.y)) {
+            dbg_outside += 1;
             continue;
         }
         // A boundary run whose points differ by last-bit noise — a chart row
@@ -1770,6 +1785,7 @@ fn triangulate_region_inner(
             ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)).abs() / 2.0
         };
         if area < degenerate_area {
+            dbg_degenerate += 1;
             continue;
         }
         #[allow(clippy::cast_possible_truncation)]
@@ -1781,6 +1797,12 @@ fn triangulate_region_inner(
         triangles.push(indices);
     }
 
+    if *MESH_DEBUG_REFINE {
+        eprintln!(
+            "FILTER {dbg_total} triangles: {dbg_outside} outside, {dbg_degenerate} degenerate (area < {degenerate_area:.3e}), {} kept",
+            triangles.len()
+        );
+    }
     if triangles.is_empty() {
         ogeom_bail!(
             NotDone,
@@ -1841,7 +1863,7 @@ fn add_interior_points(
     let rows = refine_direction(low.y, high.y, deflection.chord, |a, b| {
         probes
             .iter()
-            .map(|u| sag_between(surface, (*u, a), (*u, b), tol))
+            .map(|u| cell_error(surface, (*u, a), (*u, b), deflection, tol))
             .fold(0.0_f64, f64::max)
     });
 
@@ -1874,7 +1896,7 @@ fn add_interior_points(
         high.x,
         |v| {
             let columns = refine_direction(low.x, high.x, deflection.chord, |a, b| {
-                sag_between(surface, (a, v), (b, v), tol)
+                cell_error(surface, (a, v), (b, v), deflection, tol)
             });
             columns.len()
         },
@@ -1890,7 +1912,7 @@ fn add_interior_points(
     if *MESH_DEBUG_REFINE {
         let v = f64::midpoint(low.y, high.y);
         let columns = refine_direction(low.x, high.x, deflection.chord, |a, b| {
-            sag_between(surface, (a, v), (b, v), tol)
+            cell_error(surface, (a, v), (b, v), deflection, tol)
         });
         eprintln!(
             "GRID u [{:.3},{:.3}] v [{:.3},{:.3}]: {} rows after aspect, {} columns at the middle row, chord {}",
@@ -1906,7 +1928,7 @@ fn add_interior_points(
     for &v in &rows[1..rows.len().saturating_sub(1)] {
         // Each row gets its own u resolution, measured at that row.
         let columns = refine_direction(low.x, high.x, deflection.chord, |a, b| {
-            sag_between(surface, (a, v), (b, v), tol)
+            cell_error(surface, (a, v), (b, v), deflection, tol)
         });
         // The same the other way round: a surface straight along `u` gets
         // two columns from sag, and a row a hundred millimetres wide would
@@ -2051,6 +2073,36 @@ fn refine_direction<F: Fn(f64, f64) -> f64>(lo: f64, hi: f64, chord: f64, sag: F
 /// Measured in space, which is the only place the number means anything: the
 /// same step in `u` covers a metre at a sphere's equator and a millimetre near
 /// its pole.
+/// How far a grid cell's edge is from honest, as a sag: the chord sag
+/// itself, or the normal's turn across it scaled so that a turn of the
+/// angular deflection weighs the same as a sag of the chord — whichever
+/// is worse.
+///
+/// The chord alone is what the boundary's edges are *not* drawn to: a
+/// curve is discretized to both deflections, so a bore's rims come out
+/// round at the angular limit while columns held to the chord alone come
+/// out a polygon of far fewer sides, and the bore changes shape a chord's
+/// length in from each rim. The interior is held to the same two limits
+/// the boundary is.
+fn cell_error(
+    surface: &SurfaceGeometry,
+    from: (f64, f64),
+    to: (f64, f64),
+    deflection: Deflection,
+    tol: Tolerances,
+) -> f64 {
+    let sag = sag_between(surface, from, to, tol);
+    let turn = match (
+        surface.normal_at(from.0, from.1, tol),
+        surface.normal_at(to.0, to.1, tol),
+    ) {
+        (Ok(a), Ok(b)) => a.angle(b),
+        // A pole or an apex has no normal to compare; the sag still governs.
+        _ => 0.0,
+    };
+    sag.max(turn / deflection.angular * deflection.chord)
+}
+
 fn sag_between(
     surface: &SurfaceGeometry,
     from: (f64, f64),

@@ -466,3 +466,81 @@ fn a_long_bore_is_round_between_its_holes() {
         band * 10 + 10
     );
 }
+
+/// A bore's inside is held to the angular deflection its rims are.
+///
+/// A viewer scaling its chord to a body's size hands a long extrusion a
+/// chord of a third of a millimetre, and holds the tangent's turn to half a
+/// radian. Its edges are drawn to both, so the bore's rims come out
+/// thirteen-sided; the interior grid, held to the chord alone, came out
+/// seven-sided, and the bore changed shape a chord in from each rim. The
+/// grid's cells are now held to the normal's turn as well.
+///
+/// The same bore as above, at that viewer's deflection: every ten
+/// millimetres holds vertices at twelve or more whole degrees.
+#[test]
+fn a_bore_s_inside_is_as_round_as_its_rims() {
+    use std::collections::{BTreeMap, BTreeSet};
+    let text = corpus("long_bore_between_cross_holes.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let faces = explore_unique(model, &import.solids[0], ShapeType::Face).unwrap();
+    let deflection = ogeom::mesh::Deflection {
+        chord: 0.31,
+        angular: 0.5,
+        ..ogeom::mesh::Deflection::default()
+    };
+    let mesh = ogeom::mesh::triangulate_face(model, &faces[0], deflection, T).unwrap();
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "whole degrees and centimetres"
+    )]
+    let whole = |x: f64| x.round() as i64;
+    let mut bands: BTreeMap<i64, BTreeSet<i64>> = BTreeMap::new();
+    for p in &mesh.positions {
+        bands
+            .entry(whole((p.z / 10.0).floor()))
+            .or_default()
+            .insert(whole(p.y.atan2(p.x).to_degrees()));
+    }
+    let fewest = bands.values().map(BTreeSet::len).min().unwrap();
+    assert!(
+        fewest >= 12,
+        "a band holds only {fewest} distinct angles: the inside is coarser than the rims"
+    );
+}
+
+/// A chart's size is how far it reaches, not where it sits.
+///
+/// The face is a cylinder twenty millimetres tall whose axis point the
+/// file placed half a metre away, so its chart spans `v` from −500 000 to
+/// −499 980. The scale a degenerate triangle was measured against was the
+/// difference between the smallest and largest coordinate over both axes
+/// — half a million — and at that scale a quarter of a chart unit was a
+/// hair: every cell of the grid was dropped and the face drew as two
+/// triangles. The scale is the region's span now.
+#[test]
+fn a_chart_far_from_its_origin_is_not_degenerate() {
+    let text = corpus("chart_far_from_its_origin.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let faces = explore_unique(model, &import.solids[0], ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 1, "the fixture is the one face");
+    let mesh =
+        ogeom::mesh::triangulate_face(model, &faces[0], ogeom::mesh::Deflection::default(), T)
+            .unwrap();
+    let area: f64 = mesh
+        .triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+            (b - a).cross(c - a).magnitude() * 0.5
+        })
+        .sum();
+    // 2π · 2.25 · 20, less the chord's inscribed deficit.
+    assert!(
+        (area - 282.7).abs() < 2.0,
+        "the whole face, not two triangles of it: area {area:.2} over {} triangles",
+        mesh.triangles.len()
+    );
+}

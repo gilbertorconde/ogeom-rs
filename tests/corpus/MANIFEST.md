@@ -137,3 +137,14 @@ along its axis, so sag gave the bore a single interior row, and the
 Delaunay triangulation bridged two hundred millimetres from each rim to
 it with triangles a quarter turn wide — the bore drew as a square between
 its holes.
+
+## chart_far_from_its_origin.step
+
+One face extracted standalone from a community printer assembly, with a
+shell and a solid wrapped round it so the reader yields something: a
+cylinder twenty millimetres tall whose axis point the file placed half a
+metre away, so the face's chart spans `v` from −500 000 to −499 980. The
+reproducer for a degenerate-triangle scale taken from where the ring sits
+rather than how far it reaches: at that scale a quarter of a chart unit
+was "degenerate", every cell of a finer grid was, and the face drew as
+two triangles.

@@ -1838,6 +1838,9 @@ mod revolution_tests {
 
         // The *mesh* is inscribed and converges from below; the measurement
         // itself now runs on the exact surface and lands on the closed form.
+        // Converges, not climbs: the angular deflection holds the rim at
+        // thirty-two segments until the chord is finer than that, so the
+        // first two chords draw the same polygon and the volume stands still.
         let mut previous = 0.0;
         for chord in [0.1_f64, 0.02, 0.005] {
             let mesh = triangulate(&model, &built.shape, deflection(chord), T).unwrap();
@@ -1846,7 +1849,7 @@ mod revolution_tests {
                 mesh.volume() < exact,
                 "an inscribed volume cannot exceed it"
             );
-            assert!(mesh.volume() > previous, "refining lost volume");
+            assert!(mesh.volume() >= previous, "refining lost volume");
             previous = mesh.volume();
         }
         assert!(previous > exact * 0.995, "{previous} against {exact}");
