@@ -1672,6 +1672,7 @@ fn triangulate_region_inner(
     if !matches!(surface.kind(), ogeom_geom::SurfaceKind::Plane) {
         for _ in 0..REFINEMENT_ROUNDS {
             rounds_run += 1;
+            let before = cdt.num_vertices();
             let mut worst: Vec<SpadePoint<f64>> = Vec::new();
             for triangle in cdt.inner_faces() {
                 let vertices = triangle.vertices();
@@ -1719,6 +1720,12 @@ fn triangulate_region_inner(
                 cdt.insert(mitigate_underflow(point)).map_err(|e| {
                     ogeom_core::ogeom_err!(NotDone, "refinement insertion failed: {e}")
                 })?;
+            }
+            if *MESH_DEBUG_REFINE && cdt.num_vertices() > 500 {
+                eprintln!(
+                    "ROUND {rounds_run}: +{} vertices",
+                    cdt.num_vertices() - before
+                );
             }
         }
     }
@@ -1838,11 +1845,80 @@ fn add_interior_points(
             .fold(0.0_f64, f64::max)
     });
 
+    // Sag alone leaves a cylinder one row: it is straight along its axis, so
+    // nothing along `v` ever sags. But the triangulation is Delaunay in the
+    // chart, and a bore four hundred millimetres long with one row in the
+    // middle hands it two-hundred-millimetre spans from each rim to that
+    // row. Delaunay bridges those however it likes, and the repair below
+    // fires only at three chords; a triangle a quarter turn wide on a two
+    // millimetre bore sags less than that, so it stayed, and the bore drew
+    // as a square between its holes. Cells are held to a bounded aspect
+    // instead: rows close enough, measured in space through the surface,
+    // that no triangle between two rows can reach across more than a few
+    // columns. Rows are added, never removed, and spread evenly, so a grid
+    // that was symmetric stays symmetric. The same the other way round.
+    // How far apart two chart points are in space, where the surface says.
+    let span = |p: (f64, f64), q: (f64, f64)| -> f64 {
+        use ogeom_geom::Surface as _;
+        match (
+            surface.point_at(p.0, p.1, tol),
+            surface.point_at(q.0, q.1, tol),
+        ) {
+            (Ok(a), Ok(b)) => a.distance(b),
+            _ => 0.0,
+        }
+    };
+    let rows = spread_to_aspect(
+        rows,
+        low.x,
+        high.x,
+        |v| {
+            let columns = refine_direction(low.x, high.x, deflection.chord, |a, b| {
+                sag_between(surface, (a, v), (b, v), tol)
+            });
+            columns.len()
+        },
+        |a, b| {
+            probes
+                .iter()
+                .map(|&u| span((u, a), (u, b)))
+                .fold(0.0_f64, f64::max)
+        },
+        |a, b, v| span((a, v), (b, v)),
+    );
+
+    if *MESH_DEBUG_REFINE {
+        let v = f64::midpoint(low.y, high.y);
+        let columns = refine_direction(low.x, high.x, deflection.chord, |a, b| {
+            sag_between(surface, (a, v), (b, v), tol)
+        });
+        eprintln!(
+            "GRID u [{:.3},{:.3}] v [{:.3},{:.3}]: {} rows after aspect, {} columns at the middle row, chord {}",
+            low.x,
+            high.x,
+            low.y,
+            high.y,
+            rows.len(),
+            columns.len(),
+            deflection.chord
+        );
+    }
     for &v in &rows[1..rows.len().saturating_sub(1)] {
         // Each row gets its own u resolution, measured at that row.
         let columns = refine_direction(low.x, high.x, deflection.chord, |a, b| {
             sag_between(surface, (a, v), (b, v), tol)
         });
+        // The same the other way round: a surface straight along `u` gets
+        // two columns from sag, and a row a hundred millimetres wide would
+        // bridge across the rows as badly as the bore bridged its columns.
+        let columns = spread_to_aspect(
+            columns,
+            low.y,
+            high.y,
+            |_| rows.len(),
+            |a, b| span((a, v), (b, v)),
+            |a, b, u| span((u, a), (u, b)),
+        );
         for &u in &columns[1..columns.len().saturating_sub(1)] {
             // Interior points only: the boundary is already constrained, and a
             // point landing just off a constraint would split it.
@@ -1854,6 +1930,70 @@ fn add_interior_points(
         }
     }
     Ok(())
+}
+
+/// How many column widths a grid cell may be tall before rows are added.
+///
+/// Delaunay in the chart connects nearest neighbours in the chart; held to
+/// this aspect, a cell's nearest neighbours across a row gap are the same
+/// columns, not columns several away, and the triangles between rows stay
+/// as narrow as the columns are.
+const CELL_ASPECT: f64 = 6.0;
+
+/// Grid lines in one direction spread so that no cell is longer, in
+/// space, than [`CELL_ASPECT`] times its width the other way — extra
+/// lines added evenly between the ones sag chose.
+///
+/// Written for rows against columns and used both ways round. `lines`
+/// are the parameters sag chose in this direction; `lo..hi` is the chart
+/// range the other way; `crossings_at(t)` counts the lines the other way
+/// at parameter `t` of this one; `length(a, b)` is the extent in space
+/// between two lines of this direction; `width(a, b, t)` is the extent in
+/// space between two parameters of the other direction, along this one's
+/// line `t`.
+fn spread_to_aspect(
+    lines: Vec<f64>,
+    lo: f64,
+    hi: f64,
+    crossings_at: impl Fn(f64) -> usize,
+    length: impl Fn(f64, f64) -> f64,
+    width: impl Fn(f64, f64, f64) -> f64,
+) -> Vec<f64> {
+    if lines.len() < 2 {
+        return lines;
+    }
+    let mid = f64::midpoint(lines[0], lines[lines.len() - 1]);
+    let crossings = crossings_at(mid);
+    if crossings < 4 {
+        // Flat the other way as well: a plane in all but name, and nothing
+        // to hold an aspect against.
+        return lines;
+    }
+    // One cell's width, not the whole range's: across a closed direction
+    // the whole range comes back to its own start and measures nothing.
+    #[allow(clippy::cast_precision_loss)]
+    let step = (hi - lo) / (crossings - 1) as f64;
+    let cell = width(lo, lo + step, mid);
+    if cell.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+        return lines;
+    }
+    let mut out = Vec::with_capacity(lines.len());
+    for pair in lines.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        out.push(a);
+        let tall = length(a, b);
+        let pieces = (tall / (CELL_ASPECT * cell)).ceil();
+        if pieces.is_finite() && pieces > 1.0 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let n = (pieces as usize).min(MAX_DIRECTION_STEPS);
+            #[allow(clippy::cast_precision_loss)]
+            for i in 1..n {
+                out.push(a + (b - a) * i as f64 / n as f64);
+            }
+        }
+    }
+    out.push(lines[lines.len() - 1]);
+    out
 }
 
 /// How many places across the domain the v resolution is measured at.
@@ -2707,6 +2847,55 @@ mod predicate_tests {
             &diamond,
             Point2::new(-1.0, 0.0)
         ));
+    }
+
+    /// A cylinder's grid has as many rows as its length needs, not as
+    /// many as its sag asks for.
+    #[test]
+    fn rows_are_spread_until_no_cell_is_taller_than_its_aspect() {
+        // Sixteen columns a millimetre wide over a region a hundred long:
+        // sag left one interior row, the aspect wants cells six tall.
+        let sagged = vec![0.0, 50.0, 100.0];
+        let spread = spread_to_aspect(
+            sagged.clone(),
+            0.0,
+            16.0,
+            |_| 17,
+            |a, b| (b - a).abs(),
+            |a, b, _| (b - a).abs(),
+        );
+        assert_eq!(
+            spread.len(),
+            2 * 9 + 1,
+            "each 50 mm half in nine 6 mm pieces: {spread:?}"
+        );
+        assert_eq!(spread[0], 0.0);
+        assert_eq!(spread[9], 50.0, "the rows sag chose stay where they were");
+        assert_eq!(spread[18], 100.0);
+        assert!(spread.windows(2).all(|w| w[1] > w[0]));
+
+        // Three columns is flat along `u` as well; nothing to hold to.
+        let flat = spread_to_aspect(
+            sagged.clone(),
+            0.0,
+            16.0,
+            |_| 3,
+            |a, b| (b - a).abs(),
+            |a, b, _| (b - a).abs(),
+        );
+        assert_eq!(flat, sagged);
+
+        // Cells already shorter than the aspect are left alone.
+        let fine = vec![0.0, 4.0, 8.0];
+        let same = spread_to_aspect(
+            fine.clone(),
+            0.0,
+            16.0,
+            |_| 17,
+            |a, b| (b - a).abs(),
+            |a, b, _| (b - a).abs(),
+        );
+        assert_eq!(same, fine);
     }
 
     #[test]

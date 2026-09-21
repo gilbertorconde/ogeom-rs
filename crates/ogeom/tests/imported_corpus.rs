@@ -414,3 +414,55 @@ fn a_slit_loop_is_not_a_hole() {
         mesh.triangles.len()
     );
 }
+
+/// A long bore is drawn round between its cross holes, not square.
+///
+/// The face is a cylinder 2.1 mm in radius and four hundred long, crossed
+/// by holes wider than itself. It never sags along its axis, so sag gave
+/// the grid one interior row, and the Delaunay triangulation bridged two
+/// hundred millimetres from each rim to that row with triangles a quarter
+/// turn wide — each sagging less than the three chords the repair pass
+/// fires at, so they stayed. Grid cells are held to a bounded aspect now:
+/// rows close enough that no triangle can reach across more than a few
+/// columns.
+///
+/// Every ten-millimetre band of the bore holds vertices at fifteen
+/// distinct whole degrees; the square bore held three.
+#[test]
+fn a_long_bore_is_round_between_its_holes() {
+    use std::collections::{BTreeMap, BTreeSet};
+    let text = corpus("long_bore_between_cross_holes.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let faces = explore_unique(model, &import.solids[0], ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 1, "the fixture is the one face");
+    let mesh =
+        ogeom::mesh::triangulate_face(model, &faces[0], ogeom::mesh::Deflection::default(), T)
+            .unwrap();
+    // The bore's axis is `z`; a band's angles are the whole degrees its
+    // vertices sit at about that axis.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "whole degrees and centimetres"
+    )]
+    let whole = |x: f64| x.round() as i64;
+    let mut bands: BTreeMap<i64, BTreeSet<i64>> = BTreeMap::new();
+    for p in &mesh.positions {
+        let degrees = whole(p.y.atan2(p.x).to_degrees());
+        bands
+            .entry(whole((p.z / 10.0).floor()))
+            .or_default()
+            .insert(degrees);
+    }
+    let (band, angles) = bands
+        .iter()
+        .map(|(z, a)| (*z, a.len()))
+        .min_by_key(|b| b.1)
+        .unwrap();
+    assert!(
+        angles >= 12,
+        "the band at z {}..{} mm holds {angles} distinct angles: a square, not a bore",
+        band * 10,
+        band * 10 + 10
+    );
+}

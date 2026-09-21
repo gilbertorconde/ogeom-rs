@@ -125,3 +125,15 @@ back along two splines fitted to the same arcs, three millimetres long and
 a fifth of a micron wide, enclosing nothing. The reproducer for an inner
 loop that is not a hole: read as one, the triangulator drew the face with
 twelve holes it does not have.
+
+## long_bore_between_cross_holes.step
+
+One face extracted standalone from a community printer assembly, with a
+shell and a solid wrapped round it so the reader yields something: a bore
+2.1 mm in radius and four hundred long, crossed by holes wider than
+itself, so its one wire winds from rim to rim along the intersection
+curves. The reproducer for a grid one row deep: a cylinder never sags
+along its axis, so sag gave the bore a single interior row, and the
+Delaunay triangulation bridged two hundred millimetres from each rim to
+it with triangles a quarter turn wide — the bore drew as a square between
+its holes.

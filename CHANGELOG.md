@@ -40,6 +40,13 @@ bump may break the API and a patch bump may not.
     refusing it.
   - An inner loop thinner than a micron — arcs out, fitted splines back —
     is a slit, not a hole, and is no longer handed to the triangulator.
+- **A long bore drew square between its cross holes.** A cylinder never
+  sags along its axis, so its grid got one interior row, and the Delaunay
+  triangulation bridged from each rim to it with triangles a quarter turn
+  wide — under the three chords the repair pass fires at, so they stayed.
+  Grid cells are held to a bounded aspect: rows close enough, measured
+  through the surface, that no triangle reaches across more than a few
+  columns. Fewer triangles on the bore than before, not more.
 - **`triangulate_face` drew every face twice** since the sliver refinement
   landed. It draws once, and again only where the first came up short.
   Face by face, the assembly above meshes in 9.4 s where it took 18.6.
