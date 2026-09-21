@@ -228,12 +228,26 @@ pub fn fit_projected_pcurve_capped(
     // neighbours. Samples whose u-direction has collapsed relative to
     // their v-direction are repaired by interpolating u between the
     // nearest sound samples, extrapolating at the ends.
+    //
+    // Weak is measured in millimetres, not against `dv`. A ratio calls a
+    // direction weak whenever the *other* one is strong, and a patch whose
+    // `v` is parameterised a thousand times more densely than its `u` —
+    // three millimetres over twelve thousandths of a unit, beside a unit of
+    // `u` for a little over half a millimetre — had every sample of every
+    // edge called weak, its `u` held at one value, and two edges half a
+    // millimetre long fitted as a single point. What makes a direction
+    // degenerate is that crossing the whole of it moves the point less than
+    // a micron; that question has an answer in length, and only in length.
+    let (u_span, _) = {
+        let ((ua, ub), (va, vb)) = surface.domain();
+        (ub - ua, vb - va)
+    };
     let weak: Vec<bool> = trace
         .iter()
         .map(|uv| {
             surface
                 .d1_at(uv.x, uv.y, tol)
-                .is_ok_and(|(du, dv)| du.magnitude() < dv.magnitude() * 1e-3)
+                .is_ok_and(|(du, _)| du.magnitude() * u_span < tol.confusion() * 1e4)
         })
         .collect();
     if weak.iter().all(|w| *w) && !weak.is_empty() {
@@ -617,6 +631,49 @@ mod tests {
         retry_stalled(&cone, &[points[2], adrift], &mut honest, &mut misses, T);
         assert_eq!(honest[1], was[1]);
         assert!((misses[1] - 0.5).abs() < 1e-12);
+    }
+
+    /// A direction is weak by what crossing it moves, not by its neighbour.
+    ///
+    /// The patch is a flat strip: `u` runs a millimetre across it and `v`
+    /// runs twenty millimetres along it over a parameter span of a hundredth
+    /// — two thousand times denser than `u`. Against `dv`, `du` looks weak at
+    /// every sample, and a ratio test held every `u` at one value: an edge
+    /// a millimetre long across the strip fitted as a single chart point.
+    /// Crossing the whole of `u` moves the point a millimetre, which is the
+    /// only thing "weak" can honestly mean, and it is not.
+    #[test]
+    fn a_direction_is_weak_by_what_crossing_it_moves() {
+        use ogeom_geom::{BSplineSurface, LineCurve};
+        use ogeom_math::{ControlGrid, KnotVector, Point};
+        let mut control = Vec::new();
+        for i in 0..2 {
+            for j in 0..2 {
+                control.push(Point::new(f64::from(i), 20.0 * f64::from(j), 0.0));
+            }
+        }
+        let strip: SurfaceGeometry = BSplineSurface::new(
+            KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).unwrap(),
+            KnotVector::new(vec![0.0, 0.0, 0.01, 0.01], 1).unwrap(),
+            &ControlGrid::new(control, 2, 2).unwrap(),
+            T,
+        )
+        .unwrap()
+        .into();
+        // Across the strip at v = 0.005 (the middle in space, 10 mm along).
+        let across: Curve =
+            LineCurve::segment(Point::new(0.0, 10.0, 0.0), Point::new(1.0, 10.0, 0.0), T)
+                .unwrap()
+                .into();
+        let (pcurve, error, _, _, _) =
+            fit_projected_pcurve(&across, (0.0, 1.0), &strip, T).unwrap();
+        let a = ogeom_geom::Curve2d::point_at(&pcurve, 0.0, T).unwrap();
+        let b = ogeom_geom::Curve2d::point_at(&pcurve, 1.0, T).unwrap();
+        assert!(
+            (b.x - a.x).abs() > 0.99,
+            "the edge crosses the whole of u: {a:?} -> {b:?}"
+        );
+        assert!(error < 1e-6, "and fits: {error:.2e}");
     }
 
     /// A boundary 0.3 mm off its surface fits, and says so.
