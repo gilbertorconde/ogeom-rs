@@ -55,8 +55,12 @@ impl Default for Deflection {
             // fine enough that a mass property computed from it is accurate to
             // roughly one part in a thousand.
             chord: 1e-1,
-            // About 11 degrees, which keeps a circle at 32 segments or so.
-            angular: 0.2,
+            // Half a radian — twenty-eight degrees, a circle in thirteen
+            // segments — which is what B-rep kernels have long defaulted
+            // to, and what a viewer that lets the user tighten it asks for.
+            // The interior of a face is held to it as its edges are, so a
+            // tighter default is paid for on every curved face.
+            angular: 0.5,
             min_segments: 2,
             max_segments: 4096,
         }

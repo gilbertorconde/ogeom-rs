@@ -280,9 +280,13 @@ fn a_cone_s_apex_run_is_kept_at_a_quarter_turn() {
     let model = import.document.model();
     let faces = explore_unique(model, &import.solids[0], ShapeType::Face).unwrap();
     assert_eq!(faces.len(), 1, "the fixture is the one face");
-    let mesh =
-        ogeom::mesh::triangulate_face(model, &faces[0], ogeom::mesh::Deflection::default(), T)
-            .unwrap();
+    // At the angular deflection the areas below were measured at; the
+    // default has since moved and the inscribed area moves with it.
+    let deflection = ogeom::mesh::Deflection {
+        angular: 0.2,
+        ..ogeom::mesh::Deflection::default()
+    };
+    let mesh = ogeom::mesh::triangulate_face(model, &faces[0], deflection, T).unwrap();
     let area: f64 = mesh
         .triangles
         .iter()
@@ -545,9 +549,9 @@ fn a_chart_far_from_its_origin_is_not_degenerate() {
     );
 }
 
-/// Half a radian of angular deflection: what a viewer that keeps a circle
-/// at thirteen segments asks for, and coarser than the default's eleven
-/// degrees.
+/// Half a radian of angular deflection, spelled out: it is the default
+/// now, but these fixtures showed what they showed at this value, and the
+/// tests should keep asking for it if the default moves again.
 fn half_a_radian() -> ogeom::mesh::Deflection {
     ogeom::mesh::Deflection {
         angular: 0.5,

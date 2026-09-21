@@ -52,9 +52,7 @@ bump may break the API and a patch bump may not.
   to the chord alone. A viewer scaling its chord to a body's size gave a
   long extrusion's bore thirteen-sided rims and a seven-sided inside. Grid
   cells are held to the normal's turn as well now, so a surface's inside
-  is as round as its boundary. At the default angular deflection this is
-  more triangles on every curved face — the default was always what the
-  edges were drawn to.
+  is as round as its boundary.
 - **A face whose chart sat far from its origin drew as two triangles.**
   The scale a degenerate chart triangle was measured against was taken
   from the ring's coordinates rather than its span, so a cylinder whose
@@ -94,6 +92,14 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **The default angular deflection is half a radian**, twenty-eight
+  degrees, a circle in thirteen segments — what B-rep kernels have long
+  defaulted to — where it was 0.2, eleven degrees and thirty-two. With
+  the interior of a face now held to the angular deflection as its
+  edges are, the old default cost four times the triangles on every
+  cylinder; a real assembly meshes to 4.0M triangles at the new default
+  where the old gave 19.5M. Ask for `angular: 0.2` to have what the old
+  default drew.
 - `BSplineSurface` settles whether its net closes at construction, so
   evaluation past a closed join costs what evaluation inside costs.
 - CI verifies the declared `rust-version` on every push, reading it from
