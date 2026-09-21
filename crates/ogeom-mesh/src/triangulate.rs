@@ -749,6 +749,22 @@ fn trimming_rings(
         *ring = kept_ring;
         *anchors = kept_anchors;
     }
+    if *MESH_DEBUG {
+        for (i, (ring, anchors)) in rings.iter().zip(&ring_anchors).enumerate() {
+            eprintln!("DBG ring {i}: {} points", ring.len());
+            for (p, a) in ring.iter().zip(anchors) {
+                eprintln!(
+                    "DBG   uv({:.5},{:.5}) anchor {}",
+                    p.x,
+                    p.y,
+                    a.map_or("-".to_string(), |q| format!(
+                        "({:.4},{:.4},{:.4})",
+                        q.x, q.y, q.z
+                    ))
+                );
+            }
+        }
+    }
     rings.retain(|r| r.len() >= 3);
     ring_anchors.retain(|a| a.len() >= 3);
 
@@ -1142,16 +1158,47 @@ fn boundary_ring(
         }
         // The previous edge already contributed the shared vertex — but only
         // where the chart agrees it is shared. Two rulings meeting at an
-        // apex share the *vertex* while standing half a period apart in the
-        // chart, and the run between them along the degenerate row is
-        // boundary the ring needs: dropping its start would cut the corner
-        // straight through the face's interior.
+        // apex share the *vertex* while standing apart in the chart, and the
+        // run between them along the degenerate row is boundary the ring
+        // needs: dropping its start would cut the corner straight through
+        // the face's interior.
+        //
+        // Two things have to hold for a gap to be such a run, and neither
+        // alone is enough. It has to be wide: two ends that disagree by the
+        // file's slop stand a micron over a radius apart, and a thousandth
+        // of the period is three orders above that. And what lies between
+        // has to be degenerate: a run along an apex row lifts to one point
+        // the whole way, so its chart midpoint lands on the shared vertex,
+        // where a wide gap on a live row lifts to somewhere the width of the
+        // gap away. Width alone kept slop on fitted splines; the lift alone
+        // kept every gap too small for its midpoint to land anywhere else.
+        // And no fraction of the period alone is right at all — one real
+        // part's rulings stand exactly a quarter turn apart, which a
+        // quarter-period test read as not apart, and the face lost the
+        // triangle at its apex.
         let keep_gap = if let (Some(last), Some(first)) = (ring.last(), points.first()) {
             model.geometry().surface(surface).is_some_and(|geometry| {
                 use ogeom_geom::Surface as _;
                 let ((ua, ub), (va, vb)) = geometry.domain();
-                (geometry.is_periodic_u() && (last.x - first.x).abs() > (ub - ua) * 0.25)
-                    || (geometry.is_periodic_v() && (last.y - first.y).abs() > (vb - va) * 0.25)
+                let wide = (geometry.is_periodic_u()
+                    && (last.x - first.x).abs() > (ub - ua) * 1e-3)
+                    || (geometry.is_periodic_v() && (last.y - first.y).abs() > (vb - va) * 1e-3);
+                if !wide {
+                    return false;
+                }
+                let mid = Point2::new(
+                    f64::midpoint(last.x, first.x),
+                    f64::midpoint(last.y, first.y),
+                );
+                let reach = tol.confusion() * 1e4;
+                match (
+                    geometry.point_at(last.x, last.y, tol),
+                    geometry.point_at(mid.x, mid.y, tol),
+                    geometry.point_at(first.x, first.y, tol),
+                ) {
+                    (Ok(a), Ok(m), Ok(b)) => a.distance(m) <= reach && m.distance(b) <= reach,
+                    _ => false,
+                }
             })
         } else {
             false

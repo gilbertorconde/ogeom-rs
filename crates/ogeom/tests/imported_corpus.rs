@@ -258,3 +258,65 @@ fn a_sliver_face_is_drawn_fine_enough_to_triangulate_whole() {
         mesh.triangles.len()
     );
 }
+
+/// A run along a cone's apex row is boundary, whatever angle it spans.
+///
+/// The face is a cone sector bounded by two rulings into the apex and one
+/// arc, the rulings standing exactly a quarter turn apart. In the chart the
+/// two apex ends are distinct points a quarter period apart; in space they
+/// are one vertex. The ring has to keep both — the run between them along
+/// the degenerate row is the face's own boundary — and a test that read
+/// "apart" as "more than a quarter period" dropped the second, cut the
+/// corner through the face, and lost the triangle at the apex. The face
+/// was still a disc; it was a third smaller than it should be, and the
+/// body it belongs to had a hole exactly one triangle wide.
+///
+/// Area is the assertion because area is what went missing: 0.842 mm² with
+/// the corner cut, 1.104 with it kept.
+#[test]
+fn a_cone_s_apex_run_is_kept_at_a_quarter_turn() {
+    let text = corpus("cone_apex_quarter_turn.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let faces = explore_unique(model, &import.solids[0], ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 1, "the fixture is the one face");
+    let mesh =
+        ogeom::mesh::triangulate_face(model, &faces[0], ogeom::mesh::Deflection::default(), T)
+            .unwrap();
+    let area: f64 = mesh
+        .triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+            (b - a).cross(c - a).magnitude() * 0.5
+        })
+        .sum();
+    assert!(
+        (area - 1.10391).abs() < 0.01,
+        "the apex triangle is drawn: area {area:.5}, not 0.84195"
+    );
+    // Both apex ends survive into the mesh: two vertices at the apex row.
+    let (_, (va, _)) = ogeom::geom::Surface::domain(
+        model
+            .geometry()
+            .surface(
+                model
+                    .node(&faces[0])
+                    .unwrap()
+                    .data()
+                    .as_face()
+                    .unwrap()
+                    .surface,
+            )
+            .unwrap(),
+    );
+    let at_apex = mesh
+        .parameters
+        .iter()
+        .filter(|(_, v)| (v - va).abs() < 1e-9 || (v + 1.0).abs() < 1e-9)
+        .count();
+    assert!(
+        at_apex >= 2,
+        "both rulings reach the apex row: {at_apex} vertices there"
+    );
+}

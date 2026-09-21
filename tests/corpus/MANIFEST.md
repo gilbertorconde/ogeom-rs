@@ -95,3 +95,13 @@ each bounding arc is twenty-nine microns — wider than the region — so the
 inner polyline crosses the outer one, and the triangulator answers with
 sixteen triangles in fifteen disconnected pieces. The reproducer for a
 boundary drawn too coarsely to be a boundary.
+
+## cone_apex_quarter_turn.step
+
+One face extracted standalone from a community printer assembly, with a
+shell and a solid wrapped round it so the reader yields something: a cone
+sector bounded by two rulings into the apex and one arc, the rulings
+standing exactly a quarter turn apart. The run between them along the
+apex row is boundary the ring needs — dropping its far end cuts the corner
+through the face and loses the triangle at the apex. The reproducer for a
+degenerate row that a quarter-period test read as no row at all.
