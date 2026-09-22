@@ -1165,3 +1165,182 @@ fn a_fill_and_a_wedge_asked_together_stop_at_each_other() {
         "the orders round different corners: {volumes:?}"
     );
 }
+
+/// The blend face of a result: the one face on a surface that is neither
+/// of the two hosts' kinds — a fitted band, or a torus where none was.
+fn blend_face_of(model: &Model, shape: &Shape) -> Shape {
+    explore_unique(model, shape, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let ogeom::topo::NodeData::Face(data) = model.node(f).unwrap().data() else {
+                return false;
+            };
+            matches!(
+                model.geometry().surface(data.surface),
+                Some(ogeom::geom::SurfaceGeometry::BSpline(_))
+            )
+        })
+        .expect("the rolling ball left a fitted band")
+}
+
+/// A marched blend on a host with no ruling to lean on — a cone, a sphere,
+/// a torus — is valid, closed, and tangent to both hosts along its rails.
+fn assert_marched_blend(model: &Model, before: &Shape, after: &Shape, what: &str) {
+    let diagnosis = ogeom::algo::check(model, after, T).unwrap();
+    assert!(diagnosis.is_valid(), "{what}: {:?}", diagnosis.problems);
+    let mesh =
+        ogeom::mesh::triangulate(model, after, ogeom::mesh::Deflection::default(), T).unwrap();
+    assert!(
+        mesh.is_closed(),
+        "{what}: the blended solid is not watertight"
+    );
+    let fine = ogeom::mesh::Deflection {
+        chord: 1e-2,
+        ..ogeom::mesh::Deflection::default()
+    };
+    let v0 = ogeom::algo::volume_properties(model, before, fine, T)
+        .unwrap()
+        .mass;
+    let v1 = ogeom::algo::volume_properties(model, after, fine, T)
+        .unwrap()
+        .mass;
+    assert!(
+        v1 < v0 && v1 > v0 * 0.9,
+        "{what}: a blend shaves a little: {v0} -> {v1}"
+    );
+    let blend = blend_face_of(model, after);
+    let contacts = ogeom::fillet::analyse_blend(model, after, &blend, 9, T).unwrap();
+    let smooth = contacts.iter().filter(|c| c.tangency_error < 2e-2).count();
+    assert!(
+        smooth >= 2,
+        "{what}: the band is tangent along both rails: {contacts:?}"
+    );
+}
+
+/// A ball drilled off its centre: the seat is a fitted seam between the
+/// sphere and the bore, and the sphere is a host the march had refused.
+///
+/// The bore runs across the ball, lifted off the equator, so the seat
+/// keeps clear of both poles; the rim is picked off the sphere's own seam
+/// meridian, which is a circle edge of its own the nearest-edge search
+/// would otherwise land on.
+#[test]
+fn a_marched_blend_takes_a_sphere_host() {
+    let mut model = Model::new();
+    let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 10.0, T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(-20.0, 0.0, 2.0), Direction::X, Direction::Z, T).unwrap();
+    let bore = ogeom::algo::make_cylinder(&mut model, frame, 2.0, 40.0, T)
+        .unwrap()
+        .shape;
+    let drilled = ogeom::boolean::cut(&mut model, &ball, &bore, T)
+        .unwrap()
+        .shape;
+    let (y, z): (f64, f64) = (1.4, 2.0 + 1.42);
+    let rim = edge_near(
+        &model,
+        &drilled,
+        Point::new((100.0 - y * y - z * z).sqrt(), y, z),
+    );
+    let blended = ogeom::fillet::fillet_edge(&mut model, &drilled, &rim, 1.0, T)
+        .unwrap()
+        .shape;
+    assert_marched_blend(&model, &drilled, &blended, "sphere host");
+}
+
+/// A bore straight down a ball's axis: the rim is a full circle, a
+/// parallel of the sphere, and a circle used to be the revolved blend's
+/// alone — which refused it, since the sphere is neither the cap nor the
+/// coaxial wall that blend is built on. Any other circle is the march's.
+#[test]
+fn a_circular_rim_on_a_sphere_takes_the_march() {
+    let mut model = Model::new();
+    let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 10.0, T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(0.0, 0.0, -20.0), Direction::Z, Direction::X, T).unwrap();
+    let bore = ogeom::algo::make_cylinder(&mut model, frame, 3.0, 40.0, T)
+        .unwrap()
+        .shape;
+    let drilled = ogeom::boolean::cut(&mut model, &ball, &bore, T)
+        .unwrap()
+        .shape;
+    let (r, top): (f64, f64) = (3.0, 91.0_f64.sqrt());
+    let rim = edge_near(
+        &model,
+        &drilled,
+        Point::new(r * 0.5_f64.cos(), r * 0.5_f64.sin(), top),
+    );
+    let blended = ogeom::fillet::fillet_edge(&mut model, &drilled, &rim, 1.0, T)
+        .unwrap()
+        .shape;
+    assert_marched_blend(&model, &drilled, &blended, "circular rim on a sphere");
+}
+
+/// A ring drilled through its tube: the seat runs round the drill on the
+/// torus, and the torus is a host the march had refused.
+#[test]
+fn a_marched_blend_takes_a_torus_host() {
+    let mut model = Model::new();
+    let ring = ogeom::algo::make_torus(&mut model, Frame::WORLD, 10.0, 3.0, T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(10.0, 0.0, -10.0), Direction::Z, Direction::X, T).unwrap();
+    let drill = ogeom::algo::make_cylinder(&mut model, frame, 1.5, 20.0, T)
+        .unwrap()
+        .shape;
+    let drilled = ogeom::boolean::cut(&mut model, &ring, &drill, T)
+        .unwrap()
+        .shape;
+    let rim = edge_near(
+        &model,
+        &drilled,
+        Point::new(11.5, 0.0, (9.0_f64 - 2.25).sqrt()),
+    );
+    let blended = ogeom::fillet::fillet_edge(&mut model, &drilled, &rim, 0.5, T)
+        .unwrap()
+        .shape;
+    assert_marched_blend(&model, &drilled, &blended, "torus host");
+}
+
+/// A cone drilled across its axis: the seat is a fitted seam between the
+/// cone and the bore, and the cone is a host the march had refused.
+#[test]
+fn a_marched_blend_takes_a_cone_host() {
+    let mut model = Model::new();
+    let cone = ogeom::algo::make_cone(&mut model, Frame::WORLD, 12.0, 6.0, 20.0, T)
+        .unwrap()
+        .shape;
+    // The bore runs across the axis at forty degrees from the cone's own
+    // seam, so the seat lies clear of it.
+    let turn = 0.7_f64;
+    let along =
+        ogeom::math::Direction::new(ogeom::math::Vector::new(turn.cos(), turn.sin(), 0.0), T)
+            .unwrap();
+    let frame = Frame::new(
+        Point::new(-20.0 * turn.cos(), -20.0 * turn.sin(), 10.0),
+        along,
+        Direction::Z,
+        T,
+    )
+    .unwrap();
+    let bore = ogeom::algo::make_cylinder(&mut model, frame, 2.5, 40.0, T)
+        .unwrap()
+        .shape;
+    let drilled = ogeom::boolean::cut(&mut model, &cone, &bore, T)
+        .unwrap()
+        .shape;
+    // The bore leaves the cone at radius(10) = 9 on its far side, above the
+    // bore's own axis.
+    let rim = edge_near(
+        &model,
+        &drilled,
+        Point::new(9.0 * turn.cos(), 9.0 * turn.sin(), 12.5),
+    );
+    let blended = ogeom::fillet::fillet_edge(&mut model, &drilled, &rim, 0.8, T)
+        .unwrap()
+        .shape;
+    assert_marched_blend(&model, &drilled, &blended, "cone host");
+}

@@ -13,6 +13,22 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Marched blends on cone, sphere and torus hosts.** A seat with one
+  host a cone, a sphere or a torus — a bore through a cone's wall, a hole
+  drilled through a ring's tube, a ball drilled off its centre — was
+  refused by name; the chart inversions those surfaces have in closed
+  form are carried now, and a band whose rings start on different columns
+  gets a fitted connector where only a cylinder had an exact one. A full
+  circular rim whose hosts are not a planar cap and its coaxial wall — a
+  bore straight down a ball's axis — takes the march too, where the
+  revolved blend had refused it by name. Under it, two fixes any seat
+  could hit: a looping seat whose join is a
+  corner — the two arcs of a boolean's seam joined end to end — steers
+  the march by a smooth refit of itself, since a march cannot cross a
+  corner in the guide's derivatives; and the band's first station is
+  re-solved exactly on the apex column, where a station a fraction of a
+  stride off the host's own seam left a sliver the boolean could not
+  hold.
 - **Draft on any face.** A wall on a raw fitted patch, or a wall of
   revolution about a neutral plane tilted against its axis, used to be
   refused. Both draft now the way a mould-maker drafts: the face becomes

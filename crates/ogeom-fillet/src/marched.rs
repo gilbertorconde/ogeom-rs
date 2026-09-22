@@ -60,6 +60,38 @@ pub(crate) fn marched_fillet(
             }
         }
     };
+    // A closed seat on a fitted seam — a bore's rim where it leaves a
+    // sphere, the two arcs of a boolean's seam joined end to end — is a
+    // loop whose join is a corner: the ends meet, the tangents do not. The
+    // march evaluates the guide's derivatives at every step and cannot
+    // cross a corner in them; it crawls onto the join and stalls. So the
+    // march steers by a *second* guide, the loop re-fitted smooth through
+    // its join. It guides the section planes only — the ball seats on the
+    // exact hosts, and every edge the wedge builds rides the seat's own
+    // curve — so its fit error costs the blend nothing it can measure.
+    let loops = closed || {
+        let (lo, hi) = guide_range;
+        guide
+            .point_at(lo, tol)
+            .and_then(|p| guide.point_at(hi, tol).map(|q| p.distance(q)))
+            .is_ok_and(|d| d <= tol.confusion() * 10.0)
+    };
+    let march_guide: Option<Curve> = if loops
+        && matches!(&guide, Curve::BSpline(b) if !b.is_periodic())
+    {
+        const SAMPLES: usize = 256;
+        let (lo, hi) = guide_range;
+        let mut points: Vec<Point> = Vec::with_capacity(SAMPLES + 1);
+        for i in 0..=SAMPLES {
+            #[allow(clippy::cast_precision_loss)]
+            let t = lo + (hi - lo) * ((i % SAMPLES) as f64) / (SAMPLES as f64);
+            points.push(guide.point_at(t, tol)?);
+        }
+        let fitted = ogeom_geom::fit::fit_points_closed(&points, 3, tol.confusion() * 1e2, tol)?;
+        fitted.met.then_some(Curve::BSpline(fitted.curve))
+    } else {
+        None
+    };
 
     // The two host faces at the edge, with their surfaces and outward signs.
     let mut hosts: Vec<(Shape, SurfaceGeometry, f64)> = Vec::new();
@@ -88,15 +120,11 @@ pub(crate) fn marched_fillet(
             stored.transformed(&placement, tol)?
         };
         match surface {
-            SurfaceGeometry::Plane(_) | SurfaceGeometry::Cylinder(_) => {}
-            SurfaceGeometry::Cone(_) | SurfaceGeometry::Sphere(_) | SurfaceGeometry::Torus(_) => {
-                ogeom_bail!(
-                    Construction,
-                    "a marched fillet on a cone, sphere or torus host needs \
-                     that chart's inversion carried; planes and cylinders \
-                     are what this speaks — docs/PARITY.md, fillet.edge-blends"
-                )
-            }
+            SurfaceGeometry::Plane(_)
+            | SurfaceGeometry::Cylinder(_)
+            | SurfaceGeometry::Cone(_)
+            | SurfaceGeometry::Sphere(_)
+            | SurfaceGeometry::Torus(_) => {}
             _ => ogeom_bail!(
                 Construction,
                 "a marched fillet's hosts must be analytic; a fitted host \
@@ -243,19 +271,36 @@ pub(crate) fn marched_fillet(
     // midpoint may stand in cut-away territory where no ball seats, but the
     // crease's own midpoint is seat by definition, and a closed loop closes
     // from wherever the walker starts.
-    let blend = march_blend_seeded(
+    let (steering, seed_t) = match &march_guide {
+        Some(smooth) => {
+            let seed = guide.point_at(mid_t, tol)?;
+            let on_smooth = ogeom_algo::project_on_curve(smooth, seed, 256, tol)?;
+            (smooth, on_smooth.parameter)
+        }
+        None => (&guide, mid_t),
+    };
+    let mut blend = march_blend_seeded(
         &first,
         &second,
         radius,
-        &guide,
+        steering,
         sides,
-        mid_t,
+        seed_t,
         Marching {
             chord: 3e-6,
             ..Marching::default()
         },
         tol,
     )?;
+    // Stations steered by the smooth loop carry its parameters; the seat's
+    // own curve is what the wedge measures windows on, so each station is
+    // re-placed on it by projection.
+    if let Some(smooth) = &march_guide {
+        for t in &mut blend.along {
+            let p = smooth.point_at(*t, tol)?;
+            *t = ogeom_algo::project_on_curve(&guide, p, 256, tol)?.parameter;
+        }
+    }
     // An open seat — the ball ran off the end of a support in each
     // direction — ends in run-out caps instead of closing: the arc-restricted
     // wedge of the revolved fillets, generalised to the fitted band.
@@ -295,7 +340,6 @@ pub(crate) fn marched_fillet(
     }
     // The band wants every winding rail to run its period forward; when the
     // march went the other way round, the whole loop reverses.
-    let mut blend = blend;
     // A closed march may hand its first station back as its last; the loop
     // owns it once, and the grid closes itself.
     while blend.len() > 8
@@ -410,6 +454,100 @@ pub(crate) fn marched_fillet(
             blend.on_first.rotate_left(k);
             blend.on_second.rotate_left(k);
             blend.along.rotate_left(k);
+            // The nearest station stands a fraction of a stride off the
+            // column; where the column is the host's own seam — a rim the
+            // boolean opened at the sphere's meridian — that fraction is a
+            // sliver between the rail's start and its seam crossing, which
+            // no arrangement holds. Station zero is re-solved exactly on
+            // the column, bracketed by its two neighbours.
+            let host_is_first = core::ptr::eq(host, &first);
+            let u_of = |x: &[f64; 5]| if host_is_first { x[0] } else { x[2] };
+            let signed = |u: f64| -> f64 {
+                let d = (u - apex_u).rem_euclid(period);
+                if d <= period / 2.0 { d } else { d - period }
+            };
+            let n = blend.len();
+            let (lo, hi) = guide_range;
+            let span = hi - lo;
+            let w0 = blend.along[0];
+            let unwrap = |w: f64| -> f64 {
+                if !loops {
+                    return w;
+                }
+                let mut w = w;
+                while w - w0 > span / 2.0 {
+                    w -= span;
+                }
+                while w0 - w > span / 2.0 {
+                    w += span;
+                }
+                w
+            };
+            let fold = |w: f64| -> f64 {
+                if loops {
+                    lo + (w - lo).rem_euclid(span)
+                } else {
+                    w
+                }
+            };
+            let near = [
+                blend.on_first[0].0,
+                blend.on_first[0].1,
+                blend.on_second[0].0,
+                blend.on_second[0].1,
+            ];
+            let station_at = |w: f64| -> Option<([f64; 5], f64)> {
+                let x = crate::march::seat_section(
+                    &first,
+                    &second,
+                    radius,
+                    &guide,
+                    blend.sides,
+                    fold(w),
+                    near,
+                    tol,
+                )
+                .ok()?;
+                Some((x, signed(u_of(&x))))
+            };
+            let mut bracket = (unwrap(blend.along[n - 1]), unwrap(blend.along[1]));
+            if let (Some((_, fa)), Some((_, fb))) = (station_at(bracket.0), station_at(bracket.1))
+                && fa * fb < 0.0
+            {
+                let (mut fa, mut solved) = (fa, None);
+                for _ in 0..60 {
+                    let mid = f64::midpoint(bracket.0, bracket.1);
+                    let Some((x, fm)) = station_at(mid) else {
+                        break;
+                    };
+                    if fm.abs() <= tol.parametric() || bracket.1 - bracket.0 <= tol.parametric() {
+                        solved = Some((x, mid));
+                        break;
+                    }
+                    if fa * fm < 0.0 {
+                        bracket.1 = mid;
+                    } else {
+                        bracket.0 = mid;
+                        fa = fm;
+                    }
+                }
+                if let Some((x, w)) = solved
+                    && let (Ok(p1), Ok(p2), Ok((du, dv))) = (
+                        first.point_at(x[0], x[1], tol),
+                        second.point_at(x[2], x[3], tol),
+                        first.d1_at(x[0], x[1], tol),
+                    )
+                {
+                    let n1 = du.cross(dv);
+                    let centre = p1 + n1 / n1.magnitude() * (f64::from(blend.sides.first) * radius);
+                    blend.spine[0] = centre;
+                    blend.touch_first[0] = p1;
+                    blend.touch_second[0] = p2;
+                    blend.on_first[0] = (x[0], x[1]);
+                    blend.on_second[0] = (x[2], x[3]);
+                    blend.along[0] = fold(w);
+                }
+            }
             // The march's closing step may be far shorter than its stride;
             // rotated into the loop's interior, that cramped pair would put
             // two grid columns nearly on top of each other and poison the
@@ -444,7 +582,9 @@ pub(crate) fn marched_fillet(
     let additive = !convex;
 
     let n = blend.len();
-    let fit_target = (tol.confusion() * 1e3).max(1e-4);
+    // Two tenths of a micron at unit scale: what the march's own stations
+    // hold to, and what the band's edges are widened to say.
+    let fit_target = (tol.confusion() * 2e3).max(2e-4);
 
     // The blend surface: each station's exact ball arc, the loop of stations
     // fitted *closed* — the join is C1 wherever the seam lands, so anchoring
@@ -1062,7 +1202,9 @@ fn open_runout_wedge(
     }
 
     let n = blend.len();
-    let fit_target = (tol.confusion() * 1e3).max(1e-4);
+    // Two tenths of a micron at unit scale: what the march's own stations
+    // hold to, and what the band's edges are widened to say.
+    let fit_target = (tol.confusion() * 2e3).max(2e-4);
 
     // The band: each station's exact ball arc, fitted open along the
     // stations — same arcs as the closed case, no wrap. Sampled twice as
@@ -1782,6 +1924,18 @@ fn host_leg(
             rail_chart[i].x = u;
         }
     }
+    if let Some(period) = period_v_of(host) {
+        for i in 1..rail_chart.len() {
+            let mut v = rail_chart[i].y;
+            while v - rail_chart[i - 1].y > period / 2.0 {
+                v -= period;
+            }
+            while rail_chart[i - 1].y - v > period / 2.0 {
+                v += period;
+            }
+            rail_chart[i].y = v;
+        }
+    }
     let winding = period_of(host).map_or(0.0, |period| {
         // The unwrapped loop's chart displacement over one closing step,
         // rounded to whole periods.
@@ -1807,7 +1961,9 @@ fn host_leg(
     // the band runs every period forward — its chart image inverted in
     // closed form and unwrapped for continuity.
     let chart_run = |guide: &Curve| -> OgeomResult<(Vec<f64>, Vec<Point2>)> {
-        let samples = 96;
+        // Dense enough for a loop round a bore on a cone, whose image bends
+        // hard where the bore leaves the wall; a fit through fewer misses.
+        let samples = 256;
         let mut params: Vec<f64> = Vec::with_capacity(samples + 1);
         let mut chart: Vec<Point2> = Vec::with_capacity(samples + 1);
         let mut prev: Option<Point2> = None;
@@ -1930,11 +2086,17 @@ fn windowed(
             let (lo, hi) = pad(v);
             ogeom_geom::CylinderSurface::new(c.cylinder(), (lo, hi))?.into()
         }
+        SurfaceGeometry::Cone(c) => {
+            let (lo, hi) = pad(v);
+            ogeom_geom::ConeSurface::new(c.cone(), (lo, hi))?.into()
+        }
         SurfaceGeometry::Plane(p) => {
             let (ulo, uhi) = pad(u);
             let (vlo, vhi) = pad(v);
             ogeom_geom::PlaneSurface::over(p.plane(), (ulo, uhi), (vlo, vhi))?.into()
         }
+        // A sphere or a torus is its whole self: neither has a window to
+        // cut, and a leg on one pairs with what its rings bound.
         other => other.clone(),
     })
 }
@@ -1942,7 +2104,18 @@ fn windowed(
 /// The chart period in `u`, for surfaces that have one.
 fn period_of(surface: &SurfaceGeometry) -> Option<f64> {
     match surface {
-        SurfaceGeometry::Cylinder(_) => Some(core::f64::consts::TAU),
+        SurfaceGeometry::Cylinder(_)
+        | SurfaceGeometry::Cone(_)
+        | SurfaceGeometry::Sphere(_)
+        | SurfaceGeometry::Torus(_) => Some(core::f64::consts::TAU),
+        _ => None,
+    }
+}
+
+/// The chart period in `v`, for the one surface that has one.
+fn period_v_of(surface: &SurfaceGeometry) -> Option<f64> {
+    match surface {
+        SurfaceGeometry::Torus(_) => Some(core::f64::consts::TAU),
         _ => None,
     }
 }
@@ -1954,7 +2127,6 @@ fn chart_of(
     prev: Option<Point2>,
     tol: Tolerances,
 ) -> OgeomResult<Point2> {
-    let _ = tol;
     let raw = match surface {
         SurfaceGeometry::Plane(pl) => {
             let local = pl.plane().frame().to_local(p);
@@ -1964,6 +2136,18 @@ fn chart_of(
             let local = c.cylinder().frame().to_local(p);
             Point2::new(local.y.atan2(local.x), local.z)
         }
+        SurfaceGeometry::Cone(c) => {
+            let (u, v) = ogeom_math::elementary::cone_parameters(&c.cone(), p, tol)?;
+            Point2::new(u, v)
+        }
+        SurfaceGeometry::Sphere(s) => {
+            let (u, v) = ogeom_math::elementary::sphere_parameters(&s.sphere(), p, tol)?;
+            Point2::new(u, v)
+        }
+        SurfaceGeometry::Torus(t) => {
+            let (u, v) = ogeom_math::elementary::torus_parameters(&t.torus(), p, tol)?;
+            Point2::new(u, v)
+        }
         _ => ogeom_bail!(
             Construction,
             "no closed-form chart inversion for this surface"
@@ -1972,17 +2156,23 @@ fn chart_of(
     let Some(prev) = prev else {
         return Ok(raw);
     };
-    let Some(period) = period_of(surface) else {
-        return Ok(raw);
+    let unwrap = |x: f64, from: f64, period: Option<f64>| -> f64 {
+        let Some(period) = period else {
+            return x;
+        };
+        let mut x = x;
+        while x - from > period / 2.0 {
+            x -= period;
+        }
+        while from - x > period / 2.0 {
+            x += period;
+        }
+        x
     };
-    let mut u = raw.x;
-    while u - prev.x > period / 2.0 {
-        u -= period;
-    }
-    while prev.x - u > period / 2.0 {
-        u += period;
-    }
-    Ok(Point2::new(u, raw.y))
+    Ok(Point2::new(
+        unwrap(raw.x, prev.x, period_of(surface)),
+        unwrap(raw.y, prev.y, period_v_of(surface)),
+    ))
 }
 
 /// The signed area a closed chart image encloses, by the shoelace.

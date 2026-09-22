@@ -16,7 +16,7 @@ use crate::support::{
     revolved_seat, segment_between,
 };
 use ogeom_algo::{Built, make_edge_between, make_revolution_band, make_vertex};
-use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
+use ogeom_core::{OgeomError, OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{
     CircleCurve, Curve, CylinderSurface, PlaneSurface, SurfaceGeometry, TorusSurface,
 };
@@ -36,7 +36,7 @@ use ogeom_topo::{Model, Shape};
 ///
 /// # Errors
 ///
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the edge is
+/// [`OgeomError::Construction`] if the edge is
 /// neither of the seats above, is concave, or `radius` is not a usable
 /// length.
 pub fn fillet_edge(
@@ -83,13 +83,25 @@ fn fillet_edge_meeting(
     let closed = ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
     match curve {
         Curve::Line(_) => planar_fillet(model, solid, edge, radius, mates, tol),
-        Curve::Circle(c) if closed => revolved_fillet(model, solid, edge, &c, radius, tol),
         Curve::Circle(c) => {
+            // A rim on a planar cap and its coaxial wall is the revolved
+            // blend's, exact; a circle on any other pair of hosts — a bore
+            // down a ball's axis, a ring's own rim — is a seat like any
+            // other for the march.
+            let seat = match revolved_seat(model, solid, edge, &c, tol) {
+                Ok(seat) => seat,
+                Err(OgeomError::Construction(_)) => {
+                    return crate::marched::marched_fillet(model, solid, edge, radius, mates, tol);
+                }
+                Err(e) => return Err(e),
+            };
+            if closed {
+                return revolved_fillet(model, solid, edge, &c, radius, tol);
+            }
             // An open arc is two different seats: a piece a boolean split
             // off a full rim, whose blend must run the whole turn, or a rim
             // that genuinely stops — a stadium's rounded end. The wall
             // itself answers: probe it just below the arc's complement.
-            let seat = revolved_seat(model, solid, edge, &c, tol)?;
             let frame = seat.frame_at(seat.centre, tol)?;
             let angle_of = |t: f64| -> OgeomResult<f64> {
                 use ogeom_geom::Curve3d as _;

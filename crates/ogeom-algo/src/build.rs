@@ -1481,10 +1481,16 @@ pub fn make_band_between(
     // cylinder, and refused by name elsewhere.
     let (start0, start1) = (prepared[0].start, prepared[1].start);
     let dcol = start1.x - start0.x;
-    // The iso is for rings genuinely sharing a column; starts even a whisker
-    // apart take the chart segment, which meets both start vertices exactly
-    // where an off-column iso would miss one by the offset times the radius.
-    let (seam, up_is_forward, chart_from, chart_to) = if dcol.abs() <= 1e-12 {
+    // The iso is for rings sharing a column to within the confusion
+    // distance — the offset times the chart's stretch there, since an
+    // off-column iso misses a start vertex by exactly that. Starts further
+    // apart take the chart segment, which meets both exactly; a segment
+    // spanning less than confusion would be an edge with no length.
+    let stretch = {
+        let (du, _) = surface.d1_at(start0.x, start0.y, tol)?;
+        du.magnitude().max(1.0)
+    };
+    let (seam, up_is_forward, chart_from, chart_to) = if dcol.abs() * stretch <= tol.confusion() {
         let column = start0.x;
         let (va, vb) = (start0.y, start1.y);
         let Some(seam_curve) = surface_iso_u_curve(surface, column, tol) else {
@@ -1512,18 +1518,84 @@ pub fn make_band_between(
             iso_curve_parameter_at(surface, range.0),
             iso_curve_parameter_at(surface, range.1),
         );
+        // A ring fitted through its stations starts a fit error off the
+        // exact column; its start vertex owns that slop.
+        for (vertex, at) in [(&from, curve_range.0), (&to, curve_range.1)] {
+            let Some(data) = model.node(vertex).and_then(|n| n.data().as_vertex()) else {
+                ogeom_bail!(Construction, "a band ring's start vertex holds no point");
+            };
+            let placed = vertex.transform(model.datums())?.apply(data.point);
+            let miss = seam_curve.point_at(at, tol)?.distance(placed);
+            if miss > tol.confusion() {
+                model.widen(vertex, ogeom_core::Tolerance::new(miss * 2.0)?)?;
+            }
+        }
         let seam = make_edge_between(model, seam_curve, curve_range, &from, &to, tol)?.shape;
         let (a, b) = (
             ogeom_math::Point2::new(column, range.0),
             ogeom_math::Point2::new(column, range.1),
         );
         (seam, !downward, a, b)
+    } else if !matches!(surface, SurfaceGeometry::Cylinder(_)) {
+        // On any other surface the chart segment lifts to a curve with no
+        // closed form — a loxodrome on a sphere, a skew run on a torus —
+        // and is fitted through it, at the chart's own arc length so the
+        // curve and its images share one parameter. The fit's error is the
+        // vertices' to carry.
+        let (a, b, from, to, forward) = if dcol > 0.0 {
+            (
+                start0,
+                start1,
+                prepared[0].vertex.clone(),
+                prepared[1].vertex.clone(),
+                true,
+            )
+        } else {
+            (
+                start1,
+                start0,
+                prepared[1].vertex.clone(),
+                prepared[0].vertex.clone(),
+                false,
+            )
+        };
+        let length = (b.x - a.x).hypot(b.y - a.y);
+        const SAMPLES: usize = 64;
+        let mut params: Vec<f64> = Vec::with_capacity(SAMPLES + 1);
+        let mut lifted: Vec<Point> = Vec::with_capacity(SAMPLES + 1);
+        for i in 0..=SAMPLES {
+            #[allow(clippy::cast_precision_loss)]
+            let f = i as f64 / SAMPLES as f64;
+            params.push(length * f);
+            lifted.push(surface.point_at(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, tol)?);
+        }
+        let target = tol.confusion() * 1e3;
+        let fitted = ogeom_geom::fit::fit_points_at(&params, &lifted, 3, target, tol)?;
+        if !fitted.met {
+            ogeom_bail!(
+                NotDone,
+                "a band's connector reached {} against a target of {target}",
+                fitted.error
+            );
+        }
+        let connector: ogeom_geom::Curve = ogeom_geom::Curve::BSpline(fitted.curve);
+        let miss = connector
+            .point_at(0.0, tol)?
+            .distance(lifted[0])
+            .max(connector.point_at(length, tol)?.distance(lifted[SAMPLES]));
+        if miss > tol.confusion() {
+            let widened = ogeom_core::Tolerance::new(miss * 2.0)?;
+            model.widen(&from, widened)?;
+            model.widen(&to, widened)?;
+        }
+        let seam = make_edge_between(model, connector, (0.0, length), &from, &to, tol)?.shape;
+        (seam, forward, a, b)
     } else {
         let SurfaceGeometry::Cylinder(c) = surface else {
             ogeom_bail!(
                 Construction,
                 "a band whose rings start on different columns needs a chart \
-                 connector only a cylinder speaks exactly"
+                 connector; the surface above was not a cylinder"
             );
         };
         let cylinder = c.cylinder();

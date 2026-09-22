@@ -551,7 +551,18 @@ impl Condition for BallContact<'_> {
         // One more: the section stands in the plane through the guide point
         // square to the guide. Stated with the *unnormalized* tangent, which
         // is the same plane and a simpler derivative.
-        let w = x[4];
+        // A looping guide is evaluated on its loop: the walker's trial step
+        // may propose a parameter a hair past the end, and a fitted loop —
+        // closed, not periodic — refuses it, so the step fails and the march
+        // stalls at the join instead of crossing it.
+        let w = {
+            let (lo, hi) = self.guide.domain();
+            if self.guide_loops && hi > lo {
+                lo + (x[4] - lo).rem_euclid(hi - lo)
+            } else {
+                x[4]
+            }
+        };
         let derivatives = self.guide.derivatives_at(w, 2, tol).ok()?;
         let g = Point::ORIGIN + derivatives[0];
         let (gd, gdd) = (derivatives[1], *derivatives.get(2).unwrap_or(&Vector::ZERO));
