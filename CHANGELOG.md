@@ -11,6 +11,13 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **A skinned loft caps a non-planar end section.** A wavy rim, on which
+  no plane can stand, is capped by a patch skinned from the rim down to a
+  point inside it, sharing the wall's ring edge; the loft used to refuse
+  it. A planar end keeps its plane.
+
 ### Fixed
 
 - **A face narrower than the chord shaded as a saw of fins.** Drawn at

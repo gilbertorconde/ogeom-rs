@@ -1191,9 +1191,9 @@ restriction = """The ruled loft takes two closed wire sections — coaxial \
 parallel circles, or polygons of the same corner count whose ruled walls \
 come out planar — or a section and a point: a cone on a circle's own axis, \
 an exact pyramid over any straight loop. The skinned loft takes N closed \
-sections — planar at the ends, where the caps stand; wavy in the middle, \
-where nothing does — ends at a point on request, loops back on itself, and \
-takes per-section alignment hints. A ruled wall between two segments that \
+sections, planar or not — a planar end is capped by its plane, a wavy end \
+by a patch skinned from the rim to a point inside it — ends at a point on \
+request, loops back on itself, and takes per-section alignment hints. A ruled wall between two segments that \
 are not coplanar is the bilinear patch through its four corners, exact, so \
 polygon sections may be turned against each other; mixed edge counts are \
 authorship, not geometry, and stay with the skinned resampling."""

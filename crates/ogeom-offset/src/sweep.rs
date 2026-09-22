@@ -976,15 +976,26 @@ fn adopt_border(
 
 /// A solid skinned over a grid of section samples: [`skinned_wall`] with a
 /// planar cap over each end ring.
+/// How a skinned solid's end is closed.
+#[derive(Debug, Clone, Copy)]
+enum EndCap {
+    /// The section is planar: a plane face, its normal pointing out.
+    Plane(Vector),
+    /// The section is not: a patch skinned from the ring down to a point
+    /// inside it, sharing the wall's ring edge.
+    Skinned,
+}
+
 fn skinned_solid(
     model: &mut Model,
     rows: &[Vec<Point>],
-    cap_outward: (Vector, Vector),
+    caps: (EndCap, EndCap),
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let wall = skinned_wall(model, rows, (None, None), tolerance, tol)?;
     let u_dom = wall.u_dom;
+    let inside = centroid_of(rows);
 
     let cap = |model: &mut Model,
                ring: &Shape,
@@ -1026,8 +1037,32 @@ fn skinned_solid(
         )?;
         Ok(face)
     };
-    let cap0 = cap(model, &wall.ring0, wall.curve0.clone(), cap_outward.0)?;
-    let cap1 = cap(model, &wall.ring1, wall.curve1.clone(), cap_outward.1)?;
+    let close =
+        |model: &mut Model, end: EndCap, ring: &Shape, curve: &ogeom_geom::Curve, row: &[Point]| {
+            match end {
+                EndCap::Plane(outward) => cap(model, ring, curve.clone(), outward),
+                EndCap::Skinned => {
+                    // The ring, a row halfway in, and the point the rest of
+                    // the ring's rows collapse to: the section's own centroid,
+                    // which a closed section winds round.
+                    let apex = centroid_of(std::slice::from_ref(&row.to_vec()));
+                    let half: Vec<Point> = row
+                        .iter()
+                        .map(|p| Point::from_vector((p.to_vector() + apex.to_vector()) * 0.5))
+                        .collect();
+                    let rows = [row.to_vec(), half, vec![apex; row.len()]];
+                    Ok(apex_patch(model, &rows, Some(ring), inside, tolerance, tol)?.0)
+                }
+            }
+        };
+    let cap0 = close(model, caps.0, &wall.ring0, &wall.curve0, &rows[0])?;
+    let cap1 = close(
+        model,
+        caps.1,
+        &wall.ring1,
+        &wall.curve1,
+        &rows[rows.len() - 1],
+    )?;
 
     let faces = [wall.face, cap0, cap1];
     let sewn = sew(model, &faces, tol)?;
@@ -1037,17 +1072,20 @@ fn skinned_solid(
     make_solid(model, std::slice::from_ref(&sewn.shells[0]))
 }
 
-/// A solid skinned down to a point: [`skinned_wall`]'s construction with the
-/// top ring replaced by the apex — a degenerate edge on one vertex, bounding
-/// the chart's whole top row the way a cone's apex bounds a countersink.
-/// One cap, at the open end; the apex end closes by construction.
-fn skinned_solid_to_apex(
+/// A patch skinned from a ring down to a point: [`skinned_wall`]'s
+/// construction with the top ring replaced by the apex — a degenerate
+/// edge on one vertex, bounding the chart's whole top row the way a cone's
+/// apex bounds a countersink. The ring edge is adopted from `shared`
+/// where a neighbour already built it, and the face is turned to point
+/// away from `inside`. Returns the face and its ring edge.
+fn apex_patch(
     model: &mut Model,
     rows: &[Vec<Point>],
-    cap_outward: Vector,
+    shared: Option<&Shape>,
+    inside: Point,
     tolerance: f64,
     tol: Tolerances,
-) -> OgeomResult<Built> {
+) -> OgeomResult<(Shape, Shape)> {
     use ogeom_geom::Surface as _;
     let mut closed_rows: Vec<Vec<Point>> = Vec::with_capacity(rows.len());
     for row in rows {
@@ -1093,7 +1131,20 @@ fn skinned_solid_to_apex(
     let surface_geo: SurfaceGeometry = surface.into();
     let surface_id = model.geometry_mut().add_surface(surface_geo.clone());
 
-    let ring0 = make_edge(model, ring_curve.clone(), u_dom, tol)?.shape;
+    // The ring a neighbour built is adopted, not refitted (see `adopt_border`).
+    let ring0 = match shared {
+        Some(edge) => {
+            adopt_border(
+                model,
+                edge,
+                &surface_geo,
+                fitted.error + tol.confusion(),
+                tol,
+            )?;
+            edge.clone()
+        }
+        None => make_edge(model, ring_curve.clone(), u_dom, tol)?.shape,
+    };
     let anchor0 = ogeom_algo::edge_vertices(model, &ring0)?
         .map(|(a, _)| a)
         .ok_or_else(|| ogeom_core::ogeom_err!(Construction, "a skinned ring has no vertex"))?;
@@ -1150,40 +1201,58 @@ fn skinned_solid_to_apex(
         v_dom,
     )?;
 
-    let wall = {
-        let wire = ogeom_algo::make_wire(
-            model,
-            &[
-                ring0.clone(),
-                seam.clone(),
-                apex_edge.reversed(),
-                seam.reversed(),
-            ],
-            tol,
-        )?
-        .shape;
-        let face =
-            ogeom_algo::make_face_on(model, surface_id, std::slice::from_ref(&wire), tol)?.shape;
-        let mid_u = f64::midpoint(u_dom.0, u_dom.1);
-        let mid_v = f64::midpoint(v_dom.0, v_dom.1);
-        let s_mid = surface_geo.point_at(mid_u, mid_v, tol)?;
-        let (du, dv) = surface_geo.d1_at(mid_u, mid_v, tol)?;
-        let centroid = {
-            let mut c = Vector::new(0.0, 0.0, 0.0);
-            let mut n = 0.0;
-            for row in rows {
-                for p in row {
-                    c += p.to_vector();
-                    n += 1.0;
-                }
-            }
-            Point::from_vector(c / n)
-        };
-        if du.cross(dv).dot(s_mid - centroid) >= 0.0 {
-            face
-        } else {
-            face.reversed()
+    let wire = ogeom_algo::make_wire(
+        model,
+        &[
+            ring0.clone(),
+            seam.clone(),
+            apex_edge.reversed(),
+            seam.reversed(),
+        ],
+        tol,
+    )?
+    .shape;
+    let face = ogeom_algo::make_face_on(model, surface_id, std::slice::from_ref(&wire), tol)?.shape;
+    let mid_u = f64::midpoint(u_dom.0, u_dom.1);
+    let mid_v = f64::midpoint(v_dom.0, v_dom.1);
+    let s_mid = surface_geo.point_at(mid_u, mid_v, tol)?;
+    let (du, dv) = surface_geo.d1_at(mid_u, mid_v, tol)?;
+    let face = if du.cross(dv).dot(s_mid - inside) >= 0.0 {
+        face
+    } else {
+        face.reversed()
+    };
+    Ok((face, ring0))
+}
+
+/// The mean of every point in every row.
+fn centroid_of(rows: &[Vec<Point>]) -> Point {
+    let mut c = Vector::new(0.0, 0.0, 0.0);
+    let mut n = 0.0;
+    for row in rows {
+        for p in row {
+            c += p.to_vector();
+            n += 1.0;
         }
+    }
+    Point::from_vector(c / n)
+}
+
+/// A solid skinned down to a point: [`apex_patch`] for the wall, and one
+/// cap at the open end; the apex end closes by construction.
+fn skinned_solid_to_apex(
+    model: &mut Model,
+    rows: &[Vec<Point>],
+    cap_outward: Vector,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    use ogeom_geom::Curve3d as _;
+    let inside = centroid_of(rows);
+    let (wall, ring0) = apex_patch(model, rows, None, inside, tolerance, tol)?;
+    let (ring_curve, u_dom) = {
+        let (curve, range) = spine_curve_of(model, &ring0)?;
+        (curve, range)
     };
 
     // One cap, on the open end; the machinery is skinned_solid's, inlined
@@ -1664,7 +1733,13 @@ pub fn make_loft_skinned_aligned(
         let n = planes[planes.len() - 1].normal().vector();
         if n.dot(towards) > 0.0 { -n } else { n }
     };
-    let mut built = skinned_solid(model, &rows, (outward0, outward1), tolerance, tol)?;
+    let mut built = skinned_solid(
+        model,
+        &rows,
+        (EndCap::Plane(outward0), EndCap::Plane(outward1)),
+        tolerance,
+        tol,
+    )?;
     for section in sections {
         built.history.generate(section, built.shape.clone());
     }
@@ -1961,23 +2036,21 @@ pub fn make_loft_skinned(
         cap_planes.push(ogeom_algo::find_plane(model, wire, tol)?);
         rows.push(sample_wire(model, wire, AROUND, tol)?);
     }
-    let outward_at =
-        |rows: &[Vec<Point>], planes: &[Option<Plane>], end: bool| -> OgeomResult<Vector> {
-            let (i, j) = if end {
-                (rows.len() - 1, rows.len() - 2)
-            } else {
-                (0, 1)
-            };
-            let Some(plane) = &planes[i] else {
-                ogeom_bail!(
-                    Construction,
-                    "a loft's end section must be planar; a cap stands on it"
-                );
-            };
-            let towards = rows[j][0] - rows[i][0];
-            let n = plane.normal().vector();
-            Ok(if n.dot(towards) > 0.0 { -n } else { n })
+    // A planar end is capped by its plane; one that is not — a wavy rim —
+    // by a patch skinned from the ring to a point inside it.
+    let outward_at = |rows: &[Vec<Point>], planes: &[Option<Plane>], end: bool| -> EndCap {
+        let (i, j) = if end {
+            (rows.len() - 1, rows.len() - 2)
+        } else {
+            (0, 1)
         };
+        let Some(plane) = &planes[i] else {
+            return EndCap::Skinned;
+        };
+        let towards = rows[j][0] - rows[i][0];
+        let n = plane.normal().vector();
+        EndCap::Plane(if n.dot(towards) > 0.0 { -n } else { n })
+    };
     let mut built = if let Some(apex) = apex {
         if rows.len() < 2 {
             // One ring to a point is exact machinery's job when it can be;
@@ -1989,12 +2062,20 @@ pub fn make_loft_skinned(
                 .collect();
             rows.push(half);
         }
-        let outward0 = outward_at(&rows, &cap_planes, false)?;
+        let outward0 = match outward_at(&rows, &cap_planes, false) {
+            EndCap::Plane(n) => n,
+            EndCap::Skinned => {
+                ogeom_bail!(
+                    Construction,
+                    "a loft to a point starts from a planar section; a cap stands on it"
+                );
+            }
+        };
         rows.push(vec![apex; AROUND]);
         skinned_solid_to_apex(model, &rows, outward0, tolerance, tol)?
     } else {
-        let outward0 = outward_at(&rows, &cap_planes, false)?;
-        let outward1 = outward_at(&rows, &cap_planes, true)?;
+        let outward0 = outward_at(&rows, &cap_planes, false);
+        let outward1 = outward_at(&rows, &cap_planes, true);
         skinned_solid(model, &rows, (outward0, outward1), tolerance, tol)?
     };
     for section in sections {
@@ -2159,7 +2240,10 @@ pub fn make_pipe_skinned(
     let mut built = skinned_solid(
         model,
         &rows,
-        (-stations[0].tangent, stations[STATIONS - 1].tangent),
+        (
+            EndCap::Plane(-stations[0].tangent),
+            EndCap::Plane(stations[STATIONS - 1].tangent),
+        ),
         tolerance,
         tol,
     )?;

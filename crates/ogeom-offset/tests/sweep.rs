@@ -1197,6 +1197,67 @@ fn a_non_planar_middle_section_lofts() {
     );
 }
 
+/// A wavy *end* section is capped too: by a patch skinned from the rim
+/// down to a point inside it, where a plane cannot stand on it.
+///
+/// The rim waves as `sin 3a`, whose mean is zero, so the volume the skinned
+/// cap adds over the rim's mean plane cancels the volume it takes away, and
+/// the solid measures as the frustum between the two rims' planes.
+#[test]
+fn a_non_planar_end_section_is_capped_by_a_skinned_patch() {
+    let mut model = ogeom_topo::Model::new();
+    let s0 = {
+        let frame = Frame::new(
+            Point::ORIGIN,
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let circle = Circle::new(frame, 10.0, T).unwrap();
+        let curve = ogeom_geom::Curve::Circle(ogeom_geom::CircleCurve::new(circle));
+        let domain = curve.domain();
+        let edge = ogeom_algo::make_edge(&mut model, curve, domain, T)
+            .unwrap()
+            .shape;
+        ogeom_algo::make_wire(&mut model, std::slice::from_ref(&edge), T)
+            .unwrap()
+            .shape
+    };
+    let wavy = {
+        let n = 64_i32;
+        let pts: Vec<Point> = (0..=n)
+            .map(|i| {
+                let a = core::f64::consts::TAU * f64::from(i % n) / f64::from(n);
+                Point::new(8.0 * a.cos(), 8.0 * a.sin(), 5.0 + 0.5 * (3.0 * a).sin())
+            })
+            .collect();
+        let fitted = ogeom_geom::fit::fit_points_closed(&pts, 3, 1e-3, T).unwrap();
+        let curve = ogeom_geom::Curve::BSpline(fitted.curve);
+        let domain = curve.domain();
+        let edge = ogeom_algo::make_edge(&mut model, curve, domain, T)
+            .unwrap()
+            .shape;
+        ogeom_algo::make_wire(&mut model, std::slice::from_ref(&edge), T)
+            .unwrap()
+            .shape
+    };
+    let built = ogeom_offset::make_loft_skinned(&mut model, &[s0, wavy], 5e-2, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let faces =
+        ogeom_topo::explore_unique(&model, &built.shape, ogeom_topo::ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 3, "a wall, a plane cap and a skinned cap");
+    let mesh = ogeom_mesh::triangulate(&model, &built.shape, fine(), T).unwrap();
+    assert!(mesh.is_closed(), "the skinned cap closes the solid");
+    let v = volume(&model, &built.shape);
+    let frustum = core::f64::consts::PI * 5.0 / 3.0 * (100.0 + 80.0 + 64.0);
+    assert!(
+        (v - frustum).abs() < frustum * 0.02,
+        "loft with a wavy rim measures {v} against the frustum's {frustum}"
+    );
+}
+
 /// A faceted profile round a closed circular spine: the square torus, whose
 /// volume Pappus names exactly — side² × 2πR.
 #[test]
