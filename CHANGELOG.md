@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A stated-tolerance fit for what has no exact spline, and a degree
+  limit.** `Curve::to_bspline` still refuses a helix, an offset curve or a
+  surface curve rather than approximate silently; `Curve::fitted_bspline_over`
+  is the explicit ask, fitting the curve at its own parameters to a named
+  tolerance, measured between the samples as well as at them, the error
+  reported as found. `BSplineCurve::restricted_to_degree` and
+  `BSplineSurface::restricted_to_degree` bring a curve or a patch under a
+  degree limit the same way, which is what an exchange format with limits
+  needs written.
 - **B-spline curves and patches extend.** A B-spline used to end where
   its net ended: an analytic surface's window widens over its carrier,
   but a patch had nothing past its last row. `BSplineCurve::extended`

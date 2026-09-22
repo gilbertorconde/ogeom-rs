@@ -37,7 +37,9 @@ use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Frame, KnotVector, Point, Weighted};
 
 use crate::curve::{BSplineCurve, Curve};
+use crate::fit::{self, Fitted};
 use crate::traits::{Curve3d, Surface};
+use ogeom_core::ogeom_err;
 
 /// The widest span one rational quadratic Bézier is allowed to cover.
 ///
@@ -377,6 +379,195 @@ fn reverse(curve: &BSplineCurve) -> OgeomResult<BSplineCurve> {
 }
 
 /// A spline over `[0, 1]`, whatever it was over.
+impl Curve {
+    /// This curve as a B-spline *fitted* over `range` to a stated
+    /// tolerance, at the curve's own parameters.
+    ///
+    /// The approximation [`Curve::to_bspline`] refuses to make silently:
+    /// a helix, an offset curve, a curve on a surface — anything with no
+    /// exact rational form — is sampled at its own parameters and fitted
+    /// through them, the fit measured against the curve *between* the
+    /// samples as well as at them, and the sampling doubled until the
+    /// tolerance is met or the budget runs out. The result is
+    /// same-parameter with the curve, so every chart already speaking the
+    /// curve's parameter still does, and its `error` is what was measured,
+    /// not what was asked.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+    /// the range is empty or the tolerance is not a distance; as
+    /// [`fit::fit_points_at`].
+    pub fn fitted_bspline_over(
+        &self,
+        range: (f64, f64),
+        tolerance: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<Fitted<BSplineCurve>> {
+        same_parameter_fit(self, range, 3, tolerance, tol)
+    }
+}
+
+impl BSplineCurve {
+    /// This curve at a degree no higher than `max_degree`, to a stated
+    /// tolerance: itself where it already is, and otherwise a fit at its
+    /// own parameters — what an exchange format with a degree limit needs
+    /// written. Same-parameter with the original, error measured.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+    /// `max_degree` is zero, the curve is periodic — a ring has no ends to
+    /// fit between — or the tolerance is not a distance.
+    pub fn restricted_to_degree(
+        &self,
+        max_degree: usize,
+        tolerance: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<Fitted<Self>> {
+        if max_degree == 0 {
+            ogeom_bail!(Construction, "a curve needs a degree of at least one");
+        }
+        if self.degree() <= max_degree {
+            return Ok(Fitted {
+                curve: self.clone(),
+                error: 0.0,
+                met: true,
+            });
+        }
+        if self.is_periodic() {
+            ogeom_bail!(
+                Construction,
+                "a periodic curve has no ends to fit between; reseam it first"
+            );
+        }
+        let domain = self.domain();
+        same_parameter_fit(
+            &Curve::BSpline(self.clone()),
+            domain,
+            max_degree,
+            tolerance,
+            tol,
+        )
+    }
+}
+
+impl crate::surface::BSplineSurface {
+    /// This patch at degrees no higher than `max_degree` in either
+    /// direction, to a stated tolerance: itself where it already is, and
+    /// otherwise a fit through a grid of its own points, the grid doubled
+    /// until the fit holds every sample to the tolerance or the budget
+    /// runs out. The fit's parameterization is its own — chord-length
+    /// through the grid, not the patch's — so a pcurve spoken against the
+    /// patch must be re-derived against the result.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+    /// `max_degree` is zero or the tolerance is not a distance; as
+    /// [`fit::fit_surface_grid`].
+    pub fn restricted_to_degree(
+        &self,
+        max_degree: usize,
+        tolerance: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<Fitted<Self>> {
+        if max_degree == 0 {
+            ogeom_bail!(Construction, "a patch needs a degree of at least one");
+        }
+        if self.u_knots().degree() <= max_degree && self.v_knots().degree() <= max_degree {
+            return Ok(Fitted {
+                curve: self.clone(),
+                error: 0.0,
+                met: true,
+            });
+        }
+        if !(tolerance > 0.0 && tolerance.is_finite()) {
+            ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
+        }
+        let ((ua, ub), (va, vb)) = self.domain();
+        let mut samples = 16usize;
+        let mut best: Option<Fitted<Self>> = None;
+        for _ in 0..4 {
+            let mut rows: Vec<Vec<Point>> = Vec::with_capacity(samples + 1);
+            for j in 0..=samples {
+                #[allow(clippy::cast_precision_loss)]
+                let v = va + (vb - va) * j as f64 / samples as f64;
+                let mut row = Vec::with_capacity(samples + 1);
+                for i in 0..=samples {
+                    #[allow(clippy::cast_precision_loss)]
+                    let u = ua + (ub - ua) * i as f64 / samples as f64;
+                    row.push(self.point_at(u, v, tol)?);
+                }
+                rows.push(row);
+            }
+            let fitted = fit::fit_surface_grid(&rows, max_degree, tolerance, tol)?;
+            if fitted.met {
+                return Ok(fitted);
+            }
+            if best.as_ref().is_none_or(|b| fitted.error < b.error) {
+                best = Some(fitted);
+            }
+            samples *= 2;
+        }
+        best.ok_or_else(|| ogeom_err!(Construction, "the patch could not be sampled"))
+    }
+}
+
+/// A fit of `curve` over `range` at the curve's own parameters, measured
+/// between the samples as well as at them, the sampling doubled until the
+/// tolerance is met or the budget runs out.
+fn same_parameter_fit(
+    curve: &Curve,
+    range: (f64, f64),
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<BSplineCurve>> {
+    let (lo, hi) = range;
+    if !lo.is_finite() || !hi.is_finite() || hi <= lo + tol.parametric() {
+        ogeom_bail!(Construction, "cannot fit over an empty range [{lo}, {hi}]");
+    }
+    if !(tolerance > 0.0 && tolerance.is_finite()) {
+        ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
+    }
+    let mut samples = 32usize;
+    let mut best: Option<Fitted<BSplineCurve>> = None;
+    for _ in 0..8 {
+        #[allow(clippy::cast_precision_loss)]
+        let params: Vec<f64> = (0..=samples)
+            .map(|i| lo + (hi - lo) * i as f64 / samples as f64)
+            .collect();
+        let points = params
+            .iter()
+            .map(|t| curve.point_at(*t, tol))
+            .collect::<OgeomResult<Vec<Point>>>()?;
+        let fitted = fit::fit_points_at(&params, &points, degree, tolerance, tol)?;
+        let mut error = fitted.error;
+        for pair in params.windows(2) {
+            let t = f64::midpoint(pair[0], pair[1]);
+            error = error.max(
+                curve
+                    .point_at(t, tol)?
+                    .distance(fitted.curve.point_at(t, tol)?),
+            );
+        }
+        let candidate = Fitted {
+            curve: fitted.curve,
+            error,
+            met: error <= tolerance,
+        };
+        if candidate.met {
+            return Ok(candidate);
+        }
+        if best.as_ref().is_none_or(|b| error < b.error) {
+            best = Some(candidate);
+        }
+        samples *= 2;
+    }
+    best.ok_or_else(|| ogeom_err!(Construction, "the curve could not be sampled"))
+}
+
 fn normalized(curve: BSplineCurve) -> OgeomResult<BSplineCurve> {
     let knots = curve.knots().reparameterized(0.0, 1.0)?;
     BSplineCurve::rational(knots, curve.control_points().to_vec())
@@ -394,6 +585,92 @@ mod tests {
     };
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// A helix has no exact form and the exact conversion still says so;
+    /// asked for a fit at a stated tolerance, it comes back same-parameter
+    /// with the helix, within the tolerance everywhere, the error reported
+    /// as measured.
+    #[test]
+    fn a_helix_fits_to_a_stated_tolerance_at_its_own_parameters() {
+        let helix: Curve = crate::curve::HelixCurve::new(ogeom_math::Frame::WORLD, 5.0, 4.0, 2.0)
+            .unwrap()
+            .into();
+        assert!(helix.to_bspline(T).is_err(), "the exact conversion refuses");
+        let domain = helix.domain();
+        let fitted = helix.fitted_bspline_over(domain, 1e-3, T).unwrap();
+        assert!(fitted.met && fitted.error <= 1e-3, "error {}", fitted.error);
+        let (lo, hi) = fitted.curve.domain();
+        assert!((lo - domain.0).abs() < 1e-12 && (hi - domain.1).abs() < 1e-12);
+        for i in 0..=200 {
+            let t = domain.0 + (domain.1 - domain.0) * f64::from(i) / 200.0;
+            let gap = helix
+                .point_at(t, T)
+                .unwrap()
+                .distance(fitted.curve.point_at(t, T).unwrap());
+            assert!(gap <= 1e-3, "same-parameter within tolerance at {t}: {gap}");
+        }
+    }
+
+    /// A cubic raised to a quintic restricted back to degree three is the
+    /// cubic again, to rounding; one already low enough is itself.
+    #[test]
+    fn a_curve_restricted_in_degree_holds_its_tolerance() {
+        let cubic = BSplineCurve::new(
+            ogeom_math::KnotVector::clamped_uniform(3, 6).unwrap(),
+            vec![
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(1.0, 2.0, 0.5),
+                Point::new(2.5, 1.0, -0.5),
+                Point::new(4.0, 3.0, 1.0),
+                Point::new(5.0, 0.5, 0.0),
+                Point::new(6.0, 2.0, 2.0),
+            ],
+            T,
+        )
+        .unwrap();
+        let quintic = cubic.elevated(T).unwrap().elevated(T).unwrap();
+        assert_eq!(quintic.degree(), 5);
+        let same = quintic.restricted_to_degree(5, 1e-6, T).unwrap();
+        assert!(same.met && same.error == 0.0 && same.curve.degree() == 5);
+        let back = quintic.restricted_to_degree(3, 1e-6, T).unwrap();
+        assert!(back.met && back.curve.degree() == 3, "error {}", back.error);
+        let (lo, hi) = cubic.domain();
+        for i in 0..=50 {
+            let t = lo + (hi - lo) * f64::from(i) / 50.0;
+            let gap = cubic
+                .point_at(t, T)
+                .unwrap()
+                .distance(back.curve.point_at(t, T).unwrap());
+            assert!(gap < 1e-6, "the cubic again at {t}: {gap}");
+        }
+    }
+
+    /// A bicubic patch restricted to degree two holds every sample of
+    /// itself to the tolerance asked, at the lower degree both ways.
+    #[test]
+    fn a_patch_restricted_in_degree_holds_its_samples() {
+        let (nu, nv) = (5, 4);
+        let mut points = Vec::with_capacity(nu * nv);
+        for i in 0..nu {
+            for j in 0..nv {
+                #[allow(clippy::cast_precision_loss)]
+                let (x, y) = (i as f64, j as f64);
+                points.push(Point::new(x, y, (x * 0.7).sin() * (y * 0.5).cos() * 0.3));
+            }
+        }
+        let patch = crate::surface::BSplineSurface::new(
+            ogeom_math::KnotVector::clamped_uniform(3, nu).unwrap(),
+            ogeom_math::KnotVector::clamped_uniform(3, nv).unwrap(),
+            &ogeom_math::ControlGrid::new(points, nu, nv).unwrap(),
+            T,
+        )
+        .unwrap();
+        let lower = patch.restricted_to_degree(2, 1e-2, T).unwrap();
+        assert!(lower.met && lower.error <= 1e-2, "error {}", lower.error);
+        assert!(lower.curve.u_knots().degree() == 2 && lower.curve.v_knots().degree() == 2);
+        let same = patch.restricted_to_degree(3, 1e-2, T).unwrap();
+        assert!(same.met && same.error == 0.0);
+    }
 
     /// The greatest distance from any point of the converted curve to the
     /// original, sampled densely.
