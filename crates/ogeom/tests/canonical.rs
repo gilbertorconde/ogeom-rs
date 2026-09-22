@@ -110,3 +110,51 @@ fn a_free_form_wall_stays_free_form() {
         "nothing curved was claimed: {report:?}"
     );
 }
+
+/// A fused post converts to patches that still close.
+///
+/// Fusing a post onto a slab splits the post's rims into two half circles,
+/// and the conversion wrote the second half's pcurve as the straight chart
+/// segment between its projected endpoints — the seam vertex projecting to
+/// either column, it drew the front half mirrored, and the wall's ring lost
+/// its far side. The fit's own slop widened each converted edge past the
+/// vertices that bound it, which the checker refuses. Both are decided by
+/// the edge's own interior now, and the converted solid is as closed and
+/// as large as the analytic one.
+#[test]
+fn a_fused_post_converts_to_patches_that_close() {
+    let mut model = Model::new();
+    let slab = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 2.0), T).unwrap();
+    let frame = Frame::new(
+        Point::new(10.0, 10.0, 2.0),
+        ogeom::math::Direction::Z,
+        ogeom::math::Direction::X,
+        T,
+    )
+    .unwrap();
+    let post = ogeom::algo::make_cylinder(&mut model, frame, 3.0, 8.0, T).unwrap();
+    let joined = ogeom::boolean::fuse(&mut model, &slab.shape, &post.shape, T).unwrap();
+    // Measured at a fine chord: a rational patch meshed at the default
+    // deflection sits inside its drum by more than the check tolerates.
+    let fine = Deflection {
+        chord: 1e-3,
+        ..Deflection::default()
+    };
+    let before = ogeom::algo::volume_properties(&model, &joined.shape, fine, T)
+        .unwrap()
+        .mass;
+
+    let converted = ogeom::algo::to_nurbs(&mut model, &joined.shape, T).unwrap();
+    let diagnosis = ogeom::algo::check(&model, &converted.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let mesh =
+        ogeom::mesh::triangulate(&model, &converted.shape, Deflection::default(), T).unwrap();
+    assert!(mesh.is_closed(), "the converted post draws closed");
+    let after = ogeom::algo::volume_properties(&model, &converted.shape, fine, T)
+        .unwrap()
+        .mass;
+    assert!(
+        (after - before).abs() < before * 5e-3,
+        "converted {after} against {before}"
+    );
+}

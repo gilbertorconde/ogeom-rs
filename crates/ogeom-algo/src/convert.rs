@@ -366,11 +366,21 @@ fn rebuild(
                                     tol,
                                 )?;
                                 // The fit's honest slop rides the edge, so
-                                // every downstream filter widens by it.
-                                if let Some(node) = model.node_mut(&new_edge)
+                                // every downstream filter widens by it —
+                                // and rides its vertices, which bound the
+                                // edge and cannot be held tighter than it.
+                                let widened = if let Some(node) = model.node_mut(&new_edge)
                                     && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
                                 {
                                     data.tolerance = data.tolerance.widen_to(target);
+                                    Some(data.tolerance)
+                                } else {
+                                    None
+                                };
+                                if let Some(widened) = widened {
+                                    for vertex in model.ordered_children_of(&new_edge)? {
+                                        model.widen(&vertex, widened)?;
+                                    }
                                 }
                                 fitted
                             }
@@ -616,11 +626,35 @@ fn exact_iso_pcurve(
         a.y = v;
         b.y = v;
         let span = nu1 - nu0;
-        for u in [&mut a.x, &mut b.x] {
-            if (*u - nu0).abs() < span * 1e-6 || (*u - nu1).abs() < span * 1e-6 {
-                // On the closure both images are the same point; the edge's
-                // own direction decides which end this is.
-            }
+        // On the closure both chart edges image the same point, and the
+        // projection answers with either: a half circle from the seam
+        // round the back was drawn as the segment from the seam to the
+        // half-way column — the *front* half, mirrored — and the wall's
+        // ring lost its far side. The edge's own interior decides which
+        // column a seam endpoint is: the image of a point a little way in
+        // from that end lies on the same side of the chart.
+        let at_seam = |u: &f64| (*u - nu0).abs() < span * 1e-6 || (*u - nu1).abs() < span * 1e-6;
+        let inside = |t: f64| -> OgeomResult<f64> {
+            let p = curve.point_at(t, tol)?;
+            Ok(crate::measure::project_on_surface(surface, p, 24, tol)?
+                .parameters
+                .0)
+        };
+        let middle = f64::midpoint(nu0, nu1);
+        let step = (range.1 - range.0) * 0.02;
+        if at_seam(&a.x) {
+            a.x = if inside(range.0 + step)? < middle {
+                nu0
+            } else {
+                nu1
+            };
+        }
+        if at_seam(&b.x) {
+            b.x = if inside(range.1 - step)? < middle {
+                nu0
+            } else {
+                nu1
+            };
         }
         if (a.x - b.x).abs() < span * 1e-9 {
             // A closed row: the full width, oriented by the curve's start.
