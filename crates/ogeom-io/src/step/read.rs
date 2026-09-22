@@ -19,7 +19,10 @@
 //! report is what keeps the difference visible.
 
 use super::parse::{Arg, Exchange, Instance};
-use ogeom_algo::{make_edge_between, make_face_on, make_shell, make_solid, make_vertex, make_wire};
+use ogeom_algo::{
+    make_edge_between, make_face_on, make_shell, make_solid, make_vertex, make_wire,
+    project_on_curve,
+};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve2d as _;
 use ogeom_geom::Curve3d as _;
@@ -919,7 +922,7 @@ impl Reader<'_> {
         let args = self.args(id, "EDGE_CURVE")?;
         let v1 = args[1].reference().unwrap_or(0);
         let v2 = args[2].reference().unwrap_or(0);
-        let Some(curve) = self.curve(args[3].reference().unwrap_or(0))? else {
+        let Some(mut curve) = self.curve(args[3].reference().unwrap_or(0))? else {
             return Ok(None);
         };
         let same_sense = !args.get(4).is_some_and(|a| a.is_enum("F"));
@@ -963,6 +966,36 @@ impl Reader<'_> {
             _ => {
                 // No closed-form inversion: take the curve's own domain and
                 // hold the endpoints to it.
+                //
+                // A closed edge whose one vertex sits on the curve but away
+                // from its seam — a fitted loop written with its start
+                // wherever the fit began, the vertex millimetres along it —
+                // would otherwise be held to a seam the vertex misses by
+                // that much, and the vertex's tolerance widened to say so.
+                // The seam is moved to the vertex instead: the same curve,
+                // begun where the edge does.
+                if v1 == v2
+                    && let Curve::BSpline(spline) = &curve
+                {
+                    let (lo, hi) = curve.domain();
+                    let gap = curve.point_at(lo, self.tol)?.distance(start);
+                    if gap > self.tol.confusion() * 10.0 {
+                        let samples = (spline.control_points().len() * 8).max(64);
+                        if let Ok(found) = project_on_curve(&curve, start, samples, self.tol)
+                            && found.distance <= self.tol.confusion() * 1e4
+                            && found.parameter > lo + self.tol.parametric()
+                            && found.parameter < hi - self.tol.parametric()
+                            && let Ok(moved) = spline.reseamed_at(found.parameter, self.tol)
+                        {
+                            curve = Curve::BSpline(moved);
+                            self.report.warnings.push(format!(
+                                "#{id}: a closed edge's vertex sits {gap:.2e} along its \
+                                 curve from the seam; the seam was moved to the vertex"
+                            ));
+                            self.tally("reseamed", gap, id);
+                        }
+                    }
+                }
                 let (lo, hi) = curve.domain();
                 let head = curve.point_at(lo, self.tol)?;
                 let tail = curve.point_at(hi, self.tol)?;

@@ -333,6 +333,43 @@ pub type Spline<P> = (KnotVector, Vec<P>);
 /// A Bézier segment: the parameter interval it covers, and its control points.
 pub type BezierSegment<P> = ((f64, f64), Vec<P>);
 
+/// Join two clamped B-splines of one degree end to start into one.
+///
+/// `a`'s last control point and `b`'s first are taken to be the same
+/// point — the caller checks, since a control point is whatever blends —
+/// and become one control; the join knot is left at multiplicity `degree`,
+/// so the curve passes through it and continues with `b`'s parameter
+/// shifted to begin where `a`'s ends. The domain is the two domains laid
+/// end to end.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// degrees differ, either knot vector is not clamped, or a knot vector does
+/// not fit its control points.
+pub fn join<P: Blend>(a: &Spline<P>, b: &Spline<P>) -> OgeomResult<Spline<P>> {
+    let ((ak, ac), (bk, bc)) = (a, b);
+    check_shape(ak, ac)?;
+    check_shape(bk, bc)?;
+    let p = ak.degree();
+    if bk.degree() != p {
+        ogeom_bail!(
+            Construction,
+            "cannot join a degree {p} B-spline to a degree {} one",
+            bk.degree()
+        );
+    }
+    if !ak.is_clamped() || !bk.is_clamped() {
+        ogeom_bail!(Construction, "only clamped B-splines join");
+    }
+    let shift = ak.domain_end() - bk.domain_start();
+    let mut knots: Vec<f64> = ak.knots()[..ak.knots().len() - 1].to_vec();
+    knots.extend(bk.knots()[p + 1..].iter().map(|k| k + shift));
+    let mut control: Vec<P> = ac[..ac.len() - 1].to_vec();
+    control.extend_from_slice(bc);
+    Ok((KnotVector::new(knots, p)?, control))
+}
+
 /// Split a B-spline at `u` into two, each with its own clamped knot vector.
 ///
 /// Works by raising the multiplicity at `u` to the degree, at which point the
@@ -553,6 +590,43 @@ pub fn binomial_coefficient(n: usize, k: usize) -> u64 {
         result = result * (n - i) as u64 / (i as u64 + 1);
     }
     result
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod join_tests {
+    use super::*;
+    use crate::Point;
+
+    #[test]
+    fn a_joined_spline_evaluates_as_its_two_halves_did() {
+        let tol = Tolerances::millimetres();
+        let control: Vec<Point> = (0..6)
+            .map(|i| Point::new(f64::from(i), f64::from(i * i % 5), 0.0))
+            .collect();
+        let knots = KnotVector::clamped_uniform(3, control.len()).unwrap();
+        let ((lk, lc), (rk, rc)) = split(&knots, &control, 0.4, tol).unwrap();
+        let (jk, jc) = join(&(lk, lc), &(rk, rc)).unwrap();
+        assert_eq!(
+            jk.domain(),
+            knots.domain(),
+            "the domain is the two laid end to end"
+        );
+        assert_eq!(
+            jc.len() + 3 + 1,
+            jk.knots().len(),
+            "the knots fit the controls"
+        );
+        for i in 0..=20 {
+            let u = f64::from(i) / 20.0;
+            let before = evaluate(&knots, &control, u, tol).unwrap();
+            let after = evaluate(&jk, &jc, u, tol).unwrap();
+            assert!(
+                before.is_equal(after, tol),
+                "at {u}: {before:?} became {after:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

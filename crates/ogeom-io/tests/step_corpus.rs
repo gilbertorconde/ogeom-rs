@@ -720,3 +720,44 @@ fn a_solid_with_a_cavity_keeps_its_cavity() {
         assert!((axis - 5.0).abs() < 1e-6, "centred: {axis}");
     }
 }
+
+/// A closed edge's seam is moved to its vertex, not the vertex's tolerance
+/// to the seam.
+///
+/// A fitted loop written with its start wherever the fit began, the edge's
+/// one vertex 2.18 mm along it. Held to the curve's own seam, the vertex
+/// missed it by that much and its tolerance was widened to 2.18 mm — a
+/// reach a solid's border weld then used. The seam is moved to the vertex:
+/// the same curve, begun where the edge does, and the vertex met exactly.
+#[test]
+fn a_closed_edge_s_seam_is_moved_to_its_vertex() {
+    let text = corpus("closed_edge_vertex_off_the_seam.step");
+    let import = ogeom_io::read_step(&text, T).unwrap();
+    assert!(
+        import
+            .report
+            .warnings
+            .iter()
+            .any(|w| w.contains("the seam was moved to the vertex")),
+        "the reseam is reported: {:?}",
+        import.report.warnings
+    );
+    let worst_miss = import
+        .report
+        .warnings
+        .iter()
+        .filter(|w| w.contains("misses its vertex by"))
+        .filter_map(|w| {
+            w.split("misses its vertex by ")
+                .nth(1)?
+                .split(';')
+                .next()?
+                .parse::<f64>()
+                .ok()
+        })
+        .fold(0.0_f64, f64::max);
+    assert!(
+        worst_miss < 1e-3,
+        "no vertex is missed by millimetres any more: worst {worst_miss:.2e}"
+    );
+}

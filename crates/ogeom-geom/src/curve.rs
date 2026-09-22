@@ -963,6 +963,42 @@ impl BSplineCurve {
         })
     }
 
+    /// The same closed curve with its seam moved to `u`: what was the
+    /// stretch from `u` to the end now comes first, and the stretch from
+    /// the start to `u` follows it, joined where the old seam was. The
+    /// domain keeps its length and begins at `u`.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+    /// curve is periodic — its seam is nowhere — or does not close, its
+    /// two ends apart by more than `tol`; as [`bspline::split`] if `u` is
+    /// an end of the domain.
+    pub fn reseamed_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Self> {
+        if self.periodic {
+            ogeom_bail!(Construction, "a periodic curve has no seam to move");
+        }
+        let (start, end) = self.domain();
+        let (head, tail) = (self.point_at(start, tol)?, self.point_at(end, tol)?);
+        if !head.is_equal(tail, tol) {
+            ogeom_bail!(
+                Construction,
+                "the curve does not close: its ends are {:.3e} apart",
+                head.distance(tail)
+            );
+        }
+        let (before, after) = self.split_at(u, tol)?;
+        let (knots, control) = bspline::join(
+            &(after.knots, after.control),
+            &(before.knots, before.control),
+        )?;
+        Ok(Self {
+            knots,
+            control,
+            ..self.clone()
+        })
+    }
+
     /// Split into two curves meeting at `u`.
     ///
     /// # Errors
@@ -1625,6 +1661,50 @@ impl From<BSplineCurve> for Curve {
 impl From<TrimmedCurve> for Curve {
     fn from(c: TrimmedCurve) -> Self {
         Self::Trimmed(Box::new(c))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod reseam_tests {
+    use super::*;
+    use ogeom_core::Tolerances;
+    use ogeom_math::{KnotVector, Point};
+
+    #[test]
+    fn a_reseamed_closed_curve_is_the_same_curve_from_a_new_start() {
+        let tol = Tolerances::millimetres();
+        // A closed cubic: a ring of control points ending where it began.
+        let ring = [
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(1.0, 1.0, 0.5),
+            Point::new(-1.0, 1.0, 0.0),
+            Point::new(-1.0, -1.0, -0.5),
+            Point::new(1.0, -1.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+        ];
+        let knots = KnotVector::clamped_uniform(3, ring.len()).unwrap();
+        let curve = BSplineCurve::new(knots, ring.to_vec(), tol).unwrap();
+        let (start, end) = curve.domain();
+        let seam = 0.35;
+        let moved = curve.reseamed_at(seam, tol).unwrap();
+        let (new_start, new_end) = moved.domain();
+        assert!((new_start - seam).abs() < 1e-12, "begins at the new seam");
+        assert!(
+            ((new_end - new_start) - (end - start)).abs() < 1e-12,
+            "keeps its length"
+        );
+        for i in 0..=40 {
+            let s = (end - start) * f64::from(i) / 40.0;
+            let old_u = if seam + s <= end {
+                seam + s
+            } else {
+                seam + s - (end - start)
+            };
+            let a = curve.point_at(old_u, tol).unwrap();
+            let b = moved.point_at(new_start + s, tol).unwrap();
+            assert!(a.is_equal(b, tol), "at {s} along: {a:?} against {b:?}");
+        }
     }
 }
 

@@ -207,3 +207,14 @@ along a second edge over the same curve — a spike into the face that
 bounds nothing. It triangulated to two hairs and one triangle too many,
 and read as a crossing by the exact count. The reproducer for a spike
 stripped from a ring before it is triangulated.
+
+## closed_edge_vertex_off_the_seam.step
+
+One face extracted standalone from a community printer assembly, with a
+shell and a solid wrapped round it so the reader yields something: a
+B-spline patch bounded by four edges, one of them a closed loop — a fitted
+cubic of thirty-four controls that ends where it begins — whose one vertex
+sits on the curve 2.18 mm along it from the seam. The reproducer for a
+closed edge held to a seam its vertex misses: the reader widened the
+vertex's tolerance to 2.18 mm to say so, and a solid meshed whole then
+welded its borders at that reach.

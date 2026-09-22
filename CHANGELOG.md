@@ -86,6 +86,13 @@ bump may break the API and a patch bump may not.
   segment, a crossing a fraction of a micron deep. Merged, every solid in
   the real assembly meshes watertight at the default deflection, 1,563 of
   1,563; at half a radian, 1,562.
+- **A closed edge's seam is moved to its vertex.** A fitted loop written
+  with its start wherever the fit began, the edge's one vertex millimetres
+  along it, was held to the curve's own seam, and the vertex's tolerance
+  widened to the miss — 2.18 mm in a real assembly, a reach a solid's
+  border weld then used. The reader moves the seam to the vertex: the same
+  curve, begun where the edge does. `BSplineCurve::reseamed_at` and
+  `bspline::join` are new.
 - **`triangulate_face` drew every face twice** since the sliver refinement
   landed. It draws once, and again only where the first came up short.
   Face by face, the assembly above meshes in 9.4 s where it took 18.6.
