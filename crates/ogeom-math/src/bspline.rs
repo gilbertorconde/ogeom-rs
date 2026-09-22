@@ -370,6 +370,89 @@ pub fn join<P: Blend>(a: &Spline<P>, b: &Spline<P>) -> OgeomResult<Spline<P>> {
     Ok((KnotVector::new(knots, p)?, control))
 }
 
+/// Continue a clamped B-spline past one end by `span` in parameter: the
+/// polynomial continuation of the curve's own end derivatives, joined on.
+///
+/// The continuation is the Taylor polynomial of order `continuity` at the
+/// end — the polynomial whose derivatives up to that order agree with the
+/// curve's there — expressed in Bernstein form over the new span, raised to
+/// the spline's degree and joined on with the knot at multiplicity
+/// `degree`. The curve is continued rather than approximated: a polynomial
+/// spline of degree at most `continuity` continues *as itself*, and so does
+/// a rational curve's homogeneous polynomial — a rational circle arc
+/// continued at order two stays on its circle. Orders above the degree are
+/// held to the degree, which is as smooth as the spline itself is.
+///
+/// Extended at the start, the original run keeps its parameters and the
+/// domain grows downward; at the end, upward.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// knot vector is not clamped or the span is not positive and finite; as
+/// [`derivatives`] on a shape mismatch.
+pub fn extend<P: Blend>(
+    knots: &KnotVector,
+    control: &[P],
+    at_end: bool,
+    span: f64,
+    continuity: usize,
+    tol: Tolerances,
+) -> OgeomResult<Spline<P>> {
+    check_shape(knots, control)?;
+    if !knots.is_clamped() {
+        ogeom_bail!(Construction, "only clamped B-splines extend");
+    }
+    if !(span > 0.0 && span.is_finite()) {
+        ogeom_bail!(
+            Construction,
+            "an extension needs a positive, finite span; got {span}"
+        );
+    }
+    if !at_end {
+        // The start is the end of the reversed curve; reversed back, the
+        // extension stands before the original, which keeps its parameters
+        // once the whole is slid down by the span.
+        let (rk, rc) = reverse(knots, control);
+        let (ek, ec) = extend(&rk, &rc, true, span, continuity, tol)?;
+        let (bk, bc) = reverse(&ek, &ec);
+        let (lo, hi) = knots.domain();
+        return Ok((bk.reparameterized(lo - span, hi)?, bc));
+    }
+    let p = knots.degree();
+    let k = continuity.min(p);
+    let end = knots.domain_end();
+    let jet = derivatives(knots, control, end, k, tol)?;
+    // Monomial coefficients `D_i / i!` on `s` in `[0, span]`, in Bernstein
+    // form: `b_j = sum over i <= j of C(j, i) / C(k, i) * a_i * span^i`.
+    let mut bezier: Vec<P> = Vec::with_capacity(k + 1);
+    for j in 0..=k {
+        let mut b = P::zero();
+        let (mut factorial, mut power) = (1.0_f64, 1.0_f64);
+        for (i, derivative) in jet.iter().enumerate().take(j + 1) {
+            if i > 0 {
+                #[allow(clippy::cast_precision_loss)]
+                {
+                    factorial *= i as f64;
+                }
+                power *= span;
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let ratio = binomial_coefficient(j, i) as f64 / binomial_coefficient(k, i) as f64;
+            b = b.add(derivative.scale(ratio * power / factorial));
+        }
+        bezier.push(b);
+    }
+    let mut piece_knots: Vec<f64> = Vec::with_capacity(2 * (k + 1));
+    piece_knots.extend(core::iter::repeat_n(end, k + 1));
+    piece_knots.extend(core::iter::repeat_n(end + span, k + 1));
+    let mut piece: Spline<P> = (KnotVector::new(piece_knots, k)?, bezier);
+    for _ in k..p {
+        piece = elevate_degree(&piece.0, &piece.1, tol)?;
+    }
+    join(&(knots.clone(), control.to_vec()), &piece)
+}
+
 /// Split a B-spline at `u` into two, each with its own clamped knot vector.
 ///
 /// Works by raising the multiplicity at `u` to the degree, at which point the
@@ -636,6 +719,56 @@ mod tests {
     use approx::assert_relative_eq;
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// An extension continues the curve: the original run evaluates as it
+    /// did, the derivatives agree at the join to the order asked, and the
+    /// domain grows by the span at the end asked for.
+    #[test]
+    fn an_extension_continues_the_curve_to_its_order() {
+        let knots = KnotVector::clamped_uniform(3, 6).unwrap();
+        let control = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 2.0, 0.5),
+            Point::new(2.5, 1.0, -0.5),
+            Point::new(4.0, 3.0, 1.0),
+            Point::new(5.0, 0.5, 0.0),
+            Point::new(6.0, 2.0, 2.0),
+        ];
+        let (lo, hi) = knots.domain();
+        for at_end in [true, false] {
+            let (ek, ec) = extend(&knots, &control, at_end, 0.4, 2, T).unwrap();
+            let (elo, ehi) = ek.domain();
+            if at_end {
+                assert!((elo - lo).abs() < 1e-12 && (ehi - (hi + 0.4)).abs() < 1e-12);
+            } else {
+                assert!((elo - (lo - 0.4)).abs() < 1e-12 && (ehi - hi).abs() < 1e-12);
+            }
+            for i in 0..=10 {
+                let u = lo + (hi - lo) * f64::from(i) / 10.0;
+                let was = evaluate(&knots, &control, u, T).unwrap();
+                let now = evaluate(&ek, &ec, u, T).unwrap();
+                assert!(
+                    was.distance(now) < 1e-9,
+                    "the original run at {u}: {was:?} vs {now:?}"
+                );
+            }
+            // A hair either side of the join: the jets agree to the order
+            // asked, up to the next derivative's step across the hair.
+            let join_at = if at_end { hi } else { lo };
+            let step = if at_end { 1e-7 } else { -1e-7 };
+            let inside = derivatives(&knots, &control, join_at - step, 2, T).unwrap();
+            let outside = derivatives(&ek, &ec, join_at + step, 2, T).unwrap();
+            for order in 0..=2 {
+                let (a, b) = (inside[order], outside[order]);
+                let gap = a.to_vector().sub(b.to_vector()).magnitude();
+                let scale = a.to_vector().magnitude().max(1.0);
+                assert!(
+                    gap < scale * 1e-4,
+                    "order {order} across the join: {a:?} vs {b:?}"
+                );
+            }
+        }
+    }
 
     fn cubic_curve() -> (KnotVector, Vec<Point>) {
         let control = vec![

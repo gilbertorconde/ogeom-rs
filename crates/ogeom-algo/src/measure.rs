@@ -1759,6 +1759,41 @@ pub fn widened_to_hold(
             let m = margin(v0, v1);
             ConeSurface::new(c.cone(), (dv0.min(v0 - m), dv1.max(v1 + m)))?.into()
         }
+        // A patch has no carrier past its net: it is *continued*, side by
+        // side, by as far as a point stands off the side its projection
+        // clamped to, and a margin over that.
+        S::BSpline(patch) => {
+            let mut need = [0.0_f64; 4]; // u low, u high, v low, v high
+            let slack = tol.parametric().max(1e-9);
+            for p in points {
+                let projected = project_on_surface(surface, *p, 16, tol)?;
+                if projected.distance <= tol.confusion() {
+                    continue;
+                }
+                let (u, v) = projected.parameters;
+                let sides = [
+                    u <= du0 + slack,
+                    u >= du1 - slack,
+                    v <= dv0 + slack,
+                    v >= dv1 - slack,
+                ];
+                for (side, at) in sides.into_iter().enumerate() {
+                    if at {
+                        need[side] = need[side].max(projected.distance);
+                    }
+                }
+            }
+            let mut longer = patch.clone();
+            for (side, distance) in need.into_iter().enumerate() {
+                if distance <= 0.0 {
+                    continue;
+                }
+                let (along_u, at_end) = (side < 2, side % 2 == 1);
+                let length = distance.mul_add(1.5, tol.confusion() * 1e3);
+                longer = longer.extended(along_u, at_end, length, 2, tol)?;
+            }
+            S::BSpline(longer)
+        }
         other => other.clone(),
     })
 }
@@ -2080,6 +2115,33 @@ mod tests {
         assert_relative_eq!(p.parameter, 3.0, epsilon = 1e-6);
         assert!(p.point.is_equal(Point::new(3.0, 0.0, 0.0), T));
         assert_relative_eq!(p.distance, 4.0, epsilon = 1e-9);
+    }
+
+    /// A patch has no carrier past its net; widened to hold a point past
+    /// one side, it is continued that way — and only that way — until the
+    /// point projects onto it.
+    #[test]
+    fn a_patch_widened_to_hold_a_point_is_continued_to_it() {
+        let cylinder = Cylinder::new(Frame::WORLD, 5.0, T).unwrap();
+        let wall: SurfaceGeometry =
+            SurfaceGeometry::Cylinder(CylinderSurface::new(cylinder, (0.0, 10.0)).unwrap())
+                .to_bspline(T)
+                .unwrap()
+                .into();
+        let past = Point::new(0.0, 5.0, 12.0);
+        let short = project_on_surface(&wall, past, 16, T).unwrap();
+        assert!(short.distance > 1.0, "the point stands off the patch's top");
+        let longer = widened_to_hold(&wall, &[past], T).unwrap();
+        let ((ua, ub), (va, vb)) = longer.domain();
+        let ((wa, wb), (wva, wvb)) = wall.domain();
+        assert!((ua - wa).abs() < 1e-12 && (ub - wb).abs() < 1e-12 && (va - wva).abs() < 1e-12);
+        assert!(vb > wvb, "the top grew: {vb} over {wvb}");
+        let held = project_on_surface(&longer, past, 16, T).unwrap();
+        assert!(
+            held.distance < 1e-6,
+            "and holds the point: {}",
+            held.distance
+        );
     }
 
     #[test]

@@ -1002,6 +1002,63 @@ impl BSplineCurve {
         })
     }
 
+    /// This curve continued past one end by about `length` in space: the
+    /// polynomial continuation of its own end derivatives to the order
+    /// `continuity`, joined on. A polynomial run of degree at most that
+    /// order continues as itself, and so does a rational arc's homogeneous
+    /// polynomial: a circle arc continued at order two stays on its circle.
+    ///
+    /// The length is met to first order — the parameter span is the length
+    /// over the speed at the end — so a curve whose speed changes along the
+    /// continuation runs a little short or long of it. Extended at the
+    /// start, the original run keeps its parameters and the domain grows
+    /// downward.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+    /// curve is periodic — it has no end to continue from — or stands still
+    /// at that end; as [`bspline::extend`].
+    pub fn extended(
+        &self,
+        at_end: bool,
+        length: f64,
+        continuity: usize,
+        tol: Tolerances,
+    ) -> OgeomResult<Self> {
+        if self.periodic {
+            ogeom_bail!(Construction, "a periodic curve has no end to continue from");
+        }
+        if !(length > 0.0 && length.is_finite()) {
+            ogeom_bail!(
+                Construction,
+                "an extension needs a positive length; got {length}"
+            );
+        }
+        let (lo, hi) = self.domain();
+        let at = if at_end { hi } else { lo };
+        let speed = self.d1_at(at, tol)?.magnitude();
+        if speed <= tol.confusion() {
+            ogeom_bail!(
+                Construction,
+                "the curve stands still at its end; there is no direction to continue in"
+            );
+        }
+        let (knots, control) = bspline::extend(
+            &self.knots,
+            &self.control,
+            at_end,
+            length / speed,
+            continuity,
+            tol,
+        )?;
+        Ok(Self {
+            knots,
+            control,
+            ..self.clone()
+        })
+    }
+
     /// Split into two curves meeting at `u`.
     ///
     /// # Errors
@@ -2276,6 +2333,66 @@ mod tests {
 mod conical_tests {
     use super::*;
     use ogeom_math::Vector;
+
+    /// A rational quarter circle continued at order two stays on its
+    /// circle: the homogeneous polynomial continues as itself. The original
+    /// run keeps its points, at either end, and the continuation reaches
+    /// about the length asked.
+    #[test]
+    fn a_rational_arc_extended_stays_on_its_circle() {
+        use crate::Curve3d as _;
+        let circle = Circle::new(Frame::WORLD, 5.0, T).unwrap();
+        let arc = TrimmedCurve::new(
+            Curve::Circle(CircleCurve::new(circle)),
+            0.0,
+            core::f64::consts::FRAC_PI_2,
+            T,
+        )
+        .unwrap();
+        let spline = Curve::Trimmed(Box::new(arc)).to_bspline(T).unwrap();
+        let (lo, hi) = spline.domain();
+        for at_end in [true, false] {
+            let longer = spline.extended(at_end, 4.0, 2, T).unwrap();
+            let (elo, ehi) = longer.domain();
+            for i in 0..=8 {
+                let u = lo + (hi - lo) * f64::from(i) / 8.0;
+                let (was, now) = (
+                    spline.point_at(u, T).unwrap(),
+                    longer.point_at(u, T).unwrap(),
+                );
+                assert!(was.distance(now) < 1e-9, "the arc itself at {u}");
+            }
+            let (from, to) = if at_end { (hi, ehi) } else { (elo, lo) };
+            let mut swept = 0.0;
+            let mut last = longer.point_at(from, T).unwrap();
+            for i in 1..=64 {
+                let u = from + (to - from) * f64::from(i) / 64.0;
+                let p = longer.point_at(u, T).unwrap();
+                assert!(
+                    (p.distance(Point::ORIGIN) - 5.0).abs() < 1e-9,
+                    "off the circle at {u}: {p:?}"
+                );
+                swept += last.distance(p);
+                last = p;
+            }
+            assert!(
+                swept > 2.0 && swept < 8.0,
+                "about the length asked, to first order: {swept}"
+            );
+        }
+        let ring = BSplineCurve::periodic(
+            &[
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(1.0, 0.0, 0.0),
+                Point::new(1.0, 1.0, 0.0),
+                Point::new(0.0, 1.0, 0.0),
+            ],
+            3,
+            T,
+        )
+        .unwrap();
+        assert!(ring.extended(true, 1.0, 2, T).is_err(), "a ring has no end");
+    }
 
     const T: Tolerances = Tolerances::millimetres();
 

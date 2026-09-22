@@ -347,6 +347,96 @@ impl BSplineSurface {
         })
     }
 
+    /// This patch continued past one of its four sides by about `length`
+    /// in space: every column of the control net continued along `u` — or
+    /// every row along `v` — as [`BSplineCurve::extended`] continues a
+    /// curve, over one shared span so the net stays a grid. The span is the
+    /// length over the mean speed along that side, so the continuation
+    /// reaches the length where the side runs at its mean speed and less
+    /// where the surface stretches faster. The original patch keeps its
+    /// parameters; the domain grows at the side continued.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+    /// side stands still, or the length is not positive; as
+    /// [`ogeom_math::bspline::extend`].
+    pub fn extended(
+        &self,
+        along_u: bool,
+        at_end: bool,
+        length: f64,
+        continuity: usize,
+        tol: Tolerances,
+    ) -> OgeomResult<Self> {
+        if !along_u {
+            let turned = Self::rational(
+                self.v_knots.clone(),
+                self.u_knots.clone(),
+                self.grid.transposed(),
+            )?;
+            let longer = turned.extended(true, at_end, length, continuity, tol)?;
+            return Self::rational(
+                longer.v_knots.clone(),
+                longer.u_knots.clone(),
+                longer.grid.transposed(),
+            );
+        }
+        if !(length > 0.0 && length.is_finite()) {
+            ogeom_bail!(
+                Construction,
+                "an extension needs a positive length; got {length}"
+            );
+        }
+        use crate::traits::Surface as _;
+        let ((ua, ub), (va, vb)) = self.domain();
+        let u = if at_end { ub } else { ua };
+        let mut speed = 0.0;
+        const STATIONS: usize = 9;
+        for k in 0..STATIONS {
+            #[allow(clippy::cast_precision_loss)]
+            let v = va + (vb - va) * (k as f64 + 0.5) / STATIONS as f64;
+            speed += self.d1_at(u, v, tol)?.0.magnitude();
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let speed = speed / STATIONS as f64;
+        if speed <= tol.confusion() {
+            ogeom_bail!(
+                Construction,
+                "the surface stands still along that side; there is no \
+                 direction to continue in"
+            );
+        }
+        let span = length / speed;
+        let (nu, nv) = (self.grid.u_count(), self.grid.v_count());
+        let mut columns: Vec<Vec<Weighted<Point>>> = Vec::with_capacity(nv);
+        let mut knots = None;
+        for j in 0..nv {
+            let column: Vec<Weighted<Point>> = (0..nu)
+                .map(|i| self.grid.get(i, j).unwrap_or_else(|| self.grid.points()[0]))
+                .collect();
+            let (longer_knots, longer) =
+                ogeom_math::bspline::extend(&self.u_knots, &column, at_end, span, continuity, tol)?;
+            knots.get_or_insert(longer_knots);
+            columns.push(longer);
+        }
+        let Some(u_knots) = knots else {
+            ogeom_bail!(Construction, "a patch with no columns cannot be continued");
+        };
+        let longer_nu = columns[0].len();
+        let mut points = Vec::with_capacity(longer_nu * nv);
+        for i in 0..longer_nu {
+            for column in &columns {
+                points.push(column[i]);
+            }
+        }
+        Self::rational(
+            u_knots,
+            self.v_knots.clone(),
+            ControlGrid::new(points, longer_nu, nv)?,
+        )
+    }
+
     /// The `u = at` iso-curve: a B-spline over the `v` knots whose controls
     /// are the control columns blended by the `u` basis at `at`, weights
     /// and all — exactly the curve the surface traces up that column.
@@ -1540,6 +1630,69 @@ mod tests {
             T,
         )
         .unwrap()
+    }
+
+    /// A patch continued past a side keeps its own run and continues it:
+    /// a rational cylinder patch continued along its axis and round its
+    /// circle stays on the cylinder both ways, and the fitted patch keeps
+    /// every point it had.
+    #[test]
+    fn a_patch_extended_stays_itself_and_continues() {
+        use crate::Surface as _;
+        let cylinder = ogeom_math::Cylinder::new(Frame::WORLD, 5.0, T).unwrap();
+        let wall =
+            SurfaceGeometry::Cylinder(crate::CylinderSurface::new(cylinder, (0.0, 10.0)).unwrap())
+                .to_bspline(T)
+                .unwrap();
+        let ((ua, ub), (va, vb)) = wall.domain();
+        for (along_u, at_end) in [(true, true), (true, false), (false, true), (false, false)] {
+            let longer = wall.extended(along_u, at_end, 3.0, 2, T).unwrap();
+            let ((la, lb), (ma, mb)) = longer.domain();
+            assert!(
+                (la <= ua && lb >= ub && ma <= va && mb >= vb)
+                    && ((la < ua) || (lb > ub) || (ma < va) || (mb > vb)),
+                "the domain grows: {:?}",
+                longer.domain()
+            );
+            for i in 0..=6 {
+                for j in 0..=6 {
+                    let u = la + (lb - la) * f64::from(i) / 6.0;
+                    let v = ma + (mb - ma) * f64::from(j) / 6.0;
+                    let p = longer.point_at(u, v, T).unwrap();
+                    let radial = (p.x * p.x + p.y * p.y).sqrt();
+                    assert!(
+                        (radial - 5.0).abs() < 1e-9,
+                        "off the cylinder at ({u},{v}): {p:?}"
+                    );
+                    if (ua..=ub).contains(&u) && (va..=vb).contains(&v) {
+                        let was = wall.point_at(u, v, T).unwrap();
+                        assert!(was.distance(p) < 1e-9, "the wall itself at ({u},{v})");
+                    }
+                }
+            }
+            if !along_u {
+                let reach = if at_end { mb } else { ma };
+                let p = longer.point_at(ua, reach, T).unwrap();
+                assert!(
+                    (p.z - if at_end { 13.0 } else { -3.0 }).abs() < 1e-9,
+                    "the axial continuation reaches the length asked: {p:?}"
+                );
+            }
+        }
+        let fitted = patch();
+        let ((ua, ub), (va, vb)) = fitted.domain();
+        let longer = fitted.extended(true, true, 1.0, 2, T).unwrap();
+        for i in 0..=5 {
+            for j in 0..=5 {
+                let u = ua + (ub - ua) * f64::from(i) / 5.0;
+                let v = va + (vb - va) * f64::from(j) / 5.0;
+                let (was, now) = (
+                    fitted.point_at(u, v, T).unwrap(),
+                    longer.point_at(u, v, T).unwrap(),
+                );
+                assert!(was.distance(now) < 1e-9, "the patch itself at ({u},{v})");
+            }
+        }
     }
 
     /// An iso-curve lifted off the control net is the surface's own trace

@@ -13,6 +13,18 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **B-spline curves and patches extend.** A B-spline used to end where
+  its net ended: an analytic surface's window widens over its carrier,
+  but a patch had nothing past its last row. `BSplineCurve::extended`
+  and `BSplineSurface::extended` continue a curve past either end, or a
+  patch past any of its four sides, by about a length in space: the
+  polynomial continuation of the curve's own end derivatives to the
+  order asked, raised to the degree and joined on — a rational arc
+  continued at order two stays on its circle, and a cylinder patch
+  continued round its circle or along its axis stays on its cylinder.
+  `widened_to_hold` continues a patch, side by side, as far as a point
+  stands off the side its projection clamped to, which is what the
+  neighbour-extension steps need on spline faces.
 - **Marched blends on cone, sphere and torus hosts.** A seat with one
   host a cone, a sphere or a torus — a bore through a cone's wall, a hole
   drilled through a ring's tube, a ball drilled off its centre — was
