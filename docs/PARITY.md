@@ -17,11 +17,11 @@ per package.
 |---|---|
 | `covered` | 68 |
 | `partial` | 14 |
+| `absent` | 1 |
 | `divergent` | 9 |
 | `n/a` | 5 |
-| `unreviewed` | 1 |
 
-2704 reference headers in the reviewable pool; 2704 claimed by 97 capabilities, 0 awaiting a claim. Ratchet: `unreviewed_max = 1`.
+2704 reference headers in the reviewable pool; 2704 claimed by 97 capabilities, 0 awaiting a claim. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -213,7 +213,8 @@ whose distance varies, pcurve-only trimming, annotation and drafting.
 - **offset.form-features** — The form features: prism, revolution, rib and slot against a base · `covered` · 39 headers claimed
 - **offset.loft** — Lofting through sections, ruled or smoothed · `partial` · 1 header claimed
   - *restriction:* The ruled loft takes two closed wire sections — coaxial parallel circles, or polygons of the same corner count whose ruled walls come out planar — or a section and a point: a cone on a circle's own axis, an exact pyramid over any straight loop. The skinned loft takes N closed sections, planar or not — a planar end is capped by its plane, a wavy end by a patch skinned from the rim to a point inside it — ends at a point on request, loops back on itself, and takes per-section alignment hints. A ruled wall between two segments that are not coplanar is the bilinear patch through its four corners, exact, so polygon sections may be turned against each other; mixed edge counts are authorship, not geometry, and stay with the skinned resampling.
-- **offset.middle-path** — Extracting the middle path of a pipe-like solid · `unreviewed` · 1 header claimed
+- **offset.middle-path** — Extracting the middle path of a pipe-like solid · `absent` · 1 header claimed
+  - *owned by:* Reviewed and not built. The reference walks a pipe-like solid from one end face to the other, taking the centroid of each ring of section edges as a spine point and the wire through those as the middle path. Nothing in the pipeline asks for it — a pipe here is built *from* its spine (`make_pipe`, `make_pipe_skinned`, `make_pipe_shell`) and keeps it in the history, so the spine is never lost — and a section-centroid walk over an imported tube would be the first use. When one arrives: walk the wall's face rings from a named end face, fit a spine through the ring centroids with the same fitting the skinned pipe uses, and pin it against a tube whose spine is known.
 - **offset.projection** — Projecting wires normally onto faces, pcurves riding along · `covered` · 2 headers claimed
 - **offset.shell-thicken** — Offsetting shapes and thickening shells into solids · `covered` · 16 headers claimed
 - **offset.sweeps** — Sweeping profiles along spines: pipes, pipe shells, evolved shapes, the frame laws · `partial` · 120 headers claimed

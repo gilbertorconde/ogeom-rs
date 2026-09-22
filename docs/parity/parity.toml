@@ -13,8 +13,8 @@
 
 [audit]
 # Ratchets downward. CI fails if the count of unreviewed capabilities
-# exceeds it. The one unreviewed row is offset.middle-path.
-unreviewed_max = 1
+# exceeds it. Every row is reviewed.
+unreviewed_max = 0
 
 # --------------------------------------------------------------------------
 # The claims are total: every kept header of the reference index is claimed
@@ -1693,5 +1693,15 @@ out of scope (docs/SCOPE.md; outside/crates/ogeom-reverse)."""
 id = "offset.middle-path"
 title = "Extracting the middle path of a pipe-like solid"
 crate = "ogeom-offset"
-verdict = "unreviewed"
+verdict = "absent"
+plan = """Reviewed and not built. The reference walks a pipe-like solid from \
+one end face to the other, taking the centroid of each ring of section \
+edges as a spine point and the wire through those as the middle path. \
+Nothing in the pipeline asks for it — a pipe here is built *from* its spine \
+(`make_pipe`, `make_pipe_skinned`, `make_pipe_shell`) and keeps it in the \
+history, so the spine is never lost — and a section-centroid walk over an \
+imported tube would be the first use. When one arrives: walk the wall's \
+face rings from a named end face, fit a spine through the ring centroids \
+with the same fitting the skinned pipe uses, and pin it against a tube \
+whose spine is known."""
 claims = ["BRepOffsetAPI_MiddlePath"]
