@@ -334,6 +334,24 @@ impl Reader<'_> {
         })
     }
 
+    /// A face's arguments — name, bounds, surface, sense — whether the file
+    /// wrote it as the `ADVANCED_FACE` every modern writer uses or as the
+    /// plain `FACE_SURFACE` it specialises, which carries the same four.
+    fn face_args(&mut self, id: u64) -> OgeomResult<Vec<Arg>> {
+        let instance = self.instance(id)?;
+        if let Some(args) = instance
+            .part("ADVANCED_FACE")
+            .or_else(|| instance.part("FACE_SURFACE"))
+        {
+            return Ok(args.to_vec());
+        }
+        ogeom_bail!(
+            Construction,
+            "#{id} is {}, where a face (ADVANCED_FACE or FACE_SURFACE) was needed",
+            instance.keyword()
+        );
+    }
+
     fn args(&mut self, id: u64, keyword: &str) -> OgeomResult<Vec<Arg>> {
         let instance = self.instance(id)?;
         let Some(args) = instance.part(keyword) else {
@@ -995,7 +1013,7 @@ impl Reader<'_> {
         // The edge is built along the curve's own parameter; a STEP edge
         // running the other way is flagged, and every use composes the flag
         // into its orientation.
-        let (start, end, flipped) = if same_sense {
+        let (start, end, mut flipped) = if same_sense {
             (p1, p2, false)
         } else {
             (p2, p1, true)
@@ -1015,6 +1033,19 @@ impl Reader<'_> {
                     ((a, a + if period > 0.0 { period } else { 0.0 }), true)
                 } else if period > 0.0 && b <= a + self.tol.parametric() {
                     ((a, b + period), false)
+                } else if b < a - self.tol.parametric() {
+                    // The vertices stand at descending parameters on an
+                    // open curve whatever the sense flag says — a
+                    // mesh-to-STEP converter writes every edge forward and
+                    // lets the line run the other way. The edge is built
+                    // along the curve's own parameter and runs against it.
+                    flipped = !flipped;
+                    self.report.warnings.push(format!(
+                        "#{id}: the edge's vertices run against its curve's \
+                         parameter despite its sense flag; the edge was reversed"
+                    ));
+                    self.tally("edge-against-curve", a - b, id);
+                    ((b, a), false)
                 } else {
                     ((a, b), false)
                 }
@@ -1135,7 +1166,7 @@ impl Reader<'_> {
         if let Some(shape) = self.faces.get(&id) {
             return Ok(Some(shape.clone()));
         }
-        let args = self.args(id, "ADVANCED_FACE")?;
+        let args = self.face_args(id)?;
         let bounds: Vec<u64> = args
             .get(1)
             .and_then(Arg::list)
@@ -1835,7 +1866,7 @@ impl Reader<'_> {
         let mut jobs: Vec<Job> = Vec::new();
         let mut seen: HashSet<(u64, u64)> = HashSet::new();
         for &fid in face_ids {
-            let Ok(args) = self.args(fid, "ADVANCED_FACE") else {
+            let Ok(args) = self.face_args(fid) else {
                 continue;
             };
             let Some(surface) = args
@@ -2257,17 +2288,23 @@ impl Reader<'_> {
             .ok()?
             .get(2)
             .and_then(Arg::reference)?;
-        let product = self
-            .args(formation, "PRODUCT_DEFINITION_FORMATION")
-            .ok()?
-            .first()
-            .and_then(Arg::reference)
-            .or_else(|| {
-                self.args(formation, "PRODUCT_DEFINITION_FORMATION")
-                    .ok()?
-                    .get(2)
-                    .and_then(Arg::reference)
-            })?;
+        // The formation, plain or with its source named — a mesh converter's
+        // habit — carries the product in the same slot either way.
+        let product = {
+            let instance = self.instance(formation).ok()?;
+            instance
+                .part("PRODUCT_DEFINITION_FORMATION")
+                .or_else(|| instance.part("PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE"))?
+                .to_vec()
+        }
+        .first()
+        .and_then(Arg::reference)
+        .or_else(|| {
+            self.args(formation, "PRODUCT_DEFINITION_FORMATION")
+                .ok()?
+                .get(2)
+                .and_then(Arg::reference)
+        })?;
         let args = self.args(product, "PRODUCT").ok()?;
         match args.get(1).or_else(|| args.first()) {
             Some(Arg::Str(name)) if !name.is_empty() => Some(name.clone()),
@@ -2278,11 +2315,21 @@ impl Reader<'_> {
     /// A representation's item references.
     fn representation_items(&mut self, sr: u64) -> Option<Vec<u64>> {
         let instance = self.instance(sr).ok()?;
-        let args = instance
-            .part("SHAPE_REPRESENTATION")
-            .or_else(|| instance.part("ADVANCED_BREP_SHAPE_REPRESENTATION"))
-            .or_else(|| instance.part("REPRESENTATION"))?
-            .to_vec();
+        // Every subtype a file names a shape representation by: the B-rep
+        // kinds, the surface-model kinds a mesh converter writes, and the
+        // plain one.
+        let args = [
+            "SHAPE_REPRESENTATION",
+            "ADVANCED_BREP_SHAPE_REPRESENTATION",
+            "MANIFOLD_SURFACE_SHAPE_REPRESENTATION",
+            "FACETED_BREP_SHAPE_REPRESENTATION",
+            "GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION",
+            "GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION",
+            "REPRESENTATION",
+        ]
+        .into_iter()
+        .find_map(|keyword| instance.part(keyword))?
+        .to_vec();
         Some(
             args.get(1)?
                 .list()?

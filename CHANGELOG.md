@@ -122,6 +122,15 @@ bump may break the API and a patch bump may not.
   overshooting its neighbours, and the faces it bounded drew as nothing.
   The window between the vertices' own feet on the curve is taken, and
   the report tallies it as `vertex-window`.
+- **STEP files spelt in older or plainer vocabulary.** A face written as
+  `FACE_SURFACE` rather than `ADVANCED_FACE`, a shape carried by a
+  `SHAPE_REPRESENTATION` or a manifold surface or faceted representation
+  rather than an advanced B-rep one, and a product whose formation is
+  written with its source read as they were meant. An edge whose
+  vertices stand at descending parameters on its curve whatever its
+  sense flag says — every edge written forward and the line left to run
+  the other way — is reversed to run with the curve, tallied as
+  `edge-against-curve`.
 - **Removing a tangent chain of blends.** A stadium's top rim rounded
   in one call, its four bands named for removal together, failed by
   name: at a tangent junction neither band's crease pierces the other's
