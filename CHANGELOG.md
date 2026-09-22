@@ -92,6 +92,20 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **STEP faces on a surface of linear extrusion were skipped, and the
+  body drew open.** A curve swept along a vector is how some writers
+  spell a drum's wall, and the reader skipped every such face by name,
+  so a part with a slot's rounded ends on them showed its inside through
+  the gaps. A circle swept along its own axis now reads as the cylinder
+  it is, a line swept as the plane it is, and anything else as the swept
+  surface itself over a window the face's own edges size, its trims
+  fitted by projection.
+- **An open edge whose vertices stand on its curve short of the ends.**
+  A file that writes the whole spline and lets the vertices say where
+  the edge stops — millimetres in — had the edge held to the whole curve,
+  overshooting its neighbours, and the faces it bounded drew as nothing.
+  The window between the vertices' own feet on the curve is taken, and
+  the report tallies it as `vertex-window`.
 - **Removing a tangent chain of blends.** A stadium's top rim rounded
   in one call, its four bands named for removal together, failed by
   name: at a tangent junction neither band's crease pierces the other's

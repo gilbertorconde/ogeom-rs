@@ -569,6 +569,28 @@ impl ExtrusionSurface {
         })
     }
 
+    /// Sweep `curve` along `direction` over an explicit window of the
+    /// sweep parameter — a file's extrusion, unbounded either way, is
+    /// given the window its faces reach.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+    /// the window is not finite and increasing.
+    pub fn over(curve: Curve, direction: Direction, extent: (f64, f64)) -> OgeomResult<Self> {
+        if !extent.0.is_finite() || !extent.1.is_finite() || extent.1 <= extent.0 {
+            ogeom_bail!(
+                Construction,
+                "extrusion window {extent:?} must be finite and increasing"
+            );
+        }
+        Ok(Self {
+            curve,
+            direction,
+            extent,
+        })
+    }
+
     /// The generating curve.
     #[must_use]
     pub const fn curve(&self) -> &Curve {

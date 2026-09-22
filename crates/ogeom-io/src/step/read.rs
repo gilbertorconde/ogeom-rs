@@ -28,8 +28,8 @@ use ogeom_geom::Curve2d as _;
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::Surface as _;
 use ogeom_geom::{
-    BSplineCurve, CircleCurve, ConeSurface, Curve, CylinderSurface, EllipseCurve, LineCurve,
-    PlanarCurve, PlaneSurface, SphereSurface, SurfaceGeometry, TorusSurface,
+    BSplineCurve, CircleCurve, ConeSurface, Curve, CylinderSurface, EllipseCurve, ExtrusionSurface,
+    LineCurve, PlanarCurve, PlaneSurface, SphereSurface, SurfaceGeometry, TorusSurface,
 };
 use ogeom_math::{
     Axis, Circle, Cone, Cylinder, Direction, Ellipse, Frame, KnotVector, Plane, Point, Sphere,
@@ -656,6 +656,62 @@ impl Reader<'_> {
                 let minor = radius_arg(&args, 3).unwrap_or(0.0) * scale;
                 Some(TorusSurface::new(Torus::new(frame, major, minor, self.tol)?).into())
             }
+            "SURFACE_OF_LINEAR_EXTRUSION" => {
+                // A curve swept along a vector, unbounded either way. A
+                // file writes a drum's wall this way as often as it writes a
+                // cylinder — a circle swept along its own axis — and a wall
+                // as a line swept: those are read as the cylinder and the
+                // plane they are, exact and known everywhere downstream.
+                // Anything else sweeps as itself, over a window the face's
+                // own edges then widen to fit.
+                let Some(curve) = self.curve(args[1].reference().unwrap_or(0))? else {
+                    self.report.warnings.push(format!(
+                        "#{id}: an extrusion's swept curve is not read; its face is skipped"
+                    ));
+                    return Ok(None);
+                };
+                let vector = self.args(args[2].reference().unwrap_or(0), "VECTOR")?;
+                let direction = self.direction(vector[1].reference().unwrap_or(0))?;
+                // Parallel to the file's own precision in directions — a
+                // writer states an axis to nine digits, a whisker off the
+                // sweep it meant to be exactly along.
+                let parallel =
+                    |axis: Direction| axis.vector().cross(direction.vector()).magnitude() <= 1e-6;
+                match &curve {
+                    Curve::Circle(c) if parallel(c.circle().frame().z()) => Some(
+                        CylinderSurface::new(
+                            Cylinder::new(c.circle().frame(), c.circle().radius(), self.tol)?,
+                            (-SURFACE_EXTENT, SURFACE_EXTENT),
+                        )?
+                        .into(),
+                    ),
+                    Curve::Line(l) if !parallel(l.axis().direction) => {
+                        let axis = l.axis();
+                        let normal = Direction::from_cross(
+                            axis.direction.vector(),
+                            direction.vector(),
+                            self.tol,
+                        )?;
+                        let frame = Frame::new(axis.location, normal, axis.direction, self.tol)?;
+                        Some(
+                            PlaneSurface::over(
+                                Plane::new(frame),
+                                (-SURFACE_EXTENT, SURFACE_EXTENT),
+                                (-SURFACE_EXTENT, SURFACE_EXTENT),
+                            )?
+                            .into(),
+                        )
+                    }
+                    _ => Some(
+                        ExtrusionSurface::over(
+                            curve,
+                            direction,
+                            (-SURFACE_EXTENT, SURFACE_EXTENT),
+                        )?
+                        .into(),
+                    ),
+                }
+            }
             other => {
                 self.report.warnings.push(format!(
                     "#{id}: surface kind {other} is not read yet; its face is skipped"
@@ -999,17 +1055,40 @@ impl Reader<'_> {
                 let (lo, hi) = curve.domain();
                 let head = curve.point_at(lo, self.tol)?;
                 let tail = curve.point_at(hi, self.tol)?;
-                if head.distance(start) > self.tol.confusion() * 10.0
-                    || tail.distance(end) > self.tol.confusion() * 10.0
+                let (head_miss, tail_miss) = (head.distance(start), tail.distance(end));
+                if head_miss > self.tol.confusion() * 10.0
+                    || tail_miss > self.tol.confusion() * 10.0
                 {
-                    self.report.warnings.push(format!(
-                        "#{id}: edge endpoints sit {:.2e} and {:.2e} from its \
-                         curve's ends; the curve's own domain was taken",
-                        head.distance(start),
-                        tail.distance(end)
-                    ));
+                    // An open edge whose vertices stand *on* the curve but
+                    // short of its ends — a file that writes the whole
+                    // spline and lets the vertices say where the edge
+                    // stops, millimetres in — takes the window between the
+                    // vertices' own feet. Held to the whole curve, the edge
+                    // overshoots its neighbours and the face it bounds draws
+                    // as nothing at all.
+                    let window = if v1 == v2 {
+                        None
+                    } else {
+                        window_between_feet(&curve, start, end, self.tol)
+                    };
+                    if let Some(window) = window {
+                        self.report.warnings.push(format!(
+                            "#{id}: edge endpoints sit {head_miss:.2e} and {tail_miss:.2e} \
+                             from its curve's ends; the window between the vertices' \
+                             feet on the curve was taken"
+                        ));
+                        self.tally("vertex-window", head_miss.max(tail_miss), id);
+                        (window, false)
+                    } else {
+                        self.report.warnings.push(format!(
+                            "#{id}: edge endpoints sit {head_miss:.2e} and {tail_miss:.2e} \
+                             from its curve's ends; the curve's own domain was taken"
+                        ));
+                        ((lo, hi), v1 == v2)
+                    }
+                } else {
+                    ((lo, hi), v1 == v2)
                 }
-                ((lo, hi), v1 == v2)
             }
         };
         let _ = closed;
@@ -1355,6 +1434,25 @@ impl Reader<'_> {
                 let (origin, direction) = (axis.location, axis.direction.vector());
                 Box::new(move |at: Point| (None, Some((at - origin).dot(direction))))
             }
+            // A swept curve: a point's sweep parameter is its reach along
+            // the direction less the swept curve's own, read against the
+            // middle of the curve's reach; the curve's half-reach either
+            // way is inside the margin the window grows by.
+            SurfaceGeometry::Extrusion(e) => {
+                let direction = e.direction().vector();
+                let (lo, hi) = e.curve().domain();
+                let (mut least, mut most) = (f64::INFINITY, f64::NEG_INFINITY);
+                for k in 0..=32 {
+                    let t = lo + (hi - lo) * f64::from(k) / 32.0;
+                    if let Ok(p) = e.curve().point_at(t, self.tol) {
+                        let reach = p.to_vector().dot(direction);
+                        least = least.min(reach);
+                        most = most.max(reach);
+                    }
+                }
+                let middle = f64::midpoint(least, most);
+                Box::new(move |at: Point| (None, Some(at.to_vector().dot(direction) - middle)))
+            }
             _ => return Ok(()),
         };
         const STATIONS: usize = 4;
@@ -1390,6 +1488,9 @@ impl Reader<'_> {
             SurfaceGeometry::Plane(p) => PlaneSurface::over(p.plane(), u, v)?.into(),
             SurfaceGeometry::Cylinder(c) => CylinderSurface::new(c.cylinder(), v)?.into(),
             SurfaceGeometry::Cone(c) => ConeSurface::new(c.cone(), v)?.into(),
+            SurfaceGeometry::Extrusion(e) => {
+                ExtrusionSurface::over(e.curve().clone(), e.direction(), v)?.into()
+            }
             other => other,
         };
         if let Some(held) = self.model.geometry_mut().surface_mut(surface_id) {
@@ -3250,4 +3351,75 @@ fn closed_ring_edges(model: &Model, wires: &[Shape]) -> OgeomResult<Vec<(Shape, 
 #[allow(dead_code)]
 fn _keep(p: PlanarCurve) -> PlanarCurve {
     p
+}
+
+/// The window of `curve` between the feet of two vertices that stand on it
+/// short of its ends: both within a hair of the curve, in the curve's own
+/// order, and not the whole curve. `None` where the vertices are off the
+/// curve, reversed against it, or already at its ends.
+fn window_between_feet(
+    curve: &Curve,
+    start: Point,
+    end: Point,
+    tol: Tolerances,
+) -> Option<(f64, f64)> {
+    let (lo, hi) = curve.domain();
+    let samples = match curve {
+        Curve::BSpline(spline) => (spline.control_points().len() * 8).max(64),
+        _ => 64,
+    };
+    let foot = |p: Point| -> Option<f64> {
+        let found = project_on_curve(curve, p, samples, tol).ok()?;
+        (found.distance <= tol.confusion() * 1e4).then_some(found.parameter)
+    };
+    let (a, b) = (foot(start)?, foot(end)?);
+    let slack = tol.parametric().max((hi - lo) * 1e-9);
+    if b <= a + slack {
+        return None;
+    }
+    if (a - lo).abs() <= slack && (b - hi).abs() <= slack {
+        return None;
+    }
+    Some((a, b))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// An edge's window between the feet of vertices standing on the
+    /// curve short of its ends: taken in the curve's order, refused where
+    /// the vertices are the ends already, run against the curve, or off it.
+    #[test]
+    fn an_edges_window_is_taken_between_its_vertices_feet() {
+        let spline: Curve = BSplineCurve::new(
+            KnotVector::clamped_uniform(3, 6).unwrap(),
+            vec![
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(1.0, 2.0, 0.5),
+                Point::new(2.5, 1.0, -0.5),
+                Point::new(4.0, 3.0, 1.0),
+                Point::new(5.0, 0.5, 0.0),
+                Point::new(6.0, 2.0, 2.0),
+            ],
+            T,
+        )
+        .unwrap()
+        .into();
+        let at = |t: f64| spline.point_at(t, T).unwrap();
+        let (a, b) = window_between_feet(&spline, at(0.3), at(0.7), T).unwrap();
+        assert!(
+            (a - 0.3).abs() < 1e-9 && (b - 0.7).abs() < 1e-9,
+            "{a} .. {b}"
+        );
+        let (a, b) = window_between_feet(&spline, at(0.0), at(0.7), T).unwrap();
+        assert!(a.abs() < 1e-9 && (b - 0.7).abs() < 1e-9, "{a} .. {b}");
+        assert!(window_between_feet(&spline, at(0.0), at(1.0), T).is_none());
+        assert!(window_between_feet(&spline, at(0.7), at(0.3), T).is_none());
+        let off = at(0.3) + Vector::new(0.0, 0.0, 0.5);
+        assert!(window_between_feet(&spline, off, at(0.7), T).is_none());
+    }
 }
