@@ -264,3 +264,107 @@ fn a_blend_that_runs_out_says_which_support_it_ran_out_of() {
         "the whole guide: {ends:?}"
     );
 }
+
+/// The same square corner, both supports converted to patches: a plane
+/// as a degree-one patch, the cylinder as a rational one closed at its
+/// seam. Nothing in the march is analytic here — the chart inverts by
+/// projection and the seam wraps as a period does — and the ball still
+/// seats to the closed form.
+#[test]
+fn a_cylinder_square_on_a_plane_rounds_the_same_on_patches() {
+    let (bore, radius) = (5.0, 1.25);
+    let ground: SurfaceGeometry = SurfaceGeometry::Plane(
+        PlaneSurface::over(
+            Plane::through(Point::ORIGIN, Direction::Z),
+            (-20.0, 20.0),
+            (-20.0, 20.0),
+        )
+        .unwrap(),
+    )
+    .to_bspline(T)
+    .unwrap()
+    .into();
+    let wall: SurfaceGeometry = SurfaceGeometry::Cylinder(
+        CylinderSurface::new(Cylinder::new(Frame::WORLD, bore, T).unwrap(), (-1.0, 12.0)).unwrap(),
+    )
+    .to_bspline(T)
+    .unwrap()
+    .into();
+    assert!(matches!(ground, SurfaceGeometry::BSpline(_)));
+    assert!(matches!(wall, SurfaceGeometry::BSpline(_)));
+    let guide: Curve = CircleCurve::new(Circle::new(Frame::WORLD, bore, T).unwrap()).into();
+
+    let blend = march_blend(&ground, &wall, radius, &guide, options(), T).unwrap();
+    assert_eq!(blend.stopped, BlendStop::Closed, "a rim closes on itself");
+    assert_seated(&blend, &ground, &wall, radius);
+    for i in 0..blend.len() {
+        let centre = blend.spine[i];
+        assert!(
+            (centre.x.hypot(centre.y) - (bore + radius)).abs() < 1e-8,
+            "the spine is a circle of radius {}: {}",
+            bore + radius,
+            centre.x.hypot(centre.y)
+        );
+        assert!((centre.z - radius).abs() < 1e-8, "at height {radius}");
+    }
+}
+
+/// An open seat between two patches: two planes meeting square along a
+/// line, both as degree-one patches that end where the faces would. The
+/// ball rolls the length of the seat and runs off the patches' ends.
+#[test]
+fn a_straight_seat_between_two_patches_runs_off_their_ends() {
+    let radius = 2.0;
+    let ground: SurfaceGeometry = SurfaceGeometry::Plane(
+        PlaneSurface::over(
+            Plane::through(Point::ORIGIN, Direction::Z),
+            (0.0, 20.0),
+            (0.0, 20.0),
+        )
+        .unwrap(),
+    )
+    .to_bspline(T)
+    .unwrap()
+    .into();
+    // The wall's chart runs `u` along y and `v` up z, so its window is
+    // the strip above the seat.
+    let wall: SurfaceGeometry = SurfaceGeometry::Plane(
+        PlaneSurface::over(
+            Plane::new(Frame::new(Point::ORIGIN, Direction::X, Direction::Y, T).unwrap()),
+            (0.0, 20.0),
+            (0.0, 10.0),
+        )
+        .unwrap(),
+    )
+    .to_bspline(T)
+    .unwrap()
+    .into();
+    let guide: Curve =
+        ogeom_geom::LineCurve::segment(Point::new(0.0, 0.0, 0.0), Point::new(0.0, 20.0, 0.0), T)
+            .unwrap()
+            .into();
+    let blend = march_blend(&ground, &wall, radius, &guide, options(), T).unwrap();
+    assert!(
+        matches!(
+            blend.stopped,
+            BlendStop::LeftTheFirstSupport
+                | BlendStop::LeftTheSecondSupport
+                | BlendStop::LeftBothSupports
+                | BlendStop::RanPastTheGuide
+        ),
+        "an open seat runs out: {:?}",
+        blend.stopped
+    );
+    assert_seated(&blend, &ground, &wall, radius);
+    let reach = blend
+        .spine
+        .iter()
+        .map(|p| p.y)
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), y| {
+            (lo.min(y), hi.max(y))
+        });
+    assert!(
+        reach.0 < 1.0 && reach.1 > 19.0,
+        "the length of the seat: {reach:?}"
+    );
+}

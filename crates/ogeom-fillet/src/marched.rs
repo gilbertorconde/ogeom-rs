@@ -108,8 +108,42 @@ pub(crate) fn marched_fillet(
         let NodeData::Face(data) = node.data() else {
             ogeom_bail!(Construction, "face node holds no face data");
         };
-        let Some(stored) = model.geometry().surface(data.surface) else {
+        let surface_id = data.surface;
+        let Some(stored) = model.geometry().surface(surface_id).cloned() else {
             ogeom_bail!(Dangling, "face refers to a surface not in this model");
+        };
+        // A fitted patch ends where its face ends, and a ball rolling out
+        // through a wall needs the host to go on past it: the patch is
+        // continued on every open side by a few radii, as itself, and
+        // *written back* as the face's own surface — the same parameters,
+        // a wider window, exactly as a reader widens a window to hold a
+        // face — so the legs built on it and the face they melt with
+        // stand on one chart, as an analytic host's windowed copy does.
+        let stored = match stored {
+            SurfaceGeometry::BSpline(patch) => {
+                use ogeom_geom::Surface as _;
+                let reach = radius * 6.0;
+                let mut longer = patch;
+                for (along_u, closed) in [
+                    (true, longer.is_closed_u(tol) || longer.is_periodic_u()),
+                    (false, longer.is_closed_v(tol) || longer.is_periodic_v()),
+                ] {
+                    if closed {
+                        continue;
+                    }
+                    for at_end in [false, true] {
+                        if let Ok(grown) = longer.extended(along_u, at_end, reach, 2, tol) {
+                            longer = grown;
+                        }
+                    }
+                }
+                let wider = SurfaceGeometry::BSpline(longer);
+                if let Some(held) = model.geometry_mut().surface_mut(surface_id) {
+                    *held = wider.clone();
+                }
+                wider
+            }
+            other => other,
         };
         // Baked into the world: the face's surface lives wherever its
         // placement puts it, and everything below — the march, the legs,
@@ -119,18 +153,20 @@ pub(crate) fn marched_fillet(
             let placement = face.transform(model.datums())?;
             stored.transformed(&placement, tol)?
         };
-        match surface {
-            SurfaceGeometry::Plane(_)
-            | SurfaceGeometry::Cylinder(_)
-            | SurfaceGeometry::Cone(_)
-            | SurfaceGeometry::Sphere(_)
-            | SurfaceGeometry::Torus(_) => {}
-            _ => ogeom_bail!(
+        // Any host the ball can seat on: the analytics invert their charts
+        // in closed form, and a fitted patch — or a swept or revolved
+        // surface — inverts by projection, warm-started from the last
+        // station. A trimmed or offset host is its basis with a story the
+        // march does not read.
+        if matches!(
+            surface,
+            SurfaceGeometry::Trimmed(_) | SurfaceGeometry::Offset(_)
+        ) {
+            ogeom_bail!(
                 Construction,
-                "a marched fillet's hosts must be analytic; a fitted host \
-                 has no chart the legs can melt against — docs/PARITY.md, \
-                 fillet.edge-blends"
-            ),
+                "a marched fillet's hosts must carry their own chart; a trimmed \
+                 or offset host is refused — docs/PARITY.md, fillet.edge-blends"
+            );
         }
         let sign = if face.orientation() == Orientation::Reversed {
             -1.0
@@ -154,6 +190,50 @@ pub(crate) fn marched_fillet(
     let (face_first, face_second) = (face_first.clone(), face_second.clone());
     let (first, second) = (first.clone(), second.clone());
     let (sign_first, sign_second) = (*sign_first, *sign_second);
+
+    // A seat the boolean split into arcs at its hosts' seams, on a solid
+    // whose curves are the arcs themselves — a converted solid, an imported
+    // one — has no stored loop to run the whole turn on. The loop is put
+    // back through the neighbours the two hosts share, each continuing the
+    // last tangentially, and the seat becomes the whole turn as it is
+    // where the stored curve carries it.
+    let (guide, guide_range, edge_range) = if !closed && ends_apart(&guide, guide_range, tol) {
+        match loop_through_neighbours(
+            model,
+            edge,
+            &guide,
+            edge_range,
+            [&face_first, &face_second],
+            tol,
+        )? {
+            Some((whole, seat)) => {
+                let domain = whole.domain();
+                (whole, domain, seat)
+            }
+            None => (guide, guide_range, edge_range),
+        }
+    } else {
+        (guide, guide_range, edge_range)
+    };
+    // An open seat on a spline that ends with the edge — a converted
+    // solid's every edge — leaves the ball nowhere to run out: the guide
+    // is continued past both ends by a few radii, as itself. It steers
+    // the section planes only, so its continuation need only be smooth.
+    let (guide, guide_range) = match (&guide, closed) {
+        (Curve::BSpline(spline), false)
+            if !spline.is_periodic() && ends_apart(&guide, guide_range, tol) =>
+        {
+            let mut longer = spline.clone();
+            for at_end in [false, true] {
+                if let Ok(grown) = longer.extended(at_end, radius * 8.0, 2, tol) {
+                    longer = grown;
+                }
+            }
+            let domain = longer.domain();
+            (Curve::BSpline(longer), domain)
+        }
+        _ => (guide, guide_range),
+    };
 
     // A seat running through a point where its hosts are tangent — the
     // crossing of two equal drums — has no section there: the ball's arc
@@ -292,6 +372,22 @@ pub(crate) fn marched_fillet(
         },
         tol,
     )?;
+    if std::env::var_os("OGEOM_DEBUG_RUNOUT").is_some() {
+        eprintln!(
+            "MARCH stopped {:?} with {} stations; guide domain {:?} closed {closed}; first {:?}/{:?} at {:?}; last {:?}/{:?} at {:?}; hosts {:?} {:?}",
+            blend.stopped,
+            blend.len(),
+            guide.domain(),
+            blend.on_first.first(),
+            blend.on_second.first(),
+            blend.spine.first(),
+            blend.on_first.last(),
+            blend.on_second.last(),
+            blend.spine.last(),
+            first.domain(),
+            second.domain()
+        );
+    }
     // Stations steered by the smooth loop carry its parameters; the seat's
     // own curve is what the wedge measures windows on, so each station is
     // re-placed on it by projection.
@@ -309,6 +405,7 @@ pub(crate) fn marched_fillet(
         BlendStop::LeftTheFirstSupport
             | BlendStop::LeftTheSecondSupport
             | BlendStop::LeftBothSupports
+            | BlendStop::RanPastTheGuide
     );
     if blend.stopped != BlendStop::Closed && !open_stop {
         ogeom_bail!(
@@ -785,7 +882,17 @@ pub(crate) fn marched_fillet(
         orient(leg_second, sign_second),
         blend_face,
     ];
-    apply_wedge(model, solid, Some(edge), &faces, additive, tol)
+    let fitted_host = matches!(first, SurfaceGeometry::BSpline(_))
+        || matches!(second, SurfaceGeometry::BSpline(_));
+    match apply_wedge(model, solid, Some(edge), &faces, additive, tol) {
+        Err(e) if fitted_host => ogeom_bail!(
+            NotDone,
+            "the blend marched and its wedge was built, but the melt against a \
+             fitted host is beyond what the boolean resolves ({e}) — \
+             docs/PARITY.md, fillet.edge-blends"
+        ),
+        other => other,
+    }
 }
 
 /// The open seat's wedge: a marched band that ran off its supports, capped
@@ -1828,13 +1935,31 @@ fn section_connector(
     let reach = (radius * 8.0).max(from.1.distance(to.1) * 4.0);
     let section: SurfaceGeometry =
         ogeom_geom::PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
-    let ogeom_intersect::surface::Meeting::Along(curves) =
-        ogeom_intersect::surface::surface_surface(&section, host, tol)?
-    else {
-        ogeom_bail!(
+    // The exact conic where the plane cuts an analytic host; a marched
+    // section where the host is a patch and no closed form exists.
+    let curves: Vec<Curve> = match ogeom_intersect::surface::surface_surface(&section, host, tol) {
+        Ok(ogeom_intersect::surface::Meeting::Along(curves)) => curves,
+        Ok(_) => ogeom_bail!(
             Construction,
             "a run-out cap's plane does not cut its host in a curve"
-        );
+        ),
+        Err(ogeom_core::OgeomError::NotDone(_)) => {
+            match ogeom_intersect::intersect_surfaces(
+                &section,
+                host,
+                ogeom_intersect::IntersectOptions::default(),
+                tol,
+            )? {
+                ogeom_intersect::SurfaceIntersection::Along(sections) => {
+                    sections.into_iter().map(|s| s.curve).collect()
+                }
+                _ => ogeom_bail!(
+                    Construction,
+                    "a run-out cap's plane does not cut its host in a curve"
+                ),
+            }
+        }
+        Err(e) => return Err(e),
     };
     for curve in curves {
         let pa = ogeom_algo::project_on_curve(&curve, from.1, 64, tol)?;
@@ -2103,19 +2228,32 @@ fn windowed(
 
 /// The chart period in `u`, for surfaces that have one.
 fn period_of(surface: &SurfaceGeometry) -> Option<f64> {
+    use ogeom_geom::Surface as _;
     match surface {
         SurfaceGeometry::Cylinder(_)
         | SurfaceGeometry::Cone(_)
         | SurfaceGeometry::Sphere(_)
         | SurfaceGeometry::Torus(_) => Some(core::f64::consts::TAU),
+        // A patch that meets itself at its seam without being periodic — a
+        // converted cylinder's — wraps like one: the march wraps its
+        // parameter there, and the rail's image must unwrap it back.
+        other if other.is_periodic_u() || other.is_closed_u(Tolerances::millimetres()) => {
+            let ((ua, ub), _) = other.domain();
+            Some(ub - ua)
+        }
         _ => None,
     }
 }
 
 /// The chart period in `v`, for the one surface that has one.
 fn period_v_of(surface: &SurfaceGeometry) -> Option<f64> {
+    use ogeom_geom::Surface as _;
     match surface {
         SurfaceGeometry::Torus(_) => Some(core::f64::consts::TAU),
+        other if other.is_periodic_v() || other.is_closed_v(Tolerances::millimetres()) => {
+            let (_, (va, vb)) = other.domain();
+            Some(vb - va)
+        }
         _ => None,
     }
 }
@@ -2148,10 +2286,20 @@ fn chart_of(
             let (u, v) = ogeom_math::elementary::torus_parameters(&t.torus(), p, tol)?;
             Point2::new(u, v)
         }
-        _ => ogeom_bail!(
-            Construction,
-            "no closed-form chart inversion for this surface"
-        ),
+        // No closed form: the foot by projection, warm-started from the
+        // last station where there is one — consecutive stations are
+        // neighbours on the surface — and seeded from a grid otherwise, or
+        // where the warm start wandered off.
+        _ => {
+            let near = prev.and_then(|q| {
+                ogeom_algo::project_on_surface_from(surface, p, (q.x, q.y), tol).ok()
+            });
+            let found = match near {
+                Some(close) if close.distance <= tol.confusion() * 1e3 => close,
+                _ => ogeom_algo::project_on_surface(surface, p, 32, tol)?,
+            };
+            Point2::new(found.parameters.0, found.parameters.1)
+        }
     };
     let Some(prev) = prev else {
         return Ok(raw);
@@ -2212,4 +2360,167 @@ fn averaged_chordal(rows: &[Vec<Point>]) -> Vec<f64> {
     #[allow(clippy::cast_precision_loss)]
     let count = rows.len() as f64;
     sums.iter().map(|s| s / count).collect()
+}
+
+/// The next piece of a loop walk: its curve and range, whether it runs the
+/// walk's way, the vertex it arrives at, and the direction it arrives in.
+type NextPiece = (Curve, (f64, f64), bool, ogeom_topo::TShapeId, Vector);
+
+/// Whether a guide's two ends stand apart: an arc, not a loop.
+fn ends_apart(guide: &Curve, range: (f64, f64), tol: Tolerances) -> bool {
+    let (lo, hi) = range;
+    guide
+        .point_at(lo, tol)
+        .and_then(|p| guide.point_at(hi, tol).map(|q| p.distance(q)))
+        .is_ok_and(|d| d > tol.confusion() * 10.0)
+}
+
+/// A seat's loop closed back through the edges its two host faces share,
+/// each taken where it continues the last tangentially, as one spline —
+/// the pieces in their exact spline forms over unit spans, turned to run
+/// the walk's way, raised to one degree and joined end to end, the seat
+/// itself the first span. `None` where the walk does not come back to the
+/// seat's start.
+fn loop_through_neighbours(
+    model: &Model,
+    edge: &Shape,
+    guide: &Curve,
+    edge_range: (f64, f64),
+    hosts: [&Shape; 2],
+    tol: Tolerances,
+) -> OgeomResult<Option<(Curve, (f64, f64))>> {
+    let Some((start, end)) = ogeom_algo::edge_vertices(model, edge)? else {
+        return Ok(None);
+    };
+    // The edges both hosts share, other than the seat: the rest of the
+    // crease, arc by arc.
+    let on_second: Vec<ogeom_topo::TShapeId> =
+        explore(model, hosts[1], Filter::OfType(ShapeType::Edge))?
+            .iter()
+            .map(Shape::node)
+            .collect();
+    let mut shared: Vec<Shape> = Vec::new();
+    for candidate in explore(model, hosts[0], Filter::OfType(ShapeType::Edge))? {
+        if candidate.node() != edge.node()
+            && on_second.contains(&candidate.node())
+            && !shared.iter().any(|s| s.node() == candidate.node())
+        {
+            shared.push(candidate);
+        }
+    }
+    if shared.is_empty() {
+        return Ok(None);
+    }
+    let unit = |v: Vector| -> Option<Vector> {
+        let m = v.magnitude();
+        (m > tol.confusion()).then(|| v / m)
+    };
+    // The seat first, run forward; then each neighbour that leaves the
+    // current vertex the way the last piece arrived.
+    let mut pieces: Vec<(Curve, (f64, f64), bool)> = vec![(guide.clone(), edge_range, true)];
+    let mut at = end.node();
+    let Some(mut heading) = unit(guide.d1_at(edge_range.1, tol)?) else {
+        return Ok(None);
+    };
+    let mut used: Vec<ogeom_topo::TShapeId> = vec![edge.node()];
+    let mut closed = false;
+    for _ in 0..shared.len() {
+        let mut next: Option<NextPiece> = None;
+        for candidate in &shared {
+            if used.contains(&candidate.node()) {
+                continue;
+            }
+            let Some((a, b)) = ogeom_algo::edge_vertices(model, candidate)? else {
+                continue;
+            };
+            let (forward, far) = if a.node() == at {
+                (true, b.node())
+            } else if b.node() == at {
+                (false, a.node())
+            } else {
+                continue;
+            };
+            let (curve, range) = edge_curve(model, candidate, tol)?;
+            let (leaving, arriving) = if forward {
+                (curve.d1_at(range.0, tol)?, curve.d1_at(range.1, tol)?)
+            } else {
+                (-curve.d1_at(range.1, tol)?, -curve.d1_at(range.0, tol)?)
+            };
+            let (Some(leaving), Some(arriving)) = (unit(leaving), unit(arriving)) else {
+                continue;
+            };
+            if leaving.dot(heading) < 0.99 {
+                continue;
+            }
+            used.push(candidate.node());
+            next = Some((curve, range, forward, far, arriving));
+            break;
+        }
+        let Some((curve, range, forward, far, arriving)) = next else {
+            break;
+        };
+        pieces.push((curve, range, forward));
+        heading = arriving;
+        at = far;
+        if at == start.node() {
+            closed = true;
+            break;
+        }
+    }
+    if !closed {
+        return Ok(None);
+    }
+    // Each piece over its own arc length rather than a unit span, so the
+    // joined guide's speed is continuous across the joins: a chart image
+    // fitted at the guide's parameters would otherwise carry a kink at
+    // every join that the fit spends its budget on.
+    let mut splines: Vec<ogeom_geom::BSplineCurve> = Vec::with_capacity(pieces.len());
+    for (curve, range, forward) in &pieces {
+        let mut spline = curve.to_bspline_over(*range, tol)?;
+        if !forward {
+            let (knots, control) =
+                ogeom_math::bspline::reverse(spline.knots(), spline.control_points());
+            spline = ogeom_geom::BSplineCurve::rational(knots, control)?;
+        }
+        let (lo, hi) = spline.domain();
+        let mut length = 0.0;
+        let mut last = spline.point_at(lo, tol)?;
+        for k in 1..=64 {
+            let p = spline.point_at(lo + (hi - lo) * f64::from(k) / 64.0, tol)?;
+            length += last.distance(p);
+            last = p;
+        }
+        if length > tol.confusion() {
+            spline = ogeom_geom::BSplineCurve::rational(
+                spline.knots().reparameterized(0.0, length)?,
+                spline.control_points().to_vec(),
+            )?;
+        }
+        splines.push(spline);
+    }
+    let degree = splines
+        .iter()
+        .map(ogeom_geom::BSplineCurve::degree)
+        .max()
+        .unwrap_or(1);
+    for spline in &mut splines {
+        while spline.degree() < degree {
+            *spline = spline.elevated(tol)?;
+        }
+    }
+    let seat = splines[0].domain();
+    let mut whole = (
+        splines[0].knots().clone(),
+        splines[0].control_points().to_vec(),
+    );
+    for spline in &splines[1..] {
+        whole = ogeom_math::bspline::join(
+            &whole,
+            &(spline.knots().clone(), spline.control_points().to_vec()),
+        )?;
+    }
+    Ok(Some((
+        Curve::BSpline(ogeom_geom::BSplineCurve::rational(whole.0, whole.1)?),
+        seat,
+    )))
 }

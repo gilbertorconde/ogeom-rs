@@ -899,6 +899,69 @@ struct ContactRec {
     target_face: usize,
 }
 
+/// A same-domain contact edge's image in the shared surface's chart, where
+/// no closed form exists: fitted by projection into the target's chart, or
+/// — where the edge overhangs the target's own window, a blend's leg on a
+/// spline host continued past the face — into the owner's, which is the
+/// same chart wherever an extension kept its parent's parameters. The
+/// owner's image is trusted only where lifting it through the *target*
+/// lands back on the edge, sampled over the run the target's window holds.
+///
+/// `None` for an edge lying wholly outside the target's window, which the
+/// target face cannot meet.
+///
+/// # Errors
+///
+/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if neither
+/// chart holds the edge.
+fn projected_into_shared_chart(
+    curve: &Curve,
+    range: (f64, f64),
+    owner: &SurfaceGeometry,
+    target: &SurfaceGeometry,
+    tol: Tolerances,
+) -> OgeomResult<Option<PlanarCurve>> {
+    let against_target = ogeom_algo::pcurve_fit::fit_projected_pcurve(curve, range, target, tol);
+    if let Ok(fitted) = &against_target
+        && fitted.2
+    {
+        return Ok(Some(fitted.0.clone()));
+    }
+    let Ok(on_owner) = ogeom_algo::pcurve_fit::fit_projected_pcurve(curve, range, owner, tol)
+    else {
+        ogeom_bail!(
+            NotDone,
+            "same-domain contact whose edge could not be projected into the \
+             shared surface's chart: {}",
+            against_target
+                .err()
+                .map_or_else(String::new, |e| e.to_string())
+        );
+    };
+    let ((ua, ub), (va, vb)) = target.domain();
+    let mut checked = 0usize;
+    for i in 0..=16 {
+        let t = range.0 + (range.1 - range.0) * f64::from(i) / 16.0;
+        let uv = on_owner.0.point_at(t, tol)?;
+        if uv.x < ua || uv.x > ub || uv.y < va || uv.y > vb {
+            continue;
+        }
+        let lifted = target.point_at(uv.x, uv.y, tol)?;
+        if lifted.distance(curve.point_at(t, tol)?) > tol.confusion() * 1e4 {
+            ogeom_bail!(
+                NotDone,
+                "same-domain contact whose edge overhangs the shared surface's \
+                 window, on a chart the two surfaces do not share"
+            );
+        }
+        checked += 1;
+    }
+    if checked == 0 {
+        return Ok(None);
+    }
+    Ok(Some(on_owner.0))
+}
+
 /// Whether two surfaces are the *identical chart* — the same
 /// parameterization, frame and all, not merely the same point set.
 ///
@@ -935,6 +998,11 @@ fn same_chart(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerances) -> bool
                 && (x.torus().major_radius() - y.torus().major_radius()).abs() <= tol.confusion()
                 && (x.torus().minor_radius() - y.torus().minor_radius()).abs() <= tol.confusion()
         }
+        // Two patches are one chart only as one patch: the same knots and
+        // the same net, to the bit — a blend's leg built on the host's own
+        // patch, widened in place and shared. Any other pair of patches
+        // that merely coincides is not.
+        (S::BSpline(x), S::BSpline(y)) => x == y,
         _ => false,
     }
 }
@@ -1200,13 +1268,42 @@ fn fill(
                                 None if same_chart(&owner.surface, &target.surface, tol) => {
                                     (e.pcurve.clone(), e.prange)
                                 }
-                                None => ogeom_bail!(
-                                    NotDone,
-                                    "same-domain contact whose edges have no \
-                                     closed-form projection into the shared \
-                                     surface's chart is refused — see the \
-                                     remaining work in docs/PLAN.md"
-                                ),
+                                // Two patches that coincide as point sets
+                                // without being one chart — a blend's leg
+                                // on a spline host continued past the
+                                // face, against the face's own patch — get
+                                // the edge fitted by projection into the
+                                // target's chart, same-parameter with the
+                                // edge, the way every reader derives a
+                                // pcurve it was not given.
+                                None => {
+                                    let Some(pcurve) = projected_into_shared_chart(
+                                        &e.curve,
+                                        e.crange,
+                                        &owner.surface,
+                                        &target.surface,
+                                        tol,
+                                    )?
+                                    else {
+                                        // Wholly outside the target's window
+                                        // is wholly outside the target: a
+                                        // blend's run-out past the face it
+                                        // melts with splits nothing there.
+                                        continue;
+                                    };
+                                    if *DEBUG_WIRE {
+                                        eprintln!(
+                                            "SAME owner {} face {} (from_a {owner_from_a}) edge {} of kind {:?}: {:?} .. {:?} against target face {target_face}",
+                                            if owner_from_a { "a" } else { "b" },
+                                            if owner_from_a { ia } else { ib },
+                                            e.node.index(),
+                                            core::mem::discriminant(&e.curve),
+                                            e.curve.point_at(e.crange.0, tol).ok(),
+                                            e.curve.point_at(e.crange.1, tol).ok()
+                                        );
+                                    }
+                                    (pcurve, e.crange)
+                                }
                             };
                             contacts.push(ContactRec {
                                 curve: e.curve.clone(),
@@ -3206,7 +3303,16 @@ fn chart_point_of(face: &GFace, p: Point, tol: Tolerances) -> Option<Point2> {
             let (u, v) = elementary::torus_parameters(&torus, p, tol).ok()?;
             Point2::new(u, v)
         }
-        _ => return None,
+        // No closed form — a fitted patch, a swept or revolved surface —
+        // inverts by projection, held to the same reach: a blend's leg on
+        // a spline host is a partner like any other.
+        other => {
+            let foot = ogeom_algo::project_on_surface(other, p, 24, tol).ok()?;
+            if foot.distance > reach {
+                return None;
+            }
+            Point2::new(foot.parameters.0, foot.parameters.1)
+        }
     };
     let at = fold_point_into_chart(raw, &face.surface);
     let mut lines: Vec<Vec<Point2>> = Vec::new();

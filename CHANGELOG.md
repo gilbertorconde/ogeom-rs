@@ -13,6 +13,22 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **The marched blend takes fitted hosts as far as the melt.** A
+  B-spline patch — or a swept or revolved surface — is a host the march
+  had refused by name. It marches now: the chart inverts by projection
+  warm-started from the last station, a patch that meets itself at its
+  seam wraps as a periodic one does, the patch is continued past its
+  face by a few radii so the ball can run out through a wall, and a
+  seat the boolean split into arcs at the hosts' seams is closed back
+  into one loop through the neighbours the two hosts share, arc by arc
+  where each continues the last tangentially. The wedge is built on the
+  host's own patch, widened in place. What is not carried is the melt
+  of that wedge against a fitted face — the boolean's same-domain and
+  tangential handling on patches — and the blend refuses there by name,
+  the march and the wedge behind it. Under it, `to_nurbs` now carries the
+  old vertices' and edges' recorded tolerances into the converted solid,
+  which it had dropped, and the boolean inverts a probe on a patch by
+  projection and treats two identical patches as one chart.
 - **IGES reads more of the 1980s.** A conic arc (104) of any axis-aligned
   kind reads as its own curve — hyperbola and parabola alongside the
   ellipse, the arc's ends read off the file's points whichever way round

@@ -470,17 +470,28 @@ fn convert_edge(
         ogeom_bail!(Construction, "an edge with no vertices cannot be converted");
     }
     let mut resolve = |model: &mut Model, occurrence: &Shape| -> OgeomResult<Shape> {
-        let Some(data) = model.node(occurrence).and_then(|n| n.data().as_vertex()) else {
+        let Some(data) = model
+            .node(occurrence)
+            .and_then(|n| n.data().as_vertex().cloned())
+        else {
             ogeom_bail!(Construction, "vertex node holds no vertex data");
         };
         // The vertex's *own* composed placement, not the edge's: a prism's
         // far cap references the profile's vertex nodes under the travel,
         // and an edge placed identically still ends on a moved vertex.
         let at = map(occurrence.transform(model.datums())?.apply(data.point));
-        Ok(vertices
+        let fresh = vertices
             .entry((occurrence.node(), point_bits(at)))
             .or_insert_with(|| make_vertex(model, at).shape)
-            .clone())
+            .clone();
+        // The old vertex's recorded slop — a file's, or a fit's — is the
+        // new one's too: the curves it meets are the same curves, moved
+        // exactly, and a vertex born at the default tolerance would refuse
+        // the edge its twin accepted.
+        if data.tolerance.get() > tol.confusion() {
+            model.widen(&fresh, data.tolerance)?;
+        }
+        Ok(fresh)
     };
     let va = resolve(model, &old[0])?;
     let vb = if old.len() == 1 {
@@ -489,6 +500,12 @@ fn convert_edge(
         resolve(model, &old[old.len() - 1])?
     };
     let built = make_edge_between(model, curve.clone(), new_range, &va, &vb, tol)?.shape;
+    if data.tolerance.get() > tol.confusion()
+        && let Some(node) = model.node_mut(&built)
+        && let NodeData::Edge(fresh) = node.data_mut()
+    {
+        fresh.tolerance = fresh.tolerance.widen_to(data.tolerance.get());
+    }
     Ok((built, curve, new_range))
 }
 

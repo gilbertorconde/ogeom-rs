@@ -1096,8 +1096,15 @@ lifts the chart segment, a looping seat with a corner at its join steered \
 by a smooth refit of itself, the band's first station re-solved on the \
 apex column so a rim opened at the host's own seam leaves no sliver; a \
 full circular rim whose hosts are not a cap and its coaxial wall takes \
-the march too. Some sphere placements still fail in the boolean's \
-classification of the wedge. What is owed now: the equal-radius \
+the march too. A fitted host marches: its chart inverts by projection, a \
+closed patch's seam wraps as a period does, the patch is continued past \
+the face by a few radii so the ball can run out, a seat the boolean split \
+into arcs is closed back through the neighbours the hosts share, and the \
+wedge is built — but the melt of that wedge against a fitted face is \
+beyond what the boolean resolves (a tangential section between two patches \
+wanders; the kept pieces do not close), and the blend refuses there by \
+name. Some sphere placements still fail in the boolean's classification of \
+the wedge. What is owed now: the melt against a fitted face; the equal-radius \
 crossing whose seam pinches at tangent poles; and of the corner family, \
 the N-edged vertex whose faces no single ball touches and the curved-edged \
 corner. The corner tool rounds any planar vertex whose faces one ball \
@@ -1135,6 +1142,8 @@ tests = [
     "crates/ogeom-fillet/tests/marched_fillet.rs",
     "crates/ogeom-fillet/tests/chain.rs",
     "crates/ogeom-fillet/tests/fillet.rs",
+    "crates/ogeom-fillet/tests/marched_blend.rs::a_cylinder_square_on_a_plane_rounds_the_same_on_patches",
+    "crates/ogeom-fillet/tests/marched_blend.rs::a_straight_seat_between_two_patches_runs_off_their_ends",
 ]
 
 [[capability]]

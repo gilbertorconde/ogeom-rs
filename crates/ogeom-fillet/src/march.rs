@@ -676,9 +676,22 @@ fn normal_and_derivatives(
     Some((n, across(dcu), across(dcv)))
 }
 
+/// Whether a chart direction comes back on itself: periodic, or closed —
+/// a converted cylinder's patch meets itself at its seam without being
+/// periodic, and a march that stopped at that seam would call a wall's
+/// own join a run-out.
+fn wraps(surface: &SurfaceGeometry) -> (bool, bool) {
+    let tol = Tolerances::millimetres();
+    (
+        surface.is_periodic_u() || surface.is_closed_u(tol),
+        surface.is_periodic_v() || surface.is_closed_v(tol),
+    )
+}
+
 /// Hold a parameter pair inside a surface's own domain.
 fn clamp_to(surface: &SurfaceGeometry, u: f64, v: f64) -> (f64, f64) {
     let ((ua, ub), (va, vb)) = surface.domain();
+    let (wrap_u, wrap_v) = wraps(surface);
     let hold = |value: f64, lo: f64, hi: f64, periodic: bool| {
         if periodic {
             let span = hi - lo;
@@ -688,28 +701,26 @@ fn clamp_to(surface: &SurfaceGeometry, u: f64, v: f64) -> (f64, f64) {
         }
         value.clamp(lo, hi)
     };
-    (
-        hold(u, ua, ub, surface.is_periodic_u()),
-        hold(v, va, vb, surface.is_periodic_v()),
-    )
+    (hold(u, ua, ub, wrap_u), hold(v, va, vb, wrap_v))
 }
 
 /// Whether a parameter pair has left a surface's own domain.
 fn beyond(surface: &SurfaceGeometry, at: (f64, f64), tol: Tolerances) -> bool {
     let ((ua, ub), (va, vb)) = surface.domain();
+    let (wrap_u, wrap_v) = wraps(surface);
     let band = tol.parametric();
-    (!surface.is_periodic_u() && (at.0 < ua - band || at.0 > ub + band))
-        || (!surface.is_periodic_v() && (at.1 < va - band || at.1 > vb + band))
+    (!wrap_u && (at.0 < ua - band || at.0 > ub + band))
+        || (!wrap_v && (at.1 < va - band || at.1 > vb + band))
 }
 
 /// Whether it is at the edge of one — which is how a run-out is told from a
 /// singularity.
 fn at_edge(surface: &SurfaceGeometry, at: (f64, f64)) -> bool {
     let ((ua, ub), (va, vb)) = surface.domain();
+    let (wrap_u, wrap_v) = wraps(surface);
     let near = |value: f64, lo: f64, hi: f64| {
         let reach = (hi - lo) * 1e-6;
         value <= lo + reach || value >= hi - reach
     };
-    (!surface.is_periodic_u() && near(at.0, ua, ub))
-        || (!surface.is_periodic_v() && near(at.1, va, vb))
+    (!wrap_u && near(at.0, ua, ub)) || (!wrap_v && near(at.1, va, vb))
 }

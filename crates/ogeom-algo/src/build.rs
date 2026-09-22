@@ -132,6 +132,22 @@ pub fn make_edge_between(
         let on_curve = curve.point_at(parameter, tol)?;
         let reach = data.tolerance.get().max(tol.confusion());
         if !on_curve.is_within(placed, reach) {
+            if std::env::var_os("OGEOM_DEBUG_EDGE").is_some() {
+                eprintln!(
+                    "EDGE MISS range {range:?} at {parameter}: curve {on_curve:?} vertex {placed:?} kind {}",
+                    match &curve {
+                        Curve::Line(_) => "line",
+                        Curve::Circle(_) => "circle",
+                        Curve::BSpline(b) =>
+                            if b.degree() == 1 {
+                                "bspline-1"
+                            } else {
+                                "bspline"
+                            },
+                        _ => "other",
+                    }
+                );
+            }
             ogeom_bail!(
                 Construction,
                 "curve at {parameter} is {} from the vertex it should meet, \
@@ -1579,14 +1595,19 @@ pub fn make_band_between(
             );
         }
         let connector: ogeom_geom::Curve = ogeom_geom::Curve::BSpline(fitted.curve);
-        let miss = connector
-            .point_at(0.0, tol)?
-            .distance(lifted[0])
-            .max(connector.point_at(length, tol)?.distance(lifted[SAMPLES]));
-        if miss > tol.confusion() {
-            let widened = ogeom_core::Tolerance::new(miss * 2.0)?;
-            model.widen(&from, widened)?;
-            model.widen(&to, widened)?;
+        // Against the vertices' own points, not the lifted chart points: a
+        // ring's start vertex stands off the host by the ring's own slop —
+        // a fitted seam a few microns off the surface it trims — and the
+        // connector, which lies on the host, misses it by that much.
+        for (vertex, at) in [(&from, 0.0), (&to, length)] {
+            let Some(data) = model.node(vertex).and_then(|n| n.data().as_vertex()) else {
+                ogeom_bail!(Construction, "a band ring's start vertex holds no point");
+            };
+            let placed = vertex.transform(model.datums())?.apply(data.point);
+            let miss = connector.point_at(at, tol)?.distance(placed);
+            if miss > tol.confusion() {
+                model.widen(vertex, ogeom_core::Tolerance::new(miss * 2.0)?)?;
+            }
         }
         let seam = make_edge_between(model, connector, (0.0, length), &from, &to, tol)?.shape;
         (seam, forward, a, b)
