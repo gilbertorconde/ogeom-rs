@@ -21,11 +21,12 @@ bump may break the API and a patch bump may not.
   face by a few radii so the ball can run out through a wall, and a
   seat the boolean split into arcs at the hosts' seams is closed back
   into one loop through the neighbours the two hosts share, arc by arc
-  where each continues the last tangentially. The wedge is built on the
-  host's own patch, widened in place. What is not carried is the melt
-  of that wedge against a fitted face — the boolean's same-domain and
-  tangential handling on patches — and the blend refuses there by name,
-  the march and the wedge behind it. Under it, `to_nurbs` now carries the
+  where each continues the last tangentially, and marched as the loop it
+  is. The wedge is built on the host's own patch, widened in place, its
+  rail loop slid into the host's own window, and it melts: a converted
+  box's edge, the crease round a converted post, a converted cone's rim
+  and a converted drum's rim all round to valid solids. A melt the
+  boolean still cannot resolve refuses by name. Under it, `to_nurbs` now carries the
   old vertices' and edges' recorded tolerances into the converted solid,
   which it had dropped, and the boolean inverts a probe on a patch by
   projection and treats two identical patches as one chart.
@@ -122,6 +123,27 @@ bump may break the API and a patch bump may not.
   overshooting its neighbours, and the faces it bounded drew as nothing.
   The window between the vertices' own feet on the curve is taken, and
   the report tallies it as `vertex-window`.
+- **A marched section between two patches wandered, and a loop cut at
+  a seam stayed open.** The boolean fits a marched section jointly with
+  its two chart images, and parameterised the samples centripetally: a
+  walk that starts on a window's rim halves its step to a micron and
+  grows it back only twofold a point, so most of its samples crowd one
+  end, and a cubic through them could not be the straight line they lay
+  on — a section came back twelve hundred millimetres off it, and the
+  boolean refused the wedge for running beyond a turn. A joint fit that
+  misses its target centripetally is fitted again by chord length, and
+  the closer of the two stands. A loop
+  walked round a converted drum reached the seam from both sides and was
+  flagged as having left the domain; its ends coincide and it is closed,
+  its chart image unwrapped across the seam as across a period.
+- **A fused post converted to patches drew open, and the conversion
+  failed the checker.** The second half of a rim split by a fuse was
+  written as the chart segment between its projected endpoints, the seam
+  vertex projecting to either column, and it drew the front half
+  mirrored; the wall's ring lost its far side. A seam endpoint's column
+  is decided by the edge's own interior. The fit's slop widened each
+  converted edge past the vertices bounding it; the vertices widen with
+  the edge.
 - **A fitted pcurve hooked off its curve between the fitter's samples.**
   The reader fits an edge's pcurve by projecting samples spaced evenly in
   the curve's parameter and measuring the fit at those samples alone. A

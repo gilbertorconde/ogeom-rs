@@ -69,29 +69,34 @@ pub(crate) fn marched_fillet(
     // its join. It guides the section planes only — the ball seats on the
     // exact hosts, and every edge the wedge builds rides the seat's own
     // curve — so its fit error costs the blend nothing it can measure.
-    let loops = closed || {
-        let (lo, hi) = guide_range;
-        guide
-            .point_at(lo, tol)
-            .and_then(|p| guide.point_at(hi, tol).map(|q| p.distance(q)))
-            .is_ok_and(|d| d <= tol.confusion() * 10.0)
-    };
-    let march_guide: Option<Curve> = if loops
-        && matches!(&guide, Curve::BSpline(b) if !b.is_periodic())
-    {
-        const SAMPLES: usize = 256;
-        let (lo, hi) = guide_range;
-        let mut points: Vec<Point> = Vec::with_capacity(SAMPLES + 1);
-        for i in 0..=SAMPLES {
-            #[allow(clippy::cast_precision_loss)]
-            let t = lo + (hi - lo) * ((i % SAMPLES) as f64) / (SAMPLES as f64);
-            points.push(guide.point_at(t, tol)?);
-        }
-        let fitted = ogeom_geom::fit::fit_points_closed(&points, 3, tol.confusion() * 1e2, tol)?;
-        fitted.met.then_some(Curve::BSpline(fitted.curve))
-    } else {
-        None
-    };
+    let closure_of =
+        |guide: &Curve, guide_range: (f64, f64)| -> OgeomResult<(bool, Option<Curve>)> {
+            let loops = closed || {
+                let (lo, hi) = guide_range;
+                guide
+                    .point_at(lo, tol)
+                    .and_then(|p| guide.point_at(hi, tol).map(|q| p.distance(q)))
+                    .is_ok_and(|d| d <= tol.confusion() * 10.0)
+            };
+            let march_guide: Option<Curve> =
+                if loops && matches!(guide, Curve::BSpline(b) if !b.is_periodic()) {
+                    const SAMPLES: usize = 256;
+                    let (lo, hi) = guide_range;
+                    let mut points: Vec<Point> = Vec::with_capacity(SAMPLES + 1);
+                    for i in 0..=SAMPLES {
+                        #[allow(clippy::cast_precision_loss)]
+                        let t = lo + (hi - lo) * ((i % SAMPLES) as f64) / (SAMPLES as f64);
+                        points.push(guide.point_at(t, tol)?);
+                    }
+                    let fitted =
+                        ogeom_geom::fit::fit_points_closed(&points, 3, tol.confusion() * 1e2, tol)?;
+                    fitted.met.then_some(Curve::BSpline(fitted.curve))
+                } else {
+                    None
+                };
+            Ok((loops, march_guide))
+        };
+    let (loops, march_guide) = closure_of(&guide, guide_range)?;
 
     // The two host faces at the edge, with their surfaces and outward signs.
     let mut hosts: Vec<(Shape, SurfaceGeometry, f64)> = Vec::new();
@@ -197,24 +202,29 @@ pub(crate) fn marched_fillet(
     // back through the neighbours the two hosts share, each continuing the
     // last tangentially, and the seat becomes the whole turn as it is
     // where the stored curve carries it.
-    let (guide, guide_range, edge_range) = if !closed && ends_apart(&guide, guide_range, tol) {
-        match loop_through_neighbours(
-            model,
-            edge,
-            &guide,
-            edge_range,
-            [&face_first, &face_second],
-            tol,
-        )? {
-            Some((whole, seat)) => {
-                let domain = whole.domain();
-                (whole, domain, seat)
+    let (guide, guide_range, edge_range, loops, march_guide) =
+        if !closed && ends_apart(&guide, guide_range, tol) {
+            match loop_through_neighbours(
+                model,
+                edge,
+                &guide,
+                edge_range,
+                [&face_first, &face_second],
+                tol,
+            )? {
+                Some((whole, seat)) => {
+                    // The whole turn is a loop where the arc was not: decided
+                    // again, or the station on the seam's column is bracketed
+                    // the long way round the turn and re-solved on its far side.
+                    let domain = whole.domain();
+                    let (loops, march_guide) = closure_of(&whole, domain)?;
+                    (whole, domain, seat, loops, march_guide)
+                }
+                None => (guide, guide_range, edge_range, loops, march_guide),
             }
-            None => (guide, guide_range, edge_range),
-        }
-    } else {
-        (guide, guide_range, edge_range)
-    };
+        } else {
+            (guide, guide_range, edge_range, loops, march_guide)
+        };
     // An open seat on a spline that ends with the edge — a converted
     // solid's every edge — leaves the ball nowhere to run out: the guide
     // is continued past both ends by a few radii, as itself. It steers
@@ -2067,6 +2077,24 @@ fn host_leg(
         let delta = rail_chart[n - 1].x - rail_chart[0].x + (rail_chart[1].x - rail_chart[0].x);
         (delta / period).round() * period
     });
+    // The loop's first station stands where the march put it, which on a
+    // seam's column is either side of the seam by rounding: a station
+    // re-solved onto the column came back a hair under the chart's far
+    // edge, the loop unwrapped forward from there ran a whole period past
+    // the window, and the host face never met the rail — its arrangement
+    // drops what lies outside its chart. The whole loop is slid by whole
+    // periods so its first station starts inside the window, the hair
+    // under the far edge read as the near one.
+    if let Some(period) = period_of(host) {
+        use ogeom_geom::Surface as _;
+        let ((u0, _), _) = host.domain();
+        let turns = ((rail_chart[0].x - u0 + period * 1e-6) / period).floor();
+        if turns != 0.0 {
+            for uv in &mut rail_chart {
+                uv.x -= turns * period;
+            }
+        }
+    }
     rail_chart.push(Point2::new(rail_chart[0].x + winding, rail_chart[0].y));
     let rail_pcurve = {
         let fitted =
