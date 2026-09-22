@@ -53,6 +53,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A torus band between two parallels drew as two whole tori laid over
+  each other.** Each wire of such a face is a single edge winding the
+  chart once. Walked one wire at a time, each rim closed on its own
+  translate a tube-period over — which is the whole torus cut along that
+  rim — and two of those cancel where they overlap: the band drew to
+  more area than its torus has. Wound rims are paired into one ring
+  before any rim is closed alone, on either periodic axis, so a ball's
+  belt between two latitude wires holds the same way. The parity check
+  that guards a boundary had been flagging exactly these faces and
+  drawing them again, eight times finer, every time; the benchmark part
+  that carries two such bands tessellates in a twentieth of the time.
 - **A face narrower than the chord shaded as a saw of fins.** Drawn at
   the caller's chord its boundary sags between points by more than the
   face is wide — a thread flank a tenth of a millimetre wide at a chord

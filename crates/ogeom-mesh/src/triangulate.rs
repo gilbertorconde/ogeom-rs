@@ -902,34 +902,58 @@ fn trimming_rings(
         }
     }
 
-    // A band between two *wound* rings: each boundary winds the periodic
-    // direction once — a bore wall whose ends are a full rim and a staircase
-    // of arcs — and neither ring closes on its own. In the unrolled chart
-    // the face is the strip between the two chains, so the pair is merged
-    // into one ring by two joining runs standing exactly one period apart:
-    // their lifted points are the same 3D points, and the weld closes them
-    // the way it closes a seam.
-    if geometry_winds(surface) {
+    // A band between two *wound* rings: each boundary winds a periodic
+    // direction once — a bore wall whose ends are a full rim and a
+    // staircase of arcs, a torus band between two parallels, a ball's
+    // belt between two latitudes — and neither ring closes on its own. In
+    // the unrolled chart the face is the strip between the two chains, so
+    // the pair is merged into one ring by two joining runs standing
+    // exactly one period apart: their lifted points are the same 3D
+    // points, and the weld closes them the way it closes a seam. Paired
+    // before either is closed on its own: a rim closed alone spans the
+    // whole surface, and two of those cancel where they overlap.
+    {
         use ogeom_geom::Surface as _;
-        let ((ua, ub), _) = surface.domain();
-        let period = ub - ua;
-        let du_of = |ring: &[Point2]| -> f64 { ring.last().map_or(0.0, |l| l.x - ring[0].x) };
-        let open_wound: Vec<usize> = rings
-            .iter()
-            .enumerate()
-            .filter(|(_, ring)| {
-                ring.len() >= 3
-                    && (du_of(ring).abs() - period).abs() <= period * 1e-3
-                    && ring
-                        .last()
-                        .is_some_and(|l| ring[0].distance(*l) > period * 0.5)
-            })
-            .map(|(i, _)| i)
-            .collect();
-        if let [i, j] = open_wound[..]
-            && du_of(&rings[i]).signum() != du_of(&rings[j]).signum()
-        {
-            let sign = du_of(&rings[i]).signum();
+        let ((ua, ub), (va, vb)) = surface.domain();
+        let axes = [
+            (surface.is_periodic_u(), ub - ua),
+            (surface.is_periodic_v(), vb - va),
+        ];
+        for (axis, (periodic, period)) in axes.into_iter().enumerate() {
+            if !periodic || period <= 0.0 {
+                continue;
+            }
+            let along = |p: Point2| if axis == 0 { p.x } else { p.y };
+            let across = |p: Point2| if axis == 0 { p.y } else { p.x };
+            let make = |a: f64, c: f64| {
+                if axis == 0 {
+                    Point2::new(a, c)
+                } else {
+                    Point2::new(c, a)
+                }
+            };
+            let d_of = |ring: &[Point2]| -> f64 {
+                ring.last().map_or(0.0, |l| along(*l) - along(ring[0]))
+            };
+            let open_wound: Vec<usize> = rings
+                .iter()
+                .enumerate()
+                .filter(|(_, ring)| {
+                    ring.len() >= 3
+                        && (d_of(ring).abs() - period).abs() <= period * 1e-3
+                        && ring
+                            .last()
+                            .is_some_and(|l| ring[0].distance(*l) > period * 0.5)
+                })
+                .map(|(i, _)| i)
+                .collect();
+            let [i, j] = open_wound[..] else {
+                continue;
+            };
+            if d_of(&rings[i]).signum() == d_of(&rings[j]).signum() {
+                continue;
+            }
+            let sign = d_of(&rings[i]).signum();
             let b = rings.remove(j);
             let b_anchors = ring_anchors.remove(j);
             ring_folds.remove(j);
@@ -939,28 +963,28 @@ fn trimming_rings(
             let a_last = a.last().copied().unwrap_or(a[0]);
             // Whole periods only: the second chain slides along the unrolled
             // chart until its start stands nearest the first chain's end.
-            let shift = ((a_last.x - b[0].x) / period).round() * period;
-            let b_first = Point2::new(b[0].x + shift, b[0].y);
+            let shift = ((along(a_last) - along(b[0])) / period).round() * period;
+            let b_first = make(along(b[0]) + shift, across(b[0]));
             let steps = 8;
             for k in 1..steps {
                 let f = f64::from(k) / f64::from(steps);
-                a.push(Point2::new(
-                    a_last.x + (b_first.x - a_last.x) * f,
-                    a_last.y + (b_first.y - a_last.y) * f,
+                a.push(make(
+                    along(a_last) + (along(b_first) - along(a_last)) * f,
+                    across(a_last) + (across(b_first) - across(a_last)) * f,
                 ));
                 a_anchors.push(None);
             }
             for (p, anchor) in b.iter().zip(&b_anchors) {
-                a.push(Point2::new(p.x + shift, p.y));
+                a.push(make(along(*p) + shift, across(*p)));
                 a_anchors.push(*anchor);
             }
             // The way back: the same run, one period over, walked the other
             // way — the two runs lift to identical points.
             for k in (1..steps).rev() {
                 let f = f64::from(k) / f64::from(steps);
-                a.push(Point2::new(
-                    a_last.x + (b_first.x - a_last.x) * f - sign * period,
-                    a_last.y + (b_first.y - a_last.y) * f,
+                a.push(make(
+                    along(a_last) + (along(b_first) - along(a_last)) * f - sign * period,
+                    across(a_last) + (across(b_first) - across(a_last)) * f,
                 ));
                 a_anchors.push(None);
             }
@@ -1011,6 +1035,12 @@ fn trimming_rings(
                 }
             }
         }
+    }
+
+    // A ring still winding after all that closes on its own: against a
+    // pole row, or its own translate a period over the other way.
+    for (ring, anchors) in rings.iter_mut().zip(ring_anchors.iter_mut()) {
+        close_wound_ring(ring, anchors, surface, tol);
     }
 
     // Points closer than the triangulator's own resolution make it refuse
@@ -1760,108 +1790,135 @@ fn boundary_ring(
         if first.is_equal(last, tol) || same_vertex {
             ring.pop();
             anchors.pop();
-        } else if let Some(geometry) = model.geometry().surface(surface) {
-            // A ring that winds one periodic direction of a doubly-periodic
-            // surface — a diagonal loop on a torus. The folded walk ends a
-            // whole period from where it began, and the face is the band
-            // between the chain and its own translate one period over in the
-            // *other* periodic direction, joined at the ends by columns that
-            // lift to one 3D circle. The translate's anchors are the same 3D
-            // points, and the joining columns' two copies lift identically,
-            // so the weld closes them exactly as it closes a seam.
-            use ogeom_geom::Surface as _;
-            let ((ua, ub), (va, vb)) = geometry.domain();
-            let du = last.x - first.x;
-            let dv = last.y - first.y;
-            let winds_u = geometry.is_periodic_u()
-                && (du.abs() - (ub - ua)).abs() <= (ub - ua) * 1e-3
-                && dv.abs() <= (vb - va).max(1.0) * 1e-3;
-            let winds_v = geometry.is_periodic_u()
-                && geometry.is_periodic_v()
-                && (dv.abs() - (vb - va)).abs() <= (vb - va) * 1e-3
-                && du.abs() <= (ub - ua).max(1.0) * 1e-3;
-            // Where does a u-winding ring close against? On a doubly
-            // periodic surface, its own translate one v-period over. On a
-            // cone or sphere, the row where the surface collapses to a point
-            // — the apex or the pole — which every u reaches: the closure
-            // costs no area error because the row has none.
-            let degenerate_row = |v: f64| -> bool {
-                let (Ok(p), Ok(q), Ok(r)) = (
-                    geometry.point_at(ua, v, tol),
-                    geometry.point_at(f64::midpoint(ua, ub), v, tol),
-                    geometry.point_at(ub, v, tol),
-                ) else {
-                    return false;
-                };
-                p.distance(q) <= tol.confusion() * 10.0 && p.distance(r) <= tol.confusion() * 10.0
-            };
-            let target_v = if winds_u && !geometry.is_periodic_v() {
-                // The nearer degenerate row, if either end has one.
-                let mid_v = f64::midpoint(first.y, last.y);
-                if degenerate_row(va) && (mid_v - va).abs() <= (mid_v - vb).abs() {
-                    Some(va)
-                } else if degenerate_row(vb) {
-                    Some(vb)
-                } else if degenerate_row(va) {
-                    Some(va)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            let column_steps = 8;
-            if let Some(v_apex) = target_v {
-                // Down the seam column to the apex row, across it, and back
-                // up: the row has no length in space, so the closure adds no
-                // area and its lifted points weld to the one apex.
-                let row_steps = ring.len().max(8);
-                for k in 1..=column_steps {
-                    let f = f64::from(k) / f64::from(column_steps);
-                    ring.push(Point2::new(last.x, last.y + (v_apex - last.y) * f));
-                    anchors.push(None);
-                }
-                for k in 1..row_steps {
-                    #[allow(clippy::cast_precision_loss)]
-                    let f = k as f64 / row_steps as f64;
-                    ring.push(Point2::new(last.x + (first.x - last.x) * f, v_apex));
-                    anchors.push(None);
-                }
-                for k in 0..column_steps {
-                    let f = f64::from(column_steps - k) / f64::from(column_steps);
-                    ring.push(Point2::new(first.x, first.y + (v_apex - first.y) * f));
-                    anchors.push(None);
-                }
-            } else if (winds_u && geometry.is_periodic_v()) || winds_v {
-                let shift = if winds_u {
-                    Point2::new(0.0, -(vb - va))
-                } else {
-                    Point2::new(-(ub - ua), 0.0)
-                };
-                let chain: Vec<Point2> = ring.clone();
-                let chain_anchors = anchors.clone();
-                // Down from the chain's end to its translate's end.
-                for k in 1..=column_steps {
-                    let f = f64::from(k) / f64::from(column_steps);
-                    ring.push(Point2::new(last.x + shift.x * f, last.y + shift.y * f));
-                    anchors.push(None);
-                }
-                // The translate, walked back.
-                for (p, a) in chain.iter().rev().zip(chain_anchors.iter().rev()).skip(1) {
-                    ring.push(Point2::new(p.x + shift.x, p.y + shift.y));
-                    anchors.push(*a);
-                }
-                // Up from the translate's start back to the chain's start,
-                // stopping one step short of closing.
-                for k in 1..column_steps {
-                    let f = f64::from(column_steps - k) / f64::from(column_steps);
-                    ring.push(Point2::new(first.x + shift.x * f, first.y + shift.y * f));
-                    anchors.push(None);
-                }
-            }
         }
     }
     Ok((ring, anchors, met, folds, ties))
+}
+
+/// Close a ring that winds a periodic direction of its chart and found no
+/// partner to pair with.
+///
+/// A ring that winds one periodic direction of a doubly-periodic surface
+/// — a diagonal loop on a torus — ends a whole period from where it
+/// began, and the face is the band between the chain and its own
+/// translate one period over in the *other* periodic direction, joined
+/// at the ends by columns that lift to one 3D circle. The translate's
+/// anchors are the same 3D points, and the joining columns' two copies
+/// lift identically, so the weld closes them exactly as it closes a seam.
+/// On a cone or a sphere the ring closes against the row where the
+/// surface collapses to a point — the apex or the pole — which every `u`
+/// reaches: that closure costs no area, because the row has none.
+///
+/// A ring that has a partner — the other rim of a band — is not closed
+/// here but paired with it, or each rim would close the whole surface on
+/// its own and the two would cancel where they overlap.
+fn close_wound_ring(
+    ring: &mut Vec<Point2>,
+    anchors: &mut Vec<Option<Point>>,
+    geometry: &SurfaceGeometry,
+    tol: Tolerances,
+) {
+    let (Some(first), Some(last)) = (ring.first().copied(), ring.last().copied()) else {
+        return;
+    };
+    // A ring that winds one periodic direction of a doubly-periodic
+    // surface — a diagonal loop on a torus. The folded walk ends a
+    // whole period from where it began, and the face is the band
+    // between the chain and its own translate one period over in the
+    // *other* periodic direction, joined at the ends by columns that
+    // lift to one 3D circle. The translate's anchors are the same 3D
+    // points, and the joining columns' two copies lift identically,
+    // so the weld closes them exactly as it closes a seam.
+    use ogeom_geom::Surface as _;
+    let ((ua, ub), (va, vb)) = geometry.domain();
+    let du = last.x - first.x;
+    let dv = last.y - first.y;
+    let winds_u = geometry.is_periodic_u()
+        && (du.abs() - (ub - ua)).abs() <= (ub - ua) * 1e-3
+        && dv.abs() <= (vb - va).max(1.0) * 1e-3;
+    let winds_v = geometry.is_periodic_u()
+        && geometry.is_periodic_v()
+        && (dv.abs() - (vb - va)).abs() <= (vb - va) * 1e-3
+        && du.abs() <= (ub - ua).max(1.0) * 1e-3;
+    // Where does a u-winding ring close against? On a doubly
+    // periodic surface, its own translate one v-period over. On a
+    // cone or sphere, the row where the surface collapses to a point
+    // — the apex or the pole — which every u reaches: the closure
+    // costs no area error because the row has none.
+    let degenerate_row = |v: f64| -> bool {
+        let (Ok(p), Ok(q), Ok(r)) = (
+            geometry.point_at(ua, v, tol),
+            geometry.point_at(f64::midpoint(ua, ub), v, tol),
+            geometry.point_at(ub, v, tol),
+        ) else {
+            return false;
+        };
+        p.distance(q) <= tol.confusion() * 10.0 && p.distance(r) <= tol.confusion() * 10.0
+    };
+    let target_v = if winds_u && !geometry.is_periodic_v() {
+        // The nearer degenerate row, if either end has one.
+        let mid_v = f64::midpoint(first.y, last.y);
+        if degenerate_row(va) && (mid_v - va).abs() <= (mid_v - vb).abs() {
+            Some(va)
+        } else if degenerate_row(vb) {
+            Some(vb)
+        } else if degenerate_row(va) {
+            Some(va)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let column_steps = 8;
+    if let Some(v_apex) = target_v {
+        // Down the seam column to the apex row, across it, and back
+        // up: the row has no length in space, so the closure adds no
+        // area and its lifted points weld to the one apex.
+        let row_steps = ring.len().max(8);
+        for k in 1..=column_steps {
+            let f = f64::from(k) / f64::from(column_steps);
+            ring.push(Point2::new(last.x, last.y + (v_apex - last.y) * f));
+            anchors.push(None);
+        }
+        for k in 1..row_steps {
+            #[allow(clippy::cast_precision_loss)]
+            let f = k as f64 / row_steps as f64;
+            ring.push(Point2::new(last.x + (first.x - last.x) * f, v_apex));
+            anchors.push(None);
+        }
+        for k in 0..column_steps {
+            let f = f64::from(column_steps - k) / f64::from(column_steps);
+            ring.push(Point2::new(first.x, first.y + (v_apex - first.y) * f));
+            anchors.push(None);
+        }
+    } else if (winds_u && geometry.is_periodic_v()) || winds_v {
+        let shift = if winds_u {
+            Point2::new(0.0, -(vb - va))
+        } else {
+            Point2::new(-(ub - ua), 0.0)
+        };
+        let chain: Vec<Point2> = ring.clone();
+        let chain_anchors = anchors.clone();
+        // Down from the chain's end to its translate's end.
+        for k in 1..=column_steps {
+            let f = f64::from(k) / f64::from(column_steps);
+            ring.push(Point2::new(last.x + shift.x * f, last.y + shift.y * f));
+            anchors.push(None);
+        }
+        // The translate, walked back.
+        for (p, a) in chain.iter().rev().zip(chain_anchors.iter().rev()).skip(1) {
+            ring.push(Point2::new(p.x + shift.x, p.y + shift.y));
+            anchors.push(*a);
+        }
+        // Up from the translate's start back to the chain's start,
+        // stopping one step short of closing.
+        for k in 1..column_steps {
+            let f = f64::from(column_steps - k) / f64::from(column_steps);
+            ring.push(Point2::new(first.x + shift.x * f, first.y + shift.y * f));
+            anchors.push(None);
+        }
+    }
 }
 
 /// Parameters at which to sample an edge, taken from its 3D curve.
