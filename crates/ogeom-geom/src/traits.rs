@@ -321,6 +321,52 @@ pub struct SurfaceJet {
     pub d2v: Vector,
 }
 
+/// A surface's curvature at one place: the principal curvatures and the
+/// directions they are taken in, with the mean and Gaussian curvatures
+/// they combine to.
+///
+/// What curvature display, zebra analysis and a fillet's seat all ask.
+/// The principal directions are unit tangents in space, perpendicular to
+/// each other; at an umbilic — where every direction curves the same, as
+/// everywhere on a sphere or a plane — they are any perpendicular pair
+/// in the tangent plane, and [`SurfaceCurvature::is_umbilic`] says so.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceCurvature {
+    /// The largest normal curvature.
+    pub max: f64,
+    /// The smallest normal curvature.
+    pub min: f64,
+    /// The tangent direction of the largest.
+    pub max_direction: Direction,
+    /// The tangent direction of the smallest.
+    pub min_direction: Direction,
+    /// The unit normal the curvatures are signed against: positive where
+    /// the surface curves towards it.
+    pub normal: Direction,
+}
+
+impl SurfaceCurvature {
+    /// The mean curvature, `(max + min) / 2`.
+    #[must_use]
+    pub fn mean(&self) -> f64 {
+        f64::midpoint(self.max, self.min)
+    }
+
+    /// The Gaussian curvature, `max · min`.
+    #[must_use]
+    pub fn gaussian(&self) -> f64 {
+        self.max * self.min
+    }
+
+    /// Whether the two principal curvatures are equal to within `tol`'s
+    /// angular resolution of their size, so no direction is principal
+    /// above another.
+    #[must_use]
+    pub fn is_umbilic(&self, tol: Tolerances) -> bool {
+        (self.max - self.min).abs() <= tol.angular() * self.max.abs().max(self.min.abs()).max(1.0)
+    }
+}
+
 /// A parametric surface.
 ///
 /// Implementors must guarantee:
@@ -429,6 +475,66 @@ pub trait Surface {
             ));
         }
         Direction::new(du.cross(dv), tol)
+    }
+
+    /// The principal curvatures and directions at `(u, v)`.
+    ///
+    /// From the two fundamental forms of the jet: the principal curvatures
+    /// are the eigenvalues of the shape operator `I⁻¹ II`, the directions
+    /// its eigenvectors carried into space. Signed against the surface's
+    /// own normal, [`Surface::normal_at`], so a sphere of radius `r` seen
+    /// from outside reads `-1/r` twice and a cylinder `-1/r` round and `0`
+    /// along.
+    ///
+    /// # Errors
+    ///
+    /// As [`Surface::normal_at`]: at a degenerate point there is no normal
+    /// to sign against.
+    fn curvature_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<SurfaceCurvature> {
+        let jet = self.jet_at(u, v, tol)?;
+        let normal = self.normal_at(u, v, tol)?;
+        let n = normal.vector();
+        let (e, f, g) = (jet.du.dot(jet.du), jet.du.dot(jet.dv), jet.dv.dot(jet.dv));
+        let (l, m, nn) = (jet.d2u.dot(n), jet.duv.dot(n), jet.d2v.dot(n));
+        let det = e * g - f * f;
+        let gaussian = (l * nn - m * m) / det;
+        let mean = (e * nn - 2.0 * f * m + g * l) / (2.0 * det);
+        let spread = (mean * mean - gaussian).max(0.0).sqrt();
+        let (max, min) = (mean + spread, mean - spread);
+        // A principal direction `a du + b dv` solves `(II - k I)(a, b) = 0`;
+        // either row of that matrix gives it, and the row with the larger
+        // entries is the one to trust. At an umbilic both rows vanish and
+        // any tangent will do: `du` and the normal turned against it.
+        let direction_for = |k: f64| -> OgeomResult<Vector> {
+            let row1 = (l - k * e, m - k * f);
+            let row2 = (m - k * f, nn - k * g);
+            let (a, b) = if row1.0.hypot(row1.1) >= row2.0.hypot(row2.1) {
+                (row1.1, -row1.0)
+            } else {
+                (row2.1, -row2.0)
+            };
+            let along = jet.du * a + jet.dv * b;
+            let scale = jet.du.magnitude().max(jet.dv.magnitude());
+            if along.magnitude() <= tol.angular() * scale * (a.abs() + b.abs()).max(1.0)
+                || a.abs() + b.abs() <= tol.angular() * (l.abs() + m.abs() + nn.abs()).max(1.0)
+            {
+                return Ok(jet.du);
+            }
+            Ok(along)
+        };
+        let max_direction = Direction::new(direction_for(max)?, tol)?;
+        let min_direction = if spread <= tol.angular() * max.abs().max(min.abs()).max(1.0) {
+            Direction::new(n.cross(max_direction.vector()), tol)?
+        } else {
+            Direction::new(direction_for(min)?, tol)?
+        };
+        Ok(SurfaceCurvature {
+            max,
+            min,
+            max_direction,
+            min_direction,
+            normal,
+        })
     }
 
     /// Whether the surface degenerates at `(u, v)`.

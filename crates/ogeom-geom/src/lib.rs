@@ -29,6 +29,6 @@ pub use surface::{
     RevolutionSurface, SphereSurface, SurfaceGeometry, TorusSurface, TrimmedSurface,
 };
 pub use traits::{
-    Continuity, Curve2d, Curve3d, CurveKind, Reversible, Surface, SurfaceJet, SurfaceKind,
-    Transformable,
+    Continuity, Curve2d, Curve3d, CurveKind, Reversible, Surface, SurfaceCurvature, SurfaceJet,
+    SurfaceKind, Transformable,
 };

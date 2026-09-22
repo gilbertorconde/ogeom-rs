@@ -611,15 +611,19 @@ id = "heal.fix-shape"
 title = "Fixing broken shapes: wires, faces, shells, solids, free bounds, small features"
 crate = "ogeom-heal"
 verdict = "partial"
-restriction = """What exists: reanchoring periodic rings, sewing, validity \
+restriction = """`fix_shape` is the standalone entry point: diagnose, put a \
+wire's edges end to end where an order exists, collapse edges shorter than \
+their own vertices' tolerances, fit missing pcurves, sew loose faces, \
+tighten tolerances, diagnose again — and report what it did and what \
+remains. Beneath it: reanchoring periodic rings, sewing, validity \
 diagnosis, the reader's inline heal sequence, and the instructed fixes — \
 fix_face_pcurves fits the trims the reader refused at a caller's cap, and \
 reanchor_boundaries moves a boundary onto the surface it bounds with the \
 displacement recorded in widened tolerances, both measured on community \
-assemblies with boundaries millimetres off. What does not: wire \
-reordering, small-face and small-solid removal, the \
-face-across-a-patch-grid rebuild. Healing here is measured by the \
-imported corpus rather than claimed in general."""
+assemblies with boundaries millimetres off. What does not exist: \
+small-face and small-solid removal (removing a face opens its shell; that \
+is defeaturing's job) and the face-across-a-patch-grid rebuild. Healing \
+here is measured by the imported corpus rather than claimed in general."""
 claims = [
     "ShapeFix", "ShapeFix_Shape", "ShapeFix_Face", "ShapeFix_FaceConnect",
     "ShapeFix_Wire", "ShapeFix_Wireframe", "ShapeFix_WireSegment",
@@ -636,9 +640,11 @@ claims = [
     "ShapeExtend_ComplexCurve", "ShapeExtend_CompositeSurface",
 ]
 symbols = [
-    "ogeom_heal::reanchor_periodic_rings", "ogeom_algo::sew", "ogeom_algo::check",
+    "ogeom_heal::fix_shape", "ogeom_heal::reanchor_periodic_rings", "ogeom_algo::sew",
+    "ogeom_algo::check",
 ]
 tests = [
+    "crates/ogeom/tests/fix_shape.rs",
     "crates/ogeom-heal/src/reanchor.rs",
     "crates/ogeom/tests/imported_corpus.rs",
 ]
@@ -1187,9 +1193,10 @@ come out planar — or a section and a point: a cone on a circle's own axis, \
 an exact pyramid over any straight loop. The skinned loft takes N closed \
 sections — planar at the ends, where the caps stand; wavy in the middle, \
 where nothing does — ends at a point on request, loops back on itself, and \
-takes per-section alignment hints. Skew ruled walls stay refused by name \
-and route through the skinned form; mixed edge counts are authorship, not \
-geometry, and stay with the skinned resampling."""
+takes per-section alignment hints. A ruled wall between two segments that \
+are not coplanar is the bilinear patch through its four corners, exact, so \
+polygon sections may be turned against each other; mixed edge counts are \
+authorship, not geometry, and stay with the skinned resampling."""
 claims = ["BRepOffsetAPI_ThruSections"]
 symbols = [
     "ogeom_offset::make_loft", "ogeom_offset::make_loft_skinned",
@@ -1197,6 +1204,7 @@ symbols = [
 ]
 tests = [
     "crates/ogeom/tests/mechanical_part.rs",
+    "crates/ogeom/tests/loft.rs",
     "crates/ogeom-offset/tests/sweep.rs",
 ]
 
@@ -1376,20 +1384,19 @@ claims = ["BVH_*"]
 id = "geom.local-properties"
 title = "Local properties along curves and across surfaces: tangent, normal, curvature"
 crate = "ogeom-geom"
-verdict = "partial"
-restriction = """Curve-side interrogation exists: point, derivatives, \
-tangent, curvature (`Curve3d::curvature_at`). Surface-side, first and second \
-derivatives and the normal exist, but principal curvatures and directions — \
-what curvature display, zebra analysis and the reference's SLProps answer — \
-are not exposed as an API; a caller gets the second fundamental form's \
-ingredients and assembles it alone. The gap is an interrogation surface, not \
-missing mathematics, and any viewer wanting a curvature comb will ask for it."""
+verdict = "covered"
 claims = [
     "BRepLProp", "BRepLProp_*", "GeomLProp", "GeomLProp_*", "Geom2dLProp_*",
     "LProp_*", "LProp3d_*", "LocalAnalysis", "LocalAnalysis_*",
 ]
-symbols = ["ogeom_geom::Curve3d", "ogeom_geom::Continuity"]
-tests = ["crates/ogeom-math/src/elementary.rs::curvature_of_a_circle_is_the_reciprocal_of_its_radius"]
+symbols = [
+    "ogeom_geom::Curve3d", "ogeom_geom::Continuity", "ogeom_geom::Surface",
+    "ogeom_geom::SurfaceCurvature",
+]
+tests = [
+    "crates/ogeom-math/src/elementary.rs::curvature_of_a_circle_is_the_reciprocal_of_its_radius",
+    "crates/ogeom-geom/tests/curvature.rs",
+]
 
 [[capability]]
 id = "geom.conversion"

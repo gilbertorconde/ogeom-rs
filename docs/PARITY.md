@@ -15,8 +15,8 @@ per package.
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 66 |
-| `partial` | 16 |
+| `covered` | 67 |
+| `partial` | 15 |
 | `divergent` | 9 |
 | `n/a` | 5 |
 | `unreviewed` | 1 |
@@ -60,11 +60,24 @@ the worklist if a caller ever needs the general region.
   - *restriction:* Inner-loop features — bores, bosses, pockets whose rim is a
 surviving face's inner wire — remove in full generality: wire surgery, no
 re-intersection, the block back to the last bit. Band features — fillets and
-chamfers along an edge — close for a single band that either runs straight
-through with two end faces or wraps with none, on surfaces whose pcurves
-have closed forms. Multiple simultaneous bands, bands meeting at corners,
-and spline-surfaced neighbours are refused by name, and each refusal says
-which case it is.
+chamfers along an edge — close for any number of bands in one call, each
+running straight through with two end faces or wrapping with none, and
+bands meeting at a corner close together: each recovers its own crease,
+the corner is where one crease pierces the other's side, and a wedge's
+flush cap named with its band folds into the band's crease; a rebuilt
+face whose surface has no closed-form pcurves fits them by projection,
+tolerances widened by the measured offset. A rim blend — a drum's top, a
+bore's mouth, a boss's seat — takes a whole ring out of its neighbours and
+closes on the circle they meet along: the neighbours' surfaces tell that
+wound from a bore's, whose faces never meet and whose rings are simply
+dropped, and a neighbour's own outer boundary may be the ring, so a drum's
+cap grows back to its rim. The wall's seam reaches the recovered circle,
+which is where it is cut and what the seam extends to meet. Wires are
+spliced in the face's own order, since a seam stands in its wire twice,
+and a gap that leaves and arrives at one vertex is wound the way the rim
+it replaces was. What stays refused by name: a wound whose sides meet in
+no curve, a removal that would leave a face with no boundary and no edge
+to grow to, and a gap the recovered edges do not bridge.
 - **bool.glue** — Gluing shapes along known-coincident boundaries · `divergent` · 1 header claimed
   - *reasoning:* Subsumed, and recorded as a settled decision in docs/PLAN.md: the boolean's same-domain unification already skips nothing it needs and unifies what glue would, so a separate glue mode would be a second spelling of the fuse with a faster wrong answer available. MakeConnected's job — conformal multi-body assembly — falls out of the fuse plus history.
 - **bool.make-periodic** — Making a shape periodic so instances tile without seam duplication · `covered` · 1 header claimed
@@ -95,7 +108,7 @@ which case it is.
 - **fillet.chamfers** — Chamfering edges: symmetric, two-distance, distance-and-angle · `covered` · 1 header claimed
 - **fillet.corners-2d** — Filleting and chamfering the corners of planar wires · `covered` · 19 headers claimed
 - **fillet.edge-blends** — Blending edges: constant and variable radius fillets, rolling-ball, marched where no closed form exists · `partial` · 127 headers claimed
-  - *restriction:* Single edges, tangent chains and full rims blend, constant and variable radius, and the corner where three blends meet is closed: docs/PLAN.md §B (B2) with §A (A6) behind it. The marched fillet carries the rolling ball to topology on seats no closed form speaks — a fitted seam between two analytic walls, a conic seat re-opened to its full loop — with the blend fitted through the ball's own arcs and the legs melting on the hosts' exact surfaces. What is owed now: hosts beyond planes and cylinders (cone, sphere, torus chart inversions), open seats and their run-outs, the equal-radius crossing whose seam pinches at tangent poles; and of the corner family, the two-blend meeting and the N>3 setback vertex remain.
+  - *restriction:* Single edges, tangent chains and full rims blend, constant and variable radius, and the corner where three blends meet is closed: docs/PLAN.md §B (B2) with §A (A6) behind it. The marched fillet carries the rolling ball to topology on seats no closed form speaks — a fitted seam between two analytic walls, a conic seat re-opened to its full loop — with the blend fitted through the ball's own arcs and the legs melting on the hosts' exact surfaces. An open seat runs out: where the crease ends at a wall the band runs on until the ball has left the solid and the cut trims it against the wall; where it ends at a split — a seam vertex, or a neighbouring blend's own rail — the band is capped in the end section's own plane, and two such blends meet cap to cap along the shared arc, both caps consumed, in either order. An L-bracket's end rim blends over its re-entrant band as one tangent chain — line, the band's own end arc, line — the ball rolling on the concave cylinder between the lines, to the closed form. A fill and a wedge asked together stop at each other — only blends that round the same way run on through one another's bands, so whichever is asked first takes the corner — and both orders are exact. What is owed now: hosts beyond planes and cylinders (cone, sphere, torus chart inversions), the equal-radius crossing whose seam pinches at tangent poles; and of the corner family, the N-edged vertex whose faces no single ball touches and the curved-edged corner. The corner tool rounds any planar vertex whose faces one ball touches — a square or oblique trihedral corner, a square pyramid's four-edged apex — its block the polyhedron of the N host planes and the N planes through the ball's centre square to the edges, where each band's rim and the ball's coincide; at more than three edges the corner goes first and the flush fillets follow, since bands built before the corner crash into each other at the apex. The tool is offered on each of the corner's 2N labellings in turn, the first that closes standing: the boolean's indifference to that labelling is owed, two of the six still dying in the cut at an oblique corner, and which labellings close there turning on the last bit of the ball's centre. The curved-seat corner is closed in either order: through `fillet_edges` a marched blend and a straight one meet at their corners, the later's run-out walking on under the earlier band, and the boolean decides once per shared edge piece whether it is dust — a sub-piece of one edge lies in several charts, each with its own snap — so a sliver one chart collapses collapses in every chart.
 - **fillet.osculating-cache** — Cached osculating surfaces along a blend's tangency curves · `divergent` · 1 header claimed
   - *reasoning:* An implementation detail of the reference's blend pipeline: it caches osculating approximations to march against. The marching blend here solves the ball's two contact points directly at each section (ogeom-fillet's march module), so there is no cache to keep coherent.
 
@@ -109,8 +122,7 @@ which case it is.
   - *restriction:* An analytic surface's window widens without changing the carrier (`widened_to_hold`, which the reconstruction work proved out). A B-spline's genuine extension — new geometry continuing the old, which the reference's GeomLib_ExtendSurfByLength does — is absent, and it is exactly what H1's neighbour-extension step (docs/PLAN.md §H) will need on spline faces. The rest of GeomLib's grab bag — normal estimation, closure tests, axis mirroring — lives on the Surface and Curve traits.
 - **geom.handle-wrappers** — Geometry-layer wrappers for points, vectors, placements and transforms · `divergent` · 16 headers claimed
   - *reasoning:* The reference wraps every gp value in a reference-counted handle class so geometry can sit in documents. Here geometry lives in shared arenas keyed by id (docs/DATA_MODEL.md), and points, vectors and placements are plain values — a second, handle-shaped copy of the gp vocabulary would exist only to be a different allocation discipline. The capability those wrappers deliver is the arena's.
-- **geom.local-properties** — Local properties along curves and across surfaces: tangent, normal, curvature · `partial` · 30 headers claimed
-  - *restriction:* Curve-side interrogation exists: point, derivatives, tangent, curvature (`Curve3d::curvature_at`). Surface-side, first and second derivatives and the normal exist, but principal curvatures and directions — what curvature display, zebra analysis and the reference's SLProps answer — are not exposed as an API; a caller gets the second fundamental form's ingredients and assembles it alone. The gap is an interrogation surface, not missing mathematics, and any viewer wanting a curvature comb will ask for it.
+- **geom.local-properties** — Local properties along curves and across surfaces: tangent, normal, curvature · `covered` · 30 headers claimed
 - **geom.surfaces** — Parametric surfaces: planes, quadrics, swept, Bézier, B-spline, trimmed, offset · `covered` · 26 headers claimed
 
 ### ogeom-heal
@@ -119,7 +131,7 @@ which case it is.
 - **heal.custom-remodelling** — Rebuilding a shape's geometry wholesale: baking transforms, converting representations · `partial` · 12 headers claimed
   - *restriction:* Baking a transform into geometry is here (`baked_shape`, which the boolean requires before accepting a scaled placement). The rest of the family — swept-to-elementary, whole-shape B-spline conversion, and the degree/knot restriction an export format with limits demands — is not, and becomes necessary with the IGES writer (docs/PLAN.md F2).
 - **heal.fix-shape** — Fixing broken shapes: wires, faces, shells, solids, free bounds, small features · `partial` · 35 headers claimed
-  - *restriction:* `fix_shape` is the standalone entry point: diagnose, reorder wires whose edges are not end to end, collapse edges shorter than their vertices' tolerances, fit missing pcurves, sew loose faces, tighten tolerances, diagnose again — and report what it did and what remains. Beneath it, reanchoring periodic rings, sewing, validity diagnosis, and the fixed heal sequence the readers apply inline. What it does not do: remove small faces or small solids (removing a face opens its shell; that is defeaturing's job), or rebuild a face across a grid of patches as one. Healing is still measured by the imported corpus rather than claimed in general.
+  - *restriction:* `fix_shape` is the standalone entry point: diagnose, put a wire's edges end to end where an order exists, collapse edges shorter than their own vertices' tolerances, fit missing pcurves, sew loose faces, tighten tolerances, diagnose again — and report what it did and what remains. Beneath it: reanchoring periodic rings, sewing, validity diagnosis, the reader's inline heal sequence, and the instructed fixes — fix_face_pcurves fits the trims the reader refused at a caller's cap, and reanchor_boundaries moves a boundary onto the surface it bounds with the displacement recorded in widened tolerances, both measured on community assemblies with boundaries millimetres off. What does not exist: small-face and small-solid removal (removing a face opens its shell; that is defeaturing's job) and the face-across-a-patch-grid rebuild. Healing here is measured by the imported corpus rather than claimed in general.
 - **heal.same-parameter** — Diagnosing and repairing the same-parameter law between a curve and its pcurves · `covered` · 26 headers claimed
 - **heal.scripted-pipeline** — Resource-file-driven sequences of healing operators · `divergent` · 11 headers claimed
   - *reasoning:* The job — run a heal sequence on import — exists and is done with a fixed inline sequence in the exchange readers, measured by the corpus. A pipeline scripted from resource files is configuration the applications that need it can build from the same functions; the kernel keeping a config-file interpreter would be an application affordance.
@@ -159,7 +171,7 @@ entities, pcurve-only trimming, annotation and drafting.
 - **io.native-format** — The native shape interchange format, versioned, with location and triangulation sets · `covered` · 24 headers claimed
 - **io.step** — STEP, both directions: shapes, assemblies, colours, validation properties, semantic and presentation PMI · `covered` · 211 headers claimed
 - **io.vrml** — VRML scenes · `partial` · 102 headers claimed
-  - *restriction:* Writing works and is round-trip-checked by parsing what was written. Reading arbitrary VRML files — the reference's VrmlData, a legacy viewer-format importer — is absent: files authored by other tools have no entry point. It joins the queue behind IGES if legacy scene import ever matters; nothing else depends on it.
+  - *restriction:* Writing works and is round-trip-checked by parsing what was written. Reading arbitrary VRML files — the reference's VrmlData, a legacy viewer-format importer — is absent by choice, not by backlog: a legacy viewer format's importer serves no consumer this kernel has, and the non-coverage is deliberate (issue #28). It would join the queue behind IGES if legacy scene import ever mattered; nothing else depends on it.
 
 ### ogeom-math
 
@@ -190,16 +202,16 @@ entities, pcurve-only trimming, annotation and drafting.
 ### ogeom-offset
 
 - **offset.draft** — Drafting faces about a neutral plane for mould release · `partial` · 8 headers claimed
-  - *restriction:* Planar faces turn about their neutral line, and walls of revolution — cylinders and cones — turn about their neutral circle into exact cones, the round-boss case. What is owed: the oblique neutral on a wall of revolution, and faces that are neither planar nor revolved. The code's refusals point here.
+  - *restriction:* Planar faces turn about their neutral line, walls of revolution — cylinders and cones — turn about their neutral circle into exact cones, and extruded walls (a spline profile swept straight) turn ruling by ruling about their neutral crossing's own tangent and re-fit, with the drafted angle held along the height. A draft whose turned rulings cross inside the drafted window — a profile curled tighter than the draft's reach — is refused by name, as the scope demands. What is owed: the oblique neutral on a wall of revolution, and walls on raw fitted patches with no ruling to turn. The code's refusals point here.
 - **offset.filling** — Filling a boundary with a face: the plate surface · `covered` · 32 headers claimed
 - **offset.form-features** — The form features: prism, revolution, rib and slot against a base · `covered` · 39 headers claimed
 - **offset.loft** — Lofting through sections, ruled or smoothed · `partial` · 1 header claimed
-  - *restriction:* The ruled loft takes two closed wire sections — coaxial parallel circles, or polygons of the same corner count whose ruled walls come out planar — or a section and a point: a cone on a circle's own axis, an exact pyramid over any straight loop. The skinned loft takes N planar closed sections, loops back on itself on request, and takes per-section alignment hints. A ruled wall between two segments that are not coplanar is the bilinear patch through its four corners, exact, so polygon sections may be turned against each other or differ in shape; mixed edge counts are authorship, not geometry, and stay with the skinned resampling. The fitted loft-to-point is still owed.
+  - *restriction:* The ruled loft takes two closed wire sections — coaxial parallel circles, or polygons of the same corner count whose ruled walls come out planar — or a section and a point: a cone on a circle's own axis, an exact pyramid over any straight loop. The skinned loft takes N closed sections — planar at the ends, where the caps stand; wavy in the middle, where nothing does — ends at a point on request, loops back on itself, and takes per-section alignment hints. A ruled wall between two segments that are not coplanar is the bilinear patch through its four corners, exact, so polygon sections may be turned against each other; mixed edge counts are authorship, not geometry, and stay with the skinned resampling.
 - **offset.middle-path** — Extracting the middle path of a pipe-like solid · `unreviewed` · 1 header claimed
 - **offset.projection** — Projecting wires normally onto faces, pcurves riding along · `covered` · 2 headers claimed
 - **offset.shell-thicken** — Offsetting shapes and thickening shells into solids · `covered` · 16 headers claimed
 - **offset.sweeps** — Sweeping profiles along spines: pipes, pipe shells, evolved shapes, the frame laws · `partial` · 120 headers claimed
-  - *restriction:* Pipes run a circular section along a single spine edge — exactly for straight and circular spines, skinned for free-form and helical ones — the evolved sweep runs a profile along a planar spine, exactly, by composition, and the pipe shell sweeps an arbitrary planar profile, holes and all, along an open spine wire under a rotation-minimizing or Frenet frame law — and a smooth single-loop profile round a closed spine, the loop's holonomy paid off. What is owed on the loop: faceted and holed profiles, the Frenet law, and the mitred ring round a sharp corner. The code's refusals point here.
+  - *restriction:* Pipes run a circular section along a single spine edge — exactly for straight and circular spines, skinned for free-form and helical ones — the evolved sweep runs a profile along a planar spine, exactly, by composition, and the pipe shell sweeps an arbitrary planar profile, holes and all, along an open spine wire under a rotation-minimizing or Frenet frame law — and a profile round a closed spine, smooth or faceted, holes and all: the loop's holonomy paid off, a faceted profile skinned as one C1-closed strip per facet, each hole a void tunnel of its own shell. A sharp-cornered ring mitres exactly when its corners turn in the plane: the wrap is one more mitre, the seam must stand on a corner, and the planar Pappus volumes land to the last digit. The Frenet law rides the loop too — single-valued round it, so it owes no reconciliation — with every corner loop one rail shared by the two strips meeting there. A ring seamed mid-leg butts its two half-legs on the seam's own ring, and a skew-cornered ring closes on its mitres: the frame is reflected across each mitre plane, the loop's holonomy spread along the legs as a twist. A corner against a curved leg — on an open spine or a ring — ends both walls on the crossing of their generators, exact where the corner turns in the leg's plane; a skew corner against a curved leg is still owed its frame law.
 - **offset.wire-offset** — Offsetting planar wires, with the join styles · `covered` · 1 header claimed
 
 ### ogeom-topo

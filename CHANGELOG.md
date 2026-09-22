@@ -23,6 +23,11 @@ bump may break the API and a patch bump may not.
   solids are not removed — that is defeaturing — and the report says so
   by leaving them in `after`.
 
+- **`Surface::curvature_at`**: the principal curvatures and directions at
+  a point, signed against the surface's own normal, with the mean and
+  Gaussian curvatures they combine to and whether the point is an
+  umbilic — what curvature display and zebra analysis ask, from the two
+  fundamental forms of the jet the trait already carried.
 - **Ruled lofts take skew walls.** A wall between two segments that are
   not coplanar — a square lofted to the same square turned an eighth of a
   turn — is the bilinear patch through its four corners, the ruled
