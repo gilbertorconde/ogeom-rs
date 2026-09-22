@@ -291,11 +291,15 @@ fn pipe_segment(
 /// with the same corner count give planar walls. The sections pair edge by
 /// edge in traversal order.
 ///
+/// A wall between two segments that are not coplanar is the bilinear patch
+/// through its four corners — the ruled surface between them, exact — so
+/// sections may be turned against each other or differ in shape.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the sections
-/// are not both circles or both polygons of the same count, are not on
-/// parallel planes, or a ruled wall would be skew.
+/// are not both circles or both polygons of the same count, or are not on
+/// parallel planes.
 pub fn make_loft(
     model: &mut Model,
     bottom: &Shape,
@@ -463,17 +467,22 @@ pub fn make_loft(
                 n
             }
         };
-        for p in corners {
-            if Plane::through(corners[0], Direction::new(normal, tol)?).distance_to(*p)
+        let skew = corners.iter().any(|p| {
+            Plane::through(
+                corners[0],
+                Direction::new(normal, tol).unwrap_or(Direction::Z),
+            )
+            .distance_to(*p)
                 > tol.confusion() * 10.0
-            {
-                ogeom_bail!(
-                    Construction,
-                    "a skew ruled wall is not a plane; loft skew sections \
-                     through make_loft_skinned, aligned with hints — \
-                     docs/PARITY.md, offset.loft"
-                );
+        });
+        if skew {
+            // A wall between two segments that do not lie in one plane is
+            // the ruled surface between them, and that is exact: bilinear
+            // in the four corners, a B-spline of degree one each way.
+            if corners.len() != 4 || edges.len() != 4 {
+                ogeom_bail!(Construction, "a skew ruled wall has four corners");
             }
+            return bilinear_wall(model, corners, &edges, centroid, tol);
         }
         let plane = Plane::through(corners[0], Direction::new(normal, tol)?);
         let mut reach = 1.0_f64;
@@ -510,6 +519,75 @@ pub fn make_loft(
     built.history.generate(bottom, built.shape.clone());
     built.history.generate(top, built.shape.clone());
     Ok(built)
+}
+
+/// The ruled wall between two straight segments that are not coplanar: the
+/// bilinear patch through its four corners, exact, as a B-spline of degree
+/// one each way.
+///
+/// `corners` run round the wall — low start, low end, high end, high
+/// start — and `edges` walk them in that order, the third and fourth
+/// reversed as the caller's wire has them. Each edge's pcurve is the chart
+/// side it lies on, parameterized by the edge's own range so the two agree
+/// point for point; the wall faces away from `centroid`.
+fn bilinear_wall(
+    model: &mut Model,
+    corners: &[Point],
+    edges: &[Shape],
+    centroid: Point,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    use ogeom_geom::Surface as _;
+    let (p00, p10, p11, p01) = (corners[0], corners[1], corners[2], corners[3]);
+    let grid = ogeom_math::ControlGrid::new(vec![p00, p01, p10, p11], 2, 2)?;
+    let line = ogeom_math::KnotVector::clamped_uniform(1, 2)?;
+    let patch = ogeom_geom::BSplineSurface::new(line.clone(), line, &grid, tol)?;
+    let outward = {
+        let (du, dv) = patch.d1_at(0.5, 0.5, tol)?;
+        let centre = patch.point_at(0.5, 0.5, tol)?;
+        du.cross(dv).dot(centre - centroid) >= 0.0
+    };
+    let surface_id = model
+        .geometry_mut()
+        .add_surface(SurfaceGeometry::BSpline(patch));
+
+    // Each edge's chart side, run in the edge's own direction over the
+    // edge's own parameter range: a degree-one B-spline in the chart,
+    // which is what makes the pcurve the edge's equal parameter for
+    // parameter whatever length the edge has.
+    let sides: [(Point2, Point2); 4] = [
+        (Point2::new(0.0, 0.0), Point2::new(1.0, 0.0)),
+        (Point2::new(1.0, 0.0), Point2::new(1.0, 1.0)),
+        (Point2::new(0.0, 1.0), Point2::new(1.0, 1.0)),
+        (Point2::new(0.0, 0.0), Point2::new(0.0, 1.0)),
+    ];
+    for (edge, (from, to)) in edges.iter().zip(sides) {
+        let range = {
+            let Some(node) = model.node(edge) else {
+                ogeom_bail!(Dangling, "a loft edge is not in this model");
+            };
+            let Some(data) = node.data().as_edge() else {
+                ogeom_bail!(Construction, "a loft edge holds no edge data");
+            };
+            let Some(EdgeRepr::Curve3d { range, .. }) = data.curve3d() else {
+                ogeom_bail!(Construction, "a loft edge has no curve");
+            };
+            *range
+        };
+        let knots = ogeom_math::KnotVector::new(vec![range.0, range.0, range.1, range.1], 1)?;
+        let pcurve = ogeom_geom::BSpline2d::new(knots, vec![from, to], tol)?;
+        ogeom_algo::attach_pcurve(
+            model,
+            edge,
+            pcurve.into(),
+            surface_id,
+            ogeom_topo::Location::identity(),
+            range,
+        )?;
+    }
+    let wire = ogeom_algo::make_wire(model, edges, tol)?.shape;
+    let face = ogeom_algo::make_face_on(model, surface_id, std::slice::from_ref(&wire), tol)?.shape;
+    Ok(if outward { face } else { face.reversed() })
 }
 
 /// A skinned wall and the pieces a caller needs to close it: the rings at

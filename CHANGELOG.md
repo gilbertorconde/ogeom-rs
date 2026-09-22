@@ -23,6 +23,12 @@ bump may break the API and a patch bump may not.
   solids are not removed — that is defeaturing — and the report says so
   by leaving them in `after`.
 
+- **Ruled lofts take skew walls.** A wall between two segments that are
+  not coplanar — a square lofted to the same square turned an eighth of a
+  turn — is the bilinear patch through its four corners, the ruled
+  surface between them and exact, where it was refused by name and
+  routed to the skinned loft.
+
 ### Fixed
 
 - **Meshing a real assembly closed.** 1,499 of 1,563 solids meshed

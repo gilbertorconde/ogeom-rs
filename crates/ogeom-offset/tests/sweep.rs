@@ -170,10 +170,11 @@ fn a_circular_loft_is_the_cone_frustum() {
 }
 
 #[test]
-fn a_twisted_loft_is_refused_as_skew() {
+fn a_twisted_loft_s_walls_are_bilinear_and_measure_as_the_prismoid() {
     let mut model = ogeom_topo::Model::new();
     let bottom = square(&mut model, 1.0, 0.0);
-    // The top square rotated 45 degrees: every wall would be skew.
+    // The top square rotated 45 degrees and smaller: every wall is skew,
+    // and each is the bilinear patch between its two segments.
     let corners = [
         Point::new(0.0, -0.7, 2.0),
         Point::new(0.7, 0.0, 2.0),
@@ -183,7 +184,38 @@ fn a_twisted_loft_is_refused_as_skew() {
     let top = ogeom_algo::make_polygon(&mut model, &corners, true, T)
         .unwrap()
         .shape;
-    assert!(ogeom_offset::make_loft(&mut model, &bottom, &top, T).is_err());
+    let result = ogeom_offset::make_loft(&mut model, &bottom, &top, T).unwrap();
+    // A ruled solid's section area is quadratic in height, so the
+    // prismoid formula is exact: h (A0 + 4 Amid + A1) / 6, the mid section
+    // the polygon of the corresponding corners' midpoints.
+    let low = [
+        Point::new(-1.0, -1.0, 0.0),
+        Point::new(1.0, -1.0, 0.0),
+        Point::new(1.0, 1.0, 0.0),
+        Point::new(-1.0, 1.0, 0.0),
+    ];
+    let shoelace = |c: &[Point]| -> f64 {
+        (0..c.len())
+            .map(|i| {
+                let (a, b) = (c[i], c[(i + 1) % c.len()]);
+                a.x * b.y - b.x * a.y
+            })
+            .sum::<f64>()
+            .abs()
+            / 2.0
+    };
+    let mid: Vec<Point> = low
+        .iter()
+        .zip(&corners)
+        .map(|(a, b)| a.midpoint(*b))
+        .collect();
+    let (a0, a_mid, a1) = (shoelace(&low), shoelace(&mid), shoelace(&corners));
+    let expected = 2.0 * (a0 + 4.0 * a_mid + a1) / 6.0;
+    let measured = volume(&model, &result.shape);
+    assert!(
+        (measured - expected).abs() < expected * 5e-3,
+        "twisted loft volume {measured} against the prismoid's {expected}"
+    );
 }
 
 #[test]
