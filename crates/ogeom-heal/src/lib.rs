@@ -9,6 +9,7 @@
 //! are.
 
 pub mod fix;
+pub mod fix_shape;
 pub mod reanchor;
 pub mod same_parameter;
 
@@ -18,6 +19,7 @@ pub mod upgrade;
 
 pub use canonical::{CanonicalReport, Simplified, canonical_simplify, recognize_surface};
 pub use fix::{FixedTrims, ReanchoredBoundaries, fix_face_pcurves, reanchor_boundaries};
+pub use fix_shape::{FixReport, Fixed, fix_shape};
 pub use reanchor::reanchor_periodic_rings;
 pub use reshape::Reshape;
 pub use same_parameter::{SameParameterReport, repair_same_parameter};

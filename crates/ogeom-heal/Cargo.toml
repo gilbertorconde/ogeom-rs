@@ -28,10 +28,10 @@ ogeom-geom.workspace = true
 ogeom-topo.workspace = true
 ogeom-algo.workspace = true
 ogeom-intersect.workspace = true
+ogeom-mesh.workspace = true
 
 [dev-dependencies]
 ogeom-io.workspace = true
-ogeom-mesh.workspace = true
 approx.workspace = true
 proptest.workspace = true
 

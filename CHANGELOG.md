@@ -11,6 +11,18 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **`heal::fix_shape`**, one pass over a shape nobody promised was
+  well-formed: diagnose; put a wire's edges end to end where an order
+  exists; collapse an edge shorter than its own vertices' tolerances;
+  give a pcurve-less edge the trim projection can honestly fit; sew a
+  compound of loose faces or an open shell; tighten tolerances; diagnose
+  again. `Fixed` carries the result, its history, and a `FixReport` of
+  what was done and what the checker still sees. Small faces and small
+  solids are not removed — that is defeaturing — and the report says so
+  by leaving them in `after`.
+
 ### Fixed
 
 - **Meshing a real assembly closed.** 1,499 of 1,563 solids meshed

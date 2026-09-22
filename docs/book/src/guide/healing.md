@@ -29,6 +29,13 @@ what it did.
   cylinder stays a spline.
 - **`reanchor_periodic_rings`** re-anchors the seam of periodic faces so
   downstream algorithms see a consistent parametrisation.
+- **`fix_shape`** is the one-call pass over a shape nobody promised was
+  well-formed: it diagnoses, puts a wire's edges end to end, collapses
+  edges shorter than their own vertices' tolerances, fits missing
+  pcurves, sews loose faces, tightens tolerances, and diagnoses again.
+  Its `FixReport` says what it did and what the checker still sees;
+  small faces and solids are left in place, since removing them is
+  defeaturing.
 - **`Reshape`** is the primitive underneath: a recorded substitution of
   entities that rebuilds everything referencing them.
 
