@@ -338,8 +338,27 @@ struct Crease {
     sides: [Shape; 2],
     /// The recovered curve, the branch nearest the removed faces.
     curve: Curve,
-    /// The removed faces' extent along the curve.
+    /// The removed faces' extent along the curve, unwrapped about the
+    /// anchor on a periodic curve.
     extent: (f64, f64),
+    /// The parameter nearest the removed faces' centre: what a periodic
+    /// curve's parameters are unwrapped about, so a band straddling the
+    /// curve's seam reads as one run and not its complement.
+    anchor: f64,
+}
+
+/// A periodic curve's parameter brought within half a period of `about`;
+/// any other curve's parameter as it is.
+fn unwrapped(curve: &Curve, t: f64, about: f64) -> f64 {
+    if !curve.is_periodic() {
+        return t;
+    }
+    let (lo, hi) = curve.domain();
+    let period = hi - lo;
+    if period <= 0.0 {
+        return t;
+    }
+    about + (t - about + period / 2.0).rem_euclid(period) - period / 2.0
 }
 
 /// Close a wound: each removed band's two side faces re-intersected into
@@ -487,15 +506,17 @@ fn close_wound(
             })
             .ok_or_else(|| ogeom_err!(Construction, "the side surfaces meet along no branch"))?;
         let curve = section.curve;
+        let anchor = parameter_near(&curve, anchor, tol)?;
         let mut extent = (f64::INFINITY, f64::NEG_INFINITY);
         for p in &points {
-            let t = parameter_near(&curve, *p, tol)?;
+            let t = unwrapped(&curve, parameter_near(&curve, *p, tol)?, anchor);
             extent = (extent.0.min(t), extent.1.max(t));
         }
         recovered.push(Crease {
             sides,
             curve,
             extent,
+            anchor,
         });
     }
 
@@ -516,7 +537,7 @@ fn close_wound(
     };
     let mut new_edges: Vec<(Shape, [TShapeId; 2])> = Vec::new(); // edge, its sides
     let mut corners: Vec<Shape> = Vec::new();
-    for crease in &recovered {
+    for (index, crease) in recovered.iter().enumerate() {
         let mut piercings: Vec<(f64, Point)> = Vec::new();
         for face in interrupted {
             if crease.sides.iter().any(|s| s.node() == face.node()) {
@@ -526,7 +547,54 @@ fn close_wound(
             let hit =
                 intersect_curve_surface(&crease.curve, &se, CurveSurfaceOptions::default(), tol)?;
             for c in &hit.crossings {
-                piercings.push((c.on_curve, c.point));
+                piercings.push((unwrapped(&crease.curve, c.on_curve, crease.anchor), c.point));
+            }
+        }
+        // A tangent junction: two bands of one chain meeting flush — a
+        // stadium's straight run into its semicircular end — share the
+        // cross-section edge where they meet, and their creases touch
+        // there without either piercing the other's side; a wall the
+        // crease merely grazes yields no piercing, and a touch found as a
+        // closest approach sits anywhere in a valley the width of the
+        // slop. The shared edge says exactly where: the cross-section
+        // stands in the plane normal to the rim at the junction, so the
+        // junction is the foot of that edge on either crease — a
+        // transversal projection, exact to the last bit. Taken only where
+        // the two creases are tangent there; bands meeting at a corner
+        // place theirs by piercing.
+        for face in removed_faces {
+            if crease_of.get(&face.node()) != Some(&index) {
+                continue;
+            }
+            for edge in explore(model, face, Filter::OfType(ShapeType::Edge))? {
+                let Some(other) = users
+                    .get(&edge.node())
+                    .into_iter()
+                    .flatten()
+                    .filter(|user| user.node() != face.node())
+                    .filter_map(|user| crease_of.get(&user.node()).copied())
+                    .find(|&other| other != index)
+                else {
+                    continue;
+                };
+                let samples = sample_edge(model, &edge, tol)?;
+                let Some(&middle) = samples.get(samples.len() / 2) else {
+                    continue;
+                };
+                let here = ogeom_algo::project_on_curve(&crease.curve, middle, 64, tol)?;
+                let there = ogeom_algo::project_on_curve(&recovered[other].curve, middle, 64, tol)?;
+                if here.point.distance(there.point) > tol.confusion() * 1e3 {
+                    continue;
+                }
+                let ta = crease.curve.d1_at(here.parameter, tol)?;
+                let tb = recovered[other].curve.d1_at(there.parameter, tol)?;
+                if ta.cross(tb).magnitude() > ta.magnitude() * tb.magnitude() * 1e-3 {
+                    continue;
+                }
+                piercings.push((
+                    unwrapped(&crease.curve, here.parameter, crease.anchor),
+                    here.point,
+                ));
             }
         }
         let slack = tol.parametric().max(1e-6);
@@ -690,8 +758,19 @@ fn close_wound(
             (Some(&(t0, p0)), Some(&(t1, p1))) => {
                 let v0 = vertex_at(model, p0);
                 let v1 = vertex_at(model, p1);
+                // Unwrapped about the anchor, a window can start before a
+                // periodic curve's domain; slid by whole turns to start
+                // inside it, it is the same run, and may end a turn past
+                // the end as any run across the seam does.
+                let window = if crease.curve.is_periodic() {
+                    let (lo, hi) = crease.curve.domain();
+                    let turns = ((t0 - lo) / (hi - lo)).floor() * (hi - lo);
+                    (t0 - turns, t1 - turns)
+                } else {
+                    (t0, t1)
+                };
                 let edge =
-                    make_edge_between(model, crease.curve.clone(), (t0, t1), &v0, &v1, tol)?.shape;
+                    make_edge_between(model, crease.curve.clone(), window, &v0, &v1, tol)?.shape;
                 corners.push(v0);
                 corners.push(v1);
                 new_edges.push((edge, [crease.sides[0].node(), crease.sides[1].node()]));

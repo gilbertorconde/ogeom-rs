@@ -388,7 +388,11 @@ chamfers along an edge — close for any number of bands in one call, each
 running straight through with two end faces or wrapping with none, and
 bands meeting at a corner close together: each recovers its own crease,
 the corner is where one crease pierces the other's side, and a wedge's
-flush cap named with its band folds into the band's crease; a rebuilt
+flush cap named with its band folds into the band's crease; a tangent
+chain's bands close together too — a stadium's rim rounded in one call —
+the junction being the foot on either crease of the cross-section edge the
+two bands share, and a band across a circular crease's seam read as one
+run about its own centre rather than its complement; a rebuilt
 face whose surface has no closed-form pcurves fits them by projection,
 tolerances widened by the measured offset. A rim blend — a drum's top, a
 bore's mouth, a boss's seat — takes a whole ring out of its neighbours and

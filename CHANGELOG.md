@@ -53,6 +53,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Removing a tangent chain of blends.** A stadium's top rim rounded
+  in one call, its four bands named for removal together, failed by
+  name: at a tangent junction neither band's crease pierces the other's
+  wall — the straight crease grazes the round wall and the round crease
+  grazes the flat one — so no corner was placed and the straight crease
+  was taken for a wrapping band. The junction is now where two creases
+  touch, placed exactly by the cross-section edge the two bands share:
+  the foot of that edge on either crease. And a band standing across a
+  circular crease's seam is read as one run about its own centre rather
+  than its complement, so an end wall grows back its outer half and not
+  its inner.
 - **A torus band between two parallels drew as two whole tori laid over
   each other.** Each wire of such a face is a single edge winding the
   chart once. Walked one wire at a time, each rim closed on its own

@@ -502,3 +502,159 @@ fn a_rim_blend_removes_and_its_rim_comes_back() {
         );
     }
 }
+
+/// A stadium prism: a rectangle with semicircular ends, extruded up.
+fn stadium(model: &mut Model, length: f64, r: f64, height: f64) -> Shape {
+    use ogeom::geom::{CircleCurve, Curve, Curve3d as _, LineCurve, PlaneSurface};
+    use ogeom::math::{Circle, Plane, Vector};
+    let tl = ogeom::algo::make_vertex(model, Point::new(0.0, r, 0.0)).shape;
+    let tr = ogeom::algo::make_vertex(model, Point::new(length, r, 0.0)).shape;
+    let br = ogeom::algo::make_vertex(model, Point::new(length, -r, 0.0)).shape;
+    let bl = ogeom::algo::make_vertex(model, Point::new(0.0, -r, 0.0)).shape;
+    let arc = |model: &mut Model, centre: Point, x: Direction, from: &Shape, to: &Shape| {
+        let frame = Frame::new(centre, Direction::Z, x, T).unwrap();
+        let curve = Curve::Circle(CircleCurve::new(Circle::new(frame, r, T).unwrap()));
+        ogeom::algo::make_edge_between(model, curve, (0.0, core::f64::consts::PI), from, to, T)
+            .unwrap()
+            .shape
+    };
+    let seg = |model: &mut Model, from: (&Shape, Point), to: (&Shape, Point)| {
+        let curve = Curve::Line(LineCurve::segment(from.1, to.1, T).unwrap());
+        let domain = curve.domain();
+        ogeom::algo::make_edge_between(model, curve, domain, from.0, to.0, T)
+            .unwrap()
+            .shape
+    };
+    let top = seg(
+        model,
+        (&tl, Point::new(0.0, r, 0.0)),
+        (&tr, Point::new(length, r, 0.0)),
+    );
+    let right = arc(
+        model,
+        Point::new(length, 0.0, 0.0),
+        Direction::new(Vector::new(0.0, -1.0, 0.0), T).unwrap(),
+        &br,
+        &tr,
+    );
+    let bottom = seg(
+        model,
+        (&br, Point::new(length, -r, 0.0)),
+        (&bl, Point::new(0.0, -r, 0.0)),
+    );
+    let left = arc(model, Point::new(0.0, 0.0, 0.0), Direction::Y, &tl, &bl);
+    let plane = PlaneSurface::over(
+        Plane::through(Point::ORIGIN, Direction::Z),
+        (-100.0, 100.0),
+        (-100.0, 100.0),
+    )
+    .unwrap();
+    let face = ogeom::algo::make_face_with_pcurves(
+        model,
+        plane.into(),
+        &[vec![left, bottom.reversed(), right, top.reversed()]],
+        T,
+    )
+    .unwrap()
+    .shape;
+    ogeom::algo::make_prism(model, &face, Vector::new(0.0, 0.0, height), T)
+        .unwrap()
+        .shape
+}
+
+/// The edges of `solid` whose every vertex stands at `height`.
+fn edges_at_height(model: &Model, solid: &Shape, height: f64) -> Vec<Shape> {
+    use ogeom::topo::{Filter, explore};
+    explore_unique(model, solid, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            explore(model, e, Filter::OfType(ShapeType::Vertex))
+                .unwrap()
+                .iter()
+                .all(|v| {
+                    model
+                        .node(v)
+                        .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                        .zip(v.transform(model.datums()).ok())
+                        .is_some_and(|(p, placed)| (placed.apply(p).z - height).abs() < 1e-9)
+                })
+        })
+        .collect()
+}
+
+/// A tangent chain of blends — a stadium's whole top rim rounded in one
+/// call, two straight bands and two semicircular ones meeting flush —
+/// removed in one call. At a tangent junction neither band's crease
+/// pierces the other's wall: the straight crease grazes the round wall,
+/// and the round crease grazes the flat one. The corner is where the two
+/// creases touch, and the cross-section edge the two bands share says
+/// exactly where: its foot on either crease. The round creases are
+/// circles, and a band standing across a circle's seam is read as one run
+/// about its own centre rather than its complement, so each end wall grows
+/// back its outer half and not its inner.
+#[test]
+fn a_tangent_chain_of_blends_removes_in_one_call() {
+    let mut model = Model::new();
+    let (length, r, height) = (10.0, 5.0, 4.0);
+    let solid = stadium(&mut model, length, r, height);
+    let before = volume(&model, &solid);
+    let rim = edges_at_height(&model, &solid, height);
+    assert_eq!(rim.len(), 4, "the stadium's top rim has four edges");
+    let blended = ogeom::fillet::fillet_edges(&mut model, &solid, &rim, 1.0, T)
+        .unwrap()
+        .shape;
+    let bands = faces_where(&model, &blended, |s| match s {
+        SurfaceGeometry::Torus(_) => true,
+        SurfaceGeometry::Cylinder(c) => (c.cylinder().radius() - 1.0).abs() < 1e-9,
+        _ => false,
+    });
+    assert_eq!(bands.len(), 4, "two straight bands and two round ones");
+    let restored = ogeom::boolean::remove_faces(&mut model, &blended, &bands, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &restored, T).unwrap().is_valid());
+    assert_eq!(
+        explore_unique(&model, &restored, ShapeType::Face)
+            .unwrap()
+            .len(),
+        6,
+        "the top, the bottom and four walls"
+    );
+    let shell = explore_unique(&model, &restored, ShapeType::Shell)
+        .unwrap()
+        .remove(0);
+    assert!(ogeom::algo::is_shell_closed(&model, &shell).unwrap());
+    assert!((volume(&model, &restored) - before).abs() < 1e-6);
+}
+
+/// The whole rim of a box top rounded in one call — four bands meeting at
+/// four corners — and removed in one call: every corner is where one
+/// crease pierces the wall of the next, and the box comes back sharp.
+#[test]
+fn a_loop_of_four_fillets_removes_in_one_call() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let rim = edges_at_height(&model, &block, 10.0);
+    assert_eq!(rim.len(), 4);
+    let blended = ogeom::fillet::fillet_edges(&mut model, &block, &rim, 2.0, T)
+        .unwrap()
+        .shape;
+    let bands = faces_where(&model, &blended, |s| {
+        matches!(s, SurfaceGeometry::Cylinder(_))
+    });
+    assert_eq!(bands.len(), 4);
+    let restored = ogeom::boolean::remove_faces(&mut model, &blended, &bands, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &restored, T).unwrap().is_valid());
+    assert_eq!(
+        explore_unique(&model, &restored, ShapeType::Face)
+            .unwrap()
+            .len(),
+        6
+    );
+    assert!((volume(&model, &restored) - 4000.0).abs() < 1e-6);
+}
