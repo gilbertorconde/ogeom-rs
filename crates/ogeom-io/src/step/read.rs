@@ -2289,27 +2289,32 @@ impl Reader<'_> {
             .get(2)
             .and_then(Arg::reference)?;
         // The formation, plain or with its source named — a mesh converter's
-        // habit — carries the product in the same slot either way.
-        let product = {
-            let instance = self.instance(formation).ok()?;
-            instance
-                .part("PRODUCT_DEFINITION_FORMATION")
-                .or_else(|| instance.part("PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE"))?
-                .to_vec()
-        }
-        .first()
-        .and_then(Arg::reference)
-        .or_else(|| {
-            self.args(formation, "PRODUCT_DEFINITION_FORMATION")
+        // habit, and a modeller's for an assembly's parts — carries the
+        // product in its third slot either way, whether it stands alone or
+        // as one part of a complex instance.
+        let product = [
+            "PRODUCT_DEFINITION_FORMATION",
+            "PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE",
+        ]
+        .into_iter()
+        .find_map(|keyword| {
+            self.instance(formation)
                 .ok()?
+                .part(keyword)
+                .map(<[Arg]>::to_vec)
+                .or_else(|| self.args(formation, keyword).ok())?
                 .get(2)
                 .and_then(Arg::reference)
         })?;
+        // The product's name, or its id where the name is blank: a mesh
+        // converter fills the id and leaves the name empty.
         let args = self.args(product, "PRODUCT").ok()?;
-        match args.get(1).or_else(|| args.first()) {
-            Some(Arg::Str(name)) if !name.is_empty() => Some(name.clone()),
-            _ => None,
-        }
+        [args.get(1), args.first()]
+            .into_iter()
+            .find_map(|arg| match arg {
+                Some(Arg::Str(name)) if !name.is_empty() => Some(name.clone()),
+                _ => None,
+            })
     }
 
     /// A representation's item references.

@@ -159,7 +159,11 @@ bump may break the API and a patch bump may not.
   `FACE_SURFACE` rather than `ADVANCED_FACE`, a shape carried by a
   `SHAPE_REPRESENTATION` or a manifold surface or faceted representation
   rather than an advanced B-rep one, and a product whose formation is
-  written with its source read as they were meant. An edge whose
+  written with its source read as they were meant; the source-spelt
+  formation's product is taken from its third slot whether it stands
+  alone or inside a complex instance, and a product whose name slot is
+  blank — a mesh converter fills the id and leaves the name — reads by
+  its id rather than its entity number. An edge whose
   vertices stand at descending parameters on its curve whatever its
   sense flag says — every edge written forward and the line left to run
   the other way — is reversed to run with the curve, tallied as

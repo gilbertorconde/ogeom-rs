@@ -761,3 +761,35 @@ fn a_closed_edge_s_seam_is_moved_to_its_vertex() {
         "no vertex is missed by millimetres any more: worst {worst_miss:.2e}"
     );
 }
+
+/// A product named the plainer way still reads under its name.
+///
+/// A modeller writing an assembly, and a mesh converter writing a shell,
+/// spell the formation with its source — `..._WITH_SPECIFIED_SOURCE`, the
+/// product in the same third slot — and the converter leaves the product's
+/// name blank and fills its id instead. The reader took the first slot of
+/// the source-spelt formation, which is its blank id, and named every such
+/// product after its definition's entity number.
+#[test]
+fn a_product_spelt_with_its_source_and_a_blank_name_reads_by_name() {
+    let text = corpus("ogeom_asm_bolted_plate.stp")
+        .replace(
+            "PRODUCT_DEFINITION_FORMATION('','',#14);",
+            "PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE('','',#14,.NOT_KNOWN.);",
+        )
+        .replace(
+            "PRODUCT_DEFINITION_FORMATION('','',#158);",
+            "PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE('','',#158,.NOT_KNOWN.);",
+        )
+        .replace(
+            "PRODUCT('bolt','bolt','',(#8));",
+            "PRODUCT('bolt','','',(#8));",
+        );
+    let import = ogeom_io::read_step(&text, T).unwrap();
+    let names: Vec<String> = import
+        .document
+        .products()
+        .map(|(_, p)| p.name.clone())
+        .collect();
+    assert_eq!(names, ["plate", "bolt", "bolted-plate"]);
+}
