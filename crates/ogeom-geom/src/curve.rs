@@ -972,15 +972,18 @@ impl BSplineCurve {
     ///
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
     /// curve is periodic — its seam is nowhere — or does not close, its
-    /// two ends apart by more than `tol`; as [`bspline::split`] if `u` is
-    /// an end of the domain.
+    /// two ends apart by more than a thousand confusions; as
+    /// [`bspline::split`] if `u` is an end of the domain.
     pub fn reseamed_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Self> {
         if self.periodic {
             ogeom_bail!(Construction, "a periodic curve has no seam to move");
         }
         let (start, end) = self.domain();
         let (head, tail) = (self.point_at(start, tol)?, self.point_at(end, tol)?);
-        if !head.is_equal(tail, tol) {
+        // Closed to a thousand confusions — a marched section closes to
+        // its own march's tolerance, and a loop whose ends sit a fraction
+        // of a micron apart is closed for every purpose the seam serves.
+        if head.distance(tail) > tol.confusion() * 1e3 {
             ogeom_bail!(
                 Construction,
                 "the curve does not close: its ends are {:.3e} apart",

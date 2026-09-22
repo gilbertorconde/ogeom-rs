@@ -490,12 +490,16 @@ pub(crate) fn rebuilt(
                 ),
             }
         };
+        // A band rebuilds wholesale only on a surface of revolution; a
+        // drafted wall on a fitted support is a band the wire path
+        // assembles, seam and all.
+        let fitted_support = matches!(moved, SurfaceGeometry::BSpline(_));
         prepared.push(Prepared {
             shape: face.clone(),
             surface: moved,
             amount,
             sign,
-            rings: if has_seam && closed_rings.len() == 2 {
+            rings: if has_seam && closed_rings.len() == 2 && !fitted_support {
                 Some([closed_rings[0].clone(), closed_rings[1].clone()])
             } else {
                 None
@@ -632,6 +636,17 @@ pub(crate) fn rebuilt(
             new_vertices.insert(vertex.node(), (make_vertex(model, moved).shape, moved));
             continue;
         }
+        // A vertex where a seam ends has two seats, not three, and the
+        // third constraint is the seam itself: the vertex is where the moved
+        // support's seam column meets the other seat. Solved as that
+        // crossing where the seam has an iso-curve to offer; the nearest
+        // point two seats agree on is somewhere along their whole edge.
+        if kept.len() == 2
+            && let Some(moved) = seam_end(model, &faces, &prepared, &vertex, &kept, at, tol)?
+        {
+            new_vertices.insert(vertex.node(), (make_vertex(model, moved).shape, moved));
+            continue;
+        }
         let mut moved = at + solve_corner(&normals, &amounts, tol)?;
         // Newton onto the moved surfaces: residuals are the signed
         // distances, gradients the normals, and the same least-squares
@@ -753,9 +768,14 @@ pub(crate) fn rebuilt(
                 let moved: Curve = segment.into();
                 make_edge_between(model, moved, (t0, t1), &v_from, &v_to, tol)?.shape
             }
-            Curve::Circle(c) => {
+            Curve::Circle(c)
+                if !matches!(prepared[sides[0]].surface, SurfaceGeometry::BSpline(_))
+                    && !matches!(prepared[sides[1]].surface, SurfaceGeometry::BSpline(_)) =>
+            {
                 // The moved pair's own analytic intersection, taken in the
                 // circle's old frame so parameters and orientations carry.
+                // Between analytic supports a circle stays a circle; against
+                // a fitted support it is whatever the march finds, below.
                 let circle = c.circle();
                 let found = ogeom_intersect::intersect_surfaces(
                     &prepared[sides[0]].surface,
@@ -876,7 +896,19 @@ pub(crate) fn rebuilt(
                     };
                     let closed = sv.node() == ev.node();
                     let built = if closed {
-                        make_edge(model, curve.clone(), range, tol)?.shape
+                        // On the vertex the rest of the rebuild uses — a
+                        // seam starts from it — not one of the curve's own.
+                        match new_vertices.get(&sv.node()).cloned() {
+                            Some((v_at, p_at)) => {
+                                let gap = curve.point_at(range.0, tol)?.distance(p_at);
+                                if gap > tol.confusion() {
+                                    model.widen(&v_at, ogeom_core::Tolerance::new(gap * 2.0)?)?;
+                                }
+                                make_edge_between(model, curve.clone(), range, &v_at, &v_at, tol)?
+                                    .shape
+                            }
+                            None => make_edge(model, curve.clone(), range, tol)?.shape,
+                        }
                     } else {
                         let (Some((v_from, p_from)), Some((v_to, p_to))) = (
                             new_vertices.get(&sv.node()).cloned(),
@@ -961,8 +993,50 @@ pub(crate) fn rebuilt(
                     sv.node() == ev.node()
                 };
                 let built = if closed {
-                    let window = moved.domain();
-                    make_edge(model, moved, window, tol)?.shape
+                    // A ring's one vertex is a corner the neighbours' seams
+                    // start from, re-solved like any other: the marched
+                    // section is re-seamed to begin there, so the ring and
+                    // the seam meet at one vertex rather than at two a
+                    // section's start apart.
+                    let Some((sv, _)) = edge_vertices(model, &forward)? else {
+                        ogeom_bail!(Construction, "a ring has no vertex");
+                    };
+                    match (new_vertices.get(&sv.node()).cloned(), &moved) {
+                        (Some((v_at, p_at)), Curve::BSpline(spline)) => {
+                            let t = ogeom_algo::project_on_curve(&moved, p_at, 64, tol)?;
+                            let (lo, hi) = moved.domain();
+                            let seamed: Curve = if t.parameter > lo + tol.parametric()
+                                && t.parameter < hi - tol.parametric()
+                            {
+                                Curve::BSpline(spline.reseamed_at(t.parameter, tol)?)
+                            } else {
+                                moved.clone()
+                            };
+                            // Run the way the old ring ran: the wire uses the
+                            // rebuilt edge with the old orientation, and a
+                            // march has no opinion about direction.
+                            let seamed = {
+                                use ogeom_geom::Reversible as _;
+                                let (a, _) = seamed.domain();
+                                let old = curve.d1_at(range.0, tol)?;
+                                if seamed.d1_at(a, tol)?.dot(old) < 0.0 {
+                                    seamed.reversed()
+                                } else {
+                                    seamed
+                                }
+                            };
+                            let miss = t.distance.max(slop);
+                            if miss > tol.confusion() {
+                                model.widen(&v_at, ogeom_core::Tolerance::new(miss * 2.0)?)?;
+                            }
+                            let window = seamed.domain();
+                            make_edge_between(model, seamed, window, &v_at, &v_at, tol)?.shape
+                        }
+                        _ => {
+                            let window = moved.domain();
+                            make_edge(model, moved, window, tol)?.shape
+                        }
+                    }
                 } else {
                     let Some((sv, ev)) = edge_vertices(model, &forward)? else {
                         ogeom_bail!(Construction, "an edge has no vertices");
@@ -1204,19 +1278,36 @@ fn rebuilt_seam_edge(
                 }
                 Ok(angle)
             }
-            _ => ogeom_bail!(
-                Construction,
-                "the moved seam's iso-curve is neither straight nor circular"
-            ),
+            // A fitted support's iso-curve is a B-spline: the parameter is
+            // found by projection, and the check below says whether the end
+            // lies on it.
+            _ => Ok(ogeom_algo::project_on_curve(&curve, p, 64, tol)?.parameter),
         }
     };
     let (t_start, t_end) = (along(p_from)?, along(p_to)?);
     // Self-validation instead of trusting the move: a turned support only
     // keeps its column when the turn was built to — the re-solved ends say
     // whether it was.
-    for (t, p) in [(t_start, p_from), (t_end, p_to)] {
-        if curve.point_at(t, tol)?.distance(p) > tol.confusion() * 100.0 {
+    // A fitted support holds its column only to the fit's target, and the
+    // ends were polished onto the surface, not the column: the slack is the
+    // fit's, on a fitted support, and a hundred confusions elsewhere.
+    // A drafted support is two fits, the hinge's and its rulings', and at
+    // the far end of a ruling their errors add; a few targets' worth is
+    // the support's own honesty, not a wrong column.
+    let slack = if matches!(prep.surface, SurfaceGeometry::BSpline(_)) {
+        (tol.confusion() * 1e3).max(1e-4) * 4.0
+    } else {
+        tol.confusion() * 100.0
+    };
+    for (t, p, v) in [(t_start, p_from, &v_from), (t_end, p_to, &v_to)] {
+        let off = curve.point_at(t, tol)?.distance(p);
+        if off > slack {
             return Ok(None);
+        }
+        // The end sits on the column to the fit's breadth, and the vertex
+        // owns that breadth.
+        if off > tol.confusion() {
+            model.widen(v, ogeom_core::Tolerance::new(off * 2.0)?)?;
         }
     }
     Ok(Some(if t_start <= t_end {
@@ -1344,12 +1435,32 @@ fn assembled_with_seam(
                 rows,
             )?;
         } else {
-            let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&fresh_curve, &prep.surface, tol)
-            else {
-                ogeom_bail!(
-                    Construction,
-                    "a moved face edge has no closed-form pcurve on its surface"
-                );
+            // A closed form where one exists; on a fitted support, the
+            // projected fit the face builder trusts, the measured offset
+            // widening the edge.
+            let pcurve = match ogeom_intersect::exact_pcurve_of(&fresh_curve, &prep.surface, tol) {
+                Some(exact) => exact,
+                None => {
+                    let (fitted, _, _, worst_off, _) =
+                        ogeom_algo::pcurve_fit::fit_projected_pcurve(
+                            &fresh_curve,
+                            fresh_range,
+                            &prep.surface,
+                            tol,
+                        )?;
+                    if worst_off > tol.confusion() {
+                        // The edge owns the offset, and so must the vertices
+                        // that bound it: a bound no looser than what it
+                        // bounds is the containment rule.
+                        let widened = ogeom_core::Tolerance::new(worst_off + tol.confusion())?;
+                        model.widen(&fresh, widened)?;
+                        if let Some((a, b)) = edge_vertices(model, &fresh)? {
+                            model.widen(&a, widened)?;
+                            model.widen(&b, widened)?;
+                        }
+                    }
+                    fitted
+                }
             };
             ogeom_algo::attach_pcurve(
                 model,
@@ -1362,6 +1473,85 @@ fn assembled_with_seam(
         }
     }
     Ok(face)
+}
+
+/// Where a seam ending at `vertex` meets the other seat, on the moved
+/// supports: the seam's column as an iso-curve on its face's moved surface,
+/// pierced through the other face's; `None` where no seam ends here or the
+/// column has no curve.
+fn seam_end(
+    model: &Model,
+    faces: &[Shape],
+    prepared: &[Prepared],
+    vertex: &Shape,
+    kept: &[usize],
+    at: Point,
+    tol: Tolerances,
+) -> OgeomResult<Option<Point>> {
+    use ogeom_geom::Curve2d as _;
+    for (slot, &fi) in kept.iter().enumerate() {
+        let other = kept[1 - slot];
+        let face = &faces[fi];
+        let Some(NodeData::Face(data)) = model.node(face).map(ogeom_topo::TShape::data) else {
+            continue;
+        };
+        let old_surface = data.surface;
+        let mut uses: HashMap<TShapeId, usize> = HashMap::new();
+        for e in explore(model, face, Filter::OfType(ShapeType::Edge))? {
+            *uses.entry(e.node()).or_insert(0) += 1;
+        }
+        for e in explore_unique(model, face, ShapeType::Edge)? {
+            if uses.get(&e.node()).copied().unwrap_or(0) < 2 {
+                continue;
+            }
+            let Some((a, b)) = edge_vertices(model, &e)? else {
+                continue;
+            };
+            if a.node() != vertex.node() && b.node() != vertex.node() {
+                continue;
+            }
+            let Some(edata) = model.node(&e).and_then(|n| n.data().as_edge()) else {
+                continue;
+            };
+            let mut column = None;
+            for repr in &edata.representations {
+                if let EdgeRepr::Seam {
+                    forward,
+                    surface,
+                    range,
+                    ..
+                } = repr
+                    && *surface == old_surface
+                    && let Some(pcurve) = model.geometry().pcurve(*forward)
+                {
+                    column = Some(pcurve.point_at(range.0, tol)?.x);
+                    break;
+                }
+            }
+            let Some(column) = column else {
+                continue;
+            };
+            let Some(iso) = ogeom_algo::surface_iso_u_curve(&prepared[fi].surface, column, tol)
+            else {
+                continue;
+            };
+            let found = ogeom_intersect::intersect_curve_surface(
+                &iso,
+                &prepared[other].surface,
+                ogeom_intersect::CurveSurfaceOptions::default(),
+                tol,
+            )?;
+            let nearest = found
+                .crossings
+                .iter()
+                .map(|hit| hit.point)
+                .min_by(|p, q| p.distance(at).total_cmp(&q.distance(at)));
+            if let Some(p) = nearest {
+                return Ok(Some(p));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Rebuild an edge only one face owns: the ring a boolean left coincident

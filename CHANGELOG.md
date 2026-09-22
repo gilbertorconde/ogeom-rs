@@ -13,6 +13,23 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Draft on any face.** A wall on a raw fitted patch, or a wall of
+  revolution about a neutral plane tilted against its axis, used to be
+  refused. Both draft now the way a mould-maker drafts: the face becomes
+  the ruled surface through its crossing with the neutral plane, each
+  ruling the pull direction turned by the draft angle about the
+  crossing's tangent — the construction the planar and revolved drafts
+  are the closed forms of. The crossing is read off the face's own mesh
+  and corrected onto the surface, so it lies inside the face whatever
+  the chart does; the support is the ruled surface itself, degree one
+  along the ruling, between a cubic fitted through the crossing and one
+  fitted through the rulings' tips at the same parameters. The rebuild
+  underneath learned what a fitted support needs: a band on one is
+  assembled wire by wire, its rings marched against the caps and
+  re-seamed at the vertex the seam starts from, its seam the support's
+  own iso-curve (`BSplineSurface::iso_u_curve`, new), and a seam's end
+  vertex the crossing of that column with the other seat rather than
+  the nearest point two seats agree on.
 - **A skinned loft caps a non-planar end section.** A wavy rim, on which
   no plane can stand, is capped by a patch skinned from the rim down to a
   point inside it, sharing the wall's ring edge; the loft used to refuse

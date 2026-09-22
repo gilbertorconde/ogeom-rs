@@ -20,7 +20,7 @@ use ogeom_math::{
     Transform, Vector, Weighted, bspline, elementary,
 };
 
-use crate::curve::Curve;
+use crate::curve::{BSplineCurve, Curve};
 use crate::traits::{Continuity, Curve3d, Surface, SurfaceKind, Transformable};
 
 /// How far an unbounded surface's default domain reaches.
@@ -345,6 +345,58 @@ impl BSplineSurface {
             (Some(a), Some(b)) => a.point().is_equal(b.point(), tol),
             _ => false,
         })
+    }
+
+    /// The `u = at` iso-curve: a B-spline over the `v` knots whose controls
+    /// are the control columns blended by the `u` basis at `at`, weights
+    /// and all — exactly the curve the surface traces up that column.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Domain`](ogeom_core::OgeomError::Domain) if `at` is
+    /// outside the `u` domain.
+    pub fn iso_u_curve(&self, at: f64, tol: Tolerances) -> OgeomResult<BSplineCurve> {
+        use ogeom_math::Blend as _;
+        let span = self.u_knots.span(at, tol)?;
+        let basis = self.u_knots.basis(span, at);
+        let p = self.u_knots.degree();
+        let (k, l) = (self.grid.u_count(), self.grid.v_count());
+        let mut control: Vec<Weighted<Point>> = Vec::with_capacity(l);
+        for j in 0..l {
+            let mut acc = Weighted::<Point>::zero();
+            for (b, i) in basis.iter().zip(span - p..=span) {
+                if let Some(w) = self.grid.get(i.min(k - 1), j) {
+                    acc = acc.add(w.scale(*b));
+                }
+            }
+            control.push(acc);
+        }
+        BSplineCurve::rational(self.v_knots.clone(), control)
+    }
+
+    /// The `v = at` iso-curve, as [`BSplineSurface::iso_u_curve`] the other
+    /// way round.
+    ///
+    /// # Errors
+    ///
+    /// As [`BSplineSurface::iso_u_curve`].
+    pub fn iso_v_curve(&self, at: f64, tol: Tolerances) -> OgeomResult<BSplineCurve> {
+        use ogeom_math::Blend as _;
+        let span = self.v_knots.span(at, tol)?;
+        let basis = self.v_knots.basis(span, at);
+        let q = self.v_knots.degree();
+        let (k, l) = (self.grid.u_count(), self.grid.v_count());
+        let mut control: Vec<Weighted<Point>> = Vec::with_capacity(k);
+        for i in 0..k {
+            let mut acc = Weighted::<Point>::zero();
+            for (b, j) in basis.iter().zip(span - q..=span) {
+                if let Some(w) = self.grid.get(i, j.min(l - 1)) {
+                    acc = acc.add(w.scale(*b));
+                }
+            }
+            control.push(acc);
+        }
+        BSplineCurve::rational(self.u_knots.clone(), control)
     }
 
     /// The `u` knot vector.
@@ -1488,6 +1540,38 @@ mod tests {
             T,
         )
         .unwrap()
+    }
+
+    /// An iso-curve lifted off the control net is the surface's own trace
+    /// up that column, point for point.
+    #[test]
+    fn an_iso_curve_traces_the_surface_exactly() {
+        use crate::Curve3d as _;
+        let surface = patch();
+        let ((ua, ub), (va, vb)) = surface.domain();
+        for frac in [0.1, 0.5, 0.83] {
+            let u = ua + (ub - ua) * frac;
+            let column = surface.iso_u_curve(u, T).unwrap();
+            let v = va + (vb - va) * frac;
+            let row = surface.iso_v_curve(v, T).unwrap();
+            for k in 0..=10 {
+                let f = f64::from(k) / 10.0;
+                let vv = va + (vb - va) * f;
+                let on = surface.point_at(u, vv, T).unwrap();
+                let along = column.point_at(vv, T).unwrap();
+                assert!(
+                    on.distance(along) < 1e-9,
+                    "column at u {u}: {on:?} vs {along:?}"
+                );
+                let uu = ua + (ub - ua) * f;
+                let on = surface.point_at(uu, v, T).unwrap();
+                let along = row.point_at(uu, T).unwrap();
+                assert!(
+                    on.distance(along) < 1e-9,
+                    "row at v {v}: {on:?} vs {along:?}"
+                );
+            }
+        }
     }
 
     fn patch() -> BSplineSurface {

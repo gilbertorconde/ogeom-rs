@@ -154,7 +154,9 @@ fn a_neutral_plane_along_the_axis_is_refused_by_name() {
         T,
     )
     .unwrap_err();
-    assert!(err.to_string().contains("square to"), "{err}");
+    // A plane through the axis cuts the wall in two lines: two hinges,
+    // and no one draft.
+    assert!(err.to_string().contains("more than once"), "{err}");
 }
 
 #[test]
@@ -431,4 +433,177 @@ fn a_draft_that_folds_the_wall_refuses_by_name() {
         err.contains("folds the wall"),
         "the fold names itself: {err}"
     );
+}
+
+/// The angle a fitted wall's rulings make with `pull`, sampled at three
+/// heights up the middle of its chart: the draft angle, by definition — a
+/// drafted wall is ruled along the pull turned by the draft, whatever its
+/// hinge does.
+fn leans_of(
+    model: &ogeom_topo::Model,
+    solid: &ogeom_topo::Shape,
+    pull: ogeom_math::Vector,
+) -> Vec<f64> {
+    use ogeom_geom::Surface as _;
+    let fitted = explore(model, solid, Filter::OfType(ShapeType::Face))
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            model
+                .node(f)
+                .and_then(|n| n.data().as_face())
+                .and_then(|d| model.geometry().surface(d.surface))
+                .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::BSpline(_)))
+        })
+        .expect("the drafted wall is fitted");
+    let surface = {
+        let d = model
+            .node(&fitted)
+            .unwrap()
+            .data()
+            .as_face()
+            .unwrap()
+            .clone();
+        model.geometry().surface(d.surface).unwrap().clone()
+    };
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    [0.25, 0.5, 0.75]
+        .into_iter()
+        .map(|frac| {
+            let (u, v) = (f64::midpoint(u0, u1), v0 + (v1 - v0) * frac);
+            let (_, dv) = surface.d1_at(u, v, T).unwrap();
+            (dv / dv.magnitude()).dot(pull).abs().acos()
+        })
+        .collect()
+}
+
+/// A drum drafted about a neutral plane *tilted* against its axis: the
+/// hinge is an ellipse, the drafted wall the ruled surface through it with
+/// every ruling at the draft angle from the pull.
+#[test]
+fn a_drum_drafts_about_an_oblique_neutral() {
+    let mut model = ogeom_topo::Model::new();
+    let solid = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 10.0, 20.0, T)
+        .unwrap()
+        .shape;
+    let before = volume(&model, &solid);
+    let wall = wall_of(&model, &solid);
+    let tilt = 0.35_f64;
+    let neutral = Plane::through(
+        Point::new(0.0, 0.0, 10.0),
+        ogeom_math::Direction::new(ogeom_math::Vector::new(tilt.sin(), 0.0, tilt.cos()), T)
+            .unwrap(),
+    );
+    let angle = 0.1_f64;
+    let drafted = ogeom_offset::apply_draft(
+        &mut model,
+        &solid,
+        std::slice::from_ref(&wall),
+        neutral,
+        ogeom_math::Direction::Z,
+        angle,
+        T,
+    )
+    .unwrap();
+    let diagnosis = ogeom_algo::check(&model, &drafted.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // The hinge sits mid-height: the wall narrows above it and widens
+    // below, and the two nearly cancel. What a draft is measured by is its
+    // angle.
+    let after = volume(&model, &drafted.shape);
+    assert!(
+        (after - before).abs() < before * 0.02,
+        "a mid-height draft keeps the volume: {before} -> {after}"
+    );
+    for lean in leans_of(
+        &model,
+        &drafted.shape,
+        ogeom_math::Vector::new(0.0, 0.0, 1.0),
+    ) {
+        assert!(
+            (lean - angle).abs() < 2e-3,
+            "the wall leans {lean} off the pull, wanted {angle}"
+        );
+    }
+}
+
+/// A wall on a raw fitted patch — a skinned loft's, with no ruling to turn
+/// — drafts the same way, and comes out the frustum a drafted cylinder is.
+#[test]
+fn a_fitted_patch_wall_drafts_to_the_requested_angle() {
+    let mut model = ogeom_topo::Model::new();
+    let ring = |model: &mut ogeom_topo::Model, z: f64| {
+        let frame = Frame::new(
+            Point::new(0.0, 0.0, z),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let circle = ogeom_math::Circle::new(frame, 10.0, T).unwrap();
+        let curve = ogeom_geom::Curve::Circle(ogeom_geom::CircleCurve::new(circle));
+        let domain = {
+            use ogeom_geom::Curve3d as _;
+            curve.domain()
+        };
+        let edge = ogeom_algo::make_edge(model, curve, domain, T)
+            .unwrap()
+            .shape;
+        ogeom_algo::make_wire(model, std::slice::from_ref(&edge), T)
+            .unwrap()
+            .shape
+    };
+    let sections = [
+        ring(&mut model, 0.0),
+        ring(&mut model, 5.0),
+        ring(&mut model, 10.0),
+    ];
+    // A cubic through forty-eight samples of a circle of radius ten sits
+    // seven microns off it; the skin's target says so.
+    let solid = ogeom_offset::make_loft_skinned(&mut model, &sections, 1e-2, T)
+        .unwrap()
+        .shape;
+    let wall = explore(&model, &solid, Filter::OfType(ShapeType::Face))
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            model
+                .node(f)
+                .and_then(|n| n.data().as_face())
+                .and_then(|d| model.geometry().surface(d.surface))
+                .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::BSpline(_)))
+        })
+        .expect("the skinned wall");
+    let angle = 0.1_f64;
+    let drafted = ogeom_offset::apply_draft(
+        &mut model,
+        &solid,
+        std::slice::from_ref(&wall),
+        Plane::through(Point::ORIGIN, ogeom_math::Direction::Z),
+        ogeom_math::Direction::Z,
+        angle,
+        T,
+    )
+    .unwrap();
+    let diagnosis = ogeom_algo::check(&model, &drafted.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // The base circle is the hinge, so the top narrows to 10 − 10 tan(0.1):
+    // the frustum's volume, to what the fit resolves.
+    let top = 10.0 - 10.0 * angle.tan();
+    let frustum = core::f64::consts::PI * 10.0 / 3.0 * (100.0 + 10.0 * top + top * top);
+    let after = volume(&model, &drafted.shape);
+    assert!(
+        (after - frustum).abs() < frustum * 5e-3,
+        "the drafted skin measures {after} against the frustum's {frustum}"
+    );
+    for lean in leans_of(
+        &model,
+        &drafted.shape,
+        ogeom_math::Vector::new(0.0, 0.0, 1.0),
+    ) {
+        assert!(
+            (lean - angle).abs() < 2e-3,
+            "the wall leans {lean} off the pull, wanted {angle}"
+        );
+    }
 }

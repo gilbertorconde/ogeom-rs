@@ -572,11 +572,15 @@ pub fn make_face_with_pcurves(
                 None => {
                     let (fitted, _, _, worst_off, _) =
                         crate::pcurve_fit::fit_projected_pcurve(&curve, prange, &surface, tol)?;
-                    if worst_off > tol.confusion()
-                        && let Some(node) = model.node_mut(edge)
-                        && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
-                    {
-                        data.tolerance = data.tolerance.widen_to(worst_off + tol.confusion());
+                    if worst_off > tol.confusion() {
+                        // The edge owns the offset, and so must the vertices
+                        // that bound it: the containment rule.
+                        let widened = ogeom_core::Tolerance::new(worst_off + tol.confusion())?;
+                        model.widen(edge, widened)?;
+                        if let Some((a, b)) = edge_vertices(model, edge)? {
+                            model.widen(&a, widened)?;
+                            model.widen(&b, widened)?;
+                        }
                     }
                     fitted
                 }
@@ -1784,6 +1788,9 @@ pub fn surface_iso_u_curve(
                 })
                 .into(),
             )
+        }
+        ogeom_geom::SurfaceGeometry::BSpline(b) => {
+            Some(ogeom_geom::Curve::BSpline(b.iso_u_curve(at, tol).ok()?))
         }
         ogeom_geom::SurfaceGeometry::Sphere(sp) => {
             let sphere = sp.sphere();
