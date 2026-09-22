@@ -1565,14 +1565,17 @@ id = "io.iges"
 title = "IGES, both directions: solids as manifold B-rep, surface files sewn, units converted"
 crate = "ogeom-io"
 verdict = "partial"
-restriction = """The core entity set reads and writes — 29 entity types, the
+restriction = """The core entity set reads and writes — 30 entity types, the
 figure `tools/parity.py exchange` regenerates from the module's own table —
 and eight round-trip cases hold it to measured volumes: planes, a periodic
 cylinder wall with its seam, a doubly periodic torus, a seam-only sphere, a
 boolean result, a spline-walled prism through 126/128, and inch-unit
-scaling. Not translated, refused by name: ruled surfaces (118), parametric
-spline surfaces (114), the hyperbola and parabola conic forms, offset
-entities, pcurve-only trimming, annotation and drafting."""
+scaling. The reader also takes every axis-aligned conic arc (104: ellipse,
+hyperbola, parabola, each as its own curve), ruled surfaces (118) as the
+degree-one patch between the two curves' exact spline forms, and constant
+offset curves and offset surfaces (130, 140). Not translated, refused by
+name: parametric spline surfaces (114), a rotated conic, an offset curve
+whose distance varies, pcurve-only trimming, annotation and drafting."""
 claims = [
     "IGESControl_*", "IGESCAFControl_*", "IGESToBRep_*", "IGESData_*",
     "IGESSelect", "IGESSelect_*", "IGESConvGeom", "IGESConvGeom_*",
@@ -1580,7 +1583,11 @@ claims = [
     "BRepToIGES_*", "BRepToIGESBRep_*", "GeomToIGES_*", "Geom2dToIGES_*",
 ]
 symbols = ["ogeom_io::read_iges", "ogeom_io::write_iges", "ogeom_io::IgesImport", "ogeom_io::IgesReport"]
-tests = ["crates/ogeom/tests/iges_roundtrip.rs"]
+tests = ["crates/ogeom/tests/iges_roundtrip.rs",
+    "crates/ogeom-io/src/iges/read.rs::hyperbola_and_parabola_conic_arcs_read_as_their_curves",
+    "crates/ogeom-io/src/iges/read.rs::a_ruled_surface_reads_as_the_patch_between_its_curves",
+    "crates/ogeom-io/src/iges/read.rs::offset_entities_displace_the_way_the_file_says",
+]
 
 [[capability]]
 id = "io.exchange-framework"

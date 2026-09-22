@@ -13,6 +13,16 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **IGES reads more of the 1980s.** A conic arc (104) of any axis-aligned
+  kind reads as its own curve — hyperbola and parabola alongside the
+  ellipse, the arc's ends read off the file's points whichever way round
+  they are listed. A ruled surface (118) reads as the degree-one patch
+  between the two curves' exact spline forms, raised to one degree and
+  refined to one knot vector, the second curve walked backward where the
+  direction flag says. A constant offset curve (130) and an offset
+  surface (140) read as this vocabulary's offsets, the file's direction
+  conventions carried by the sign. Parametric spline surfaces (114) and
+  rotated conics stay refused by name.
 - **Gauss–Kronrod quadrature, and an integral over a rectangle of
   parameters.** The adaptive integral estimated its error by halving and
   comparing, thirty evaluations an interval; it now takes the seven-point

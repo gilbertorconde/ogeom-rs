@@ -163,14 +163,17 @@ to grow to, and a gap the recovered edges do not bridge.
 - **io.exchange-framework** — The exchange session framework: interface models, transfer processes, selections, work sessions · `divergent` · 215 headers claimed
   - *reasoning:* The reference decouples file model from transfer through a session framework — Interface models, Transfer processes and actors, IFSelect work sessions — largely so many formats and an interactive shell can share one machinery. Readers here parse the file model and build the document directly; what a session would report lives in the returned reports, and there is no interactive shell to serve. The capability the framework delivers to an application — read the file, know what happened — is the readers' contract.
 - **io.iges** — IGES, both directions: solids as manifold B-rep, surface files sewn, units converted · `partial` · 128 headers claimed
-  - *restriction:* The core entity set reads and writes — 29 entity types, the
+  - *restriction:* The core entity set reads and writes — 30 entity types, the
 figure `tools/parity.py exchange` regenerates from the module's own table —
 and eight round-trip cases hold it to measured volumes: planes, a periodic
 cylinder wall with its seam, a doubly periodic torus, a seam-only sphere, a
 boolean result, a spline-walled prism through 126/128, and inch-unit
-scaling. Not translated, refused by name: ruled surfaces (118), parametric
-spline surfaces (114), the hyperbola and parabola conic forms, offset
-entities, pcurve-only trimming, annotation and drafting.
+scaling. The reader also takes every axis-aligned conic arc (104: ellipse,
+hyperbola, parabola, each as its own curve), ruled surfaces (118) as the
+degree-one patch between the two curves' exact spline forms, and constant
+offset curves and offset surfaces (130, 140). Not translated, refused by
+name: parametric spline surfaces (114), a rotated conic, an offset curve
+whose distance varies, pcurve-only trimming, annotation and drafting.
 - **io.mesh-formats** — The mesh exchange formats: STL, OBJ, PLY, glTF/GLB, 3MF, with welding on import · `covered` · 69 headers claimed
 - **io.native-format** — The native shape interchange format, versioned, with location and triangulation sets · `covered` · 24 headers claimed
 - **io.step** — STEP, both directions: shapes, assemblies, colours, validation properties, semantic and presentation PMI · `covered` · 211 headers claimed

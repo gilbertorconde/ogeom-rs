@@ -23,13 +23,13 @@ use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::Transformable as _;
 use ogeom_geom::{
-    BSplineCurve, CircleCurve, ConeSurface, Curve, CylinderSurface, EllipseCurve, ExtrusionSurface,
-    LineCurve, PlaneSurface, RevolutionSurface, SphereSurface, SurfaceGeometry, TorusSurface,
-    TrimmedCurve,
+    BSplineCurve, BSplineSurface, CircleCurve, ConeSurface, Curve, CylinderSurface, EllipseCurve,
+    ExtrusionSurface, HyperbolaCurve, LineCurve, OffsetCurve, OffsetSurface, ParabolaCurve,
+    PlaneSurface, RevolutionSurface, SphereSurface, SurfaceGeometry, TorusSurface, TrimmedCurve,
 };
 use ogeom_math::{
-    Circle, Cone, ControlGrid, Cylinder, Direction, Ellipse, Frame, KnotVector, Matrix3, Plane,
-    Point, Sphere, Torus, Transform, Vector, Weighted,
+    Circle, Cone, ControlGrid, Cylinder, Direction, Ellipse, Frame, Hyperbola, KnotVector, Matrix3,
+    Parabola, Plane, Point, Sphere, Torus, Transform, Vector, Weighted,
 };
 use ogeom_topo::{Model, Shape};
 use std::collections::{BTreeMap, HashMap};
@@ -295,6 +295,7 @@ impl<'a> Reader<'a> {
             104 => self.conic(de, entity)?,
             112 => self.spline_curve(de, entity)?,
             126 => self.nurbs_curve(de, entity)?,
+            130 => self.offset_curve(de, entity)?,
             102 => ogeom_bail!(
                 Construction,
                 "D{de}: a composite curve is a sequence, not a curve; the \
@@ -316,8 +317,12 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// Conic arc: the axis-aligned ellipse form translates; the rest are
-    /// refused by name until a file demands them.
+    /// Conic arc: `A x² + B xy + C y² + D x + E y + F = 0` in the definition
+    /// plane, axis-aligned. The coefficients say which conic it is — both
+    /// squares one sign an ellipse, opposite signs a hyperbola, one square
+    /// missing a parabola — and each translates to its own curve, the arc's
+    /// ends read off the start and terminate points. A rotated conic is
+    /// refused by name until a file demands it.
     fn conic(&mut self, de: i64, entity: &Entity) -> OgeomResult<(Curve, (f64, f64))> {
         let scale = self.report.scale_mm;
         let (a, b, c, d, e, f) = (
@@ -328,16 +333,47 @@ impl<'a> Reader<'a> {
             entity.at(4).real(),
             entity.at(5).real(),
         );
-        // A x² + B xy + C y² + D x + E y + F = 0 in the definition plane.
-        if b.abs() > 1e-12 || a <= 0.0 || c <= 0.0 {
+        if b.abs() > 1e-12 {
             ogeom_bail!(
                 Construction,
-                "D{de}: conic arc form {} is not the axis-aligned ellipse \
-                 this reader translates — docs/PARITY.md, io.iges",
+                "D{de}: conic arc form {} turns its axes; only an axis-aligned \
+                 conic is translated — docs/PARITY.md, io.iges",
                 entity.form
             );
         }
         let zt = entity.at(6).real() * scale;
+        let start = Point::new(entity.at(7).real() * scale, entity.at(8).real() * scale, zt);
+        let end = Point::new(
+            entity.at(9).real() * scale,
+            entity.at(10).real() * scale,
+            zt,
+        );
+        // Both squares present and of one sign: an ellipse, its coefficients
+        // made positive.
+        if a != 0.0 && c != 0.0 && (a > 0.0) == (c > 0.0) {
+            let sign = if a > 0.0 { 1.0 } else { -1.0 };
+            return self.ellipse_arc(de, [a, c, d, e, f].map(|k| k * sign), zt, start, end);
+        }
+        if a != 0.0 && c != 0.0 {
+            return Self::hyperbola_arc(de, [a, c, d, e, f], zt, start, end, scale, self.tol);
+        }
+        if (a == 0.0) != (c == 0.0) {
+            return Self::parabola_arc(de, [a, c, d, e, f], zt, start, end, scale, self.tol);
+        }
+        ogeom_bail!(Construction, "D{de}: conic arc coefficients close no conic")
+    }
+
+    /// The ellipse arm of [`Reader::conic`]: `A x² + C y² + D x + E y + F = 0`
+    /// with `A` and `C` positive.
+    fn ellipse_arc(
+        &mut self,
+        de: i64,
+        [a, c, d, e, f]: [f64; 5],
+        zt: f64,
+        start: Point,
+        end: Point,
+    ) -> OgeomResult<(Curve, (f64, f64))> {
+        let scale = self.report.scale_mm;
         let cx = -d / (2.0 * a);
         let cy = -e / (2.0 * c);
         let rhs = a * cx * cx + c * cy * cy - f;
@@ -366,23 +402,175 @@ impl<'a> Reader<'a> {
             )
         };
         let ellipse = Ellipse::new(frame, major, minor, self.tol)?;
-        let angle_of = |px: f64, py: f64| -> f64 {
-            let local = frame.to_local(Point::new(px * scale, py * scale, zt));
+        let angle_of = |p: Point| -> f64 {
+            let local = frame.to_local(p);
             (local.y / minor)
                 .atan2(local.x / major)
                 .rem_euclid(core::f64::consts::TAU)
         };
-        let t0 = angle_of(entity.at(7).real(), entity.at(8).real());
-        let mut t1 = angle_of(entity.at(9).real(), entity.at(10).real());
+        let t0 = angle_of(start);
+        let mut t1 = angle_of(end);
         if t1 <= t0 + self.tol.parametric() {
             t1 += core::f64::consts::TAU;
         }
         Ok((Curve::from(EllipseCurve::new(ellipse)), (t0, t1)))
     }
 
-    /// Parametric spline curve: piecewise cubics become one clamped
-    /// B-spline, each polynomial segment re-expressed in Bernstein form
-    /// exactly — a change of basis, not a fit.
+    /// The hyperbola arm of [`Reader::conic`]: squares of opposite sign.
+    /// The branch is the one the arc's ends stand on, its parameter the
+    /// natural one — `(a cosh t, b sinh t)` — and the arc runs in increasing
+    /// parameter, the frame turned over where the file's ends run the other
+    /// way.
+    fn hyperbola_arc(
+        de: i64,
+        [a, c, d, e, f]: [f64; 5],
+        zt: f64,
+        start: Point,
+        end: Point,
+        scale: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<(Curve, (f64, f64))> {
+        let cx = -d / (2.0 * a);
+        let cy = -e / (2.0 * c);
+        let rhs = a * cx * cx + c * cy * cy - f;
+        if rhs == 0.0 {
+            ogeom_bail!(
+                Construction,
+                "D{de}: conic arc coefficients close no hyperbola; they cross"
+            );
+        }
+        // Divided through by the right-hand side, the positive square names
+        // the transverse axis.
+        let (pa, pc) = (a / rhs, c / rhs);
+        let (major, minor, along_x) = if pa > 0.0 {
+            ((1.0 / pa).sqrt(), (-1.0 / pc).sqrt(), true)
+        } else {
+            ((1.0 / pc).sqrt(), (-1.0 / pa).sqrt(), false)
+        };
+        let centre = Point::new(cx * scale, cy * scale, zt);
+        let axis = if along_x { Direction::X } else { Direction::Y };
+        // The branch: where the ends stand along the transverse axis.
+        let side = (start - centre).dot(axis.vector());
+        let x = if side >= 0.0 {
+            axis
+        } else {
+            Direction::new(-axis.vector(), tol)?
+        };
+        let build = |z: Direction| -> OgeomResult<(Curve, (f64, f64))> {
+            let frame = Frame::new(centre, z, x, tol)?;
+            let (major, minor) = (major * scale, minor * scale);
+            let hyperbola = Hyperbola::new(frame, major, minor, tol)?;
+            let t_of = |p: Point| (frame.to_local(p).y / minor).asinh();
+            let (t0, t1) = (t_of(start), t_of(end));
+            let extent = t0.abs().max(t1.abs()).max(1e-3) * 1.5;
+            Ok((
+                Curve::from(HyperbolaCurve::new(hyperbola, extent)?),
+                (t0, t1),
+            ))
+        };
+        let (curve, (t0, t1)) = build(Direction::Z)?;
+        if t1 > t0 {
+            return Ok((curve, (t0, t1)));
+        }
+        // Turned over: the same branch, the parameter running the other way.
+        let (curve, (t0, t1)) = build(Direction::new(-Direction::Z.vector(), tol)?)?;
+        Ok((curve, (t0, t1)))
+    }
+
+    /// The parabola arm of [`Reader::conic`]: one square missing. The axis
+    /// is the missing square's direction; the parameter runs along the
+    /// other, as this vocabulary's parabola does.
+    fn parabola_arc(
+        de: i64,
+        [a, c, d, e, f]: [f64; 5],
+        zt: f64,
+        start: Point,
+        end: Point,
+        scale: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<(Curve, (f64, f64))> {
+        // `A x² + D x + E y + F = 0` opens along y; `C y² + D x + E y + F = 0`
+        // along x. Either is `axis = apex + k (across - apex)²`.
+        let (apex_across, apex_along, k, along) = if c == 0.0 {
+            if e == 0.0 {
+                ogeom_bail!(
+                    Construction,
+                    "D{de}: conic arc coefficients close no parabola"
+                );
+            }
+            let x0 = -d / (2.0 * a);
+            let y0 = -(a * x0 * x0 + d * x0 + f) / e;
+            (x0, y0, -a / e, Direction::Y)
+        } else {
+            if d == 0.0 {
+                ogeom_bail!(
+                    Construction,
+                    "D{de}: conic arc coefficients close no parabola"
+                );
+            }
+            let y0 = -e / (2.0 * c);
+            let x0 = -(c * y0 * y0 + e * y0 + f) / d;
+            (y0, x0, -c / d, Direction::X)
+        };
+        let apex = if c == 0.0 {
+            Point::new(apex_across * scale, apex_along * scale, zt)
+        } else {
+            Point::new(apex_along * scale, apex_across * scale, zt)
+        };
+        // The axis points the way the parabola opens.
+        let x = if k >= 0.0 {
+            along
+        } else {
+            Direction::new(-along.vector(), tol)?
+        };
+        // `axis = k across²` against `axis = across² / (4 f)`.
+        let focal = scale / (4.0 * k.abs());
+        let build = |z: Direction| -> OgeomResult<(Curve, (f64, f64))> {
+            let frame = Frame::new(apex, z, x, tol)?;
+            let parabola = Parabola::new(frame, focal, tol)?;
+            let t_of = |p: Point| frame.to_local(p).y;
+            let (t0, t1) = (t_of(start), t_of(end));
+            let extent = t0.abs().max(t1.abs()).max(1e-3) * 1.5;
+            Ok((Curve::from(ParabolaCurve::new(parabola, extent)?), (t0, t1)))
+        };
+        let (curve, (t0, t1)) = build(Direction::Z)?;
+        if t1 > t0 {
+            return Ok((curve, (t0, t1)));
+        }
+        let (curve, (t0, t1)) = build(Direction::new(-Direction::Z.vector(), tol)?)?;
+        Ok((curve, (t0, t1)))
+    }
+
+    /// Offset curve (130): a base curve displaced a constant distance
+    /// perpendicular to a reference direction. The file displaces along
+    /// the reference crossed with the tangent; this vocabulary's offset runs
+    /// along the tangent crossed with the reference, so the distance flips
+    /// sign. A varying offset — a function of the parameter — is refused by
+    /// name.
+    fn offset_curve(&mut self, de: i64, entity: &Entity) -> OgeomResult<(Curve, (f64, f64))> {
+        let scale = self.report.scale_mm;
+        let kind = entity.at(1).int();
+        let (d1, d2) = (entity.at(5).real(), entity.at(7).real());
+        if kind != 1 || (d1 - d2).abs() > 1e-12 {
+            ogeom_bail!(
+                Construction,
+                "D{de}: only a constant offset (type 1) is translated — \
+                 docs/PARITY.md, io.iges"
+            );
+        }
+        let (basis, range) = self.curve(entity.at(0).int())?;
+        let reference = Direction::from_coords(
+            entity.at(9).real(),
+            entity.at(10).real(),
+            entity.at(11).real(),
+            self.tol,
+        )?;
+        let (tt1, tt2) = (entity.at(12).real(), entity.at(13).real());
+        let range = if tt2 > tt1 { (tt1, tt2) } else { range };
+        let offset = OffsetCurve::new(basis, -d1 * scale, reference)?;
+        Ok((Curve::Offset(Box::new(offset)), range))
+    }
+
     fn spline_curve(&mut self, de: i64, entity: &Entity) -> OgeomResult<(Curve, (f64, f64))> {
         let n = usize::try_from(entity.at(3).int()).unwrap_or(0);
         if n == 0 {
@@ -539,6 +727,33 @@ impl<'a> Reader<'a> {
                     .into()
             }
             128 => self.nurbs_surface(de, entity)?,
+            118 => self.ruled_surface(de, entity)?,
+            140 => {
+                // Normal, distance, base surface: displaced along the
+                // file's direction, which is the base's own normal or its
+                // opposite — the sign carries the difference.
+                let given = Direction::from_coords(
+                    entity.at(0).real(),
+                    entity.at(1).real(),
+                    entity.at(2).real(),
+                    self.tol,
+                )?;
+                let distance = entity.at(3).real() * scale;
+                let basis = self.surface(entity.at(4).int())?;
+                let ((ua, ub), (va, vb)) = ogeom_geom::Surface::domain(&basis);
+                let own = ogeom_geom::Surface::normal_at(
+                    &basis,
+                    f64::midpoint(ua, ub),
+                    f64::midpoint(va, vb),
+                    self.tol,
+                )?;
+                let signed = if own.vector().dot(given.vector()) < 0.0 {
+                    -distance
+                } else {
+                    distance
+                };
+                SurfaceGeometry::Offset(Box::new(OffsetSurface::new(basis, signed)?))
+            }
             192 => {
                 let point = self.location_entity(entity.at(0).int())?;
                 let dir = self.direction_entity(entity.at(1).int())?;
@@ -588,6 +803,66 @@ impl<'a> Reader<'a> {
         } else {
             Ok(surface.transformed(&placement, self.tol)?)
         }
+    }
+
+    /// Ruled surface (118): the straight lines between points of equal
+    /// parameter on two curves, as a patch of degree one across. Both
+    /// curves in their exact spline form over `[0, 1]`, raised to one
+    /// degree and refined to one knot vector, the second walked backward
+    /// where the file's direction flag says so. The file's form 0 joins
+    /// points of equal *arc length* fraction; that is read as equal
+    /// parameter, exact for the uniform-speed curves and a hair off for the
+    /// rest.
+    fn ruled_surface(&mut self, de: i64, entity: &Entity) -> OgeomResult<SurfaceGeometry> {
+        let (first, first_range) = self.curve(entity.at(0).int())?;
+        let (second, second_range) = self.curve(entity.at(1).int())?;
+        let mut a = first.to_bspline_over(first_range, self.tol)?;
+        let mut b = second.to_bspline_over(second_range, self.tol)?;
+        if entity.at(2).int() == 1 {
+            let Curve::BSpline(turned) =
+                ogeom_geom::Reversible::reversed(&Curve::BSpline(b.clone()))
+            else {
+                ogeom_bail!(Construction, "D{de}: a reversed spline is not a spline");
+            };
+            b = turned;
+        }
+        while a.degree() < b.degree() {
+            a = a.elevated(self.tol)?;
+        }
+        while b.degree() < a.degree() {
+            b = b.elevated(self.tol)?;
+        }
+        let tol = self.tol;
+        let unify = |target: &mut BSplineCurve, source: &BSplineCurve| -> OgeomResult<()> {
+            let (lo, hi) = source.knots().domain();
+            for (value, multiplicity) in source.knots().distinct() {
+                if value <= lo + 1e-12 || value >= hi - 1e-12 {
+                    continue;
+                }
+                let held = target.knots().multiplicity_of(value);
+                if multiplicity > held {
+                    *target = target.with_knot_inserted(value, multiplicity - held, tol)?;
+                }
+            }
+            Ok(())
+        };
+        unify(&mut a, &b)?;
+        unify(&mut b, &a)?;
+        let nu = a.control_points().len();
+        if b.control_points().len() != nu {
+            ogeom_bail!(
+                Construction,
+                "D{de}: the ruled surface's curves refine to different nets"
+            );
+        }
+        let mut points: Vec<Weighted<Point>> = Vec::with_capacity(nu * 2);
+        for i in 0..nu {
+            points.push(a.control_points()[i]);
+            points.push(b.control_points()[i]);
+        }
+        let grid = ControlGrid::new(points, nu, 2)?;
+        let across = KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1)?;
+        Ok(BSplineSurface::rational(a.knots().clone(), across, grid)?.into())
     }
 
     fn nurbs_surface(&mut self, de: i64, entity: &Entity) -> OgeomResult<SurfaceGeometry> {
@@ -1360,4 +1635,257 @@ fn frame_about(origin: Point, axis: Direction, tol: Tolerances) -> OgeomResult<F
     };
     let x = Direction::from_cross(axis.vector(), seed, tol)?;
     Frame::new(origin, axis, x, tol)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::super::parse::Value;
+    use super::*;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn entity(kind: i64, form: i64, params: Vec<Value>) -> Entity {
+        Entity {
+            kind,
+            form,
+            transform: 0,
+            colour: 0,
+            level: 0,
+            status: 0,
+            label: String::new(),
+            params,
+        }
+    }
+
+    fn file(entities: Vec<(i64, Entity)>) -> File {
+        let mut global = vec![Value::Default; 16];
+        global[13] = Value::Int(2);
+        File {
+            global,
+            entities: entities.into_iter().collect(),
+        }
+    }
+
+    fn reader(file: &File) -> Reader<'_> {
+        Reader {
+            file,
+            model: Model::new(),
+            report: IgesReport {
+                scale_mm: 1.0,
+                ..IgesReport::default()
+            },
+            visited: BTreeMap::new(),
+            vertices: HashMap::new(),
+            edges: HashMap::new(),
+            tol: T,
+        }
+    }
+
+    fn reals(values: &[f64]) -> Vec<Value> {
+        values.iter().map(|v| Value::Real(*v)).collect()
+    }
+
+    fn line(from: [f64; 3], to: [f64; 3]) -> Entity {
+        entity(
+            110,
+            0,
+            reals(&[from[0], from[1], from[2], to[0], to[1], to[2]]),
+        )
+    }
+
+    /// A conic arc whose squares differ in sign is a hyperbola, and one
+    /// missing a square is a parabola; each reads as its own curve, the arc
+    /// running from the file's start to its terminate point whichever way
+    /// round the file lists them.
+    #[test]
+    fn hyperbola_and_parabola_conic_arcs_read_as_their_curves() {
+        let (cosh1, sinh1) = (1.0_f64.cosh(), 1.0_f64.sinh());
+        // x²/4 − y²/9 = 1, the arc from the vertex to parameter one.
+        let hyperbola = |forward: bool| {
+            let (s, e) = if forward {
+                ([2.0, 0.0], [2.0 * cosh1, 3.0 * sinh1])
+            } else {
+                ([2.0 * cosh1, 3.0 * sinh1], [2.0, 0.0])
+            };
+            entity(
+                104,
+                2,
+                reals(&[
+                    0.25,
+                    0.0,
+                    -1.0 / 9.0,
+                    0.0,
+                    0.0,
+                    -1.0,
+                    0.0,
+                    s[0],
+                    s[1],
+                    e[0],
+                    e[1],
+                ]),
+            )
+        };
+        // x² − 4 y = 0 opening along y, and y² − 4 x = 0 opening along x.
+        let parabola_y = entity(
+            104,
+            3,
+            reals(&[1.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 4.0, 4.0]),
+        );
+        let parabola_x = entity(
+            104,
+            3,
+            reals(&[0.0, 0.0, 1.0, -4.0, 0.0, 0.0, 0.0, 4.0, 4.0, 0.0, 0.0]),
+        );
+        let deck = file(vec![
+            (1, hyperbola(true)),
+            (3, hyperbola(false)),
+            (5, parabola_y),
+            (7, parabola_x),
+        ]);
+        let mut reader = reader(&deck);
+        for de in [1, 3] {
+            let (curve, (t0, t1)) = reader.curve(de).unwrap();
+            assert!(matches!(curve, Curve::Hyperbola(_)), "D{de} is a hyperbola");
+            assert!(t1 > t0, "the arc runs forward: {t0} .. {t1}");
+            let entity = deck.entity(de).unwrap();
+            let start = Point::new(entity.at(7).real(), entity.at(8).real(), 0.0);
+            let end = Point::new(entity.at(9).real(), entity.at(10).real(), 0.0);
+            assert!(curve.point_at(t0, T).unwrap().distance(start) < 1e-9);
+            assert!(curve.point_at(t1, T).unwrap().distance(end) < 1e-9);
+            let mid = curve.point_at(f64::midpoint(t0, t1), T).unwrap();
+            assert!((mid.x * mid.x / 4.0 - mid.y * mid.y / 9.0 - 1.0).abs() < 1e-9);
+        }
+        for (de, along_y) in [(5, true), (7, false)] {
+            let (curve, (t0, t1)) = reader.curve(de).unwrap();
+            assert!(matches!(curve, Curve::Parabola(_)), "D{de} is a parabola");
+            assert!(t1 > t0);
+            let (start, end) = if along_y {
+                (Point::ORIGIN, Point::new(4.0, 4.0, 0.0))
+            } else {
+                (Point::new(4.0, 4.0, 0.0), Point::ORIGIN)
+            };
+            assert!(curve.point_at(t0, T).unwrap().distance(start) < 1e-9);
+            assert!(curve.point_at(t1, T).unwrap().distance(end) < 1e-9);
+            let mid = curve.point_at(f64::midpoint(t0, t1), T).unwrap();
+            let residual = if along_y {
+                mid.x * mid.x - 4.0 * mid.y
+            } else {
+                mid.y * mid.y - 4.0 * mid.x
+            };
+            assert!(residual.abs() < 1e-9, "on the parabola: {mid:?}");
+        }
+    }
+
+    /// A ruled surface between two lines is the bilinear patch between
+    /// them, the second line walked backward where the direction flag says.
+    #[test]
+    fn a_ruled_surface_reads_as_the_patch_between_its_curves() {
+        let deck = file(vec![
+            (1, line([0.0, 0.0, 0.0], [10.0, 0.0, 0.0])),
+            (3, line([0.0, 5.0, 2.0], [10.0, 5.0, 2.0])),
+            (
+                5,
+                entity(
+                    118,
+                    1,
+                    vec![Value::Int(1), Value::Int(3), Value::Int(0), Value::Int(0)],
+                ),
+            ),
+            (
+                7,
+                entity(
+                    118,
+                    1,
+                    vec![Value::Int(1), Value::Int(3), Value::Int(1), Value::Int(0)],
+                ),
+            ),
+        ]);
+        let mut reader = reader(&deck);
+        let straight = reader.surface(5).unwrap();
+        let turned = reader.surface(7).unwrap();
+        use ogeom_geom::Surface as _;
+        let middle = straight.point_at(0.5, 0.5, T).unwrap();
+        assert!(
+            middle.distance(Point::new(5.0, 2.5, 1.0)) < 1e-9,
+            "{middle:?}"
+        );
+        let far = straight.point_at(0.0, 1.0, T).unwrap();
+        assert!(far.distance(Point::new(0.0, 5.0, 2.0)) < 1e-9, "{far:?}");
+        let far = turned.point_at(0.0, 1.0, T).unwrap();
+        assert!(far.distance(Point::new(10.0, 5.0, 2.0)) < 1e-9, "{far:?}");
+    }
+
+    /// An offset surface displaces its base along the file's direction,
+    /// and an offset curve along the file's reference crossed with the
+    /// tangent — whichever way round this vocabulary spells either.
+    #[test]
+    fn offset_entities_displace_the_way_the_file_says() {
+        let deck = file(vec![
+            (1, entity(108, 0, reals(&[0.0, 0.0, 1.0, 0.0]))),
+            (
+                3,
+                entity(
+                    140,
+                    0,
+                    vec![
+                        Value::Real(0.0),
+                        Value::Real(0.0),
+                        Value::Real(1.0),
+                        Value::Real(3.0),
+                        Value::Int(1),
+                    ],
+                ),
+            ),
+            (
+                5,
+                entity(
+                    140,
+                    0,
+                    vec![
+                        Value::Real(0.0),
+                        Value::Real(0.0),
+                        Value::Real(-1.0),
+                        Value::Real(3.0),
+                        Value::Int(1),
+                    ],
+                ),
+            ),
+            (7, line([0.0, 0.0, 0.0], [10.0, 0.0, 0.0])),
+            (
+                9,
+                entity(
+                    130,
+                    0,
+                    vec![
+                        Value::Int(7),
+                        Value::Int(1),
+                        Value::Int(0),
+                        Value::Int(3),
+                        Value::Int(0),
+                        Value::Real(2.0),
+                        Value::Real(0.0),
+                        Value::Real(2.0),
+                        Value::Real(0.0),
+                        Value::Real(0.0),
+                        Value::Real(0.0),
+                        Value::Real(1.0),
+                        Value::Real(0.0),
+                        Value::Real(10.0),
+                    ],
+                ),
+            ),
+        ]);
+        let mut reader = reader(&deck);
+        use ogeom_geom::Surface as _;
+        let up = reader.surface(3).unwrap();
+        assert!((up.point_at(1.0, 2.0, T).unwrap().z - 3.0).abs() < 1e-9);
+        let down = reader.surface(5).unwrap();
+        assert!((down.point_at(1.0, 2.0, T).unwrap().z + 3.0).abs() < 1e-9);
+        let (offset, (t0, t1)) = reader.curve(9).unwrap();
+        assert!(matches!(offset, Curve::Offset(_)));
+        assert!((t0, t1) == (0.0, 10.0));
+        let at = offset.point_at(5.0, T).unwrap();
+        assert!(at.distance(Point::new(5.0, 2.0, 0.0)) < 1e-9, "{at:?}");
+    }
 }
