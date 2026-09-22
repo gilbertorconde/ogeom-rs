@@ -122,6 +122,25 @@ bump may break the API and a patch bump may not.
   overshooting its neighbours, and the faces it bounded drew as nothing.
   The window between the vertices' own feet on the curve is taken, and
   the report tallies it as `vertex-window`.
+- **A mesh assembled face by face cracked along every narrow face's
+  edges.** A face narrower than a few chords draws its edges finer than
+  asked, as does one whose boundary crosses itself at the chord, and
+  `triangulate` tells the faces across those edges to draw them the
+  same. `triangulate_face` could not be told, so a viewer keeping one
+  mesh per face — and the kernel's own stored tessellation, built the
+  same way — drew the two sides of such an edge to different points: a
+  seam of cracks round every fillet and along every thin plate.
+  `edge_chords_for` answers the agreement once per shape and
+  `triangulate_face_with` draws a face to it; `tessellate` stores its
+  faces and its edge polylines by the same answer.
+- **A bore crossed by a hole at its wall drew with a ring missing.** The
+  hole's two rims wind the bore's chart between them, and pairing them
+  along the first rim's last column could run into the hole's own
+  opening, or leave a rim's tail on the far side of the seam from the
+  ring it was folded into. The pairing column is chosen in the widest
+  gap free of the other rings, either rim is cut whichever way it runs,
+  and the rings the band passes are slid into the same stretch of the
+  period; a cross hole through a bore wall draws closed.
 - **STEP files spelt in older or plainer vocabulary.** A face written as
   `FACE_SURFACE` rather than `ADVANCED_FACE`, a shape carried by a
   `SHAPE_REPRESENTATION` or a manifold surface or faceted representation

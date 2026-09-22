@@ -330,146 +330,12 @@ pub fn triangulate(
         ogeom_topo::explore(model, shape, ogeom_topo::Filter::OfType(ShapeType::Face))?;
     let read_model: &Model = model;
 
-    // Meshed once at the caller's deflection, each face saying whether the
-    // rings it was drawn from crossed themselves. Nearly none do, and those
-    // faces are finished: the only cost they carry is one sweep over a ring
-    // that had to be built anyway.
-    // `Some(&nothing)`, not `None`: a face left to itself refines its own
-    // edges, which is right when it is meshed alone and wrong here, where
-    // its neighbours must be told to refine the same ones. Phase one draws
-    // every face at exactly what the caller asked and reports what crossed.
-    //
-    // Before that, every face's rings are walked at the caller's chord and
-    // its width read off them: a face narrower than a few chords wants its
-    // edges drawn finer, and so do the faces across those edges. Known
-    // before anything is drawn, those chords go into the first pass, and
-    // the big faces round a thousand small fillets are drawn once rather
-    // than once and again. The rings are kept for the faces they still
-    // describe — every face none of whose edges the map names.
-    let nothing = EdgeChords::new();
-    let prepared: Vec<OgeomResult<Option<Walked>>> =
-        ogeom_core::parallel::map_ordered(&faces, |_, face| {
-            ogeom_core::progress::checkpoint()?;
-            let Some(node) = read_model.node(face) else {
-                return Ok(None);
-            };
-            let NodeData::Face(data) = node.data() else {
-                return Ok(None);
-            };
-            let Some(surface) = read_model.geometry().surface(data.surface) else {
-                return Ok(None);
-            };
-            let trim = trimming_rings(
-                read_model,
-                face,
-                data.surface,
-                surface,
-                deflection,
-                &nothing,
-                tol,
-            )?;
-            let narrow = narrow_chord(surface, &trim.rings, deflection, tol);
-            Ok(Some((trim, narrow)))
-        });
-    let mut finer = EdgeChords::new();
-    let mut kept: Vec<Option<Trimming>> = Vec::with_capacity(faces.len());
-    for (face, one) in faces.iter().zip(prepared) {
-        match one {
-            Ok(Some((prep, narrow))) => {
-                if let Some(chord) = narrow {
-                    for edge in ogeom_topo::explore(
-                        read_model,
-                        face,
-                        ogeom_topo::Filter::OfType(ShapeType::Edge),
-                    )? {
-                        let held = finer.entry(edge.node().index()).or_insert(chord);
-                        *held = held.min(chord);
-                    }
-                }
-                kept.push(Some(prep));
-            }
-            Ok(None) => kept.push(None),
-            Err(_) => kept.push(None),
-        }
-    }
-    let touched = |face: &Shape| -> bool {
-        ogeom_topo::explore(
-            read_model,
-            face,
-            ogeom_topo::Filter::OfType(ShapeType::Edge),
-        )
-        .is_ok_and(|es| es.iter().any(|e| finer.contains_key(&e.node().index())))
-    };
-    // The rings are handed over by the job that draws the face; a shared
-    // slice cannot give them away, so each sits behind a lock it is taken
-    // from once.
-    let jobs: Vec<(&Shape, std::sync::Mutex<Option<Trimming>>)> = faces
-        .iter()
-        .zip(kept)
-        .map(|(face, prep)| {
-            let trim = prep.filter(|_| !touched(face));
-            (face, std::sync::Mutex::new(trim))
-        })
-        .collect();
-    let first: Vec<OgeomResult<(Triangulation, Verdict)>> =
-        ogeom_core::parallel::map_ordered(&jobs, |_, (face, slot)| {
-            ogeom_core::progress::checkpoint()?;
-            let trim = slot.lock().ok().and_then(|mut held| held.take());
-            triangulate_reporting_from(read_model, face, deflection, Some(&finer), trim, tol)
-        });
-    let mut computed: Vec<OgeomResult<Triangulation>> = Vec::with_capacity(faces.len());
-    let mut crossed: Vec<usize> = Vec::new();
-    for (index, one) in first.into_iter().enumerate() {
-        match one {
-            Ok((mesh, Verdict::Short)) => {
-                crossed.push(index);
-                computed.push(Ok(mesh));
-            }
-            Ok((mesh, Verdict::Whole)) => computed.push(Ok(mesh)),
-            Err(e) => computed.push(Err(e)),
-        }
-    }
-
-    // A face whose boundary crossed itself needs its edges drawn finer —
-    // and so does every face that shares one of them, or the two sides of
-    // that edge arrive with a different number of points, which is a worse
-    // crack than the sliver the refinement was for. Only those faces are
-    // drawn again.
-    if *MESH_DEBUG_REFINE && !crossed.is_empty() {
-        eprintln!(
-            "REFINE {} of {} faces came up short",
-            crossed.len(),
-            faces.len()
-        );
-    }
-    if !crossed.is_empty() {
-        // On top of the first pass's map, not instead of it: a neighbour
-        // drawn again here must still draw the edges the first pass held
-        // finer at that chord, or the two sides of one of them disagree.
-        // Only the faces touching an edge whose chord *changed* are drawn
-        // again.
-        let mut changed: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        for &index in &crossed {
-            let face = &faces[index];
-            let Some(node) = read_model.node(face) else {
-                continue;
-            };
-            let NodeData::Face(data) = node.data() else {
-                continue;
-            };
-            let Some(surface) = read_model.geometry().surface(data.surface) else {
-                continue;
-            };
-            for (edge, chord) in
-                face_chords(read_model, face, data.surface, surface, deflection, tol)?
-            {
-                let held = finer.entry(edge).or_insert(f64::INFINITY);
-                if chord < *held {
-                    *held = chord;
-                    changed.insert(edge);
-                }
-            }
-        }
+    let FirstPass {
+        finer,
+        mut computed,
+        changed,
+    } = first_pass(read_model, &faces, deflection, tol)?;
+    if !changed.is_empty() {
         let again: Vec<usize> = (0..faces.len())
             .filter(|&i| {
                 ogeom_topo::explore(
@@ -526,6 +392,234 @@ pub fn triangulate(
     } else {
         Ok(mesh)
     }
+}
+
+/// What the first pass over a shape's faces produced: the chords its faces
+/// agreed to draw their shared edges to, the meshes drawn at the caller's
+/// chord, and the edges whose chord the crossed faces changed after those
+/// meshes were drawn — the faces touching one of them are drawn again.
+struct FirstPass {
+    finer: EdgeChords,
+    computed: Vec<OgeomResult<Triangulation>>,
+    changed: std::collections::HashSet<u32>,
+}
+
+/// Every face drawn once at the caller's deflection, each saying whether
+/// the rings it was drawn from crossed themselves, on top of the chords
+/// the narrow faces asked for. Nearly none cross, and those faces are
+/// finished. A face whose boundary crossed itself needs its edges drawn
+/// finer — and so does every face that shares one of them, or the two
+/// sides of that edge arrive with a different number of points, which is
+/// a worse crack than the sliver the refinement was for. Their chords
+/// are folded into the map and the edges that changed are named.
+fn first_pass(
+    read_model: &Model,
+    faces: &[Shape],
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<FirstPass> {
+    // `Some(&finer)`, never `None`: a face left to itself refines its own
+    // edges, which is right when it is meshed alone and wrong here, where
+    // its neighbours must be told to refine the same ones. Every face is
+    // drawn at exactly what the caller asked and reports what crossed.
+    //
+    // Before that, every face's rings are walked at the caller's chord and
+    // its width read off them: a face narrower than a few chords wants its
+    // edges drawn finer, and so do the faces across those edges. Known
+    // before anything is drawn, those chords go into this pass, and the
+    // big faces round a thousand small fillets are drawn once rather than
+    // once and again. The rings are kept for the faces they still
+    // describe — every face none of whose edges the map names.
+    let (mut finer, kept) = walk_for_chords(read_model, faces, deflection, tol);
+    let touched = |face: &Shape| -> bool {
+        ogeom_topo::explore(
+            read_model,
+            face,
+            ogeom_topo::Filter::OfType(ShapeType::Edge),
+        )
+        .is_ok_and(|es| es.iter().any(|e| finer.contains_key(&e.node().index())))
+    };
+    // The rings are handed over by the job that draws the face; a shared
+    // slice cannot give them away, so each sits behind a lock it is taken
+    // from once.
+    let jobs: Vec<(&Shape, std::sync::Mutex<Option<Trimming>>)> = faces
+        .iter()
+        .zip(kept)
+        .map(|(face, prep)| {
+            let trim = prep.filter(|_| !touched(face));
+            (face, std::sync::Mutex::new(trim))
+        })
+        .collect();
+    let first: Vec<OgeomResult<(Triangulation, Verdict)>> =
+        ogeom_core::parallel::map_ordered(&jobs, |_, (face, slot)| {
+            ogeom_core::progress::checkpoint()?;
+            let trim = slot.lock().ok().and_then(|mut held| held.take());
+            triangulate_reporting_from(read_model, face, deflection, Some(&finer), trim, tol)
+        });
+    let mut computed: Vec<OgeomResult<Triangulation>> = Vec::with_capacity(faces.len());
+    let mut crossed: Vec<usize> = Vec::new();
+    for (index, one) in first.into_iter().enumerate() {
+        match one {
+            Ok((mesh, Verdict::Short)) => {
+                crossed.push(index);
+                computed.push(Ok(mesh));
+            }
+            Ok((mesh, Verdict::Whole)) => computed.push(Ok(mesh)),
+            Err(e) => computed.push(Err(e)),
+        }
+    }
+    if *MESH_DEBUG_REFINE && !crossed.is_empty() {
+        eprintln!(
+            "REFINE {} of {} faces came up short",
+            crossed.len(),
+            faces.len()
+        );
+    }
+    // On top of the walk's map, not instead of it: a neighbour drawn again
+    // must still draw the edges the walk held finer at that chord, or the
+    // two sides of one of them disagree. Only an edge whose chord
+    // *changed* sends its faces back.
+    let mut changed: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for &index in &crossed {
+        let face = &faces[index];
+        let Some(node) = read_model.node(face) else {
+            continue;
+        };
+        let NodeData::Face(data) = node.data() else {
+            continue;
+        };
+        let Some(surface) = read_model.geometry().surface(data.surface) else {
+            continue;
+        };
+        for (edge, chord) in face_chords(read_model, face, data.surface, surface, deflection, tol)?
+        {
+            let held = finer.entry(edge).or_insert(f64::INFINITY);
+            if chord < *held {
+                *held = chord;
+                changed.insert(edge);
+            }
+        }
+    }
+    Ok(FirstPass {
+        finer,
+        computed,
+        changed,
+    })
+}
+
+/// Every face's rings walked at the caller's chord, and the chords the
+/// narrow faces want their edges drawn to, agreed across the shape: the
+/// finest any face asks of an edge is what every face draws it to.
+///
+/// The rings are kept for the faces they still describe — every face none
+/// of whose edges the map names — so the whole-shape pass draws those once.
+fn walk_for_chords(
+    read_model: &Model,
+    faces: &[Shape],
+    deflection: Deflection,
+    tol: Tolerances,
+) -> (EdgeChords, Vec<Option<Trimming>>) {
+    let nothing = EdgeChords::new();
+    let prepared: Vec<OgeomResult<Option<Walked>>> =
+        ogeom_core::parallel::map_ordered(faces, |_, face| {
+            ogeom_core::progress::checkpoint()?;
+            let Some(node) = read_model.node(face) else {
+                return Ok(None);
+            };
+            let NodeData::Face(data) = node.data() else {
+                return Ok(None);
+            };
+            let Some(surface) = read_model.geometry().surface(data.surface) else {
+                return Ok(None);
+            };
+            let trim = trimming_rings(
+                read_model,
+                face,
+                data.surface,
+                surface,
+                deflection,
+                &nothing,
+                tol,
+            )?;
+            let narrow = narrow_chord(surface, &trim.rings, deflection, tol);
+            Ok(Some((trim, narrow)))
+        });
+    let mut finer = EdgeChords::new();
+    let mut kept: Vec<Option<Trimming>> = Vec::with_capacity(faces.len());
+    for (face, one) in faces.iter().zip(prepared) {
+        match one {
+            Ok(Some((prep, narrow))) => {
+                if let Some(chord) = narrow
+                    && let Ok(edges) = ogeom_topo::explore(
+                        read_model,
+                        face,
+                        ogeom_topo::Filter::OfType(ShapeType::Edge),
+                    )
+                {
+                    for edge in edges {
+                        let held = finer.entry(edge.node().index()).or_insert(chord);
+                        *held = held.min(chord);
+                    }
+                }
+                kept.push(Some(prep));
+            }
+            Ok(None) | Err(_) => kept.push(None),
+        }
+    }
+    (finer, kept)
+}
+
+/// The chords the faces below `shape` agree to draw their shared edges to.
+///
+/// A face narrower than a few chords draws its edges finer than the
+/// caller asked, and so does a face whose boundary crosses itself at that
+/// chord; the face across each of those edges must draw it the same or
+/// the two meshes disagree along it — a crack in every mesh assembled
+/// face by face. [`triangulate`] agrees this for itself; a caller meshing
+/// face by face — a viewer keeping one mesh per face — asks here once per
+/// shape and hands the answer to [`triangulate_face_with`] for every face.
+///
+/// The answer costs a draw of every face at the caller's chord, since a
+/// boundary is only known to cross itself once it is triangulated; a
+/// caller meshing face by face pays that draw twice over, and one that
+/// wants only the welded whole should ask [`triangulate`] instead.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// deflection is unusable; a face that will not draw asks for nothing
+/// rather than failing the shape.
+pub fn edge_chords_for(
+    model: &Model,
+    shape: &Shape,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<EdgeChords> {
+    deflection.validate()?;
+    let faces: Vec<Shape> =
+        ogeom_topo::explore(model, shape, ogeom_topo::Filter::OfType(ShapeType::Face))?;
+    Ok(first_pass(model, &faces, deflection, tol)?.finer)
+}
+
+/// As [`triangulate_face`], with the edge chords the shape agreed on — the
+/// answer of [`edge_chords_for`] — so the face's boundary matches its
+/// neighbours' point for point along every edge the map names.
+///
+/// # Errors
+///
+/// As [`triangulate_face`].
+pub fn triangulate_face_with(
+    model: &Model,
+    face: &Shape,
+    deflection: Deflection,
+    chords: &EdgeChords,
+    tol: Tolerances,
+) -> OgeomResult<Triangulation> {
+    let (mesh, verdict) = triangulate_reporting(model, face, deflection, Some(chords), tol)?;
+    if verdict != Verdict::Short {
+        return Ok(mesh);
+    }
+    triangulate_with(model, face, deflection, None, tol)
 }
 
 /// Make the appended face meshes traverse their shared boundaries in
@@ -731,7 +825,10 @@ pub fn face_boundary(
 ///
 /// Keyed by the edge's node, so both faces bounding it look the same value
 /// up and sample it identically. Absent means the caller's own chord.
-type EdgeChords = std::collections::HashMap<u32, f64>;
+/// The chord each edge is to be drawn to, by edge node index, where a face
+/// wants its edges finer than the caller's chord: what every face sharing
+/// an edge has to agree on, or their meshes disagree along it.
+pub type EdgeChords = std::collections::HashMap<u32, f64>;
 
 /// How many times a face's boundary may be redrawn finer before its
 /// crossing is taken to be something the chord cannot fix.
@@ -954,6 +1051,94 @@ fn trimming_rings(
                 continue;
             }
             let sign = d_of(&rings[i]).signum();
+            // The column the joining runs stand on. Wherever the first rim's
+            // chain happens to end is as good as anywhere for the rims
+            // themselves, and no good at all when a third ring lies there —
+            // a cross hole through a bore wall, whose loop the runs would
+            // then cut through, two constraints refused and the face never
+            // drawn whole. So the column is chosen where no other ring is,
+            // in the widest gap the others leave round the period, and
+            // both rims are re-cut to begin there: the same chains, the
+            // same lifted points, begun a turn's fraction round.
+            let column = {
+                let mut spans: Vec<(f64, f64)> = Vec::new();
+                for (k, ring) in rings.iter().enumerate() {
+                    if k == i || k == j {
+                        continue;
+                    }
+                    let (lo, hi) = ring
+                        .iter()
+                        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+                            (lo.min(along(*p)), hi.max(along(*p)))
+                        });
+                    if lo.is_finite() && hi - lo < period {
+                        spans.push((lo.rem_euclid(period), hi - lo));
+                    }
+                }
+                let fallback = rings[i].last().map_or(0.0, |l| along(*l));
+                if spans.is_empty() {
+                    fallback
+                } else {
+                    // The widest gap between the spans' images on one turn.
+                    let mut edges: Vec<(f64, f64)> =
+                        spans.iter().map(|(lo, len)| (*lo, lo + len)).collect();
+                    edges.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    let mut best = (f64::NEG_INFINITY, fallback);
+                    for k in 0..edges.len() {
+                        let end = edges[k].1;
+                        let next = if k + 1 < edges.len() {
+                            edges[k + 1].0
+                        } else {
+                            edges[0].0 + period
+                        };
+                        if next - end > best.0 {
+                            best = (next - end, f64::midpoint(end, next));
+                        }
+                    }
+                    best.1
+                }
+            };
+            let recut = |chain: &mut Vec<Point2>, anchors: &mut Vec<Option<Point>>| {
+                // The chain runs one period from its first point, either way
+                // round; it is cut where it first reaches the column in its
+                // own direction, and its head carried a period on to the
+                // tail, closing on the same lifted point.
+                let n = chain.len();
+                if n < 3 {
+                    return;
+                }
+                let forward = d_of(chain) > 0.0;
+                let start = along(chain[0]);
+                let target = if forward {
+                    start + (column - start).rem_euclid(period)
+                } else {
+                    start - (start - column).rem_euclid(period)
+                };
+                let reached = |k: usize| {
+                    if forward {
+                        along(chain[k]) >= target
+                    } else {
+                        along(chain[k]) <= target
+                    }
+                };
+                let Some(k) = (1..n - 1).find(|&k| reached(k)) else {
+                    return;
+                };
+                if k <= 1 {
+                    return;
+                }
+                let carry = if forward { period } else { -period };
+                let mut turned: Vec<Point2> = chain[k..].to_vec();
+                let mut turned_anchors: Vec<Option<Point>> = anchors[k..].to_vec();
+                for (p, a) in chain[1..=k].iter().zip(&anchors[1..=k]) {
+                    turned.push(make(along(*p) + carry, across(*p)));
+                    turned_anchors.push(*a);
+                }
+                *chain = turned;
+                *anchors = turned_anchors;
+            };
+            recut(&mut rings[i], &mut ring_anchors[i]);
+            recut(&mut rings[j], &mut ring_anchors[j]);
             let b = rings.remove(j);
             let b_anchors = ring_anchors.remove(j);
             ring_folds.remove(j);
@@ -987,6 +1172,33 @@ fn trimming_rings(
                     across(a_last) + (across(b_first) - across(a_last)) * f,
                 ));
                 a_anchors.push(None);
+            }
+            // The band now stands on one stretch of the chart, a period wide
+            // from where the first rim was cut; every other ring — a hole
+            // through the wall — is slid by whole periods into that stretch,
+            // the same lifted points, or it stands outside the band it
+            // belongs in.
+            let (band_lo, band_hi) = a
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+                    (lo.min(along(*p)), hi.max(along(*p)))
+                });
+            for (k, ring) in rings.iter_mut().enumerate() {
+                if k == i || ring.is_empty() {
+                    continue;
+                }
+                #[allow(clippy::cast_precision_loss)]
+                let mean = ring.iter().map(|p| along(*p)).sum::<f64>() / ring.len() as f64;
+                if mean >= band_lo && mean <= band_hi {
+                    continue;
+                }
+                let turns = ((mean - band_lo) / period).floor();
+                if turns == 0.0 {
+                    continue;
+                }
+                for p in ring.iter_mut() {
+                    *p = make(along(*p) - turns * period, across(*p));
+                }
             }
         }
     }

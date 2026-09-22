@@ -26,7 +26,7 @@ use ogeom_topo::{
 };
 
 use crate::discretize::{Deflection, discretize};
-use crate::triangulate::triangulate_face;
+use crate::triangulate::{edge_chords_for, triangulate_face_with};
 
 /// What a tessellation pass produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +52,7 @@ pub struct Tessellated {
 ///
 /// # Errors
 ///
-/// As [`triangulate_face`], plus
+/// As [`triangulate_face`](crate::triangulate::triangulate_face), plus
 /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if a handle fails to
 /// resolve.
 pub fn tessellate(
@@ -69,6 +69,20 @@ pub fn tessellate(
         deflection_met: true,
     };
 
+    // The chords the faces agree to draw their shared edges to: a narrow
+    // face's edges finer than asked, and the faces across them the same.
+    // Agreed once here, for the polylines and the faces both.
+    let chords = edge_chords_for(model, shape, deflection, tol)?;
+    let along = |edge: &Shape| -> Deflection {
+        match chords.get(&edge.node().index()) {
+            Some(chord) => Deflection {
+                chord: *chord,
+                ..deflection
+            },
+            None => deflection,
+        }
+    };
+
     // Edges first. A face's triangulation is built from its boundary edges, so
     // doing them in the other order would store a face mesh whose boundary the
     // edge polylines then contradict.
@@ -78,7 +92,7 @@ pub fn tessellate(
     for (at, edge) in edges.into_iter().enumerate() {
         ogeom_core::progress::checkpoint()?;
         ogeom_core::progress::stage_at("tessellate: edges", at as u64 + 1, edge_total);
-        if attach_polyline(model, &edge, deflection, tol)? {
+        if attach_polyline(model, &edge, along(&edge), tol)? {
             done.edges += 1;
         }
     }
@@ -104,7 +118,7 @@ pub fn tessellate(
     let computed: Vec<OgeomResult<FaceWork>> =
         ogeom_core::parallel::map_ordered(&faces, |_, face| {
             ogeom_core::progress::checkpoint()?;
-            let mesh = triangulate_face(read_model, face, deflection, tol)?;
+            let mesh = triangulate_face_with(read_model, face, deflection, &chords, tol)?;
             ogeom_core::progress::stage_at(
                 "tessellate: faces",
                 faces_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
@@ -123,7 +137,7 @@ pub fn tessellate(
                 }
                 seen.push(key);
                 let points =
-                    crate::triangulate::polyline_of_edge(read_model, &edge, deflection, tol)?;
+                    crate::triangulate::polyline_of_edge(read_model, &edge, along(&edge), tol)?;
                 if points.len() < 2 {
                     continue;
                 }
@@ -367,6 +381,48 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_narrow_face_draws_its_edges_finer_and_its_neighbours_agree() {
+        // A disc a fraction of a chord thick: its rim is narrower than the
+        // chord, so it draws its circles finer than asked. The two flat
+        // faces share those circles and must draw them to the same points,
+        // or the stored meshes, assembled face by face, crack along the
+        // rim — and the stored polylines would side with one face or the
+        // other.
+        let mut model = Model::new();
+        let coarse = Deflection {
+            chord: 1.0,
+            ..Deflection::default()
+        };
+        let disc = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 10.0, 0.5, T).unwrap();
+        tessellate(&mut model, &disc.shape, coarse, T).unwrap();
+
+        let mut refined = 0;
+        for edge in explore_unique(&model, &disc.shape, ShapeType::Edge).unwrap() {
+            let (points, _) = polyline_of(&model, &edge).unwrap();
+            let alone = crate::triangulate::polyline_of_edge(&model, &edge, coarse, T).unwrap();
+            if points.len() > alone.len() {
+                refined += 1;
+            }
+            for face in
+                ogeom_topo::ancestors_of(&model, &disc.shape, &edge, ShapeType::Face).unwrap()
+            {
+                let mesh = triangulation_of(&model, &face).unwrap();
+                for p in &points {
+                    assert!(
+                        mesh.positions.iter().any(|q| q.is_equal(*p, T)),
+                        "the face's mesh has no vertex at {p:?}, which its edge's \
+                         polyline passes through"
+                    );
+                }
+            }
+        }
+        assert!(
+            refined >= 2,
+            "the rim's circles are drawn finer than the coarse chord asks"
+        );
     }
 
     #[test]

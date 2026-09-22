@@ -110,3 +110,51 @@ fn a_belt_between_two_latitudes_is_the_belt() {
         "the belt's own area: {area:.2} drawn against {owed:.2} owed"
     );
 }
+
+/// A bore through a block with a cross hole through the bore's wall: the
+/// wall is a cylinder whose two rims wind the chart and whose cross hole
+/// is a loop that does not. The rims pair into one ring joined by runs up
+/// one column; that column used to be wherever the first rim's chain
+/// happened to end, which on this part is where the cross hole's loop
+/// lies, and the runs cut straight through it — two constraints refused,
+/// the face redrawn finer and finer, never whole. The runs now stand in
+/// the widest column no other ring touches, and the body draws closed.
+#[test]
+fn a_cross_hole_through_a_bore_wall_draws_closed() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (30.0, 30.0, 30.0), T)
+        .unwrap()
+        .shape;
+    let bore_frame =
+        Frame::new(Point::new(15.0, 15.0, -5.0), Direction::Z, Direction::X, T).unwrap();
+    let bore = ogeom::algo::make_cylinder(&mut model, bore_frame, 8.0, 40.0, T)
+        .unwrap()
+        .shape;
+    let cross_frame =
+        Frame::new(Point::new(-5.0, 15.0, 15.0), Direction::X, Direction::Z, T).unwrap();
+    let cross = ogeom::algo::make_cylinder(&mut model, cross_frame, 3.0, 40.0, T)
+        .unwrap()
+        .shape;
+    let bored = ogeom::boolean::cut(&mut model, &block, &bore, T)
+        .unwrap()
+        .shape;
+    let holed = ogeom::boolean::cut(&mut model, &bored, &cross, T)
+        .unwrap()
+        .shape;
+    let mesh = ogeom::mesh::triangulate(&model, &holed, Deflection::default(), T).unwrap();
+    assert!(mesh.is_closed(), "the drilled block draws closed");
+    let expected = 27000.0
+        - core::f64::consts::PI * 64.0 * 30.0
+        - 2.0 * core::f64::consts::PI * 9.0 * (15.0 - 8.0);
+    let measured =
+        ogeom::algo::volume_properties(&model, &holed, Deflection::with_chord(1e-2).unwrap(), T)
+            .unwrap()
+            .mass;
+    // The cross hole's two legs each reach from the block's face to the
+    // bore; the small overlap where a leg meets the bore's curve is inside
+    // the percent.
+    assert!(
+        (measured - expected).abs() < expected * 1e-2,
+        "{measured} against about {expected}"
+    );
+}
