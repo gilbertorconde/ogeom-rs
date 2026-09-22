@@ -94,6 +94,44 @@ fn triangulate_with(
     Ok(mesh)
 }
 
+/// The surface's unit normal at `(u, v)`, or where the surface is
+/// degenerate there — a cone's apex, a sphere's pole, a patch's collapsed
+/// corner — the normal a step inside along the vertex's own column.
+///
+/// A degenerate point has no normal of its own, and `None` for it left
+/// the vertex shading black and dragged every normal it was welded with
+/// towards nothing. It has a *limit* normal along any line approaching
+/// it: the apex of a cone seen up one ruling is that ruling's normal, and
+/// a mesh vertex at the apex carries the `u` of the ruling it closes. The
+/// step is a millionth of the domain towards its middle, first along
+/// `v`, then `u`, then both; `None` only where all three are degenerate.
+fn limit_normal(surface: &SurfaceGeometry, u: f64, v: f64, tol: Tolerances) -> Option<Vector> {
+    if let Ok(n) = surface.normal_at(u, v, tol) {
+        return Some(n.vector());
+    }
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let su = if u < f64::midpoint(ua, ub) { 1.0 } else { -1.0 };
+    let sv = if v < f64::midpoint(va, vb) { 1.0 } else { -1.0 };
+    // Widening steps: a patch whose corner collapses with its tangent —
+    // the control rows drawn together and the next row too — is degenerate
+    // to first order for a stretch, and a millionth of the domain is still
+    // inside it; on a sphere a millimetre across the tangents a millionth
+    // in from the pole cross to less than a direction resolves. A
+    // hundredth of the domain is past both, and on a patch that small the
+    // normal there is the corner's for every purpose.
+    for scale in [1e-6, 1e-4, 1e-2] {
+        let du = (ub - ua).abs().max(f64::EPSILON) * scale * su;
+        let dv = (vb - va).abs().max(f64::EPSILON) * scale * sv;
+        let found = [(u, v + dv), (u + du, v), (u + du, v + dv)]
+            .into_iter()
+            .find_map(|(nu, nv)| surface.normal_at(nu, nv, tol).ok().map(|n| n.vector()));
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
 /// One face, and whether the rings it was built from crossed themselves.
 ///
 /// The flag is how the shape-wide pass learns which faces need their edges
@@ -205,9 +243,8 @@ fn triangulate_reporting(
             }
             None => placement.apply(surface.point_at(u, v, tol)?),
         };
-        let normal = surface
-            .normal_at(u, v, tol)
-            .map_or(Vector::ZERO, |n| placement.apply_vector(n.vector()));
+        let normal =
+            limit_normal(surface, u, v, tol).map_or(Vector::ZERO, |n| placement.apply_vector(n));
         mesh.positions.push(point);
         mesh.normals.push(if flip { -normal } else { normal });
         mesh.parameters.push((u, v));
@@ -3014,6 +3051,45 @@ mod tests {
             chord: 1e-3,
             angular: 0.05,
             ..Deflection::default()
+        }
+    }
+
+    /// A vertex at a cone's apex or a sphere's pole carries the normal the
+    /// surface tends to there along its own column, not nothing.
+    #[test]
+    fn apex_and_pole_vertices_carry_the_limit_normal() {
+        let mut model = Model::new();
+        let cone = ogeom_algo::make_cone(&mut model, Frame::WORLD, 2.0, 0.0, 3.0, T).unwrap();
+        let sphere = ogeom_algo::make_sphere(&mut model, Frame::WORLD, 1.5, T).unwrap();
+        for (shape, what) in [(&cone.shape, "cone"), (&sphere.shape, "sphere")] {
+            for face in explore_unique(&model, shape, ShapeType::Face).unwrap() {
+                let mesh = triangulate_face(&model, &face, fine(), T).unwrap();
+                for (i, n) in mesh.normals.iter().enumerate() {
+                    assert!(
+                        (n.magnitude() - 1.0).abs() < 1e-9,
+                        "{what} vertex {i} at {:?} has normal {n:?}",
+                        mesh.positions[i]
+                    );
+                }
+            }
+        }
+        // At the apex the limit normal along a ruling is that ruling's
+        // normal: on a cone of half-angle atan(2/3) it leans out by that
+        // much from the axis, the same as every other normal in its column.
+        let faces = explore_unique(&model, &cone.shape, ShapeType::Face).unwrap();
+        let lean = (2.0_f64 / 3.0).atan();
+        for face in &faces {
+            let mesh = triangulate_face(&model, face, fine(), T).unwrap();
+            for (i, p) in mesh.positions.iter().enumerate() {
+                if p.distance(Point::new(0.0, 0.0, 3.0)) < 1e-9 {
+                    let n = mesh.normals[i];
+                    let from_axis = n.z.abs().acos();
+                    assert!(
+                        ((std::f64::consts::FRAC_PI_2 - from_axis) - lean).abs() < 1e-6,
+                        "apex normal {n:?} leans {from_axis} from the axis"
+                    );
+                }
+            }
         }
     }
 

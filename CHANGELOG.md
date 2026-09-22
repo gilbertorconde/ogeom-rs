@@ -11,6 +11,16 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A vertex at a cone's apex, a sphere's pole or a patch's collapsed
+  corner had no normal.** The surface has none there, and the mesh carried
+  a zero, which shaded the tip black and dragged every normal it was
+  welded with towards nothing. The vertex now carries the limit normal
+  along its own column — the apex of a cone seen up a ruling is that
+  ruling's normal — found a step inside the domain. On a real assembly,
+  1,199 such vertices; none now.
+
 ## [0.2.0] — 2026-09-22
 
 A minor bump before 1.0, which is to say it breaks one thing: the default
