@@ -354,6 +354,13 @@ pub fn trace(
         return Ok(ahead);
     }
     let behind = walk(a, b, from, -1.0, options, tol)?;
+    let last_step = |walked: &[Point]| -> f64 {
+        walked
+            .windows(2)
+            .last()
+            .map_or(0.0, |w| w[0].distance(w[1]))
+    };
+    let steps = last_step(&ahead.points).max(last_step(&behind.points));
 
     // Join them, the backward half reversed and its shared first point dropped.
     let mut points = behind.points;
@@ -371,13 +378,31 @@ pub fn trace(
 
     // The worse of the two reasons: a branch truncated at either end is
     // truncated.
-    let stopped = if ahead.stopped == Stopped::RanOut || behind.stopped == Stopped::RanOut {
+    let mut stopped = if ahead.stopped == Stopped::RanOut || behind.stopped == Stopped::RanOut {
         Stopped::RanOut
     } else if ahead.stopped == Stopped::Stalled || behind.stopped == Stopped::Stalled {
         Stopped::Stalled
     } else {
         Stopped::LeftTheDomain
     };
+    // A loop cut at a seam. A closed patch is clamped, not periodic: a
+    // section that runs round it — a rim's circle on a converted drum —
+    // is walked from the seed to the seam one way and to the seam the
+    // other, each walk stopping a fraction of a step short of it, and the
+    // two ends meet where the surface closes on itself. That is the whole
+    // loop, and it is closed: left open, the arrangement downstream held a
+    // circle with two ends at one point and found no face piece to keep.
+    // The ends are within a couple of the walks' own last steps of each
+    // other, and the loop is closed exactly on its first point.
+    if stopped == Stopped::LeftTheDomain && points.len() > 3 {
+        let gap = points[0].distance(points[points.len() - 1]);
+        if gap <= (steps * 2.0).max(tol.confusion() * 10.0) {
+            points.push(points[0]);
+            on_a.push(on_a[0]);
+            on_b.push(on_b[0]);
+            stopped = Stopped::Closed;
+        }
+    }
     Ok(Traced {
         points,
         on_a,

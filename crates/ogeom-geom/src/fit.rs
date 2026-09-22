@@ -381,7 +381,35 @@ fn fit_points_joint_inner(
         .zip(on_b)
         .map(|((p, a), b)| [p.x, p.y, p.z, a.x, a.y, b.x, b.y])
         .collect();
-    let (knots, control, error, met) = fit::<7>(&joined, degree, tolerance, smooth_loop, tol)?;
+    // Centripetal first, as every free fit is, and by chord length where
+    // that misses its target: the two disagree only where the samples are
+    // spaced far from evenly, and there each is right for its own data —
+    // the centripetal guess for a trace with a kink in it, chord length
+    // for a smooth trace crowded at one end — so the closer of the two
+    // stands.
+    let first = fit_spaced::<7>(
+        &joined,
+        degree,
+        tolerance,
+        smooth_loop,
+        Spacing::Centripetal,
+        tol,
+    )?;
+    let (knots, control, error, met) = if first.3 {
+        first
+    } else {
+        match fit_spaced::<7>(
+            &joined,
+            degree,
+            tolerance,
+            smooth_loop,
+            Spacing::ChordLength,
+            tol,
+        ) {
+            Ok(second) if second.2 < first.2 => second,
+            _ => first,
+        }
+    };
     let curve = BSplineCurve::new(
         knots.clone(),
         control
@@ -637,11 +665,46 @@ fn fit_points_2d_at_inner(
 /// depends only on the parameters and the knots, so the expensive part is
 /// shared and each coordinate is one more right-hand side.
 #[allow(clippy::type_complexity)]
+/// How a free fit first assigns parameters to its samples, before the
+/// correction rounds move them to the feet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Spacing {
+    /// The square root of each chord: the general choice, which keeps a
+    /// corner from pulling the parameterization through it.
+    Centripetal,
+    /// Each chord as it is: exact for a straight run however unevenly it
+    /// was sampled, and right for anything traced smoothly. Marched
+    /// sections are sampled by a walk whose step halves to a micron at a
+    /// window's rim and grows back only twofold a point; the centripetal
+    /// guess sits so far from the feet there that two rounds of correction
+    /// never reach them, and a straight section came back twelve hundred
+    /// millimetres off its own line.
+    ChordLength,
+}
+
 fn fit<const D: usize>(
     points: &[[f64; D]],
     degree: usize,
     tolerance: f64,
     smooth_loop: bool,
+    tol: Tolerances,
+) -> OgeomResult<(KnotVector, Vec<[f64; D]>, f64, bool)> {
+    fit_spaced::<D>(
+        points,
+        degree,
+        tolerance,
+        smooth_loop,
+        Spacing::Centripetal,
+        tol,
+    )
+}
+
+fn fit_spaced<const D: usize>(
+    points: &[[f64; D]],
+    degree: usize,
+    tolerance: f64,
+    smooth_loop: bool,
+    spacing: Spacing,
     tol: Tolerances,
 ) -> OgeomResult<(KnotVector, Vec<[f64; D]>, f64, bool)> {
     if !tolerance.is_finite() || tolerance <= 0.0 {
@@ -665,7 +728,10 @@ fn fit<const D: usize>(
     // spends shape freedom at the join that an open fit keeps.
     let closed =
         smooth_loop && distance::<D>(&points[0], &points[points.len() - 1]) <= tol.confusion();
-    let parameters = centripetal::<D>(&points);
+    let parameters = match spacing {
+        Spacing::Centripetal => centripetal::<D>(&points),
+        Spacing::ChordLength => chord_length::<D>(&points),
+    };
 
     // Start with the fewest control points a clamped curve of this degree can
     // have: one Bézier span. Refinement adds knots only where the error says.
@@ -1310,6 +1376,27 @@ fn fit_family<const D: usize>(
 /// map keeps a uniform speed across spacing jumps — exactly where the
 /// centripetal assignment would fold a spacing jump into a speed kink.
 fn chordal<const D: usize>(points: &[[f64; D]]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(points.len());
+    out.push(0.0);
+    let mut total = 0.0;
+    for pair in points.windows(2) {
+        total += distance::<D>(&pair[0], &pair[1]);
+        out.push(total);
+    }
+    if total > 0.0 {
+        for u in &mut out {
+            *u /= total;
+        }
+    }
+    if let Some(last) = out.last_mut() {
+        *last = 1.0;
+    }
+    out
+}
+
+/// Parameters proportional to the running chord length, ending exactly at
+/// one.
+fn chord_length<const D: usize>(points: &[[f64; D]]) -> Vec<f64> {
     let mut out = Vec::with_capacity(points.len());
     out.push(0.0);
     let mut total = 0.0;
@@ -2147,5 +2234,47 @@ mod tests {
         assert!(fit_points(&two, 0, 1e-3, T).is_err());
         // Two points always fit: the segment between them.
         assert!(fit_points(&two, 3, 1e-9, T).unwrap().met);
+    }
+
+    /// A joint fit reproduces a straight run however unevenly it was walked.
+    ///
+    /// A marched section's walk starts on a window's rim with a step that
+    /// halved to a micron and grows back twofold a point, so most of its
+    /// samples crowd one end. Parameterised centripetally, a cubic through
+    /// them could not be the line they lie on, and the correction rounds
+    /// never reached the feet: a straight section came back twelve hundred
+    /// millimetres off its own line. Chord length makes the line exact.
+    #[test]
+    fn a_joint_fit_holds_a_straight_run_sampled_geometrically() {
+        let mut points = Vec::new();
+        let mut on_a = Vec::new();
+        let mut on_b = Vec::new();
+        let mut s = 0.0_f64;
+        let mut step = 1e-5;
+        while s < 16.0 {
+            points.push(Point::new(-6.5, 9.0 - s, 8.0));
+            on_a.push(Point2::new(-8.0 + s, -1.0));
+            on_b.push(Point2::new(-0.2, 0.7 - s / 16.0));
+            s += step;
+            step = (step * 2.0).min(1.0);
+        }
+        points.push(Point::new(-6.5, -7.0, 8.0));
+        on_a.push(Point2::new(8.0, -1.0));
+        on_b.push(Point2::new(-0.2, -0.3));
+        let (space, pa, pb) = fit_points_joint(&points, &on_a, &on_b, 3, 1e-6, T).unwrap();
+        assert!(space.error < 1e-6, "the run is a line: {}", space.error);
+        let (lo, hi) = space.curve.domain();
+        for i in 0..=200 {
+            let t = lo + (hi - lo) * f64::from(i) / 200.0;
+            let p = space.curve.point_at(t, T).unwrap();
+            assert!(
+                (p.x + 6.5).abs() < 1e-6 && (p.z - 8.0).abs() < 1e-6,
+                "off the line at {p:?}"
+            );
+            let a = pa.point_at(t, T).unwrap();
+            assert!((a.y + 1.0).abs() < 1e-6 && (a.x - (-8.0 + (9.0 - p.y))).abs() < 1e-6);
+            let b = pb.point_at(t, T).unwrap();
+            assert!((b.x + 0.2).abs() < 1e-6);
+        }
     }
 }

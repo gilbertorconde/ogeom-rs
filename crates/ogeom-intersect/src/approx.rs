@@ -108,8 +108,8 @@ pub fn approximate_branch(
     // evaluated millimetres from their own curve. Jointly, one
     // parameterization and one knot vector serve all three, and the reported
     // error bounds every coordinate.
-    let unwrapped_a = unwrap_periodic(a, &kept_a);
-    let unwrapped_b = unwrap_periodic(b, &kept_b);
+    let unwrapped_a = unwrap_periodic(a, &kept_a, tol);
+    let unwrapped_b = unwrap_periodic(b, &kept_b, tol);
     // A closed branch takes the loop-smoothing fit: the join's tangents are
     // constrained to agree in all seven coordinates, so the section curve and
     // both pcurves cross their own seam without a crease.
@@ -176,14 +176,24 @@ fn space_error(surface: &SurfaceGeometry, fitted: &(BSpline2d, bool, f64), tol: 
 /// crossing `u = 0` continues to `-0.1` rather than tearing to `2π - 0.1`. The
 /// result may leave the surface's stated domain, which is what a pcurve
 /// crossing a seam *is*.
-fn unwrap_periodic(surface: &SurfaceGeometry, samples: &[(f64, f64)]) -> Vec<Point2> {
+fn unwrap_periodic(
+    surface: &SurfaceGeometry,
+    samples: &[(f64, f64)],
+    tol: Tolerances,
+) -> Vec<Point2> {
     let ((ua, ub), (va, vb)) = surface.domain();
-    let u_period = if surface.is_periodic_u() {
+    // Closure as well as periodicity: a converted drum is a clamped patch
+    // that meets itself at its seam, and a loop walked round it lands on
+    // either side of that seam by the walk's own rounding. Folded by the
+    // chart's span like a period, the trace is the continuous curve it is;
+    // left as sampled, it jumped a whole span at the seam and the closed
+    // fit chased the jump to a third of a millimetre.
+    let u_period = if surface.is_periodic_u() || surface.is_closed_u(tol) {
         Some(ub - ua)
     } else {
         None
     };
-    let v_period = if surface.is_periodic_v() {
+    let v_period = if surface.is_periodic_v() || surface.is_closed_v(tol) {
         Some(vb - va)
     } else {
         None
@@ -367,6 +377,45 @@ mod tests {
             assert!(
                 (at.x - previous.x).abs() < 1.0,
                 "the pcurve tears at the seam: {} to {}",
+                previous.x,
+                at.x
+            );
+            previous = at;
+        }
+    }
+
+    /// A loop walked round a converted drum is closed, seam or no seam.
+    ///
+    /// A cylinder converted to a patch is clamped, not periodic: it meets
+    /// itself at its seam. A plane across it cuts a circle the walk reaches
+    /// the seam on from both sides, each half stopping a fraction of a step
+    /// short of it, and the joined branch has coincident ends. Left flagged
+    /// as having left the domain, the arrangement downstream held a circle
+    /// with two ends at one point; it is closed, and fitted as a loop whose
+    /// chart image runs continuously across the seam.
+    #[test]
+    fn a_loop_cut_at_a_converted_drum_s_seam_is_closed() {
+        let drum: SurfaceGeometry = cylinder(2.0).to_bspline(T).unwrap().into();
+        assert!(matches!(drum, SurfaceGeometry::BSpline(_)));
+        let cut = plane(Point::new(0.0, 0.0, 1.0), Vector::new(0.0, 0.2, 1.0));
+        let found = branches(&drum, &cut, options(), T).unwrap();
+        assert_eq!(found.len(), 1, "an oblique plane cuts one loop");
+        assert!(found[0].closed(), "the loop closes on the seam");
+        let fitted = approximate_branch(&drum, &cut, &found[0], 1e-4, T).unwrap();
+        assert!(fitted.closed);
+        assert!(
+            fitted.fit_error < 1e-3,
+            "the loop fits as one: {}",
+            fitted.fit_error
+        );
+        let (lo, hi) = fitted.on_a.domain();
+        let mut previous = fitted.on_a.point_at(lo, T).unwrap();
+        for i in 1..=400 {
+            let u = lo + (hi - lo) * f64::from(i) / 400.0;
+            let at = fitted.on_a.point_at(u, T).unwrap();
+            assert!(
+                (at.x - previous.x).abs() < 0.5,
+                "the chart image tears at the seam: {} to {}",
                 previous.x,
                 at.x
             );
