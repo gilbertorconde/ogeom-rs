@@ -11,6 +11,15 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-22
+
+A minor bump before 1.0, which is to say it breaks one thing: the default
+angular deflection is half a radian. Everything else is additions and
+fixes, most of them to meshing, measured on a community printer assembly
+of 1,563 solids: every one of them meshes watertight at the default
+deflection, with no triangle standing off its surface, in a third of the
+time 0.1.0 took.
+
 ### Added
 
 - **`heal::fix_shape`**, one pass over a shape nobody promised was
@@ -208,5 +217,6 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/gilbertorconde/ogeom-rs/releases/tag/v0.1.0

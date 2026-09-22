@@ -27,7 +27,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
@@ -56,20 +56,20 @@ expect_used = "warn"
 
 [workspace.dependencies]
 # --- internal ---
-ogeom-core = { path = "crates/ogeom-core", version = "0.1.0" }
-ogeom-math = { path = "crates/ogeom-math", version = "0.1.0" }
-ogeom-geom = { path = "crates/ogeom-geom", version = "0.1.0" }
-ogeom-topo = { path = "crates/ogeom-topo", version = "0.1.0" }
-ogeom-algo = { path = "crates/ogeom-algo", version = "0.1.0" }
-ogeom-mesh = { path = "crates/ogeom-mesh", version = "0.1.0" }
-ogeom-intersect = { path = "crates/ogeom-intersect", version = "0.1.0" }
-ogeom-bool = { path = "crates/ogeom-bool", version = "0.1.0" }
-ogeom-heal = { path = "crates/ogeom-heal", version = "0.1.0" }
-ogeom-fillet = { path = "crates/ogeom-fillet", version = "0.1.0" }
-ogeom-offset = { path = "crates/ogeom-offset", version = "0.1.0" }
-ogeom-io = { path = "crates/ogeom-io", version = "0.1.0" }
-ogeom-hlr = { path = "crates/ogeom-hlr", version = "0.1.0" }
-ogeom-doc = { path = "crates/ogeom-doc", version = "0.1.0" }
+ogeom-core = { path = "crates/ogeom-core", version = "0.2.0" }
+ogeom-math = { path = "crates/ogeom-math", version = "0.2.0" }
+ogeom-geom = { path = "crates/ogeom-geom", version = "0.2.0" }
+ogeom-topo = { path = "crates/ogeom-topo", version = "0.2.0" }
+ogeom-algo = { path = "crates/ogeom-algo", version = "0.2.0" }
+ogeom-mesh = { path = "crates/ogeom-mesh", version = "0.2.0" }
+ogeom-intersect = { path = "crates/ogeom-intersect", version = "0.2.0" }
+ogeom-bool = { path = "crates/ogeom-bool", version = "0.2.0" }
+ogeom-heal = { path = "crates/ogeom-heal", version = "0.2.0" }
+ogeom-fillet = { path = "crates/ogeom-fillet", version = "0.2.0" }
+ogeom-offset = { path = "crates/ogeom-offset", version = "0.2.0" }
+ogeom-io = { path = "crates/ogeom-io", version = "0.2.0" }
+ogeom-hlr = { path = "crates/ogeom-hlr", version = "0.2.0" }
+ogeom-doc = { path = "crates/ogeom-doc", version = "0.2.0" }
 
 # --- arithmetic substrate ---
 # Generic over RealField so extended-precision / interval scalars can be swapped
