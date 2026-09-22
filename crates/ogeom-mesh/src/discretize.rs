@@ -281,7 +281,7 @@ pub fn discretize(
     while let Some((t1, p1)) = pending.pop() {
         let t0 = *parameters.last().unwrap_or(&t1);
         let p0 = points.last().copied().unwrap_or(p1);
-        if splitting && needs_split(curve, (t0, t1), (p0, p1), deflection, tol)? {
+        if splitting && needs_split(curve, (t0, t1), (p0, p1), (lo, hi), deflection, tol)? {
             // The count the cap sees is every point currently alive, exactly
             // as the old loop counted before each split.
             if parameters.len() + pending.len() + 1 > deflection.max_segments {
@@ -318,6 +318,7 @@ fn needs_split(
     curve: &Curve,
     parameters: (f64, f64),
     ends: (Point, Point),
+    whole: (f64, f64),
     deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<bool> {
@@ -339,6 +340,21 @@ fn needs_split(
     // Angular error: how far the tangent turns across the segment. Chord error
     // alone misses a long, gently curving span, which is exactly where a
     // silhouette goes visibly polygonal.
+    //
+    // Not over a segment that is both shorter than the chord tolerance and
+    // a small fraction of the whole edge. A fitted edge often ends in a
+    // hook a few microns long — the fit overshooting its vertex and turning
+    // back — and the tangent turns through a right angle across it at
+    // every scale; asked of it, the angular test bisects the hook down to
+    // the resolution of the parameter and hands the face a fan of hairs at
+    // one corner, each a fin off the surface. A turn across a span under
+    // the deflection the caller accepted is below what they can see; the
+    // fraction keeps the test on a hole a fifth of a millimetre across,
+    // every segment of which is under the chord and a thirteenth of the
+    // whole.
+    if ends.0.distance(ends.1) <= deflection.chord && (b - a) <= (whole.1 - whole.0) / 16.0 {
+        return Ok(false);
+    }
     let (Ok(start), Ok(end)) = (curve.tangent_at(a, tol), curve.tangent_at(b, tol)) else {
         // A cusp has no tangent to compare; the chord test still governs.
         return Ok(false);

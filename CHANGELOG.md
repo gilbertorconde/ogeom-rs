@@ -70,6 +70,27 @@ bump may break the API and a patch bump may not.
   Grid cells are held to a bounded aspect: rows close enough, measured
   through the surface, that no triangle reaches across more than a few
   columns. Fewer triangles on the bore than before, not more.
+- **Faces shaded as quilts of creases.** Delaunay in the chart is not
+  Delaunay on the surface when the chart's units differ by axis — a
+  cylinder's `u` in radians against its `v` in millimetres, a fitted
+  strip's `u` over a fiftieth of a unit against a `v` over one — and the
+  slivers it makes across the narrow way lift folded, flat across a bend
+  the surface takes in between, their normals pointing where none of
+  their vertices' do. Three things, measured on a real assembly by the
+  area of triangles standing more than 45° off their vertices' normals,
+  61,000 mm² before and 540 after:
+  - the triangulation runs in the chart scaled to the surface's own
+    metric, the mean tangent length each way, so Delaunay sees distances
+    as space does;
+  - an interior grid point keeps a third of a cell clear of the boundary,
+    where a point hugging a boundary chord makes a sliver that stands off
+    the surface as a fin;
+  - the angular deflection is not asked of a segment both shorter than
+    the chord tolerance and a sixteenth of its edge — a fitted edge's
+    end hook, a few microns long, which bisection chased down to the
+    resolution of the parameter and handed the face a fan of hairs.
+  The same assembly meshes in a third of the time with a fifth fewer
+  triangles, the slivers the repair pass used to chase now never made.
 - **A bore's inside was coarser than its rims.** Edges are discretized
   to the chord *and* the angular deflection; the interior grid was held
   to the chord alone. A viewer scaling its chord to a body's size gave a

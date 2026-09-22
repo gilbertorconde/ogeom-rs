@@ -1786,6 +1786,83 @@ fn triangulate_region(
     }
 }
 
+/// The chart stretched per axis to the surface's own metric, so that the
+/// triangulation — Delaunay in the chart — sees distances as space does.
+///
+/// A fitted strip a fifth of a millimetre wide and a centimetre long may
+/// carry `u` over a fiftieth of a unit and `v` over one: in the chart the
+/// long way is the short way, sixty times over, and Delaunay, which
+/// connects nearest neighbours *in the chart*, joins points along the
+/// strip across several columns rather than to the row beside them. The
+/// triangles it makes are slivers in space that lift folded — a flat
+/// triangle spanning a bend the surface takes in between, its normal
+/// pointing where none of its vertices' do — and the face shades as a
+/// quilt of creases. Scaled by the mean tangent length each way, the
+/// chart is the surface to first order, and Delaunay in it is Delaunay
+/// on the surface.
+#[derive(Debug, Clone, Copy)]
+struct ChartScale {
+    su: f64,
+    sv: f64,
+}
+
+impl ChartScale {
+    /// The mean tangent length each way over the rings' extent, the longer
+    /// normalized to one; `(1, 1)` where the surface will not say.
+    fn of(surface: &SurfaceGeometry, rings: &[Vec<Point2>], tol: Tolerances) -> Self {
+        let (lo, hi) = chart_extent(rings);
+        if !(lo.x.is_finite() && hi.x.is_finite() && lo.y.is_finite() && hi.y.is_finite()) {
+            return Self { su: 1.0, sv: 1.0 };
+        }
+        let (mut du, mut dv, mut n) = (0.0_f64, 0.0_f64, 0usize);
+        for i in 0..=2 {
+            for j in 0..=2 {
+                let u = lo.x + (hi.x - lo.x) * (0.25 + 0.25 * f64::from(i));
+                let v = lo.y + (hi.y - lo.y) * (0.25 + 0.25 * f64::from(j));
+                if let Ok((a, b)) = surface.d1_at(u, v, tol) {
+                    du += a.magnitude();
+                    dv += b.magnitude();
+                    n += 1;
+                }
+            }
+        }
+        if n == 0 || !(du > 0.0 && dv > 0.0) || !du.is_finite() || !dv.is_finite() {
+            return Self { su: 1.0, sv: 1.0 };
+        }
+        let longer = du.max(dv);
+        Self {
+            su: du / longer,
+            sv: dv / longer,
+        }
+    }
+
+    /// A chart point into the scaled chart.
+    fn to(self, u: f64, v: f64) -> SpadePoint<f64> {
+        SpadePoint::new(u * self.su, v * self.sv)
+    }
+
+    /// A scaled-chart point back into the chart.
+    fn from(self, x: f64, y: f64) -> (f64, f64) {
+        (x / self.su, y / self.sv)
+    }
+}
+
+/// The rings' bounding box in the chart.
+fn chart_extent(rings: &[Vec<Point2>]) -> (Point2, Point2) {
+    rings.iter().flatten().fold(
+        (
+            Point2::new(f64::INFINITY, f64::INFINITY),
+            Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+        ),
+        |(lo, hi), p| {
+            (
+                Point2::new(lo.x.min(p.x), lo.y.min(p.y)),
+                Point2::new(hi.x.max(p.x), hi.y.max(p.y)),
+            )
+        },
+    )
+}
+
 fn triangulate_region_inner(
     rings: &[Vec<Point2>],
     surface: &SurfaceGeometry,
@@ -1797,11 +1874,30 @@ fn triangulate_region_inner(
     let sub = std::time::Instant::now();
     let mut refused_total = 0usize;
 
+    // Everything the triangulation sees is in the scaled chart; the rings'
+    // own chart points are kept by their scaled bits so a boundary vertex
+    // comes back with exactly the parameters its anchor was keyed by.
+    let scale = ChartScale::of(surface, rings, tol);
+    let scaled: Vec<Vec<Point2>> = rings
+        .iter()
+        .map(|ring| {
+            ring.iter()
+                .map(|p| {
+                    let q = scale.to(p.x, p.y);
+                    Point2::new(q.x, q.y)
+                })
+                .collect()
+        })
+        .collect();
+    let mut exact: std::collections::HashMap<(u64, u64), (f64, f64)> =
+        std::collections::HashMap::new();
+
     // The boundary edges are constraints, so the triangulation respects the
     // trimming rather than spanning across a hole.
-    for ring in rings {
+    for (ring, chart) in scaled.iter().zip(rings) {
         let mut ring_handles = Vec::with_capacity(ring.len());
-        for p in ring {
+        for (p, uv) in ring.iter().zip(chart) {
+            exact.insert((p.x.to_bits(), p.y.to_bits()), (uv.x, uv.y));
             // A chart coordinate can come out subnormal-tiny — the sine of
             // a fold angle, the residue of an exact cancellation — and the
             // triangulation refuses what is, for every purpose, zero.
@@ -1853,7 +1949,7 @@ fn triangulate_region_inner(
     // of a polygon with holes has. One that crosses itself gives another
     // number: a segment refused as a constraint, a lobe wound the wrong
     // way. Asked here, before interior points bury the difference.
-    let bands = RingBands::over(rings);
+    let bands = RingBands::over(&scaled);
     // A segment the triangulation refused as a constraint crossed one
     // already there; that alone is the answer.
     let crossed = refused_total > 0
@@ -1875,7 +1971,7 @@ fn triangulate_region_inner(
     // deflection rather than by a fixed grid.
     let boundary_ms = sub.elapsed().as_secs_f64() * 1e3;
     let sub = std::time::Instant::now();
-    add_interior_points(&mut cdt, rings, surface, deflection, tol)?;
+    add_interior_points(&mut cdt, rings, surface, deflection, scale, tol)?;
     let interior_ms = sub.elapsed().as_secs_f64() * 1e3;
     let interior_points = cdt.num_vertices();
     let sub = std::time::Instant::now();
@@ -1887,18 +1983,7 @@ fn triangulate_region_inner(
     // `v` near −500 000 and a span of twenty, and a scale taken from where
     // the ring sits rather than how far it reaches would call every honest
     // cell a hair.
-    let (lo, hi) = rings.iter().flatten().fold(
-        (
-            Point2::new(f64::INFINITY, f64::INFINITY),
-            Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
-        ),
-        |(lo, hi), p| {
-            (
-                Point2::new(lo.x.min(p.x), lo.y.min(p.y)),
-                Point2::new(hi.x.max(p.x), hi.y.max(p.y)),
-            )
-        },
-    );
+    let (lo, hi) = chart_extent(&scaled);
     let extent = (hi.x - lo.x).max(hi.y - lo.y);
     let degenerate_area = extent.max(1.0).powi(2) * 1e-12;
 
@@ -1954,7 +2039,8 @@ fn triangulate_region_inner(
                 // perfectly symmetric one, whose mesh must stay symmetric —
                 // is left untouched.
                 let sagged = (0..3).any(|i| {
-                    sag_between(surface, corners[i], corners[(i + 1) % 3], tol)
+                    let (a, b) = (corners[i], corners[(i + 1) % 3]);
+                    sag_between(surface, scale.from(a.0, a.1), scale.from(b.0, b.1), tol)
                         > deflection.chord * 3.0
                 });
                 if sagged {
@@ -1974,7 +2060,7 @@ fn triangulate_region_inner(
                 // centre is the same point again: round after round, a
                 // stack of hairs the degenerate filter then drops, and a
                 // hole in the face where they were.
-                if lands_on_the_mesh(&cdt, point, extent * 1e-9) {
+                if lands_on_the_mesh(&cdt, point, extent * 1e-9, (1.0, 1.0)) {
                     continue;
                 }
                 cdt.insert(mitigate_underflow(point)).map_err(|e| {
@@ -2008,7 +2094,12 @@ fn triangulate_region_inner(
     for (i, vertex) in cdt.vertices().enumerate() {
         let p = vertex.position();
         index_of.insert(vertex.fix(), i);
-        parameters.push((p.x, p.y));
+        parameters.push(
+            exact
+                .get(&(p.x.to_bits(), p.y.to_bits()))
+                .copied()
+                .unwrap_or_else(|| scale.from(p.x, p.y)),
+        );
     }
 
     let mut triangles = Vec::new();
@@ -2091,6 +2182,7 @@ fn add_interior_points(
     rings: &[Vec<Point2>],
     surface: &SurfaceGeometry,
     deflection: Deflection,
+    scale: ChartScale,
     tol: Tolerances,
 ) -> OgeomResult<()> {
     // A plane is flat everywhere; sampling it would add points that buy nothing.
@@ -2108,8 +2200,11 @@ fn add_interior_points(
         return Ok(());
     };
     // Within this of a boundary vertex or segment is on it: a hair's width
-    // at the chart's scale, the same reach the repair pass keeps.
-    let reach = (high.x - low.x).max(high.y - low.y).max(1.0) * 1e-9;
+    // at the scaled chart's scale, the same reach the repair pass keeps.
+    let reach = ((high.x - low.x) * scale.su)
+        .max((high.y - low.y) * scale.sv)
+        .max(1.0)
+        * 1e-9;
 
     // The v resolution has to hold everywhere the region reaches, so its sag is
     // the worst over a spread of u probes rather than the sag along one line.
@@ -2183,7 +2278,15 @@ fn add_interior_points(
             deflection.chord
         );
     }
-    for &v in &rows[1..rows.len().saturating_sub(1)] {
+    for (row, &v) in rows
+        .iter()
+        .enumerate()
+        .take(rows.len().saturating_sub(1))
+        .skip(1)
+    {
+        // The row gap either side of this row, the finer of the two: the
+        // chart scale a keep-out band is measured against along `v`.
+        let dv = (v - rows[row - 1]).abs().min((rows[row + 1] - v).abs());
         // Each row gets its own u resolution, measured at that row.
         let columns = refine_direction(low.x, high.x, deflection.chord, |a, b| {
             cell_error(surface, (a, v), (b, v), deflection, tol)
@@ -2199,7 +2302,12 @@ fn add_interior_points(
             |a, b| span((a, v), (b, v)),
             |a, b, u| span((u, a), (u, b)),
         );
-        for &u in &columns[1..columns.len().saturating_sub(1)] {
+        for (column, &u) in columns
+            .iter()
+            .enumerate()
+            .take(columns.len().saturating_sub(1))
+            .skip(1)
+        {
             // Interior points only: the boundary is already constrained, and a
             // point landing just off a constraint would split it.
             if !inside_region(rings, Point2::new(u, v)) {
@@ -2211,8 +2319,32 @@ fn add_interior_points(
             // join — and even-odd counting calls it inside. Inserted, it
             // splits that constraint on this face alone, and the face
             // across the edge is drawn to the unsplit segment.
-            let point = SpadePoint::new(u, v);
-            if lands_on_the_mesh(cdt, point, reach) {
+            let point = scale.to(u, v);
+            if lands_on_the_mesh(cdt, point, reach, (1.0, 1.0)) {
+                continue;
+            }
+            // Nor *near* it, measured in cells. A grid point a sliver's
+            // width from a boundary chord makes a triangle with that
+            // chord's two ends that is thin in the chart and, lifted, is
+            // not thin at all: the chord cuts across the curvature by its
+            // sag and the point sits on the surface, so the triangle
+            // stands off the surface as a fin whose normal is tangent to
+            // it and whose sign is whichever way the sliver leaned. A face
+            // shades with a crease along every such chord. The point is
+            // left out and the boundary's own row of triangles reaches
+            // to the next grid line instead.
+            let du = (u - columns[column - 1])
+                .abs()
+                .min((columns[column + 1] - u).abs());
+            if du > 0.0
+                && dv > 0.0
+                && lands_on_the_mesh(
+                    cdt,
+                    point,
+                    KEEP_OUT,
+                    (1.0 / (du * scale.su), 1.0 / (dv * scale.sv)),
+                )
+            {
                 continue;
             }
             cdt.insert(mitigate_underflow(point))
@@ -2301,19 +2433,29 @@ fn lands_on_the_mesh(
     cdt: &ConstrainedDelaunayTriangulation<SpadePoint<f64>>,
     point: SpadePoint<f64>,
     reach: f64,
+    scale: (f64, f64),
 ) -> bool {
     use spade::PositionInTriangulation as At;
-    let near = |v: SpadePoint<f64>| (v.x - point.x).hypot(v.y - point.y) <= reach;
+    // Distances in a chart scaled per axis: `scale` is one over the local
+    // grid step each way, so `reach` reads in cells, whatever the chart's
+    // own units — one face's `u` runs over a fiftieth of its `v`.
+    let scaled = |p: SpadePoint<f64>| ((p.x - point.x) * scale.0, (p.y - point.y) * scale.1);
+    let near = |v: SpadePoint<f64>| {
+        let (x, y) = scaled(v);
+        x.hypot(y) <= reach
+    };
     let along = |a: SpadePoint<f64>, b: SpadePoint<f64>| {
-        // Distance to the segment `a..b`.
-        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        // Distance to the segment `a..b`, the point at the origin.
+        let (ax, ay) = scaled(a);
+        let (bx, by) = scaled(b);
+        let (dx, dy) = (bx - ax, by - ay);
         let len2 = dx * dx + dy * dy;
         let t = if len2 > 0.0 {
-            (((point.x - a.x) * dx + (point.y - a.y) * dy) / len2).clamp(0.0, 1.0)
+            ((-ax * dx - ay * dy) / len2).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        (a.x + t * dx - point.x).hypot(a.y + t * dy - point.y) <= reach
+        (ax + t * dx).hypot(ay + t * dy) <= reach
     };
     match cdt.locate(point) {
         At::OnVertex(_) => true,
@@ -2331,6 +2473,14 @@ fn lands_on_the_mesh(
         At::OutsideOfConvexHull(_) | At::NoTriangulation => false,
     }
 }
+
+/// How close to the boundary, in grid cells, an interior point may sit.
+///
+/// Closer than this the triangle between the point and a boundary chord
+/// is a sliver in the chart and a fin in space; at this and beyond the
+/// boundary's own row of triangles is at least this tall against the
+/// chord, and lifts as a facet on the surface rather than off it.
+const KEEP_OUT: f64 = 0.35;
 
 /// How many column widths a grid cell may be tall before rows are added.
 ///

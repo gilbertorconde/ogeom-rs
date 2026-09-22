@@ -218,3 +218,15 @@ sits on the curve 2.18 mm along it from the seam. The reproducer for a
 closed edge held to a seam its vertex misses: the reader widened the
 vertex's tolerance to 2.18 mm to say so, and a solid meshed whole then
 welded its borders at that reach.
+
+## fillet_strip_with_a_narrow_chart.step
+
+One face extracted standalone from a community printer assembly, with a
+shell and a solid wrapped round it so the reader yields something: a
+fillet strip a centimetre long and a couple of millimetres wide, turning
+a quarter turn across its width, on a rational B-spline whose chart runs
+`u` over a fiftieth of a unit and `v` over one. The reproducer for a
+triangulation Delaunay in the chart but not on the surface: with the
+chart sixty times narrower one way than the other, points were joined
+along the strip across columns rather than to the row beside them, and
+the triangles lifted folded — half the face shaded as creases.

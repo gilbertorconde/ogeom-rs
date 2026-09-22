@@ -711,3 +711,66 @@ fn a_spike_on_the_boundary_is_stripped() {
         mesh.positions.len()
     );
 }
+
+/// A face is drawn on its surface, not as a quilt of fins off it.
+///
+/// A fillet strip a centimetre long and a couple of millimetres wide,
+/// turning a quarter turn across its width, whose chart runs `u` over a
+/// fiftieth of a unit and `v` over one. Delaunay in that chart joined
+/// points along the strip across columns rather than to the row beside
+/// them, and the triangles it made were slivers in space that lifted
+/// folded: flat across a bend the surface takes in between, their normals
+/// pointing where none of their vertices' do. Half the face shaded as
+/// creases. Triangulated in the chart scaled to the surface's own metric,
+/// every triangle lies with its vertices' normals.
+#[test]
+fn a_narrow_chart_s_triangles_lie_on_the_surface() {
+    let text = corpus("fillet_strip_with_a_narrow_chart.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let faces = explore_unique(model, &import.solids[0], ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 1, "the fixture is the one face");
+    let deflection = ogeom::mesh::Deflection {
+        chord: 0.31,
+        angular: 0.5,
+        ..ogeom::mesh::Deflection::default()
+    };
+    let mesh = ogeom::mesh::triangulate_face(model, &faces[0], deflection, T).unwrap();
+    // Each triangle against the mean of its vertices' normals; a fin
+    // stands near ninety degrees off, a facet on a fillet at most a few
+    // tens.
+    let total: f64 = mesh
+        .triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+            (b - a).cross(c - a).magnitude()
+        })
+        .sum();
+    let mut worst = 0.0_f64;
+    let mut fins = 0;
+    for t in &mesh.triangles {
+        let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+        let own = (b - a).cross(c - a);
+        if own.magnitude() < total * 1e-6 {
+            continue;
+        }
+        let theirs =
+            mesh.normals[t[0] as usize] + mesh.normals[t[1] as usize] + mesh.normals[t[2] as usize];
+        let angle = (own.dot(theirs) / (own.magnitude() * theirs.magnitude()))
+            .clamp(-1.0, 1.0)
+            .acos()
+            .to_degrees();
+        worst = worst.max(angle);
+        if angle > 60.0 {
+            fins += 1;
+        }
+    }
+    assert_eq!(
+        fins,
+        0,
+        "{fins} of {} triangles stand off the surface; the worst by {worst:.1} degrees",
+        mesh.triangles.len()
+    );
+    assert!(worst < 45.0, "the worst triangle leans {worst:.1} degrees");
+}
