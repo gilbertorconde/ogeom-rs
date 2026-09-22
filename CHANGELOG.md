@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Gauss–Kronrod quadrature, and an integral over a rectangle of
+  parameters.** The adaptive integral estimated its error by halving and
+  comparing, thirty evaluations an interval; it now takes the seven-point
+  Gauss and fifteen-point Kronrod pair, fifteen evaluations shared, the
+  gap between the two the error. `integrate_2d` integrates over a chart
+  rectangle the same way, in tensor form, halving a cell along whichever
+  direction the pair finds rougher, so a crease running across the chart
+  costs a line of cells rather than a field of them.
 - **A stated-tolerance fit for what has no exact spline, and a degree
   limit.** `Curve::to_bspline` still refuses a helix, an offset curve or a
   surface curve rather than approximate silently; `Curve::fitted_bspline_over`

@@ -254,20 +254,24 @@ claims = [
 id = "math.quadrature"
 title = "Numerical integration"
 crate = "ogeom-math"
-verdict = "partial"
-restriction = """Fixed-order Gauss–Legendre only. No Gauss–Kronrod pairs, so \
-integration error is controlled by choosing the order from the integrand's \
-degree (exact for the polynomial cases mass properties meet) rather than \
-estimated adaptively. An integrand that needs adaptive subdivision has no \
-entry point yet."""
+verdict = "covered"
 claims = [
     "math_ComputeGaussPointsAndWeights", "math_ComputeKronrodPointsAndWeights",
     "math_GaussMultipleIntegration", "math_GaussSetIntegration",
     "math_GaussSingleIntegration", "math_KronrodSingleIntegration",
     "math_ValueAndWeight",
 ]
-symbols = ["ogeom_math::gauss_legendre", "ogeom_math::integrate"]
-tests = ["crates/ogeom-math/tests/algebra_properties.rs"]
+symbols = [
+    "ogeom_math::gauss_legendre",
+    "ogeom_math::gauss_kronrod",
+    "ogeom_math::integrate",
+    "ogeom_math::integrate_2d",
+]
+tests = [
+    "crates/ogeom-math/tests/algebra_properties.rs",
+    "crates/ogeom-math/src/integrate.rs::the_gauss_kronrod_pair_is_exact_to_its_degrees",
+    "crates/ogeom-math/src/integrate.rs::a_rectangle_integrates_to_a_stated_tolerance",
+]
 
 # --- ogeom-geom -----------------------------------------------------------
 

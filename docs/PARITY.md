@@ -15,8 +15,8 @@ per package.
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 67 |
-| `partial` | 15 |
+| `covered` | 68 |
+| `partial` | 14 |
 | `divergent` | 9 |
 | `n/a` | 5 |
 | `unreviewed` | 1 |
@@ -190,8 +190,7 @@ entities, pcurve-only trimming, annotation and drafting.
 - **math.linear-algebra** — Dense and sparse linear systems, least squares, eigenvalues · `divergent` · 16 headers claimed
   - *reasoning:* Dense linear algebra is nalgebra's, on purpose: the workspace is generic over RealField so extended-precision scalars can be swapped in (docs/DATA_MODEL.md), and reimplementing SVD/LU under that constraint buys nothing but bugs. What is ours is what the reference lacks a direct twin for: the sparse matrix and conjugate-gradient path the fitting pipeline uses (ogeom_math::SparseMatrix, ogeom_math::least_squares_cgnr).
 - **math.primitives** — Points, vectors, directions and frames, in the plane and in space · `covered` · 17 headers claimed
-- **math.quadrature** — Numerical integration · `partial` · 7 headers claimed
-  - *restriction:* Fixed-order Gauss–Legendre only. No Gauss–Kronrod pairs, so integration error is controlled by choosing the order from the integrand's degree (exact for the polynomial cases mass properties meet) rather than estimated adaptively. An integrand that needs adaptive subdivision has no entry point yet.
+- **math.quadrature** — Numerical integration · `covered` · 7 headers claimed
 - **math.tangency-constructions** — 2D tangency constructions: circles and lines tangent to points, lines and circles · `covered` · 58 headers claimed
 - **math.transforms** — Rigid and general transforms, quaternions, and their interpolation · `covered` · 12 headers claimed
 
