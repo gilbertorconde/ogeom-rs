@@ -122,6 +122,20 @@ bump may break the API and a patch bump may not.
   overshooting its neighbours, and the faces it bounded drew as nothing.
   The window between the vertices' own feet on the curve is taken, and
   the report tallies it as `vertex-window`.
+- **A fitted pcurve hooked off its curve between the fitter's samples.**
+  The reader fits an edge's pcurve by projecting samples spaced evenly in
+  the curve's parameter and measuring the fit at those samples alone. A
+  curve is free to run far faster at one end than the other — a fan
+  blade's root meets its hub through most of its bend inside the first
+  sample interval — and there the cubic hooked four tenths of a
+  millimetre past the curve while every sample sat within a hundredth:
+  the ring crossed the face's neighbouring ring in the chart and the hub
+  drew with overlapping triangles and open edges at every blade. The fit
+  is now measured between its samples as well, through the surface, and
+  where it leaves the curve by more than a micron it is asked again at
+  twice the samples, a few rounds at most, the closest round kept; the
+  reported error and `fit-short` count what was found between the
+  samples too.
 - **A mesh assembled face by face cracked along every narrow face's
   edges.** A face narrower than a few chords draws its edges finer than
   asked, as does one whose boundary crosses itself at the chord, and

@@ -59,6 +59,56 @@ pub(crate) fn chart_of(surface: &SurfaceGeometry, p: Point) -> Option<ogeom_math
     }
 }
 
+/// Where a point of the curve lands on the surface: its chart position and
+/// how far off the surface it sat.
+///
+/// Analytic surfaces invert in closed form — grid seeding over a plane's
+/// or cylinder's enormous stated extents lands microns off, and a fitted
+/// pcurve inherits every micron. On a patch, where the previous sample
+/// landed is a far better starting guess than any grid: consecutive
+/// samples of a curve are neighbouring points of the surface. Trusted only
+/// when it lands convincingly *on* the surface — the same bar the denser
+/// reseed is judged against — so a guess that wandered into the wrong
+/// basin, or a first sample with no predecessor, still pays for the grid.
+fn land(
+    surface: &SurfaceGeometry,
+    p: Point,
+    seed: Option<ogeom_math::Point2>,
+    tol: Tolerances,
+) -> OgeomResult<(ogeom_math::Point2, f64)> {
+    if let Some(uv) = chart_of(surface, p) {
+        let lifted = surface.point_at(uv.x, uv.y, tol)?;
+        return Ok((uv, p.distance(lifted)));
+    }
+    let near = seed.and_then(|luv| {
+        crate::measure::project_on_surface_from(surface, p, (luv.x, luv.y), tol).ok()
+    });
+    if let Some(close) = near.filter(|f| f.distance <= tol.confusion() * 1e5) {
+        return Ok((
+            ogeom_math::Point2::new(close.parameters.0, close.parameters.1),
+            close.distance,
+        ));
+    }
+    let mut projection = crate::measure::project_on_surface(surface, p, 24, tol)?;
+    if projection.distance > tol.confusion() * 1e5 {
+        // A miss this large on a spline surface is more often a projection
+        // stuck in the wrong basin than real slop; seed denser before
+        // believing it.
+        let denser = crate::measure::project_on_surface(surface, p, 96, tol)?;
+        if denser.distance < projection.distance {
+            projection = denser;
+        }
+    }
+    Ok((
+        ogeom_math::Point2::new(projection.parameters.0, projection.parameters.1),
+        projection.distance,
+    ))
+}
+
+/// A sample of the curve landed on the surface: the parameter, the point,
+/// where it landed in the chart, and how far off the surface it sat.
+type Landed = (f64, Point, ogeom_math::Point2, f64);
+
 /// Fit a pcurve by projection at the reader's own line: slop under a
 /// millimetre is a file's error, honestly carried; anything past it is a
 /// wrong pairing and refuses. The exchange readers call this; a healer
@@ -109,48 +159,7 @@ pub fn fit_projected_pcurve_capped(
         #[allow(clippy::cast_precision_loss)]
         let t = range.0 + (range.1 - range.0) * i as f64 / SAMPLES as f64;
         let p = curve.point_at(t, tol)?;
-        let (uv, off) = match chart_of(surface, p) {
-            // Analytic surfaces invert in closed form — grid seeding
-            // over a plane's or cylinder's enormous stated extents lands
-            // microns off, and a fitted pcurve inherits every micron.
-            Some(uv) => {
-                let lifted = surface.point_at(uv.x, uv.y, tol)?;
-                (uv, p.distance(lifted))
-            }
-            None => {
-                // Where the previous sample landed is a far better starting
-                // guess than any grid: consecutive samples of a curve are
-                // neighbouring points of the surface. Trusted only when it
-                // lands convincingly *on* the surface — the same bar the
-                // denser reseed below is judged against — so a guess that
-                // wandered into the wrong basin, or the first sample, which
-                // has no predecessor, still pays for the grid.
-                let near = previous.and_then(|(_, luv)| {
-                    crate::measure::project_on_surface_from(surface, p, (luv.x, luv.y), tol).ok()
-                });
-                if let Some(close) = near.filter(|f| f.distance <= tol.confusion() * 1e5) {
-                    (
-                        ogeom_math::Point2::new(close.parameters.0, close.parameters.1),
-                        close.distance,
-                    )
-                } else {
-                    let mut projection = crate::measure::project_on_surface(surface, p, 24, tol)?;
-                    if projection.distance > tol.confusion() * 1e5 {
-                        // A miss this large on a spline surface is more often
-                        // a projection stuck in the wrong basin than real
-                        // slop; seed denser before believing it.
-                        let denser = crate::measure::project_on_surface(surface, p, 96, tol)?;
-                        if denser.distance < projection.distance {
-                            projection = denser;
-                        }
-                    }
-                    (
-                        ogeom_math::Point2::new(projection.parameters.0, projection.parameters.1),
-                        projection.distance,
-                    )
-                }
-            }
-        };
+        let (uv, off) = land(surface, p, previous.map(|(_, luv)| luv), tol)?;
         previous = Some((p, uv));
         parameters.push(t);
         trace.push(uv);
@@ -306,46 +315,48 @@ pub fn fit_projected_pcurve_capped(
         1.0
     };
     let target = (tol.confusion() * 1e2 * scale).max(f64::MIN_POSITIVE);
-    let fitted = ogeom_geom::fit::fit_points_2d_at(&parameters, &trace, 3, target, tol)?;
-    // A least-squares fit wiggles past its samples at the ends, and a
-    // surface with a *tight* stated window — an imported patch, not a
-    // reader-built analytic with its enormous extents — refuses evaluation
-    // a hair outside it. The control points clamp into the window on the
-    // non-periodic axes: the curve lives in its controls' hull, so the
-    // clamp is a guarantee. Whatever the clamp cost is not hidden either —
-    // it is the clamped curve that is measured below. Periodic axes stay
-    // free: an unwrapped trace crosses the seam on purpose.
-    let fitted = {
+    let fit_and_clamp = |parameters: &[f64],
+                         trace: &[ogeom_math::Point2]|
+     -> OgeomResult<ogeom_geom::fit::Fitted<ogeom_geom::BSpline2d>> {
+        let fitted = ogeom_geom::fit::fit_points_2d_at(parameters, trace, 3, target, tol)?;
+        // A least-squares fit wiggles past its samples at the ends, and a
+        // surface with a *tight* stated window — an imported patch, not a
+        // reader-built analytic with its enormous extents — refuses
+        // evaluation a hair outside it. The control points clamp into the
+        // window on the non-periodic axes: the curve lives in its controls'
+        // hull, so the clamp is a guarantee. Whatever the clamp cost is not
+        // hidden either — it is the clamped curve that is measured below.
+        // Periodic axes stay free: an unwrapped trace crosses the seam on
+        // purpose.
         let ((wa, wb), (va2, vb2)) = surface.domain();
         let clamp_u = !(surface.is_periodic_u() || surface.is_closed_u(tol));
         let clamp_v = !(surface.is_periodic_v() || surface.is_closed_v(tol));
-        if clamp_u || clamp_v {
-            let mut moved = 0.0_f64;
-            let knots = fitted.curve.knots().clone();
-            let control: Vec<ogeom_math::Point2> = fitted
-                .curve
-                .control_points()
-                .iter()
-                .map(|w| {
-                    let p = w.point();
-                    let q = ogeom_math::Point2::new(
-                        if clamp_u { p.x.clamp(wa, wb) } else { p.x },
-                        if clamp_v { p.y.clamp(va2, vb2) } else { p.y },
-                    );
-                    moved = moved.max(p.distance(q));
-                    q
-                })
-                .collect();
-            if moved > 0.0 {
-                ogeom_geom::fit::Fitted {
-                    curve: ogeom_geom::BSpline2d::new(knots, control, tol)?,
-                    ..fitted
-                }
-            } else {
-                fitted
-            }
+        if !(clamp_u || clamp_v) {
+            return Ok(fitted);
+        }
+        let mut moved = 0.0_f64;
+        let knots = fitted.curve.knots().clone();
+        let control: Vec<ogeom_math::Point2> = fitted
+            .curve
+            .control_points()
+            .iter()
+            .map(|w| {
+                let p = w.point();
+                let q = ogeom_math::Point2::new(
+                    if clamp_u { p.x.clamp(wa, wb) } else { p.x },
+                    if clamp_v { p.y.clamp(va2, vb2) } else { p.y },
+                );
+                moved = moved.max(p.distance(q));
+                q
+            })
+            .collect();
+        if moved > 0.0 {
+            Ok(ogeom_geom::fit::Fitted {
+                curve: ogeom_geom::BSpline2d::new(knots, control, tol)?,
+                ..fitted
+            })
         } else {
-            fitted
+            Ok(fitted)
         }
     };
     // What the caller is told, as a length. The fitter reports its error
@@ -357,20 +368,198 @@ pub fn fit_projected_pcurve_capped(
     // tenth of a millimetre across. So the fitted curve is walked instead,
     // through the surface, against the trace it was fitted to: that
     // difference is the fit's own and is measured where the mesh will be.
-    let mut error = 0.0_f64;
-    for (index, t) in parameters.iter().enumerate() {
-        let Ok(at) = ogeom_geom::Curve2d::point_at(&fitted.curve, *t, tol) else {
-            continue;
+    //
+    // Measured between the samples as well as at them. The samples are
+    // spaced evenly in the curve's parameter, and a curve is free to run
+    // sixteen times faster at one end than the other: a blade's root
+    // meeting a hub turns through most of its bend inside the first
+    // interval, and a cubic held only at the interval's ends hooked four
+    // tenths of a millimetre past the curve there, off the face and across
+    // its neighbouring ring, while every sample sat within a hundredth. A
+    // midpoint the fit leaves is projected and joins the samples, and the
+    // fit is asked again, a few rounds at most.
+    let closed_form = points
+        .first()
+        .is_some_and(|p| chart_of(surface, *p).is_some());
+    let deviation = |fitted: &ogeom_geom::fit::Fitted<ogeom_geom::BSpline2d>,
+                     parameters: &[f64],
+                     trace: &[ogeom_math::Point2],
+                     offs: &[f64]|
+     -> (f64, f64, Vec<Landed>) {
+        let mut error = 0.0_f64;
+        let mut between_all = 0.0_f64;
+        let mut more = Vec::new();
+        let mut landed_middles = Vec::new();
+        let mut left = false;
+        // A landing is believed only where it belongs: on the surface as
+        // convincingly as its neighbours, and inside the chart interval
+        // they span, widened by the interval itself. A projection that
+        // settled in another basin, or on the far side of a seam, would
+        // otherwise be fitted as if the curve went there. Beside its
+        // neighbour on a periodic chart, as the trace was unwrapped; where
+        // the chart collapses its angle is noise, and the neighbours' is
+        // taken.
+        let landing = |index: usize, tm: f64| -> Option<Landed> {
+            let before = trace[index - 1];
+            let after = trace[index];
+            let p = curve.point_at(tm, tol).ok()?;
+            let (mut uv, off) = land(surface, p, Some(before), tol).ok()?;
+            if spans.0 > 0.0 {
+                while uv.x - before.x > spans.0 * 0.5 {
+                    uv.x -= spans.0;
+                }
+                while uv.x - before.x < -spans.0 * 0.5 {
+                    uv.x += spans.0;
+                }
+            }
+            if spans.1 > 0.0 {
+                while uv.y - before.y > spans.1 * 0.5 {
+                    uv.y -= spans.1;
+                }
+                while uv.y - before.y < -spans.1 * 0.5 {
+                    uv.y += spans.1;
+                }
+            }
+            if surface
+                .d1_at(uv.x, uv.y, tol)
+                .is_ok_and(|(du, _)| du.magnitude() * u_span < tol.confusion() * 1e4)
+            {
+                uv.x = 0.5 * (before.x + after.x);
+            }
+            let reach = before.distance(after).max(f64::EPSILON);
+            let mid =
+                ogeom_math::Point2::new(0.5 * (before.x + after.x), 0.5 * (before.y + after.y));
+            let sound = offs[index - 1].max(offs[index]).max(tol.confusion() * 1e5);
+            (off <= 2.0 * sound && mid.distance(uv) <= reach).then_some((tm, p, uv, off))
         };
-        let (Ok(fitted_at), Ok(traced_at)) = (
-            surface.point_at(at.x, at.y, tol),
-            surface.point_at(trace[index].x, trace[index].y, tol),
-        ) else {
-            continue;
-        };
-        error = error.max(fitted_at.distance(traced_at));
+        for (index, t) in parameters.iter().enumerate() {
+            let Ok(at) = ogeom_geom::Curve2d::point_at(&fitted.curve, *t, tol) else {
+                continue;
+            };
+            let (Ok(fitted_at), Ok(traced_at)) = (
+                surface.point_at(at.x, at.y, tol),
+                surface.point_at(trace[index].x, trace[index].y, tol),
+            ) else {
+                continue;
+            };
+            error = error.max(fitted_at.distance(traced_at));
+            if index == 0 {
+                continue;
+            }
+            // Probed at the quarters as well as the middle where the chart
+            // inverts in closed form, which costs nothing: a hook sits
+            // where the curve turns, wherever in the interval that is. On a
+            // patch every landing is a projection, and the middle alone is
+            // asked: a hook is the cubic's own excursion, broad across the
+            // interval, and once the fit is asked again at twice the
+            // samples the quarters of this round are the middles of the
+            // next.
+            let (ta, tb) = (parameters[index - 1], *t);
+            let tm = 0.5 * (ta + tb);
+            let quarters = [0.5 * (ta + tm), tm, 0.5 * (tm + tb)];
+            let probes: &[f64] = if closed_form {
+                &quarters
+            } else {
+                &quarters[1..2]
+            };
+            for &probe in probes {
+                let Ok(at) = ogeom_geom::Curve2d::point_at(&fitted.curve, probe, tol) else {
+                    continue;
+                };
+                let Ok(fitted_at) = surface.point_at(at.x, at.y, tol) else {
+                    continue;
+                };
+                if !closed_form {
+                    // Against the curve's own point first, which costs no
+                    // projection: the curve sits about as far off the
+                    // surface here as at the samples either side, so a
+                    // fitted point within the bar and that slop of it is
+                    // within the bar of where the curve lands. A hook worth
+                    // the name is hundreds of times the slop; only a probe
+                    // that misses by more than the slop is projected.
+                    let Ok(p) = curve.point_at(probe, tol) else {
+                        continue;
+                    };
+                    let slop = offs[index - 1].max(offs[index]);
+                    let rough = fitted_at.distance(p);
+                    if rough <= tol.confusion() * 1e4 + slop {
+                        between_all = between_all.max((rough - slop).max(0.0));
+                        continue;
+                    }
+                }
+                let Some(landed) = landing(index, probe) else {
+                    continue;
+                };
+                let Ok(traced_at) = surface.point_at(landed.2.x, landed.2.y, tol) else {
+                    continue;
+                };
+                let between = fitted_at.distance(traced_at);
+                between_all = between_all.max(between);
+                if between > tol.confusion() * 1e4 {
+                    left = true;
+                }
+                if probe == tm {
+                    landed_middles.push(landed);
+                }
+            }
+        }
+        // The fit is asked again at twice the samples everywhere, the
+        // middle of every interval joining them — landed now where the
+        // rough test spared it the projection.
+        if left {
+            more = landed_middles;
+            if !closed_form {
+                more = (1..parameters.len())
+                    .filter_map(|index| {
+                        landing(index, 0.5 * (parameters[index - 1] + parameters[index]))
+                    })
+                    .collect();
+            }
+        }
+        (error, between_all, more)
+    };
+    // A micron between samples is the bar, a tenth of the finest chord a
+    // mesh is asked for: the hook was four hundred times that. Every fit
+    // pays one pass of probes; only the few that leave the curve pay a
+    // refit, at twice the samples everywhere — a handful of new samples
+    // in one interval draw the fitter's knots to themselves and the curve
+    // wobbles on either side, while an even doubling keeps it steady — and
+    // a curve the fit cannot follow, a corner inside the edge, stops at a
+    // few hundred samples rather than doubling for ever.
+    const DENSIFY: usize = 6;
+    const MOST: usize = 512;
+    let mut fitted = fit_and_clamp(&parameters, &trace)?;
+    let mut best: Option<(ogeom_geom::fit::Fitted<ogeom_geom::BSpline2d>, f64, f64)> = None;
+    let mut round = 0;
+    loop {
+        let (at_samples, between, more) = deviation(&fitted, &parameters, &trace, &offs);
+        // The best round stands, whichever it was: a refit is not obliged
+        // to improve, and the fit handed on is the one measured closest.
+        if best
+            .as_ref()
+            .is_none_or(|(_, a, b)| at_samples.max(between) < a.max(*b))
+        {
+            best = Some((fitted.clone(), at_samples, between));
+        }
+        if more.is_empty() || round == DENSIFY || parameters.len() >= MOST {
+            break;
+        }
+        for (tm, p, uv, off) in more {
+            let k = parameters.partition_point(|&t| t < tm);
+            parameters.insert(k, tm);
+            trace.insert(k, uv);
+            points.insert(k, p);
+            offs.insert(k, off);
+        }
+        fitted = fit_and_clamp(&parameters, &trace)?;
+        round += 1;
     }
-    let met = error <= tol.confusion() * 1e2;
+    let (fitted, at_samples, between) = best.unwrap_or((fitted, f64::INFINITY, f64::INFINITY));
+    let worst_off = offs.iter().copied().fold(worst_off, f64::max);
+    // Each miss against its own bar: the samples hold the fit to a hair,
+    // and the probes between them to the micron that sent them back.
+    let error = at_samples.max(between);
+    let met = at_samples <= tol.confusion() * 1e2 && between <= tol.confusion() * 1e4;
     let slop = (worst_off > tol.confusion() * 1e3).then(|| {
         format!(
             "an edge sits up to {worst_off:.2e} from the surface it \
@@ -705,6 +894,66 @@ mod tests {
         assert!(
             fit_projected_pcurve(&rim(13.0), (0.0, core::f64::consts::TAU), &wall, T).is_err(),
             "a miss of millimetres still refuses"
+        );
+    }
+
+    /// A fit is held between its samples, where a fast-running curve bends.
+    ///
+    /// The samples are spaced evenly in the curve's parameter, and this
+    /// curve spends a twentieth of its parameter on a steep drop of a
+    /// millimetre before running slowly round the drum for the rest: the
+    /// whole of the drop, and the bend at its foot, fall inside the first
+    /// sample interval. A cubic held only at the samples hooked past the
+    /// curve there; measured between the samples and refitted where it
+    /// leaves them, the pcurve follows the curve everywhere.
+    #[test]
+    fn a_fit_is_held_between_its_samples_where_the_curve_runs_fast() {
+        use ogeom_geom::{BSplineCurve, Curve, Curve2d, Curve3d, Surface, SurfaceGeometry};
+        use ogeom_math::{KnotVector, Point};
+        let radius = 10.0;
+        let on = |angle: f64, z: f64| Point::new(radius * angle.cos(), radius * angle.sin(), z);
+        let mut knots = vec![0.0, 0.0, 0.0, 0.0, 0.05];
+        knots.extend((1..8).map(f64::from));
+        knots.extend([8.0; 4]);
+        let control = vec![
+            on(0.12, 4.0),
+            on(0.13, 3.7),
+            on(0.14, 3.4),
+            on(0.15, 3.1),
+            on(0.10, 2.5),
+            on(0.0, 1.5),
+            on(-0.1, 0.5),
+            on(-0.2, -0.5),
+            on(-0.3, -1.5),
+            on(-0.35, -2.5),
+            on(-0.38, -3.3),
+            on(-0.4, -4.0),
+        ];
+        let curve: Curve = BSplineCurve::new(KnotVector::new(knots, 3).unwrap(), control, T)
+            .unwrap()
+            .into();
+        let drum: SurfaceGeometry =
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, radius, T).unwrap(), (-5.0, 5.0))
+                .unwrap()
+                .into();
+        let (pcurve, error, _, _, _) = fit_projected_pcurve(&curve, (0.0, 8.0), &drum, T).unwrap();
+        let mut worst = 0.0_f64;
+        for i in 0..=2000 {
+            let t = 8.0 * f64::from(i) / 2000.0;
+            let p = curve.point_at(t, T).unwrap();
+            let uv = pcurve.point_at(t, T).unwrap();
+            let lifted = drum.point_at(uv.x, uv.y, T).unwrap();
+            // The pcurve's own miss: the curve's point, pulled onto the drum.
+            worst = worst.max(lifted.distance(on(p.y.atan2(p.x), p.z)));
+        }
+        assert!(
+            worst <= T.confusion() * 3e4,
+            "the pcurve leaves the curve by {worst:.3e} between the samples, \
+             {error:.3e} reported"
+        );
+        assert!(
+            error >= 0.5 * worst,
+            "and the miss between the samples is reported: {error:.3e} for {worst:.3e}"
         );
     }
 }
