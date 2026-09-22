@@ -605,6 +605,12 @@ pub fn edge_chords_for(
 /// answer of [`edge_chords_for`] — so the face's boundary matches its
 /// neighbours' point for point along every edge the map names.
 ///
+/// The agreement already holds every refinement the face's own boundary
+/// asked for, so the face is drawn to it and left there, as the
+/// whole-shape triangulation leaves it: refining alone past the agreed
+/// chord, as [`triangulate_face`] would, is what the neighbours cannot
+/// follow.
+///
 /// # Errors
 ///
 /// As [`triangulate_face`].
@@ -615,11 +621,7 @@ pub fn triangulate_face_with(
     chords: &EdgeChords,
     tol: Tolerances,
 ) -> OgeomResult<Triangulation> {
-    let (mesh, verdict) = triangulate_reporting(model, face, deflection, Some(chords), tol)?;
-    if verdict != Verdict::Short {
-        return Ok(mesh);
-    }
-    triangulate_with(model, face, deflection, None, tol)
+    triangulate_with(model, face, deflection, Some(chords), tol)
 }
 
 /// Make the appended face meshes traverse their shared boundaries in
