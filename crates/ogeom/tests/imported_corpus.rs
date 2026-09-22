@@ -774,3 +774,49 @@ fn a_narrow_chart_s_triangles_lie_on_the_surface() {
     );
     assert!(worst < 45.0, "the worst triangle leans {worst:.1} degrees");
 }
+
+/// A face narrower than the chord is drawn to a fraction of its width.
+///
+/// A thread flank a tenth of a millimetre wide, drawn at a chord three
+/// times that: the boundary sagged by more than the face is wide between
+/// its points, and every triangle across the width — a boundary chord
+/// two millimetres long against a point a hundredth of a millimetre in —
+/// stood off the surface by that sag. The face's edges are drawn to a
+/// quarter of its width instead, and the triangles lie on it.
+#[test]
+fn a_face_narrower_than_the_chord_draws_its_edges_finer() {
+    let text = corpus("thread_flank_narrower_than_a_chord.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let faces = explore_unique(model, &import.solids[0], ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 1, "the fixture is the one face");
+    let deflection = ogeom::mesh::Deflection {
+        chord: 0.31,
+        angular: 0.5,
+        ..ogeom::mesh::Deflection::default()
+    };
+    let mesh = ogeom::mesh::triangulate_face(model, &faces[0], deflection, T).unwrap();
+    let (mut total, mut fins) = (0.0_f64, 0.0_f64);
+    for t in &mesh.triangles {
+        let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+        let own = (b - a).cross(c - a);
+        let area = own.magnitude() * 0.5;
+        total += area;
+        let theirs =
+            mesh.normals[t[0] as usize] + mesh.normals[t[1] as usize] + mesh.normals[t[2] as usize];
+        if own.magnitude() > 0.0 && theirs.magnitude() > 0.0 {
+            let angle = (own.dot(theirs) / (own.magnitude() * theirs.magnitude()))
+                .clamp(-1.0, 1.0)
+                .acos()
+                .to_degrees();
+            if angle > 45.0 {
+                fins += area;
+            }
+        }
+    }
+    assert!(
+        fins < total * 0.01,
+        "{fins:.2} of {total:.2} mm² stands off the surface over {} triangles",
+        mesh.triangles.len()
+    );
+}

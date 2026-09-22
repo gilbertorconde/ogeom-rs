@@ -13,6 +13,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A face narrower than the chord shaded as a saw of fins.** Drawn at
+  the caller's chord its boundary sags between points by more than the
+  face is wide — a thread flank a tenth of a millimetre wide at a chord
+  three times that — and every triangle across the width stands off the
+  surface by the sag. A face narrower than four chords has its edges
+  drawn to a quarter of its width, and the faces across those edges draw
+  them the same. The whole-shape pass reads every face's width off its
+  rings before drawing anything, so the big faces round a thousand small
+  fillets are drawn once; on a real assembly the area standing more than
+  45° off the surface falls from 540 to 80 mm², for 7% more triangles
+  and a quarter more time.
+
 - **A vertex at a cone's apex, a sphere's pole or a patch's collapsed
   corner had no normal.** The surface has none there, and the mesh carried
   a zero, which shaded the tip black and dragged every normal it was

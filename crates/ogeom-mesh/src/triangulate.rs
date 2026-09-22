@@ -145,6 +145,24 @@ fn triangulate_reporting(
     finer: Option<&EdgeChords>,
     tol: Tolerances,
 ) -> OgeomResult<(Triangulation, Verdict)> {
+    triangulate_reporting_from(model, face, deflection, finer, None, tol)
+}
+
+/// A face's rings walked ahead of drawing, and the chord its edges want
+/// if it is narrower than a few of the caller's.
+type Walked = (Trimming, Option<f64>);
+
+/// [`triangulate_reporting`] with the rings already walked, where the
+/// caller has them and none of the face's edges were told to draw finer
+/// since — the rings depend on nothing else.
+fn triangulate_reporting_from(
+    model: &Model,
+    face: &Shape,
+    deflection: Deflection,
+    finer: Option<&EdgeChords>,
+    prepared: Option<Trimming>,
+    tol: Tolerances,
+) -> OgeomResult<(Triangulation, Verdict)> {
     deflection.validate()?;
     if model.kind_of(face)? != ShapeType::Face {
         ogeom_bail!(Construction, "expected a face");
@@ -173,7 +191,10 @@ fn triangulate_reporting(
         rings: uv,
         anchors,
         met,
-    } = trimming_rings(model, face, data.surface, surface, deflection, finer, tol)?;
+    } = match prepared {
+        Some(trim) => trim,
+        None => trimming_rings(model, face, data.surface, surface, deflection, finer, tol)?,
+    };
     let rings_ms = phase.elapsed().as_secs_f64() * 1e3;
     let phase = std::time::Instant::now();
     let planar = triangulate_region(&uv, surface, deflection, tol)?;
@@ -200,8 +221,17 @@ fn triangulate_reporting(
     // triangles the moment the boundary is in and nothing else — where the
     // number is exactly `b + 2w - 4` for a boundary that encloses a region
     // and anything else for one that crosses.
+    //
+    // And a face narrower than a few chords is short too, whatever its
+    // count: drawn at the caller's chord its boundary sags by more than
+    // the face is wide, and every triangle across the width stands off the
+    // surface by that sag. Its edges want a chord under the width, which
+    // is [`face_chords`]' first move; it is asked here so the whole-shape
+    // pass tells the neighbours to draw those edges finer too.
     let boundary: usize = uv.iter().map(Vec::len).sum();
-    let crossed = planar.crossed || planar.triangles.len() + 4 < boundary + 2 * uv.len();
+    let narrow = narrow_chord(surface, &uv, deflection, tol)
+        .is_some_and(|want| !edges_already_at(model, face, finer, want));
+    let crossed = narrow || planar.crossed || planar.triangles.len() + 4 < boundary + 2 * uv.len();
     if *MESH_DEBUG_REFINE {
         eprintln!(
             "SHORT {} triangles against {boundary} boundary points in {} rings: crossed {crossed} (boundary pass {})",
@@ -308,11 +338,84 @@ pub fn triangulate(
     // edges, which is right when it is meshed alone and wrong here, where
     // its neighbours must be told to refine the same ones. Phase one draws
     // every face at exactly what the caller asked and reports what crossed.
+    //
+    // Before that, every face's rings are walked at the caller's chord and
+    // its width read off them: a face narrower than a few chords wants its
+    // edges drawn finer, and so do the faces across those edges. Known
+    // before anything is drawn, those chords go into the first pass, and
+    // the big faces round a thousand small fillets are drawn once rather
+    // than once and again. The rings are kept for the faces they still
+    // describe — every face none of whose edges the map names.
     let nothing = EdgeChords::new();
-    let first: Vec<OgeomResult<(Triangulation, Verdict)>> =
+    let prepared: Vec<OgeomResult<Option<Walked>>> =
         ogeom_core::parallel::map_ordered(&faces, |_, face| {
             ogeom_core::progress::checkpoint()?;
-            triangulate_reporting(read_model, face, deflection, Some(&nothing), tol)
+            let Some(node) = read_model.node(face) else {
+                return Ok(None);
+            };
+            let NodeData::Face(data) = node.data() else {
+                return Ok(None);
+            };
+            let Some(surface) = read_model.geometry().surface(data.surface) else {
+                return Ok(None);
+            };
+            let trim = trimming_rings(
+                read_model,
+                face,
+                data.surface,
+                surface,
+                deflection,
+                &nothing,
+                tol,
+            )?;
+            let narrow = narrow_chord(surface, &trim.rings, deflection, tol);
+            Ok(Some((trim, narrow)))
+        });
+    let mut finer = EdgeChords::new();
+    let mut kept: Vec<Option<Trimming>> = Vec::with_capacity(faces.len());
+    for (face, one) in faces.iter().zip(prepared) {
+        match one {
+            Ok(Some((prep, narrow))) => {
+                if let Some(chord) = narrow {
+                    for edge in ogeom_topo::explore(
+                        read_model,
+                        face,
+                        ogeom_topo::Filter::OfType(ShapeType::Edge),
+                    )? {
+                        let held = finer.entry(edge.node().index()).or_insert(chord);
+                        *held = held.min(chord);
+                    }
+                }
+                kept.push(Some(prep));
+            }
+            Ok(None) => kept.push(None),
+            Err(_) => kept.push(None),
+        }
+    }
+    let touched = |face: &Shape| -> bool {
+        ogeom_topo::explore(
+            read_model,
+            face,
+            ogeom_topo::Filter::OfType(ShapeType::Edge),
+        )
+        .is_ok_and(|es| es.iter().any(|e| finer.contains_key(&e.node().index())))
+    };
+    // The rings are handed over by the job that draws the face; a shared
+    // slice cannot give them away, so each sits behind a lock it is taken
+    // from once.
+    let jobs: Vec<(&Shape, std::sync::Mutex<Option<Trimming>>)> = faces
+        .iter()
+        .zip(kept)
+        .map(|(face, prep)| {
+            let trim = prep.filter(|_| !touched(face));
+            (face, std::sync::Mutex::new(trim))
+        })
+        .collect();
+    let first: Vec<OgeomResult<(Triangulation, Verdict)>> =
+        ogeom_core::parallel::map_ordered(&jobs, |_, (face, slot)| {
+            ogeom_core::progress::checkpoint()?;
+            let trim = slot.lock().ok().and_then(|mut held| held.take());
+            triangulate_reporting_from(read_model, face, deflection, Some(&finer), trim, tol)
         });
     let mut computed: Vec<OgeomResult<Triangulation>> = Vec::with_capacity(faces.len());
     let mut crossed: Vec<usize> = Vec::new();
@@ -340,7 +443,12 @@ pub fn triangulate(
         );
     }
     if !crossed.is_empty() {
-        let mut finer = EdgeChords::new();
+        // On top of the first pass's map, not instead of it: a neighbour
+        // drawn again here must still draw the edges the first pass held
+        // finer at that chord, or the two sides of one of them disagree.
+        // Only the faces touching an edge whose chord *changed* are drawn
+        // again.
+        let mut changed: std::collections::HashSet<u32> = std::collections::HashSet::new();
         for &index in &crossed {
             let face = &faces[index];
             let Some(node) = read_model.node(face) else {
@@ -355,8 +463,11 @@ pub fn triangulate(
             for (edge, chord) in
                 face_chords(read_model, face, data.surface, surface, deflection, tol)?
             {
-                let held = finer.entry(edge).or_insert(chord);
-                *held = held.min(chord);
+                let held = finer.entry(edge).or_insert(f64::INFINITY);
+                if chord < *held {
+                    *held = chord;
+                    changed.insert(edge);
+                }
             }
         }
         let again: Vec<usize> = (0..faces.len())
@@ -366,7 +477,7 @@ pub fn triangulate(
                     &faces[i],
                     ogeom_topo::Filter::OfType(ShapeType::Edge),
                 )
-                .is_ok_and(|es| es.iter().any(|e| finer.contains_key(&e.node().index())))
+                .is_ok_and(|es| es.iter().any(|e| changed.contains(&e.node().index())))
             })
             .collect();
         let redone: Vec<OgeomResult<Triangulation>> =
@@ -658,6 +769,15 @@ fn face_chords(
 ) -> OgeomResult<EdgeChords> {
     let mut finer = EdgeChords::new();
     let mut chord = deflection.chord;
+    // A face narrower than a few chords first: its edges drawn to a
+    // fraction of its width, so the boundary's sag is small against it.
+    let first = trimming_rings(model, face, id, surface, deflection, &finer, tol)?.rings;
+    if let Some(want) = narrow_chord(surface, &first, deflection, tol) {
+        chord = want;
+        for edge in ogeom_topo::explore(model, face, ogeom_topo::Filter::OfType(ShapeType::Edge))? {
+            finer.insert(edge.node().index(), chord);
+        }
+    }
     for _ in 0..=REFINEMENTS {
         let rings = trimming_rings(model, face, id, surface, deflection, &finer, tol)?.rings;
         let planar = triangulate_region(&rings, surface, deflection, tol)?;
@@ -671,6 +791,67 @@ fn face_chords(
         }
     }
     Ok(finer)
+}
+
+/// How many chords wide a face must be for its edges to be drawn at the
+/// caller's chord; narrower, they are drawn at the width over this.
+///
+/// The boundary of a face drawn at chord `c` sags up to `c` between its
+/// points, and a triangle from that boundary across the face to the
+/// other side stands off the surface by the sag. On a face `w` wide that
+/// is `c / w` of the way to standing on end; held to a quarter, the
+/// triangles lean at most fourteen degrees.
+const NARROW: f64 = 4.0;
+
+/// The chord a face narrower than [`NARROW`] chords wants its edges drawn
+/// to, `None` for a face wide enough at the caller's.
+///
+/// Width is the rings' chart extent each way scaled by the mean tangent
+/// length that way, the smaller of the two: right for a strip along a
+/// chart axis, an over-estimate for one across the chart, which then
+/// keeps the caller's chord.
+fn narrow_chord(
+    surface: &SurfaceGeometry,
+    rings: &[Vec<Point2>],
+    deflection: Deflection,
+    tol: Tolerances,
+) -> Option<f64> {
+    let (lo, hi) = chart_extent(rings);
+    if !(lo.x.is_finite() && hi.x.is_finite() && lo.y.is_finite() && hi.y.is_finite()) {
+        return None;
+    }
+    let (mut du, mut dv, mut n) = (0.0_f64, 0.0_f64, 0usize);
+    for i in 0..=2 {
+        for j in 0..=2 {
+            let u = lo.x + (hi.x - lo.x) * (0.25 + 0.25 * f64::from(i));
+            let v = lo.y + (hi.y - lo.y) * (0.25 + 0.25 * f64::from(j));
+            if let Ok((a, b)) = surface.d1_at(u, v, tol) {
+                du += a.magnitude();
+                dv += b.magnitude();
+                n += 1;
+            }
+        }
+    }
+    if n == 0 {
+        return None;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let width = ((hi.x - lo.x) * du / n as f64).min((hi.y - lo.y) * dv / n as f64);
+    if !width.is_finite() || width <= tol.confusion() || width >= deflection.chord * NARROW {
+        return None;
+    }
+    Some(width / NARROW)
+}
+
+/// Whether every edge of `face` is already held to `want` or finer.
+fn edges_already_at(model: &Model, face: &Shape, finer: &EdgeChords, want: f64) -> bool {
+    ogeom_topo::explore(model, face, ogeom_topo::Filter::OfType(ShapeType::Edge)).is_ok_and(
+        |edges| {
+            edges
+                .iter()
+                .all(|e| finer.get(&e.node().index()).is_some_and(|&c| c <= want))
+        },
+    )
 }
 
 /// A face's trimming rings, walked, folded and cleaned.

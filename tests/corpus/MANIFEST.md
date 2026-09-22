@@ -230,3 +230,14 @@ triangulation Delaunay in the chart but not on the surface: with the
 chart sixty times narrower one way than the other, points were joined
 along the strip across columns rather than to the row beside them, and
 the triangles lifted folded — half the face shaded as creases.
+
+## thread_flank_narrower_than_a_chord.step
+
+One face extracted standalone from a community printer assembly, with a
+shell and a solid wrapped round it so the reader yields something: the
+flank of a machine thread, a helical strip a tenth of a millimetre wide
+running twenty turns round a rod, on a B-spline with a long control net —
+which is why the file is large. The reproducer for a face narrower than
+the chord it is drawn at: its boundary sagged by three times the face's
+width between points, and every triangle across the width stood off the
+surface by that sag, so the thread shaded as a saw of fins.
