@@ -523,11 +523,36 @@ fn prism_over_face(
     let mut history = History::new();
     let mut faces = Vec::new();
 
-    for wire in model.children_of(&profile)? {
-        let (sides, wire_history) =
-            prism_over_wire(model, rails, &wire, displacement, vector, tol)?;
+    // A closed wire on a plane bounds one region however it is walked, but a
+    // wall's side is read off its edge's direction: walked clockwise about
+    // the travel, an outer ring swept every wall facing into the material
+    // while the caps faced out, and the solid came back inside out. Each
+    // ring's turn about the travel is measured, the ring enclosing the most
+    // is the outer one and must turn positively, every other a hole turning
+    // the other way, and a ring walked against that has its walls turned.
+    let wires = model.children_of(&profile)?;
+    let turns: Vec<f64> = wires
+        .iter()
+        .map(|w| wire_turn(model, w, vector, tol))
+        .collect::<OgeomResult<_>>()?;
+    let outer = turns
+        .iter()
+        .enumerate()
+        .max_by(|a, b| {
+            a.1.abs()
+                .partial_cmp(&b.1.abs())
+                .unwrap_or(core::cmp::Ordering::Equal)
+        })
+        .map_or(0, |(i, _)| i);
+    for (index, wire) in wires.iter().enumerate() {
+        let (sides, wire_history) = prism_over_wire(model, rails, wire, displacement, vector, tol)?;
         history = history.then(&wire_history);
-        faces.extend(sides);
+        let wanted = if index == outer { 1.0 } else { -1.0 };
+        if turns[index] * wanted < 0.0 {
+            faces.extend(sides.into_iter().map(|f| f.reversed()));
+        } else {
+            faces.extend(sides);
+        }
     }
 
     // The near end faces backwards, because the solid is on the far side of it.
@@ -546,6 +571,43 @@ fn prism_over_face(
     let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
     history.generate(face, solid.clone());
     Ok(Built::new(solid, history))
+}
+
+/// How a wire turns about `axis`: twice the area it encloses projected
+/// square to the axis, signed by the right-hand rule, from points sampled
+/// along its edges in traversal order.
+fn wire_turn(model: &Model, wire: &Shape, axis: Vector, tol: Tolerances) -> OgeomResult<f64> {
+    use ogeom_geom::Curve3d as _;
+    let mut points: Vec<ogeom_math::Point> = Vec::new();
+    for edge in model.ordered_children_of(wire)? {
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = model
+            .node(&edge)
+            .and_then(|n| n.data().as_edge())
+            .and_then(|d| d.curve3d())
+        else {
+            continue;
+        };
+        let Some(geometry) = model.geometry().curve(*curve) else {
+            continue;
+        };
+        let placement = edge.transform(model.datums())?;
+        const SAMPLES: u32 = 16;
+        for k in 0..SAMPLES {
+            let f = f64::from(k) / f64::from(SAMPLES);
+            let t = if edge.orientation() == ogeom_topo::Orientation::Reversed {
+                range.1 + (range.0 - range.1) * f
+            } else {
+                range.0 + (range.1 - range.0) * f
+            };
+            points.push(placement.apply(geometry.point_at(t, tol)?));
+        }
+    }
+    let mut newell = Vector::ZERO;
+    for i in 0..points.len() {
+        let (a, b) = (points[i], points[(i + 1) % points.len()]);
+        newell += (a - ogeom_math::Point::ORIGIN).cross(b - ogeom_math::Point::ORIGIN);
+    }
+    Ok(newell.dot(axis))
 }
 
 /// Every face a wire sweeps out.
