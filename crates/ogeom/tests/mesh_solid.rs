@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use ogeom::algo::{MeshSolidOptions, check, solid_from_mesh, volume_properties};
 use ogeom::core::Tolerances;
-use ogeom::math::{Direction, Frame, Point};
+use ogeom::math::{Direction, Frame, Point, Vector};
 use ogeom::mesh::Deflection;
 use ogeom::topo::{Model, Shape, ShapeType, Triangulation, explore_unique};
 
@@ -103,8 +103,8 @@ fn an_open_mesh_comes_back_as_a_shell_with_its_holes_counted() {
     assert_eq!(model.kind_of(&out.shape).unwrap(), ShapeType::Shell);
 }
 
-/// Triangles wound every which way — some reversed against their
-/// neighbours, then the whole inside out — are wound to agree and to face
+/// Triangles wound every which way (some reversed against their
+/// neighbours, then the whole inside out) are wound to agree and to face
 /// outward, and the report counts what was turned.
 #[test]
 fn inconsistent_windings_are_turned_outward() {
@@ -223,8 +223,8 @@ fn holds(original: (&Model, &Shape), converted: (&Model, &Shape)) {
     assert!((a - b).abs() / a < 2e-4, "{a} went in, {b} came out");
 }
 
-/// Without recognition, a drilled block's flat faces come back whole — the
-/// drilled ones with the bore's polygon as a hole — and the bore faceted.
+/// Without recognition, a drilled block's flat faces come back whole (the
+/// drilled ones with the bore's polygon as a hole) and the bore faceted.
 #[test]
 fn planar_faces_with_holes_come_back_whole() {
     let mut model = Model::new();
@@ -301,8 +301,8 @@ fn a_meshed_bore_comes_back_a_cylinder() {
     assert!(check(&back, &cut, T).unwrap().is_valid());
 }
 
-/// Cylinders, cones, and the fillets and corner blends of a rounded box —
-/// cylinders along the edges, spheres at the corners — come back on the
+/// Cylinders, cones, and the fillets and corner blends of a rounded box (
+/// cylinders along the edges, spheres at the corners) come back on the
 /// surfaces they were meshed from.
 #[test]
 fn primitives_and_fillets_come_back_on_their_surfaces() {
@@ -347,34 +347,135 @@ fn primitives_and_fillets_come_back_on_their_surfaces() {
     }
 }
 
-/// A whole sphere has no seam and no pole edges to build a face with here:
-/// it is recognized, said to be faceted, and still converts to a valid
-/// solid.
+/// Converts a shape's mesh and checks the surfaces it comes back on, its
+/// validity and its volume. The volume is held to a thousandth: a face
+/// built on a sphere or torus from boundary edges alone meshes a little
+/// coarser at the measuring chord than the face it was meshed from.
+fn comes_back_as(model: &Model, shape: &Shape, expected: [usize; 5]) {
+    let mut back = Model::new();
+    let out = solid_from_mesh(
+        &mut back,
+        &meshed(model, shape),
+        &MeshSolidOptions::default(),
+        T,
+    )
+    .unwrap();
+    assert!(out.closed, "{:?}", out.report);
+    assert_eq!(kinds(&back, &out.shape), expected);
+    assert_eq!(out.report.curved_faceted, 0);
+    let diagnosis = check(&back, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let fine = Deflection::with_chord(1e-3).unwrap();
+    let (a, b) = (
+        volume_properties(model, shape, fine, T).unwrap().mass,
+        volume_properties(&back, &out.shape, fine, T).unwrap().mass,
+    );
+    assert!((a - b).abs() / a < 1e-3, "{a} went in, {b} came out");
+}
+
+/// A whole sphere and a whole torus have no boundary: each comes back one
+/// face, closed on itself.
 #[test]
-fn what_cannot_be_built_exactly_stays_faceted() {
+fn whole_spheres_and_tori_come_back_one_face() {
     let mut model = Model::new();
     let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 7.0, T)
         .unwrap()
         .shape;
+    let ring = ogeom::algo::make_torus(&mut model, Frame::WORLD, 10.0, 3.0, T)
+        .unwrap()
+        .shape;
+    comes_back_as(&model, &ball, [0, 0, 0, 1, 0]);
+    comes_back_as(&model, &ring, [0, 0, 0, 0, 1]);
+}
+
+/// A sphere cut by one plane is a cap, by two parallel planes a zone, and
+/// a torus cut across its tube twice is a bent tube: each comes back on its
+/// sphere or torus, bounded by full circles.
+#[test]
+fn caps_zones_and_bent_tubes_come_back_exact() {
+    let mut model = Model::new();
+    let rod = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 4.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let top = Frame::new(Point::new(0.0, 0.0, 10.0), Direction::Z, Direction::X, T).unwrap();
+    let end = ogeom::algo::make_sphere(&mut model, top, 4.0, T)
+        .unwrap()
+        .shape;
+    let pin = ogeom::boolean::fuse(&mut model, &rod, &end, T)
+        .unwrap()
+        .shape;
+
+    let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 7.0, T)
+        .unwrap()
+        .shape;
+    let under = Frame::new(
+        Point::new(-10.0, -10.0, -3.0),
+        Direction::Z,
+        Direction::X,
+        T,
+    )
+    .unwrap();
+    let slab = ogeom::algo::make_box(&mut model, under, (20.0, 20.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let zone = ogeom::boolean::common(&mut model, &ball, &slab, T)
+        .unwrap()
+        .shape;
+
+    let ring = ogeom::algo::make_torus(&mut model, Frame::WORLD, 10.0, 3.0, T)
+        .unwrap()
+        .shape;
+    let turned = Direction::new(Vector::new(3.0, 1.0, 0.0), T).unwrap();
+    let below = Frame::new(Point::new(0.0, 0.0, -5.0), Direction::Z, turned, T).unwrap();
+    let quarter = ogeom::algo::make_box(&mut model, below, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let elbow = ogeom::boolean::common(&mut model, &ring, &quarter, T)
+        .unwrap()
+        .shape;
+
+    comes_back_as(&model, &pin, [1, 1, 0, 1, 0]);
+    comes_back_as(&model, &zone, [2, 0, 0, 1, 0]);
+    comes_back_as(&model, &elbow, [2, 0, 0, 0, 1]);
+}
+
+/// A sphere bored through twice, across, meets its bores in four circles
+/// that no single frame makes parallels: it is recognized, said to be
+/// faceted, and still converts to a valid solid.
+#[test]
+fn what_cannot_be_built_exactly_stays_faceted() {
+    let mut model = Model::new();
+    let mut shape = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 7.0, T)
+        .unwrap()
+        .shape;
+    for (at, along, across, radius) in [
+        (Point::new(0.0, 0.0, -10.0), Direction::Z, Direction::X, 2.0),
+        (Point::new(-10.0, 0.0, 0.0), Direction::X, Direction::Y, 1.5),
+    ] {
+        let frame = Frame::new(at, along, across, T).unwrap();
+        let bore = ogeom::algo::make_cylinder(&mut model, frame, radius, 20.0, T)
+            .unwrap()
+            .shape;
+        shape = ogeom::boolean::cut(&mut model, &shape, &bore, T)
+            .unwrap()
+            .shape;
+    }
     let mut back = Model::new();
     let out = solid_from_mesh(
         &mut back,
-        &meshed(&model, &ball),
+        &meshed(&model, &shape),
         &MeshSolidOptions::default(),
         T,
     )
     .unwrap();
     assert!(out.closed);
-    assert_eq!(out.report.curved_faces, 0);
-    assert_eq!(out.report.curved_faceted, 1);
+    assert!(out.report.curved_faceted >= 1);
+    assert_eq!(kinds(&back, &out.shape)[3], 0, "the sphere is not built");
     assert!(check(&back, &out.shape, T).unwrap().is_valid());
 }
 
-/// A torus tessellated into 200 000 triangles converts in seconds. It is
-/// recognized as the torus it is, which runs round both ways and so stays
-/// faceted; each grid cell's two triangles are coplanar, so the faces are
-/// its cells — fewer where the tube's crown and keel run flat round the
-/// ring.
+/// A torus tessellated into 200 000 triangles converts in seconds, to the
+/// one face of the torus it is.
 #[test]
 fn a_large_mesh_converts_in_seconds() {
     let (rings, sides) = (500_u32, 200_u32);
@@ -404,6 +505,6 @@ fn a_large_mesh_converts_in_seconds() {
     let took = started.elapsed();
     assert!(out.closed);
     assert_eq!(out.report.triangles, 200_000);
-    assert!(out.report.faces <= 100_000, "{}", out.report.faces);
+    assert_eq!(out.report.faces, 1);
     assert!(took < Duration::from_secs(10), "{took:?}");
 }

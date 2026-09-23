@@ -3,7 +3,7 @@
 //! A mesh already says which triangles meet along which edges: once its
 //! repeated vertices are welded, two triangles that share two vertices
 //! share an edge. So the topology is built from that connectivity
-//! directly — one vertex per mesh vertex, one edge per mesh edge — and no
+//! directly (one vertex per mesh vertex, one edge per mesh edge), and no
 //! geometric sewing search is needed, which is what lets a printable file
 //! of hundreds of thousands of triangles convert in seconds.
 //!
@@ -17,15 +17,17 @@
 //! turns smoothly are grown into regions for as long as their vertices lie
 //! on one cylinder, cone, sphere or torus, verified at the stated
 //! tolerance, and the region is rebuilt on that surface. Its boundary with
-//! each neighbour is placed on the surface exactly — a parallel circle or
-//! a ruling of it — so a meshed bore comes back as a cylinder between two
+//! each neighbour is placed on the surface exactly (a parallel circle or
+//! a ruling of it), so a meshed bore comes back as a cylinder between two
 //! circles, and a band all the way round its axis gets a seam as a
-//! modelled one has. A region whose boundary is no such curve, or that
-//! nothing canonical fits, stays faceted.
+//! modelled one has. A sphere or torus with no boundary is one face, a
+//! sphere bounded by one circle a cap, and a band round a torus's tube
+//! runs between two of its meridians. A region whose boundary is no such
+//! curve, or that nothing canonical fits, stays faceted.
 //!
 //! Windings are made consistent across each connected piece and turned
-//! outward. A mesh that does not close — a hole, an edge three triangles
-//! share, a piece that cannot be oriented — does not fail: it comes back
+//! outward. A mesh that does not close (a hole, an edge three triangles
+//! share, a piece that cannot be oriented) does not fail: it comes back
 //! as open shells, with the report saying why.
 
 use std::collections::HashMap;
@@ -62,7 +64,7 @@ pub struct MeshSolidOptions {
     /// the coplanar distance. Needs `merge_coplanar`.
     pub recognize: bool,
     /// The angle, in radians, from which a turn between two triangles is a
-    /// crease — an edge of the model — rather than the surface curving on:
+    /// crease (an edge of the model) rather than the surface curving on:
     /// thirty degrees by default. A mesh drawn coarser than this round a
     /// curve reads as facets.
     pub crease: f64,
@@ -117,8 +119,8 @@ pub struct MeshSolidReport {
 /// The result of [`solid_from_mesh`].
 #[derive(Debug, Clone)]
 pub struct MeshSolid {
-    /// A solid when the mesh closes — a compound of solids when it is
-    /// several disjoint closed pieces — and otherwise a shell, or a
+    /// A solid when the mesh closes (a compound of solids when it is
+    /// several disjoint closed pieces), and otherwise a shell, or a
     /// compound of shells.
     pub shape: Shape,
     /// Whether every piece closed and became a solid.
@@ -611,10 +613,31 @@ struct Curved {
     /// read on one branch.
     centre: (f64, f64),
     /// Whether the region runs all the way round its axis, and so needs a
-    /// seam.
+    /// seam across it.
     wraps: bool,
+    /// Whether it runs all the way round a torus's tube, and so needs a
+    /// seam along it.
+    wraps_v: bool,
+    /// Whether the frame was set from the region's own boundary: a sphere
+    /// bounded by circles in parallel planes turns about their normal, so
+    /// they are its latitudes.
+    fixed: bool,
     /// The region's mesh vertices.
     vertices: Vec<u32>,
+}
+
+/// How a curved face's boundary lies in its chart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    /// A patch inside one branch of the chart.
+    Open,
+    /// A band between two full circles, joined by a seam: round the axis,
+    /// or round a torus's tube.
+    Band { round_tube: bool },
+    /// A sphere's cap: one latitude circle, a seam to the pole, and the pole.
+    Cap,
+    /// The whole surface, with no boundary of its own.
+    Whole,
 }
 
 /// Triangles gathered into faces: which face each triangle is in, and what
@@ -629,7 +652,7 @@ struct Groups {
 fn plane_of(points: &[Point], [a, b, c]: [u32; 3], tol: Tolerances) -> OgeomResult<Plane> {
     let [a, b, c] = [a, b, c].map(|i| points[i as usize]);
     // Scaled to unit length before the kernel's own normalization, which
-    // refuses a vector shorter than the confusion distance — as the cross
+    // refuses a vector shorter than the confusion distance, as the cross
     // product of a small triangle's sides may be.
     let normal = (b - a).cross(c - a);
     let z = Direction::new(normal / normal.magnitude(), tol)?;
@@ -850,9 +873,9 @@ fn angular_spread(angles: &mut [f64]) -> (f64, f64) {
 /// Grow regions of triangles that recognition says lie on one curved
 /// canonical surface, then planar faces over the rest.
 ///
-/// A region starts at a triangle with a curved edge — one across which the
+/// A region starts at a triangle with a curved edge (one across which the
 /// surface turns by less than the crease angle but more than the coplanar
-/// angle — and first grows across such edges only, which keeps a flat face
+/// angle) and first grows across such edges only, which keeps a flat face
 /// tangent to a fillet out of the fillet's first samples. Once it holds
 /// enough vertices it is recognized, and from then on grows across any
 /// smooth edge to a triangle whose corners lie on the surface and whose
@@ -887,6 +910,7 @@ fn segment(
             &mut groups,
             tol,
         );
+        sphere_axes(points, triangles, adjacency, &mut groups, flat, tol);
         align_axes(points, &mut groups, flat, tol);
     }
     coplanar_groups(
@@ -980,10 +1004,10 @@ impl Surfaces<'_> {
     /// the retired seeds stand; it changes nothing.
     ///
     /// Samples grow across smooth edges into triangles where the surface
-    /// is seen to bend — each with an edge across which it turns. Within a
+    /// is seen to bend, each with an edge across which it turns. Within a
     /// strip of a cylinder or a torus the two triangles of a cell meet
     /// flat, and each still bends across its other side; a flat face met
-    /// tangentially — a fillet's run-out — lends only its triangles along
+    /// tangentially (a fillet's run-out) lends only its triangles along
     /// the tangent line, whose far corners the trimmed fit drops. The fit
     /// is tried as the sample grows: a narrow fillet fits from a few dozen
     /// vertices and would take in its neighbours' by a hundred; a patch of a
@@ -1064,7 +1088,7 @@ impl Surfaces<'_> {
                     break;
                 }
                 // A larger sample is worth fitting only where this one came
-                // near for its size — within a hundredth of its own span —
+                // near for its size (within a hundredth of its own span),
                 // as a small patch of a thick torus does, its tube not yet
                 // seen; a free-form patch misses by more, and is left.
                 Err(closest) if closest > span(&pts) * 1e-2 || queue.is_empty() => break,
@@ -1147,7 +1171,7 @@ fn recognized_regions(
             if !eligible(seed, &groups.of, &tried) {
                 continue;
             }
-            // A triangle's standing only moves one way — free to taken — so
+            // A triangle's standing only moves one way (free to taken), so
             // a triangle the gathering passed over stays passed over, and
             // only one it took can have changed what it gathers.
             let fit = if fit.region.iter().any(|&t| changed[t] == batch) {
@@ -1262,6 +1286,30 @@ fn recognized_regions(
                     None => break,
                 }
             }
+            // A triangle the region surrounds on all three sides, with its
+            // corners on the surface, belongs to it whatever its normal: a
+            // sliver's plane through three nearly collinear points on the
+            // surface tilts far from the surface's normal, as in the fans
+            // round a sphere's pole.
+            let enclosed: Vec<usize> = region
+                .iter()
+                .flat_map(|&t| (3 * t..3 * t + 3).filter_map(|h| adjacency.twin[h]))
+                .map(|g| g / 3)
+                .filter(|&other| {
+                    !mine.contains(&other)
+                        && groups.of[other] == usize::MAX
+                        && (3 * other..3 * other + 3)
+                            .all(|h| adjacency.twin[h].is_some_and(|g| mine.contains(&(g / 3))))
+                        && triangles[other]
+                            .iter()
+                            .all(|&v| shape.distance_to(points[v as usize]) <= flat)
+                })
+                .collect();
+            for other in enclosed {
+                if mine.insert(other) {
+                    region.push(other);
+                }
+            }
             let pts: Vec<Point> = vertices.iter().map(|&v| points[v as usize]).collect();
             let deviation = worst_deviation(&shape, &pts);
             let flat_too = crate::recognize::is_flat(&pts, flat, tol);
@@ -1282,6 +1330,8 @@ fn recognized_regions(
                 deviation,
                 centre: (0.0, 0.0),
                 wraps: false,
+                wraps_v: false,
+                fixed: false,
                 vertices,
             }));
         }
@@ -1293,6 +1343,114 @@ fn span(points: &[Point]) -> f64 {
     points.first().map_or(0.0, |a| {
         points.iter().map(|p| p.distance(*a)).fold(0.0, f64::max)
     })
+}
+
+/// Turn each recognized sphere whose boundary is circles in parallel planes
+/// about their common normal, so the circles are latitudes and the face a
+/// cap or a zone about a pole; the axis points into a cap, so its pole is
+/// the frame's north one. A sphere with no boundary is whole and keeps its
+/// frame, and one bounded otherwise keeps it for the re-framing that moves
+/// its poles away.
+fn sphere_axes(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    groups: &mut Groups,
+    flat: f64,
+    tol: Tolerances,
+) {
+    let reach = flat * REACH;
+    for g in 0..groups.carriers.len() {
+        let Carrier::Curved(curved) = &groups.carriers[g] else {
+            continue;
+        };
+        let Canonical::Sphere(sphere) = curved.shape else {
+            continue;
+        };
+        // The region's boundary, walked into loops: each border half-edge
+        // leads to the one leaving its end.
+        let mut leaving: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (t, tri) in triangles.iter().enumerate() {
+            if groups.of[t] != g {
+                continue;
+            }
+            for k in 0..3 {
+                let inside = adjacency.twin[3 * t + k].is_some_and(|o| groups.of[o / 3] == g);
+                if !inside {
+                    leaving.entry(tri[k]).or_default().push(tri[(k + 1) % 3]);
+                }
+            }
+        }
+        if leaving.is_empty() || leaving.values().any(|to| to.len() != 1) {
+            continue;
+        }
+        let mut loops: Vec<Vec<u32>> = Vec::new();
+        let mut done: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut starts: Vec<u32> = leaving.keys().copied().collect();
+        starts.sort_unstable();
+        for start in starts {
+            if !done.insert(start) {
+                continue;
+            }
+            let mut ring = vec![start];
+            let mut at = leaving[&start][0];
+            while at != start && ring.len() <= leaving.len() {
+                done.insert(at);
+                ring.push(at);
+                at = leaving.get(&at).map_or(start, |to| to[0]);
+            }
+            loops.push(ring);
+        }
+        let mut axis: Option<Vector> = None;
+        let mut planar = true;
+        for ring in &loops {
+            let pts: Vec<Point> = ring.iter().map(|&v| points[v as usize]).collect();
+            let Some((through, normal)) =
+                (pts.len() >= 3).then(|| plane_through(&pts, tol)).flatten()
+            else {
+                planar = false;
+                break;
+            };
+            let n = normal.vector();
+            if pts.iter().any(|p| (*p - through).dot(n).abs() > reach) {
+                planar = false;
+                break;
+            }
+            match axis {
+                None => axis = Some(n),
+                Some(a) if a.cross(n).magnitude() <= 1e-3 => {}
+                Some(_) => {
+                    planar = false;
+                    break;
+                }
+            }
+        }
+        let (true, Some(mut z)) = (planar, axis) else {
+            continue;
+        };
+        // Into the region: the pole a cap covers is the north one.
+        let side: f64 = curved
+            .vertices
+            .iter()
+            .map(|&v| (points[v as usize] - sphere.centre()).dot(z))
+            .sum();
+        if side < 0.0 {
+            z = -z;
+        }
+        let Ok(z) = Direction::new(z, tol) else {
+            continue;
+        };
+        let Ok(frame) = Frame::new(sphere.centre(), z, z.any_perpendicular(), tol) else {
+            continue;
+        };
+        let Ok(turned) = Sphere::new(frame, sphere.radius(), tol) else {
+            continue;
+        };
+        if let Carrier::Curved(curved) = &mut groups.carriers[g] {
+            curved.shape = Canonical::Sphere(turned);
+            curved.fixed = true;
+        }
+    }
 }
 
 /// Put coaxial surfaces on one axis and one angular origin, so bands that
@@ -1351,15 +1509,13 @@ fn align_axes(points: &[Point], groups: &mut Groups, flat: f64, tol: Tolerances)
         let (_, pv) = periodic(&curved.shape);
         if pv {
             let mut vs: Vec<f64> = charts.iter().map(|c| c.1).collect();
-            if angular_spread(&mut vs).1 < core::f64::consts::FRAC_PI_2 {
-                // Round the tube too: no seam layout for that here, and
-                // the planning demotes it.
-                curved.wraps = true;
-            }
+            curved.wraps_v = angular_spread(&mut vs).1 < core::f64::consts::FRAC_PI_2;
         }
         let wraps_u = gap_u < core::f64::consts::FRAC_PI_2;
-        curved.wraps = curved.wraps || wraps_u;
+        curved.wraps = wraps_u;
         if !curved.wraps
+            && !curved.wraps_v
+            && !curved.fixed
             && let Some(reframed) = away_from(curved, points, tol)
         {
             curved.shape = reframed;
@@ -1373,7 +1529,9 @@ fn align_axes(points: &[Point], groups: &mut Groups, flat: f64, tol: Tolerances)
             .collect();
         let mut us: Vec<f64> = charts.iter().map(|c| c.0).collect();
         let (mean_u, _) = angular_spread(&mut us);
-        let mean_v = if pv {
+        let mean_v = if curved.wraps_v {
+            core::f64::consts::PI
+        } else if pv {
             let mut vs: Vec<f64> = charts.iter().map(|c| c.1).collect();
             angular_spread(&mut vs).0
         } else {
@@ -1394,7 +1552,7 @@ fn align_axes(points: &[Point], groups: &mut Groups, flat: f64, tol: Tolerances)
 }
 
 /// The surface on a frame that puts the region half a turn from its
-/// chart's cut — and a sphere's poles a quarter turn to either side of it —
+/// chart's cut (and a sphere's poles a quarter turn to either side of it),
 /// so every image of its boundary reads in one piece.
 fn away_from(curved: &Curved, points: &[Point], tol: Tolerances) -> Option<Canonical> {
     let mut mean = Vector::ZERO;
@@ -1432,8 +1590,8 @@ fn away_from(curved: &Curved, points: &[Point], tol: Tolerances) -> Option<Canon
     }
 }
 
-/// A vertex as built: a mesh vertex, or a point the construction placed
-/// — where a closed circle is bounded.
+/// A vertex as built: a mesh vertex, or a point the construction placed,
+/// where a closed circle is bounded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Corner {
     Mesh(u32),
@@ -1464,6 +1622,8 @@ struct Plan {
     /// Each edge's image on each curved face it bounds, by (edge, face),
     /// with how far the image strays from the edge.
     pcurves: HashMap<(usize, usize), (PlanarCurve, f64)>,
+    /// How each curved face's boundary lies in its chart.
+    layouts: Vec<Layout>,
 }
 
 /// Plans the edges and loops.
@@ -1528,7 +1688,7 @@ impl Planner<'_> {
         }
         let any_curved = |faces: &[usize]| faces.iter().any(|&g| self.curved(g).is_some());
         // A vertex between two boundary edges with the same faces either
-        // side is inside one edge — between planes only where the two are
+        // side is inside one edge: between planes only where the two are
         // on one line; along a curved face always, the curve deciding.
         let removable = |v: u32| -> bool {
             if !self.merge || self.pinned.contains(&v) {
@@ -1561,6 +1721,7 @@ impl Planner<'_> {
             placed: Vec::new(),
             surfaces: vec![None; self.groups.carriers.len()],
             pcurves: HashMap::new(),
+            layouts: vec![Layout::Open; self.groups.carriers.len()],
         };
         let mut failed: Vec<usize> = Vec::new();
         let mut keys: Vec<(u32, u32)> = edge_faces.keys().copied().collect();
@@ -1731,9 +1892,9 @@ impl Planner<'_> {
             plan.loops[self.groups.of[h / 3]].push(ring);
         }
 
-        // A face whose boundary would run out and back along one line — a
+        // A face whose boundary would run out and back along one line (a
         // strip of slivers merged into two straight edges between the same
-        // two vertices — encloses nothing; its runs keep their vertices.
+        // two vertices) encloses nothing; its runs keep their vertices.
         let mut pin: Vec<u32> = Vec::new();
         for (g, rings) in plan.loops.iter().enumerate() {
             if !matches!(self.groups.carriers[g], Carrier::Plane(_)) {
@@ -1770,26 +1931,42 @@ impl Planner<'_> {
             return Ok(Err(Replan::Pin(pin)));
         }
 
-        // A face round its axis is built as a band between two full
-        // circles joined by a seam; anything else round an axis is not.
+        // A face round its axis, or round a torus's tube, is built as a band
+        // between two full circles joined by a seam; a sphere's cap as one
+        // circle, a seam and the pole; a sphere or torus with no boundary
+        // whole. Anything else round a period is not built exactly.
         for (g, carrier) in self.groups.carriers.iter().enumerate() {
             let Carrier::Curved(curved) = carrier else {
                 continue;
             };
-            if failed.contains(&g) || !curved.wraps {
+            if failed.contains(&g) || !(curved.wraps || curved.wraps_v) {
                 continue;
             }
-            let band = !matches!(curved.shape, Canonical::Sphere(_))
-                && !self.wraps_in_v(curved)
-                && plan.loops[g].len() == 2
-                && plan.loops[g].iter().all(|ring| {
-                    let first = self.entry(&plan, ring[0]);
-                    ring.iter().all(|&h| self.entry(&plan, h).0 == first.0)
-                        && first.0 != usize::MAX
-                        && plan.edges[first.0].closed_circle
-                });
-            if !band {
-                failed.push(g);
+            let sphere = matches!(curved.shape, Canonical::Sphere(_));
+            let torus = matches!(curved.shape, Canonical::Torus(_));
+            let rings = &plan.loops[g];
+            let circles = rings.iter().all(|ring| {
+                let first = self.entry(&plan, ring[0]);
+                first.0 != usize::MAX
+                    && plan.edges[first.0].closed_circle
+                    && ring.iter().all(|&h| self.entry(&plan, h).0 == first.0)
+            });
+            let layout = if rings.is_empty() {
+                (sphere || torus).then_some(Layout::Whole)
+            } else if (curved.wraps && curved.wraps_v) || !circles {
+                None
+            } else if sphere && rings.len() == 1 && curved.fixed {
+                Some(Layout::Cap)
+            } else if rings.len() == 2 && (!sphere || curved.fixed) {
+                Some(Layout::Band {
+                    round_tube: curved.wraps_v,
+                })
+            } else {
+                None
+            };
+            match layout {
+                Some(layout) => plan.layouts[g] = layout,
+                None => failed.push(g),
             }
         }
 
@@ -1805,7 +1982,7 @@ impl Planner<'_> {
                 continue;
             }
             let surface = surface_of(curved, self.points, self.tol)?;
-            if !curved.wraps {
+            if plan.layouts[g] == Layout::Open {
                 let mut held = true;
                 'rings: for ring in &plan.loops[g] {
                     for &h in ring {
@@ -1845,19 +2022,6 @@ impl Planner<'_> {
         }
     }
 
-    fn wraps_in_v(&self, curved: &Curved) -> bool {
-        if !periodic(&curved.shape).1 {
-            return false;
-        }
-        let mut vs: Vec<f64> = curved
-            .vertices
-            .iter()
-            .filter_map(|&v| chart(&curved.shape, self.points[v as usize], self.tol))
-            .map(|c| c.1)
-            .collect();
-        angular_spread(&mut vs).1 < core::f64::consts::FRAC_PI_2
-    }
-
     /// A half-edge's planned edge, and whether the half-edge runs it
     /// forward.
     fn entry(&self, plan: &Plan, h: Half) -> (usize, bool) {
@@ -1883,7 +2047,7 @@ impl Planner<'_> {
         // A band round its axis bounds itself with its own rims, so its
         // seam meets their vertices; its candidates go first.
         let mut order: Vec<usize> = faces.to_vec();
-        order.sort_by_key(|&g| !self.curved(g).is_some_and(|c| c.wraps));
+        order.sort_by_key(|&g| !self.curved(g).is_some_and(|c| c.wraps || c.wraps_v));
         for &g in &order {
             let Some(curved) = self.curved(g) else {
                 continue;
@@ -2004,7 +2168,30 @@ enum Snapped {
 fn candidates(shape: &Canonical, pts: &[Point], reach: f64, tol: Tolerances) -> Vec<Curve> {
     let mut out = Vec::new();
     if let Canonical::Sphere(sphere) = shape {
-        // The section of the sphere by the chain's plane.
+        // The section of the sphere by the chain's plane. Where that plane
+        // is square to the sphere's axis the section is a latitude, and is
+        // built on the sphere's own frame, so its parameter is the sphere's
+        // angle and it starts where the sphere's seam does.
+        let axis = sphere.frame().z();
+        if pts.len() >= 3
+            && let Some((centre, normal)) = plane_through(pts, tol)
+            && normal.vector().cross(axis.vector()).magnitude() <= 1e-3
+        {
+            let h = (centre - sphere.centre()).dot(axis.vector());
+            let r2 = sphere.radius().powi(2) - h * h;
+            if r2 > 0.0
+                && let Ok(frame) = Frame::new(
+                    sphere.centre() + axis.vector() * h,
+                    axis,
+                    sphere.frame().x(),
+                    tol,
+                )
+                && let Ok(circle) = ogeom_math::Circle::new(frame, r2.sqrt(), tol)
+            {
+                out.push(ogeom_geom::CircleCurve::new(circle).into());
+                return out;
+            }
+        }
         if pts.len() >= 3
             && let Some((centre, normal)) = plane_through(pts, tol)
         {
@@ -2063,6 +2250,32 @@ fn candidates(shape: &Canonical, pts: &[Point], reach: f64, tol: Tolerances) -> 
             && let Ok(circle) = ogeom_math::Circle::new(at, radius, tol)
         {
             out.push(ogeom_geom::CircleCurve::new(circle).into());
+        }
+    }
+    // A circle of a torus's tube: every point in one plane through the
+    // axis, at the angle the chain stands at. Built with the tube's own
+    // angle as its parameter, starting at the outer equator.
+    if let Canonical::Torus(torus) = shape
+        && pts.len() >= 2
+    {
+        let mut angles: Vec<f64> = pts
+            .iter()
+            .filter_map(|x| chart(shape, *x, tol).map(|c| c.0))
+            .collect();
+        if !angles.is_empty() {
+            let (u, _) = angular_spread(&mut angles);
+            let (x, y) = (frame.x().vector(), frame.y().vector());
+            let out_u = x * u.cos() + y * u.sin();
+            let across = y * u.cos() - x * u.sin();
+            let in_plane = pts.iter().all(|p| (*p - o).dot(across).abs() <= reach);
+            if in_plane
+                && let Ok(radial) = Direction::new(out_u, tol)
+                && let Ok(normal) = Direction::new(out_u.cross(z), tol)
+                && let Ok(at) = Frame::new(o + out_u * torus.major_radius(), normal, radial, tol)
+                && let Ok(circle) = ogeom_math::Circle::new(at, torus.minor_radius(), tol)
+            {
+                out.push(ogeom_geom::CircleCurve::new(circle).into());
+            }
         }
     }
     if matches!(shape, Canonical::Cylinder(_) | Canonical::Cone(_)) && pts.len() >= 2 {
@@ -2277,12 +2490,20 @@ impl Builder<'_> {
             let rings = &self.plan.loops[g];
             let face = match carrier {
                 Carrier::Gone => None,
+                Carrier::Curved(curved) if self.plan.layouts[g] == Layout::Whole => {
+                    Some(self.whole_face(curved, g)?)
+                }
                 _ if rings.is_empty() => None,
                 Carrier::Plane(plane) => Some(self.plane_face(*plane, rings, &edges)?),
-                Carrier::Curved(curved) if curved.wraps => {
-                    Some(self.band_face(curved, rings, &edges)?)
-                }
-                Carrier::Curved(curved) => Some(self.curved_face(curved, g, rings, &edges)?),
+                Carrier::Curved(curved) => match self.plan.layouts[g] {
+                    Layout::Band { round_tube } => {
+                        Some(self.band_face(curved, rings, &edges, round_tube)?)
+                    }
+                    Layout::Cap => Some(self.cap_face(curved, rings, &edges)?),
+                    Layout::Open | Layout::Whole => {
+                        Some(self.curved_face(curved, g, rings, &edges)?)
+                    }
+                },
             };
             faces.push(face);
         }
@@ -2372,7 +2593,7 @@ impl Builder<'_> {
         vote >= 0.0
     }
 
-    /// The surface's own normal — the chart's `du × dv` — near a point.
+    /// The surface's own normal (the chart's `du × dv`) near a point.
     fn surface_normal(&self, curved: &Curved, p: Point) -> Vector {
         let Some(at) = chart(&curved.shape, p, self.tol) else {
             return Vector::ZERO;
@@ -2455,6 +2676,7 @@ impl Builder<'_> {
         curved: &Curved,
         rings: &[Vec<Half>],
         edges: &[Shape],
+        round_tube: bool,
     ) -> OgeomResult<Shape> {
         use ogeom_geom::Curve3d as _;
         let tau = core::f64::consts::TAU;
@@ -2477,12 +2699,21 @@ impl Builder<'_> {
                 ogeom_bail!(Construction, "a band's rim is not a circle");
             };
             let circle = c.circle();
-            let with = circle.frame().z().vector().dot(frame.z().vector()) > 0.0;
             let start = spec.curve.point_at(0.0, self.tol)?;
-            let Some((_, v)) = unwrapped(curved, start, self.tol) else {
+            let Some((u, v)) = unwrapped(curved, start, self.tol) else {
                 ogeom_bail!(Construction, "a band's rim has no chart position");
             };
-            rims.push((edge, v, with, start));
+            // Whether the rim's own parameter runs with the chart's angle
+            // it goes round: the axis's for a band round it, the tube's for
+            // a band round the tube.
+            let turning = if round_tube {
+                let radial = circle.centre() - frame.origin();
+                radial.cross(frame.z().vector())
+            } else {
+                frame.z().vector()
+            };
+            let with = circle.frame().z().vector().dot(turning) > 0.0;
+            rims.push((edge, if round_tube { u } else { v }, with, start));
         }
         rims.sort_by(|a, b| a.1.total_cmp(&b.1));
         let [
@@ -2492,9 +2723,14 @@ impl Builder<'_> {
         else {
             ogeom_bail!(Construction, "a band has two rims");
         };
-        for (edge, v, with) in [(low, v_low, low_with), (high, v_high, high_with)] {
+        for (edge, at, with) in [(low, v_low, low_with), (high, v_high, high_with)] {
             let (a, b) = if with { (0.0, tau) } else { (tau, 0.0) };
-            let pcurve = linear((a, v), (b, v), (0.0, tau), self.tol)?;
+            let (from, to) = if round_tube {
+                ((at, a), (at, b))
+            } else {
+                ((a, at), (b, at))
+            };
+            let pcurve = linear(from, to, (0.0, tau), self.tol)?;
             crate::build::attach_pcurve(
                 self.model,
                 &edges[edge],
@@ -2504,8 +2740,24 @@ impl Builder<'_> {
                 (0.0, tau),
             )?;
         }
-        // The seam, low rim to high, on the surface along angle zero.
+        // The seam, low rim to high, on the surface along angle zero: a
+        // ruling, a meridian of a sphere, a circle of a torus's tube, or
+        // for a band round the tube, an arc of its outer equator.
         let seam_curve: Curve = match curved.shape {
+            Canonical::Torus(t) if round_tube => ogeom_geom::CircleCurve::new(
+                ogeom_math::Circle::new(frame, t.major_radius() + t.minor_radius(), self.tol)?,
+            )
+            .into(),
+            Canonical::Sphere(s) => {
+                let normal =
+                    Direction::new(frame.x().vector().cross(frame.z().vector()), self.tol)?;
+                ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(
+                    Frame::new(s.centre(), normal, frame.x(), self.tol)?,
+                    s.radius(),
+                    self.tol,
+                )?)
+                .into()
+            }
             Canonical::Torus(t) => {
                 let spine = frame.origin() + frame.x().vector() * t.major_radius();
                 let normal =
@@ -2520,11 +2772,11 @@ impl Builder<'_> {
             _ => LineCurve::segment(low_at, high_at, self.tol)?.into(),
         };
         let seam_range = match curved.shape {
-            Canonical::Torus(_) => (v_low, v_high),
+            Canonical::Torus(_) | Canonical::Sphere(_) => (v_low, v_high),
             _ => (0.0, low_at.distance(high_at)),
         };
         // The seam runs between the rims' own vertices, placed where each
-        // circle's parameter starts — the surface's angle zero.
+        // circle's parameter starts: the surface's angle zero.
         let placed = |at: Point| {
             self.plan
                 .placed
@@ -2547,23 +2799,146 @@ impl Builder<'_> {
         let id = self.model.geometry_mut().add_curve(seam_curve);
         let data = EdgeData::on_curve(id, Location::identity(), seam_range);
         let seam = self.model.add_edge(data, &[from_vertex, to_vertex])?;
+        // The seam's two images: where the wire walks it forward, then back.
+        let (forward, back) = if round_tube {
+            (
+                linear((v_low, 0.0), (v_high, 0.0), seam_range, self.tol)?,
+                linear((v_low, tau), (v_high, tau), seam_range, self.tol)?,
+            )
+        } else {
+            (
+                linear((tau, v_low), (tau, v_high), seam_range, self.tol)?,
+                linear((0.0, v_low), (0.0, v_high), seam_range, self.tol)?,
+            )
+        };
         crate::build::attach_seam(
             self.model,
             &seam,
-            linear((tau, v_low), (tau, v_high), seam_range, self.tol)?,
-            linear((0.0, v_low), (0.0, v_high), seam_range, self.tol)?,
+            forward,
+            back,
             surface,
             Location::identity(),
             seam_range,
         )?;
-        // Counter-clockwise in the chart: along the low rim, up the seam's
-        // far side, back along the high rim, down its near side — then the
-        // whole ring the other way for a face that faces against the
-        // surface.
+        // Counter-clockwise in the chart, then the whole ring the other way
+        // for a face that faces against the surface. Round the axis: along
+        // the low rim, up the seam's far side, back along the high rim, down
+        // its near side. Round the tube: along the seam's near side, up the
+        // high rim, back along the seam's far side, down the low rim.
+        let mut ring = if round_tube {
+            vec![
+                seam.clone(),
+                oriented(&edges[high], high_with),
+                seam.reversed(),
+                oriented(&edges[low], !low_with),
+            ]
+        } else {
+            vec![
+                oriented(&edges[low], low_with),
+                seam.clone(),
+                oriented(&edges[high], !high_with),
+                seam.reversed(),
+            ]
+        };
+        if !outward {
+            ring.reverse();
+            ring = ring.iter().map(Shape::reversed).collect();
+        }
+        let wire = self.model.add_wire(&ring)?;
+        let mut data = FaceData::new(surface, Location::identity());
+        data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
+        let face = self.model.add_face(data, std::slice::from_ref(&wire))?;
+        Ok(if outward { face } else { face.reversed() })
+    }
+}
+
+impl Builder<'_> {
+    /// A sphere's cap: its rim, a meridian seam from the rim to the pole,
+    /// and the pole as an edge of no length, the frame's axis pointing into
+    /// the cap so the pole is the north one.
+    fn cap_face(
+        &mut self,
+        curved: &Curved,
+        rings: &[Vec<Half>],
+        edges: &[Shape],
+    ) -> OgeomResult<Shape> {
+        use ogeom_geom::Curve3d as _;
+        let tau = core::f64::consts::TAU;
+        let north = core::f64::consts::FRAC_PI_2;
+        let g = self.groups.of[rings[0][0] / 3];
+        let Canonical::Sphere(sphere) = curved.shape else {
+            ogeom_bail!(Construction, "a cap is a sphere's");
+        };
+        let Some(geometry) = self.plan.surfaces[g].clone() else {
+            ogeom_bail!(Construction, "a cap was planned without its surface");
+        };
+        let surface = self.model.geometry_mut().add_surface(geometry);
+        let outward = self.outward(curved, g);
+        let frame = sphere.frame();
+        let (rim, _) = self.entry(rings[0][0]);
+        let spec = &self.plan.edges[rim];
+        let Curve::Circle(c) = &spec.curve else {
+            ogeom_bail!(Construction, "a cap's rim is not a circle");
+        };
+        let with = c.circle().frame().z().vector().dot(frame.z().vector()) > 0.0;
+        let start = spec.curve.point_at(0.0, self.tol)?;
+        let Some((_, v_rim)) = unwrapped(curved, start, self.tol) else {
+            ogeom_bail!(Construction, "a cap's rim has no chart position");
+        };
+        let (a, b) = if with { (0.0, tau) } else { (tau, 0.0) };
+        crate::build::attach_pcurve(
+            self.model,
+            &edges[rim],
+            linear((a, v_rim), (b, v_rim), (0.0, tau), self.tol)?,
+            surface,
+            Location::identity(),
+            (0.0, tau),
+        )?;
+        let Some(rim_vertex) = self.model.children_of(&edges[rim])?.first().cloned() else {
+            ogeom_bail!(Construction, "a rim has no vertex");
+        };
+        let pole = self.model.add_vertex(VertexData::new(
+            sphere.centre() + frame.z().vector() * sphere.radius(),
+        ));
+        let normal = Direction::new(frame.x().vector().cross(frame.z().vector()), self.tol)?;
+        let meridian: Curve = ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(
+            Frame::new(sphere.centre(), normal, frame.x(), self.tol)?,
+            sphere.radius(),
+            self.tol,
+        )?)
+        .into();
+        let id = self.model.geometry_mut().add_curve(meridian);
+        let seam_range = (v_rim, north);
+        let seam = self.model.add_edge(
+            EdgeData::on_curve(id, Location::identity(), seam_range),
+            &[rim_vertex, pole.clone()],
+        )?;
+        crate::build::attach_seam(
+            self.model,
+            &seam,
+            linear((tau, v_rim), (tau, north), seam_range, self.tol)?,
+            linear((0.0, v_rim), (0.0, north), seam_range, self.tol)?,
+            surface,
+            Location::identity(),
+            seam_range,
+        )?;
+        let mut data = EdgeData::new();
+        data.degenerate = true;
+        let tip = self.model.add_edge(data, &[pole.clone(), pole])?;
+        crate::build::attach_pcurve(
+            self.model,
+            &tip,
+            linear((0.0, north), (tau, north), (0.0, tau), self.tol)?,
+            surface,
+            Location::identity(),
+            (0.0, tau),
+        )?;
+        // Counter-clockwise in the chart: along the rim, up the seam's far
+        // side, back along the pole, down the seam's near side.
         let mut ring = vec![
-            oriented(&edges[low], low_with),
+            oriented(&edges[rim], with),
             seam.clone(),
-            oriented(&edges[high], !high_with),
+            tip.reversed(),
             seam.reversed(),
         ];
         if !outward {
@@ -2574,6 +2949,38 @@ impl Builder<'_> {
         let mut data = FaceData::new(surface, Location::identity());
         data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
         let face = self.model.add_face(data, std::slice::from_ref(&wire))?;
+        Ok(if outward { face } else { face.reversed() })
+    }
+
+    /// A whole sphere or torus, a piece with no boundary: the face the
+    /// primitive builds on the recognized surface.
+    fn whole_face(&mut self, curved: &Curved, g: usize) -> OgeomResult<Shape> {
+        let outward = self.outward(curved, g);
+        let built = match curved.shape {
+            Canonical::Sphere(s) => {
+                crate::primitive::make_sphere(self.model, s.frame(), s.radius(), self.tol)?
+            }
+            Canonical::Torus(t) => crate::primitive::make_torus(
+                self.model,
+                t.frame(),
+                t.major_radius(),
+                t.minor_radius(),
+                self.tol,
+            )?,
+            _ => ogeom_bail!(Construction, "only a sphere or a torus is whole"),
+        };
+        let Some(face) =
+            ogeom_topo::explore_unique(self.model, &built.shape, ogeom_topo::ShapeType::Face)?
+                .into_iter()
+                .next()
+        else {
+            ogeom_bail!(Construction, "a primitive came back with no face");
+        };
+        if let Some(node) = self.model.node_mut(&face)
+            && let ogeom_topo::NodeData::Face(data) = node.data_mut()
+        {
+            data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
+        }
         Ok(if outward { face } else { face.reversed() })
     }
 }
