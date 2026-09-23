@@ -1783,7 +1783,7 @@ mod tests {
         // kilometres down the infinite line, past the apex on the other
         // nappe. Only the used range may vote on the angle, or the pcurve
         // lands half a turn away and the face triangulates as a fan across
-        // the whole chart — the issue #36 bug.
+        // the whole chart.
         let cone =
             ogeom_math::Cone::new(Frame::WORLD, 24.0, core::f64::consts::FRAC_PI_4, T).unwrap();
         let surface: SurfaceGeometry = ConeSurface::new(cone, (-1e5, 1e5)).unwrap().into();

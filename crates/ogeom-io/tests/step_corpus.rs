@@ -122,7 +122,7 @@ fn every_nist_part_reads_and_reports_honestly() {
 /// second traversal must take the other side of the parameter rectangle —
 /// continuity cannot say so, because at the apex both sides start at the
 /// same 3D point, and choosing by nearness closes the ring over nothing.
-/// Found as two invisible countersinks in a real frame assembly (issue #14).
+/// Found as two invisible countersinks in a real frame assembly.
 #[test]
 fn a_cone_walked_to_its_apex_triangulates() {
     let text = r#"ISO-10303-21;
@@ -210,7 +210,7 @@ fn a_step_read_announces_each_solid_with_its_total() {
 /// healing cap, the wrong-pairing regime — so the fit refuses, the face
 /// reads without a trim, and `report.untrimmed_faces` carries its STEP id
 /// for the consumer to mark. The warnings still tell the story in prose;
-/// this is the form a UI can act on (issue #15).
+/// this is the form a UI can act on.
 #[test]
 fn a_face_the_fit_refuses_is_named_in_the_report() {
     let text = r#"ISO-10303-21;
@@ -291,7 +291,7 @@ END-ISO-10303-21;
 
 /// The warning flood, counted: the hovering face's read carries its kinds
 /// as summary entries — count, worst measured value, an exemplar id — so a
-/// consumer shows four lines where the prose runs to hundreds (issue #24).
+/// consumer shows four lines where the prose runs to hundreds.
 #[test]
 fn warnings_summarise_by_kind_with_counts_and_worsts() {
     let text = corpus("nist_ftc_11_asme1_rb.stp");
@@ -318,7 +318,7 @@ fn warnings_summarise_by_kind_with_counts_and_worsts() {
 
 #[test]
 fn a_slit_sphere_zone_meshes_its_own_region_not_the_complement() {
-    // Issue #37: the button head's sphere zone is slit along a meridian
+    // A button head's sphere zone slit along a meridian
     // that sits at the chart's own seam. The doubly-used slit edge was
     // bracketed like a period-wrapping seam, which wound the ring, pulled
     // in a pole row the face never touches, and meshed the complement of
@@ -381,7 +381,7 @@ fn a_slit_sphere_zone_meshes_its_own_region_not_the_complement() {
 
 #[test]
 fn two_oblique_rims_on_a_sphere_bound_a_face_not_a_band() {
-    // Issue #37, the assembly-side half: the button head's sphere zone is
+    // The assembly-side half: a button head's sphere zone is
     // bounded by two closed circles cut square to the screw, while the
     // sphere's chart runs along z. They lie on the sphere but are not its
     // parallels, and the reader used to synthesise a band between them —

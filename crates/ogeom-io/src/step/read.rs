@@ -1285,7 +1285,7 @@ impl Reader<'_> {
                 uses.reverse();
             }
             // The window may have grown to hold this bound, and the images
-            // are derived on the surface as it now stands.
+            // are derived on the surface as it stands.
             self.widen_window(surface_id, &uses)?;
             let widened = self
                 .model

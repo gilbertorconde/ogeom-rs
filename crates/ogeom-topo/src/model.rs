@@ -1466,8 +1466,8 @@ mod tests {
     #[test]
     fn reversing_a_wire_reverses_the_walk_as_well_as_each_edge() {
         // Reversing each edge without reversing the order breaks the chain:
-        // edge 1 would end where it used to start while edge 2 still starts
-        // where it used to, so consecutive edges stop meeting and a face built
+        // edge 1 would end where it started while edge 2 still starts where
+        // it did, so consecutive edges stop meeting and a face built
         // on the wire comes apart along its boundary.
         let mut model = Model::new();
         let face = square(&mut model);

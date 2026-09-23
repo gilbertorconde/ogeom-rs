@@ -1,6 +1,6 @@
 //! The ISO 10303-21 exchange structure, parsed but not yet interpreted.
 //!
-//! Part 21 is a syntax, not a schema: `#12 = CIRCLE('', #10, 5.0);` says an
+//! Part 21 is a syntax, not a schema: `#3 = CIRCLE('', #2, 5.0);` says an
 //! instance exists with a keyword and arguments, and what a `CIRCLE` *means*
 //! is the reader's business, not the parser's. This module turns the text
 //! into a map from instance number to typed argument trees and nothing more —

@@ -1475,7 +1475,7 @@ fn merge_near_duplicates(ring: &mut Vec<Point2>, anchors: &mut Vec<Option<Point>
         if (p.x - q.x).hypot(p.y - q.y) <= reach {
             // The later point goes — the last one when the ring's end
             // repeats its start — and the earlier is looked at again, in
-            // case it now sits next to another near-duplicate.
+            // case it sits next to another near-duplicate.
             if next == 0 {
                 ring.remove(i);
                 anchors.remove(i);
@@ -1853,7 +1853,7 @@ fn boundary_ring(
                     // chart, both traversals stand on one column, and
                     // forcing them apart winds the ring, invites a pole row
                     // it never touches, and meshes the complement of the
-                    // face — the issue #37 screw head. The ring's own reach
+                    // face. The ring's own reach
                     // says which face this is.
                     if hi - lo >= span * 0.5 {
                         let side = if f64::midpoint(lo, hi) >= prior.x {

@@ -114,11 +114,11 @@ fn a_belt_between_two_latitudes_is_the_belt() {
 /// A bore through a block with a cross hole through the bore's wall: the
 /// wall is a cylinder whose two rims wind the chart and whose cross hole
 /// is a loop that does not. The rims pair into one ring joined by runs up
-/// one column; that column used to be wherever the first rim's chain
-/// happened to end, which on this part is where the cross hole's loop
-/// lies, and the runs cut straight through it — two constraints refused,
-/// the face redrawn finer and finer, never whole. The runs now stand in
-/// the widest column no other ring touches, and the body draws closed.
+/// one column. Taken wherever the first rim's chain happened to end — on
+/// this part, where the cross hole's loop lies — the runs cut straight
+/// through the loop: two constraints refused, the face redrawn finer and
+/// finer, never whole. The runs stand in the widest column no other ring
+/// touches, and the body draws closed.
 #[test]
 fn a_cross_hole_through_a_bore_wall_draws_closed() {
     let mut model = Model::new();

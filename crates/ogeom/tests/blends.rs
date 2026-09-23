@@ -886,7 +886,7 @@ fn round_vertex_refuses_the_setback_family_by_name() {
     );
 }
 
-/// The recon shape of issue #18 step 2: a box grooved by a tilted drum,
+/// A box grooved by a tilted drum,
 /// whose creases are ellipse arcs cut open by the box sides and split
 /// again by the cylinder's own seam.
 fn grooved_block(model: &mut Model) -> Shape {
@@ -1480,9 +1480,9 @@ fn a_marched_blend_takes_a_sphere_host() {
 }
 
 /// A bore straight down a ball's axis: the rim is a full circle, a
-/// parallel of the sphere, and a circle used to be the revolved blend's
-/// alone — which refused it, since the sphere is neither the cap nor the
-/// coaxial wall that blend is built on. Any other circle is the march's.
+/// parallel of the sphere. The revolved blend refuses it, since the sphere
+/// is neither the cap nor the coaxial wall that blend is built on, and the
+/// march takes it, as it takes any other circle.
 #[test]
 fn a_circular_rim_on_a_sphere_takes_the_march() {
     let mut model = Model::new();

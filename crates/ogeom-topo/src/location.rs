@@ -477,8 +477,8 @@ mod tests {
 
     #[test]
     fn a_handle_from_another_store_is_refused_rather_than_resolved() {
-        // It used to resolve — to whatever transform happened to sit at that
-        // index, silently and confidently. An arena handle now carries the
+        // Resolved, it would name whatever transform happened to sit at that
+        // index, silently and confidently. An arena handle carries the
         // identifier of the arena that issued it, so a foreign one names a
         // datum this store does not have, and composing it says so.
         let (s, first, _) = store();

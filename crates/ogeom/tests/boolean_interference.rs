@@ -370,10 +370,9 @@ fn a5_a_corner_block_less_a_ball_clears_the_spike() {
 /// corner block less the ball, which A5 measures — is tangent to everything
 /// it rounds *by construction*: its spherical patch touches each of the
 /// box's three faces at a point that is a vertex of the patch's own
-/// boundary. This used to surface as a dangling boundary strand, because
-/// the octant's seam-meridian boundary fed both chart columns into the
-/// arrangement and the far one connected to nothing. Now the cut answers,
-/// and the answer is measured against the closed form: the box less the
+/// boundary. Fed both chart columns of the octant's seam-meridian
+/// boundary, the arrangement would find the far one connected to nothing
+/// and the strand dangling. The cut answers, and the answer is measured against the closed form: the box less the
 /// corner block plus the ball's octant.
 #[test]
 fn a6_the_corner_tool_cuts_through_its_own_tangencies() {

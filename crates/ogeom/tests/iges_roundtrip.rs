@@ -97,11 +97,11 @@ fn a_drilled_block_round_trips_through_its_boolean_faces() {
         .unwrap()
         .shape;
     let (original, recovered, _) = round_trip(model, solid);
-    // Issue #38's acceptance. The wall's rims come back chained — each
+    // The wall's rims come back chained — each
     // image shifted by whole periods until its start meets the last one's
     // end — so the chart is the rectangle it was, and the two solids
-    // tessellate the same way. They used to differ by a tenth of a percent
-    // at this chord, which was the mesh reading a torn chart.
+    // tessellate the same way. A tenth of a percent between them at this
+    // chord is the mesh reading a torn chart.
     assert!(
         (recovered - original).abs() < original * 1e-9,
         "{recovered} against {original}"

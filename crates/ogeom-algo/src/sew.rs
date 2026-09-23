@@ -11,7 +11,7 @@
 //! # Sewing is a topological operation, not a geometric one
 //!
 //! It does not move anything. Two edges within tolerance of each other are
-//! decided to be *one* edge, and every face that used either now uses that one
+//! decided to be *one* edge, and every face that used either uses that one
 //! — so the shell closes because the topology says so, not because the geometry
 //! was nudged until it did. A version that moved geometry to close gaps would
 //! be a repair, would need to decide which of two positions is right, and would

@@ -1,4 +1,4 @@
-//! Healing a face the reader refused to trim (issue #21).
+//! Healing a face the reader refused to trim.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -63,7 +63,7 @@ fn a_face_the_reader_refused_heals_at_the_callers_cap() {
     let text = HOVER;
     let import = ogeom::io::read_step(text, T).unwrap();
     // The report hands over the face itself — the instructed follow-up
-    // needs no search (issue #34).
+    // needs no search.
     assert_eq!(import.report.untrimmed_faces.len(), 1);
     let refused = &import.report.untrimmed_faces[0];
     assert_eq!(refused.entity, 56, "named by the id the warnings use");

@@ -965,8 +965,7 @@ fn a_sharp_cornered_closed_spine_mitres_a_smooth_profile() {
     let profile = ogeom_algo::make_wire(&mut model, std::slice::from_ref(&sedge), T)
         .unwrap()
         .shape;
-    // Once the mitred ring's refusal (issue #20 step 4); flipped to
-    // measured the day the corners learned their mitres. A symmetric
+    // The mitred ring, measured. A symmetric
     // profile's corner wedges cancel, so Pappus holds exactly: area times
     // the square's perimeter.
     let ring = ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 5e-2, T).unwrap();

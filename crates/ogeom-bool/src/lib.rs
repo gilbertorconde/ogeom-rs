@@ -388,7 +388,7 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
         // against — the diagonal as the blanket three-quarter bulge left it —
         // because the chord is a tolerance, not a bound: tightening the
         // filter must not silently tighten the marcher, which is exactly
-        // what happened when the box fed both (issue #12).
+        // what a single box feeding both does.
         let margin = tol.confusion() * 1e2;
         let chord_scale = match &surface {
             SurfaceGeometry::Plane(_) => bound.expanded(margin).diagonal(),
@@ -2921,8 +2921,7 @@ fn surfaces_stand_apart(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerance
     // One seeding grid over the far surface, asked a hundred times: the
     // same seeds and the same Newton the per-call projection would use, so
     // the verdict is bit-identical, at hundreds of evaluations instead of
-    // tens of thousands — the price issue #26 named for every genuine
-    // near-miss.
+    // tens of thousands for every genuine near-miss.
     let Ok(seeds) = ogeom_algo::SurfaceSeeds::over(against, 16, tol) else {
         return false;
     };
@@ -3690,7 +3689,7 @@ fn mark_covered_coincidences(ga: &GSolid, pieces: &mut [FacePiece], tol: Toleran
 /// a correctness precondition — a pair wrongly dropped is absorbed by the
 /// empty-result fallback today, and would be a wrong solid if that fallback
 /// ever came up empty too — and this is the check that makes the
-/// precondition falsifiable (issue #12). Costs one branch per pair when off.
+/// precondition falsifiable. Costs one branch per pair when off.
 static AUDIT_BOUNDS: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("OGEOM_BOOL_AUDIT_BOUNDS").is_ok());
 static DEBUG_WIRE: std::sync::LazyLock<bool> =

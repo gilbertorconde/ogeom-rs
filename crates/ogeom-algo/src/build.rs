@@ -1925,7 +1925,7 @@ mod tests {
 
     /// A face on a fitted surface builds with fitted trims: the closed-form
     /// refusal falls back to the projected fit, which is what lets a
-    /// defeaturing rebuild stand a face on a spline neighbour (issue #19).
+    /// defeaturing rebuild stand a face on a spline neighbour.
     #[test]
     fn a_face_on_a_fitted_surface_gains_projected_pcurves() {
         let tol = ogeom_core::Tolerances::millimetres();

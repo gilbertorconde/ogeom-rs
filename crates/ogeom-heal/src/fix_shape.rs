@@ -230,7 +230,7 @@ fn collapse_small_edges(
         let (keep, drop) = (root(&survivor, &a), root(&survivor, &b));
         if keep.is_same(&drop) {
             // Already one vertex through earlier collapses; the edge is a
-            // loop on it now and goes.
+            // loop on it and goes.
             reshape.remove(&edge);
             count += 1;
             continue;

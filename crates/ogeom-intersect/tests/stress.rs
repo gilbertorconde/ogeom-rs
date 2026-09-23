@@ -135,8 +135,8 @@ fn tangential_contact_yields_no_curves_and_the_analytic_path_names_it() {
 fn a_walk_that_reaches_the_edge_of_a_surface_says_so() {
     // Two parallel cylinders overlap in two straight lines that run off both
     // ends of the domain. The walk converges on the boundary from inside, so it
-    // stalls a fraction of a step short — which used to be reported as
-    // `Stalled`, indistinguishable from a genuine singularity.
+    // stalls a fraction of a step short — which must not read as `Stalled`,
+    // indistinguishable from a genuine singularity.
     let a = cylinder(Point::ORIGIN, Vector::Z, 1.0);
     let b = cylinder(Point::new(1.99, 0.0, 0.0), Vector::Z, 1.0);
     let found = branches(&a, &b, options(), T).unwrap();

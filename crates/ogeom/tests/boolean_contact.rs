@@ -178,7 +178,7 @@ fn a_tangential_contact_is_sectioned_but_not_classified() {
 /// points in space — and by a seam it meets twice. Leave the poles out of
 /// the arrangement and the chart has no top or bottom, so nothing can be
 /// arranged inside it and every boolean over a ball fails, whether or not
-/// the ball is anywhere near the other solid. They are in it now.
+/// the ball is anywhere near the other solid. They are in it.
 #[test]
 fn a_ball_is_boolean_material_like_anything_else() {
     let corner = Frame::new(Point::new(-5.0, -5.0, -5.0), Direction::Z, Direction::X, T).unwrap();

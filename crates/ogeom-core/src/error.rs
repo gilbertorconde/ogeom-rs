@@ -169,9 +169,8 @@ mod tests {
 
     #[test]
     fn inline_captures_interpolate_in_the_single_argument_form() {
-        // The trap this guards: a literal containing `{name}` used to be taken
-        // verbatim, so the message shipped with braces in it and the value was
-        // silently dropped.
+        // The trap this guards: a literal containing `{name}` taken verbatim
+        // ships the message with braces in it and silently drops the value.
         let index = 7;
         let e = ogeom_err!(Range, "index {index} is out of bounds");
         assert_eq!(e.to_string(), "out of range: index 7 is out of bounds");

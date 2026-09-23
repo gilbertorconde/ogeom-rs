@@ -344,7 +344,7 @@ impl KnotVector {
         // triangular recurrence; both halves are needed to build derivatives.
         // Every scratch row lives inline for the degrees the kernel actually
         // meets: this is the innermost loop of every spline evaluation, and
-        // it used to be the kernel's single largest allocation source.
+        // a heap row per call there is the kernel's largest allocation source.
         let mut ndu: SmallVec<[BasisValues; 8]> =
             core::iter::repeat_with(|| BasisValues::from_elem(0.0, p + 1))
                 .take(p + 1)

@@ -108,7 +108,7 @@ pub fn write(model: &Model, roots: &[Shape], options: WriteOptions) -> OgeomResu
     }
     // The file carries the reachable closure of `roots`, not the model: a
     // snapshot of one body from a 330-solid assembly is that body's records,
-    // not 35 MB of everyone else's (issue #16). Empty roots keep the whole
+    // not 35 MB of everyone else's. Empty roots keep the whole
     // model — that is `write_document`'s contract, whose products name
     // shapes the root list does not. When the closure covers everything, the
     // subset would be a copy of the model spelled the long way, so the model

@@ -79,7 +79,7 @@ pub struct CanonicalReport {
 ///
 /// Faces are rebuilt on the recognized carrier with exact pcurves; their
 /// edges' space curves are untouched, because the curves were never wrong.
-/// A surface that does not verify stays exactly as it was: the decision is
+/// A surface that does not verify is left untouched: the decision is
 /// the product, and a wrong yes is a solid that measures nearly right with
 /// the wrong surface under every later operation.
 ///

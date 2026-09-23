@@ -1,5 +1,5 @@
 //! A written subset is a subset: `write(model, roots)` carries the closure
-//! of `roots`, not the model (issue #16).
+//! of `roots`, not the model.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;

@@ -29,7 +29,7 @@ pub struct FixedTrims {
 /// instructed follow-up — the
 /// same projection fit, at the cap the caller chooses. Each fitted edge's
 /// tolerance widens to the offset actually measured, so the model says
-/// what it now knows; an edge past the cap is reported, not touched.
+/// what it knows; an edge past the cap is reported, not touched.
 ///
 /// # Errors
 ///

@@ -169,7 +169,7 @@ pub fn fit_projected_pcurve_capped(
     retry_stalled(surface, &points, &mut trace, &mut offs, tol);
     // The cap separates a file's own slop from an edge paired with the
     // wrong surface. Slop is routinely a micron or two, but real community
-    // exports carry as much as 0.34 mm (issue #15) — while a wrong pairing
+    // exports carry as much as 0.34 mm — while a wrong pairing
     // misses by the distance between two different surfaces of the body,
     // whole millimetres. One millimetre stands between the worst slop
     // observed and the smallest wrong pairing plausible. Slop inside the
@@ -868,7 +868,7 @@ mod tests {
     /// A boundary 0.3 mm off its surface fits, and says so.
     ///
     /// Community exports carry boundary curves that far from the surfaces
-    /// they trim (issue #15: 0.12–0.34 mm on a real assembly). The fit
+    /// they trim: 0.12–0.34 mm on a real assembly. The fit
     /// accepts anything under a millimetre and reports the offset, so the
     /// reader widens the edge's tolerance instead of leaving the face
     /// without a trim; a miss of whole millimetres — the signature of an

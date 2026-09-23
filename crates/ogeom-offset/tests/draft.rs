@@ -261,7 +261,7 @@ fn a_negative_draft_widens_the_drum() {
     );
 }
 
-/// The recon prism of issue #22: a wavy spline profile closed into a slab
+/// A wavy spline profile closed into a slab
 /// footprint, extruded along `z`, whose front wall is an extruded-spline
 /// surface. `amplitude` and `frequency` set how tightly the wall curls.
 fn spline_prism(
