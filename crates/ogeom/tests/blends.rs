@@ -232,7 +232,7 @@ fn b2_three_fillets_and_the_corner_tool_round_the_vertex() {
             .mass;
         let error = (measured - want).abs() / want;
         assert!(
-            error < previous,
+            error < previous || error < 1e-12,
             "refining the mesh brings the measurement closer: {measured} vs {want}"
         );
         // The curved area is three band runs and the octant; the inscribed
@@ -1024,7 +1024,7 @@ fn two_blends_meeting_at_a_corner_trim_each_other() {
             .mass;
         let error = (measured - want).abs() / want;
         assert!(
-            error < previous,
+            error < previous || error < 1e-12,
             "refining brings it closer: {measured} vs {want}"
         );
         assert!(

@@ -39,7 +39,7 @@ pub use construct2d::{
 pub use direction::{Direction, Direction2};
 pub use elementary::{CurvePoint, SurfacePoint};
 pub use frame::{Axis, Axis2, Frame, Frame2, Handedness};
-pub use integrate::{gauss_kronrod, gauss_legendre, integrate, integrate_2d};
+pub use integrate::{gauss_kronrod, gauss_legendre, gauss_legendre_rule, integrate, integrate_2d};
 pub use interval::Interval;
 pub use knots::{BasisValues, KnotVector};
 pub use matrix::{Matrix2, Matrix3};

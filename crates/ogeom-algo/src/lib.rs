@@ -20,6 +20,7 @@ pub mod fit;
 pub mod history;
 pub mod length;
 pub mod mass;
+mod mass_chart;
 pub mod measure;
 pub mod medial;
 pub mod mesh_solid;

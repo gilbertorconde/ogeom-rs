@@ -328,9 +328,14 @@ fn a_fitted_edge_on_a_shared_cylinder_still_melts_the_same_domain_contact() {
             .is_valid(),
         "the fused drum is a valid solid"
     );
-    // The budget is two separately meshed fitted trims at this chord, not
-    // the melt: the fuse either resolves the contact or refuses by name.
-    let measured = volume(&model, &fused.shape);
+    // The container integrates on its exact surfaces; the fused drum's
+    // fitted trims leave it to the mesh, measured a decade finer so its
+    // deficit stays inside the budget. The budget is the mesh, not the
+    // melt: the fuse either resolves the contact or refuses by name.
+    let finer = Deflection::with_chord(1e-4).unwrap();
+    let measured = ogeom::algo::volume_properties(&model, &fused.shape, finer, T)
+        .unwrap()
+        .mass;
     assert!(
         (measured - before).abs() < 2e-2,
         "fusing a contained drum should give the container: {measured} vs {before}"

@@ -5,18 +5,21 @@
 //! edges, the area of its faces, the volume it encloses), each with the centre
 //! of that measure and the inertia tensor about that centre.
 //!
-//! # Computed from the tessellation, and why
+//! # Integrated on the surfaces where possible, meshed where not
 //!
-//! A polyhedron's volume has a closed form and a cylinder's does not, not
-//! once it is trimmed by arbitrary wires. An implementation exact for planar
-//! faces would be right for a box, right for a wedge, and quietly wrong for
-//! anything curved, with nothing in the answer to say which case it was. So
-//! every measure here comes from the same tessellation, and every result
-//! carries the deflection it was computed at.
+//! Area and volume are integrated on the exact surfaces first. A face on a
+//! plane, cylinder, cone, sphere or torus bounded by a chart rectangle or a
+//! full circle has a closed form; any other face with pcurves is integrated
+//! round its chart boundary by Green's theorem. Either way the result
+//! reports a deflection of zero.
 //!
-//! That makes the error bounded and stated rather than hidden. Halving the
-//! deflection and seeing the answer move tells a caller exactly how much to
-//! trust it; [`MassProperties::deflection`] is what makes that check possible.
+//! A shape with a face neither can take (no pcurves, a scaling placement,
+//! a boundary that does not close in the chart) is measured on its
+//! tessellation instead, and the result carries the deflection it was
+//! computed at. Halving the deflection and seeing the answer move tells a
+//! caller how much to trust it; [`MassProperties::deflection`] is what
+//! makes that check possible. Lengths are always measured on a
+//! discretization.
 //!
 //! # The one formula
 //!
@@ -290,6 +293,8 @@ enum ExactFace {
         sign: f64,
         share: f64,
     },
+    /// Any other face, integrated round its chart loops.
+    Chart(Box<crate::mass_chart::ChartFace>),
 }
 
 impl ExactFace {
@@ -300,6 +305,7 @@ impl ExactFace {
     const fn share(&self) -> f64 {
         match self {
             Self::ChartRectangle { share, .. } | Self::Disc { share, .. } => *share,
+            Self::Chart(_) => 1.0,
         }
     }
 
@@ -311,12 +317,14 @@ impl ExactFace {
         match self {
             Self::Disc { radius, .. } => core::f64::consts::PI * radius * radius,
             Self::ChartRectangle { rect, .. } => (rect.1 - rect.0) * (rect.3 - rect.2),
+            Self::Chart(_) => 0.0,
         }
     }
 
     fn take_away(&mut self) {
         match self {
             Self::ChartRectangle { share, .. } | Self::Disc { share, .. } => *share = -1.0,
+            Self::Chart(_) => {}
         }
     }
 }
@@ -341,7 +349,7 @@ fn exact_volume_properties(
     }
     let mut exact = Vec::with_capacity(faces.len());
     for face in &faces {
-        match exact_face(model, face, tol)? {
+        match integrable_face(model, face, tol)? {
             Some(found) => exact.extend(found),
             None => {
                 if std::env::var_os("OGEOM_DEBUG_MASS").is_some() {
@@ -354,8 +362,10 @@ fn exact_volume_properties(
             }
         }
     }
-    // And the faces must agree with each other about which way is out.
-    if !flags_agree(model, shape, tol)? {
+    // And the faces must agree with each other about which way is out. A
+    // boundary that cannot be walked to ask (a pcurve whose domain falls
+    // short of its edge's range) is left to the mesh.
+    if !flags_agree(model, shape, tol).unwrap_or(false) {
         return Ok(None);
     }
     // The divergence theorem needs a closed boundary; topology says whether
@@ -379,7 +389,7 @@ fn exact_volume_properties(
     let mut first = Vector::ZERO;
     let mut second = Matrix3::ZERO;
     for face in &exact {
-        integrate_face(face, reference, tol, &mut |p, n_da, share| {
+        let settled = integrate_face(face, reference, tol, &mut |p, n_da, share| {
             let n_da = n_da * share;
             let q = p - reference;
             mass += q.dot(n_da) / 3.0;
@@ -401,6 +411,9 @@ fn exact_volume_properties(
                 }
             }
         })?;
+        if !settled {
+            return Ok(None);
+        }
     }
     // The off-diagonal identity fills each pair twice, once from each axis;
     // average them, which also symmetrizes rounding.
@@ -438,7 +451,7 @@ fn exact_surface_properties(
     }
     let mut exact = Vec::with_capacity(faces.len());
     for face in &faces {
-        match exact_face(model, face, tol)? {
+        match integrable_face(model, face, tol)? {
             Some(found) => exact.extend(found),
             None => return Ok(None),
         }
@@ -448,7 +461,7 @@ fn exact_surface_properties(
     let mut first = Vector::ZERO;
     let mut second = Matrix3::ZERO;
     for face in &exact {
-        integrate_face(face, reference, tol, &mut |p, n_da, share| {
+        let settled = integrate_face(face, reference, tol, &mut |p, n_da, share| {
             let da = n_da.magnitude() * share;
             let q = p - reference;
             mass += da;
@@ -459,6 +472,9 @@ fn exact_surface_properties(
                 }
             }
         })?;
+        if !settled {
+            return Ok(None);
+        }
     }
     let acc = Accumulator {
         reference: Some(reference),
@@ -475,6 +491,7 @@ fn reference_point(faces: &[ExactFace], tol: Tolerances) -> OgeomResult<Point> {
     match &faces[0] {
         ExactFace::ChartRectangle { surface, rect, .. } => surface.point_at(rect.0, rect.2, tol),
         ExactFace::Disc { centre, .. } => Ok(*centre),
+        ExactFace::Chart(chart) => chart.anchor(tol),
     }
 }
 
@@ -488,11 +505,12 @@ fn integrate_face(
     _reference: Point,
     tol: Tolerances,
     contribute: &mut dyn FnMut(Point, Vector, f64),
-) -> OgeomResult<()> {
+) -> OgeomResult<bool> {
     let share = face.share();
     use ogeom_geom::Surface as _;
     const QUARTER: f64 = core::f64::consts::FRAC_PI_2;
     match face {
+        ExactFace::Chart(chart) => Ok(chart.integrate(_reference, tol, contribute)),
         ExactFace::ChartRectangle {
             surface,
             rect,
@@ -538,7 +556,7 @@ fn integrate_face(
             }
             match failure {
                 Some(e) => Err(e),
-                None => Ok(()),
+                None => Ok(true),
             }
         }
         ExactFace::Disc {
@@ -568,7 +586,7 @@ fn integrate_face(
             }
             match failure {
                 Some(e) => Err(e),
-                None => Ok(()),
+                None => Ok(true),
             }
         }
     }
@@ -632,6 +650,21 @@ fn gauss2(a: f64, b: f64, c: f64, d: f64, f: &mut dyn FnMut(f64, f64, f64)) {
             f(u, v, wu * wv);
         }
     }
+}
+
+/// A face's regions in closed form where its surface and trim allow, and
+/// otherwise its chart loops for integrating round; `None` where neither
+/// can be had.
+fn integrable_face(
+    model: &Model,
+    face: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<ExactFace>>> {
+    if let Some(found) = exact_face(model, face, tol)? {
+        return Ok(Some(found));
+    }
+    Ok(crate::mass_chart::chart_face(model, face, tol)
+        .map(|chart| vec![ExactFace::Chart(Box::new(chart))]))
 }
 
 /// The exact-integrable regions of one face, or `None` where there are

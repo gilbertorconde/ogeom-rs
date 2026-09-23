@@ -350,7 +350,7 @@ fn a5_a_corner_block_less_a_ball_clears_the_spike() {
             .mass;
         let error = (measured - want).abs() / want;
         assert!(
-            error < previous,
+            error < previous || error < 1e-12,
             "refining the mesh brings the measurement closer: {measured} vs {want}"
         );
         assert!(
@@ -412,8 +412,9 @@ fn a6_the_corner_tool_cuts_through_its_own_tangencies() {
     let pi = core::f64::consts::PI;
     let octant = 4.0 / 3.0 * pi * r * r * r / 8.0;
     let want = 1000.0 - (r * r * r - octant);
-    // The concave spherical patch meshes to the chord like any other; two
-    // deflections a decade apart say the residual is the mesh, not the cut.
+    // Integrated on its exact surfaces the corner lands on the closed form.
+    // Where a face leaves it to the mesh, two deflections a decade apart say
+    // the residual is the mesh, not the cut.
     let mut previous = f64::INFINITY;
     for chord in [1e-3, 1e-4] {
         let fine = Deflection::with_chord(chord).unwrap();
@@ -422,7 +423,7 @@ fn a6_the_corner_tool_cuts_through_its_own_tangencies() {
             .mass;
         let error = (measured - want).abs() / want;
         assert!(
-            error < previous,
+            error < previous || error < 1e-12,
             "refining the mesh brings the measurement closer: {measured} vs {want}"
         );
         assert!(

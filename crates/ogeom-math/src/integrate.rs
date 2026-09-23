@@ -117,6 +117,24 @@ pub fn gauss_legendre<F: FnMut(f64) -> f64>(mut f: F, a: f64, b: f64) -> f64 {
     total * half
 }
 
+/// The ten-point Gauss-Legendre rule on `[a, b]`: each node with its weight.
+///
+/// For a caller that needs the samples themselves rather than one scalar
+/// integral, such as a sum of several integrands over the same nodes. The
+/// weights carry the sign of `b - a`, as [`gauss_legendre`]'s do.
+#[must_use]
+pub fn gauss_legendre_rule(a: f64, b: f64) -> [(f64, f64); 10] {
+    let half = (b - a) * 0.5;
+    let middle = f64::midpoint(a, b);
+    let mut rule = [(0.0, 0.0); 10];
+    for (i, (node, weight)) in NODES.iter().zip(&WEIGHTS).enumerate() {
+        let offset = half * node;
+        rule[2 * i] = (middle - offset, weight * half);
+        rule[2 * i + 1] = (middle + offset, weight * half);
+    }
+    rule
+}
+
 /// Integrate `f` over `[a, b]` with the seven-point Gauss and fifteen-point
 /// Kronrod pair: the Kronrod value, and the magnitude of its difference
 /// from the Gauss value as the estimate of what it still misses.

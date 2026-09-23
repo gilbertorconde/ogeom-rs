@@ -8,9 +8,12 @@ Everything here is in `ogeom::algo`.
 `MassProperties`: the measure (`mass`), the centroid, and the inertia
 tensor about the centroid.
 
-- They are computed on a tessellation at a given `Deflection`. The result
-  converges as the deflection gets smaller. The test suite's volume checks
-  use bounds derived from that deflection.
+- Area and volume are integrated on the exact surfaces, trim and all,
+  whenever every face has pcurves. The result then reports a `deflection`
+  of zero and does not depend on the one passed in.
+- Otherwise they are computed on a tessellation at the given `Deflection`,
+  which the result reports. The answer converges as the deflection gets
+  smaller. Lengths are always measured this way.
 - An inside-out shell would measure a negative volume. It is reported as an
   error, not returned as a negative number.
 

@@ -51,9 +51,11 @@ pub struct Deflection {
 impl Default for Deflection {
     fn default() -> Self {
         Self {
-            // A tenth of a millimetre at unit scale: invisible on screen, and
-            // fine enough that a mass property computed from it is accurate to
-            // roughly one part in a thousand.
+            // A tenth of a millimetre at unit scale: invisible on screen. On
+            // a small curved part the angular limit below rules instead, and
+            // a mesh at this default can be a part in a hundred off in
+            // volume; mass properties integrate a face on its exact surface
+            // wherever its pcurves allow, and mesh only what they cannot.
             chord: 1e-1,
             // Half a radian (twenty-eight degrees, a circle in thirteen
             // segments), which is what B-rep kernels have long defaulted
