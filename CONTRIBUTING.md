@@ -111,6 +111,14 @@ wrong solid does not throw; it corrupts a document six operations later. So:
 
 ## Practical
 
+- **Comments describe present behaviour**, never the change that produced
+  it. No "used to", "formerly", "now returns", "since X landed", and no
+  issue, PR or commit references as the reason for a behaviour — those
+  belong in the commit message. `node tools/lint-comment-rot.mjs --all`
+  gates this in `tools/check.sh`; `--pedantic` adds an advisory tier, and
+  `lint-comment-rot: ignore` on a line opts it out where a reference is
+  load-bearing. The tracked pre-commit hook runs it over the lines a commit
+  adds; enable it once per clone with `git config core.hooksPath .githooks`.
 - **Run `./tools/check.sh`** before review — format, lints, tests and docs, with
   the test suite repeated so a property test that only fails on some seeds does
   not slip through. Do not verify by grepping cargo's output for "ok": a run

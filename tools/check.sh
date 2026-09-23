@@ -14,6 +14,13 @@ cd "$(dirname "$0")/.."
 echo "== fmt =="
 cargo fmt --all -- --check
 
+echo "== comment rot =="
+# Comments describe present behaviour, never the change that produced it and
+# never an issue, PR or commit as the reason for it: both go stale the moment
+# the next change lands. The whole tree, so a violation cannot hide in a line
+# the pre-commit hook never saw.
+node tools/lint-comment-rot.mjs --all
+
 echo "== clippy =="
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
