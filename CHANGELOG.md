@@ -19,6 +19,18 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`read_3mf`**, reading a 3MF package into one placed mesh per build
+  item, with `ThreeMfImport`, `ThreeMfObject` and `ObjectType`.
+  Components are flattened, the production extension's multi-part
+  packages followed (every slicer writes one object per part), the
+  model's unit scaled to millimetres, a mirroring transform's triangles
+  rewound, and a uniform object colour kept; per-triangle colours,
+  textures, supports and unknown required extensions come back as
+  warnings. Deflated entries are inflated by a decoder in the crate, and
+  the archive is read through its central directory, so entries streamed
+  with their sizes after the data read too. `read_package` reads deflated
+  entries as well, checks every entry's checksum, and refuses ZIP64 and
+  encrypted entries by name.
 - **`restore_containment`**, the pass that establishes the tolerance
   containment rule the checker enforces: every edge widened to at least
   the faces it bounds, every vertex to at least the edges it bounds,

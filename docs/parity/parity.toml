@@ -1664,8 +1664,8 @@ verdict = "covered"
 claims = ["RWGltf_*", "RWObj_*", "RWPly_*", "RWStl", "RWStl_*", "RWMesh_*", "StlAPI", "StlAPI_*", "DE_*", "DEBRepCascade_*", "DEXCAFCascade_*", "RWMesh", "RWObj"]
 symbols = [
     "ogeom_io::read_gltf", "ogeom_io::read_glb", "ogeom_io::read_obj",
-    "ogeom_io::read_ply", "ogeom_io::write_3mf", "ogeom_io::ImportedMesh",
-    "ogeom_io::ExportMesh",
+    "ogeom_io::read_ply", "ogeom_io::write_3mf", "ogeom_io::read_3mf",
+    "ogeom_io::ThreeMfImport", "ogeom_io::ImportedMesh", "ogeom_io::ExportMesh",
 ]
 tests = ["crates/ogeom/tests/gltf_reading.rs", "crates/ogeom/tests/exchange.rs"]
 

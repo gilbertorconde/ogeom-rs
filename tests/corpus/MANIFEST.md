@@ -18,6 +18,9 @@ One entry per committed file. A file without an entry does not get committed.
 | `NIST-README.txt` | NIST's own readme from inside the zip, kept verbatim as provenance | same | 2026-08-04 |
 | `nist_ctc_01_asme1_ap242-e1.stp` | Same NIST zip as the AP203 parts, `NIST-PMI-STEP-Files/` root: the CTC 1 part in AP242 edition 1 with full semantic PMI — dimensions, plus/minus bounds, geometric tolerances, datums. | Same NIST terms as above | 2026-08-05 |
 | `ogeom_asm_bolted_plate.stp` | Authored for this project (generated, then committed): a plate with two bolts — AP214 product structure, three usage occurrences over two parts, per-product and per-face colours, reference designators. Ground truth for the assembly reader, every value chosen by hand. | This repository's own licence (MIT OR Apache-2.0) | 2026-08-05 |
+| `threemf_cube_deflated.3mf` | Authored for this project (generated with Python's `zipfile`, then committed): one 10 mm cube with a base-material colour, placed at x = 10 by its build item, its start part named by the package relationships, every entry deflated and streamed with a data descriptor as slicers write them. | This repository's own licence (MIT OR Apache-2.0) | 2026-09-23 |
+| `threemf_components_inch.3mf` | Authored for this project, as above: model unit inch; one object of two components of a one-inch cube held in a model part of its own and reached through the production extension's `p:path`, the second component mirrored in x. | same | 2026-09-23 |
+| `threemf_painted_sphere.3mf` | Authored for this project, as above: a 4 680-triangle sphere painted two colours from a colour group, large enough to span several dynamic-Huffman blocks, beside a cube of type `support`. | same | 2026-09-23 |
 
 The eleven `.stp` files are the **AP203 geometry-only** exports of the CTC 1–5 and
 FTC 6–11 test parts from the NIST MBE PMI Validation and Conformance Testing

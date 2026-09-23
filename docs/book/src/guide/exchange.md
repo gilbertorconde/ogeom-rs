@@ -71,11 +71,16 @@ interchange at the model level.
 |---|---|---|
 | STL (ascii and binary) | yes | yes |
 | glTF / GLB | yes | GLB |
-| OBJ | — | yes |
-| PLY | — | yes |
+| OBJ | yes | yes |
+| PLY | yes | yes |
 | VRML | — | yes |
-| 3MF | — | yes |
+| 3MF (deflated or stored, multi-part) | yes | yes |
 | DXF (2D drawings) | yes | yes |
+
+`read_3mf` returns one placed mesh per build item — components
+flattened, the production extension's multi-part packages followed, the
+model's unit scaled to millimetres — with a uniform object colour where
+the file gives one, and warnings for what it read with a caveat.
 
 The mesh writers take the tessellation you built at your chosen
 deflection — the error budget is yours, stated once. DXF is the outlet
