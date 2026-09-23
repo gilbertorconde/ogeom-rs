@@ -3,11 +3,11 @@
 //! *Elsewhere* this is `GeomAPI_IntCS` and the line/quadric half of `IntAna`.
 //! Two consumers drive it: edge/face interference in the boolean's pave
 //! filler, and the exact point-in-solid classifier, which is a ray/surface
-//! query per face — the very use `docs/PLAN.md` carries what remains exact.
+//! query per face, the very use `docs/PLAN.md` carries what remains exact.
 //!
 //! # Well-posed, for once
 //!
-//! `C(t) = S(u, v)` is three equations in three unknowns — unlike the
+//! `C(t) = S(u, v)` is three equations in three unknowns; unlike the
 //! surface/surface system, nothing has to be pinned for Newton to converge to
 //! a point. The analytic cases are still answered in closed form first: a line
 //! against a plane or a quadric is a linear or quadratic equation, and solving
@@ -16,8 +16,8 @@
 //!
 //! # A curve lying in the surface
 //!
-//! A line in a plane crosses it nowhere and everywhere. That is an overlap —
-//! the parameter range of the curve that lies in the surface — and it is a
+//! A line in a plane crosses it nowhere and everywhere. That is an overlap
+//! (the parameter range of the curve that lies in the surface), and it is a
 //! different answer from any list of points. Detected where the analytic
 //! forms can see it; the general path reports whatever isolated piercings its
 //! sampling resolves, and says so.
@@ -48,7 +48,7 @@ pub struct CurveSurfaceIntersection {
     pub crossings: Vec<Piercing>,
     /// Parameter ranges of the curve that lie *in* the surface.
     ///
-    /// Detected for the analytic cases — a line in a plane. The general path
+    /// Detected for the analytic cases: a line in a plane. The general path
     /// cannot see lying-on and reports whatever isolated piercings its
     /// sampling resolves.
     pub lying: Vec<(f64, f64)>,
@@ -257,7 +257,7 @@ fn line_quadric(
         // The extent check is the gap. The polish clamps the surface
         // parameters into the stated domain, so a root beyond the cylinder's
         // height converges to the rim with a gap of exactly how far past it
-        // was — a piercing of the unbounded geometry, not of this surface.
+        // was: a piercing of the unbounded geometry, not of this surface.
         // Discarding the polish's gap and writing zero here was the bug this
         // comment replaces.
         if found.gap > tol.confusion() {
@@ -316,7 +316,7 @@ fn invert(
         _ => return None,
     };
     // One polish step against the curve point, so parameter rounding in the
-    // inversion does not survive into the result — and the gap comes with it,
+    // inversion does not survive into the result, and the gap comes with it,
     // because the polish clamps into the surface's extents and the gap is
     // what says whether the clamped answer still touches the curve.
     polish(curve, surface, on_curve, guess, tol)
@@ -614,7 +614,7 @@ mod tests {
     #[test]
     fn a_spline_through_a_sphere_is_found_and_polished() {
         // A spline wandering through the ball: piercings with no closed form
-        // anywhere, verified implicitly — each reported point is on the
+        // anywhere, verified implicitly: each reported point is on the
         // sphere to the gap it claims.
         let wander: Curve = BSplineCurve::new(
             KnotVector::new(vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 3).unwrap(),

@@ -3,7 +3,7 @@
 //! Part 21 is a syntax, not a schema: `#3 = CIRCLE('', #2, 5.0);` says an
 //! instance exists with a keyword and arguments, and what a `CIRCLE` *means*
 //! is the reader's business, not the parser's. This module turns the text
-//! into a map from instance number to typed argument trees and nothing more —
+//! into a map from instance number to typed argument trees and nothing more,
 //! which is what lets the reader say precisely which entities it understood
 //! and which it deliberately walked past.
 
@@ -13,11 +13,11 @@ use std::collections::HashMap;
 /// One argument of an entity instance.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Arg {
-    /// `$` — no value.
+    /// `$`: no value.
     Null,
-    /// `*` — value derivable from the schema, not stated.
+    /// `*`: value derivable from the schema, not stated.
     Derived,
-    /// `#n` — a reference to another instance.
+    /// `#n`: a reference to another instance.
     Ref(u64),
     /// An integer literal.
     Int(i64),
@@ -25,11 +25,11 @@ pub enum Arg {
     Real(f64),
     /// A string literal, with Part 21's quote doubling undone.
     Str(String),
-    /// `.NAME.` — an enumeration value, without its dots.
+    /// `.NAME.`: an enumeration value, without its dots.
     Enum(String),
     /// A parenthesised list.
     List(Vec<Arg>),
-    /// `KEYWORD(...)` in argument position — a typed (select) value.
+    /// `KEYWORD(...)` in argument position: a typed (select) value.
     Typed(String, Vec<Arg>),
 }
 
@@ -354,8 +354,8 @@ impl Parser<'_> {
         self.expect(b'\'')?;
         let mut out = String::new();
         loop {
-            // The common run — everything up to the next quote or non-ASCII
-            // byte — lands in one push, not a byte at a time. Bytes above
+            // The common run (everything up to the next quote or non-ASCII
+            // byte) lands in one push, not a byte at a time. Bytes above
             // ASCII keep their historical Latin-1 reading, one by one.
             let start = self.at;
             while self
@@ -400,7 +400,7 @@ impl Parser<'_> {
             match b {
                 b'0'..=b'9' => self.at += 1,
                 b'.' => {
-                    // A dot starts a real — unless it starts an enumeration
+                    // A dot starts a real, unless it starts an enumeration
                     // hard against the number, which no real file does.
                     real = true;
                     self.at += 1;

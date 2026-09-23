@@ -18,7 +18,7 @@ fn a_drums_silhouette_is_two_rulings_and_a_balls_is_a_circle() {
         .shape;
 
     // Seen across its axis, a cylinder's outline is the two rulings at the
-    // sides — exactly, at the radius, not to within a chord.
+    // sides: exactly, at the radius, not to within a chord.
     let found = ogeom::hlr::exact::silhouettes(&model, &drum, Vector::X, T).unwrap();
     assert_eq!(found.len(), 2, "two rulings: {found:?}");
     for ruling in &found {
@@ -73,8 +73,8 @@ fn the_far_side_of_a_drum_is_hidden_and_the_near_side_is_not() {
         drawing.hidden.len()
     );
 
-    // The rim circles are half visible and half hidden — the drum's own
-    // wall stands in the way of the far half — so both lists hold curves
+    // The rim circles are half visible and half hidden (the drum's own
+    // wall stands in the way of the far half), so both lists hold curves
     // that came from model edges.
     let from_edges = |curves: &[ogeom::hlr::DrawnCurve]| {
         curves
@@ -133,11 +133,11 @@ fn iso_lines_stay_on_their_face_and_reflect_lines_follow_the_light() {
 }
 
 /// §D1: a torus has no closed-form silhouette, and it is *walked* rather
-/// than refused — the same walk a surface intersection uses, following a
+/// than refused: the same walk a surface intersection uses, following a
 /// different condition.
 ///
 /// Seen along its own axis a torus's outline is two circles, the outer and
-/// the inner equators, and those are arithmetic — so the marched answer is
+/// the inner equators, and those are arithmetic, so the marched answer is
 /// held to them rather than to its own consistency.
 #[test]
 fn a_torus_silhouette_is_marched_and_lands_on_its_own_equators() {
@@ -164,7 +164,7 @@ fn a_torus_silhouette_is_marched_and_lands_on_its_own_equators() {
                 + (silhouette.range.1 - silhouette.range.0) * f64::from(k) / 64.0;
             let p = ogeom::geom::Curve3d::point_at(&silhouette.curve, t, T).unwrap();
             // The walk is fitted, so the claim is the chord it was walked to
-            // and not exactness — which is what a marched curve is worth.
+            // and not exactness, which is what a marched curve is worth.
             assert!(p.z.abs() < 1e-4, "in the torus's own plane: {p:?}");
             let r = p.x.hypot(p.y);
             if (r - (major - minor)).abs() < 1e-4 {

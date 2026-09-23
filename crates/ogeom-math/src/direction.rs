@@ -5,8 +5,8 @@
 //!
 //! This matters more than it looks. Surface normals, axis directions and
 //! parameterization references are all directions, and an algorithm that
-//! assumes unit length — as almost all of them do, implicitly, when they skip a
-//! division — silently produces scaled results when handed a vector that is not.
+//! assumes unit length (as almost all of them do, implicitly, when they skip a
+//! division) silently produces scaled results when handed a vector that is not.
 //! Making the invariant unrepresentable-if-false removes the whole class.
 
 use core::ops::{Mul, Neg};
@@ -55,7 +55,7 @@ impl Direction {
     /// Checks rather than normalizes, and the distinction is the whole reason
     /// it exists: dividing a unit vector by its own magnitude does not give it
     /// back, it gives something a bit or two away. That is invisible until
-    /// something has to reproduce a direction exactly — reading a document back
+    /// something has to reproduce a direction exactly: reading a document back
     /// from a file, above all, where the drift turns a round trip that should
     /// be the identity into one that changes the model a little every time.
     ///
@@ -108,7 +108,7 @@ impl Direction {
         self.0.to_array()
     }
 
-    /// Dot product with another direction — the cosine of the angle between
+    /// Dot product with another direction: the cosine of the angle between
     /// them, in `[-1, 1]` up to rounding.
     #[must_use]
     pub fn dot(self, other: Self) -> f64 {
@@ -122,7 +122,7 @@ impl Direction {
     }
 
     /// Cross product, as a free vector. Its magnitude is the sine of the angle
-    /// between the two directions, so it is *not* itself a direction — for
+    /// between the two directions, so it is *not* itself a direction; for
     /// nearly parallel inputs it is nearly null.
     #[must_use]
     pub fn cross_vector(self, other: Self) -> Vector {
@@ -163,8 +163,8 @@ impl Direction {
     /// The unit normal to two free vectors.
     ///
     /// The right way to build a normal from two edges of a triangle. Naively
-    /// normalizing `a.cross(b)` compares its magnitude — which is twice the
-    /// triangle's area, and so scales as the *square* of the size — against a
+    /// normalizing `a.cross(b)` compares its magnitude (which is twice the
+    /// triangle's area, and so scales as the *square* of the size) against a
     /// length tolerance. A triangle a micron across then looks degenerate even
     /// though its normal is perfectly well determined. The test here is
     /// relative: `|a x b| > tol.angular() * |a| * |b|`, which asks the question
@@ -336,13 +336,13 @@ impl Direction2 {
         self.0.to_array()
     }
 
-    /// Dot product — the cosine of the angle between the two.
+    /// Dot product: the cosine of the angle between the two.
     #[must_use]
     pub fn dot(self, other: Self) -> f64 {
         self.0.dot(other.0)
     }
 
-    /// Scalar cross product — the sine of the signed angle from `self` to
+    /// Scalar cross product: the sine of the signed angle from `self` to
     /// `other`.
     #[must_use]
     pub fn cross(self, other: Self) -> f64 {

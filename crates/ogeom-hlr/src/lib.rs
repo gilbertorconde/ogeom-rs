@@ -1,4 +1,4 @@
-//! Hidden line removal — projecting 3D shapes to annotated 2D edge sets for
+//! Hidden line removal: projecting 3D shapes to annotated 2D edge sets for
 //! technical drawings.
 //!
 //! *Elsewhere:* `HLRAlgo`, `HLRBRep`, `HLRTopoBRep` and `HLRAppli`.

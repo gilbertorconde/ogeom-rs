@@ -1,6 +1,6 @@
 //! Non-manifold topology, pinned: the model permits an edge bounding three
 //! faces and a compound mixing dimensions, and every query over them answers
-//! honestly — traversal finds what is there, closure says not-closed, the
+//! honestly: traversal finds what is there, closure says not-closed, the
 //! native format gives the same bytes back.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
@@ -11,7 +11,7 @@ use ogeom::topo::{Model, Shape, ShapeType, explore_unique};
 
 const T: Tolerances = Tolerances::millimetres();
 
-/// Three rectangular sheets meeting along one shared spine edge — a T-joint
+/// Three rectangular sheets meeting along one shared spine edge: a T-joint
 /// plus one more leaf, the textbook non-manifold edge.
 fn t_joint(model: &mut Model) -> (Shape, Vec<Shape>) {
     let spine = ogeom::algo::make_edge(
@@ -118,7 +118,7 @@ fn an_edge_bounding_three_faces_is_permitted_and_read_honestly() {
     // bound a volume, and the shell says so instead of guessing.
     assert!(!ogeom::algo::is_shell_closed(&model, &shell).unwrap());
 
-    // The mesh layer meshes what is there — each leaf triangulates.
+    // The mesh layer meshes what is there: each leaf triangulates.
     let done =
         ogeom::mesh::tessellate(&mut model, &shell, ogeom::mesh::Deflection::default(), T).unwrap();
     assert_eq!(done.faces, 3);

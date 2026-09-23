@@ -6,7 +6,7 @@
 //! Configurations the surface/surface literature names as hard.
 //!
 //! The corpus problem in miniature: every other test's inputs were chosen by
-//! the people who wrote the code, and these were not — they are transcribed
+//! the people who wrote the code, and these were not; they are transcribed
 //! from the published record of what breaks intersectors. Two of them earned
 //! their keep immediately: the cone case exposed `Cone::distance_to` measuring
 //! one nappe of a two-nappe surface (a defect in the *instrument*, flagged by
@@ -89,8 +89,8 @@ fn options() -> Marching {
 fn equal_cylinders_at_a_shallow_angle_cover_everything_even_fragmented() {
     // The classic: equal radii force the two intersection curves through two
     // tangency points, and a two-degree crossing makes them long and thin.
-    // The tracer stalls at the tangencies rather than jumping branch — the
-    // deliberate refusal — so the answer arrives as fragments. What must hold
+    // The tracer stalls at the tangencies rather than jumping branch (the
+    // deliberate refusal), so the answer arrives as fragments. What must hold
     // even so: every fragment on both surfaces, and nothing missed.
     let a = cyl(Point::ORIGIN, Vector::Z, 1.0);
     let tilt = 2.0_f64.to_radians();
@@ -106,7 +106,7 @@ fn equal_cylinders_at_a_shallow_angle_cover_everything_even_fragmented() {
     let score = coverage(&a, &b, &found, 50, T).unwrap();
     assert!(
         score.complete(),
-        "{}/{} — fragmented is acceptable, incomplete is not",
+        "{}/{}: fragmented is acceptable, incomplete is not",
         score.covered,
         score.crossings
     );
@@ -143,7 +143,7 @@ fn near_tangent_sphere_and_cylinder_give_one_thin_loop() {
 #[test]
 fn a_sphere_across_a_cones_apex_cuts_both_nappes() {
     // The case that caught the instrument. A cone's height range crosses its
-    // apex, so the surface has two nappes — and a sphere spanning the apex
+    // apex, so the surface has two nappes, and a sphere spanning the apex
     // cuts a loop in each. The first run flagged the lower loop as 0.9 off
     // the cone; the trace was exact and Cone::distance_to was measuring one
     // nappe of a two-nappe surface.
@@ -173,7 +173,7 @@ fn a_sphere_across_a_cones_apex_cuts_both_nappes() {
 fn tangency_along_a_circle_produces_fragments_not_a_curve() {
     // A plane resting on top of a torus touches along a whole circle. There
     // is no transversal curve to find, and the marcher cannot say "touching
-    // along a curve" — near the contact the two surfaces sit within the
+    // along a curve": near the contact the two surfaces sit within the
     // correction's acceptance of each other, so seeds converge and wander
     // briefly before stalling. What comes back is fragments hugging the
     // contact circle: on both surfaces to rounding, describing nothing.
@@ -242,8 +242,8 @@ fn the_same_tangency_asked_of_the_one_call_comes_back_as_contact() {
 fn a_ball_seated_in_a_torus_tube_has_its_contact_walked() {
     // The tangency with no closed form: a unit ball centred on the tube's
     // own centre line touches the torus along a whole tube cross-section.
-    // Nothing analytic answers this pair, so it goes through the marcher —
-    // which stalls, as tangencies make it — and the stalled fragments seed
+    // Nothing analytic answers this pair, so it goes through the marcher
+    // (which stalls, as tangencies make it), and the stalled fragments seed
     // the tangential walker instead of being discarded.
     //
     // The contact comes back in two arcs rather than one loop, and that is

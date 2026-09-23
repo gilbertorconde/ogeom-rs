@@ -1,6 +1,6 @@
 //! One pick structure over several deflections.
 //!
-//! The claim under test is not that the hierarchy is faster — that is what it
+//! The claim under test is not that the hierarchy is faster; that is what it
 //! is *for*, and a timing is not a proof of anything. The claim is that it
 //! changes nothing: what the descent returns is what the finest level alone
 //! returns, ray for ray, hit for hit. A structure that skipped work and got a
@@ -159,7 +159,7 @@ fn a_view_asks_for_the_detail_it_needs_and_gets_a_level_that_exists() {
         hierarchy.coarsest().triangle_count()
     );
 
-    // Every level names the same faces in the same order — which is what lets
+    // Every level names the same faces in the same order, which is what lets
     // an answer found at one level be carried to another.
     let count = hierarchy.coarsest().face_count();
     for index in 0..hierarchy.level_count() {
@@ -167,7 +167,7 @@ fn a_view_asks_for_the_detail_it_needs_and_gets_a_level_that_exists() {
     }
 }
 
-/// And the descent actually rules things out. Not a timing — a count: for a
+/// And the descent actually rules things out. Not a timing but a count: for a
 /// ray down the part, the coarse level admits a small fraction of the faces,
 /// which is the whole reason the structure exists.
 #[test]
@@ -185,7 +185,7 @@ fn the_coarse_level_rules_out_most_of_the_scene() {
         let near = coarse.faces_near(ray, 1.0 + 0.05);
         admitted += near.iter().filter(|x| **x).count();
         asked += total;
-        // And nothing the fine level hits is ever ruled out — the property
+        // And nothing the fine level hits is ever ruled out: the property
         // the descent stands on, checked ray by ray rather than argued.
         for hit in fine.pick(ray, 0.0) {
             let owner = fine.face_index(hit.triangle).unwrap();

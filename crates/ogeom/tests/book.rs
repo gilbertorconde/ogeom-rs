@@ -1,6 +1,6 @@
 //! The guide's code, run. Every example in `docs/book/` is included from
-//! this file by anchor, so a snippet that stops compiling — or stops being
-//! true — fails the build instead of lying in the documentation.
+//! this file by anchor, so a snippet that stops compiling (or stops being
+//! true) fails the build instead of lying in the documentation.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -194,7 +194,7 @@ fn watching_an_import() {
 
     // A watch scopes a long operation: its sink hears each stage as the
     // operation reaches it, and its canceller stops the work at the next
-    // checkpoint. Stages that know their numbers say them — "step: solid"
+    // checkpoint. Stages that know their numbers say them: "step: solid"
     // arrives as (done, total), which is what a determinate progress bar
     // is made of.
     let watch = Watch::with_stage_sink(|stage: Stage<'_>| {
@@ -208,7 +208,7 @@ fn watching_an_import() {
     drop(stop);
 
     // The report is the import's honest ledger: entities the reader met
-    // and did not translate, warnings one line each — and the faces that
+    // and did not translate, warnings one line each, and the faces that
     // read without a complete trim, by file id, because their boundary
     // sat too far from the surface for any honest pcurve. Nothing here:
     // this file is clean.

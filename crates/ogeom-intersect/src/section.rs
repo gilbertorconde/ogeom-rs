@@ -1,18 +1,18 @@
 //! Where two surfaces meet: the one call.
 //!
-//! Everything else in this crate is a stage — closed forms, seeding, tracing,
+//! Everything else in this crate is a stage: closed forms, seeding, tracing,
 //! fitting. This is the function an application calls, and the one `ogeom-bool`
 //! will build on: give it two surfaces, get back what they do to each other,
 //! with the analytic path taken where it exists and the marched-and-fitted
 //! path where it does not. The caller does not choose; the pair does.
 //!
-//! *Elsewhere* this is `GeomAPI_IntSS` over `IntPatch`/`GeomInt` — one entry
+//! *Elsewhere* this is `GeomAPI_IntSS` over `IntPatch`/`GeomInt`: one entry
 //! point hiding an analytic dispatch and a walking intersector.
 //!
 //! # What a section curve carries
 //!
 //! Three descriptions, because three consumers: the curve in space for the
-//! edge, and a pcurve per surface for the faces — face splitting happens in
+//! edge, and a pcurve per surface for the faces; face splitting happens in
 //! parameter space, and a curve a face cannot express is one it cannot be
 //! split along. Analytic results carry exact pcurves where the projection has
 //! a closed form and `None` where it does not; fitted results always carry
@@ -21,7 +21,7 @@
 //! A pcurve here is **same-parameter** with its 3D curve: evaluating either at
 //! the same `t` lands on the same point of the intersection. That is the claim
 //! `docs/DATA_MODEL.md` §6 makes edges carry, and it is arranged here by
-//! construction — the 2D curves inherit the 3D curve's own parameterization —
+//! construction (the 2D curves inherit the 3D curve's own parameterization)
 //! rather than asserted and repaired later.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -61,8 +61,8 @@ pub struct SectionCurve {
     /// The curve in the first surface's parameter space, where it has one.
     ///
     /// Always present for a fitted curve. For an exact curve, present when the
-    /// projection has a closed form — a line on a plane, a circle on the
-    /// cylinder it wraps — and `None` where it does not, which is a statement
+    /// projection has a closed form (a line on a plane, a circle on the
+    /// cylinder it wraps) and `None` where it does not, which is a statement
     /// about the projection rather than about the curve.
     pub on_a: Option<PlanarCurve>,
     /// The same, on the second surface.
@@ -70,7 +70,7 @@ pub struct SectionCurve {
     /// How far this curve may sit from the true intersection.
     ///
     /// Zero for an exact curve. For a fitted one, the trace's chord tolerance
-    /// plus the fit's reported error — the sum of the stated parts.
+    /// plus the fit's reported error: the sum of the stated parts.
     pub tolerance: f64,
     /// Whether the curve came from a closed form.
     pub exact: bool,
@@ -79,8 +79,8 @@ pub struct SectionCurve {
     /// Whether the surfaces *touch* along this curve rather than crossing
     /// it.
     ///
-    /// A tangential contact is a real curve — the two surfaces meet there,
-    /// and a drawing has to show it — but it carries no boundary parity:
+    /// A tangential contact is a real curve (the two surfaces meet there,
+    /// and a drawing has to show it), but it carries no boundary parity:
     /// neither surface passes through the other, so nothing is inside on
     /// one side and outside on the other. Consumers that classify by
     /// crossing must leave these out of that arithmetic; consumers that
@@ -94,7 +94,7 @@ pub enum SurfaceIntersection {
     /// They do not meet.
     ///
     /// From the general path this means *no crossing was found at the seeding
-    /// resolution* — a branch thinner than the sampling grid is invisible to
+    /// resolution*: a branch thinner than the sampling grid is invisible to
     /// it, and the completeness instrument in `tests/support/coverage.rs` is
     /// what checks.
     Apart,
@@ -108,7 +108,7 @@ pub enum SurfaceIntersection {
 
 /// Where two surfaces meet.
 ///
-/// The analytic path answers the pairs with closed forms — exactly, with
+/// The analytic path answers the pairs with closed forms, exactly, with
 /// tolerance zero. Every other pair is seeded, traced and fitted to
 /// `options.tolerance`. One call, and the pair decides the path.
 ///
@@ -116,7 +116,7 @@ pub enum SurfaceIntersection {
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the options
 /// are unusable. A pair the marcher finds nothing for is [`Apart`], not an
-/// error — see that variant for what it can and cannot claim.
+/// error; see that variant for what it can and cannot claim.
 ///
 /// [`Apart`]: SurfaceIntersection::Apart
 pub fn intersect_surfaces(
@@ -157,8 +157,8 @@ pub fn intersect_surfaces(
 
 /// An exact curve dressed as a section, clipped to the surfaces it lies on.
 ///
-/// The analytic layer works on the unbounded geometry — a plane and a cylinder
-/// meet in unbounded lines — but the *surfaces* carry finite extents, and a
+/// The analytic layer works on the unbounded geometry (a plane and a cylinder
+/// meet in unbounded lines), but the *surfaces* carry finite extents, and a
 /// section running a billion units past both is not something an edge can be
 /// built on. A line is clipped to the parameter interval where it is inside
 /// both extents, through its exact pcurves; a curve wholly outside either
@@ -167,7 +167,7 @@ pub fn intersect_surfaces(
 ///
 /// A *closed* curve partially outside an extent is kept whole: cutting it into
 /// arcs is the restriction problem, and the restriction that matters is the
-/// face's trim, which is §8's job — the extent here is only the surface's
+/// face's trim, which is §8's job; the extent here is only the surface's
 /// parameterization window.
 fn exact_section(
     curve: Curve,
@@ -245,7 +245,7 @@ fn exact_section(
 ///
 /// Decided through the curve's own pcurves, which is where the normals can
 /// be read without inverting anything. A curve missing a pcurve on either
-/// surface is reported as a crossing — the honest default, since a section
+/// surface is reported as a crossing, the honest default, since a section
 /// nobody can place in a chart is one nothing can classify as contact
 /// either.
 fn touching_along(
@@ -258,8 +258,8 @@ fn touching_along(
 ) -> bool {
     // The chart position of a sample: through the pcurve where one exists,
     // through the surface's own closed-form inversion where not. A meridian
-    // through a sphere's poles has no pcurve — its longitude jumps half a
-    // turn at each pole — but every *point* of it inverts fine, and a
+    // through a sphere's poles has no pcurve (its longitude jumps half a
+    // turn at each pole), but every *point* of it inverts fine, and a
     // tangency that would be missed for want of a pcurve becomes a crossing
     // section lying along a face's own boundary, which is the worst thing a
     // section can be.
@@ -275,7 +275,7 @@ fn touching_along(
     };
     let (lo, hi) = curve.domain();
     // Offsets chosen off the round fractions, so a curve through a chart
-    // degeneracy — a meridian's poles sit at quarters of its turn — is
+    // degeneracy (a meridian's poles sit at quarters of its turn) is
     // sampled beside the degenerate points rather than on them. A sample
     // whose inversion still fails is skipped: the point tells us nothing,
     // not that the surfaces cross.
@@ -392,7 +392,7 @@ fn marched(
         // noise floor of a tangential valley from a genuine sign change, and
         // what it traces there is a stalled fragment of the valley, not a
         // section. The valley is still a curve, though, and the tangential
-        // walker is the one that can follow it — so the fragment becomes a
+        // walker is the one that can follow it, so the fragment becomes a
         // seed rather than a discard, and what comes back is marked as
         // contact so nobody classifies by it.
         if branch_is_tangential(a, b, branch, tol)? {
@@ -410,7 +410,7 @@ fn marched(
             );
         }
         // A fit past its budget is still honest data: the error it reached
-        // is carried on the record and every consumer widens by it — an
+        // is carried on the record and every consumer widens by it: an
         // imported part's ragged pair can trace branches nothing fits, and
         // those sections fall outside every trim downstream. Only a trace
         // cut off by the point budget, refused above, states a curve that
@@ -452,8 +452,8 @@ fn marched(
 /// traced covers it.
 ///
 /// A tangential valley hands the crossing marcher several stalled fragments
-/// — the seeds converge onto the contact from wherever they started and
-/// wander there — so the fragments are candidates for *one* curve, not
+/// (the seeds converge onto the contact from wherever they started and
+/// wander there), so the fragments are candidates for *one* curve, not
 /// several. A fragment whose middle already lies on a traced contact is one
 /// of those repeats.
 fn walk_contact(
@@ -491,7 +491,7 @@ fn walk_contact(
         on_b: fragment.on_b[middle],
     };
     // The walker refuses a seed that is not a contact; that refusal is an
-    // answer, not a failure — the fragment simply had nothing to follow.
+    // answer, not a failure: the fragment simply had nothing to follow.
     // A walk that stalls where it started says the same thing in points:
     // too few to fit, so there is no contact curve to report here.
     Ok(trace_tangential(a, b, seed, marching, tol)
@@ -538,7 +538,7 @@ fn branch_is_tangential(
 }
 
 /// The exact pcurve of a curve lying on a surface, where the projection has
-/// a closed form — `None` where it does not.
+/// a closed form; `None` where it does not.
 ///
 /// Public because the boolean's same-domain handling needs it: two faces on
 /// one geometric surface may still carry different charts, and the other
@@ -559,7 +559,7 @@ pub fn exact_pcurve_of(
 /// A curve's chart image can depend on *which part* of the curve is meant: a
 /// ruling on a cone crosses the apex, and its angle on the far nappe is half
 /// a turn from its angle on the near one. The curve's own domain may span
-/// both — an imported line's usually does — so a caller that knows its edge's
+/// both (an imported line's usually does), so a caller that knows its edge's
 /// range must say so, or the exact projection may answer for the wrong side.
 #[must_use]
 pub fn exact_pcurve_over(
@@ -576,7 +576,7 @@ pub fn exact_pcurve_over(
 ///
 /// Same-parameter by construction: each 2D curve inherits the 3D curve's own
 /// parameterization, so the two evaluate to the same point of the intersection
-/// at the same `t`. The cases are the ones where that inheritance is exact —
+/// at the same `t`. The cases are the ones where that inheritance is exact;
 /// anything else returns `None` rather than a fit, because an *exact* result
 /// with a fitted pcurve would be a curve whose descriptions disagree by an
 /// amount nothing on it records.
@@ -613,7 +613,7 @@ fn exact_pcurve(
 
 /// The pcurve of a curve on a cone, for the two straight-line families.
 ///
-/// A ruling — through the apex, on the surface — runs at constant `u`; a
+/// A ruling (through the apex, on the surface) runs at constant `u`; a
 /// circle perpendicular to the axis, centred on it, with the radius the cone
 /// has at that height, runs at constant `v`. Both inherit the 3D curve's own
 /// parameter, the circle with phase and winding exactly as the cylinder case.
@@ -663,7 +663,7 @@ fn on_cone(
             )
         }
         Curve::Line(line) => {
-            // A ruling: verified by sample, not assumed — three points on
+            // A ruling: verified by sample, not assumed: three points on
             // the surface pin a line to it.
             let axis = line.axis();
             let on = |t: f64| {
@@ -674,7 +674,7 @@ fn on_cone(
                 return None;
             }
             // A ruling reaching the tip may be *stated* from the apex
-            // itself — where the angle is atan2(0, 0), garbage — and its
+            // itself (where the angle is atan2(0, 0), garbage) and its
             // own domain usually spans both nappes, where the angles differ
             // by half a turn. Measure the angle at whichever end of the
             // *used* range stands farthest from the axis: that is the side
@@ -685,9 +685,9 @@ fn on_cone(
                 line.domain()
             };
             // Only the used range votes. The line's own origin is stated
-            // wherever the file likes — some writers park it hundreds of
+            // wherever the file likes (some writers park it hundreds of
             // kilometres down the infinite line, past the apex on the other
-            // nappe — and letting it compete reads the angle half a turn
+            // nappe), and letting it compete reads the angle half a turn
             // from the side the edge actually uses.
             let mut local: Option<ogeom_math::Point> = None;
             for t in [lo, hi] {
@@ -730,9 +730,9 @@ fn on_cone(
 /// The pcurve of a circle on a torus, for the two families that are straight
 /// lines in `(u, v)`.
 ///
-/// A *parallel* — centred on the axis, in a plane perpendicular to it — runs
-/// at constant `v`; a *tube circle* — minor radius, centred on the tube's
-/// spine, in a plane through the axis — runs at constant `u`. Both inherit
+/// A *parallel* (centred on the axis, in a plane perpendicular to it) runs
+/// at constant `v`; a *tube circle* (minor radius, centred on the tube's
+/// spine, in a plane through the axis) runs at constant `u`. Both inherit
 /// the circle's own angle, phase and winding included, exactly as the
 /// cylinder case does; the STEP reader is the consumer that forced the torus
 /// into this list, fillet faces being tori more often than not.
@@ -858,7 +858,7 @@ fn on_plane(curve: &Curve, plane: ogeom_math::Plane, tol: Tolerances) -> Option<
         Curve::BSpline(b) => {
             // Affine invariance: a (rational) B-spline in the plane projects
             // into the plane's own coordinates control point by control
-            // point, knots and weights untouched — exact, and same-parameter
+            // point, knots and weights untouched: exact, and same-parameter
             // by construction.
             let control = b
                 .control_points()
@@ -881,7 +881,7 @@ fn on_plane(curve: &Curve, plane: ogeom_math::Plane, tol: Tolerances) -> Option<
 ///
 /// A line along the axis runs at constant `u`; a full circle around it runs at
 /// constant `v`. Both are lines in `(u, v)`, exactly, and both inherit the 3D
-/// curve's own parameter — height for the line, angle for the circle.
+/// curve's own parameter: height for the line, angle for the circle.
 fn on_cylinder(
     curve: &Curve,
     range: (f64, f64),
@@ -937,11 +937,11 @@ fn on_cylinder(
                 return None;
             }
             let local = frame.to_local(circle.centre());
-            // Where the circle's own angle zero sits in the cylinder's angle —
+            // Where the circle's own angle zero sits in the cylinder's angle,
             // and which way its parameter runs around the axis. A section
             // circle inherits its winding from the pair that made it, and one
-            // wound against the cylinder's `u` — a circle cut by a plane whose
-            // normal opposes the axis — runs its pcurve in `-u`. Writing `+u`
+            // wound against the cylinder's `u` (a circle cut by a plane whose
+            // normal opposes the axis) runs its pcurve in `-u`. Writing `+u`
             // unconditionally here was the bug the boolean's drill test found:
             // the pcurve evaluated half a turn away from the curve, and the
             // face's arrangement tore along a seam that was not there.
@@ -964,7 +964,7 @@ fn on_cylinder(
         Curve::Ellipse(_) => {
             // An oblique plane's section: its plan projection is the
             // cylinder's own cross-section circle traced *uniformly*, so
-            // the chart trace is u = s·t + φ, v = c₀ + a·cos t + b·sin t —
+            // the chart trace is u = s·t + φ, v = c₀ + a·cos t + b·sin t:
             // the trig-affine family. Derived from the curve's own
             // evaluations and verified by sample, never assumed.
             use ogeom_geom::Curve3d as _;
@@ -998,8 +998,8 @@ fn on_cylinder(
             let c0 = f64::midpoint(l0.z, lh.z);
             let a = (l0.z - lh.z) / 2.0;
             let b = lq.z - c0;
-            // The trig formula is global — cosine wraps, the linear angle
-            // unwraps the chart — so the pcurve lives on whatever range the
+            // The trig formula is global (cosine wraps, the linear angle
+            // unwraps the chart), so the pcurve lives on whatever range the
             // edge actually spans, a loop crossing the period included.
             let candidate = ogeom_geom::Trig2d::new(
                 Point2::new(phase, c0),
@@ -1033,12 +1033,12 @@ fn on_cylinder(
 /// The pcurve of half a meridian: a great circle through both poles,
 /// restricted to one side of them.
 ///
-/// The whole circle has no chart image a single curve can carry — its
-/// longitude jumps by half a turn at each pole — but each *half* does, and it
+/// The whole circle has no chart image a single curve can carry (its
+/// longitude jumps by half a turn at each pole), but each *half* does, and it
 /// is a straight line. Writing the circle's own parameter as `t` and the
 /// sphere's axis as `Z = cos α·X + sin α·Y` in the circle's own frame, the
 /// point's height above the equator is `r·cos(t − α)`, so the latitude is
-/// `asin(cos(t − α))`, which on `t − α ∈ [0, π]` is exactly `π/2 − (t − α)` —
+/// `asin(cos(t − α))`, which on `t − α ∈ [0, π]` is exactly `π/2 − (t − α)`,
 /// affine in `t`, with slope one. The longitude is constant on that half and
 /// half a turn away on the other. So the pcurve is a vertical line in the
 /// chart, sharing the circle's parameter exactly, and the caller's `range` is
@@ -1262,7 +1262,7 @@ mod tests {
     #[test]
     fn an_analytic_pair_comes_back_exact_with_matching_pcurves() {
         // A plane through a cylinder's axis: two lines, and every description
-        // agrees at the same parameter — which is the claim edges carry and
+        // agrees at the same parameter, which is the claim edges carry and
         // booleans rely on.
         let drum = cylinder(Vector::Z, 2.0);
         let cut = plane(Point::ORIGIN, Vector::X);
@@ -1285,8 +1285,8 @@ mod tests {
     #[test]
     fn an_oblique_cut_gives_the_ellipse_a_trig_pcurve_on_the_drum() {
         // The pcurve an earlier plan owed: the oblique ellipse runs
-        // linearly in the chart angle and sinusoidally in height — the
-        // trig-affine family — exactly, same-parameter, both sides.
+        // linearly in the chart angle and sinusoidally in height (the
+        // trig-affine family), exactly, same-parameter, both sides.
         let drum = cylinder(Vector::Z, 2.0);
         let angle: f64 = 0.5;
         let cut = plane(Point::ORIGIN, Vector::new(0.0, angle.sin(), angle.cos()));
@@ -1395,8 +1395,8 @@ mod tests {
 
     #[test]
     fn the_plane_a_ball_rolls_on_touches_its_torus_along_the_circle_it_rolled() {
-        // Tangency with length is reported as the curve it is — the way a
-        // tangent plane reports its line on a cylinder — because the blend
+        // Tangency with length is reported as the curve it is (the way a
+        // tangent plane reports its line on a cylinder), because the blend
         // machinery builds faces whose boundaries are exactly these circles,
         // and a Touching with no curve in it would read as a refusal upstream.
         let ring = torus(Point::ORIGIN, Vector::Z, 2.0, 0.5);
@@ -1656,7 +1656,7 @@ mod tests {
     }
 
     /// A plane through a ball's own axis cuts a meridian. The whole circle has
-    /// no chart image — its longitude jumps half a turn at each pole — but
+    /// no chart image (its longitude jumps half a turn at each pole), but
     /// each half is a straight line in the chart, exactly, at the circle's own
     /// parameter. Pinned by lifting the line back through the sphere and
     /// demanding the circle's point, on every half of every orientation.
@@ -1725,7 +1725,7 @@ mod tests {
 
     /// A trim says *where* on a curve, not what it is. The basis carries the
     /// shape and the trim shares its parameter, so a trimmed curve's pcurve is
-    /// the basis's own pcurve trimmed the same way — on every surface, since
+    /// the basis's own pcurve trimmed the same way, on every surface, since
     /// the answer does not depend on the surface at all.
     ///
     /// Found by a corner blend: a fillet's own end cap is a plane, the edges

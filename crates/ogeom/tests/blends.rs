@@ -12,7 +12,7 @@ const T: Tolerances = Tolerances::millimetres();
 /// The edge of `shape` whose midpoint is nearest `near`.
 fn edge_near(model: &Model, shape: &Shape, near: Point) -> Shape {
     use ogeom::geom::Curve3d as _;
-    // A degenerate edge — a sphere's pole — has no curve and no midpoint.
+    // A degenerate edge (a sphere's pole) has no curve and no midpoint.
     explore_unique(model, shape, ShapeType::Edge)
         .unwrap()
         .into_iter()
@@ -101,7 +101,7 @@ fn a_fillet_reports_its_own_tangency_instead_of_claiming_it() {
     assert_eq!(contacts.len(), 4, "two tangency edges and two end caps");
     // The two long edges are the tangency lines: smooth to rounding. The
     // two ends are the cap arcs, where the blend meets a face it is *not*
-    // tangent to — a right angle, and it should say so.
+    // tangent to: a right angle, and it should say so.
     let mut smooth = 0;
     let mut square = 0;
     for contact in &contacts {
@@ -127,7 +127,7 @@ fn a_fillet_reports_its_own_tangency_instead_of_claiming_it() {
 fn a_blend_bridges_two_faces_that_share_no_edge() {
     // A step: a tall block and a low one side by side, their vertical wall
     // and horizontal lid meeting at no edge at all. The rolling ball still
-    // has a seat — it touches both — and the blend is the fillet that seat
+    // has a seat (it touches both), and the blend is the fillet that seat
     // implies.
     let mut model = Model::new();
     let tall = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 20.0, 20.0), T)
@@ -168,19 +168,19 @@ fn a_blend_bridges_two_faces_that_share_no_edge() {
     );
 }
 
-/// B2 — the corner where three blends meet. Three edges of a box are
+/// B2: the corner where three blends meet. Three edges of a box are
 /// filleted in sequence at one vertex, and the leftover spike is rounded by
 /// the A5 tool: the corner block less the ball. The result is measured
 /// against a closed form derived independently, by inclusion–exclusion over
 /// the corner cube: within the cube every fillet prism's removal lies inside
 /// the spike's, so the removed volume is three prism runs *outside* the cube
-/// plus the spike itself —
+/// plus the spike itself:
 ///
 ///   V = 10³ − 3(1 − π/4) r² (10 − r) − r³ + πr³/6
 ///
 /// which for r = 3 is 784 + 51.75π. The blend is tangent to everything it
-/// rounds by construction — each contact a chart-degenerate curve or a
-/// vertex of the tool's own patch — and this test is the corner family's
+/// rounds by construction (each contact a chart-degenerate curve or a
+/// vertex of the tool's own patch), and this test is the corner family's
 /// pin: it exercises A6, the tangential set-aside, the degeneracy splits,
 /// and the tolerance-carrying welds at once.
 #[test]
@@ -248,7 +248,7 @@ fn b2_three_fillets_and_the_corner_tool_round_the_vertex() {
 
 /// The promoted corner tool: `round_vertex` reproduces the B2 closed form.
 ///
-/// Same three fillets, same corner, same inclusion–exclusion reference —
+/// Same three fillets, same corner, same inclusion–exclusion reference,
 /// but the ball-and-block construction now lives in the fillet crate with
 /// its own refusals, instead of being spelled out per call site.
 #[test]
@@ -297,7 +297,7 @@ fn round_vertex_reproduces_the_b2_closed_form() {
 
 /// The corner tool at every corner of the box, the three fillets in a
 /// different order at each: the construction is the same whichever way the
-/// corner faces and whichever edge goes first. It was not — the tool's
+/// corner faces and whichever edge goes first. It was not: the tool's
 /// block face meets a band exactly along the arc that bounds it, and the
 /// paving read that section as outside the block face by a hair at some
 /// corners and inside at others, so the band split at some corners and
@@ -441,7 +441,7 @@ fn round_vertex_rounds_an_oblique_corner() {
 /// the vertex, one ball touching all four, and the corner tool's block a
 /// polyhedron of eight faces. The corner is cut first and the four edges
 /// then take their flush fillets one after another, each band ending on
-/// the ball's rim — the other order, four fillets and then the corner,
+/// the ball's rim; the other order, four fillets and then the corner,
 /// dies at the third fillet, whose predecessors crash into each other at
 /// the apex. The corner's volume is measured against the closed form:
 /// the block, N pyramids of height `r` over the host quads, less the
@@ -555,7 +555,7 @@ fn round_vertex_sets_back_a_four_edge_apex() {
     }
     let faces = explore_unique(&model, &solid, ShapeType::Face).unwrap();
     assert_eq!(faces.len(), 10, "five walls, four bands and the patch");
-    // Every blend face — the patch and the four bands — meets each of its
+    // Every blend face (the patch and the four bands) meets each of its
     // neighbours tangentially: the bands their walls and the patch, the
     // patch its four bands.
     let mut blends = 0;
@@ -823,7 +823,7 @@ fn round_vertex_rounds_flat_and_oblique_apexes_no_ball_touches() {
 }
 
 /// An irregular pentagonal pyramid's apex: five planes, three tip vertices
-/// and two ridges, one of them seven microns long — a sliver of cylinder
+/// and two ridges, one of them seven microns long, a sliver of cylinder
 /// the tool keeps rather than merging into a sphere that touches none of
 /// its planes exactly.
 #[test]
@@ -908,7 +908,7 @@ fn an_open_seat_runs_out_through_the_wall() {
     // The bottom crease of the grooved block is an ellipse arc that meets
     // the box wall at both ends: an open seat. The band runs on past each
     // end until the ball has left the solid, and the cut trims it against
-    // the wall — material comes off, the blend rides both hosts
+    // the wall: material comes off, the blend rides both hosts
     // tangentially, and it ends on the wall itself, not on a cap standing
     // short of it with a sliver of sharp crease behind.
     let mut model = Model::new();
@@ -931,7 +931,7 @@ fn an_open_seat_runs_out_through_the_wall() {
         removed > 1.0 && removed < before * 0.05,
         "a run-out fillet removes a sliver, not a bite: {removed}"
     );
-    // One new face — the band — and no caps: both ends are the wall's.
+    // One new face (the band) and no caps: both ends are the wall's.
     assert_eq!(
         explore_unique(&model, &built.shape, ShapeType::Face)
             .unwrap()
@@ -993,7 +993,7 @@ fn an_open_seat_runs_out_through_the_wall() {
 /// length; the corner cell where both wedges reach is counted once, and
 /// what both remove there is the cell outside both cylinders,
 /// r³ (5/3 − π/2). One edge at a time stops flush instead, and keeps a
-/// cap at the corner — the state the corner tool is built for.
+/// cap at the corner, the state the corner tool is built for.
 #[test]
 fn two_blends_meeting_at_a_corner_trim_each_other() {
     let (l, r) = (20.0_f64, 2.0_f64);
@@ -1072,8 +1072,8 @@ fn l_bracket(model: &mut Model) -> Shape {
 }
 
 /// An L-bracket's re-entrant blend against the end face's convex blends:
-/// the concave band first, then the rim of the end face — the leg's top
-/// edge, the concave band's own end arc, the wall's edge — blended as one
+/// the concave band first, then the rim of the end face (the leg's top
+/// edge, the concave band's own end arc, the wall's edge) blended as one
 /// tangent chain. The ball rolls along the two lines and, between them,
 /// on the concave cylinder: a quarter turn of a torus, whose volume
 /// Pappus gives as the cross-section's area times its centroid's path.
@@ -1149,7 +1149,7 @@ fn a_rim_blend_rolls_over_the_bracket_s_concave_blend() {
 /// that runs out through that wall across it. In either order the later
 /// blend's run-out walks on under the earlier band until the ball has left
 /// the material, the cut trimming the two bands against each other at both
-/// corners — and the two orders land on the same solid. The wall's bottom
+/// corners, and the two orders land on the same solid. The wall's bottom
 /// edge is two pieces either side of the scoop, on one line; only the left
 /// is asked for, and only the left is blended whichever goes first.
 #[test]
@@ -1270,8 +1270,8 @@ fn two_seam_split_blends_meet_cap_to_cap_in_either_order() {
 #[test]
 fn a_seam_split_crease_arc_rounds_with_run_out_caps() {
     // The top crease is split by the cylinder's own seam into two arcs
-    // sharing a mid-scoop vertex. The seat probe used to die on these —
-    // the reconstructed loop's midpoint stands in cut-away territory —
+    // sharing a mid-scoop vertex. The seat probe used to die on these (
+    // the reconstructed loop's midpoint stands in cut-away territory)
     // before the march could speak. Probed and seated on the crease
     // itself, the arc marches its seat and lands as a capped blend.
     let mut model = Model::new();
@@ -1330,8 +1330,8 @@ fn vertex_near(model: &Model, shape: &Shape, near: Point) -> Shape {
 /// other's band: a wedge's cut would eat a fill, and a fill cannot run on
 /// through a wedge's band, so whichever is asked first takes the corner
 /// and the other stops flush against its rail. The two orders therefore
-/// land on different solids — which is the honest picture of a corner no
-/// single ball rolls around — and each is its own closed form: the fill
+/// land on different solids (which is the honest picture of a corner no
+/// single ball rolls around), and each is its own closed form: the fill
 /// over the length the other blend leaves it, the wedge over what is left
 /// of its own edge.
 ///
@@ -1396,7 +1396,7 @@ fn a_fill_and_a_wedge_asked_together_stop_at_each_other() {
 }
 
 /// The blend face of a result: the one face on a surface that is neither
-/// of the two hosts' kinds — a fitted band, or a torus where none was.
+/// of the two hosts' kinds: a fitted band, or a torus where none was.
 fn blend_face_of(model: &Model, shape: &Shape) -> Shape {
     explore_unique(model, shape, ShapeType::Face)
         .unwrap()
@@ -1413,8 +1413,8 @@ fn blend_face_of(model: &Model, shape: &Shape) -> Shape {
         .expect("the rolling ball left a fitted band")
 }
 
-/// A marched blend on a host with no ruling to lean on — a cone, a sphere,
-/// a torus — is valid, closed, and tangent to both hosts along its rails.
+/// A marched blend on a host with no ruling to lean on (a cone, a sphere,
+/// a torus) is valid, closed, and tangent to both hosts along its rails.
 fn assert_marched_blend(model: &Model, before: &Shape, after: &Shape, what: &str) {
     let diagnosis = ogeom::algo::check(model, after, T).unwrap();
     assert!(diagnosis.is_valid(), "{what}: {:?}", diagnosis.problems);

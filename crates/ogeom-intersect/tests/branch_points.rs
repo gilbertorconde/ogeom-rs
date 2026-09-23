@@ -58,7 +58,7 @@ fn tangential_contact_traces_as_the_circle_it_is() {
     use ogeom_math::Sphere;
 
     // A unit sphere seated inside a unit cylinder: tangent along the whole
-    // equator, no transversal crossing anywhere — the case the crossing
+    // equator, no transversal crossing anywhere: the case the crossing
     // walker honestly refuses and the valley walker owns.
     let drum: SurfaceGeometry =
         CylinderSurface::new(Cylinder::new(Frame::WORLD, 1.0, T).unwrap(), (-2.0, 2.0))

@@ -8,7 +8,7 @@
 //!
 //! [`Model::add_wire`] verifies that its children are edges. That is all it can
 //! do, because it has no geometry. [`make_wire`] additionally verifies that
-//! consecutive edges actually *meet* — which is the property that makes a wire
+//! consecutive edges actually *meet*, which is the property that makes a wire
 //! a connected path rather than a bag of edges, and which every algorithm
 //! downstream assumes without checking. A wire whose edges do not join produces
 //! a face with a gap in its boundary, and the first thing to notice is usually
@@ -125,7 +125,7 @@ pub fn make_edge_between(
         };
         // Through the vertex's own placement, not against its stored point. A
         // vertex is a triple like any other shape, and the same node appears at
-        // different places — the two ends of a prism are one vertex twice.
+        // different places: the two ends of a prism are one vertex twice.
         // Comparing against the stored point would put both ends at the origin
         // of the placement and reject every edge that joins them.
         let placed = vertex.transform(model.datums())?.apply(data.point);
@@ -194,7 +194,7 @@ pub fn edge_vertices(model: &Model, edge: &Shape) -> OgeomResult<Option<(Shape, 
 
 /// Build a wire of straight segments through a sequence of points.
 ///
-/// `closed` adds a final segment back to the first point — and does it by
+/// `closed` adds a final segment back to the first point, and does it by
 /// naming the *first vertex again* rather than making a coincident second one,
 /// which is what keeps the wire closed under [`is_wire_closed`] rather than
 /// merely looking closed.
@@ -203,7 +203,7 @@ pub fn edge_vertices(model: &Model, edge: &Shape) -> OgeomResult<Option<(Shape, 
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if there are fewer
 /// than two points, fewer than three for a closed polygon, if consecutive
-/// points coincide within tolerance — a zero-length edge is not an edge — or if
+/// points coincide within tolerance (a zero-length edge is not an edge), or if
 /// a closed polygon's ends do not meet.
 pub fn make_polygon(
     model: &mut Model,
@@ -232,7 +232,7 @@ pub fn make_polygon(
     }
     // Whether or not `closed` was asked for. A caller that repeated the first
     // point at the end wants a loop, and building it as written would give the
-    // wire two vertices in the same place — which every later boundary walk
+    // wire two vertices in the same place, which every later boundary walk
     // treats as a gap that happens to be zero wide. `closed` produces the loop
     // by naming the first vertex again, which is the thing that actually
     // closes.
@@ -322,7 +322,7 @@ pub fn find_plane(
 /// along its length.
 fn sample_shape(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<Point>> {
     /// Enough to catch a curve leaving a candidate plane, without the cost of a
-    /// real discretization — this is a yes-or-no question, not a mesh.
+    /// real discretization; this is a yes-or-no question, not a mesh.
     const ALONG_EDGE: usize = 8;
 
     let mut points = Vec::new();
@@ -370,7 +370,7 @@ pub fn make_wire(model: &mut Model, edges: &[Shape], tol: Tolerances) -> OgeomRe
     let wire = model.add_wire(edges)?;
     let mut history = History::new();
     for edge in edges {
-        // The edges are not consumed — they are shared, and an edge between two
+        // The edges are not consumed: they are shared, and an edge between two
         // faces belongs to both wires. Reporting them modified into the wire
         // would claim the edge ceased to exist.
         history.generate(edge, wire.clone());
@@ -516,7 +516,7 @@ pub fn make_face_on(
 /// same-parameter pcurve to every edge.
 ///
 /// The construction path for faces whose curves were *chosen* to have
-/// closed-form charts — blend wedges, offset rebuilds. Every edge's curve
+/// closed-form charts: blend wedges, offset rebuilds. Every edge's curve
 /// must lie on the surface in a configuration
 /// [`ogeom_intersect::exact_pcurve_of`] recognises; a fitted pcurve here would
 /// manufacture disagreement where none exists, so an edge with no closed
@@ -580,7 +580,7 @@ pub fn make_face_with_pcurves(
             };
             let mut pcurve = match ogeom_intersect::exact_pcurve_of(&curve, &surface, tol) {
                 Some(exact) => exact,
-                // No closed form — a fitted surface, mostly. The edge lies on
+                // No closed form: a fitted surface, mostly. The edge lies on
                 // the surface by construction here (a rebuilt boundary, a
                 // recovered intersection), so the projected fit speaks it: the
                 // same machinery the exchange readers trust, at the same cap,
@@ -641,8 +641,8 @@ pub fn make_face_with_pcurves(
 ///
 /// An exchange file's pcurves, or a fit of them, answer with whatever
 /// phase the inversion likes: a hole loop that straddles a drum's seam
-/// comes back half on each branch — a loop that never closes in the chart,
-/// which no mesher can cut — and a slitted wall's outer wire hops branches
+/// comes back half on each branch (a loop that never closes in the chart,
+/// which no mesher can cut), and a slitted wall's outer wire hops branches
 /// at every slit. Walked in each wire's own order, an image whose start
 /// misses the previous traversal's end by close to a whole period is
 /// shifted by that period; a miss of half a period is a pole, where two
@@ -652,7 +652,7 @@ pub fn make_face_with_pcurves(
 /// nothing. Every wire after the first is then carried whole onto the
 /// first wire's branch, so rims, slits and holes all read in one chart.
 /// The images are rewritten in place (`GeometryStore::pcurve_mut`), once
-/// each — a slit uses one image twice.
+/// each; a slit uses one image twice.
 ///
 /// # Errors
 ///
@@ -812,7 +812,7 @@ pub fn make_natural_face(model: &mut Model, surface: SurfaceGeometry) -> OgeomRe
 /// a face, or the list is empty.
 /// Build a compsolid: solids gluing along shared faces.
 ///
-/// A compsolid is more than a bag of solids — its members must actually
+/// A compsolid is more than a bag of solids: its members must actually
 /// glue. Every pair connected through the whole is connected through shared
 /// *face nodes*: the same face entity bounding two solids, once from each
 /// side, which is the sharing a boolean or a sew produces. A set of solids
@@ -877,7 +877,7 @@ pub fn make_compsolid(model: &mut Model, solids: &[Shape]) -> OgeomResult<Built>
 ///
 /// The grouping container: a compound holds anything, orders nothing, and
 /// claims nothing about closure. What this adds over the raw model call is
-/// the same thing every builder adds — a history that says what went in.
+/// the same thing every builder adds: a history that says what went in.
 ///
 /// # Errors
 ///
@@ -926,7 +926,7 @@ pub fn make_solid(model: &mut Model, shells: &[Shape]) -> OgeomResult<Built> {
 /// Whether every edge in a shell is shared by exactly two faces.
 ///
 /// The defining property of a closed shell, and the one that decides whether it
-/// can bound a solid. An edge used once is a free boundary — the shell has a
+/// can bound a solid. An edge used once is a free boundary: the shell has a
 /// hole. An edge used three or more times is non-manifold, which is legitimate
 /// topology but not something that encloses a volume.
 ///
@@ -935,14 +935,14 @@ pub fn make_solid(model: &mut Model, shells: &[Shape]) -> OgeomResult<Built> {
 /// As [`ogeom_topo::explore`].
 pub fn is_shell_closed(model: &Model, shell: &Shape) -> OgeomResult<bool> {
     // Counted by *use*, not by how many distinct faces an edge belongs to. A
-    // seam edge bounds one face twice — up one side of its parameter rectangle
-    // and down the other — so counting faces would call every cylinder, sphere
+    // seam edge bounds one face twice (up one side of its parameter rectangle
+    // and down the other), so counting faces would call every cylinder, sphere
     // and torus open, which is precisely backwards.
     let mut uses: HashMap<ogeom_topo::TShapeId, usize> = HashMap::new();
     for face in ogeom_topo::explore(model, shell, ogeom_topo::Filter::OfType(ShapeType::Face))? {
         for wire in model.children_of(&face)? {
             for edge in model.children_of(&wire)? {
-                // A degenerate edge — a sphere's pole, a cone's apex — has no
+                // A degenerate edge (a sphere's pole, a cone's apex) has no
                 // length, so there is no gap along it for a second face to
                 // close. Counting it would call every sphere and every true
                 // cone open, and the thing that is actually open, isn't.
@@ -998,7 +998,7 @@ pub fn attach_pcurve(
 /// surface's join.
 ///
 /// The counterpart of [`attach_pcurve`] for the edge that bounds one face
-/// twice — up one side of the parameter rectangle and down the other. Which
+/// twice: up one side of the parameter rectangle and down the other. Which
 /// pcurve applies to an occurrence is decided by that occurrence's
 /// orientation, which is the only thing distinguishing the two.
 ///
@@ -1037,8 +1037,8 @@ pub fn attach_seam(
     Ok(())
 }
 
-/// Whether a circle is a *parallel* of a revolved surface — its axis the
-/// revolution axis, its centre on it — rather than a circle that merely
+/// Whether a circle is a *parallel* of a revolved surface (its axis the
+/// revolution axis, its centre on it) rather than a circle that merely
 /// lies on the surface.
 fn circle_is_parallel_of(
     circle: ogeom_math::Circle,
@@ -1062,8 +1062,8 @@ fn circle_is_parallel_of(
 /// Whether two closed ring edges are parallels of `surface`, so that
 /// [`make_revolution_band`] can build a band between them. A reader asks
 /// this first: a periodic face bounded by two closed circles that are *not*
-/// parallels — a button head's rims, square to the screw on a sphere whose
-/// chart runs along z — is a legitimate face on its own bounds, not a band
+/// parallels (a button head's rims, square to the screw on a sphere whose
+/// chart runs along z) is a legitimate face on its own bounds, not a band
 /// missing its seam, and deserves no warning.
 ///
 /// # Errors
@@ -1122,14 +1122,14 @@ fn surface_axis_origin(surface: &ogeom_geom::SurfaceGeometry) -> Option<Point> {
 /// different ways. The chart walk decides everything: the bottom ring is
 /// traversed forward, and where its chart line *ends* is where the first
 /// seam column stands; the top ring's occurrence direction is chosen so its
-/// walk starts there — rings winding the same way traverse opposite, rings
-/// winding opposite traverse alike — and the seam's two pcurves are assigned
+/// walk starts there (rings winding the same way traverse opposite, rings
+/// winding opposite traverse alike), and the seam's two pcurves are assigned
 /// to match which occurrence the triangulator will hand them to. The face is
 /// built on a fresh copy of the surface, so no stale annotation from another
 /// phase of the same rings can apply.
 ///
-/// One ring may be *degenerate* — an edge with no curve, both ends the same
-/// vertex, flagged as such — standing for an apex or a pole: a rim of no
+/// One ring may be *degenerate* (an edge with no curve, both ends the same
+/// vertex, flagged as such), standing for an apex or a pole: a rim of no
 /// length that still bounds the face in parameter space. It takes the row
 /// the collapsed point sits on and traverses the chart opposite the real
 /// ring, exactly as native cones and spheres bound their tips.
@@ -1200,7 +1200,7 @@ pub fn make_revolution_band(
         };
         if degenerate {
             // An apex or a pole: no curve to read, no winding of its own.
-            // Its row comes from the collapsed point — which sits on the
+            // Its row comes from the collapsed point, which sits on the
             // axis, where iterative projection has no nearest angle, so only
             // the closed-form inversion can place it.
             let Some(uv) = analytic_chart_of(surface, at) else {
@@ -1238,9 +1238,9 @@ pub fn make_revolution_band(
             ogeom_bail!(Construction, "a band ring is not a circle");
         };
         // A ring of *this* surface is a parallel: its axis the revolution
-        // axis, its centre on it. A circle merely lying on the surface —
-        // a button head's rim, cut square to the screw while the sphere's
-        // chart runs along z — is a closed loop in the chart, not a row of
+        // axis, its centre on it. A circle merely lying on the surface
+        // (a button head's rim, cut square to the screw while the sphere's
+        // chart runs along z) is a closed loop in the chart, not a row of
         // it, and building a band on it would hand every rim a latitude
         // line it never follows. Refused here, so a reader falls through to
         // the face's own bounds, which triangulate as the nested loops they
@@ -1418,14 +1418,14 @@ pub fn make_revolution_band(
 /// circles, each with a caller-supplied chart image.
 ///
 /// [`make_revolution_band`]'s general sibling: where the band derives each
-/// circle's row and pcurve itself, this takes the rings as they come — a
-/// fitted tangency curve, a wavy trim — with the pcurve the caller already
+/// circle's row and pcurve itself, this takes the rings as they come (a
+/// fitted tangency curve, a wavy trim), with the pcurve the caller already
 /// knows for each, same-parameter over the edge's own range. The seam stays
 /// an exact iso-column of the surface, which is what routes around the
 /// closed-form refusal in [`make_face_with_pcurves`].
 ///
 /// The caller's contract: both rings are closed, both chart images run the
-/// full period *forward* in `u`, and both start on the same column — the
+/// full period *forward* in `u`, and both start on the same column; the
 /// seam runs there, between the two start vertices.
 ///
 /// # Errors
@@ -1493,12 +1493,12 @@ pub fn make_band_between(
     }
     // The connector between the rings' starts. On one column it is the
     // surface's own iso; on different columns it is the straight chart
-    // segment — a ruling, a parallel arc, or a helix, all exact on a
+    // segment: a ruling, a parallel arc, or a helix, all exact on a
     // cylinder, and refused by name elsewhere.
     let (start0, start1) = (prepared[0].start, prepared[1].start);
     let dcol = start1.x - start0.x;
     // The iso is for rings sharing a column to within the confusion
-    // distance — the offset times the chart's stretch there, since an
+    // distance: the offset times the chart's stretch there, since an
     // off-column iso misses a start vertex by exactly that. Starts further
     // apart take the chart segment, which meets both exactly; a segment
     // spanning less than confusion would be an edge with no length.
@@ -1554,7 +1554,7 @@ pub fn make_band_between(
         (seam, !downward, a, b)
     } else if !matches!(surface, SurfaceGeometry::Cylinder(_)) {
         // On any other surface the chart segment lifts to a curve with no
-        // closed form — a loxodrome on a sphere, a skew run on a torus —
+        // closed form (a loxodrome on a sphere, a skew run on a torus)
         // and is fitted through it, at the chart's own arc length so the
         // curve and its images share one parameter. The fit's error is the
         // vertices' to carry.
@@ -1596,8 +1596,8 @@ pub fn make_band_between(
         }
         let connector: ogeom_geom::Curve = ogeom_geom::Curve::BSpline(fitted.curve);
         // Against the vertices' own points, not the lifted chart points: a
-        // ring's start vertex stands off the host by the ring's own slop —
-        // a fitted seam a few microns off the surface it trims — and the
+        // ring's start vertex stands off the host by the ring's own slop
+        // (a fitted seam a few microns off the surface it trims), and the
         // connector, which lies on the host, misses it by that much.
         for (vertex, at) in [(&from, 0.0), (&to, length)] {
             let Some(data) = model.node(vertex).and_then(|n| n.data().as_vertex()) else {
@@ -1735,7 +1735,7 @@ pub fn make_band_between(
 /// needs.
 ///
 /// A cone face bounded by a single circle has exactly one other boundary the
-/// geometry permits — the apex — because the region away from the apex is
+/// geometry permits, the apex, because the region away from the apex is
 /// unbounded. The apex becomes a vertex and a degenerate edge, and the rest
 /// is [`make_revolution_band`], one authority for the seam either way.
 ///
@@ -1822,7 +1822,7 @@ fn surface_iso_axis(surface: &ogeom_geom::SurfaceGeometry) -> Option<ogeom_math:
 
 /// The surface's `u = at` iso-curve, parameterized by `v` exactly.
 ///
-/// A ruling on a cylinder, a tube circle on a torus — the curve a seam runs
+/// A ruling on a cylinder, a tube circle on a torus: the curve a seam runs
 /// along. `None` where no closed form exists. Shared by the STEP reader's
 /// seam synthesis and the healer's ring re-anchoring, so the two cannot
 /// disagree about what a seam is.
@@ -1907,8 +1907,8 @@ pub fn surface_iso_u_curve(
 
 /// The parameter on a surface's iso-curve that lands at chart row `v`.
 ///
-/// Identity for the kinds whose iso-curve is parameterized by `v` itself —
-/// a cylinder ruling, a torus tube circle, a sphere meridian — and the slant
+/// Identity for the kinds whose iso-curve is parameterized by `v` itself
+/// (a cylinder ruling, a torus tube circle, a sphere meridian) and the slant
 /// rescale for a cone, whose ruling is arc-length parameterized while the
 /// chart's `v` is the height.
 fn iso_curve_parameter_at(surface: &SurfaceGeometry, v: f64) -> f64 {
@@ -2026,7 +2026,7 @@ mod tests {
     fn a_band_whose_rings_start_apart_gets_a_helical_connector() {
         // Two circles at different heights whose parameter origins differ:
         // the seam has no single column to run down, so it runs the straight
-        // chart segment — a helix on the cylinder, exactly.
+        // chart segment: a helix on the cylinder, exactly.
         let mut model = Model::new();
         let radius = 2.0;
         let cylinder = ogeom_geom::CylinderSurface::new(
@@ -2331,7 +2331,7 @@ mod tests {
 
     #[test]
     fn a_wire_whose_edges_do_not_meet_is_refused() {
-        // Model::add_wire cannot catch this — it has no geometry. This is the
+        // Model::add_wire cannot catch this: it has no geometry. This is the
         // check that keeps a face from being built on a boundary with a gap.
         let mut model = Model::new();
         let joined = make_edge(
@@ -2458,7 +2458,7 @@ mod tests {
     #[test]
     fn a_pcurve_can_be_attached_after_the_edge_exists() {
         // An edge learns about a face's parameter space when it joins that
-        // face, not when it is created — it may join several.
+        // face, not when it is created; it may join several.
         let mut model = Model::new();
         let edge = make_edge(
             &mut model,
@@ -2912,7 +2912,7 @@ mod band_tests {
     fn a_ring_square_to_the_axis_is_not_a_band_ring() {
         // A button head: a sphere whose chart runs along z, bounded by two
         // circles cut square to the screw along x. Each lies on the sphere
-        // and is closed, but neither is a parallel — building a band on
+        // and is closed, but neither is a parallel; building a band on
         // them hands every rim a latitude line it never follows. Refused,
         // and the reader's question answers the same.
         let mut model = Model::new();

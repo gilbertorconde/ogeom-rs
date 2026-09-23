@@ -706,7 +706,7 @@ fn an_alignment_hint_untwists_a_loft() {
         "aligned loft volume {straight} against 12"
     );
 
-    // Without the hints the rows pair a corner apart and the skin twists —
+    // Without the hints the rows pair a corner apart and the skin twists:
     // visibly less volume, which is the defect the hint exists to fix.
     let twisted = ogeom_offset::make_loft_skinned(&mut model, &[bottom, top], 5e-2, T).unwrap();
     let sheared = volume_of(&model, &twisted.shape);
@@ -718,7 +718,7 @@ fn an_alignment_hint_untwists_a_loft() {
 
 #[test]
 fn a_ruled_loft_between_tilted_polygons_still_builds() {
-    // Non-parallel sections were never the refusal — only skew walls are.
+    // Non-parallel sections were never the refusal; only skew walls are.
     // A top square turned about the x axis keeps every wall planar.
     let mut model = ogeom_topo::Model::new();
     let bottom = ogeom_algo::make_polygon(
@@ -820,8 +820,8 @@ fn a_pipe_shell_round_a_closed_circle_matches_the_torus() {
 fn a_round_profile_along_a_closed_square_spine_is_a_ring() {
     // The closed square spine, its corners rounded the way a real ring's
     // are: four straights and four quarter arcs, one G1 loop. The sharp
-    // corner is refused by name — no skin can turn a section through a
-    // finite angle over no arc — and the refusal test below pins that.
+    // corner is refused by name (no skin can turn a section through a
+    // finite angle over no arc), and the refusal test below pins that.
     let mut model = ogeom_topo::Model::new();
     let (half, r) = (8.0, 2.0);
     let flat = half - r;
@@ -984,7 +984,7 @@ fn an_l_spine_mitres_its_corner_and_the_runs_share_the_ring() {
     // stations throw both boundary rings onto the bisector plane, and the
     // sew joins the runs along that one mitred ring. The mitre passes
     // through the centreline corner, so Pappus prices the whole elbow at
-    // area times the legs' summed length — exactly.
+    // area times the legs' summed length, exactly.
     let mut model = ogeom_topo::Model::new();
     let a = Point::new(0.0, 0.0, 0.0);
     let b = Point::new(20.0, 0.0, 0.0);
@@ -1031,7 +1031,7 @@ fn an_l_spine_mitres_its_corner_and_the_runs_share_the_ring() {
 fn a_corner_against_a_curved_leg_meets_it_on_its_generators() {
     let mut model = ogeom_topo::Model::new();
     let r = 20.0;
-    // A quarter arc ending at (0, 20), then a straight leg heading +x —
+    // A quarter arc ending at (0, 20), then a straight leg heading +x:
     // a genuine corner between a curved run and a straight one.
     let arc_curve: ogeom_geom::Curve =
         ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(Frame::WORLD, r, T).unwrap()).into();
@@ -1087,7 +1087,7 @@ fn a_corner_against_a_curved_leg_meets_it_on_its_generators() {
 /// deliberately off every axis so no exact cone could stand in.
 ///
 /// The reference is piecewise: Pappus's frustum from the two rings, plus the
-/// cone from the top ring to the apex — whose shear off the axis changes
+/// cone from the top ring to the apex, whose shear off the axis changes
 /// nothing, volume being shear-invariant. The skin smooths the crease where
 /// the pieces meet, so the assertion carries the fit's honesty, not the
 /// mesher's.
@@ -1258,7 +1258,7 @@ fn a_non_planar_end_section_is_capped_by_a_skinned_patch() {
 }
 
 /// A faceted profile round a closed circular spine: the square torus, whose
-/// volume Pappus names exactly — side² × 2πR.
+/// volume Pappus names exactly: side² × 2πR.
 #[test]
 fn a_square_profile_along_a_closed_circle_is_a_pappus_ring() {
     let mut model = ogeom_topo::Model::new();
@@ -1308,7 +1308,7 @@ fn a_square_profile_along_a_closed_circle_is_a_pappus_ring() {
 }
 
 /// A holed profile round a closed spine: the outer square ring less the
-/// tunnel its hole sweeps — Pappus on both, subtracted.
+/// tunnel its hole sweeps: Pappus on both, subtracted.
 #[test]
 fn a_holed_profile_round_a_closed_spine_carries_its_tunnel() {
     let mut model = ogeom_topo::Model::new();
@@ -1380,7 +1380,7 @@ fn a_holed_profile_round_a_closed_spine_carries_its_tunnel() {
 }
 
 /// A faceted ring round a wavy *non-planar* closed spine: the geometry
-/// that exposed two step-1 debts — rails must widen to their fits' honest
+/// that exposed two step-1 debts: rails must widen to their fits' honest
 /// error before the sew can join them, and a ring strip's outward is away
 /// from the spine's own line, not the loop's centroid. Volume is the
 /// generalized Pappus, section area times the spine's arc length, held
@@ -1416,7 +1416,7 @@ fn a_faceted_ring_round_a_wavy_spine_closes_and_measures() {
         }
         total
     };
-    // The profile stands square to the *fitted* tangent — the fit's own
+    // The profile stands square to the *fitted* tangent: the fit's own
     // start, not the ideal circle's.
     let (start, tangent) = {
         let p = curve.point_at(domain.0, T).unwrap();
@@ -1469,7 +1469,7 @@ fn a_faceted_ring_round_a_wavy_spine_closes_and_measures() {
 fn a_mitred_square_ring_measures_pappus_exactly() {
     // A 4x4 profile round a 30x30 square spine: the mitred ring is four
     // trimmed prisms meeting on their bisector planes, and its volume is
-    // exactly area x perimeter — the outer box minus the inner box.
+    // exactly area x perimeter: the outer box minus the inner box.
     let mut model = ogeom_topo::Model::new();
     let spine = ogeom_algo::make_polygon(
         &mut model,
@@ -1552,8 +1552,8 @@ fn a_cornered_ring_seamed_mid_leg_measures_pappus() {
 fn a_skew_cornered_ring_closes_on_its_mitres() {
     // Corners with genuine out-of-plane turn. The frame reflected across
     // each mitre plane lands both sheared sections on one ring, the
-    // loop's holonomy is spread along the legs as a twist — each straight
-    // leg a ruled skin between its two end rings — and the ring closes as
+    // loop's holonomy is spread along the legs as a twist (each straight
+    // leg a ruled skin between its two end rings), and the ring closes as
     // a valid solid whose volume sits near area times perimeter, the
     // twist alone bending it away from Pappus.
     let mut model = ogeom_topo::Model::new();
@@ -1841,7 +1841,7 @@ fn two_curved_legs_meet_at_a_corner_on_their_generators() {
     );
 }
 
-/// A D-shaped ring — a semicircle closed by its diameter — swept by a
+/// A D-shaped ring (a semicircle closed by its diameter) swept by a
 /// square: both corners stand between the arc and the straight leg, one of
 /// them the wrap. Each corner's slice is the arc's inner overlap with the
 /// leg and the outer corner the run-ons fill.

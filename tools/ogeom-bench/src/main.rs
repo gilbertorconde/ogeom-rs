@@ -1,9 +1,9 @@
-//! Benchmarks over the kernel's hot paths — the sequencing instrument the
+//! Benchmarks over the kernel's hot paths: the sequencing instrument the
 //! scope promised.
 //!
 //! The harness is deliberately its own: medians over repeated runs, wall
 //! clock, no dependency. Absolute times move with the machine, so every run
-//! also times a fixed arithmetic spin — the *calibration* — and the
+//! also times a fixed arithmetic spin (the *calibration*) and the
 //! comparison mode reports each benchmark as a multiple of it. Ratios
 //! travel between machines; milliseconds do not.
 //!
@@ -177,7 +177,7 @@ fn benchmarks() -> Vec<(&'static str, f64)> {
 
     // Whole-shape tessellation of a real imported part: the sequential face
     // loop that mass properties falls into whenever a face is not analytic,
-    // which is guaranteed on an imported b-rep. A primitive will not do —
+    // which is guaranteed on an imported b-rep. A primitive will not do:
     // a torus answers from its closed form and never meshes at all.
     {
         let path = format!(

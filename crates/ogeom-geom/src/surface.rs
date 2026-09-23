@@ -2,7 +2,7 @@
 //!
 //! The five analytic surfaces plus a NURBS patch, a surface of revolution, a
 //! surface of extrusion, and a trimmed restriction of any of them. All reachable
-//! through [`SurfaceGeometry`], an enum for the same reasons curves are one — see
+//! through [`SurfaceGeometry`], an enum for the same reasons curves are one; see
 //! [`crate::curve`].
 //!
 //! # Keeping analytic surfaces analytic
@@ -11,7 +11,7 @@
 //! that. Keeping it a cylinder is worth the extra types: intersection can take a
 //! closed-form path, measurement can report a radius rather than a fit, files
 //! stay small, and a fillet knows it is filleting a cylinder. The cost is that
-//! every algorithm must handle a handful of cases — which the `kind` method
+//! every algorithm must handle a handful of cases, which the `kind` method
 //! makes an explicit choice rather than a hidden one.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -97,7 +97,7 @@ pub struct BSplineSurface {
     v_knots: KnotVector,
     grid: ControlGrid<Weighted<Point>>,
     rational: bool,
-    /// Whether the net's first and last columns, and rows, coincide —
+    /// Whether the net's first and last columns, and rows, coincide:
     /// settled once here, because a parameter past the end of a closed
     /// direction is wrapped rather than refused, and asking the net at
     /// every such evaluation walked a control column millions of times
@@ -135,7 +135,7 @@ pub struct TrimmedSurface {
 /// A surface displaced a constant signed distance along its basis's normal,
 /// sharing the basis's parameterization.
 ///
-/// Point and first derivatives are exact — the normal's derivative is the
+/// Point and first derivatives are exact; the normal's derivative is the
 /// projection formula over the basis's second derivatives. The *second*
 /// derivative would need the basis's third, which the vocabulary does not
 /// carry, so `d2_at` refuses by name rather than differencing quietly. For
@@ -231,7 +231,7 @@ impl ConeSurface {
         self.cone
     }
 
-    /// The height at which the radius vanishes — the apex.
+    /// The height at which the radius vanishes: the apex.
     #[must_use]
     pub fn apex_height(&self) -> f64 {
         -self.cone.reference_radius() / self.cone.half_angle().tan()
@@ -348,8 +348,8 @@ impl BSplineSurface {
     }
 
     /// This patch continued past one of its four sides by about `length`
-    /// in space: every column of the control net continued along `u` — or
-    /// every row along `v` — as [`BSplineCurve::extended`] continues a
+    /// in space: every column of the control net continued along `u` (or
+    /// every row along `v`), as [`BSplineCurve::extended`] continues a
     /// curve, over one shared span so the net stays a grid. The span is the
     /// length over the mean speed along that side, so the continuation
     /// reaches the length where the side runs at its mean speed and less
@@ -439,7 +439,7 @@ impl BSplineSurface {
 
     /// The `u = at` iso-curve: a B-spline over the `v` knots whose controls
     /// are the control columns blended by the `u` basis at `at`, weights
-    /// and all — exactly the curve the surface traces up that column.
+    /// and all: exactly the curve the surface traces up that column.
     ///
     /// # Errors
     ///
@@ -570,7 +570,7 @@ impl ExtrusionSurface {
     }
 
     /// Sweep `curve` along `direction` over an explicit window of the
-    /// sweep parameter — a file's extrusion, unbounded either way, is
+    /// sweep parameter: a file's extrusion, unbounded either way, is
     /// given the window its faces reach.
     ///
     /// # Errors
@@ -684,7 +684,7 @@ impl Surface for OffsetSurface {
     fn d1_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<(Vector, Vector)> {
         // Differentiate S + d·c/|c| with c = Su x Sv: the unit normal's
         // derivative is the tangential projection of c's derivative, scaled
-        // by the magnitude — exact from the basis's first and second
+        // by the magnitude, exact from the basis's first and second
         // derivatives.
         let (su, sv) = self.basis.d1_at(u, v, tol)?;
         let (suu, suv, svv) = self.basis.d2_at(u, v, tol)?;
@@ -1339,7 +1339,7 @@ impl Surface for SurfaceGeometry {
     }
 
     // Dispatched like the rest. Without it the enum answers with the trait's
-    // default, which asks the three accessors — so the variant that overrides
+    // default, which asks the three accessors, so the variant that overrides
     // `jet_at` to avoid exactly that would never be reached through a
     // `SurfaceGeometry`, which is how every caller holds a surface.
     fn jet_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<crate::SurfaceJet> {
@@ -1502,7 +1502,7 @@ mod tests {
     /// A clamped tube whose first and last control columns coincide has
     /// the same points at both ends of `u` and repeats nowhere. A ring that
     /// runs right round it spans exactly a period, so wherever it is slid
-    /// some of it lies past the end — and refusing there stopped three real
+    /// some of it lies past the end, and refusing there stopped three real
     /// bodies from meshing. A parameter a period past the end names a point
     /// the surface has, and is answered with it.
     #[test]
@@ -1809,7 +1809,7 @@ mod tests {
     /// fractions where a spline's interior knots sit.
     ///
     /// At a knot a spline's second derivative is one-sided, while a central
-    /// difference straddles two different polynomial pieces — so a comparison
+    /// difference straddles two different polynomial pieces, so a comparison
     /// there measures the discontinuity rather than the derivative. The offset
     /// keeps samples clear of knots at halves, thirds and quarters.
     fn interior(s: &SurfaceGeometry, n: usize) -> Vec<(f64, f64)> {
@@ -2206,7 +2206,7 @@ mod tests {
     #[test]
     fn a_sphere_is_not_periodic_in_latitude() {
         // Wrapping past a pole would land on the far side of the sphere, which
-        // is a different point — so latitude stops rather than repeating.
+        // is a different point, so latitude stops rather than repeating.
         let s = SphereSurface::new(Sphere::new(Frame::WORLD, 1.0, T).unwrap());
         assert!(!s.is_periodic_v());
         assert!(s.point_at(0.0, core::f64::consts::PI, T).is_err());

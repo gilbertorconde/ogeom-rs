@@ -2,7 +2,7 @@
 //!
 //! Three answers, never two: inside, outside, or *on* the boundary within
 //! tolerance. The third is not a hedge. Geometry that meets is the normal case
-//! in a kernel — a boolean's whole job is finding it — and a classifier that
+//! in a kernel (a boolean's whole job is finding it), and a classifier that
 //! forces every point to one side has to pick, silently, for exactly the points
 //! where the choice matters most.
 //!
@@ -14,7 +14,7 @@
 //! band the answer is uncertain within is the deflection, and saying so is the
 //! difference between an approximate answer and a wrong one.
 //!
-//! Tightening the deflection narrows the band. It never removes it — the
+//! Tightening the deflection narrows the band. It never removes it: the
 //! exact question needs ray/surface intersection, which is
 //! [`classify_in_solid_exact`]: rays cast against the faces' true surfaces,
 //! where the uncertain band shrinks from the deflection to the tolerance.
@@ -114,7 +114,7 @@ pub fn classify_on_face(
     // tolerance would be metres wide at a sphere's equator and nothing at its
     // pole. The rings are polylines drawn at the caller's deflection, so the
     // band carries that sag too: without it, a point between a tangent chord
-    // and its arc — inside the true trim, outside the sampled one — would
+    // and its arc (inside the true trim, outside the sampled one) would
     // read as Out when the honest answer at this resolution is On.
     let band = parametric_band(surface, (u, v), reach + deflection.chord, tol);
     if distance_to_rings(&rings, at) <= band {
@@ -136,7 +136,7 @@ pub fn classify_on_face(
 ///
 /// As [`triangulate()`], plus
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the boundary is
-/// not closed — an open shell has no inside — and
+/// not closed (an open shell has no inside), and
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if every ray tried hit an
 /// edge or a vertex, where the crossing count is ambiguous.
 pub fn classify_in_solid(
@@ -205,7 +205,7 @@ pub fn classify_in_solid(
 /// the discipline about degenerate hits. A ray that grazes a surface
 /// tangentially, meets a face too near its boundary to be sure which side of
 /// the trim it crossed, lies *in* a face's surface, or passes through a
-/// pole or an apex, is not patched into a count — the ray is abandoned and
+/// pole or an apex, is not patched into a count; the ray is abandoned and
 /// the next direction tried. Six directions, deterministic, none axis-aligned.
 ///
 /// # Errors
@@ -213,7 +213,7 @@ pub fn classify_in_solid(
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the shape is
 /// not a solid or a shell, or its boundary is not closed;
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if every ray met a
-/// degeneracy — which a handful of deliberately skew directions makes an
+/// degeneracy, which a handful of deliberately skew directions makes an
 /// engineered case rather than an encountered one.
 pub fn classify_in_solid_exact(
     model: &Model,
@@ -228,8 +228,8 @@ pub fn classify_in_solid_exact(
 /// control.
 ///
 /// The band is the ring polylines' chord tolerance, and with it the width of
-/// the region that answers `On`. The default is generous — a boolean wants a
-/// piece near a boundary called On and resolved against its partner — but a
+/// the region that answers `On`. The default is generous (a boolean wants a
+/// piece near a boundary called On and resolved against its partner), but a
 /// caller that got On *without* a partner to resolve against needs to ask
 /// again at a width where proximity stops impersonating coincidence.
 ///
@@ -263,7 +263,7 @@ struct PreparedFace {
 /// Classifying a point casts rays and counts crossings, which is cheap. What
 /// is not cheap is what the rays are cast *against*: every face's trimming
 /// rings, polylined, plus its placement's inverse. That work depends on the
-/// solid and the chord, never on the point — and asked point by point it was
+/// solid and the chord, never on the point, and asked point by point it was
 /// redone from scratch every time, which for a boolean means once per face
 /// piece. Measured on a four-hole cut, preparing took 3.5 ms against 5.6 µs
 /// of ray casting: six hundred times the work of the question being asked.
@@ -334,7 +334,7 @@ impl SolidBoundary {
         let faces = ogeom_topo::explore_unique(model, solid, ShapeType::Face)?;
         // One prepared face per face, in face order, computed in parallel:
         // each preparation reads the model and writes nothing, and walking a
-        // face's trimming rings is the whole cost of building a boundary —
+        // face's trimming rings is the whole cost of building a boundary:
         // 84% of the boolean's split stage before this ran wide.
         let prepared = ogeom_core::parallel::map_ordered(&faces, |_, face| {
             ogeom_core::progress::checkpoint()?;
@@ -426,7 +426,7 @@ impl SolidBoundary {
                 for hit in &found.crossings {
                     if hit.on_curve <= tol.confusion() {
                         // At the very start: the probe lies in this face's
-                        // *surface*. Whether that matters depends on the trim —
+                        // *surface*. Whether that matters depends on the trim:
                         // the boundary test above already said the point is off
                         // every face, so a start-crossing far from this face's
                         // rings is the unbounded surface talking, not the face,
@@ -459,7 +459,7 @@ impl SolidBoundary {
                     let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
                     if distance_to_rings(rings, at) <= band {
                         // Too near the face's boundary to know which side of the
-                        // trim it crossed — and a shared edge would be counted by
+                        // trim it crossed, and a shared edge would be counted by
                         // both faces or neither.
                         continue 'directions;
                     }
@@ -487,7 +487,7 @@ impl SolidBoundary {
 ///
 /// Below this the hit is treated as a graze: a tangential contact is one
 /// crossing where parity arithmetic needs zero or two, and the seed of the
-/// threshold is the same as the marching intersector's `SHALLOWEST` — beneath
+/// threshold is the same as the marching intersector's `SHALLOWEST`: beneath
 /// a microradian, rounding in the evaluated normal can no longer tell a
 /// crossing from a touch.
 const GRAZING: f64 = 1e-6;
@@ -497,8 +497,8 @@ const GRAZING: f64 = 1e-6;
 /// Deterministic, not random: a classifier that gives different answers on
 /// different runs is worse than one that fails, because the failure can be
 /// handled and the inconsistency cannot. They are deliberately not axis-aligned
-/// and share no common plane, so a mesh built on a regular grid — where an
-/// axis-aligned ray runs along a whole row of edges — does not defeat all of
+/// and share no common plane, so a mesh built on a regular grid (where an
+/// axis-aligned ray runs along a whole row of edges) does not defeat all of
 /// them at once.
 const RAY_DIRECTIONS: [[f64; 3]; 6] = [
     [0.577_35, 0.577_35, 0.577_35],
@@ -589,7 +589,7 @@ fn ray_hits_triangle(from: Point, along: Direction, t: [Point; 3], tol: Toleranc
 
     let distance = inverse * e2.dot(q);
     if distance <= tol.confusion() {
-        // Behind the start, or right at it — and right at it was already ruled
+        // Behind the start, or right at it, and right at it was already ruled
         // out by the on-boundary test before any ray was cast.
         return Hit::Misses;
     }
@@ -671,14 +671,14 @@ fn segment_distance_2d(p: Point2, a: Point2, b: Point2) -> f64 {
 
 /// How wide, in parameter units, a distance of `reach` in space is at `(u, v)`.
 ///
-/// The surface's tangents give the conversion. Where a tangent vanishes — a
-/// sphere's pole, a cone's apex — no parameter distance corresponds to a
+/// The surface's tangents give the conversion. Where a tangent vanishes (a
+/// sphere's pole, a cone's apex), no parameter distance corresponds to a
 /// spatial one, and the band opens to cover the whole neighbourhood rather than
 /// closing to nothing.
 /// Fold a chart point toward the rings' own window, one period at a time.
 ///
 /// Projection and intersection answer parameters in a surface's principal
-/// range, but a face's trim may live in any window of a periodic chart — a
+/// range, but a face's trim may live in any window of a periodic chart: a
 /// band anchored where its rings happened to start. The trim tests compare
 /// against the rings, so the point folds to them, not the other way round.
 pub(crate) fn fold_toward_rings(
@@ -957,7 +957,7 @@ mod tests {
     #[test]
     fn the_exact_classifier_resolves_what_the_deflection_band_cannot() {
         // The reason this function exists. A point a micron off a sphere's
-        // wall is far inside any practical deflection band — the tessellated
+        // wall is far inside any practical deflection band; the tessellated
         // classifier must say On, because against a mesh it genuinely cannot
         // tell. Against the true sphere the side is knowable, and known.
         let mut model = Model::new();
@@ -1011,7 +1011,7 @@ mod tests {
     #[test]
     fn the_exact_classifier_walks_the_general_path_through_a_torus() {
         // No analytic ray/torus case exists, so every crossing here came from
-        // the seeded Newton path — and a torus also puts the hole in the
+        // the seeded Newton path, and a torus also puts the hole in the
         // middle, where a ray to the outside crosses the tube wall twice.
         let mut model = Model::new();
         let built = crate::make_torus(&mut model, Frame::WORLD, 3.0, 1.0, T).unwrap();

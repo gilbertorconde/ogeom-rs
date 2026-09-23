@@ -27,7 +27,7 @@ fn area(corners: &[Point]) -> f64 {
 /// wall is skew, and each is the bilinear patch between its two segments.
 ///
 /// A ruled solid's section area is quadratic in height, so the prismoidal
-/// formula — `h (A₀ + 4 A_mid + A₁) / 6` — is its volume exactly, and the
+/// formula, `h (A₀ + 4 A_mid + A₁) / 6`, is its volume exactly, and the
 /// mid section is the polygon of the walls' midlines' midpoints.
 #[test]
 fn a_twisted_loft_has_bilinear_walls_and_the_prismoid_s_volume() {

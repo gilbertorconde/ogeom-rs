@@ -1,8 +1,8 @@
 //! The shape triple, orientation, and the identity trichotomy.
 //!
 //! `docs/DATA_MODEL.md` §1, §3 and §4. A [`Shape`] is a *(topology node,
-//! placement, orientation)* triple: cheap to copy, with the heavy data — the
-//! children, the geometry, the tolerances — living once in an arena behind the
+//! placement, orientation)* triple: cheap to copy, with the heavy data (the
+//! children, the geometry, the tolerances) living once in an arena behind the
 //! node handle. That separation is why boundary representation scales: the same
 //! node appears at many placements and orientations without a byte of geometry
 //! being copied.
@@ -28,8 +28,8 @@ use crate::location::{DatumStore, Location};
 
 /// What a topology node is.
 ///
-/// Ordered by dimension, so `>=` asks a meaningful question — "is this at least
-/// a face?" — and sorting a mixed collection groups it sensibly.
+/// Ordered by dimension, so `>=` asks a meaningful question ("is this at least
+/// a face?") and sorting a mixed collection groups it sensibly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ShapeType {
     /// A point.
@@ -53,7 +53,7 @@ pub enum ShapeType {
 impl ShapeType {
     /// The type of the sub-shapes this type is built from, if any.
     ///
-    /// A compound has no fixed child type — it holds anything — so this reports
+    /// A compound has no fixed child type (it holds anything), so this reports
     /// `None` for it rather than guessing.
     #[must_use]
     pub const fn child_type(self) -> Option<Self> {
@@ -93,7 +93,7 @@ pub enum Orientation {
     Forward,
     /// The material is on the other side.
     Reversed,
-    /// The boundary lies *inside* the material — a stiffener edge embedded in a
+    /// The boundary lies *inside* the material: a stiffener edge embedded in a
     /// face, an edge that does not separate anything.
     Internal,
     /// The boundary lies outside the material: reference geometry, carried
@@ -126,7 +126,7 @@ impl Orientation {
 
     /// This orientation reversed.
     ///
-    /// `Internal` and `External` are unaffected — neither names a side, so
+    /// `Internal` and `External` are unaffected; neither names a side, so
     /// neither has one to swap.
     #[must_use]
     pub const fn reversed(self) -> Self {
@@ -170,7 +170,7 @@ impl TShape {
         }
     }
 
-    /// A container node — wire, shell, solid, compsolid or compound.
+    /// A container node: wire, shell, solid, compsolid or compound.
     #[must_use]
     pub const fn container(kind: ShapeType, children: Vec<Shape>) -> Self {
         Self {
@@ -228,7 +228,7 @@ impl TShape {
 
 /// A shape: a topology node, a placement, and an orientation.
 ///
-/// Cheap to copy — a key, a small chain and an enum — so it is passed by value
+/// Cheap to copy (a key, a small chain and an enum), so it is passed by value
 /// everywhere.
 #[derive(Debug, Clone)]
 pub struct Shape {
@@ -298,7 +298,7 @@ impl Shape {
     /// [`rebound`](Self::rebound)'s sibling for absorbing parts: the indices
     /// were local to the source document, and its nodes and datums are about
     /// to land `nodes` and `datums` slots into the target's arenas. The
-    /// handles stay unscoped — binding is a separate, later step.
+    /// handles stay unscoped; binding is a separate, later step.
     pub(crate) fn shifted(&self, nodes: u32, datums: u32) -> Self {
         Self {
             node: crate::entity::shifted_key(self.node, nodes),
@@ -354,7 +354,7 @@ impl Shape {
     /// Whether two shapes share a topology node, ignoring placement and
     /// orientation.
     ///
-    /// "Is this the same underlying topology, anywhere, any way round?" — the
+    /// "Is this the same underlying topology, anywhere, any way round?": the
     /// question to ask when relating a shape to another instance of itself
     /// elsewhere in an assembly.
     #[must_use]
@@ -403,7 +403,7 @@ impl Shape {
     }
 }
 
-/// Equality by [`Shape::is_equal`] — node, placement *and* orientation.
+/// Equality by [`Shape::is_equal`]: node, placement *and* orientation.
 ///
 /// The strictest of the three, chosen as the derive-shaped default so that a
 /// plain `==` never silently means something looser than the reader expects.
@@ -425,7 +425,7 @@ impl Hash for Shape {
     }
 }
 
-/// A key that hashes and compares by [`Shape::is_same`] — node and placement,
+/// A key that hashes and compares by [`Shape::is_same`]: node and placement,
 /// ignoring orientation.
 ///
 /// Wrapping rather than offering a custom hasher, because the danger being
@@ -451,7 +451,7 @@ impl Hash for SameKey {
     }
 }
 
-/// A key that hashes and compares by [`Shape::is_partner`] — the node alone.
+/// A key that hashes and compares by [`Shape::is_partner`]: the node alone.
 #[derive(Debug, Clone)]
 pub struct PartnerKey(pub Shape);
 

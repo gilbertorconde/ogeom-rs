@@ -87,7 +87,7 @@ fn volume(model: &Model, shape: &Shape) -> f64 {
 }
 
 /// The acceptance of the chamfer chain: the box's four top edges bevelled
-/// by one millimetre as one operation mitre at every corner — ten faces,
+/// by one millimetre as one operation mitre at every corner: ten faces,
 /// the four prisms less their four corner overlaps.
 #[test]
 fn a_chamfer_chain_mitres_at_shared_vertices() {
@@ -159,7 +159,7 @@ fn chamfer_chains_meet_three_at_a_corner() {
 
 /// The acceptance of the fillet corner: three fillets at a box's top corner
 /// asked together close it with the octant of the sphere a radius in from
-/// all three faces — ten faces, and inside the corner cube nothing but that
+/// all three faces: ten faces, and inside the corner cube nothing but that
 /// sphere. The corner is the prism's far end, placed by the sweep, so the
 /// corner tool must read where the vertex stands and not where its node
 /// was built.
@@ -223,7 +223,7 @@ fn three_fillets_at_a_corner_close_it_with_a_sphere() {
 
 /// At a vertex of more edges the corner still closes: a square pyramid's
 /// four slopes filleted together round the apex with one sphere, and a
-/// rectangular one's — no single ball touches its four slopes — with two
+/// rectangular one's (no single ball touches its four slopes) with two
 /// spheres and a cylinder between them.
 #[test]
 fn fillet_chains_close_an_apex() {

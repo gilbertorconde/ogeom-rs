@@ -6,8 +6,8 @@
 //! with a closed-form chart. A ruled loft between two parallel sections is
 //! walls of planes and cones: segment to segment gives the planar quad,
 //! coaxial circle to circle gives the frustum the cone primitive already
-//! builds. The sweeps that need *new* surfaces — free-form spines, skew
-//! ruled walls, smoothed skinning through many sections — are recorded in
+//! builds. The sweeps that need *new* surfaces (free-form spines, skew
+//! ruled walls, smoothed skinning through many sections) are recorded in
 //! docs/PARITY.md (offset.sweeps), not approximated here.
 
 use ogeom_algo::{
@@ -83,7 +83,7 @@ pub fn make_pipe(
         _ => ogeom_bail!(
             Construction,
             "a pipe along a free-form spine needs the sweep-surface \
-             machinery — docs/PARITY.md, offset.sweeps"
+             machinery; see docs/PARITY.md, offset.sweeps"
         ),
     };
     built.history.generate(spine, built.shape.clone());
@@ -95,8 +95,8 @@ pub fn make_pipe(
 /// The tube circles are framed so their own parameter *is* the torus tube
 /// angle, which makes every tube pcurve a vertical line in the chart and the
 /// two patches the clean rectangles `v ∈ [0, π]` and `[π, 2π]`. The outer
-/// equator is then the seam between the halves across the period — one edge,
-/// two chart rows — which is exactly what [`ogeom_algo::attach_seam`] exists to
+/// equator is then the seam between the halves across the period (one edge,
+/// two chart rows), which is exactly what [`ogeom_algo::attach_seam`] exists to
 /// say.
 fn pipe_segment(
     model: &mut Model,
@@ -214,7 +214,7 @@ fn pipe_segment(
     )?;
     // The outer equator bounds both halves across the period: v = 2π for its
     // forward use under the upper patch, v = 0 for its reversed use under the
-    // lower — a seam, said as one.
+    // lower: a seam, said as one.
     let outer = parallel(model, 0.0, &verts[0][0], &verts[1][0])?;
     ogeom_algo::attach_seam(
         model,
@@ -292,7 +292,7 @@ fn pipe_segment(
 /// edge in traversal order.
 ///
 /// A wall between two segments that are not coplanar is the bilinear patch
-/// through its four corners — the ruled surface between them, exact — so
+/// through its four corners (the ruled surface between them, exact), so
 /// sections may be turned against each other or differ in shape.
 ///
 /// # Errors
@@ -355,7 +355,7 @@ pub fn make_loft(
             ogeom_bail!(
                 Construction,
                 "lofted circles must be coaxial on parallel planes; the \
-                 oblique loft needs the sweep machinery — see the deferred \
+                 oblique loft needs the sweep machinery; see the deferred \
                  table"
             );
         }
@@ -399,7 +399,7 @@ pub fn make_loft(
             let Some(Curve::Line(_)) = model.geometry().curve(*curve) else {
                 ogeom_bail!(
                     Construction,
-                    "a mixed or curved section needs the skinning machinery — \
+                    "a mixed or curved section needs the skinning machinery; see \
                      docs/PARITY.md, offset.sweeps"
                 );
             };
@@ -525,8 +525,8 @@ pub fn make_loft(
 /// bilinear patch through its four corners, exact, as a B-spline of degree
 /// one each way.
 ///
-/// `corners` run round the wall — low start, low end, high end, high
-/// start — and `edges` walk them in that order, the third and fourth
+/// `corners` run round the wall (low start, low end, high end, high
+/// start) and `edges` walk them in that order, the third and fourth
 /// reversed as the caller's wire has them. Each edge's pcurve is the chart
 /// side it lies on, parameterized by the edge's own range so the two agree
 /// point for point; the wall faces away from `centroid`.
@@ -608,8 +608,8 @@ struct SkinnedWall {
 /// first sample repeated at its end: the row fits pin their ends, so the two
 /// border control columns are *equal* and the seam closes exactly, not
 /// within tolerance. The border iso-curves come straight off the control
-/// net — the v-borders are the fitted sections, planar whenever the
-/// sections are, which is what lets the caps be planes — and every pcurve
+/// net (the v-borders are the fitted sections, planar whenever the
+/// sections are, which is what lets the caps be planes), and every pcurve
 /// is an iso line in the fitted chart, same-parameter by construction.
 fn skinned_wall(
     model: &mut Model,
@@ -783,7 +783,7 @@ fn skinned_wall(
 }
 
 /// A strip closed the *long* way: open across its own width, a smooth loop
-/// along the sweep — one face of a faceted ring, [`skinned_wall`]'s
+/// along the sweep: one face of a faceted ring, [`skinned_wall`]'s
 /// construction with the chart's roles swapped and the loop made C1 by
 /// [`ogeom_geom::fit::fit_surface_grid_closed_v`]. The rails are the two
 /// closed border loops; the seam is one station's column, used twice.
@@ -818,8 +818,8 @@ fn skinned_ring_strip(
     let (u_dom, v_dom) = surface.domain();
 
     // The chart's roles, straight: `u` runs across the strip (open), `v`
-    // around the loop (closed). The rails are v-curves — the closed border
-    // loops at the two u-borders — and the seam is the u-row at the loop's
+    // around the loop (closed). The rails are v-curves (the closed border
+    // loops at the two u-borders), and the seam is the u-row at the loop's
     // join, bounding the chart twice as every seam does.
     let rail_curve = |i: usize| -> OgeomResult<ogeom_geom::Curve> {
         let control: Vec<Point> = (0..l).map(|j| point_at(i, j)).collect();
@@ -845,7 +845,7 @@ fn skinned_ring_strip(
     // border is another fit of the same loop, so the edge widens to how
     // far it honestly sits from this surface. Two independent fits of one
     // loop can disagree by more than either fit's own error, which is what
-    // the sew refused under a frame that turns fast — and one edge cannot
+    // the sew refused under a frame that turns fast, and one edge cannot
     // disagree with itself.
     let slack = fitted.error + tol.confusion();
     let rail_of = |model: &mut Model, i: usize, given: Option<&Shape>| -> OgeomResult<Shape> {
@@ -1073,7 +1073,7 @@ fn skinned_solid(
 }
 
 /// A patch skinned from a ring down to a point: [`skinned_wall`]'s
-/// construction with the top ring replaced by the apex — a degenerate
+/// construction with the top ring replaced by the apex: a degenerate
 /// edge on one vertex, bounding the chart's whole top row the way a cone's
 /// apex bounds a countersink. The ring edge is adopted from `shared`
 /// where a neighbour already built it, and the face is turned to point
@@ -1305,7 +1305,7 @@ fn skinned_solid_to_apex(
 /// A solid skinned over a grid of sections that loops back on itself: the
 /// wall is one face closed in both chart directions, no caps at all.
 ///
-/// The `u` seam closes the way every skin's does — pinned row ends — and
+/// The `u` seam closes the way every skin's does (pinned row ends), and
 /// the `v` loop closes through [`ogeom_geom::fit::fit_surface_grid_closed_v`],
 /// C1 across the join. All four boundary traversals are two seam edges used
 /// twice, anchored at one shared vertex, exactly as a torus bounds itself.
@@ -1319,7 +1319,7 @@ fn closed_skinned_solid(
     make_solid(model, std::slice::from_ref(&shell))
 }
 
-/// The closed skin as a shell, for callers assembling solids with voids —
+/// The closed skin as a shell, for callers assembling solids with voids;
 /// a holed profile's ring is one outer shell and one per tunnel.
 fn closed_skinned_shell(
     model: &mut Model,
@@ -1388,7 +1388,7 @@ fn closed_skinned_shell(
         )?
         .into())
     };
-    // The u-run is a seam in v — the same curve at both rows — and the
+    // The u-run is a seam in v (the same curve at both rows), and the
     // v-run a seam in u.
     ogeom_algo::attach_seam(
         model,
@@ -1453,7 +1453,7 @@ fn closed_skinned_shell(
 ///
 /// A circle takes the cone the revolved primitives already build, apex on
 /// its axis or refused; a polygon takes exact planar triangle walls, sound
-/// for *any* apex — a skew pyramid's walls are still triangles.
+/// for *any* apex: a skew pyramid's walls are still triangles.
 fn loft_to_point(
     model: &mut Model,
     section: &Shape,
@@ -1485,7 +1485,7 @@ fn loft_to_point(
             ogeom_bail!(
                 Construction,
                 "a circle lofts to a point on its own axis; the oblique cone \
-                 needs the skinned machinery — docs/PARITY.md, offset.loft"
+                 needs the skinned machinery; see docs/PARITY.md, offset.loft"
             );
         }
         if height.abs() <= tol.confusion() {
@@ -1521,7 +1521,7 @@ fn loft_to_point(
             ogeom_bail!(
                 Construction,
                 "a mixed or curved section lofts to a point through the \
-                 skinned machinery — docs/PARITY.md, offset.loft"
+                 skinned machinery; see docs/PARITY.md, offset.loft"
             );
         };
         let t = if edge.orientation() == ogeom_topo::Orientation::Reversed {
@@ -1681,8 +1681,8 @@ fn loft_to_point(
 /// Loft through sections with the start of each row named by the caller.
 ///
 /// [`make_loft_skinned`] leaves alignment to each section's own traversal
-/// start; this sibling takes one hint per section — a point near where its
-/// row should begin — and rotates each sampling there, which is how a
+/// start; this sibling takes one hint per section (a point near where its
+/// row should begin) and rotates each sampling there, which is how a
 /// caller untwists a loft whose wires happen to start in different places.
 ///
 /// # Errors
@@ -1750,13 +1750,13 @@ pub fn make_loft_skinned_aligned(
 ///
 /// [`make_loft_skinned`]'s closed sibling: the sections are sampled the same
 /// way, the skin runs through all of them and back to the start, C1 across
-/// the loop, and there are no caps — the result bounds itself the way a
+/// the loop, and there are no caps: the result bounds itself the way a
 /// torus does. The sections are *not* repeated: the loop-back is the
 /// construction's own.
 ///
 /// The closed join costs freedom: a sparse loop fits only loosely, and the
 /// refusal quotes the deviation it honestly reached. A loop that wants a
-/// tight tolerance wants sections dense enough to bend around — in
+/// tight tolerance wants sections dense enough to bend around: in
 /// practice, a dozen and up.
 ///
 /// # Errors
@@ -1796,8 +1796,8 @@ pub fn make_loft_skinned_closed(
 
 /// A skinned strip: one open patch of a sweep, with its border edges.
 ///
-/// The wall of a *faceted* profile cannot be one closed skin — a fit cannot
-/// speak a corner — so each profile edge sweeps its own strip, cornered at
+/// The wall of a *faceted* profile cannot be one closed skin (a fit cannot
+/// speak a corner), so each profile edge sweeps its own strip, cornered at
 /// the caller's shared vertices, and the strips weld along their rails by
 /// the tolerance the fit honestly carries.
 struct SkinnedStrip {
@@ -1812,11 +1812,11 @@ struct SkinnedStrip {
     rail1: Shape,
 }
 
-/// Skin an open grid of samples — stations by profile-edge samples — into
+/// Skin an open grid of samples (stations by profile-edge samples) into
 /// one strip. `corners` are the caller's vertices at (first station, edge
 /// start), (first, end), (last, start), (last, end), shared with the
 /// neighbouring strips so the wires chain. `shared` are borders a
-/// neighbouring strip already built — bottom, top, start rail, end rail —
+/// neighbouring strip already built (bottom, top, start rail, end rail),
 /// adopted as they are (see `adopt_border`).
 #[allow(clippy::too_many_arguments, reason = "one strip, spelled out")]
 fn skinned_strip(
@@ -1980,7 +1980,7 @@ fn skinned_strip(
 /// Loft a solid through many closed planar sections, skinned smoothly.
 ///
 /// The sections are sampled at matched arc-length fractions from their own
-/// traversal starts — aligning those starts is the caller's authorship —
+/// traversal starts (aligning those starts is the caller's authorship),
 /// and the skin holds every section to `tolerance`. The caps are the first
 /// and last sections' own planes.
 ///
@@ -2036,7 +2036,7 @@ pub fn make_loft_skinned(
         cap_planes.push(ogeom_algo::find_plane(model, wire, tol)?);
         rows.push(sample_wire(model, wire, AROUND, tol)?);
     }
-    // A planar end is capped by its plane; one that is not — a wavy rim —
+    // A planar end is capped by its plane; one that is not (a wavy rim),
     // by a patch skinned from the ring to a point inside it.
     let outward_at = |rows: &[Vec<Point>], planes: &[Option<Plane>], end: bool| -> EndCap {
         let (i, j) = if end {
@@ -2095,7 +2095,7 @@ fn sample_wire(
 }
 
 /// As [`sample_wire`], with the arc-length origin rotated to the dense
-/// sample nearest `start_hint` — how a caller says which point of each
+/// sample nearest `start_hint`: how a caller says which point of each
 /// section rows up with which, instead of leaning on traversal starts.
 fn sample_wire_from(
     model: &Model,
@@ -2282,12 +2282,12 @@ fn closed_loop_shell(
     let t0 = stations[0].tangent;
     let y0 = t0.cross(x0);
     if !smooth {
-        // A faceted profile: one ring strip per profile edge — a fit cannot
+        // A faceted profile: one ring strip per profile edge; a fit cannot
         // speak a corner, so each facet gets its own v-closed skin and the
         // strips sew along the corner loops they share within tolerance.
         const ALONG_EDGE: usize = 8;
         // Outward for a ring strip means away from the spine's own line,
-        // not from the loop's centroid — a ring's inner side *faces* the
+        // not from the loop's centroid: a ring's inner side *faces* the
         // centroid. The hint is the station the strip's midpoint rides.
         let mid_station = stations[stations.len() / 2].at;
         let mut faces = Vec::with_capacity(edges.len());
@@ -2398,7 +2398,7 @@ fn closed_loop_shell(
 
 /// Rotation-minimizing normals along the stations, by double reflection:
 /// reflect in each chord's plane, then in the plane bisecting the tangents.
-/// Self-contained — it needs only the station list — and shared by every
+/// Self-contained (it needs only the station list) and shared by every
 /// sweep that must not twist where its spine bends.
 fn rmf_normals(stations: &[SpineStation]) -> Vec<Vector> {
     let mut normals: Vec<Vector> = Vec::with_capacity(stations.len());
@@ -2421,7 +2421,7 @@ fn rmf_normals(stations: &[SpineStation]) -> Vec<Vector> {
         let c1 = v1.dot(v1);
         if c1 <= 1e-20 {
             // A corner's twin station: no travel to reflect through. The
-            // normal is reflected across the corner's mitre plane instead —
+            // normal is reflected across the corner's mitre plane instead;
             // for a vector square to the incoming tangent that is exactly
             // the parallel transport about the corner's own axis, and the
             // mirror symmetry is what lands both legs' sheared sections on
@@ -2467,7 +2467,7 @@ fn rmf_step(p0: Point, t0: Vector, n0: Vector, p1: Point, t1: Vector) -> Vector 
 /// A leg's generators, evaluated anywhere: the spine's own curve between
 /// stations with the rotation-minimizing normal carried one step from the
 /// station behind, and a straight extension past either end in the end
-/// frame — the surface a mitre trims against. Parameters are station
+/// frame: the surface a mitre trims against. Parameters are station
 /// indices; a unit beyond an end is one station spacing.
 struct SpineWalk<'a> {
     /// Each spine edge's curve, range and whether it is travelled reversed.
@@ -2478,7 +2478,7 @@ struct SpineWalk<'a> {
 
 /// Where two legs' generators for one profile point meet at a corner: the
 /// point, each leg's parameter, and how far the two generators actually
-/// miss each other — zero when the corner turns in the plane.
+/// miss each other (zero when the corner turns in the plane).
 struct CornerJoin {
     at: Point,
     s1: f64,
@@ -2597,22 +2597,22 @@ impl SpineWalk<'_> {
     }
 }
 
-/// Sweep a planar profile — a wire, or a face whose holes ride along —
+/// Sweep a planar profile (a wire, or a face whose holes ride along)
 /// down an arbitrary spine, one skinned wall per profile loop.
 ///
 /// The spine may be a single edge or a wire of edges of any curve the
-/// vocabulary evaluates — lines, arcs, splines, helices. Frames along it are
+/// vocabulary evaluates: lines, arcs, splines, helices. Frames along it are
 /// rotation-minimizing by default (the double-reflection construction), so
 /// the profile neither twists nor kinks where the spine bends; `frenet`
 /// asks for the Frenet frame instead, which turns with the spine's own
-/// curvature — the law a thread wants. Stations are placed by each edge's
+/// curvature, the law a thread wants. Stations are placed by each edge's
 /// own turning, the skin holds every transported section to `tolerance`,
 /// and the caps sit perpendicular to the spine's ends, holes and all.
 ///
 /// A sharp corner is mitred. Between straight legs the mitre is a plane and
 /// each wall is sheared onto it; where a leg is curved the two legs' walls
-/// end on the crossing of their generators — each profile point's own path
-/// down either leg, run straight on past the corner — which is exact where
+/// end on the crossing of their generators (each profile point's own path
+/// down either leg, run straight on past the corner), which is exact where
 /// the corner turns in the leg's plane.
 ///
 /// # Errors
@@ -2654,7 +2654,7 @@ pub fn make_pipe_shell(
     }
     // The cornered ring closes at its own wrap. Seamed on a corner, the
     // wrap is one more mitre; seamed mid-leg, the wrap's "mitre" plane is
-    // the leg's own cross-section — both twin tangents are the leg's — and
+    // the leg's own cross-section (both twin tangents are the leg's), and
     // the shear onto it moves nothing, so the two halves of that leg butt
     // together on the seam's own ring, coplanar walls meeting on it. The
     // solid is exact either way; the mid-leg seam merely leaves its leg in
@@ -2673,7 +2673,7 @@ pub fn make_pipe_shell(
     };
     // A ring's frame must come home: carry once more across the wrap
     // corner, read the twist between departure and return, and spread it
-    // along the arc — the smooth loop's own reconciliation, ending at a
+    // along the arc: the smooth loop's own reconciliation, ending at a
     // mitre instead of a tangent join.
     let normals = if ring {
         let mut extended = stations.clone();
@@ -2755,8 +2755,8 @@ pub fn make_pipe_shell(
     // Every corner as the pair of runs it stands between, the wrap
     // included, and whether either leg is curved. A curved leg's trim is
     // not a loft of its rows: the two legs' generators for one profile
-    // point are followed — the leg's own curve, run straight on past the
-    // corner — to where they meet, and each wall ends on that crossing.
+    // point are followed (the leg's own curve, run straight on past the
+    // corner) to where they meet, and each wall ends on that crossing.
     // Where the corner turns in the plane the crossing is exact; a skew
     // corner's generators miss each other, and that miss is refused.
     struct CornerPair {
@@ -2811,7 +2811,7 @@ pub fn make_pipe_shell(
             ogeom_bail!(
                 Construction,
                 "a skew corner against a curved leg is still owed its frame \
-                 law: the legs' generators miss by {} — docs/PARITY.md, \
+                 law: the legs' generators miss by {}; see docs/PARITY.md, \
                  offset.sweeps",
                 join.gap
             );
@@ -2897,7 +2897,7 @@ pub fn make_pipe_shell(
         })
     };
     // The rows a run's skin interpolates. A straight run is its two end
-    // rings, ruled — the trimmed prism itself, whether an end is sheared
+    // rings, ruled: the trimmed prism itself, whether an end is sheared
     // onto a mitre plane or stands on a curved corner's crossing. A curved
     // run is its stations, except that a stretch at a curved corner is
     // re-rowed: each row runs along the generators from the last plain
@@ -2973,7 +2973,7 @@ pub fn make_pipe_shell(
             // A curved run with a crossing at either end is re-rowed whole:
             // every column runs its own generator from its start to its end,
             // sampled at the same fractions, so the grid's shared parameter is
-            // honest for every column — a stretch skewed only near the corner
+            // honest for every column; a stretch skewed only near the corner
             // would pace each column differently and the fit would fight it.
             if start
                 .as_ref()
@@ -3109,8 +3109,8 @@ pub fn make_pipe_shell(
                 // The wrap is one corner: both runs take the same vertex
                 // objects. Every corner's two sheared sections must land on
                 // one ring for the loop to close; a planar ring's do
-                // exactly, and a skew ring's — whose parallel-carried frame
-                // leaves the far tangent's plane — do not, so the residue
+                // exactly, and a skew ring's (whose parallel-carried frame
+                // leaves the far tangent's plane) do not, so the residue
                 // is measured and the skew ring refused by name rather
                 // than sewn hoping.
                 let mut worst = 0.0_f64;
@@ -3125,7 +3125,7 @@ pub fn make_pipe_shell(
                         Construction,
                         "a skew-cornered ring's sections do not meet on \
                          their mitres; the out-of-plane corner's frame law \
-                         is still owed — docs/PARITY.md, offset.sweeps"
+                         is still owed; see docs/PARITY.md, offset.sweeps"
                     );
                 }
                 let set = make_corners(model, 0)?;
@@ -3163,7 +3163,7 @@ pub fn make_pipe_shell(
             let mut tops = Vec::with_capacity(count);
             // Per run: the first strip's start rail, for the last strip to
             // close the loop on, and the previous strip's end rail, for
-            // the next to start from — one edge for both, never two fits.
+            // the next to start from: one edge for both, never two fits.
             let mut run_rails: Vec<(Option<Shape>, Option<Shape>)> = vec![(None, None); runs.len()];
             for (ei, edge) in edges.iter().enumerate() {
                 let (curve, range) = spine_curve_of(model, edge)?;
@@ -3307,7 +3307,7 @@ pub fn make_pipe_shell(
                     ogeom_bail!(Construction, "a swept ring is not a spline");
                 };
                 // A planar polynomial spline's chart image is the same-degree
-                // spline of the projected control points — affine, so exact.
+                // spline of the projected control points: affine, so exact.
                 let control2: Vec<Point2> = bs
                     .control_points()
                     .iter()
@@ -3403,7 +3403,7 @@ fn spine_curve_of(model: &Model, edge: &Shape) -> OgeomResult<(ogeom_geom::Curve
 /// The frames are rotation-minimizing with the loop's holonomy paid off:
 /// transported round a closed spine, the frame comes home twisted by some
 /// angle, and that twist is spread back along the arc so the last station's
-/// frame *is* the first's — without it the closed fit fights a helical
+/// frame *is* the first's; without it the closed fit fights a helical
 /// grid. The profile must be one smooth closed loop; a faceted profile's
 /// strips and a holed profile's nested shells are still owed, and the
 /// Frenet law on a closed loop is not carried yet.
@@ -3430,7 +3430,7 @@ fn closed_pipe_shell(
             ogeom_bail!(
                 Construction,
                 "a closed spine with a sharp corner needs the mitred strips, \
-                 which are still owed — docs/PARITY.md, offset.sweeps; round \
+                 which are still owed; see docs/PARITY.md, offset.sweeps; round \
                  the corner and the ring sweeps"
             );
         }
@@ -3478,7 +3478,7 @@ fn closed_pipe_shell(
         // The Frenet frame is the spine's own, single-valued round a loop:
         // read with wrapped neighbours it closes on itself and owes no
         // reconciliation. Read from a walk that visits the join twice it
-        // does not — the one-sided differences at the walk's two ends
+        // does not: the one-sided differences at the walk's two ends
         // disagree with the interior, and the strips built on them miss
         // each other at the join by that kink.
         frenet_normals_closed(&stations, tol)?
@@ -3541,7 +3541,7 @@ fn closed_pipe_shell(
     Ok(built)
 }
 
-/// Sample a spine — one edge or a wire of them — into stations, each edge
+/// Sample a spine (one edge or a wire of them) into stations, each edge
 /// given a station count by its own turning.
 fn shell_stations(model: &Model, spine: &Shape, tol: Tolerances) -> OgeomResult<Vec<SpineStation>> {
     let edges: Vec<Shape> = match model.kind_of(spine)? {
@@ -3744,15 +3744,15 @@ struct Station {
 /// normal, positioned where the spine starts. What comes back is what the
 /// profile sweeps out as it travels the spine, always square to it:
 ///
-/// - a straight spine edge extrudes the profile — a prism;
-/// - a circular one turns it about that arc's own axis — a revolution;
+/// - a straight spine edge extrudes the profile (a prism);
+/// - a circular one turns it about that arc's own axis (a revolution);
 /// - and each corner between them turns it about the corner, through exactly
 ///   the angle the spine turns there, which is the join the 2D offset makes
 ///   for the same reason.
 ///
 /// Every piece is exact: the surfaces are the ones a prism and a revolution
 /// give for the profile's own curves, and nothing is fitted. The pieces are
-/// then unioned, which is the assembly's real name — consecutive pieces meet
+/// then unioned, which is the assembly's real name: consecutive pieces meet
 /// on the *same* placed profile, and a coincident face is what the boolean
 /// identifies rather than probes across.
 ///
@@ -3771,8 +3771,8 @@ struct Station {
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the spine is
 /// not a planar wire or face, if it carries an edge that is neither straight
 /// nor circular, if the profile is not planar, if the profile's plane does not
-/// contain the spine's normal or does not cut across it — a profile that leans
-/// or lies along is not square to the spine — or if an open profile has no
+/// contain the spine's normal or does not cut across it (a profile that leans
+/// or lies along is not square to the spine), or if an open profile has no
 /// spine plane to close against.
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where a corner's turn
 /// would sweep the profile across the corner itself, which no revolution can
@@ -3826,7 +3826,7 @@ pub fn make_evolved(
 
     // The profile as a face, which is what makes each swept piece a *solid*
     // and the assembly a union rather than a hopeful sew. An open profile is
-    // closed against the spine's own plane — which is exactly what a face
+    // closed against the spine's own plane, which is exactly what a face
     // spine offers and a wire spine does not.
     let section = profile_face(
         model,
@@ -4068,7 +4068,7 @@ fn spine_stations(model: &Model, wire: &Shape, tol: Tolerances) -> OgeomResult<V
 
 /// The spine's own normal, and the check that it has one.
 ///
-/// Taken from the first turn the spine makes — a corner or an arc — because
+/// Taken from the first turn the spine makes (a corner or an arc) because
 /// that is exact, and then measured against every station: a spine that
 /// leaves its own plane has no square profile to carry, and says so here
 /// rather than by producing a shape nobody asked for.
@@ -4198,7 +4198,7 @@ fn station_transform(
 /// The wedge a corner adds: the profile turned about the corner, through
 /// exactly the angle the spine turns there.
 ///
-/// `None` where the spine does not turn — two edges meeting smoothly leave no
+/// `None` where the spine does not turn; two edges meeting smoothly leave no
 /// wedge to fill.
 #[allow(clippy::too_many_arguments)]
 fn corner_piece(

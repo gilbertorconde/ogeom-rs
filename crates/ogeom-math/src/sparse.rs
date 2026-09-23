@@ -3,13 +3,13 @@
 //!
 //! The consumer this exists for is a constraint solver whose Jacobian has a
 //! row per residual and entries only under the parameters that residual
-//! names — a matrix that is nearly all zeros and whose dense factorization
+//! names, a matrix that is nearly all zeros and whose dense factorization
 //! cost grows with the whole parameter vector rather than with the
 //! constraints. CGNR works entirely through products with the matrix and
 //! its transpose, so its cost per iteration is the number of stored entries.
 //!
 //! Starting from zero, CGNR converges to the least-squares solution lying in
-//! the row space — the *minimum-norm* solution — which is the same answer a
+//! the row space (the *minimum-norm* solution), which is the same answer a
 //! pseudo-inverse gives, so a caller can swap it for an SVD solve and expect
 //! agreement, not merely feasibility.
 
@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn a_rank_deficient_system_returns_the_minimum_norm_solution() {
         // One equation, two unknowns: x + y = 2. The minimum-norm answer is
-        // (1, 1) — the same point a pseudo-inverse names.
+        // (1, 1), the same point a pseudo-inverse names.
         let a = SparseMatrix::from_triplets(1, 2, &[(0, 0, 1.0), (0, 1, 1.0)]);
         let x = least_squares_cgnr(&a, &[2.0], 1e-14, 50).unwrap();
         assert!(

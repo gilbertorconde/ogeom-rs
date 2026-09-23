@@ -166,7 +166,7 @@ proptest! {
         // How much accuracy survives a round trip is set by the conditioning of
         // the matrix, not by any fixed distance. Columns spanning six orders of
         // magnitude give a condition number around 1e6, and the result is then
-        // accurate to about 1e-16 * 1e6 relative — which can exceed an absolute
+        // accurate to about 1e-16 * 1e6 relative, which can exceed an absolute
         // millimetre-scale tolerance while being perfectly correct. Asserting
         // `is_equal` here would be asserting something false about floating
         // point, not something true about the inverse.

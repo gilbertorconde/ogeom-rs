@@ -9,7 +9,7 @@
 //!
 //! Collapsing an edge moves the surface. *How far* it moves is what decides
 //! whether the collapse is worth making, so every candidate carries the squared
-//! distance from the merged vertex to the planes of every face that met there —
+//! distance from the merged vertex to the planes of every face that met there:
 //! the quadric error metric of Garland and Heckbert. Summing plane distances
 //! this way costs one small symmetric matrix per vertex and makes the choice a
 //! comparison rather than a guess.
@@ -22,7 +22,7 @@
 //! A vertex on a boundary stays. The alternative is a constraint plane that
 //! makes boundary collapses expensive but possible, and "expensive but
 //! possible" means the outline of a sheet body creeps inward as the mesh
-//! coarsens — which is exactly the thing a caller would not think to check.
+//! coarsens, which is exactly the thing a caller would not think to check.
 //! Holding the boundary exactly is a stronger promise and a simpler one.
 //!
 //! A collapse that would turn a triangle inside out is refused for the same
@@ -62,7 +62,7 @@ pub struct Simplified {
     /// Whether the target was reached.
     ///
     /// A mesh can run out of *valid* collapses before it runs out of triangles
-    /// — every remaining edge is on a boundary or would fold something — and
+    /// (every remaining edge is on a boundary or would fold something), and
     /// then the result is as small as it can safely be rather than as small as
     /// was asked for. Reported rather than passed off as success.
     pub target_met: bool,
@@ -302,7 +302,7 @@ impl State {
     /// Whether merging two vertices would turn any surviving triangle over.
     ///
     /// A fold is not a small error. It is a mesh that no longer bounds what it
-    /// did, and no error metric measures that — the merged point can sit
+    /// did, and no error metric measures that: the merged point can sit
     /// exactly on every plane and still put the triangle back to front.
     fn would_fold(&self, from: u32, to: u32, at: Point) -> bool {
         for vertex in [from, to] {

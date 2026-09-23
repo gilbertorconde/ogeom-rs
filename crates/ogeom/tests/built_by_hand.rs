@@ -1,6 +1,6 @@
 //! A many-faced closed solid assembled from nothing but vertices, curves and
-//! the builders — `make_wire`, `make_face_with_pcurves`, `make_shell`,
-//! `make_solid` — and then measured against a closed form.
+//! the builders (`make_wire`, `make_face_with_pcurves`, `make_shell`,
+//! `make_solid`) and then measured against a closed form.
 //!
 //! This is the shape of use the builders get from a caller that is *not* one
 //! of the kernel's own modelling operations: dozens of faces handed over at
@@ -13,7 +13,7 @@
 //!
 //! The face builder here is the one that attaches pcurves. `make_face_on`
 //! takes wires and a surface and nothing else, which leaves every edge on the
-//! face without a curve in the face's own parameters — `check` reports that as
+//! face without a curve in the face's own parameters; `check` reports that as
 //! broken and the face does not triangulate. A caller assembling a face by
 //! hand wants the pcurve-attaching one; the bare builder is for callers that
 //! already computed the pcurves themselves.
@@ -43,7 +43,7 @@ fn segment(model: &mut Model, from: &Shape, to: &Shape, a: Point, b: Point) -> S
 
 /// A planar face through `origin` with normal `normal`, bounded by `edges`.
 /// `reference` fixes the chart's u direction and must not be parallel to the
-/// normal — a wall's outward normal is horizontal, so `Z` serves; a cap's is
+/// normal: a wall's outward normal is horizontal, so `Z` serves; a cap's is
 /// `Z`, so `X` does.
 fn face(
     model: &mut Model,
@@ -71,7 +71,7 @@ fn a_hand_built_prism_closes_and_measures_its_closed_form() {
 
     let mut model = Model::new();
 
-    // The two rings of corners, and one vertex apiece — shared between the
+    // The two rings of corners, and one vertex apiece, shared between the
     // cap that uses them and the two walls that meet there, which is the
     // whole point of handing the builders vertices rather than points.
     let ring = |z: f64| -> Vec<Point> {
@@ -147,7 +147,7 @@ fn a_hand_built_prism_closes_and_measures_its_closed_form() {
             // Head to tail all the way round: along the bottom rim, up the
             // far upright, back along the top rim against its own sense, and
             // down the near upright against its own. `make_wire` insists on
-            // this and says which pair failed to meet — an orientation the
+            // this and says which pair failed to meet; an orientation the
             // caller got wrong is a gap in every face built on the wire.
             vec![
                 bottom_edges[i].clone(),
@@ -196,7 +196,7 @@ fn a_hand_built_prism_closes_and_measures_its_closed_form() {
         .unwrap()
         .mass;
     // A prism is flat everywhere, so the tessellation is exact and the
-    // deflection buys nothing — the tolerance here is arithmetic, not
+    // deflection buys nothing: the tolerance here is arithmetic, not
     // sampling.
     assert!(
         (measured - exact).abs() < 1e-9,
@@ -204,8 +204,8 @@ fn a_hand_built_prism_closes_and_measures_its_closed_form() {
     );
 }
 
-/// A planar face a sliver narrower than a millionth of its length — a
-/// long strip whose two sides are one line to the mesher — encloses no
+/// A planar face a sliver narrower than a millionth of its length (a
+/// long strip whose two sides are one line to the mesher) encloses no
 /// area worth a triangle. It meshes to nothing within its own bounds, not
 /// to the plane's whole window, which a face without wires would cover.
 #[test]

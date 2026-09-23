@@ -1,4 +1,4 @@
-//! `ogeom-cli` — build, measure and export shapes from the shell.
+//! `ogeom-cli`: build, measure and export shapes from the shell.
 //!
 //! Deliberately thin: it exists so the kernel is usable and testable without a
 //! host application, and so a wrong result is easy to reproduce from a command
@@ -169,7 +169,7 @@ fn census(args: &[String]) -> Result<(), String> {
 }
 
 /// How many of a mesh's edges are crossed more often one way than the
-/// other — zero exactly when the mesh is closed.
+/// other; zero exactly when the mesh is closed.
 fn unbalanced_edges(mesh: &Triangulation) -> usize {
     let mut balance: HashMap<(u32, u32), i64> = HashMap::new();
     for t in &mesh.triangles {

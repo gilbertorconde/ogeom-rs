@@ -17,7 +17,7 @@ pub struct FixedTrims {
     /// The worst measured edge-to-surface offset among the fitted, now
     /// recorded in those edges' widened tolerances.
     pub worst: f64,
-    /// Edges refused — farther from the surface than the cap — with the
+    /// Edges refused (farther from the surface than the cap), with the
     /// offset each was measured at.
     pub refused: Vec<(Shape, f64)>,
 }
@@ -26,7 +26,7 @@ pub struct FixedTrims {
 ///
 /// The reader heals boundary slop up to a millimetre and hands what it
 /// refuses over in `untrimmed_faces`, face shape included; this is the
-/// instructed follow-up — the
+/// instructed follow-up: the
 /// same projection fit, at the cap the caller chooses. Each fitted edge's
 /// tolerance widens to the offset actually measured, so the model says
 /// what it knows; an edge past the cap is reported, not touched.
@@ -126,10 +126,10 @@ pub struct ReanchoredBoundaries {
     pub moved: usize,
     /// The worst edge-to-surface offset found before moving.
     pub worst_before: f64,
-    /// The worst residual after — the fit's honest distance from the
+    /// The worst residual after: the fit's honest distance from the
     /// projected samples.
     pub worst_after: f64,
-    /// Edges refused — farther out than the cap — with their offsets.
+    /// Edges refused (farther out than the cap), with their offsets.
     pub refused: Vec<(Shape, f64)>,
 }
 
@@ -137,7 +137,7 @@ pub struct ReanchoredBoundaries {
 ///
 /// The stronger fix behind [`fix_face_pcurves`]: where that fits a *chart*
 /// through whatever offset the boundary carries, this moves the boundary
-/// itself — each off-surface edge's curve is projected, refitted at its own
+/// itself: each off-surface edge's curve is projected, refitted at its own
 /// parameters (so every chart already speaking the old curve keeps its
 /// same-parameter law), and replaced throughout the shape. The displacement
 /// is not hidden: the edge's and its vertices' tolerances widen to cover

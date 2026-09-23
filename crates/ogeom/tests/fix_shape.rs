@@ -174,7 +174,7 @@ fn a_sound_shape_is_left_alone() {
 /// A substitution rebuilds every edge, wire and face above the substituted
 /// vertex, and a rebuilt node is shared by every occurrence of the old one.
 /// Rebuilt through an occurrence that reverses it, a wire came back with
-/// its walk reversed once too often — and the collapse of a degenerate
+/// its walk reversed once too often, and the collapse of a degenerate
 /// edge, which substitutes a vertex, left the neighbouring wire gaping.
 /// Every vertex of a prism, whose near cap is its profile reversed, and of
 /// a fused pair, whose faces come back in either sense, is substituted in

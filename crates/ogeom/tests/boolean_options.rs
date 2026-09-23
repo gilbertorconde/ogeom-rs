@@ -9,9 +9,9 @@ use ogeom::topo::Model;
 
 const T: Tolerances = Tolerances::millimetres();
 
-/// A placement with scale no longer refuses: the boolean bakes it — every
+/// A placement with scale no longer refuses: the boolean bakes it (every
 /// surface restated exactly in its own analytic vocabulary, pcurves
-/// re-derived — and the drilled result measures.
+/// re-derived) and the drilled result measures.
 #[test]
 fn a_scaled_placement_bakes_and_the_boolean_runs() {
     let mut model = Model::new();
@@ -186,7 +186,7 @@ fn cells_partition_and_their_volumes_add_up() {
 }
 
 /// Fuzz: boxes adrift by five microns fuse into one solid at a stated
-/// tenth-of-a-millimetre fuzz, and the inputs survive untouched — the
+/// tenth-of-a-millimetre fuzz, and the inputs survive untouched: the
 /// non-destructive contract, pinned.
 #[test]
 fn fuzzy_fusion_closes_small_gaps_and_inputs_survive() {

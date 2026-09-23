@@ -1,5 +1,5 @@
 //! §I of `docs/PLAN.md`: exact geometry that is secretly analytic becomes
-//! the analytic thing — and geometry that is not, stays what it is.
+//! the analytic thing, and geometry that is not, stays what it is.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -10,8 +10,8 @@ use ogeom::topo::{Model, ShapeType, explore_unique};
 
 const T: Tolerances = Tolerances::millimetres();
 
-/// A drum whose every surface and curve was spelt out as NURBS — the way an
-/// exchange file might deliver it — comes back analytic: the wall a cylinder
+/// A drum whose every surface and curve was spelt out as NURBS (the way an
+/// exchange file might deliver it) comes back analytic: the wall a cylinder
 /// at its exact radius, the caps planes, the volume unchanged to the last
 /// bit, and every certificate is a measured worst deviation, not a hope.
 #[test]
@@ -76,7 +76,7 @@ fn a_nurbsed_drum_confesses_its_cylinder() {
     assert_eq!(cylinders, 1, "the wall carries the cylinder again");
 }
 
-/// A genuinely free-form wall — a skinned loft — refuses to be anything
+/// A genuinely free-form wall (a skinned loft) refuses to be anything
 /// else. The decision is the product, and a wrong yes is a solid that
 /// measures nearly right with the wrong surface under every operation after.
 #[test]
@@ -115,7 +115,7 @@ fn a_free_form_wall_stays_free_form() {
 ///
 /// Fusing a post onto a slab splits the post's rims into two half circles,
 /// and the conversion wrote the second half's pcurve as the straight chart
-/// segment between its projected endpoints — the seam vertex projecting to
+/// segment between its projected endpoints: the seam vertex projecting to
 /// either column, it drew the front half mirrored, and the wall's ring lost
 /// its far side. The fit's own slop widened each converted edge past the
 /// vertices that bound it, which the checker refuses. Both are decided by

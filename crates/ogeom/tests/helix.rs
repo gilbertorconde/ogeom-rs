@@ -13,7 +13,7 @@ const T: Tolerances = Tolerances::millimetres();
 #[test]
 fn a_helical_pipe_is_a_spring_that_measures() {
     let mut model = Model::new();
-    // Two turns, radius 10, pitch 8 — wide enough that the tube nowhere
+    // Two turns, radius 10, pitch 8: wide enough that the tube nowhere
     // approaches itself and the pipe volume is the tube formula.
     let helix = HelixCurve::new(Frame::WORLD, 10.0, 8.0, 2.0).unwrap();
     let length = helix.arc_length(0.0, 2.0 * core::f64::consts::TAU);

@@ -1,50 +1,50 @@
 //! Defeaturing by face removal: delete faces, close the wound from the
 //! neighbours' own surfaces.
 //!
-//! The input is a set of faces — what those faces *mean* is the caller's
+//! The input is a set of faces; what those faces *mean* is the caller's
 //! business, and the operation works on a solid whose history is gone.
 //! Three wounds exist, and they close differently.
 //!
-//! A feature whose rim is an **inner loop** of a surviving face — a bore in a
-//! lid, a boss on a base, a pocket in the middle of a top — leaves survivors
+//! A feature whose rim is an **inner loop** of a surviving face (a bore in a
+//! lid, a boss on a base, a pocket in the middle of a top) leaves survivors
 //! whose boundary is already right except for that loop. The cure is wire
 //! surgery: the surviving face is rebuilt without the rim wire, edges,
 //! pcurves and all, and nothing is re-intersected because nothing new meets.
 //!
-//! A feature that **interrupts** its neighbours' outer boundaries — a fillet
-//! band or a chamfer along an edge — leaves a gap no surviving boundary
+//! A feature that **interrupts** its neighbours' outer boundaries (a fillet
+//! band or a chamfer along an edge) leaves a gap no surviving boundary
 //! closes. The cure is the neighbours themselves: the two side faces'
 //! surfaces are re-intersected to recover the edge the blend replaced, the
 //! end faces' edges are extended along their own curves to the recovered
 //! corners, and the faces are rebuilt on the result. Extension here is the
-//! surfaces' and curves' own unbounded carriers — no new geometry is
+//! surfaces' and curves' own unbounded carriers: no new geometry is
 //! invented, only wider windows of what is already there.
 //!
-//! A feature that takes a **whole ring** out of a neighbour — a rim
-//! blend, round a drum's top, a bore's mouth or a boss's seat — looks
+//! A feature that takes a **whole ring** out of a neighbour (a rim
+//! blend, round a drum's top, a bore's mouth or a boss's seat) looks
 //! like the first wound and closes like the second. The neighbours' own
 //! surfaces tell the two apart: a bore's two mouths sit in faces that
 //! never meet, so the rings are dropped and the faces grow over them,
 //! while a rim blend's cap and wall meet along the very circle it
 //! replaced, in the wound's own room. There the ring is replaced rather
-//! than dropped, and a neighbour's outer boundary may be the ring — a
+//! than dropped, and a neighbour's outer boundary may be the ring: a
 //! drum's cap grows back to its own rim. The wall's chart has a seam, and
 //! the seam reaches the recovered circle: that is where the circle is
 //! cut, and the seam extends to meet it, exactly as a band's end faces
 //! extend to their corners. One corner leaves the rim one closed edge,
-//! re-anchored so the whole turn stands in the curve's own domain — the
+//! re-anchored so the whole turn stands in the curve's own domain: the
 //! shape the rim had before the feature was cut.
 //!
 //! Several bands close together. Each removed band recovers its own
-//! crease; where two creases meet — two blends that met at a corner, or
+//! crease; where two creases meet (two blends that met at a corner, or
 //! one blend's flush cap standing against another's band, the cap named
-//! with its band — the corner is where one crease pierces the other's
+//! with its band), the corner is where one crease pierces the other's
 //! side, and it is one vertex for both.
 //!
 //! Every rebuilt wire is spliced in the face's own order rather than
 //! re-chained from a bag of edges: a chart's seam stands in its wire
 //! twice, and a bag cannot say so. Where a gap leaves and arrives at one
-//! vertex, the rim it replaces says which way round it goes — nothing in
+//! vertex, the rim it replaces says which way round it goes; nothing in
 //! the topology notices a face inside out along its own rim, and the
 //! mesher finds it as a boundary that will not close.
 //!
@@ -90,7 +90,7 @@ pub fn remove_faces(
     // two wounds; classifying their ring edges together declares the two
     // longest interrupted faces "the sides" across both and recovers a
     // nonsense edge. Faces group into features by shared edges, and each
-    // feature runs the whole machinery on the previous feature's result —
+    // feature runs the whole machinery on the previous feature's result,
     // sequential exactly as a caller would have called it, so one call
     // means what N calls mean, in the order given.
     let groups = feature_groups(model, faces)?;
@@ -98,7 +98,7 @@ pub fn remove_faces(
         let mut current = Built::from_nothing(solid.clone());
         for group in &groups {
             // A later group's faces survive the earlier surgeries untouched
-            // — different regions — but the solid they belong to is new.
+            // (different regions), but the solid they belong to is new.
             let step = remove_faces(model, &current.shape, group, tol)?;
             current = Built {
                 shape: step.shape,
@@ -144,7 +144,7 @@ pub fn remove_faces(
         })
     };
 
-    // Sort survivors: untouched, whole-ring, and interrupted — a wire with
+    // Sort survivors: untouched, whole-ring, and interrupted: a wire with
     // no rim edge, a wire that is all rim, a wire that is part rim.
     struct Touched {
         face: Shape,
@@ -284,18 +284,18 @@ fn placed_surface(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<S
 ///
 /// A whole ring taken out of a neighbour is two different wounds, and only
 /// the neighbours' own surfaces tell them apart. A bore's wall leaves its
-/// two mouths as whole inner wires, and the faces holding them — a block's
-/// top and bottom — never meet: dropping the wires is the closure, and the
-/// block comes back whole. A rim blend leaves a whole ring too — the
+/// two mouths as whole inner wires, and the faces holding them (a block's
+/// top and bottom) never meet: dropping the wires is the closure, and the
+/// block comes back whole. A rim blend leaves a whole ring too (the
 /// annulus a mouth fillet takes out of the top, the circle a boss's seat
-/// takes out of the wall — but there the cap and the wall meet along the
+/// takes out of the wall), but there the cap and the wall meet along the
 /// very circle the blend replaced, and dropping would leave the boundary
 /// open where that circle belongs.
 ///
 /// Meeting *somewhere* is not enough: two faces of any solid meet if their
 /// surfaces are carried far enough, and a bore through a wedge would
 /// recover the line where the wedge closes. The meeting must stand in the
-/// wound's own room — the removed faces' bounds — which is where the edge
+/// wound's own room (the removed faces' bounds), which is where the edge
 /// the feature replaced stood.
 fn wound_recovers(
     model: &Model,
@@ -363,8 +363,8 @@ fn unwrapped(curve: &Curve, t: f64, about: f64) -> f64 {
 
 /// Close a wound: each removed band's two side faces re-intersected into
 /// the crease it replaced, the creases' ends placed where they pierce the
-/// other interrupted faces — or one another's sides, which is where two
-/// bands meeting at a corner share their corner — every dangling edge
+/// other interrupted faces (or one another's sides, which is where two
+/// bands meeting at a corner share their corner), every dangling edge
 /// extended along its own curve to the corner standing on it, and every
 /// interrupted face rebuilt with the creases it borders.
 ///
@@ -401,9 +401,9 @@ fn close_wound(
 
     // Each removed face's sides: the two interrupted survivors it shares
     // the most ring length with. Creases are keyed by the side pair. A
-    // removed face with fewer than two such neighbours — a wedge's cap
+    // removed face with fewer than two such neighbours (a wedge's cap
     // standing against another blend's band, bordering one wall and two
-    // removed faces — joins the crease of a removed neighbour it shares an
+    // removed faces) joins the crease of a removed neighbour it shares an
     // edge with, once that neighbour has one.
     let mut creases: Vec<(TShapeId, TShapeId, [Shape; 2], Vec<Point>)> = Vec::new();
     let mut crease_of: HashMap<TShapeId, usize> = HashMap::new();
@@ -550,15 +550,15 @@ fn close_wound(
                 piercings.push((unwrapped(&crease.curve, c.on_curve, crease.anchor), c.point));
             }
         }
-        // A tangent junction: two bands of one chain meeting flush — a
-        // stadium's straight run into its semicircular end — share the
+        // A tangent junction: two bands of one chain meeting flush (a
+        // stadium's straight run into its semicircular end) share the
         // cross-section edge where they meet, and their creases touch
         // there without either piercing the other's side; a wall the
         // crease merely grazes yields no piercing, and a touch found as a
         // closest approach sits anywhere in a valley the width of the
         // slop. The shared edge says exactly where: the cross-section
         // stands in the plane normal to the rim at the junction, so the
-        // junction is the foot of that edge on either crease — a
+        // junction is the foot of that edge on either crease: a
         // transversal projection, exact to the last bit. Taken only where
         // the two creases are tangent there; bands meeting at a corner
         // place theirs by piercing.
@@ -609,7 +609,7 @@ fn close_wound(
         match (below, above) {
             (None, None) if piercings.is_empty() => {
                 // No ends: the band wraps, and the recovered edge closes on
-                // itself — but not always as one edge. A chart's seam
+                // itself, but not always as one edge. A chart's seam
                 // reaches the recovered curve too: a cylinder wall's wire
                 // runs up its seam, round the rim and back down, and a
                 // closed edge carrying a vertex of its own leaves that wire
@@ -682,8 +682,8 @@ fn close_wound(
                 // Re-anchored at the first corner, so the whole turn stands
                 // inside the curve's own domain: a rim written from a corner
                 // right round to itself would otherwise end a turn past the
-                // end of it. One corner then leaves the rim one closed edge
-                // — which is the shape it had before the feature was cut,
+                // end of it. One corner then leaves the rim one closed edge,
+                // which is the shape it had before the feature was cut,
                 // and the shape the exact volume integrator reads as a disc.
                 let (curve, stops) = match (&crease.curve, stops.first().copied()) {
                     (Curve::Circle(circle), Some(first)) => {
@@ -888,8 +888,8 @@ fn rebuild_interrupted(
             }
         }
         // Substituted in the wire's own order rather than re-chained from
-        // a bag of edges. A chart's seam stands in its wire *twice* — up
-        // one column and down the other — and a bag cannot say so: four
+        // a bag of edges. A chart's seam stands in its wire *twice* (up
+        // one column and down the other), and a bag cannot say so: four
         // edge ends meet at each of the seam's vertices, which reads as a
         // branching network and not a wire. The order the face already has
         // is the answer the bag was being asked to guess.
@@ -1116,7 +1116,7 @@ fn edge_ends(model: &Model, edge: &Shape) -> OgeomResult<(Shape, Shape)> {
 /// and the walk that built it took whichever direction its first edge
 /// happened to be stored in. The rim the wound took out went one way round
 /// its face, and the recovered one must go the same way or the face is
-/// inside out along it — which nothing in the topology notices, and the
+/// inside out along it, which nothing in the topology notices, and the
 /// mesher finds as a boundary that will not close.
 fn wind_like(
     model: &Model,
@@ -1261,7 +1261,7 @@ fn corner_on_edge(
 }
 
 /// The edge, extended along its own curve so its dangling end reaches the
-/// corner vertex — shared across the faces that use it, so sewing rejoins
+/// corner vertex, shared across the faces that use it, so sewing rejoins
 /// them on one node.
 fn extend_to_corner(
     model: &mut Model,

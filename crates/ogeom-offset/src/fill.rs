@@ -1,7 +1,7 @@
 //! Surface filling: a face fitted over the region four edges bound.
 //!
 //! The construction is the transfinite Coons blend of the four boundary
-//! curves — which interpolates them exactly — sampled and fitted through
+//! curves (which interpolates them exactly), sampled and fitted through
 //! the grid machinery, error reported. What the caller gets is a *natural*
 //! face over the fitted patch: the patch's own chart rectangle is the trim,
 //! and the patch boundary stands within the stated fit tolerance of the
@@ -14,7 +14,7 @@ use ogeom_topo::{EdgeRepr, Model, Shape, ShapeType};
 
 /// Fill the loop `edges` bound with a fitted patch face.
 ///
-/// The four edges must chain head to tail into a closed loop, in order —
+/// The four edges must chain head to tail into a closed loop, in order;
 /// the first runs along the patch's `u` direction. `samples` controls the
 /// Coons sampling per direction and `tolerance` the fit target; the fit
 /// that cannot meet it refuses with the error it reached.

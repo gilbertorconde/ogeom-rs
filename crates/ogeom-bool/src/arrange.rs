@@ -1,13 +1,13 @@
 //! Splitting a face by section curves, in its own parameter space.
 //!
 //! This is the builder's 2D half, and it deliberately knows nothing about
-//! geometry beyond polylines. The caller — the pave filler — has already done
+//! geometry beyond polylines. The caller (the pave filler) has already done
 //! the exact work: every boundary edge and every section curve is split at
 //! every mutual crossing by the intersectors, so what arrives here is
 //! *strands*: polyline scaffolding in parameter space, each carrying a tag
 //! naming the exact sub-curve it stands for, meeting other strands only at
-//! endpoints. This module decides the combinatorics — which strands bound
-//! which region — and hands back pieces as sequences of directed tags, so the
+//! endpoints. This module decides the combinatorics (which strands bound
+//! which region) and hands back pieces as sequences of directed tags, so the
 //! rebuild works from the exact geometry and the polylines are never promoted
 //! to an answer.
 
@@ -63,7 +63,7 @@ pub(crate) struct Piece<T> {
 
 /// Assemble pre-split strands into the pieces they bound.
 ///
-/// Dangling sections — chains that separate no material — are pruned;
+/// Dangling sections (chains that separate no material) are pruned;
 /// regions outside the boundary strands' material (a hole's inside, say) are
 /// dropped by an even-odd test against the boundary polylines.
 ///
@@ -102,8 +102,8 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
 
     // Dust welds through. A strand shorter than the snap is dropped from
     // the graph, but its two ends were still one junction of the boundary:
-    // a run of consecutive dust pieces — the paving's crossing clusters on
-    // a tolerant rail leave them — can jointly span more than the snap, and
+    // a run of consecutive dust pieces (the paving's crossing clusters on
+    // a tolerant rail leave them) can jointly span more than the snap, and
     // dropping the pieces one by one would tear a gap no positional weld
     // reaches. Each dropped strand therefore aliases its endpoints, and a
     // chain of dust aliases end to end, so the surviving neighbours meet at
@@ -190,7 +190,7 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
         ogeom_bail!(Construction, "the face's boundary vanished in arrangement");
     }
 
-    // Darts: twins adjacent by construction — dart 2k runs strand k forward,
+    // Darts: twins adjacent by construction: dart 2k runs strand k forward,
     // dart 2k + 1 backward.
     let dart_count = live.len() * 2;
     let head = |d: usize| -> usize {
@@ -365,7 +365,7 @@ fn angle(from: Point2, to: Point2) -> f64 {
     v.y.atan2(v.x)
 }
 
-/// The signed area — positive for counter-clockwise.
+/// The signed area: positive for counter-clockwise.
 fn area(ring: &[Point2]) -> f64 {
     let mut doubled = 0.0;
     for i in 0..ring.len() {
@@ -381,7 +381,7 @@ fn area(ring: &[Point2]) -> f64 {
 /// The straddle test picks the segments the ray could cross; for those, the
 /// crossing question is exactly "which side of the segment's line does `p`
 /// lie on", which is `orient2d`'s question. A point exactly on the segment's
-/// line reads as no crossing, matching the strict comparison this replaces —
+/// line reads as no crossing, matching the strict comparison this replaces;
 /// the callers probe interior sample points, never boundary ones.
 fn ray_crosses_segment<P: Predicates>(a: Point2, b: Point2, p: Point2) -> bool {
     if (a.y > p.y) == (b.y > p.y) {
@@ -416,8 +416,8 @@ fn slanted_ray_crosses_segment<P: Predicates>(a: Point2, b: Point2, p: Point2) -
 }
 
 /// Even-odd containment with the leaning ray: the entry for probes that may
-/// legitimately sit along an axis-aligned line of the boundary — a contact
-/// strand down a tangent junction — where the horizontal ray is degenerate.
+/// legitimately sit along an axis-aligned line of the boundary (a contact
+/// strand down a tangent junction), where the horizontal ray is degenerate.
 pub(crate) fn inside_many_slanted(lines: &[&[Point2]], p: Point2) -> bool {
     let mut inside = false;
     for line in lines {
@@ -481,21 +481,21 @@ pub(crate) fn inside_many(lines: &[&[Point2]], p: Point2) -> bool {
 /// is interior with room to spare.
 ///
 /// The rest are for the caller who has to ask again. They vary in *both*
-/// chart directions — other heights, and other positions along each — because
+/// chart directions (other heights, and other positions along each) because
 /// a piece that merely touches the other solid touches it somewhere, and a
 /// second opinion taken from the same place is not one.
 fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
     let mut heights: Vec<f64> = rings.iter().flatten().map(|p| p.y).collect();
     heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
     heights.dedup_by(|a, b| (*a - *b).abs() <= snap);
-    // Widest gap first — that is the scanline with the most room — then the
+    // Widest gap first (that is the scanline with the most room), then the
     // rest, so a caller that needs a second opinion has one.
     let mut levels: Vec<(f64, f64)> = heights
         .windows(2)
         .map(|pair| (pair[1] - pair[0], f64::midpoint(pair[0], pair[1])))
         .collect();
     levels.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
-    // An unsplit chart — a whole sphere, pole to pole — has exactly one gap
+    // An unsplit chart (a whole sphere, pole to pole) has exactly one gap
     // and therefore one scanline, straight across its middle. That is
     // precisely where a solid seated on its equator touches it, so the widest
     // gap also offers its quarter heights: same piece, different latitude.
@@ -506,9 +506,9 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
 
     // Every inside interval of every scanline is a candidate, and they are
     // ranked by width. The first interval of the roomiest scanline is not
-    // good enough: a piece with a cusp — the sliver beside a line tangent
+    // good enough: a piece with a cusp (the sliver beside a line tangent
     // to a circle, which is what a ball inscribed in a cylinder leaves on
-    // any plane through both — puts that interval inside the cusp, where
+    // any plane through both) puts that interval inside the cusp, where
     // the "interior" point is within rounding of the boundary and reads as
     // lying on it.
     let mut candidates: Vec<(f64, Point2)> = Vec::new();
@@ -532,8 +532,8 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
                 candidates.push((width, Point2::new(f64::midpoint(pair[0], pair[1]), level)));
                 // And its quarter positions, ranked below the midpoint. Moving
                 // the scanline is not enough on its own: a piece symmetric
-                // about a chart-vertical line — a cylinder band, a revolved
-                // wall, a chart rectangle — has the same midpoint at every
+                // about a chart-vertical line (a cylinder band, a revolved
+                // wall, a chart rectangle) has the same midpoint at every
                 // height, so a solid touching it along that line is met by
                 // every one of these "different" probes at once. The quarter
                 // heights above exist for the same reason in the other
@@ -555,7 +555,7 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
     // of a piece symmetric about a chart-vertical line offers its own midpoint
     // before any of them offers a different position, so a caller asking nine
     // times asks the same column nine times. Take the roomiest candidate at
-    // each distinct column first, then the rest in width order — which leaves
+    // each distinct column first, then the rest in width order, which leaves
     // the other columns at the front for a touch running down one, and the
     // other heights right behind them for a touch running across.
     //
@@ -610,7 +610,7 @@ mod tests {
         assert!(inside(&ring, Point2::new(0.5 - eps, 0.5)));
         assert!(!inside(&ring, Point2::new(0.5 + eps, 0.5)));
         // A point exactly on the edge's line, straddle satisfied, reads as
-        // no crossing from either side — the convention the strict
+        // no crossing from either side: the convention the strict
         // comparison had, now stated by `Sign::Zero`.
         assert!(!ray_crosses_segment::<Exact>(
             Point2::new(1.0, 0.0),
@@ -657,8 +657,8 @@ mod tests {
         // A piece symmetric about a chart-vertical line has the same midpoint
         // at every height, so ranking probes by room alone offers one column
         // over and over. A solid touching this piece down that column would
-        // meet every probe at once, and the classifier — which asks again
-        // precisely because the first answer was "on the boundary" — would
+        // meet every probe at once, and the classifier (which asks again
+        // precisely because the first answer was "on the boundary") would
         // have nowhere else to ask.
         let pieces = assemble(&square(2.0), 1e-7).unwrap();
         assert_eq!(pieces.len(), 1);

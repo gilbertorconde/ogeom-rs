@@ -54,7 +54,7 @@ fn a_step_read_keeps_tolerance_containment() {
 }
 
 /// The healer restores containment. A real part whose edges genuinely
-/// need their width — pcurves sitting microns off their curves — has its
+/// need their width (pcurves sitting microns off their curves) has its
 /// vertices reset to the confusion tolerance, which is the state a reader
 /// that widened only the edges left behind. The reduction cannot tighten
 /// those edges, so the vertices are what must grow, and the report says

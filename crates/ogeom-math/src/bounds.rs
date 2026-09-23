@@ -173,7 +173,7 @@ impl Aabb {
     #[must_use]
     pub fn contains_box(&self, other: &Self) -> bool {
         match other.extent {
-            // Nothing is contained by anything, vacuously — including by the
+            // Nothing is contained by anything, vacuously, including by the
             // empty box.
             None => true,
             Some((low, high)) => self.contains(low) && self.contains(high),
@@ -261,7 +261,7 @@ impl Aabb {
     /// The result contains the transformed box but is generally larger than the
     /// tightest one: a rotated box is not axis-aligned, and its bounding box
     /// must cover the rotation. Erring outward is the safe direction, and
-    /// repeatedly transforming a box therefore inflates it — transform the
+    /// repeatedly transforming a box therefore inflates it; transform the
     /// geometry and re-bound instead of chaining this.
     #[must_use]
     pub fn transformed(&self, t: &crate::Transform) -> Self {
@@ -434,7 +434,7 @@ mod tests {
     fn transforming_a_box_errs_outward() {
         // A rotated box is not axis-aligned, so its bound must cover the
         // rotation. That means the result is larger than the tightest box round
-        // the rotated shape — which is the safe direction, and the reason to
+        // the rotated shape, which is the safe direction, and the reason to
         // re-bound the geometry rather than chain this.
         let b = unit();
         let rotated = b.transformed(&Transform::rotation(Axis::Z, core::f64::consts::FRAC_PI_4));

@@ -30,7 +30,7 @@ fn p3() -> impl Strategy<Value = [f64; 3]> {
 }
 
 proptest! {
-    /// §11 — a key resolves to what was inserted under it, whatever else happened
+    /// §11: a key resolves to what was inserted under it, whatever else happened
     /// to the arena in between.
     #[test]
     fn arena_keys_resolve_to_their_own_value(values in prop::collection::vec(any::<u64>(), 1..64)) {
@@ -41,7 +41,7 @@ proptest! {
         }
     }
 
-    /// §11 — the central safety claim of generational indices: after a slot is
+    /// §11: the central safety claim of generational indices: after a slot is
     /// freed and reused, the old key must not resolve. This is the property that
     /// turns a silent wrong answer into a clean `None`.
     #[test]
@@ -74,7 +74,7 @@ proptest! {
         }
     }
 
-    /// §5 — widening is a join: commutative, associative, idempotent, and never
+    /// §5: widening is a join: commutative, associative, idempotent, and never
     /// decreasing. Boolean operations lean on this when they inflate tolerances.
     #[test]
     fn tolerance_widening_is_a_join(a in 0.0f64..1e3, b in 0.0f64..1e3, c in 0.0f64..1e3) {
@@ -90,7 +90,7 @@ proptest! {
         prop_assert!(a.widen(b).get() >= b.get(), "never shrinks");
     }
 
-    /// §5 — a tolerance always covers separations up to its own magnitude, and
+    /// §5: a tolerance always covers separations up to its own magnitude, and
     /// never covers anything beyond it.
     #[test]
     fn tolerance_covers_exactly_its_radius(t in 1e-6f64..1e3, d in 0.0f64..1e4) {
@@ -99,7 +99,7 @@ proptest! {
         prop_assert_eq!(tol.covers(-d), tol.covers(d), "sign-independent");
     }
 
-    /// §5 — scale conversion is exact enough to round-trip. A model in inches
+    /// §5: scale conversion is exact enough to round-trip. A model in inches
     /// must not accumulate tolerance drift simply by being read back.
     #[test]
     fn tolerances_scale_consistently(scale in 1e-3f64..1e4) {
@@ -111,7 +111,7 @@ proptest! {
         prop_assert_eq!(t.parametric(), Tolerances::millimetres().parametric());
     }
 
-    /// §9 — swapping two arguments of an orientation predicate flips its sign.
+    /// §9: swapping two arguments of an orientation predicate flips its sign.
     /// Exactly, with no epsilon: this is what makes a triangulation's
     /// combinatorial decisions consistent no matter which way an edge is walked.
     #[test]
@@ -122,14 +122,14 @@ proptest! {
         prop_assert_eq!(Exact::orient2d(a, b, c), Exact::orient2d(b, c, a));
     }
 
-    /// §9 — likewise in 3D.
+    /// §9: likewise in 3D.
     #[test]
     fn orient3d_is_antisymmetric(a in p3(), b in p3(), c in p3(), d in p3()) {
         prop_assert_eq!(Exact::orient3d(a, b, c, d), Exact::orient3d(b, a, c, d).reversed());
         prop_assert_eq!(Exact::orient3d(a, b, c, d), Exact::orient3d(a, b, d, c).reversed());
     }
 
-    /// §9 — a repeated point is a degenerate configuration, always, with no
+    /// §9: a repeated point is a degenerate configuration, always, with no
     /// dependence on magnitude or ordering.
     #[test]
     fn degenerate_inputs_are_exactly_zero(a in p2(), b in p2(), x in p3(), y in p3()) {
@@ -138,7 +138,7 @@ proptest! {
         prop_assert_eq!(Exact::orient3d(x, x, y, y), Sign::Zero);
     }
 
-    /// §9 — a point that provably lies on the line through `a` and `b` is
+    /// §9: a point that provably lies on the line through `a` and `b` is
     /// reported as collinear *exactly*, not merely nearly, across ten orders of
     /// magnitude. Naive determinant evaluation loses this at scale.
     ///
@@ -167,7 +167,7 @@ proptest! {
         );
     }
 
-    /// §8 — provenance is append-only and every recorded id resolves in the table
+    /// §8: provenance is append-only and every recorded id resolves in the table
     /// that issued it, with ids strictly increasing.
     #[test]
     fn provenance_ids_are_unique_and_resolvable(n in 1usize..128) {

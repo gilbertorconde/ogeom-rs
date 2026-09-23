@@ -240,7 +240,7 @@ impl Cylinder {
     /// # Errors
     ///
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if `p` lies on
-    /// the axis, where the nearest point — and so the normal — is not unique.
+    /// the axis, where the nearest point (and so the normal) is not unique.
     pub fn normal_at(&self, p: Point, tol: Tolerances) -> OgeomResult<Direction> {
         let axis = self.axis();
         Direction::new(p - axis.project(p), tol)
@@ -362,11 +362,11 @@ impl Cone {
         let radial = local.xy().to_vector().magnitude();
         let apex_z = -self.reference_radius / self.half_angle.tan();
         // A cone is a *double* cone: the quadric has two nappes meeting at the
-        // apex, and the surface type built on this parameterizes both — its
+        // apex, and the surface type built on this parameterizes both; its
         // height range may cross the apex, exactly as the conventional
         // kernel's conical surface does. An earlier version measured one nappe
         // and clamped everything past the apex to the apex, which reported a
-        // point *on* the second nappe as almost a unit away — and it was the
+        // point *on* the second nappe as almost a unit away, and it was the
         // intersection benchmark that caught it, by flagging a correctly
         // traced curve as off the surface.
         //
@@ -603,8 +603,8 @@ impl Torus {
     /// For a [`TorusKind::Ring`] or [`TorusKind::Horn`] torus, inside is
     /// the tube. A [`TorusKind::Spindle`] torus passes through itself and
     /// bounds two nested regions, and "inside" cannot name both; here it
-    /// names the *outer* one — the apple, the solid of revolution the
-    /// outer sheet bounds, which contains the lemon — because that is the
+    /// names the *outer* one (the apple, the solid of revolution the
+    /// outer sheet bounds, which contains the lemon) because that is the
     /// region the torus-as-a-solid occupies. The magnitude is measured to
     /// whichever sheet is nearer, the folded inner sheet included, so a
     /// point on either sheet reads zero.
@@ -631,7 +631,7 @@ impl Torus {
     /// surface's profile is the generating circle *folded* about the axis: when
     /// the minor radius exceeds the major, part of that circle lies on the far
     /// side of the axis and sweeps to the near side. Measuring only to the
-    /// unfolded branch — which is what the signed form does — then reports a
+    /// unfolded branch (which is what the signed form does) then reports a
     /// point on the surface as being some distance off it.
     #[must_use]
     pub fn distance_to(&self, p: Point) -> f64 {
@@ -849,7 +849,7 @@ mod tests {
         );
         // A cone is a double cone: behind the apex is the second nappe, and a
         // point on the axis there measures perpendicular to it, not to the
-        // apex. The earlier claim here — apex distance, 5.0 — encoded a
+        // apex. The earlier claim here (apex distance, 5.0) encoded a
         // single-nappe convention that disagreed with the surface type built
         // on this, and the intersection benchmark caught the disagreement by
         // flagging a correctly traced second-nappe curve as off the surface.
@@ -970,7 +970,7 @@ mod tests {
         assert_relative_eq!(scaled.major_radius(), 15.0, epsilon = 1e-12);
         assert_relative_eq!(scaled.minor_radius(), 6.0, epsilon = 1e-12);
 
-        // A similarity leaves a cone's half angle alone — the reason transforms
+        // A similarity leaves a cone's half angle alone: the reason transforms
         // are restricted to similarities in the first place.
         let cone = Cone::new(Frame::WORLD, 3.0, 0.5, T).unwrap();
         let big = cone.transformed(&scale, T).unwrap();
@@ -999,7 +999,7 @@ mod spindle_tests {
     const T: Tolerances = Tolerances::millimetres();
 
     /// The spindle's signed distance names the apple: negative through the
-    /// whole enclosed solid, zero on either sheet, positive beyond — and a
+    /// whole enclosed solid, zero on either sheet, positive beyond, and a
     /// ring torus keeps its classical values exactly.
     #[test]
     fn a_spindle_signs_its_apple_and_a_ring_is_unchanged() {

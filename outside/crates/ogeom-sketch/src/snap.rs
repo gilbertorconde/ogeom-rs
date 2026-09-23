@@ -1,14 +1,14 @@
 //! Snapping: what the pointer means when it lands near something.
 //!
 //! A sketch is drawn with a pointer, and a pointer is never exactly on
-//! anything. Snapping is the sketch answering "what did you mean" — and the
+//! anything. Snapping is the sketch answering "what did you mean", and the
 //! answer has to say *what* it snapped to, not just where, because the
 //! caller's next move is usually to constrain against it. A point snapped
 //! to a line's midpoint is a midpoint constraint waiting to happen; the
 //! same coordinates snapped to nothing are just coordinates.
 //!
-//! The order is by kind before distance. A defined feature — a point, an
-//! end, a centre, a midpoint — beats lying on a curve, and lying on a curve
+//! The order is by kind before distance. A defined feature (a point, an
+//! end, a centre, a midpoint) beats lying on a curve, and lying on a curve
 //! beats the grid, because that is the order of how much the sketch knows
 //! about each. Within one kind, the nearest wins.
 
@@ -84,7 +84,7 @@ impl Default for SnapOptions {
 impl Sketch {
     /// What the pointer at `at` means, given how near it has to be.
     ///
-    /// `None` when nothing — not even the grid, if one was offered — lies
+    /// `None` when nothing (not even the grid, if one was offered) lies
     /// within the reach.
     #[must_use]
     pub fn snap(&self, at: Point2, options: SnapOptions) -> Option<Snap> {
@@ -129,8 +129,8 @@ impl Sketch {
                 kind: SnapKind::Midpoint(LineId(i)),
                 distance: middle.distance(at),
             });
-            // The foot of the pointer on the segment, kept between the ends
-            // — beyond them the line is not there to snap to.
+            // The foot of the pointer on the segment, kept between the ends;
+            // beyond them the line is not there to snap to.
             let along = b - a;
             let length = along.magnitude();
             if length > f64::MIN_POSITIVE {
@@ -260,7 +260,7 @@ mod tests {
         assert_eq!(snapped.kind, SnapKind::OnCircle(circle));
         assert!((snapped.at.x - 5.0).abs() < 1e-12);
 
-        // Made construction and excluded, the same pointer finds nothing —
+        // Made construction and excluded, the same pointer finds nothing,
         // and its centre point goes with it, since the point is the
         // circle's own.
         sketch.set_circle_construction(circle, true).unwrap();

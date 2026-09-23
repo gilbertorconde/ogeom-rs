@@ -16,7 +16,7 @@
 //!
 //! The angular deflection bounds how far the tangent may turn across one
 //! segment. Without it a nearly straight curve gets two points and a
-//! near-circular one gets far too few near its flattest part — chord error
+//! near-circular one gets far too few near its flattest part; chord error
 //! alone does not notice a long, gently curving span.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -34,7 +34,7 @@ pub struct Deflection {
     ///
     /// A closed curve needs at least three to enclose anything, and a nearly
     /// straight arc of one would otherwise collapse to a chord that misses the
-    /// bulge entirely — the midpoint test is a sample, and one sample can be
+    /// bulge entirely: the midpoint test is a sample, and one sample can be
     /// placed exactly where the curve happens to cross its own chord.
     ///
     /// It does *not* apply to a straight curve, which is exactly represented by
@@ -43,7 +43,7 @@ pub struct Deflection {
     pub min_segments: usize,
     /// A ceiling, so a pathological curve cannot exhaust memory.
     ///
-    /// Reaching it is reported rather than passed off as success — see
+    /// Reaching it is reported rather than passed off as success; see
     /// [`Polyline::deflection_met`].
     pub max_segments: usize,
 }
@@ -55,8 +55,8 @@ impl Default for Deflection {
             // fine enough that a mass property computed from it is accurate to
             // roughly one part in a thousand.
             chord: 1e-1,
-            // Half a radian — twenty-eight degrees, a circle in thirteen
-            // segments — which is what B-rep kernels have long defaulted
+            // Half a radian (twenty-eight degrees, a circle in thirteen
+            // segments), which is what B-rep kernels have long defaulted
             // to, and what a viewer that lets the user tighten it asks for.
             // The interior of a face is held to it as its edges are, so a
             // tighter default is paid for on every curved face.
@@ -172,7 +172,7 @@ impl Polyline {
     /// Total length of the polyline.
     ///
     /// An underestimate of the curve's own length, since a chord is shorter
-    /// than the arc it spans — and one that improves as the deflection tightens.
+    /// than the arc it spans, and one that improves as the deflection tightens.
     #[must_use]
     pub fn length(&self) -> f64 {
         self.points.windows(2).map(|w| w[0].distance(w[1])).sum()
@@ -217,7 +217,7 @@ pub fn is_straight_planar(curve: &ogeom_geom::PlanarCurve) -> bool {
 /// Adaptive bisection: split a segment whenever its midpoint is further from the
 /// chord than allowed, or the tangent turns too far across it. Uniform sampling
 /// is the obvious alternative and wastes points on the straight parts of a curve
-/// while still missing the tight ones — the whole difficulty of tessellation is
+/// while still missing the tight ones; the whole difficulty of tessellation is
 /// that curvature is not uniform.
 ///
 /// # Errors
@@ -259,7 +259,7 @@ pub fn discretize(
 
     // Leftmost-first subdivision with a worklist: each segment is settled
     // before the walk moves right, and a split pushes its halves back for
-    // re-examination — the exact split sequence the old
+    // re-examination: the exact split sequence the old
     // rescan-from-zero-and-insert loop produced, without re-asking every
     // settled segment on every pass or shifting the vectors per split. Same
     // splits in the same order, so the same floats come out; a circle that
@@ -343,8 +343,8 @@ fn needs_split(
     //
     // Not over a segment that is both shorter than the chord tolerance and
     // a small fraction of the whole edge. A fitted edge often ends in a
-    // hook a few microns long — the fit overshooting its vertex and turning
-    // back — and the tangent turns through a right angle across it at
+    // hook a few microns long (the fit overshooting its vertex and turning
+    // back), and the tangent turns through a right angle across it at
     // every scale; asked of it, the angular test bisects the hook down to
     // the resolution of the parameter and hands the face a fan of hairs at
     // one corner, each a fin off the surface. A turn across a span under
@@ -369,7 +369,7 @@ fn needs_split(
 /// surface to convert through; this is the version that does. Each candidate
 /// segment is lifted to the surface and the sagitta measured between world
 /// points, so one chord tolerance means one thing whatever the chart's
-/// scale — a quarter-turn on a large cylinder refines further than the same
+/// scale: a quarter-turn on a large cylinder refines further than the same
 /// quarter-turn on a small one.
 ///
 /// # Errors
@@ -449,7 +449,7 @@ pub fn discretize_on_surface(
 /// Approximate a planar curve in a surface's parameter space.
 ///
 /// The deflection is measured in parameter units here, not in space, so a caller
-/// wanting a spatial tolerance has to convert through the surface's own scale —
+/// wanting a spatial tolerance has to convert through the surface's own scale:
 /// the two differ by orders of magnitude near a pole; [`discretize_on_surface`]
 /// is the version that measures through the surface. This exists for boundary
 /// work in parameter space; for a face's actual boundary, discretize the edge's
@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn straightness_sees_through_a_trim() {
         // The exemption has to survive trimming, or an edge built from a
-        // trimmed line — which is what a solid's edges usually are — pays the
+        // trimmed line (which is what a solid's edges usually are) pays the
         // floor anyway and the saving evaporates.
         use ogeom_geom::TrimmedCurve;
         let line: Curve = LineCurve::segment(Point::ORIGIN, Point::new(10.0, 0.0, 0.0), T)
@@ -621,7 +621,7 @@ mod tests {
     #[test]
     fn a_polylines_length_underestimates_the_curve_and_converges_to_it() {
         // Each chord is shorter than the arc it spans, so the polyline is always
-        // short — and refining closes the gap.
+        // short, and refining closes the gap.
         let radius = 10.0;
         let curve = circle(radius);
         let exact = core::f64::consts::TAU * radius;

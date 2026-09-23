@@ -1,4 +1,4 @@
-//! Curves in the plane — pcurves.
+//! Curves in the plane: pcurves.
 //!
 //! These carry a curve through a surface's `(u, v)` parameter space. An edge
 //! holds one per adjacent face (`docs/DATA_MODEL.md` §6), and boolean face
@@ -7,9 +7,9 @@
 //!
 //! A separate type hierarchy from [`crate::curve`] rather than a generic
 //! parameter, because a pcurve is used differently from a spatial curve.
-//! Distance in parameter space is not distance in space — the same parametric
+//! Distance in parameter space is not distance in space; the same parametric
 //! step covers a metre near a cylinder's equator and nothing at all near a
-//! sphere's pole — so a function that treats the two alike is wrong, and
+//! sphere's pole, so a function that treats the two alike is wrong, and
 //! separate types keep that from compiling.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -37,7 +37,7 @@ pub enum PlanarCurve {
     Trimmed(Box<Trimmed2d>),
     /// A curve at a constant signed distance along another's left normal.
     Offset(Box<Offset2d>),
-    /// An affine-plus-trigonometric curve: `c + d·t + a·cos t + b·sin t` —
+    /// An affine-plus-trigonometric curve: `c + d·t + a·cos t + b·sin t`:
     /// the exact chart trace of an oblique analytic section on a periodic
     /// surface.
     Trig(Trig2d),
@@ -235,7 +235,7 @@ impl Curve2d for Trig2d {
 }
 
 /// A planar curve displaced a constant signed distance along its basis's
-/// left normal — the tangent turned a quarter left — sharing the basis's
+/// left normal (the tangent turned a quarter left), sharing the basis's
 /// parameterization.
 ///
 /// Point and first derivative are exact from the basis's first and second
@@ -399,8 +399,8 @@ impl Circle2d {
     /// Whether the curve runs backwards along its underlying circle.
     ///
     /// Part of the curve's state and not derivable from its circle, so
-    /// anything that has to reproduce this curve exactly — the native format
-    /// above all — needs to be able to read it.
+    /// anything that has to reproduce this curve exactly (the native format
+    /// above all) needs to be able to read it.
     #[must_use]
     pub const fn is_reversed(&self) -> bool {
         self.reversed
@@ -426,8 +426,8 @@ impl Ellipse2d {
     /// Whether the curve runs backwards along its underlying ellipse.
     ///
     /// Part of the curve's state and not derivable from its ellipse, so
-    /// anything that has to reproduce this curve exactly — the native format
-    /// above all — needs to be able to read it.
+    /// anything that has to reproduce this curve exactly (the native format
+    /// above all) needs to be able to read it.
     #[must_use]
     pub const fn is_reversed(&self) -> bool {
         self.reversed
@@ -523,8 +523,8 @@ impl Trimmed2d {
     /// Whether the curve runs backwards along its underlying curve.
     ///
     /// Part of the curve's state and not derivable from its basis curve, so
-    /// anything that has to reproduce this curve exactly — the native format
-    /// above all — needs to be able to read it.
+    /// anything that has to reproduce this curve exactly (the native format
+    /// above all) needs to be able to read it.
     #[must_use]
     pub const fn is_reversed(&self) -> bool {
         self.reversed

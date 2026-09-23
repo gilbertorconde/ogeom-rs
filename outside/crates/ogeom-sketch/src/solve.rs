@@ -1,8 +1,8 @@
 //! Solving the sketch, and reading the system's shape.
 //!
 //! The solver is damped Gauss–Newton over the stacked residuals: the Jacobian
-//! by central differences, the step by singular-value least squares — which
-//! handles the under-determined case a sketch nearly always is — and a
+//! by central differences, the step by singular-value least squares (which
+//! handles the under-determined case a sketch nearly always is), and a
 //! halving line search so a bad quadratic model shrinks the step instead of
 //! diverging.
 //!
@@ -10,7 +10,7 @@
 //! descent. Its rank against the parameter count is the degrees of freedom;
 //! the right null space says *which* geometry can still move; the left null
 //! space names the dependent constraint groups, and the residuals at the
-//! optimum split those into the redundant — dependent but satisfied — and
+//! optimum split those into the redundant (dependent but satisfied) and
 //! the conflicting, which no parameter vector can satisfy together.
 //!
 //! **Analytic per-constraint Jacobians are declined**, and the decision is
@@ -37,7 +37,7 @@ pub struct SolveOptions {
     /// Compute each step through the sparse conjugate-gradient solver
     /// instead of the dense SVD. Same minimum-norm answer, cost scaling
     /// with the constraints actually written rather than with the whole
-    /// parameter vector — the choice for large sketches. Diagnosis always
+    /// parameter vector, the choice for large sketches. Diagnosis always
     /// reads structure through the SVD regardless.
     pub sparse: bool,
 }
@@ -57,8 +57,8 @@ impl Default for SolveOptions {
 pub struct Freedom {
     /// Degrees of freedom remaining: parameters minus the system's rank.
     ///
-    /// A sketch with no anchor keeps its rigid-body motions — two
-    /// translations and a rotation — and they are counted here, because
+    /// A sketch with no anchor keeps its rigid-body motions (two
+    /// translations and a rotation), and they are counted here, because
     /// they are real: fixing a point and a direction is what removes them.
     pub degrees: usize,
     /// Points with a component in some remaining motion.
@@ -72,9 +72,9 @@ pub struct Freedom {
 pub struct Diagnosis {
     /// What can still move.
     pub freedom: Freedom,
-    /// Dependent groups that are satisfied — redundant constraints.
+    /// Dependent groups that are satisfied: redundant constraints.
     pub redundant: Vec<Vec<ConstraintId>>,
-    /// Dependent groups that are violated — the conflicting constraints,
+    /// Dependent groups that are violated: the conflicting constraints,
     /// by name.
     pub conflicting: Vec<Vec<ConstraintId>>,
 }
@@ -94,8 +94,8 @@ pub struct Solution {
     /// Whether every residual came under the tolerance.
     ///
     /// A conflicted sketch does not converge; the diagnosis names the
-    /// conflict. An unconflicted one that still fails to converge stalled —
-    /// a fold the line search could not leave — and keeping the flag
+    /// conflict. An unconflicted one that still fails to converge stalled
+    /// (a fold the line search could not leave), and keeping the flag
     /// separate from the diagnosis keeps those two stories distinct.
     pub converged: bool,
     /// Iterations taken.
@@ -120,8 +120,8 @@ const VIOLATION_FACTOR: f64 = 1e3;
 impl Sketch {
     /// Solve the sketch in place.
     ///
-    /// The geometry moves to satisfy the constraints; where it cannot —
-    /// conflicts — the returned [`Diagnosis`] names them, and the sketch is
+    /// The geometry moves to satisfy the constraints; where it cannot
+    /// (conflicts), the returned [`Diagnosis`] names them, and the sketch is
     /// left at the least-bad configuration the descent reached rather than
     /// reverted, because seeing where the fight is happening is diagnostic
     /// too.
@@ -176,7 +176,7 @@ impl Sketch {
             };
 
             // Halving line search: accept the first step that reduces the
-            // residual norm; a stall — no fraction helps — ends the descent.
+            // residual norm; a stall (no fraction helps) ends the descent.
             let before = r.norm();
             let base = self.params.clone();
             let mut accepted = false;
@@ -250,7 +250,7 @@ impl Sketch {
         outcome?;
         // Release polish: even a whisper of a pull perturbs the hard
         // constraints at its squared weight, so the sketch re-solves
-        // without it — warm-started, a step or two — and lands exactly on
+        // without it (warm-started, a step or two) and lands exactly on
         // the constraints, at the configuration the drag chose.
         self.solve(options)
     }
@@ -312,7 +312,7 @@ impl Sketch {
         // produce. The thin factors determine both completely.
 
         // Right null: a parameter is free exactly when the row space does
-        // not contain its axis — the projector's diagonal is its remaining
+        // not contain its axis; the projector's diagonal is its remaining
         // freedom, in [0, 1].
         let mut movable_points = Vec::new();
         let mut movable_radii = Vec::new();
@@ -407,7 +407,7 @@ impl Sketch {
     /// structural sparsity: each constraint is differentiated only over
     /// the parameters of the entities it names, so the cost scales with
     /// the constraint count rather than with constraints times the whole
-    /// parameter vector — the difference between a solver that re-reads
+    /// parameter vector: the difference between a solver that re-reads
     /// the world and one that can keep up with a drag.
     fn numeric_jacobian(&self, scale: f64, m: usize) -> DMatrix<f64> {
         let mut jacobian = DMatrix::zeros(m, self.params.len());
@@ -417,7 +417,7 @@ impl Sketch {
         jacobian
     }
 
-    /// The sparse Jacobian as `(row, column, value)` entries — only the
+    /// The sparse Jacobian as `(row, column, value)` entries; only the
     /// parameters each constraint names are differenced, so the entry count
     /// is the coupling structure itself.
     fn jacobian_triplets(&self, scale: f64, m: usize) -> Vec<(usize, usize, f64)> {

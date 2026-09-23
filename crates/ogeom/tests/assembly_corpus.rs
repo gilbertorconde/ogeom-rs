@@ -60,7 +60,7 @@ fn the_bolted_plate_assembly_reads_whole() {
     assert!(world(1).is_equal(Point::new(30.0, 30.0, 5.0), T));
     assert!(world(2).is_equal(Point::new(0.0, 0.0, 0.0), T));
 
-    // The two bolts are one part: same node, different chains — instancing.
+    // The two bolts are one part: same node, different chains: instancing.
     assert_eq!(occurrences[0].shape.node(), occurrences[1].shape.node());
     assert_eq!(occurrences[0].part, occurrences[1].part);
 
@@ -78,7 +78,7 @@ fn the_bolted_plate_assembly_reads_whole() {
         "assembly volume {total} against {expected}"
     );
 
-    // Colours: the plate green, the bolt blue — resolved per occurrence.
+    // Colours: the plate green, the bolt blue, resolved per occurrence.
     let colour = |i: usize| doc.resolved_colour(occurrences[i].part, &occurrences[i].shape);
     assert_eq!(colour(0), Some(Colour::rgb(0.2, 0.3, 0.9)));
     assert_eq!(colour(2), Some(Colour::rgb(0.1, 0.8, 0.2)));
@@ -210,7 +210,7 @@ fn the_assembly_round_trips_through_the_writer() {
 fn a_real_part_round_trips_with_its_volume() {
     // ftc_11 is the all-analytic NIST part: planes, cylinders, seams,
     // misaligned rings and all. What the writer serializes, the reader must
-    // heal and measure identically — the same healing the original needs,
+    // heal and measure identically: the same healing the original needs,
     // because the writer writes what the file actually says.
     let fine = ogeom::mesh::Deflection {
         chord: 1e-2,

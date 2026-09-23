@@ -2,7 +2,7 @@
 //!
 //! Everything here is generic over [`Blend`], the affine structure a control
 //! point needs. That is what lets one implementation serve curves and surfaces,
-//! 2D and 3D, and — through the homogeneous trick — rational and non-rational
+//! 2D and 3D, and (through the homogeneous trick) rational and non-rational
 //! alike, instead of four near-copies that drift apart.
 //!
 //! # Rational curves
@@ -26,7 +26,7 @@ use crate::{KnotVector, Point, Point2, Vector, Vector2};
 /// The affine structure a control point needs: scaling and addition.
 ///
 /// Implemented for vectors, points and scalars. de Boor and the refinement
-/// algorithms take only affine combinations — coefficients summing to one — so
+/// algorithms take only affine combinations (coefficients summing to one), so
 /// applying them to positions is meaningful even though positions have no
 /// meaningful sum on their own.
 pub trait Blend: Copy {
@@ -112,8 +112,8 @@ impl Blend for Point2 {
 
 /// A control point carrying a weight, for rational geometry.
 ///
-/// Stored in *homogeneous* form — the point is already multiplied through by
-/// the weight — because that is the form every algorithm needs, and converting
+/// Stored in *homogeneous* form (the point is already multiplied through by
+/// the weight) because that is the form every algorithm needs, and converting
 /// on each access would be both slower and a source of drift.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Weighted<P> {
@@ -336,7 +336,7 @@ pub type BezierSegment<P> = ((f64, f64), Vec<P>);
 /// Join two clamped B-splines of one degree end to start into one.
 ///
 /// `a`'s last control point and `b`'s first are taken to be the same
-/// point — the caller checks, since a control point is whatever blends —
+/// point (the caller checks, since a control point is whatever blends)
 /// and become one control; the join knot is left at multiplicity `degree`,
 /// so the curve passes through it and continues with `b`'s parameter
 /// shifted to begin where `a`'s ends. The domain is the two domains laid
@@ -374,12 +374,12 @@ pub fn join<P: Blend>(a: &Spline<P>, b: &Spline<P>) -> OgeomResult<Spline<P>> {
 /// polynomial continuation of the curve's own end derivatives, joined on.
 ///
 /// The continuation is the Taylor polynomial of order `continuity` at the
-/// end — the polynomial whose derivatives up to that order agree with the
-/// curve's there — expressed in Bernstein form over the new span, raised to
+/// end (the polynomial whose derivatives up to that order agree with the
+/// curve's there), expressed in Bernstein form over the new span, raised to
 /// the spline's degree and joined on with the knot at multiplicity
 /// `degree`. The curve is continued rather than approximated: a polynomial
 /// spline of degree at most `continuity` continues *as itself*, and so does
-/// a rational curve's homogeneous polynomial — a rational circle arc
+/// a rational curve's homogeneous polynomial: a rational circle arc
 /// continued at order two stays on its circle. Orders above the degree are
 /// held to the degree, which is as smooth as the spline itself is.
 ///
@@ -499,8 +499,8 @@ pub fn split<P: Blend>(
 /// Decompose a B-spline into its Bézier segments.
 ///
 /// Returns one control-point array per segment, each of `degree + 1` points,
-/// together with the parameter interval it covers. Many algorithms — plotting,
-/// intersection, conversion to exchange formats — are far simpler on Bézier
+/// together with the parameter interval it covers. Many algorithms (plotting,
+/// intersection, conversion to exchange formats) are far simpler on Bézier
 /// pieces than on the whole spline.
 ///
 /// # Errors
@@ -1017,7 +1017,7 @@ mod tests {
         for i in 0..=100 {
             let u = f64::from(i) / 100.0;
             let p = evaluate_rational(&k, &c, u, T).unwrap();
-            // Every point is at exactly unit distance from the origin — which
+            // Every point is at exactly unit distance from the origin, which
             // no non-rational B-spline can achieve.
             assert_relative_eq!(p.to_vector().magnitude(), 1.0, epsilon = 1e-14);
             assert_relative_eq!(p.z, 0.0, epsilon = 1e-15);
@@ -1249,7 +1249,7 @@ fn check_grid_shape<P>(ku: &KnotVector, kv: &KnotVector, grid: &ControlGrid<P>) 
 /// Evaluate a tensor-product B-spline surface at `(u, v)`.
 ///
 /// Sums the `(p+1) x (q+1)` non-zero basis products over the control window.
-/// Only that window contributes — the basis has local support — so cost depends
+/// Only that window contributes (the basis has local support), so cost depends
 /// on the degrees, not on the size of the surface.
 ///
 /// # Errors
@@ -1367,7 +1367,7 @@ pub fn evaluate_rational_surface<P: Blend>(
 /// The two-parameter quotient rule. Each mixed partial subtracts the weight's
 /// influence in `u`, in `v`, and in both together; dropping the last of those
 /// three sums is the classic error, and it only shows up on genuinely rational
-/// surfaces with mixed derivatives — which is to say, on exactly the spheres and
+/// surfaces with mixed derivatives, which is to say, on exactly the spheres and
 /// tori where the answer matters.
 ///
 /// # Errors

@@ -5,7 +5,7 @@
 //! not clear the bar the project ships as a geometry library rather than
 //! spending years on a boolean over an intersector that cannot carry one.
 //!
-//! This is the instrument. It is not a test — it is the thing a test asserts
+//! This is the instrument. It is not a test; it is the thing a test asserts
 //! about, and the thing a report quotes.
 //!
 //! # What ground truth is here
@@ -16,7 +16,7 @@
 //! lies on **both** surfaces. That is checkable without reference to anything
 //! else, it is checkable to machine precision, and it does not care how the
 //! curve was arrived at. So the measure is the largest distance from any sampled
-//! point of the reported curve to either surface — which is zero for a correct
+//! point of the reported curve to either surface, which is zero for a correct
 //! result and says how wrong an incorrect one is.
 //!
 //! # What it deliberately does not measure
@@ -24,8 +24,8 @@
 //! *Completeness.* Every point being on both surfaces says the answer is not
 //! wrong; it does not say the answer is all of it. An intersector that returned
 //! one of two circles would score perfectly here. Completeness needs a second
-//! instrument — sampling one surface and asking whether points near the other
-//! are covered — and the general intersector is where that starts to matter,
+//! instrument (sampling one surface and asking whether points near the other
+//! are covered), and the general intersector is where that starts to matter,
 //! since these closed forms return the whole answer by construction.
 //!
 //! Saying so is the point. A benchmark that quietly measured one thing while
@@ -46,8 +46,8 @@ pub struct Measured {
     /// The largest distance from any sampled point to the surfaces it should
     /// lie on.
     ///
-    /// `None` when there was nothing to sample — the surfaces are apart, or the
-    /// same — because a deviation of zero and no measurement at all are
+    /// `None` when there was nothing to sample (the surfaces are apart, or the
+    /// same), because a deviation of zero and no measurement at all are
     /// different things and averaging them together would flatter the result.
     pub deviation: Option<f64>,
     /// How many points were sampled.
@@ -85,7 +85,7 @@ impl Report {
 ///
 /// # Errors
 ///
-/// As [`surface_surface`] — a pair with no closed form is reported rather than
+/// As [`surface_surface`]: a pair with no closed form is reported rather than
 /// measured, and the caller decides whether that counts against it.
 pub fn measure(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerances) -> OgeomResult<Measured> {
     /// Enough to catch a curve that is right at its ends and wrong in the
@@ -135,7 +135,7 @@ pub fn measure(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerances) -> Oge
 ///
 /// # Errors
 ///
-/// Never for a case with no closed form — those are counted as deferred, which
+/// Never for a case with no closed form; those are counted as deferred, which
 /// is the honest reading: the closed forms are not claiming to answer them.
 pub fn measure_all(
     cases: &[(String, SurfaceGeometry, SurfaceGeometry)],
@@ -165,7 +165,7 @@ pub fn measure_all(
 /// The range to sample a curve over.
 ///
 /// An unbounded line's own domain reaches a billion units either way, and
-/// sampling that says nothing useful about an intersection near the origin — the
+/// sampling that says nothing useful about an intersection near the origin; the
 /// interesting part is where the surfaces actually are. A bounded curve is
 /// sampled over all of itself.
 fn sampling_range(curve: &Curve) -> (f64, f64) {

@@ -5,7 +5,7 @@
 //! clockwise about the travel swept its four walls facing into the
 //! material while its caps faced out: the shell closed, the checker was
 //! content, and the volume came back refused as wound inward. Every ring's
-//! walls now follow the ring's winding about the travel — the outer ring
+//! walls now follow the ring's winding about the travel: the outer ring
 //! turning positively, a hole the other way.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 

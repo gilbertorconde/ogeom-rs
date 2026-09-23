@@ -1,7 +1,7 @@
 //! Conic sections: circle, ellipse, hyperbola, parabola.
 //!
 //! Each is a shape described by a [`Frame`] and one or two size parameters. The
-//! frame is not decoration — it fixes the parameterization. A circle's angular
+//! frame is not decoration: it fixes the parameterization. A circle's angular
 //! parameter is measured from its frame's `x` axis towards its `y` axis, so
 //! "the point at 0" is a specific place that survives the shape being stored,
 //! reloaded and transformed.
@@ -22,7 +22,7 @@ use crate::{Frame, Frame2, Point, Point2, Transform, Transform2};
 /// The complete elliptic integral of the second kind, `E(m)`, for `m` in
 /// `[0, 1]`.
 ///
-/// Computed by the arithmetic-geometric mean, which converges quadratically —
+/// Computed by the arithmetic-geometric mean, which converges quadratically:
 /// the number of correct digits doubles each iteration, so `f64` accuracy costs
 /// about seven steps regardless of `m`.
 ///
@@ -144,7 +144,7 @@ impl Circle {
     /// # Errors
     ///
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the points
-    /// are collinear or any two coincide — no circle passes through them.
+    /// are collinear or any two coincide; no circle passes through them.
     pub fn through(a: Point, b: Point, c: Point, tol: Tolerances) -> OgeomResult<Self> {
         let (ab, ac) = (b - a, c - a);
 
@@ -200,7 +200,7 @@ impl Circle {
 
     /// The shortest distance from `p` to the circle.
     ///
-    /// Zero on the circle, and positive both inside and outside — this is the
+    /// Zero on the circle, and positive both inside and outside; this is the
     /// distance to the curve, not to the disc it bounds.
     #[must_use]
     pub fn distance_to(&self, p: Point) -> f64 {
@@ -318,7 +318,7 @@ impl Ellipse {
     /// The circumference.
     ///
     /// Exact to machine precision, via the complete elliptic integral of the
-    /// second kind — see [`complete_elliptic_e`].
+    /// second kind; see [`complete_elliptic_e`].
     ///
     /// Ramanujan's well-known approximation was the obvious alternative and is
     /// not good enough: it is excellent for a nearly circular ellipse but its
@@ -380,7 +380,7 @@ impl Hyperbola {
         self.frame
     }
 
-    /// The centre — the midpoint of the two vertices, not a point on the curve.
+    /// The centre: the midpoint of the two vertices, not a point on the curve.
     #[must_use]
     pub const fn centre(&self) -> Point {
         self.frame.origin()
@@ -574,7 +574,7 @@ impl Circle2 {
     /// The frame goes through the transform intact rather than being rebuilt
     /// from the centre. The frame fixes where the angular parameter starts, so
     /// discarding its orientation would keep the shape and silently renumber
-    /// every point on it — invisible to a distance check, and wrong for
+    /// every point on it, invisible to a distance check, and wrong for
     /// anything holding a parameter.
     ///
     /// # Errors

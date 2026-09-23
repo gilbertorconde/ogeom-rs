@@ -1,7 +1,7 @@
 //! STL: a triangle soup, in ASCII or binary.
 //!
-//! The format has no notion of a shared vertex — every triangle names its three
-//! corners in full — and no notion of topology at all. Writing to it therefore
+//! The format has no notion of a shared vertex (every triangle names its three
+//! corners in full) and no notion of topology at all. Writing to it therefore
 //! *loses* everything the kernel knows: which triangles belong to which face,
 //! which edges were exact, what the surfaces actually were. That is the format's
 //! nature and not a shortcoming of this writer.
@@ -11,7 +11,7 @@
 //! [`read`] returns a [`Triangulation`], not a `Shape`, and that is deliberate.
 //! Recovering a B-rep from a triangle soup means deciding which triangles are
 //! coplanar enough to be one face, which chains of edges are one curve, and
-//! what surface each face was cut from — that is surface reconstruction, a
+//! what surface each face was cut from: that is surface reconstruction, a
 //! research problem, not a file format concern. A function returning a `Shape`
 //! here would have to guess, and the guess would be wrong in ways nothing
 //! downstream could detect.
@@ -36,7 +36,7 @@ pub enum Encoding {
     /// Human-readable. Roughly six times the size and exact only to the
     /// precision printed.
     Ascii,
-    /// Compact and exact, but `f32` — see [`write()`].
+    /// Compact and exact, but `f32`; see [`write()`].
     Binary,
 }
 
@@ -48,8 +48,8 @@ const HEADER: &str = "ogeom";
 /// # Precision
 ///
 /// STL stores coordinates as `f32` in binary and as printed decimals in ASCII.
-/// The kernel works in `f64`. A round trip therefore loses precision — about
-/// seven significant digits in binary — and a model far from the origin loses
+/// The kernel works in `f64`. A round trip therefore loses precision (about
+/// seven significant digits in binary), and a model far from the origin loses
 /// it where it matters most: a part at 1e6 units has a binary STL resolution of
 /// about 0.06 units. This writes what the format can hold; it does not pretend
 /// the result round-trips exactly, and [`read`] will not return what was
@@ -204,7 +204,7 @@ fn read_f32(bytes: &[u8], at: usize) -> f32 {
 
 /// Parse the ASCII form.
 ///
-/// Deliberately lenient about layout — indentation, blank lines, and the solid
+/// Deliberately lenient about layout: indentation, blank lines, and the solid
 /// name vary between writers, and the keywords are what carry the meaning.
 /// Deliberately strict about a facet having exactly three vertices, because a
 /// facet with four is a quad some writer emitted and silently dropping one
@@ -464,7 +464,7 @@ endsolid q
 
     #[test]
     fn a_binary_round_trip_loses_precision_and_the_docs_say_so() {
-        // Not a defect to fix — the format stores f32. The test exists so that
+        // Not a defect to fix; the format stores f32. The test exists so that
         // if someone later "fixes" a failing comparison by loosening a
         // tolerance, they meet this instead and learn where the loss comes from.
         let mut mesh = tetrahedron();

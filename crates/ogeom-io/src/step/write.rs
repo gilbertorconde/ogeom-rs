@@ -3,15 +3,15 @@
 //! The mirror of the reader, and deliberately written against the same
 //! vocabulary: every entity this writer emits is one the reader parses, so
 //! writing what was read and reading it back is the honest round-trip test.
-//! AP214's schema name goes in the header — the entities used are the common
+//! AP214's schema name goes in the header; the entities used are the common
 //! AP203/AP214/AP242 core.
 //!
 //! Geometry is written in world coordinates: every face, edge and vertex is
 //! transformed through its occurrence's own placement chain before it is
-//! serialized, and shared nodes are deduplicated *per placement* — a prism's
+//! serialized, and shared nodes are deduplicated *per placement*: a prism's
 //! bottom and top edge are one node at two locations, and the file needs
-//! both. Surfaces the format has no analytic name for — extrusions,
-//! revolutions — go out as their exact rational B-spline patches (§3's
+//! both. Surfaces the format has no analytic name for (extrusions,
+//! revolutions) go out as their exact rational B-spline patches (§3's
 //! conversion), so nothing is fitted on the way out.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -33,7 +33,7 @@ use std::fmt::Write as _;
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
-/// shape's structure cannot be expressed — a non-rigid instance placement, a
+/// shape's structure cannot be expressed: a non-rigid instance placement, a
 /// solid with no shell.
 pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
     let mut writer = Writer {
@@ -215,7 +215,7 @@ struct Writer<'a> {
     vertices: HashMap<(ogeom_topo::TShapeId, [u64; 3]), u64>,
     /// Edge occurrences by node and placement bits.
     edges: HashMap<(ogeom_topo::TShapeId, [u64; 3]), u64>,
-    /// Every solid and face written, with its entity id — the hooks colours
+    /// Every solid and face written, with its entity id: the hooks colours
     /// attach to.
     written_nodes: Vec<(ogeom_topo::TShapeId, u64)>,
     tol: Tolerances,
@@ -358,7 +358,7 @@ impl Writer<'_> {
     }
 
     /// A wire as an `EDGE_LOOP`, or a `VERTEX_LOOP` when every edge in it is
-    /// degenerate — a pole or an apex has no curve to serialize, and STEP's
+    /// degenerate: a pole or an apex has no curve to serialize, and STEP's
     /// own spelling for it is the loop of one vertex.
     fn wire(&mut self, wire: &Shape) -> OgeomResult<u64> {
         let children = self.model.ordered_children_of(wire)?;
@@ -486,7 +486,7 @@ impl Writer<'_> {
             other => {
                 // Exact for the conics and trims: the conversion is the §3
                 // machinery, not a fit. A helix refuses inside the
-                // conversion — it has no exact spline form, and writing a
+                // conversion: it has no exact spline form, and writing a
                 // fit without saying so is the lie this crate does not tell.
                 let spline = other.to_bspline_over(range, self.tol)?;
                 self.bspline_curve(&spline)
@@ -534,7 +534,7 @@ impl Writer<'_> {
     }
 
     /// A surface: analytic where STEP has the word, the exact B-spline patch
-    /// where it does not. Trimmed surfaces write their basis — the trim is
+    /// where it does not. Trimmed surfaces write their basis; the trim is
     /// the face's own topology.
     fn surface(&mut self, surface: &SurfaceGeometry) -> OgeomResult<u64> {
         match surface {
@@ -792,7 +792,7 @@ impl Writer<'_> {
         }
 
         // Datum targets: the pads a datum is established at. The identifier
-        // is the letter and the number the drawing shows — `A1` — and the
+        // is the letter and the number the drawing shows (`A1`), and the
         // placement and sizes go in a shape representation the target's own
         // property definition names, which is where the reader looks for them.
         for target in &pmi.targets {
@@ -911,7 +911,7 @@ impl Writer<'_> {
         // Saved views: a named draughting model per view, holding a camera
         // and the callouts the view presents. The camera's view volume is
         // written `$`: this writer keeps no viewing frustum to state, and
-        // the readers that matter — this one included — take the name and
+        // the readers that matter (this one included) take the name and
         // the placement and leave the rest.
         for view in views {
             let name = escape(&view.name);

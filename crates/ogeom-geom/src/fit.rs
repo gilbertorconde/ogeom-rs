@@ -1,7 +1,7 @@
 //! Fitting a B-spline to points, to a stated error target.
 //!
 //! The missing half of fitting. Interpolation and fixed-count approximation
-//! exist in `ogeom-algo`; what they cannot do is *choose* — the caller names a
+//! exist in `ogeom-algo`; what they cannot do is *choose*: the caller names a
 //! control-point count and hopes. This module is the loop that closes that:
 //! fit, measure where the fit is worst, refine the knots exactly there, and
 //! repeat until the error target is met.
@@ -15,7 +15,7 @@
 //! # Where the knots go
 //!
 //! Refinement is *where the error is*, not everywhere. Splitting every span
-//! doubles the control points per round and most of them buy nothing — a curve
+//! doubles the control points per round and most of them buy nothing; a curve
 //! that is straight for most of its length and tight in one corner needs its
 //! knots in the corner. Each round measures the error per span and splits only
 //! the spans that exceed the target, so the knot density ends up tracking the
@@ -26,7 +26,7 @@
 //! The marching intersector, first: a traced branch is a polyline with a stated
 //! chord tolerance, and downstream code wants a curve, so the polyline is fitted
 //! to the same tolerance and the result is as good as the trace. But nothing
-//! here knows about intersections — it fits points, in three dimensions or two,
+//! here knows about intersections; it fits points, in three dimensions or two,
 //! which is also what a digitized profile or an imported polyline needs.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -53,8 +53,8 @@ pub struct Fitted<C> {
     pub error: f64,
     /// Whether the error target was met.
     ///
-    /// A fit can run out of room — more control points than points to fit
-    /// solves nothing, since at that ratio least squares *is* interpolation —
+    /// A fit can run out of room (more control points than points to fit
+    /// solves nothing, since at that ratio least squares *is* interpolation),
     /// and then this is `false` and `error` says how close it got. Reported
     /// rather than rounded up to success.
     pub met: bool,
@@ -64,8 +64,8 @@ pub struct Fitted<C> {
 ///
 /// The first and last points are honoured exactly: they are where the curve
 /// joins whatever comes next, and a fit that drifts at its ends produces gaps
-/// at every junction built on it. A closed polyline — first point repeated at
-/// the end — therefore comes back closed.
+/// at every junction built on it. A closed polyline (first point repeated at
+/// the end) therefore comes back closed.
 ///
 /// # Errors
 ///
@@ -98,13 +98,13 @@ pub fn fit_points(
 /// Fit a *fair* curve: least squares over the points, pulled toward
 /// minimum bending energy by a smoothing weight.
 ///
-/// The energy is the squared second difference of the control polygon — the
-/// discrete bending of the curve's own skeleton — added to the normal
+/// The energy is the squared second difference of the control polygon (the
+/// discrete bending of the curve's own skeleton), added to the normal
 /// equations as `λ·DᵀD`. At `λ = 0` this is plain least squares; as `λ`
 /// grows the curve trades closeness for straightness, which is the batten
 /// a drafter flexes through points. Both ends interpolate their points
 /// exactly, whatever the weight. The reported error is the honest maximum
-/// distance from the inputs, which *rises* with `λ` — fairness is spent
+/// distance from the inputs, which *rises* with `λ`: fairness is spent
 /// closeness, and the number says how much was spent.
 ///
 /// # Errors
@@ -229,7 +229,7 @@ pub fn fit_points_faired(
 
 /// Fit a smoothly closed loop: as [`fit_points`], with the join C1.
 ///
-/// The input must be a loop — the first point repeated at the end — and the
+/// The input must be a loop (the first point repeated at the end), and the
 /// ends are honoured exactly as always. Beyond that, the tangent leaving the
 /// join is constrained to equal the tangent arriving at it, eliminated
 /// exactly inside the least-squares solve rather than patched on after, so a
@@ -313,7 +313,7 @@ pub fn fit_points_2d(
 /// parameter-space images, as a single seven-dimensional fit.
 ///
 /// One parameterization, one knot vector, one correction: the three results
-/// are same-parameter *by construction*, which separate fits cannot promise —
+/// are same-parameter *by construction*, which separate fits cannot promise:
 /// each fit's parameter correction drifts its parameterization independently,
 /// and the drift is invisible to every per-fit error measure. The boolean
 /// found that: pcurves claiming 1e-7 evaluated millimetres from their own
@@ -338,7 +338,7 @@ pub fn fit_points_joint(
 /// As [`fit_points_joint`], with a closed loop's join made C1.
 ///
 /// The seven-dimensional twin of [`fit_points_closed`]: when the trace is a
-/// loop — the first sample repeated at the end in every space — the join's
+/// loop (the first sample repeated at the end in every space), the join's
 /// tangent constraint is eliminated inside the shared solve, so the curve
 /// *and both pcurves* cross their seam smoothly, still same-parameter by
 /// construction. An input that is not closed in all seven coordinates fits
@@ -383,9 +383,9 @@ fn fit_points_joint_inner(
         .collect();
     // Centripetal first, as every free fit is, and by chord length where
     // that misses its target: the two disagree only where the samples are
-    // spaced far from evenly, and there each is right for its own data —
-    // the centripetal guess for a trace with a kink in it, chord length
-    // for a smooth trace crowded at one end — so the closer of the two
+    // spaced far from evenly, and there each is right for its own data
+    // (the centripetal guess for a trace with a kink in it, chord length
+    // for a smooth trace crowded at one end), so the closer of the two
     // stands.
     let first = fit_spaced::<7>(
         &joined,
@@ -431,12 +431,12 @@ fn fit_points_joint_inner(
     Ok((Fitted { curve, error, met }, pa, pb))
 }
 
-/// Fit a pcurve at *fixed* parameters — the source curve's own.
+/// Fit a pcurve at *fixed* parameters: the source curve's own.
 ///
 /// The fixed-parameter twin of [`fit_points_2d`], and the difference is the
 /// contract: parameter correction is what makes a free fit's residual honest,
 /// and it is exactly what a *same-parameter* fit must never do, because the
-/// parameters are not a guess to be improved — they are the 3D curve's own,
+/// parameters are not a guess to be improved; they are the 3D curve's own,
 /// and drifting them is how a pcurve ends up evaluating away from the curve
 /// it annotates. Here the parameters stay put, refinement adds knots where
 /// the error says, and the reported error is the true same-parameter
@@ -552,8 +552,8 @@ fn build_curve_3(
 
 /// As [`fit_points_2d_at`], with the loop's join made C1.
 ///
-/// The chart image of a closed curve either returns to its first point or —
-/// crossing its surface's seam — to that point one period over; both are the
+/// The chart image of a closed curve either returns to its first point or,
+/// crossing its surface's seam, to that point one period over; both are the
 /// same loop, and the join constraint holds either way because it speaks
 /// derivatives, not positions.
 ///
@@ -602,7 +602,7 @@ fn fit_points_2d_at_inner(
     let mut best: Option<(KnotVector, Vec<[f64; 2]>, f64)> = None;
     for _ in 0..ROUNDS {
         // A refinement can place a knot in a span the fixed parameters never
-        // visit — clustered samples leave the system singular. That kills
+        // visit: clustered samples leave the system singular. That kills
         // the *round*, not the fit: the best earlier round still stands.
         let control = match least_squares::<2>(&knots, &data, parameters, closed) {
             Ok(control) => control,
@@ -723,7 +723,7 @@ fn fit_spaced<const D: usize>(
     }
     let degree = degree.min(points.len() - 1);
     // A loop the caller asked to close smoothly: the first point repeated at
-    // the end, and the join constrained to matching *tangents* — a surface
+    // the end, and the join constrained to matching *tangents*; a surface
     // built over a C0 loop shows the crease. Opt-in, because the constraint
     // spends shape freedom at the join that an open fit keeps.
     let closed =
@@ -757,14 +757,14 @@ fn fit_spaced<const D: usize>(
                 return Err(e);
             }
         };
-        // Parameter correction, and it is not a refinement — it is what makes
+        // Parameter correction, and it is not a refinement; it is what makes
         // the residual mean anything. The residual is measured at each point's
         // assigned parameter, and the centripetal assignment is a guess: where
         // it drifts from the curve's own flow, a *perfect* curve still shows an
         // error at the assigned spot, the loop reads that as the curve's
         // fault, and refinement adds knots forever against a floor it can
-        // never get under. Projecting each point onto the current curve —
-        // Newton on the foot of the perpendicular — removes the
+        // never get under. Projecting each point onto the current curve
+        // (Newton on the foot of the perpendicular) removes the
         // parameterization's share of the error and leaves the curve's.
         for _ in 0..2 {
             correct_parameters::<D>(&knots, &control, &points, &mut parameters, closed);
@@ -823,7 +823,7 @@ fn distance<const D: usize>(a: &[f64; D], b: &[f64; D]) -> f64 {
 /// Fit a surface to *scattered* points: no grid required.
 ///
 /// The points are parameterized by projection onto the cloud's own
-/// principal plane — the two dominant directions of its covariance — and
+/// principal plane (the two dominant directions of its covariance), and
 /// fitted by tensor-product least squares with a bending penalty at
 /// `smoothing`, which is what keeps the system solvable where the scatter
 /// leaves basis functions unsupported. The reported error is the honest
@@ -831,7 +831,7 @@ fn distance<const D: usize>(a: &[f64; D], b: &[f64; D]) -> f64 {
 /// parameters.
 ///
 /// The cloud must be a *height field* over its principal plane: points
-/// that fold over — a closed shell, a cliff — project onto each other, and
+/// that fold over (a closed shell, a cliff) project onto each other, and
 /// the fit answers with a large reported error rather than a lie.
 ///
 /// # Errors
@@ -1006,8 +1006,8 @@ pub fn fit_surface_scattered(
 /// transfinite Coons blend of the boundaries, sampled and fitted, its error
 /// reported.
 ///
-/// The curves must close corner to corner in the order given — `bottom`
-/// runs with `u`, `top` above it, `left` and `right` with `v` — each
+/// The curves must close corner to corner in the order given (`bottom`
+/// runs with `u`, `top` above it, `left` and `right` with `v`), each
 /// traversed over its own domain. The patch *interpolates the Coons
 /// surface's samples* to the stated tolerance; the Coons surface itself
 /// interpolates the boundaries exactly, so the fit error is the whole
@@ -1082,7 +1082,7 @@ pub fn fill_boundary(
 /// Fit a rectangular grid of points with a tensor-product B-spline surface.
 ///
 /// The deferred grid fit, kept honest the way the curve fit is: rows first,
-/// columns second, both passes at *fixed* parameters — a grid's
+/// columns second, both passes at *fixed* parameters: a grid's
 /// parameterization is shared property, and correcting it per row is how a
 /// grid stops being one. Each pass adapts one shared knot vector against the
 /// worst residual across its whole family, so every row rides the same
@@ -1107,7 +1107,7 @@ pub fn fit_surface_grid(
 }
 
 /// As [`fit_surface_grid`], parameterized by chord length instead of the
-/// centripetal assignment — the open counterpart of
+/// centripetal assignment, the open counterpart of
 /// [`fit_surface_grid_closed_v_chordal`], for a marched band that stops at
 /// its run-out instead of closing on itself.
 ///
@@ -1125,7 +1125,7 @@ pub fn fit_surface_grid_chordal(
 
 /// As [`fit_surface_grid`], with the `v` direction closed into a smooth loop.
 ///
-/// The rows must form a loop — the first row repeated at the end — and the
+/// The rows must form a loop (the first row repeated at the end), and the
 /// join across it is made C1 the way [`fit_points_closed`] makes a curve's:
 /// the constraint is eliminated inside the shared solve, so the two border
 /// control rows are equal and the loop crosses its own seam smoothly.
@@ -1217,8 +1217,8 @@ fn fit_surface_grid_inner(
         .collect();
 
     // Averaged parameters: one shared assignment per direction. A family
-    // with no extent — a row collapsed to a single point, the apex a skin
-    // narrows to — has no parameterization opinion: its zero chords assign
+    // with no extent (a row collapsed to a single point, the apex a skin
+    // narrows to) has no parameterization opinion: its zero chords assign
     // [0, …, 0, 1], and averaging that in compresses everyone else's
     // parameters toward the start and sends the fitted border curves on an
     // oscillating sprint over the tail. It rides the others' parameters
@@ -1373,7 +1373,7 @@ fn fit_family<const D: usize>(
 ///
 /// For densely sampled points of a smooth curve, chord length approximates
 /// arc length whatever the sampling density does, so the parameter-to-point
-/// map keeps a uniform speed across spacing jumps — exactly where the
+/// map keeps a uniform speed across spacing jumps, exactly where the
 /// centripetal assignment would fold a spacing jump into a speed kink.
 fn chordal<const D: usize>(points: &[[f64; D]]) -> Vec<f64> {
     let mut out = Vec::with_capacity(points.len());
@@ -1446,8 +1446,8 @@ fn single_span(degree: usize, a: f64, b: f64) -> OgeomResult<KnotVector> {
 
 /// Least-squares control points for a fixed knot vector.
 ///
-/// The ends are pinned to the first and last data points — they are where the
-/// curve joins its neighbours — and the interior is solved. With no interior
+/// The ends are pinned to the first and last data points (they are where the
+/// curve joins its neighbours), and the interior is solved. With no interior
 /// there is nothing to solve and the pinned Bézier is the answer.
 fn least_squares<const D: usize>(
     knots: &KnotVector,
@@ -1469,7 +1469,7 @@ fn least_squares<const D: usize>(
     // C1 across a closed loop's join: the clamped end derivatives are
     // degree/(t_{p+1}-t_1) * (P_1 - P_0) and
     // degree/(t_{n+p-1}-t_{n-1}) * (P_{n-1} - P_{n-2}). Setting them equal
-    // makes P_{n-2} = P_{n-1} - r (P_1 - P_0) — one unknown eliminated, the
+    // makes P_{n-2} = P_{n-1} - r (P_1 - P_0): one unknown eliminated, the
     // constraint exact in the solve rather than patched on after. Both ends
     // are pinned, so this holds whether they coincide or sit one period
     // apart, as a chart image crossing its surface's seam does.
@@ -1559,7 +1559,7 @@ fn least_squares<const D: usize>(
         }
     }
 
-    // The normal matrix can be singular when a span has no parameter in it —
+    // The normal matrix can be singular when a span has no parameter in it:
     // a knot was placed where there is no data to say where the curve goes.
     let Some(inverted) = normal.clone().try_inverse() else {
         ogeom_bail!(
@@ -1596,7 +1596,7 @@ fn correct_parameters<const D: usize>(
     let (lo, hi) = knots.domain();
     let last = parameters.len() - 1;
     // On a loop, a trust region of a few sample spacings. Newton on a curve
-    // that is still poor — the early rounds of a fit — can project a point
+    // that is still poor (the early rounds of a fit) can project a point
     // to the far side of the domain, and a loop's join makes that a cliff:
     // both ends of the domain are the same place in space, one wild foot
     // lands at the wrong end, and the monotonicity repair below drags every
@@ -1687,10 +1687,10 @@ fn residuals<const D: usize>(
 /// The middle is where a textbook puts it and it stalls in practice: when the
 /// data crowds into one half of a bad span, a middle knot leaves the other
 /// half empty, an empty half makes the least-squares system singular, and the
-/// span can never be refined again — the fit then converges to just above the
+/// span can never be refined again; the fit then converges to just above the
 /// target and sticks there. The median always leaves data on both sides.
 ///
-/// `None` when no span can be split further — every bad span holds fewer than
+/// `None` when no span can be split further: every bad span holds fewer than
 /// two parameters, and a knot needs data on both sides to be supported.
 fn refined_where_bad(
     knots: &KnotVector,
@@ -1868,8 +1868,8 @@ mod tests {
 
     #[test]
     fn scattered_points_fit_without_a_grid() {
-        // A paraboloid sampled at pseudo-random spots — a deterministic
-        // congruential walk, no randomness in the test — fits within a
+        // A paraboloid sampled at pseudo-random spots (a deterministic
+        // congruential walk, no randomness in the test) fits within a
         // stated error.
         let mut state = 12345u64;
         let mut next = || {
@@ -1928,8 +1928,8 @@ mod tests {
             bend(&faired.curve),
             bend(&chased.curve)
         );
-        // The price is stated: the faired error is larger — it includes the
-        // tangential slip a strong weight causes — while the *geometric*
+        // The price is stated: the faired error is larger (it includes the
+        // tangential slip a strong weight causes), while the *geometric*
         // deviation from the underlying line stays inside the noise band.
         assert!(faired.error >= chased.error);
         use crate::traits::Curve3d as _;
@@ -2003,9 +2003,9 @@ mod tests {
                 fitted.error
             );
             // And the report is honest: measure independently, point to curve.
-            // A bare scan reports its own step size — 2000 samples over a
+            // A bare scan reports its own step size: 2000 samples over a
             // circumference of thirty is an 8e-3 grid, and comparing that to a
-            // 1e-6 fit measures the scan — so the scan brackets and a ternary
+            // 1e-6 fit measures the scan, so the scan brackets and a ternary
             // search finishes.
             let mut worst = 0.0_f64;
             for p in &points {
@@ -2098,7 +2098,7 @@ mod tests {
         assert!(start.is_equal(end, T), "the loop opened");
 
         // The join is C1: the derivative leaving the seam equals the one
-        // arriving, exactly — the constraint is solved, not approximated.
+        // arriving, exactly; the constraint is solved, not approximated.
         let out = curve.d1_at(a, T).unwrap();
         let back = curve.d1_at(b, T).unwrap();
         assert!(

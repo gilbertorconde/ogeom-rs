@@ -6,7 +6,7 @@ use ogeom_math::Point2;
 use ogeom_sketch::{Constraint, Sketch, SolveOptions};
 
 /// A bracket profile solves to its dimensions and reports itself exactly
-/// constrained — and when a contradictory dimension is added, the solver
+/// constrained, and when a contradictory dimension is added, the solver
 /// refuses and *names* the two constraints that fight. Naming them is the
 /// requirement: a solver that only says "did not converge" leaves the person
 /// holding it to find the contradiction by bisection.

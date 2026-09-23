@@ -6,7 +6,7 @@
 //! own perpendicular meets them. That is what "the ball is seated" means, and
 //! nothing weaker would distinguish a correct march from a plausible one.
 //!
-//! Where the seat has a closed form the answer is held to it as well — a
+//! Where the seat has a closed form the answer is held to it as well: a
 //! cylinder standing square on a plane rounds to a torus, and its spine is a
 //! circle whose radius and height are arithmetic.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
@@ -51,7 +51,7 @@ fn assert_seated(
             "station {i}: and the second: {}",
             centre.distance(p2)
         );
-        // The touch points are on their supports, at the parameters reported —
+        // The touch points are on their supports, at the parameters reported,
         // which is the whole point of solving for them rather than projecting.
         let (u1, v1) = blend.on_first[i];
         let (u2, v2) = blend.on_second[i];
@@ -71,7 +71,7 @@ fn assert_seated(
 }
 
 /// A cylinder standing square on a plane. The seat is a circle, the blend is
-/// a torus, and every number in it is arithmetic — so the march is held to
+/// a torus, and every number in it is arithmetic, so the march is held to
 /// the closed form and not merely to its own consistency.
 #[test]
 fn a_cylinder_square_on_a_plane_rounds_to_the_torus_it_should() {
@@ -123,7 +123,7 @@ fn a_cylinder_square_on_a_plane_rounds_to_the_torus_it_should() {
 }
 
 /// The same pair, tilted. There is no closed form for a cylinder meeting a
-/// plane at an angle — which is exactly why this seat needs marching — so the
+/// plane at an angle (which is exactly why this seat needs marching), so the
 /// claim is the ball's own definition at every station, plus one number that
 /// *is* arithmetic: the lowest the spine reaches.
 #[test]
@@ -149,7 +149,7 @@ fn a_cylinder_meeting_a_plane_at_an_angle_is_marched() {
         CylinderSurface::new(Cylinder::new(frame, bore, T).unwrap(), (-4.0, 16.0))
             .unwrap()
             .into();
-    // The guide is the ellipse the tilted cylinder cuts from the plane —
+    // The guide is the ellipse the tilted cylinder cuts from the plane,
     // taken here as the circle of the same mean size, deliberately *not* the
     // seat itself, to show the guide only says where the sections are.
     let guide: Curve = CircleCurve::new(Circle::new(Frame::WORLD, bore, T).unwrap()).into();
@@ -158,7 +158,7 @@ fn a_cylinder_meeting_a_plane_at_an_angle_is_marched() {
     assert_eq!(blend.stopped, BlendStop::Closed);
     assert_seated(&blend, &ground, &wall, radius);
 
-    // Every centre stands the radius above the ground, whatever the tilt —
+    // Every centre stands the radius above the ground, whatever the tilt:
     // the plane is flat, so the ball's height is its radius exactly.
     for centre in &blend.spine {
         assert!(
@@ -176,7 +176,7 @@ fn a_cylinder_meeting_a_plane_at_an_angle_is_marched() {
     assert!(hi - lo > 0.2, "the tilted seat is not round: {lo} to {hi}");
 
     // The tangency curve on the wall lives in the wall's own parameters, and
-    // those parameters lift back onto it exactly — which is the property the
+    // those parameters lift back onto it exactly, which is the property the
     // whole formulation exists for. A projected curve would agree only to the
     // projection's own tolerance.
     for (i, (u, v)) in blend.on_second.iter().enumerate() {
@@ -221,7 +221,7 @@ fn a_ball_too_large_for_the_seat_is_refused_by_name() {
 }
 
 /// A blend that runs off the end of a support says which support it ran off,
-/// which is the state a caller has to act on — the section has to be carried
+/// which is the state a caller has to act on: the section has to be carried
 /// onto the next face, and it cannot be until it is told.
 #[test]
 fn a_blend_that_runs_out_says_which_support_it_ran_out_of() {
@@ -267,8 +267,8 @@ fn a_blend_that_runs_out_says_which_support_it_ran_out_of() {
 
 /// The same square corner, both supports converted to patches: a plane
 /// as a degree-one patch, the cylinder as a rational one closed at its
-/// seam. Nothing in the march is analytic here — the chart inverts by
-/// projection and the seam wraps as a period does — and the ball still
+/// seam. Nothing in the march is analytic here (the chart inverts by
+/// projection and the seam wraps as a period does) and the ball still
 /// seats to the closed form.
 #[test]
 fn a_cylinder_square_on_a_plane_rounds_the_same_on_patches() {

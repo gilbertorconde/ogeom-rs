@@ -3,7 +3,7 @@
 //! An exchange file's edge must end up with a curve in each bounding face's
 //! parameters, or the face cannot be split or triangulated. Where the
 //! curve/surface pair has a closed form the exact projection is used; where
-//! it does not — a spline surface, mostly — the pcurve is *fitted at the
+//! it does not (a spline surface, mostly), the pcurve is *fitted at the
 //! curve's own parameters*: sample the edge, project each sample into the
 //! chart, fit the trace with the parameters held fixed, so the same-parameter
 //! law holds by construction. This honours the standing decision that an
@@ -62,13 +62,13 @@ pub(crate) fn chart_of(surface: &SurfaceGeometry, p: Point) -> Option<ogeom_math
 /// Where a point of the curve lands on the surface: its chart position and
 /// how far off the surface it sat.
 ///
-/// Analytic surfaces invert in closed form — grid seeding over a plane's
+/// Analytic surfaces invert in closed form: grid seeding over a plane's
 /// or cylinder's enormous stated extents lands microns off, and a fitted
 /// pcurve inherits every micron. On a patch, where the previous sample
 /// landed is a far better starting guess than any grid: consecutive
 /// samples of a curve are neighbouring points of the surface. Trusted only
-/// when it lands convincingly *on* the surface — the same bar the denser
-/// reseed is judged against — so a guess that wandered into the wrong
+/// when it lands convincingly *on* the surface (the same bar the denser
+/// reseed is judged against), so a guess that wandered into the wrong
 /// basin, or a first sample with no predecessor, still pays for the grid.
 fn land(
     surface: &SurfaceGeometry,
@@ -130,8 +130,8 @@ pub fn fit_projected_pcurve(
 /// As the reader's projected-pcurve fit, with the acceptance cap in the
 /// caller's hands.
 ///
-/// The reader draws its line at a millimetre — below it is a file's own
-/// slop, above it a wrong pairing — but a *healer* acts on instruction, and
+/// The reader draws its line at a millimetre (below it is a file's own
+/// slop, above it a wrong pairing), but a *healer* acts on instruction, and
 /// the instruction carries the cap. Returns the fitted pcurve, the fit's
 /// reached error as a length, whether it met its target, the worst measured
 /// edge-to-surface offset, and the slop note when that offset is worth
@@ -169,7 +169,7 @@ pub fn fit_projected_pcurve_capped(
     retry_stalled(surface, &points, &mut trace, &mut offs, tol);
     // The cap separates a file's own slop from an edge paired with the
     // wrong surface. Slop is routinely a micron or two, but real community
-    // exports carry as much as 0.34 mm — while a wrong pairing
+    // exports carry as much as 0.34 mm, while a wrong pairing
     // misses by the distance between two different surfaces of the body,
     // whole millimetres. One millimetre stands between the worst slop
     // observed and the smallest wrong pairing plausible. Slop inside the
@@ -194,7 +194,7 @@ pub fn fit_projected_pcurve_capped(
     // pointwise so the fit sees a continuous curve. Closure, not
     // periodicity, is the right test: a skinned loft's wall is a clamped
     // B-spline that closes on itself without being periodic, and its
-    // projections near the joining column land in either copy — both
+    // projections near the joining column land in either copy: both
     // answers are right pointwise, and only continuity chooses. This is
     // the docs/PLAN.md F5 case, and it is decided here for both exchange
     // readers at once.
@@ -230,7 +230,7 @@ pub fn fit_projected_pcurve_capped(
         }
     }
     slide_into_chart(&mut trace, spans, ((ua, ub), (va, vb)));
-    // Where the chart collapses — a sphere's pole, a cone's apex — the
+    // Where the chart collapses (a sphere's pole, a cone's apex), the
     // u of a sample is atan2 of noise: the point determines no angle.
     // The *arc* does: a smooth curve through the pole approaches it at
     // a definite chart angle, which is the limit of its well-conditioned
@@ -240,9 +240,9 @@ pub fn fit_projected_pcurve_capped(
     //
     // Weak is measured in millimetres, not against `dv`. A ratio calls a
     // direction weak whenever the *other* one is strong, and a patch whose
-    // `v` is parameterised a thousand times more densely than its `u` —
-    // three millimetres over twelve thousandths of a unit, beside a unit of
-    // `u` for a little over half a millimetre — had every sample of every
+    // `v` is parameterised a thousand times more densely than its `u`
+    // (three millimetres over twelve thousandths of a unit, beside a unit of
+    // `u` for a little over half a millimetre) had every sample of every
     // edge called weak, its `u` held at one value, and two edges half a
     // millimetre long fitted as a single point. What makes a direction
     // degenerate is that crossing the whole of it moves the point less than
@@ -308,7 +308,7 @@ pub fn fit_projected_pcurve_capped(
     }
 
     // The tolerance carried into the chart through the trace's own
-    // metric — the honest cheap version, refined by the fit's report.
+    // metric: the honest cheap version, refined by the fit's report.
     let scale = if space_run > tol.confusion() {
         parameter_run / space_run
     } else {
@@ -320,12 +320,12 @@ pub fn fit_projected_pcurve_capped(
      -> OgeomResult<ogeom_geom::fit::Fitted<ogeom_geom::BSpline2d>> {
         let fitted = ogeom_geom::fit::fit_points_2d_at(parameters, trace, 3, target, tol)?;
         // A least-squares fit wiggles past its samples at the ends, and a
-        // surface with a *tight* stated window — an imported patch, not a
-        // reader-built analytic with its enormous extents — refuses
+        // surface with a *tight* stated window (an imported patch, not a
+        // reader-built analytic with its enormous extents) refuses
         // evaluation a hair outside it. The control points clamp into the
         // window on the non-periodic axes: the curve lives in its controls'
         // hull, so the clamp is a guarantee. Whatever the clamp cost is not
-        // hidden either — it is the clamped curve that is measured below.
+        // hidden either: it is the clamped curve that is measured below.
         // Periodic axes stay free: an unwrapped trace crosses the seam on
         // purpose.
         let ((wa, wb), (va2, vb2)) = surface.domain();
@@ -363,7 +363,7 @@ pub fn fit_projected_pcurve_capped(
     // in *chart* units, and a chart's units are whatever the file chose: one
     // patch met in the wild spans four microns across its `u` and ten
     // millimetres along its `v`, so no single scale converts the one number
-    // into the other — a control point dragged back into that chart by the
+    // into the other: a control point dragged back into that chart by the
     // clamp read as seven hundred millimetres of mesh error, on a face a
     // tenth of a millimetre across. So the fitted curve is walked instead,
     // through the surface, against the trace it was fitted to: that
@@ -504,7 +504,7 @@ pub fn fit_projected_pcurve_capped(
             }
         }
         // The fit is asked again at twice the samples everywhere, the
-        // middle of every interval joining them — landed now where the
+        // middle of every interval joining them, landed now where the
         // rough test spared it the projection.
         if left {
             more = landed_middles;
@@ -521,9 +521,9 @@ pub fn fit_projected_pcurve_capped(
     // A micron between samples is the bar, a tenth of the finest chord a
     // mesh is asked for: the hook was four hundred times that. Every fit
     // pays one pass of probes; only the few that leave the curve pay a
-    // refit, at twice the samples everywhere — a handful of new samples
+    // refit, at twice the samples everywhere (a handful of new samples
     // in one interval draw the fitter's knots to themselves and the curve
-    // wobbles on either side, while an even doubling keeps it steady — and
+    // wobbles on either side, while an even doubling keeps it steady), and
     // a curve the fit cannot follow, a corner inside the edge, stops at a
     // few hundred samples rather than doubling for ever.
     const DENSIFY: usize = 6;
@@ -571,14 +571,14 @@ pub fn fit_projected_pcurve_capped(
 
 /// Re-project the samples a stalled projection left behind.
 ///
-/// Where a chart collapses — a spline patch whose whole `v = 0` row is a
-/// single point — the projector has no direction to move in, and it answers
+/// Where a chart collapses (a spline patch whose whole `v = 0` row is a
+/// single point), the projector has no direction to move in, and it answers
 /// with the pole's own parameters and the distance to it. Four consecutive
 /// samples of one imported edge came back pinned to such a row, the last of
 /// them a tenth of a millimetre out; the reader repeated that as the file's
 /// own boundary slop, widened the edge to cover it, and the fitter tried to
 /// draw a curve through it. A sample that landed badly is retried from a
-/// neighbour that landed well — the same seeding the forward walk already
+/// neighbour that landed well, the same seeding the forward walk already
 /// trusts, run in both directions so a run of them unwinds from whichever
 /// end is sound. The retry is kept only when it lands closer, so it can
 /// never make an honest projection worse: a file's real slop is left alone.
@@ -630,7 +630,7 @@ fn retry_stalled(
 /// Unwrapped for continuity, a trace can end up a whole turn outside the
 /// chart it belongs to: a projection that starts near one edge of a closed
 /// chart and walks off it keeps walking, and the surface then refuses to be
-/// evaluated where its own trim lies — an imported face whose
+/// evaluated where its own trim lies: an imported face whose
 /// fitted v ran to −2.5π on a chart that stops at −π, and drew as a hole.
 ///
 /// A rigid shift keeps the trace exactly as continuous as the unwrap left
@@ -750,8 +750,8 @@ mod tests {
     /// The patch is `S(u, v) = v·C(u)`: its whole `v = 0` row is the origin,
     /// so a projection that reaches the pole has no direction left to move
     /// in and stops there, however far off it is. Seeding from the pole is
-    /// shown stuck first — that is the trap the forward walk falls into,
-    /// once per imported edge that starts on such a row — and the retry from a
+    /// shown stuck first (that is the trap the forward walk falls into,
+    /// once per imported edge that starts on such a row), and the retry from a
     /// sound neighbour is shown to get out of it.
     #[test]
     fn a_sample_stalled_at_a_pole_is_retried_from_its_neighbour() {
@@ -825,8 +825,8 @@ mod tests {
     /// A direction is weak by what crossing it moves, not by its neighbour.
     ///
     /// The patch is a flat strip: `u` runs a millimetre across it and `v`
-    /// runs twenty millimetres along it over a parameter span of a hundredth
-    /// — two thousand times denser than `u`. Against `dv`, `du` looks weak at
+    /// runs twenty millimetres along it over a parameter span of a hundredth,
+    /// two thousand times denser than `u`. Against `dv`, `du` looks weak at
     /// every sample, and a ratio test held every `u` at one value: an edge
     /// a millimetre long across the strip fitted as a single chart point.
     /// Crossing the whole of `u` moves the point a millimetre, which is the
@@ -871,8 +871,8 @@ mod tests {
     /// they trim: 0.12–0.34 mm on a real assembly. The fit
     /// accepts anything under a millimetre and reports the offset, so the
     /// reader widens the edge's tolerance instead of leaving the face
-    /// without a trim; a miss of whole millimetres — the signature of an
-    /// edge paired with the wrong surface — still refuses.
+    /// without a trim; a miss of whole millimetres (the signature of an
+    /// edge paired with the wrong surface) still refuses.
     #[test]
     fn slop_under_a_millimetre_fits_and_is_reported() {
         let wall: SurfaceGeometry =

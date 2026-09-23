@@ -1,7 +1,7 @@
 //! What a blend actually achieved, measured rather than asserted.
 //!
 //! A blend claims two things: that it meets each of its supports along a
-//! curve, and that it meets them *smoothly* — the two surfaces sharing a
+//! curve, and that it meets them *smoothly*: the two surfaces sharing a
 //! normal there. Both are claims about geometry that construction can get
 //! subtly wrong: a fitted section drifts, a marched spine carries its
 //! chord budget, a rebuilt face lands on a neighbour a hair off. This
@@ -21,7 +21,7 @@ pub struct BlendContact {
     /// The face on the other side of it.
     pub neighbour: Shape,
     /// The largest angle, in radians, between the two surfaces' normals at
-    /// the sampled stations — zero for a tangent join.
+    /// the sampled stations: zero for a tangent join.
     pub tangency_error: f64,
     /// The largest distance, in model units, between the edge's curve and
     /// the two surfaces it is supposed to lie on.
@@ -140,8 +140,8 @@ pub fn analyse_blend(
                     let uv = ogeom_geom::Curve2d::point_at(pcurve, pt, tol)?;
                     worst_gap =
                         worst_gap.max(surface.point_at(uv.x, uv.y, tol)?.distance(on_curve));
-                    // A station on a chart's pole — a corner patch's own
-                    // corner sits on the ball's pole by construction — has
+                    // A station on a chart's pole (a corner patch's own
+                    // corner sits on the ball's pole by construction) has
                     // no normal from the chart; the stations beside it say
                     // what the join does there.
                     if let Ok(normal) = surface.normal_at(uv.x, uv.y, tol) {

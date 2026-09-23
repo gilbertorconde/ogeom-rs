@@ -5,9 +5,9 @@
 //!
 //! Four responsibilities:
 //!
-//! - **Arenas.** [`Arena`] and [`Key`] — typed generational index arenas replace
+//! - **Arenas.** [`Arena`] and [`Key`]: typed generational index arenas replace
 //!   the intrusive reference counting conventional kernels use. No cycle hazard,
-//!   cache-friendly, and — critically — arena keys are what make stable entity
+//!   cache-friendly, and, critically, arena keys are what make stable entity
 //!   identity possible at all.
 //! - **Identity.** [`EntityId`] plus [`Provenance`]. Conventionally a topology
 //!   node's identity is its address, so every modeling operation produces new ones
@@ -15,8 +15,8 @@
 //!   record where an entity came from at creation time instead of reconstructing it
 //!   from history maps afterwards.
 //! - **Errors.** [`OgeomError`] covers the failure vocabulary a kernel needs, lining
-//!   up with the categories applications already handle, but as a plain [`Result`]
-//!   — no exceptions, and no conversion of hardware signals into throwable
+//!   up with the categories applications already handle, but as a plain [`Result`]:
+//!   no exceptions, and no conversion of hardware signals into throwable
 //!   objects.
 //! - **Numerics.** [`Tolerances`], [`Tolerance`] and the [`Predicates`] trait, so
 //!   the robustness strategy can change without rewriting a single algorithm.

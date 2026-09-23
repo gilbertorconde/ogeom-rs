@@ -1,8 +1,8 @@
 //! Draft: turning faces about a neutral plane so a part can leave its mould.
 //!
 //! A drafted face is the same face on a *tilted* support. It keeps the line
-//! where it crosses the neutral plane — that line does not move, which is
-//! what makes the draft measurable from a datum — and turns about it by the
+//! where it crosses the neutral plane (that line does not move, which is
+//! what makes the draft measurable from a datum) and turns about it by the
 //! draft angle. Everything else follows: the neighbouring faces re-meet the
 //! tilted plane, the vertices re-solve, and the solid comes back with the
 //! same topology on new geometry.
@@ -23,12 +23,12 @@ use crate::shape::rebuilt;
 ///
 /// Each face turns about its own intersection with `neutral` by `angle`,
 /// in the sense that leans the face inwards as it goes: a positive angle
-/// narrows the solid in the `pull` direction — the way the part leaves its
-/// mould — and a negative one widens it. Leaning inwards tilts the face's
+/// narrows the solid in the `pull` direction (the way the part leaves its
+/// mould), and a negative one widens it. Leaning inwards tilts the face's
 /// outward normal *towards* the pull, which is how the sense is picked,
-/// measured rather than assumed from a convention nobody can check. A face parallel
-/// to the neutral plane has no line to turn about and is refused by name,
-/// as is a face the rebuild cannot re-meet.
+/// measured rather than assumed from a convention nobody can check. A face
+/// parallel to the neutral plane has no line to turn about and is refused
+/// by name, as is a face the rebuild cannot re-meet.
 ///
 /// # Errors
 ///
@@ -155,8 +155,8 @@ pub fn apply_draft(
                 continue;
             }
             SurfaceGeometry::Plane(_) => {}
-            // Everything else — a raw fitted patch, a wall of revolution
-            // about an oblique neutral — is drafted the way a mould-maker
+            // Everything else (a raw fitted patch, a wall of revolution
+            // about an oblique neutral) is drafted the way a mould-maker
             // drafts: along the pull, tilted by the angle, through the
             // line where the face crosses the neutral plane.
             _ => {
@@ -190,8 +190,8 @@ pub fn apply_draft(
         let hinge = meet(plane, neutral, along, tol)?;
 
         // Which way to turn: probed at the angle's *magnitude*, so the
-        // sense names the inward lean — outward normal furthest towards the
-        // pull, the solid narrowing as it leaves — and the angle's sign
+        // sense names the inward lean (outward normal furthest towards the
+        // pull, the solid narrowing as it leaves), and the angle's sign
         // stays the caller's: positive drafts inward, negative outward.
         let axis = ogeom_math::Axis::new(hinge, Direction::new(along, tol)?);
         let mut candidates = Vec::with_capacity(2);
@@ -259,8 +259,8 @@ fn revolved_draft(
         ogeom_bail!(
             Construction,
             "a wall of revolution drafts about a neutral plane square to \
-             its axis; the oblique neutral needs the general machinery — \
-             docs/PARITY.md, offset.draft"
+             its axis; the oblique neutral needs the general machinery (see \
+             docs/PARITY.md, offset.draft)"
         );
     }
     // The neutral circle: where the axis meets the plane, and the radius
@@ -277,8 +277,8 @@ fn revolved_draft(
     let hinge_frame = Frame::new(neutral_point, frame.z(), frame.x(), tol)?;
 
     // Which way to lean, by measurement: of the two candidate slants, keep
-    // the one whose outward normal — probed a little above the neutral
-    // circle — ends up leaning furthest towards the pull.
+    // the one whose outward normal (probed a little above the neutral
+    // circle) ends up leaning furthest towards the pull.
     let mut best: Option<(f64, f64)> = None;
     for sense in [1.0_f64, -1.0] {
         // Probed at the magnitude: the sense names the inward lean, and the
@@ -328,14 +328,14 @@ fn revolved_draft(
 /// The turned support for a drafted extruded wall: every ruling rotated
 /// about the hinge curve's own tangent by the draft, the result re-fitted.
 ///
-/// The hinge is where the wall crosses the neutral plane — one closed-form
-/// height per profile parameter — and it does not move, exactly as a planar
+/// The hinge is where the wall crosses the neutral plane (one closed-form
+/// height per profile parameter), and it does not move, exactly as a planar
 /// draft's hinge line does not. Each ruling turns about the hinge's local
 /// tangent in the sense that leans the outward normal towards the pull,
 /// probed at the profile's midpoint the way the planar draft probes its
 /// candidates. The turned rulings are sampled on a grid and fitted; a draft
-/// whose rulings cross inside the drafted window — a concave profile turned
-/// far enough to fold — is refused by name before anything is fitted.
+/// whose rulings cross inside the drafted window (a concave profile turned
+/// far enough to fold) is refused by name before anything is fitted.
 #[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
 fn extruded_draft(
     extrusion: &ogeom_geom::ExtrusionSurface,
@@ -464,7 +464,7 @@ fn extruded_draft(
                 ogeom_bail!(
                     Construction,
                     "the draft folds the wall onto itself inside the drafted \
-                     window; refused — docs/PARITY.md, offset.draft"
+                     window; refused; see docs/PARITY.md, offset.draft"
                 );
             }
         }
@@ -499,7 +499,7 @@ const HINGE_STATIONS: usize = 256;
 
 /// The turned support for any face: the ruled surface through the face's
 /// crossing with the neutral plane, its rulings the pull direction turned
-/// about the crossing's tangent by the draft — what a mould-maker means by
+/// about the crossing's tangent by the draft: what a mould-maker means by
 /// a draft, and what the planar and revolved paths are the closed forms
 /// of. The crossing is read off the face's own mesh and corrected onto the
 /// surface, so it lies inside the face whatever the surface's chart does.
@@ -540,8 +540,8 @@ fn general_draft(
     }
 
     // The crossing, one segment per triangle the plane cuts, in the chart
-    // with its ends in space. A vertex the plane passes through — the hinge
-    // running along a rim, as a draft about a base does — is a crossing in
+    // with its ends in space. A vertex the plane passes through (the hinge
+    // running along a rim, as a draft about a base does) is a crossing in
     // itself, not a sign to read; read as one, rounding gives every rim
     // triangle a hair of a segment pointing anywhere.
     let on = tol.confusion() * 10.0;
@@ -586,7 +586,7 @@ fn general_draft(
         );
     }
     // Chained end to end into one run, closed or open, by where the ends
-    // are in space — across a seam the chart says two things and space one.
+    // are in space; across a seam the chart says two things and space one.
     // Two runs is a face the plane crosses twice, which has no one hinge.
     // A rim's segments come once per triangle on either side of it, so a
     // segment already covered by the chain is dropped rather than chained.
@@ -657,7 +657,7 @@ fn general_draft(
 
     // The mesh's stations are a chord apart; a cubic fitted through them
     // sits a fraction of that chord off the true hinge. Resampled between
-    // them in the chart — across a periodic seam by the short way — and
+    // them in the chart (across a periodic seam by the short way), and
     // corrected onto the surface below, the stations are as dense as the
     // fit's target wants.
     let chain: Vec<(f64, f64)> = {
@@ -762,8 +762,8 @@ fn general_draft(
         dense
     };
 
-    // Each station corrected onto the surface's crossing with the plane —
-    // the mesh's chord is not the surface — and read for its tangent and
+    // Each station corrected onto the surface's crossing with the plane
+    // (the mesh's chord is not the surface), and read for its tangent and
     // outward normal.
     let mut hinges: Vec<Point> = Vec::with_capacity(chain.len());
     let mut tangents: Vec<Vector> = Vec::with_capacity(chain.len());
@@ -900,14 +900,14 @@ fn general_draft(
                 ogeom_bail!(
                     Construction,
                     "the draft folds the wall onto itself inside the drafted \
-                     window; refused — docs/PARITY.md, offset.draft"
+                     window; refused; see docs/PARITY.md, offset.draft"
                 );
             }
         }
     }
     // The ruled surface itself, exactly: the hinge fitted as a cubic, the
     // rulings' tips fitted as another at the *same* parameters, the two
-    // brought onto one knot vector, and the surface linear between them —
+    // brought onto one knot vector, and the surface linear between them:
     // degree one along the ruling, so a straight line is a straight line
     // and the fit's only error is the two curves' own. A grid fit through
     // rows at several heights parameterizes each row by its own chord and
@@ -997,7 +997,7 @@ fn general_draft(
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if no
-/// probe separates the sides — a wall thinner than the probe can resolve.
+/// probe separates the sides: a wall thinner than the probe can resolve.
 fn outward_sign(
     model: &Model,
     solid: &Shape,
@@ -1006,8 +1006,8 @@ fn outward_sign(
     tol: Tolerances,
 ) -> OgeomResult<f64> {
     use ogeom_algo::Containment;
-    // A point genuinely on the face — the surface's domain midpoint may lie
-    // outside the trim — from the face's own triangulation, at its largest
+    // A point genuinely on the face (the surface's domain midpoint may lie
+    // outside the trim), from the face's own triangulation, at its largest
     // triangle's centre.
     let mesh = ogeom_mesh::triangulate_face(model, face, ogeom_mesh::Deflection::default(), tol)?;
     let mut at = None;

@@ -11,7 +11,7 @@
 //!   nearly as fast as Newton in practice.
 //! - A root with a known derivative and a good starting point: [`newton`],
 //!   which falls back to bisection whenever a step would leave the bracket.
-//!   Unsafeguarded Newton diverges on the configurations that matter — a
+//!   Unsafeguarded Newton diverges on the configurations that matter: a
 //!   tangential intersection is exactly where the derivative vanishes.
 //! - Roots of a polynomial up to quartic: [`roots`]. Closed form, and the
 //!   quadratic is written to avoid the cancellation the schoolbook formula
@@ -95,7 +95,7 @@ impl Criteria {
 /// Combines bisection, the secant method and inverse quadratic interpolation,
 /// taking whichever step is both safe and fast. Guaranteed to converge for a
 /// continuous function that changes sign across the bracket, and superlinear in
-/// practice — the right default when a bracket is available.
+/// practice, the right default when a bracket is available.
 ///
 /// # Errors
 ///
@@ -373,7 +373,7 @@ pub fn roots(coefficients: &[f64], tolerance: f64) -> OgeomResult<Vec<f64>> {
 ///
 /// Uses the citardauq form for whichever root would otherwise be computed as a
 /// difference of nearly equal numbers. The schoolbook formula loses most of its
-/// precision for the smaller root when `b^2 >> 4ac` — which is the common case
+/// precision for the smaller root when `b^2 >> 4ac`, which is the common case
 /// for a ray grazing a sphere.
 #[must_use]
 pub fn quadratic_roots(a: f64, b: f64, c: f64) -> Vec<f64> {
@@ -597,7 +597,7 @@ pub struct SystemSolution {
 /// Solve `f(x) = 0` for a vector `x`, by damped Newton.
 ///
 /// `f` returns the residual vector and the Jacobian, row-major. The step is
-/// halved until it actually reduces the residual — undamped Newton overshoots
+/// halved until it actually reduces the residual; undamped Newton overshoots
 /// badly from a poor start, and a geometry caller's start is often only a rough
 /// guess from a coarse sampling.
 ///
@@ -606,7 +606,7 @@ pub struct SystemSolution {
 ///
 /// Where no root exists the residual has a positive minimum, and no damping
 /// finds a downhill step from it. That is reported as
-/// [`Convergence::Exhausted`] with the best estimate attached — "no root here"
+/// [`Convergence::Exhausted`] with the best estimate attached; "no root here"
 /// is a useful answer, and far better than iterating to the limit.
 ///
 /// # Errors
@@ -714,8 +714,8 @@ where
 /// The foot-point projection runs this system millions of times per real
 /// model, and the general path pays a heap allocation for every residual,
 /// Jacobian, vector and factorization of every damped step. The algorithm
-/// here is the same — damped Newton, halving until the residual falls, the
-/// same three convergence verdicts — with the two-by-two solve written out:
+/// here is the same (damped Newton, halving until the residual falls, the
+/// same three convergence verdicts), with the two-by-two solve written out:
 /// partial pivoting is one comparison, and singularity is a vanishing
 /// pivot.
 ///

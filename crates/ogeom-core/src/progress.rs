@@ -1,13 +1,13 @@
 //! Progress reporting and cancellation for long operations.
 //!
 //! A caller who starts a tessellation, a boolean or an import may need to
-//! stop it — a user closed the dialog — or to show that it is alive. The
+//! stop it (a user closed the dialog) or to show that it is alive. The
 //! kernel's answer is a [`Watch`]: install one around a call with
 //! [`watched`], hand its [`Canceller`] to whoever may pull the plug, and
 //! every long loop inside the kernel calls [`checkpoint`] at its own
 //! boundaries. A cancelled checkpoint returns
 //! [`OgeomError::Cancelled`], which unwinds as
-//! an ordinary error — no partial result pretends to be whole.
+//! an ordinary error; no partial result pretends to be whole.
 //!
 //! The watch travels implicitly, by scope: operations keep their signatures,
 //! and code that never installs a watch pays one thread-local read per
@@ -32,7 +32,7 @@ pub struct Stage<'a> {
     /// The stage's name, stable across a run: `"step: solid"`,
     /// `"tessellate: faces"`.
     pub name: &'a str,
-    /// `(done, total)` within this stage, when both are known — what a
+    /// `(done, total)` within this stage, when both are known: what a
     /// determinate progress bar needs. `None` for a bare boundary.
     pub progress: Option<(u64, u64)>,
 }
@@ -89,7 +89,7 @@ impl Watch {
         Self::with_stage_sink(move |stage: Stage<'_>| sink(stage.name))
     }
 
-    /// A watch whose sink hears each full [`Stage`] announcement — the name,
+    /// A watch whose sink hears each full [`Stage`] announcement: the name,
     /// and `(done, total)` where the operation states them. The sink runs on
     /// whichever thread reaches the stage; a parallel stage's counts arrive
     /// in completion order, each value once.
@@ -189,7 +189,7 @@ pub fn stage(name: &str) {
 
 /// Announce a stage with its position: `done` of `total` items complete.
 /// What a determinate progress bar is built from; emitted by the operations
-/// that know both numbers — a reader over its solids, a tessellation over
+/// that know both numbers: a reader over its solids, a tessellation over
 /// its faces.
 pub fn stage_at(name: &str, done: u64, total: u64) {
     announce(Stage {
@@ -214,7 +214,7 @@ pub fn snapshot() -> Option<WatchSnapshot> {
     ACTIVE.with(|active| active.borrow().clone().map(|state| WatchSnapshot { state }))
 }
 
-/// Run `f` under a snapshot taken on another thread — how a parallel stage
+/// Run `f` under a snapshot taken on another thread: how a parallel stage
 /// keeps answering the caller's watch.
 pub fn with_snapshot<T>(snapshot: Option<&WatchSnapshot>, f: impl FnOnce() -> T) -> T {
     match snapshot {

@@ -4,10 +4,10 @@
 //! face on a periodic surface may arrive bounded by two closed rings and no
 //! seam; where the rings' vertices share an angle, the reader synthesises
 //! the seam itself, but where they sit at *different* angles no seam can
-//! join them — the vertices are load-bearing, and one of them is in the
+//! join them: the vertices are load-bearing, and one of them is in the
 //! wrong place. Moving it is surgery: the ring's closed edge is rebuilt
-//! anchored at the aligned angle, and every face that shares the edge — the
-//! neighbour on the other side of the ring — is rebuilt to use the new one,
+//! anchored at the aligned angle, and every face that shares the edge (the
+//! neighbour on the other side of the ring) is rebuilt to use the new one,
 //! or the shell tears exactly where the file was trying to close it.
 
 use ogeom_algo::{
@@ -52,7 +52,7 @@ struct Chain {
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the shape is
-/// not a solid, or a broken face's structure resists the repair — in which
+/// not a solid, or a broken face's structure resists the repair, in which
 /// case nothing is modified.
 pub fn reanchor_periodic_rings(
     model: &mut Model,
@@ -148,10 +148,10 @@ pub fn reanchor_periodic_rings(
     //
     // Re-anchoring one ring per face is not enough: rings are shared, and a
     // neighbouring face's seam ties to the vertex being moved. For a coaxial
-    // chain — which a fillet stack is — a single half-plane through the axis
+    // chain (which a fillet stack is) a single half-plane through the axis
     // meets every ring exactly once, and anchoring them all there satisfies
     // every face's equal-angle constraint at one stroke. A real part carries
-    // several such chains on several axes — every bored hole is its own —
+    // several such chains on several axes (every bored hole is its own),
     // so the broken faces are grouped by axis first and each group healed
     // with its own half-plane; a group whose rings resist (a non-circle
     // ring, a stray non-coaxial circle) is left alone rather than damning
@@ -293,8 +293,8 @@ pub fn reanchor_periodic_rings(
 
 /// Anchor every ring of one coaxial chain at the chain's own half-plane.
 ///
-/// Returns the substitutions to apply — `(old node, new edge, old edge, old
-/// vertex)` — or an error if any ring in the chain resists, in which case
+/// Returns the substitutions to apply (`(old node, new edge, old edge, old
+/// vertex)`) or an error if any ring in the chain resists, in which case
 /// nothing has been decided and the chain is left as imported. New vertices
 /// and edges may have been added to the model, but nothing references them.
 #[allow(clippy::type_complexity)]
@@ -408,7 +408,7 @@ fn circle_parameter(curve: &Curve, p: Point) -> Option<f64> {
 
 /// Rebuild a healed face: both rings now share an angle, so the seam the
 /// reader could not synthesise can exist. The band construction itself is
-/// ogeom-algo's `make_revolution_band` — one authority for reader and healer.
+/// ogeom-algo's `make_revolution_band`: one authority for reader and healer.
 #[allow(clippy::type_complexity)]
 fn rebuild_broken_face(
     model: &mut Model,

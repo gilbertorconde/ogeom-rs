@@ -1,7 +1,7 @@
 //! Primitive solids.
 //!
 //! Built from numbers rather than from existing topology, so their history has
-//! nothing to report — but their *provenance* very much does. Each face gets a
+//! nothing to report, but their *provenance* very much does. Each face gets a
 //! role naming which face of the primitive it is ([`roles`]), so a reference to
 //! "the top of that box" survives the box being rebuilt at a different size.
 //! Without it the reference would be to a handle that no longer exists.
@@ -37,7 +37,7 @@ pub mod roles {
     pub const FACE_MIN_Z: Role = Role::op_defined(14);
     /// The face at the high end of the frame's `z` axis.
     pub const FACE_MAX_Z: Role = Role::op_defined(15);
-    /// The face swept around the frame's `z` axis — a cylinder's side, a
+    /// The face swept around the frame's `z` axis: a cylinder's side, a
     /// sphere's whole surface, a cone's flank.
     pub const FACE_LATERAL: Role = Role::op_defined(16);
 }
@@ -72,7 +72,7 @@ const EDGES: [(usize, usize); 12] = [
 ];
 
 /// The six faces, each as four corner indices wound counter-clockwise *seen
-/// from outside* — which is what makes every face normal point outward and the
+/// from outside*, which is what makes every face normal point outward and the
 /// shell consistently oriented.
 ///
 /// Getting a winding backwards produces a solid that is inside out along one
@@ -130,7 +130,7 @@ pub fn make_box(
 
 /// A parallelepiped: the solid spanned at `origin` by three edge vectors.
 ///
-/// A box whose edges need not be square to each other — a corner tool's
+/// A box whose edges need not be square to each other: a corner tool's
 /// block at an oblique vertex, a sheared block to stand one on. The three
 /// vectors may come in either handedness; the layout is wound so the faces
 /// look outward whichever way they came.
@@ -171,8 +171,8 @@ pub fn make_parallelepiped(
 
 /// A hexahedron: the solid on eight corners laid out like a box's, whose
 /// six faces are planar. The corners come in a box's order: the four of
-/// the bottom face counter-clockwise from the origin corner — `(0,0,0)`,
-/// `(1,0,0)`, `(1,1,0)`, `(0,1,0)` — then the four above them in the same
+/// the bottom face counter-clockwise from the origin corner (`(0,0,0)`,
+/// `(1,0,0)`, `(1,1,0)`, `(0,1,0)`), then the four above them in the same
 /// order.
 ///
 /// A box and a parallelepiped are the square and sheared cases; a corner
@@ -239,7 +239,7 @@ pub fn make_hexahedron(
 /// winding: the builder winds every ring outward itself, judged against the
 /// centroid of all the points, which is what makes the solid's convexity a
 /// requirement rather than a courtesy. Every ring must be planar, and every
-/// edge — a pair of consecutive points on a ring — must be shared by exactly
+/// edge (a pair of consecutive points on a ring) must be shared by exactly
 /// two rings, or the shell would not close. The corner tool's block at an
 /// N-edged vertex is one: the N host planes and, through the ball's centre,
 /// the N planes square to the edges.
@@ -357,7 +357,7 @@ pub fn make_polyhedron(
 ///
 /// A box and a wedge differ only in where the corners are: both have the same
 /// eight, the same twelve edges and the same six planar faces. Sharing the
-/// construction is not just less code — it is what keeps the two from drifting
+/// construction is not just less code; it is what keeps the two from drifting
 /// apart in their winding, their roles or their pcurves.
 fn box_like(model: &mut Model, corner_points: &[Point], tol: Tolerances) -> OgeomResult<Built> {
     let vertices: Vec<Shape> = corner_points
@@ -489,8 +489,8 @@ fn faceted_solid(
                     edge
                 }
             };
-            // The pcurve follows the edge's own parameterization — its
-            // canonical low-to-high corner order — not the ring's traversal.
+            // The pcurve follows the edge's own parameterization (its
+            // canonical low-to-high corner order), not the ring's traversal.
             attach_plane_pcurve(
                 model,
                 &edge,
@@ -649,7 +649,7 @@ pub fn make_sphere(
 
     // The seam is the meridian at longitude zero, pole to pole through the
     // frame's `x`. Its plane is spanned by `x` and `z`, so the circle's normal
-    // is `-y` — which makes its angle parameter the latitude exactly, and the
+    // is `-y`, which makes its angle parameter the latitude exactly, and the
     // mapping onto the surface's `v` the identity rather than a rescaling.
     let meridian = Circle::new(Frame::new(centre, -frame.y(), frame.x(), tol)?, radius, tol)?;
     let seam = make_edge_between(
@@ -732,7 +732,7 @@ fn full_circle_edge(
 /// An edge with no length, bounded twice by the same vertex.
 ///
 /// A pole or an apex: it bounds a face in parameter space and collapses to a
-/// point in space. It carries no 3D curve, because there is no curve to carry —
+/// point in space. It carries no 3D curve, because there is no curve to carry;
 /// its pcurve is the whole story, and the `degenerate` flag says so rather than
 /// leaving a caller to notice the missing representation.
 fn degenerate_edge(model: &mut Model, at: &Shape, tol: Tolerances) -> OgeomResult<Shape> {
@@ -807,7 +807,7 @@ fn rectangle_face(
 /// A planar cap closing one end of a solid of revolution.
 ///
 /// `outward` says whether the cap's normal follows the frame's `z` or opposes
-/// it — which is the difference between a solid and one that is inside out
+/// it, which is the difference between a solid and one that is inside out
 /// along one face, and nothing in the geometry says which was meant.
 fn cap_face(
     model: &mut Model,
@@ -939,7 +939,7 @@ fn circle_pcurve_on_plane(
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the height is
 /// not positive, a radius is negative, both radii are zero, or the two radii
-/// are equal — that last is a cylinder, which is a different surface with its
+/// are equal; that last is a cylinder, which is a different surface with its
 /// own type, and admitting it here would ask for a cone whose apex is at
 /// infinity.
 pub fn make_cone(
@@ -1117,7 +1117,7 @@ pub fn make_torus(
 /// upper face, over the same corner. Equal extents give a box.
 ///
 /// Both top extents must be positive. A wedge whose top collapses to a ridge
-/// has five faces and one whose top collapses to a point has four — different
+/// has five faces and one whose top collapses to a point has four: different
 /// topologies, not this one with a zero somewhere, and building them here would
 /// produce a face with no area.
 ///
@@ -1237,13 +1237,13 @@ pub fn make_wedge(
 /// # It is only as unbounded as its surface is
 ///
 /// A half space is genuinely infinite; a surface in this kernel is not. A plane
-/// declares a finite domain — very large, but finite — and the solid built here
+/// declares a finite domain (very large, but finite), and the solid built here
 /// reaches exactly as far as its face's surface does. So its *volume* and its
 /// centre of mass are properties of that declared extent rather than of a half
 /// space, and mean nothing. What does mean something is which side of the face
 /// a point is on, which is the question a half space exists to answer.
 ///
-/// That is what it is for: a half space is an argument to a boolean — cut a
+/// That is what it is for: a half space is an argument to a boolean: cut a
 /// solid with one and you have trimmed it by a surface. `cut`, `common` and
 /// `section` all accept one as either operand; `fuse` refuses it by name,
 /// because an unbounded fuse has no volume to keep. Classification against it
@@ -1252,7 +1252,7 @@ pub fn make_wedge(
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if `face` is not a
-/// face, or if `inside` lies on it — a point on the boundary names no side.
+/// face, or if `inside` lies on it; a point on the boundary names no side.
 pub fn make_half_space(
     model: &mut Model,
     face: &Shape,
@@ -2185,7 +2185,7 @@ mod half_space_tests {
     #[test]
     fn nothing_can_yet_be_asked_about_the_inside_of_one() {
         // Recorded rather than worked around. A half space's boundary is one
-        // face with free edges all round, so it is *not* a closed shell — and
+        // face with free edges all round, so it is *not* a closed shell, and
         // every query that needs an inside says so instead of guessing. That is
         // the correct answer for a shape whose boundary does not close, and it
         // is why a half space is only useful as a boolean argument.

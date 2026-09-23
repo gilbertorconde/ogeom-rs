@@ -1,8 +1,8 @@
 //! The blend between two faces that share no edge.
 //!
 //! A rolling ball does not care whether the solid has an edge where the two
-//! supports would meet. It cares where they *would* meet — for two planes,
-//! their own line of intersection — and rolls in the corner that line
+//! supports would meet. It cares where they *would* meet (for two planes,
+//! their own line of intersection) and rolls in the corner that line
 //! defines. So a face-face blend is the edge blend seated on a line the
 //! solid does not have: found from the planes, cut back to the stretch both
 //! faces actually reach, and handed to the same wedge construction.
@@ -25,11 +25,11 @@ use crate::support::Seat;
 /// The two faces need not touch. What they must do is face each other
 /// across a corner: their planes must meet, both must reach the stretch of
 /// that meeting line the blend will sit on, and the material must fill the
-/// dihedral between them — which is asked of the solid rather than assumed
+/// dihedral between them, which is asked of the solid rather than assumed
 /// from the normals, because normals cannot tell a step from a slot.
 ///
 /// Planar supports only. A curved face-face blend needs the marching seat
-/// — the spine that is the two offset surfaces' own intersection — which is
+/// (the spine that is the two offset surfaces' own intersection), which is
 /// recorded as owed in `docs/PLAN.md` rather than guessed at here.
 ///
 /// # Errors
@@ -98,8 +98,8 @@ pub fn blend_faces(
 
     // Which way does the corner turn? The solid answers, and the question
     // has to be asked in the right place: the quadrant opposite both
-    // normals is material either way — that is what makes both faces
-    // outward-facing — so it tells a convex corner from a concave one not
+    // normals is material either way (that is what makes both faces
+    // outward-facing), so it tells a convex corner from a concave one not
     // at all. The *side* quadrants do. Around a convex edge the material is
     // the opposite quadrant alone; around a concave one, a step's inner
     // corner, it is three of the four, and a side probe lands in it.

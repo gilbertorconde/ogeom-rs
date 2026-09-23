@@ -1,96 +1,122 @@
 # Scope
 
-What belongs in this kernel, what does not, and how to tell without arguing.
+This file says what belongs in the kernel, what does not, and how to decide a
+case.
 
 ## The rule
 
-**ogeom targets parity with the reference kernel's modelling modules, and nothing
-else** — save one addition, meshes into solids, argued below. Four modules are in scope:
+ogeom targets parity with the reference kernel's modelling modules, and nothing
+else. There is one deliberate addition: turning meshes into solids (see
+[below](#the-one-addition-meshes-into-solids)).
 
-| Module | What it is |
+Four modules are in scope:
+
+| Module | What it covers |
 |---|---|
 | **FoundationClasses** | Arithmetic, primitives, solvers, tolerances, errors. |
-| **ModelingData** | The geometry and topology vocabularies — curves, surfaces, the b-rep data model. |
+| **ModelingData** | The geometry and topology vocabularies: curves, surfaces, the b-rep data model. |
 | **ModelingAlgorithms** | Intersection, booleans, blending, offsets, sweeps, healing, tessellation, hidden-line removal. |
-| **DataExchange** | STEP, IGES, STL, VRML, OBJ, glTF, PLY, and the document structure they carry. |
+| **DataExchange** | STEP, IGES, STL, VRML, OBJ, glTF, PLY, and the document structure these formats carry. |
 
-Three are out, permanently:
+Three modules are permanently out of scope:
 
-| Module | Why |
+| Module | Why it is out |
 |---|---|
 | **Visualization** | Rendering, viewers, interactive selection. A kernel is not a renderer. |
-| **ApplicationFramework** | The generic label-and-attribute document tree. The *exchange* document is in scope — it is part of DataExchange — but the framework beneath it is an application's concern. |
+| **ApplicationFramework** | The generic label-and-attribute document tree. The *exchange* document is in scope, because it is part of DataExchange. The framework beneath it belongs to the application. |
 | **Draw** | A test harness with its own scripting language. |
 
-Anything the reference does not do at all is out of scope by default. Constraint
-solving, feature recognition and process planning are all real disciplines and
-none of them is this.
+Anything the reference kernel does not do at all is out of scope by default.
+Examples: constraint solving, feature recognition and process planning. These
+are real disciplines, but they are not this kernel.
 
-One addition is deliberate: **a mesh becomes a solid, with its surfaces
-recognized.** The reference's modelling algorithms build a shape on a mesh — a
-planar face per triangle, sharing edges — and unify coplanar faces; ogeom goes
-on to decide which regions of triangles lie on a cylinder, a cone, a sphere or
-a torus, and rebuilds them on those surfaces (`solid_from_mesh`,
-`recognize_points`). The reason is the exchange module's own: meshes are what
-printers, slicers and model sites exchange, and a kernel that reads STL, OBJ and
-3MF but can only display what it read leaves the application to rebuild the
-geometry itself. Recognition is held to the kernel's standard rather than to a
-heuristic's — every surface is verified against every sample at a stated
-tolerance, every edge between recognized faces is placed on the surfaces
-exactly, and a region that cannot be built that way stays faceted and is
-counted — which is what makes it a construction the kernel can stand behind.
-Fitting free-form surfaces to scans, and reading design intent back out of
-topology, remain outside.
+## The one addition: meshes into solids
 
-The disciplines left out were built here before this rule was written, and
-each of them works. Rather than delete working code to make a point, it lives in `outside/`,
-which is a separate workspace the kernel's `Cargo.toml` excludes by name. The
-exclusion is what makes the rule structural instead of aspirational: nothing
-there can be pulled back in by a path dependency without someone deleting that
-line on purpose. `outside/README.md` says why each crate is on the far side.
+ogeom turns a mesh into a solid and recognizes its surfaces
+(`solid_from_mesh`, `recognize_points`).
+
+What the reference kernel does: its modelling algorithms build a shape on a
+mesh (one planar face per triangle, with shared edges) and merge coplanar faces.
+
+What ogeom adds: it finds which regions of triangles lie on a cylinder, a
+cone, a sphere or a torus, and rebuilds those regions on those surfaces.
+
+Why: the same reason the exchange module exists. Printers, slicers and model
+sites exchange meshes. A kernel that reads STL, OBJ and 3MF but can only display
+the result leaves the application to rebuild the geometry itself.
+
+Recognition meets the kernel's standard, not a heuristic's:
+
+- every surface is verified against every sample, at a stated tolerance;
+- every edge between recognized faces is placed exactly on both surfaces;
+- a region that cannot be built this way stays faceted, and is counted.
+
+This is what makes recognition a construction the kernel can stand behind.
+
+Still out of scope: fitting free-form surfaces to scans, and reading design
+intent back out of topology.
+
+## Code that is out of scope: `outside/`
+
+Some out-of-scope disciplines were built here before this rule existed, and
+they work. Instead of deleting working code, it lives in `outside/`.
+
+- `outside/` is a separate workspace.
+- The kernel's `Cargo.toml` excludes it by name.
+- So no path dependency can pull it back in unless someone deliberately deletes
+  that exclusion. This makes the rule structural, not just a statement of
+  intent.
+
+`outside/README.md` explains why each crate there is out of scope.
 
 ## How to decide a case
 
-The question "is this in scope?" is answered mechanically, not by taste:
+The answer comes from the reference tree's own files, not from opinion:
 
-1. `adm/MODULES` in the reference tree maps each module to its toolkits.
+1. `adm/MODULES` maps each module to its toolkits.
 2. `src/<Toolkit>/PACKAGES` maps each toolkit to its packages.
-3. `src/<Package>/*.hxx` are that package's classes.
+3. `src/<Package>/*.hxx` are the package's classes.
 
-The union over the four in-scope modules is **276 packages / 6,267 public
-headers**. If a capability's counterpart is in that set, it is in scope. If it is
-in Visualization, ApplicationFramework or Draw, it is not. If it has no
-counterpart at all, it is not.
+Across the four in-scope modules this gives **276 packages and 6,267 public
+headers**. Then:
 
-`docs/parity/reference-index.tsv` is that set, committed, so the question can be
-answered without a reference checkout. `docs/PARITY.md` records where we stand
-against it.
+- If a capability's counterpart is in that set, it is in scope.
+- If it is in Visualization, ApplicationFramework or Draw, it is out.
+- If it has no counterpart at all, it is out.
 
-## What the scope rule is *not*
+`docs/parity/reference-index.tsv` is that set, committed, so you can answer the
+question without a reference checkout. `docs/PARITY.md` records where ogeom
+stands against it.
 
-**Not a licence to mirror.** `CONTRIBUTING.md` forbids reproducing another
-kernel's class hierarchy, decomposition and file layout, and that still holds.
-Parity is a claim about *capability*, not about structure: the parity record is
-keyed on what a caller would ask for, and each entry names the reference
-packages it accounts for. A capability we deliberately provide differently is
-recorded as `divergent`, with the reasoning — not as a gap.
+## What the scope rule does not mean
 
-**Not driven by usage data.** `docs/api_surface.json` profiles how one large
-application exercises the reference. It is a **sequencing** input — it says what
-to get right first — and it appears in the parity index as a column for exactly
-that purpose. It has never been a scope input and is not one now. Its own
-generator says so: *"What it is emphatically not good for: deciding what to
-build."* A capability inside the four modules is in scope whether or not that
-application ever calls it.
+**It does not allow mirroring.** `CONTRIBUTING.md` forbids copying another
+kernel's class hierarchy, decomposition or file layout, and that still holds.
+Parity is about *capability*, not structure:
 
-**Not a size target.** 6,267 headers is not 6,267 things to build. Most of that
-count is generic instantiation — `TColStd_Array1OfReal` and its several hundred
-siblings — which Rust's generics give for free. The triage rules in
-`tools/apisurf/apisurf.py` are what reduce the number to the capabilities
-underneath it, and every rule is recorded with the headers it removed so the
-reduction is auditable rather than asserted.
+- the parity record is keyed on what a caller would ask for;
+- each entry names the reference packages it accounts for;
+- a capability we deliberately provide differently is recorded as `divergent`,
+  with the reasoning. It is not a gap.
 
-## Where the scope changes
+**It is not driven by usage data.** `docs/api_surface.json` profiles how one
+large application uses the reference kernel.
 
-Here, by editing this file, with the reasoning written down. Not in a pull
-request that quietly adds a crate.
+- It is a **sequencing** input: it says what to get right first.
+- It appears in the parity index as a column for that purpose only.
+- It has never been a scope input. Its own generator says so: *"What it is
+  emphatically not good for: deciding what to build."*
+- A capability inside the four modules is in scope whether or not that
+  application ever calls it.
+
+**It is not a size target.** 6,267 headers are not 6,267 things to build. Most
+are generic instantiations (`TColStd_Array1OfReal` and several hundred similar
+headers), which Rust generics give for free. The triage rules in
+`tools/apisurf/apisurf.py` reduce the count to the underlying capabilities.
+Each rule is recorded with the headers it removed, so the reduction can be
+audited.
+
+## How the scope changes
+
+Only by editing this file, with the reasoning written down. Never through a
+pull request that quietly adds a crate.

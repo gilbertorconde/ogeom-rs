@@ -1,5 +1,5 @@
 //! M3's closing argument: the corpus imported, healed, measured, and
-//! operated on — real files in, real modelling out.
+//! operated on: real files in, real modelling out.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -13,7 +13,7 @@ fn corpus(name: &str) -> String {
 }
 
 /// Healing sweeps the whole corpus: every part reads, every shell closes,
-/// every part measures, and each volume pins to its known figure — the
+/// every part measures, and each volume pins to its known figure: the
 /// values ftc_07 and ftc_11 arbitrated against the kernel's exact ray
 /// classifier and ctc_01 against an orientation-free even-odd grid. A loose
 /// relative band absorbs future mesh refinements; an orientation or unit
@@ -82,7 +82,7 @@ fn an_imported_part_takes_a_boolean_cut() {
         .unwrap()
         .mass;
 
-    // A square post cut down through the plate's solid ring — the part has a
+    // A square post cut down through the plate's solid ring; the part has a
     // large central pocket, and a post through fresh air cuts nothing, as an
     // earlier version of this test discovered only once the result's mesh
     // first became measurable.
@@ -99,7 +99,7 @@ fn an_imported_part_takes_a_boolean_cut() {
 
     // The cut runs on the imported part: the result is a solid whose shell
     // closes, built from pieces of the world's geometry and this kernel's,
-    // and it *measures* — the mesh welds across the file's slop because the
+    // and it *measures*: the mesh welds across the file's slop because the
     // slop is recorded on the edges and vertices and the weld honours it.
     let shell = explore_unique(import.document.model(), &result.shape, ShapeType::Shell)
         .unwrap()
@@ -141,7 +141,7 @@ fn an_imported_part_takes_a_boolean_cut() {
 /// imported plane reported its own window, which spans kilometres, and a
 /// cylinder its height domain. A consumer asking how big a screw is got a
 /// box a billion millimetres across and had to fall back to the hull of the
-/// topological vertices — which does not contain the body either, since a
+/// topological vertices, which does not contain the body either, since a
 /// button head's apex is a bulge between its rims, three millimetres past
 /// every vertex the head has.
 ///
@@ -178,8 +178,8 @@ fn a_body_is_bounded_by_what_it_is_trimmed_to() {
                 hull.high()
             );
             // And holds little else. Where the bound stands proud of the mesh it
-            // is the mesh that is short — a chord across an arc falls inside it
-            // — so the margin is the chord's, either way round.
+            // is the mesh that is short (a chord across an arc falls inside it),
+            // so the margin is the chord's, either way round.
             let (low, high) = (bounds.low().unwrap(), bounds.high().unwrap());
             let (near, far) = (hull.low().unwrap(), hull.high().unwrap());
             for (bound, meshed) in [
@@ -211,8 +211,8 @@ fn a_body_is_bounded_by_what_it_is_trimmed_to() {
 /// The face is a quarter-arc forty-five millimetres long and eighteen
 /// microns wide, between two nearly concentric circles, lifted out of a
 /// community printer assembly. At the default tenth of a millimetre the
-/// sagitta of each bounding arc is twenty-nine microns — wider than the
-/// region itself — so the inner polyline crosses the outer one and what
+/// sagitta of each bounding arc is twenty-nine microns (wider than the
+/// region itself), so the inner polyline crosses the outer one and what
 /// reaches the triangulator is not a region. It answered with sixteen
 /// triangles in fifteen disconnected pieces, and the holes between them
 /// were what kept the body it belongs to from meshing closed.
@@ -264,8 +264,8 @@ fn a_sliver_face_is_drawn_fine_enough_to_triangulate_whole() {
 /// The face is a cone sector bounded by two rulings into the apex and one
 /// arc, the rulings standing exactly a quarter turn apart. In the chart the
 /// two apex ends are distinct points a quarter period apart; in space they
-/// are one vertex. The ring has to keep both — the run between them along
-/// the degenerate row is the face's own boundary — and a test that read
+/// are one vertex. The ring has to keep both (the run between them along
+/// the degenerate row is the face's own boundary), and a test that read
 /// "apart" as "more than a quarter period" dropped the second, cut the
 /// corner through the face, and lost the triangle at the apex. The face
 /// was still a disc; it was a third smaller than it should be, and the
@@ -327,14 +327,14 @@ fn a_cone_s_apex_run_is_kept_at_a_quarter_turn() {
 
 /// A ring folds across a closed chart's join, periodic or not.
 ///
-/// The face lies on a B-spline tube that closes on itself in `u` — the
-/// same points at `u = 0` and `u = 1` — without being periodic, and its
+/// The face lies on a B-spline tube that closes on itself in `u` (the
+/// same points at `u = 0` and `u = 1`) without being periodic, and its
 /// trim crosses that join twice. Walking the ring, the fold onto the branch
 /// that continues it engaged on periodicity alone, so on this surface it
 /// never fired: consecutive edges' images stood a whole chart apart, the
 /// ring jumped the width of the chart twice, and the triangulator drew six
-/// pieces. Closure, not periodicity, is the test — the same distinction the
-/// projected-fit unwrap learned — and folded, the face is one piece.
+/// pieces. Closure, not periodicity, is the test (the same distinction the
+/// projected-fit unwrap learned), and folded, the face is one piece.
 #[test]
 fn a_ring_folds_across_a_closed_chart_s_join() {
     use std::collections::HashMap;
@@ -378,8 +378,8 @@ fn a_ring_folds_across_a_closed_chart_s_join() {
 /// An inner loop thinner than a micron is a slit, not a hole.
 ///
 /// The face is a plane with twenty inner loops. Fifteen are holes. Five run
-/// out along two arcs and back along two splines fitted to the same arcs —
-/// three millimetres long, a fifth of a micron wide, enclosing nothing —
+/// out along two arcs and back along two splines fitted to the same arcs (
+/// three millimetres long, a fifth of a micron wide, enclosing nothing)
 /// and read as holes they are a tangle the triangulator cannot classify:
 /// it drew the face with thirty-two holes. Measured in space, they are
 /// slits, and dropped; the fifteen real holes stay.
@@ -425,7 +425,7 @@ fn a_slit_loop_is_not_a_hole() {
 /// by holes wider than itself. It never sags along its axis, so sag gave
 /// the grid one interior row, and the Delaunay triangulation bridged two
 /// hundred millimetres from each rim to that row with triangles a quarter
-/// turn wide — each sagging less than the three chords the repair pass
+/// turn wide, each sagging less than the three chords the repair pass
 /// fires at, so they stayed. Grid cells are held to a bounded aspect now:
 /// rows close enough that no triangle can reach across more than a few
 /// columns.
@@ -520,7 +520,7 @@ fn a_bore_s_inside_is_as_round_as_its_rims() {
 /// file placed half a metre away, so its chart spans `v` from −500 000 to
 /// −499 980. The scale a degenerate triangle was measured against was the
 /// difference between the smallest and largest coordinate over both axes
-/// — half a million — and at that scale a quarter of a chart unit was a
+/// (half a million), and at that scale a quarter of a chart unit was a
 /// hair: every cell of the grid was dropped and the face drew as two
 /// triangles. The scale is the region's span now.
 #[test]
@@ -631,8 +631,8 @@ fn a_sliver_on_a_diagonal_of_the_grid_leaves_the_solid_closed() {
 ///
 /// A turned part with a B-spline patch and the torus across one of its
 /// edges, an edge that runs diagonally across the patch's chart. Meshed
-/// whole at half a radian, a grid point falls exactly on that segment —
-/// the midpoint of two grid corners the ring joins — and even-odd counting
+/// whole at half a radian, a grid point falls exactly on that segment (
+/// the midpoint of two grid corners the ring joins), and even-odd counting
 /// calls it inside; inserted, it split the constraint on the patch alone,
 /// and the torus was drawn to the unsplit edge: a T-junction, and the
 /// solid open by six edges.
@@ -653,7 +653,7 @@ fn a_grid_point_on_a_diagonal_boundary_leaves_the_solid_closed() {
 ///
 /// A cylinder wall with six slanted slots, each slot's two sides different
 /// curves between the same two points. At half a radian the two sides'
-/// polylines cross, and the face drew with two holes more than it has —
+/// polylines cross, and the face drew with two holes more than it has:
 /// `V - E + F` of −7 for a face with six holes, which is −5. The count of
 /// triangles against boundary points saw nothing: the crossing cost a
 /// handful of triangles and the face's hundreds of interior points buried
@@ -684,9 +684,9 @@ fn a_crossing_is_told_by_the_boundary_alone() {
 /// A spike on the boundary bounds nothing and is not drawn.
 ///
 /// A plane whose wire runs out along an edge to a point and straight back
-/// over the same curve. Kept, the spike triangulated to two hairs — one
+/// over the same curve. Kept, the spike triangulated to two hairs (one
 /// vertex and one triangle more than a boundary that encloses a region
-/// has — and the face was two pieces by count. Stripped before the
+/// has), and the face was two pieces by count. Stripped before the
 /// triangulation, the face is one.
 #[test]
 fn a_spike_on_the_boundary_is_stripped() {
@@ -779,8 +779,8 @@ fn a_narrow_chart_s_triangles_lie_on_the_surface() {
 ///
 /// A thread flank a tenth of a millimetre wide, drawn at a chord three
 /// times that: the boundary sagged by more than the face is wide between
-/// its points, and every triangle across the width — a boundary chord
-/// two millimetres long against a point a hundredth of a millimetre in —
+/// its points, and every triangle across the width (a boundary chord
+/// two millimetres long against a point a hundredth of a millimetre in)
 /// stood off the surface by that sag. The face's edges are drawn to a
 /// quarter of its width instead, and the triangles lie on it.
 #[test]

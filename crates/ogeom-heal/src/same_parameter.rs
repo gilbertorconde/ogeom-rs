@@ -1,10 +1,10 @@
-//! Verifying — and where needed, widening into truth — the `same_parameter`
+//! Verifying (and where needed, widening into truth) the `same_parameter`
 //! claim.
 //!
 //! An edge carries several representations of one curve, and nearly every
 //! algorithm evaluates whichever is convenient, assuming the answers are
 //! interchangeable within the edge's tolerance. The flag that records this is
-//! set false whenever a representation is added — honest, but pessimistic:
+//! set false whenever a representation is added: honest, but pessimistic:
 //! every primitive's edges claim a disagreement they do not have. This is the
 //! repair the flag's own documentation demands: measure the actual
 //! disagreement, and either confirm the claim or widen the edge's tolerance
@@ -23,14 +23,14 @@ pub struct SameParameterReport {
     pub agreed: usize,
     /// Edges whose tolerance had to widen to make the claim true.
     pub widened: usize,
-    /// Edges with no pcurves to disagree with — trivially true.
+    /// Edges with no pcurves to disagree with; trivially true.
     pub trivial: usize,
 }
 
 /// Verify every edge under `shape` and make its `same_parameter` flag true.
 ///
 /// Each pcurve is sampled against the edge's own curve at matched parameters
-/// — the same linear range mapping the triangulator uses — and the worst gap
+/// (the same linear range mapping the triangulator uses), and the worst gap
 /// decides: within the edge's tolerance, the claim is confirmed; beyond it,
 /// the tolerance widens to cover what was measured, which makes the claim
 /// true by making the tolerance honest. Degenerate edges and edges with no

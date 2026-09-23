@@ -2,7 +2,7 @@
 //!
 //! A multi-body STEP assembly imported with colours, names and PMI,
 //! modified, exported, reimported, and compared against what went in; and a
-//! 2D drawing generated from a 3D model — hidden lines removed, visible and
+//! 2D drawing generated from a 3D model, hidden lines removed, visible and
 //! hidden edges classified, sections taken.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
@@ -188,7 +188,7 @@ fn a_drawing_comes_off_the_model_with_hidden_lines_and_a_section() {
     );
 
     // The section, half a radius off the bore's axis: revealed material is
-    // the rectangle minus the chord-width slot — arithmetic, not opinion.
+    // the rectangle minus the chord-width slot: arithmetic, not opinion.
     let plane =
         Plane::new(Frame::new(Point::new(0.0, 2.5, 0.0), Direction::Y, Direction::Z, T).unwrap());
     let section = ogeom::hlr::section(&mut model, &part.shape, &plane, fine(), T).unwrap();

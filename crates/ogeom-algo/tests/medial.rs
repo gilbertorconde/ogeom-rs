@@ -1,4 +1,4 @@
-//! §J of `docs/PLAN.md`: the medial axis, held to closed forms — the
+//! §J of `docs/PLAN.md`: the medial axis, held to closed forms: the
 //! rectangle's roof line and the triangle's incenter.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
@@ -69,7 +69,7 @@ fn a_rectangles_axis_is_its_roof_line() {
 }
 
 /// A 3–4–5 right triangle's axis meets at the incenter, and the clearance
-/// there is the inradius, (a + b − c) / 2 = 1 — a closed form older than
+/// there is the inradius, (a + b − c) / 2 = 1, a closed form older than
 /// the field.
 #[test]
 fn a_triangles_axis_meets_at_the_incenter() {

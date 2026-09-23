@@ -2,8 +2,8 @@
 //!
 //! P4's opening stone, built deliberately on M3's shoulders: a chamfer along
 //! a straight edge between two planar faces is a wedge subtracted, and the
-//! wedge's own faces lie *exactly* on the solid's — coplanar, materials
-//! aligned — which is the same-domain case the boolean learned to resolve.
+//! wedge's own faces lie *exactly* on the solid's (coplanar, materials
+//! aligned), which is the same-domain case the boolean learned to resolve.
 //!
 //! Three spellings, one construction. The symmetric chamfer cuts the same
 //! distance along both faces; the distance-distance form cuts a named
@@ -14,7 +14,7 @@
 //!
 //! Two seats per spelling. A straight edge between planes takes the
 //! triangular prism above; the circular rim where a cylindrical wall meets a
-//! perpendicular planar cap takes a revolved wedge whose bevel is a *cone* —
+//! perpendicular planar cap takes a revolved wedge whose bevel is a *cone*:
 //! the same flanks the rim fillet builds, with the quarter-tube exchanged
 //! for the slant, and the same melt taking the legs away.
 
@@ -33,7 +33,7 @@ use ogeom_topo::{Model, Shape};
 ///
 /// The edge must be straight, convex, and shared by exactly two planar faces;
 /// the distances are equal (the symmetric chamfer). The result is the boolean
-/// difference with a wedge whose legs run along the two faces — so the
+/// difference with a wedge whose legs run along the two faces, so the
 /// history reads as a cut: the two faces are modified into their trimmed
 /// pieces, the edge's neighbourhood gains the bevel face.
 ///
@@ -255,9 +255,9 @@ fn wedge_for(
                     let i = seat_side(&seat, face)?;
                     // In the cross-section: from the contact on the named
                     // face, the bevel leaves at `angle` into the wedge's own
-                    // side — the material on a convex edge, the open dihedral
+                    // side: the material on a convex edge, the open dihedral
                     // on a concave one. Where it crosses the other leg's ray
-                    // is the derived distance — no crossing, no chamfer.
+                    // is the derived distance; no crossing, no chamfer.
                     let sign = if seat.convex { 1.0 } else { -1.0 };
                     let a = seat.leg(i, tol)? * sign;
                     let b = seat.leg(1 - i, tol)? * sign;
@@ -276,8 +276,8 @@ fn wedge_for(
                     bevel(model, &seat, distances, tol)
                 }
                 SeatKind::Rim(rim) => {
-                    // The rim's seat is square by construction — the cap is
-                    // perpendicular to the wall — so the derived distance is
+                    // The rim's seat is square by construction (the cap is
+                    // perpendicular to the wall), so the derived distance is
                     // the plain tangent, and past a right angle the bevel
                     // walks away from the other face instead of toward it.
                     if angle >= core::f64::consts::FRAC_PI_2 - tol.angular() {
@@ -384,17 +384,17 @@ fn revolved_bevel(
     }
     let flanks = revolved_flanks(model, seat, on_wall, cap_rho, tol)?;
 
-    // The bevel: the cone through both tangency rings — reference radius
-    // `cap_rho` at the cap's level, the rim's radius a wall-depth below.
+    // The bevel: the cone through both tangency rings (reference radius
+    // `cap_rho` at the cap's level, the rim's radius a wall-depth below).
     // Unlike the fillet's quarter-tube, whose away-from-the-tube normal
     // tracks the wedge seat by seat, the cone's natural normal always points
-    // away from the axis — and the wedge sits on the axis side of the slant
+    // away from the axis, and the wedge sits on the axis side of the slant
     // exactly when `sigma` and `tau` agree.
     let bevel_band = {
         let slope = (cap_rho - seat.radius) / (seat.tau * on_wall);
         let cone = Cone::new(seat.frame_at(seat.centre, tol)?, cap_rho, slope.atan(), tol)?;
-        // The domain covers the band's two rows — the cap ring at zero and
-        // the wall ring a depth away — with a margin that stays clear of the
+        // The domain covers the band's two rows (the cap ring at zero and
+        // the wall ring a depth away) with a margin that stays clear of the
         // apex, where the surface degenerates.
         let rows = (
             0.0_f64.min(-seat.tau * on_wall),
@@ -445,7 +445,7 @@ fn bevel(
     }
     // On a concave edge every leg mirrors: the wedge sits in the open
     // dihedral, its legs walk the faces' planes into it, and its strips face
-    // the material they will melt against with *opposed* orientation — which
+    // the material they will melt against with *opposed* orientation, which
     // is exactly what a fuse cancels.
     let sign = if seat.convex { 1.0 } else { -1.0 };
     let a = seat.leg(0, tol)? * sign;
@@ -480,8 +480,8 @@ fn bevel(
     // legs run the distances along each face. Built from five explicit planar
     // faces rather than swept, because a sweep's walls are extrusion
     // surfaces even when they are geometrically planes, and the boolean's
-    // same-domain resolution — which is what makes the coplanar legs melt
-    // into the solid's own faces — recognises coincidence between *planes*.
+    // same-domain resolution (which is what makes the coplanar legs melt
+    // into the solid's own faces) recognises coincidence between *planes*.
     let faces = [
         planar_face(model, &[apex0, a0, b0], -seat.along, tol)?,
         planar_face(model, &[apex1, a1, b1], seat.along, tol)?,

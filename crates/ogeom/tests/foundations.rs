@@ -26,7 +26,7 @@ fn build(model: &mut Model) -> Vec<Shape> {
 }
 
 /// The same model tessellated at one thread and at four serializes to the
-/// same bytes — scheduling cannot reach the answer.
+/// same bytes: scheduling cannot reach the answer.
 #[test]
 fn parallel_tessellation_is_bit_identical() {
     let write = |threads: usize| {
@@ -49,7 +49,7 @@ fn parallel_tessellation_is_bit_identical() {
 }
 
 /// A pre-cancelled watch stops the tessellation at its first checkpoint,
-/// and the error says cancelled — not a partial result, not a stall.
+/// and the error says cancelled, not a partial result, not a stall.
 #[test]
 fn a_cancelled_watch_stops_tessellation() {
     let mut model = Model::new();
@@ -63,7 +63,7 @@ fn a_cancelled_watch_stops_tessellation() {
 }
 
 /// The stage names of a boolean reach the watch's sink in pipeline order,
-/// and the cut still measures — a sink is a listener, not a participant.
+/// and the cut still measures: a sink is a listener, not a participant.
 #[test]
 fn a_boolean_reports_its_stages() {
     use std::sync::{Arc, Mutex};

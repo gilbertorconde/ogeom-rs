@@ -5,7 +5,7 @@
 //! [`transformed`] returns the *same* topology at a different
 //! [`Location`]. No node is created, no curve is
 //! re-evaluated, and the result compares equal to the original under
-//! [`Shape::is_partner`] — which is how "these thousand bolts are the same
+//! [`Shape::is_partner`], which is how "these thousand bolts are the same
 //! bolt" stays a fact the model knows rather than one an application has to
 //! remember (`docs/DATA_MODEL.md` §2, §3).
 //!
@@ -14,7 +14,7 @@
 //! the geometry underneath still describes the moved shape. An affine transform
 //! that shears or scales unevenly does not: it carries a circle to an ellipse,
 //! and no amount of placement makes a circle record that. The type system says
-//! so — [`transformed`] takes a [`Transform`], which is a similarity by
+//! so: [`transformed`] takes a [`Transform`], which is a similarity by
 //! construction, and a general affine transform is a different type it will not
 //! accept. Applying one means rebuilding the geometry, which is not written
 //! yet; see the deferred list in `docs/PLAN.md`.
@@ -22,7 +22,7 @@
 //! # A copy is for editing, not for moving
 //!
 //! [`copied`] duplicates the topology so the two can diverge. It shares the
-//! *geometry* — curves and surfaces are immutable values in an arena, so two
+//! *geometry*: curves and surfaces are immutable values in an arena, so two
 //! shapes naming one circle can never disagree about it, and copying it would
 //! only make the model larger. What a copy buys is independent topology:
 //! tolerances, representations and children that one shape can change without
@@ -50,7 +50,7 @@ pub mod roles {
 /// geometry, at a new placement.
 ///
 /// There is no way to pass something that is *not* a placement. [`Transform`]
-/// is a similarity by construction — rigid motion with a uniform scale — and a
+/// is a similarity by construction (rigid motion with a uniform scale), and a
 /// shear or a non-uniform scale is a
 /// [`GeneralTransform`](ogeom_math::GeneralTransform), which this does not accept.
 /// That is deliberate: such a transform carries a circle to an ellipse, and
@@ -77,7 +77,7 @@ pub fn transformed(model: &mut Model, shape: &Shape, transform: Transform) -> Og
 
 /// Duplicate a shape's topology so the two can be edited apart.
 ///
-/// Geometry is shared, not duplicated — see the module docs.
+/// Geometry is shared, not duplicated; see the module docs.
 ///
 /// # Errors
 ///
@@ -97,11 +97,11 @@ pub fn copied(model: &mut Model, shape: &Shape) -> OgeomResult<Built> {
     Ok(Built::new(root, history))
 }
 
-/// Copy one node and everything below it, memoized. Returns the *bare* copy —
-/// the new node at identity, forward — never the occurrence it was reached by.
+/// Copy one node and everything below it, memoized. Returns the *bare* copy
+/// (the new node at identity, forward), never the occurrence it was reached by.
 ///
 /// The memo is not an optimization. A shared edge appears under two faces, and
-/// copying it twice would give the copy two edges where the original had one —
+/// copying it twice would give the copy two edges where the original had one;
 /// the shell would then be open along every shared boundary, and nothing about
 /// the geometry would say why.
 ///
@@ -111,7 +111,7 @@ pub fn copied(model: &mut Model, shape: &Shape) -> OgeomResult<Built> {
 /// child, which is right for traversal and wrong for copying: storing the
 /// composed occurrence and then returning it composed again applies the
 /// parent's transform twice. A doubled placement merely puts the copy in the
-/// wrong place, but a doubled orientation takes a wire apart — reversing a
+/// wrong place, but a doubled orientation takes a wire apart: reversing a
 /// wire is *reverse the order and flip every sense*, and `children_of` carries
 /// only the sense half, so the second application flips the senses back while
 /// the order stays put and consecutive edges stop meeting. A parent's
@@ -327,9 +327,9 @@ mod tests {
     fn a_copy_of_a_prism_with_instanced_caps_is_still_a_closed_solid() {
         // A box is the easy case: every occurrence it stores is forward and at
         // identity, so copying it cannot tell whether a parent's placement is
-        // being applied once or twice. A prism can — its near cap is the
+        // being applied once or twice. A prism can: its near cap is the
         // profile *reversed* and its far cap is that same node at a
-        // displacement — and a wire is where a doubled orientation shows,
+        // displacement, and a wire is where a doubled orientation shows,
         // because reversing one reverses the walk as well as each edge.
         let mut model = Model::new();
         let solid = prism_of_a_square(&mut model);
@@ -360,7 +360,7 @@ mod tests {
     fn a_copy_of_a_prism_bakes_cleanly() {
         // The bake walks every wire in traversal order and rebuilds it, so it
         // is the shortest path to the question "do this copy's edges still
-        // meet?" — and it is the path a mirrored operand takes into the
+        // meet?", and it is the path a mirrored operand takes into the
         // boolean, where this last went wrong.
         let mut model = Model::new();
         let solid = prism_of_a_square(&mut model);

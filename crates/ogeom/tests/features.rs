@@ -60,7 +60,7 @@ fn four_walls_drafted_about_the_base_make_a_frustum() {
     .unwrap()
     .shape;
 
-    // The base keeps its 20 by 20 — that is what a neutral plane means —
+    // The base keeps its 20 by 20 (that is what a neutral plane means)
     // and each wall leans in by tan(angle) per unit of height, so the
     // section at height z is a square of side 20 - 2 z tan(angle).
     let t = angle.tan();

@@ -1,8 +1,8 @@
 //! Offsetting a solid, and the shelling built on it.
 //!
 //! The topology-preserving offset: every face's surface moves along its own
-//! outward normal — a plane translates, a cylinder's radius grows or
-//! shrinks — and the topology is rebuilt one-for-one on the moved surfaces.
+//! outward normal (a plane translates, a cylinder's radius grows or
+//! shrinks), and the topology is rebuilt one-for-one on the moved surfaces.
 //! Vertices re-solve where their planes now meet, edges re-derive on the
 //! moved supports with their directions and parameterizations preserved, and
 //! band faces rebuild through [`make_revolution_band`] so seams stay seams.
@@ -11,19 +11,19 @@
 //!
 //! Shelling is the offset pointed inward and the boolean pointed at the
 //! result: the cavity is the inward offset with the *removed* faces left
-//! exactly where they were, so it reaches the boundary at the openings —
+//! exactly where they were, so it reaches the boundary at the openings,
 //! and the cut's same-domain resolution melts the flush faces away, which is
 //! what opens the shell.
 //!
 //! The honest limits, refused by name: faces whose surfaces are not among
-//! the five analytics — a spline, revolution, extrusion, trimmed or offset
+//! the five analytics (a spline, revolution, extrusion, trimmed or offset
 //! surface has no same-family parallel to move to, though a face something
 //! *replaces* (a draft's turned wall) rides through on the replacement and
-//! a face moved by nothing keeps its own surface whatever the family —
+//! a face moved by nothing keeps its own surface whatever the family),
 //! vertices whose seats leave them under-determined, and offsets that
 //! collapse the solid. Edges between moved supports re-derive exactly where
 //! a line or circle exists; anywhere else the pair's own intersection is
-//! marched and fitted, with its stated slop widening the edge — an edge
+//! marched and fitted, with its stated slop widening the edge; an edge
 //! that sits unmoved on both supports rebuilds on its own curve.
 
 use ogeom_algo::{
@@ -45,7 +45,7 @@ use std::collections::HashMap;
 type Displacement<'a> = dyn Fn(&Model, usize, Point) -> OgeomResult<Option<(Vector, f64)>> + 'a;
 
 /// Canonicalize a solid whose topology is *instanced*: the same node placed
-/// twice — a prism's far cap reusing the profile's nodes under the travel.
+/// twice: a prism's far cap reusing the profile's nodes under the travel.
 ///
 /// The rebuild below resolves everything by node, which is one name for two
 /// places on such a solid. Baking restates every occurrence as its own node
@@ -128,9 +128,9 @@ pub fn offset_shape(
 /// Two constructions, chosen by the opening's neighbours. When a removed
 /// face meets every neighbour across a corner, the cavity is the inward
 /// offset of every kept face with the removed faces left in place,
-/// subtracted through the boolean — the flush faces melt away, which is
-/// what opens the shell. When a removed face has a *tangent* neighbour — a
-/// blend melting into the face it rounds — leaving it in place would tear
+/// subtracted through the boolean; the flush faces melt away, which is
+/// what opens the shell. When a removed face has a *tangent* neighbour (a
+/// blend melting into the face it rounds), leaving it in place would tear
 /// the shared vertices, so instead the whole solid offsets inward and each
 /// removed face's cavity image extrudes back out through the opening; the
 /// rim a tangent opening leaves is the tapering strip a true
@@ -211,8 +211,8 @@ pub fn make_thick_solid(
         return Ok(result);
     }
 
-    // The tangent construction: everything moves together — which is what
-    // keeps the tangencies intact — and each opening is drilled back out by
+    // The tangent construction: everything moves together (which is what
+    // keeps the tangencies intact), and each opening is drilled back out by
     // extruding its opening image through where the wall now stands.
     let displaced = if outward_walls { reach } else { -reach };
     let moved = rebuilt(model, solid, &|_| displaced, &|_| None, tol)?;
@@ -224,7 +224,7 @@ pub fn make_thick_solid(
             ogeom_bail!(
                 Construction,
                 "a tangent opening must be planar; a curved opening needs \
-                 the general rebuild — docs/PARITY.md, offset.shell-thicken"
+                 the general rebuild; see docs/PARITY.md, offset.shell-thicken"
             );
         };
         let mut normal = p.plane().normal().vector();
@@ -335,29 +335,29 @@ struct Prepared {
     /// The sign relating the face's outward side to the surface's own
     /// normal: `+1` for a Forward face.
     sign: f64,
-    /// For a full revolution band — seam and two closed rings — the rings.
+    /// For a full revolution band (seam and two closed rings), the rings.
     rings: Option<[Shape; 2]>,
 }
 
 /// The rebuild under both entry points: every face offset by its own amount,
 /// the topology re-derived on the moved surfaces.
 ///
-/// One rule serves every element. A surface moves along its own normal — a
-/// plane translates, a revolution surface's radius grows — which makes the
+/// One rule serves every element. A surface moves along its own normal (a
+/// plane translates, a revolution surface's radius grows), which makes the
 /// *displacement* constraint at any point of it exactly planar: normal
 /// there, offset amount along it. Vertices solve those constraints in the
 /// least-squares sense and then Newton-polish onto the moved surfaces
-/// themselves, edges re-derive from the moved pair — a line from its planes'
+/// themselves, edges re-derive from the moved pair (a line from its planes'
 /// constraints, a circle from the pair's analytic intersection re-framed on
-/// its old axes so parameters and orientations carry — and faces rebuild
+/// its old axes so parameters and orientations carry), and faces rebuild
 /// wire by wire with exact pcurves, or wholesale through
 /// [`make_revolution_band`] where a seam says the face wraps.
 /// Rebuild a solid's topology on moved supports.
 ///
 /// `amount_of` says how far each face travels along its own outward normal;
 /// `instead_of` may hand back a surface to use *in place* of that move,
-/// which is how an operation that turns a face rather than translating it —
-/// a draft — rides the same rebuild. The two are exclusive per face: a
+/// which is how an operation that turns a face rather than translating it
+/// (a draft) rides the same rebuild. The two are exclusive per face: a
 /// surface supplied by `instead_of` is taken as it stands.
 pub(crate) fn rebuilt(
     model: &mut Model,
@@ -486,7 +486,7 @@ pub(crate) fn rebuilt(
                 _ => ogeom_bail!(
                     Construction,
                     "offsetting a face on this surface needs a construction \
-                     the rebuild does not yet speak — docs/PARITY.md, offset.shell-thicken"
+                     the rebuild does not yet speak; see docs/PARITY.md, offset.shell-thicken"
                 ),
             }
         };
@@ -548,7 +548,7 @@ pub(crate) fn rebuilt(
     };
 
     // New vertices: the linear constraint solve seeds a Newton polish onto
-    // the moved surfaces themselves — the tangent-plane answer is exact for
+    // the moved surfaces themselves; the tangent-plane answer is exact for
     // planes and off by the surfaces' own curvature otherwise.
     let mut new_vertices: HashMap<TShapeId, (Shape, Point)> = HashMap::new();
     for vertex in explore_unique(model, solid, ShapeType::Vertex)? {
@@ -594,8 +594,8 @@ pub(crate) fn rebuilt(
             kept.push(*fi);
         }
         if normals.is_empty() {
-            // A cone's apex has no normal to offer — the projection there is
-            // degenerate — but the parallel cone knows exactly where its own
+            // A cone's apex has no normal to offer (the projection there is
+            // degenerate), but the parallel cone knows exactly where its own
             // apex went.
             let mut apex: Option<Point> = None;
             for fi in &seats {
@@ -631,7 +631,7 @@ pub(crate) fn rebuilt(
             // Every seat is tangent to the rest, and the dedup above made
             // them agree on the amount. A normal offset moves each point of a
             // surface along its own normal, so the shared normal is the exact
-            // answer — no corner to solve, nothing to polish.
+            // answer: no corner to solve, nothing to polish.
             let moved = at + normals[0] * amounts[0];
             new_vertices.insert(vertex.node(), (make_vertex(model, moved).shape, moved));
             continue;
@@ -682,7 +682,7 @@ pub(crate) fn rebuilt(
         new_vertices.insert(vertex.node(), (make_vertex(model, moved).shape, moved));
     }
 
-    // How many times each edge occurs across all faces — a seam is one face
+    // How many times each edge occurs across all faces; a seam is one face
     // using an edge twice, which face-deduplicated sides cannot see.
     let mut edge_uses: HashMap<TShapeId, usize> = HashMap::new();
     for face in &faces {
@@ -699,7 +699,7 @@ pub(crate) fn rebuilt(
         if sides.len() != 2 {
             if edge_uses.get(&edge.node()).copied().unwrap_or(0) >= 2 {
                 // A seam. A band face rebuilds its own; a face assembled wire
-                // by wire — a band a boolean split into arc rings — needs the
+                // by wire (a band a boolean split into arc rings) needs the
                 // moved seam here: the same iso-column on the moved surface,
                 // which chart preservation makes exact.
                 if let [fi] = sides.as_slice()
@@ -747,8 +747,8 @@ pub(crate) fn rebuilt(
             Curve::Line(_) => {
                 // A straight edge is the line through its own re-solved
                 // ends. That is true whether the supports were translated
-                // or turned — an offset leaves the direction alone and this
-                // reproduces it, a draft does not and this follows it —
+                // or turned (an offset leaves the direction alone and this
+                // reproduces it, a draft does not and this follows it),
                 // whereas a line anchored where the old one sat misses its
                 // own vertices the moment either end moves sideways.
                 let Some((sv, ev)) = edge_vertices(model, &forward)? else {
@@ -865,8 +865,8 @@ pub(crate) fn rebuilt(
                 }
             }
             _ => {
-                // The general edge. First the still question: a hinge edge —
-                // a draft's neutral crossing — sits on both moved supports
+                // The general edge. First the still question: a hinge edge
+                // (a draft's neutral crossing) sits on both moved supports
                 // exactly where it always was, and an edge that did not move
                 // rebuilds on its own curve rather than on a march of it.
                 let unmoved = {
@@ -896,8 +896,8 @@ pub(crate) fn rebuilt(
                     };
                     let closed = sv.node() == ev.node();
                     let built = if closed {
-                        // On the vertex the rest of the rebuild uses — a
-                        // seam starts from it — not one of the curve's own.
+                        // On the vertex the rest of the rebuild uses (a
+                        // seam starts from it), not one of the curve's own.
                         match new_vertices.get(&sv.node()).cloned() {
                             Some((v_at, p_at)) => {
                                 let gap = curve.point_at(range.0, tol)?.distance(p_at);
@@ -947,8 +947,8 @@ pub(crate) fn rebuilt(
                     continue;
                 }
                 // Otherwise the moved pair's own intersection, marched where
-                // no closed form exists — a drafted spline wall re-meeting
-                // its cap plane — with the candidate nearest the old edge
+                // no closed form exists (a drafted spline wall re-meeting
+                // its cap plane), with the candidate nearest the old edge
                 // kept and trimmed between the re-solved ends. The section's
                 // stated slop widens the edge; nothing pretends the fit is
                 // exact.
@@ -1122,7 +1122,7 @@ pub(crate) fn rebuilt(
                 wires.push(edges);
             }
             let face = if face_uses.values().any(|c| *c >= 2) {
-                // A seam in a wire-assembled face — a band a boolean split
+                // A seam in a wire-assembled face: a band a boolean split
                 // into arc rings. Every ordinary pcurve is recomputed on the
                 // moved surface; the seam's columns carry over, which the
                 // seam rebuild already validated against the re-solved ends.
@@ -1164,7 +1164,7 @@ pub(crate) fn rebuilt(
     // moved faces past each other builds a shell that is closed and inside
     // out. Its measured volume is the tell.
     // The guard meshes at the default deflection, and a thin tangential
-    // cusp — a small blend meeting its face — can defeat that resolution
+    // cusp (a small blend meeting its face) can defeat that resolution
     // without anything being wrong. One finer retry separates a mesh that
     // cannot see the cusp from a solid that is genuinely inside out.
     let mut mass = None;
@@ -1198,8 +1198,8 @@ pub(crate) fn rebuilt(
 /// Rebuild a seam for a face assembled wire by wire: the same iso-column on
 /// the moved surface, over the same rows.
 ///
-/// A same-family move preserves the chart — every point travels along its
-/// own normal without changing its parameters — so the moved seam sits at
+/// A same-family move preserves the chart (every point travels along its
+/// own normal without changing its parameters), so the moved seam sits at
 /// the column the old one's own pcurves state, between the re-solved end
 /// vertices. `None` when the old edge carries no seam representation on this
 /// face's surface.
@@ -1265,7 +1265,7 @@ fn rebuilt_seam_edge(
         );
     };
     // The parameters the re-solved ends land at, by the iso-curve's own
-    // closed form — the ends were Newton-polished onto this very surface, so
+    // closed form; the ends were Newton-polished onto this very surface, so
     // they lie on the curve exactly.
     let along = |p: Point| -> OgeomResult<f64> {
         match &curve {
@@ -1286,7 +1286,7 @@ fn rebuilt_seam_edge(
     };
     let (t_start, t_end) = (along(p_from)?, along(p_to)?);
     // Self-validation instead of trusting the move: a turned support only
-    // keeps its column when the turn was built to — the re-solved ends say
+    // keeps its column when the turn was built to; the re-solved ends say
     // whether it was.
     // A fitted support holds its column only to the fit's target, and the
     // ends were polished onto the surface, not the column: the slack is the
@@ -1325,8 +1325,8 @@ fn rebuilt_seam_edge(
 /// Assemble a moved face whose wires contain a seam.
 ///
 /// Every ordinary edge gets its exact pcurve recomputed on the moved
-/// surface. The seam is the one edge no closed-form projection can answer —
-/// it needs a column per side — so its columns carry over from the old
+/// surface. The seam is the one edge no closed-form projection can answer
+/// (it needs a column per side), so its columns carry over from the old
 /// face's own seam representation (a same-family move leaves the columns
 /// where they were), rebuilt over the rows the moved seam actually spans.
 fn assembled_with_seam(
@@ -1405,7 +1405,7 @@ fn assembled_with_seam(
             columns
         };
         if let Some((forward_col, reversed_col)) = columns {
-            // The rows the moved seam spans, from its own rebuilt range —
+            // The rows the moved seam spans, from its own rebuilt range,
             // identical to the curve range except a cone's slant rescale.
             let rows = match &prep.surface {
                 SurfaceGeometry::Cone(c) => {
@@ -1558,7 +1558,7 @@ fn seam_end(
 /// with a neighbour's twin, or a cone's apex.
 ///
 /// A normal offset moves every point of a face along the face's own normal,
-/// so three displaced samples of a ring pin the moved ring exactly — no
+/// so three displaced samples of a ring pin the moved ring exactly; no
 /// second face required. `None` when the edge is neither shape.
 fn rebuilt_lone_edge(
     model: &mut Model,
@@ -1631,7 +1631,7 @@ fn rebuilt_lone_edge(
 }
 
 fn solve_corner(normals: &[Vector], amounts: &[f64], tol: Tolerances) -> OgeomResult<Vector> {
-    // Normal equations: (NᵀN) x = Nᵀw — 3×3 whatever the seat count.
+    // Normal equations: (NᵀN) x = Nᵀw, 3×3 whatever the seat count.
     let mut a = [[0.0_f64; 3]; 3];
     let mut b = [0.0_f64; 3];
     for (n, w) in normals.iter().zip(amounts) {

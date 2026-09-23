@@ -1,8 +1,8 @@
 //! Offsetting a closed planar wire: the sketch-plane operation everything in
 //! this crate stands on.
 //!
-//! Each edge is offset on its own — a segment to the parallel segment, an arc
-//! to the concentric arc — and the corners decide the rest. Where the corner
+//! Each edge is offset on its own (a segment to the parallel segment, an arc
+//! to the concentric arc) and the corners decide the rest. Where the corner
 //! turns *away* from the offset side the pieces separate, and the gap is
 //! closed by the chosen join: an arc about the old corner, or the extension
 //! of both pieces to their meeting. Where it turns *toward* the offset side
@@ -13,7 +13,7 @@
 //! The honest limits, refused by name rather than mishandled: edges that are
 //! neither straight nor circular, offsets that consume an edge whole, arcs
 //! whose concentric offset would have no radius left, and results that
-//! self-intersect — the global arrangement that trims a collapsed offset into
+//! self-intersect; the global arrangement that trims a collapsed offset into
 //! its valid loops is recorded in docs/PARITY.md (offset.wire-offset).
 
 use ogeom_algo::{
@@ -28,9 +28,9 @@ use ogeom_topo::{EdgeRepr, Filter, Model, Shape, ShapeType, explore};
 /// How a gap at a corner is closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Join {
-    /// An arc about the old corner, radius the offset — the rounded corner.
+    /// An arc about the old corner, radius the offset: the rounded corner.
     Arc,
-    /// Both pieces extended to their meeting — the sharp corner. Supported
+    /// Both pieces extended to their meeting: the sharp corner. Supported
     /// where both sides are straight; extending arcs to a meeting that may
     /// not exist is refused.
     Intersection,
@@ -236,14 +236,14 @@ pub fn offset_wire(
             _ => ogeom_bail!(
                 Construction,
                 "offsetting an edge that is neither straight nor circular \
-                 needs the offset-curve machinery — docs/PARITY.md, offset.wire-offset"
+                 needs the offset-curve machinery; see docs/PARITY.md, offset.wire-offset"
             ),
         }
     }
 
     // An open wire offsets on both sides and closes over its ends: the
     // outline of the thick path. The return pass is the same pieces walked
-    // backwards, and every corner rule below then applies unchanged — the
+    // backwards, and every corner rule below then applies unchanged: the
     // ends become 180-degree corners, which is what the caps close.
     let source_count = pieces.len();
     if open {
@@ -377,7 +377,7 @@ pub fn offset_wire(
             continue; // Tangent-continuous: nothing to do.
         }
         let corner = pieces[i].end_point();
-        // A 180-degree corner — an open path's end — is a gap whatever the
+        // A 180-degree corner (an open path's end) is a gap whatever the
         // turn's vanishing cross product says.
         let is_cap =
             turn.abs() <= 1e-9 && pieces[i].tangent(true).dot(pieces[j].tangent(false)) < 0.0;
@@ -413,7 +413,7 @@ pub fn offset_wire(
                 Join::Arc => {
                     let a0 = (e - corner).y.atan2((e - corner).x);
                     let mut a1 = (s - corner).y.atan2((s - corner).x);
-                    // The short way round is the way the gap opens — and a
+                    // The short way round is the way the gap opens, and a
                     // cap's exact semicircle has no short way, so the end
                     // tangent breaks the tie: the cap bulges past the end,
                     // not back through the path.
@@ -481,7 +481,7 @@ pub fn offset_wire(
     }
 
     // Where the raw offset crosses itself, split; every sub-piece then
-    // stands or falls by the offset's own definition — a point of the true
+    // stands or falls by the offset's own definition: a point of the true
     // offset boundary is a full offset from the source, and a collapsed
     // sliver is closer.
     let m = chain.len();
@@ -648,7 +648,7 @@ pub fn offset_wire(
             match provenance {
                 Provenance::Offset(i) => history.modify(&edges[i % edges.len()], built.clone()),
                 Provenance::Join(i) => {
-                    // The join stands where the corner vertex stood — for an
+                    // The join stands where the corner vertex stood; for an
                     // open path's cap, the end vertex itself.
                     if let Some((_, corner_vertex)) = edge_vertices(model, &edges[i % edges.len()])?
                     {

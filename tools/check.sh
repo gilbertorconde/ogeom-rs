@@ -33,7 +33,7 @@ echo "-- full run --"
 cargo test --workspace --all-features --no-fail-fast 2>&1 | tee "$log"
 
 # Property tests draw fresh cases each run, so a single green run proves less
-# than it looks — but only the *unit* suites hold property tests, and the
+# than it looks, but only the *unit* suites hold property tests, and the
 # corpus integration suites are deterministic and heavy. Repeat what benefits
 # from repetition and leave the rest at one honest pass.
 runs="${OGEOM_TEST_RUNS:-2}"
@@ -53,19 +53,19 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
 
 echo "== book =="
 # The guide's code blocks are included by anchor from crates/ogeom/tests/book.rs,
-# which the test pass above just ran — so a book that builds is a book whose
+# which the test pass above just ran, so a book that builds is a book whose
 # examples passed. Install the builder with `cargo install mdbook --locked`;
 # an absent mdbook fails here on purpose, because a skipped gate is a silent one.
 mdbook build docs/book
 
 echo "== parity =="
 # The audit gate: every verdict in docs/parity/parity.toml cites evidence that
-# still exists — symbols against the rustdoc just built, tests against the
-# tree — and docs/PARITY.md matches the committed index. Runs entirely against
+# still exists (symbols against the rustdoc just built, tests against the
+# tree), and docs/PARITY.md matches the committed index. Runs entirely against
 # committed files; no reference checkout is consulted here or in CI.
 python3 tools/parity.py check
 
 passing=$(grep -E '^test result:' "$log" \
     | awk -F'ok\\. ' '{split($2,a," "); s+=a[1]} END {print s}')
 echo
-echo "OK — $passing tests passing"
+echo "OK: $passing tests passing"

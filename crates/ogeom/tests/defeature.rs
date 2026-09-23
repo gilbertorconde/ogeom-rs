@@ -1,5 +1,5 @@
 //! §H of `docs/PLAN.md`: removing a set of faces, the wound closed from the
-//! neighbours' own geometry — measured against the solids the features were
+//! neighbours' own geometry, measured against the solids the features were
 //! cut from, not against plausibility.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
@@ -37,7 +37,7 @@ fn faces_where(
 }
 
 /// A through bore's wall removed: the rims are inner loops of the lid and
-/// base, and the block comes back to the last bit of its exact volume —
+/// base, and the block comes back to the last bit of its exact volume:
 /// no overshoot, because nothing is filled; the boundary is resewn.
 #[test]
 fn removing_a_bores_wall_makes_the_block_whole() {
@@ -151,7 +151,7 @@ fn impossible_removals_are_refused_by_name() {
     assert!(err.to_string().contains("nothing remains"), "{err}");
 
     // Removing one wall of a plain box: the wound has no feature geometry to
-    // close it — the neighbours meet at right angles already, and nothing
+    // close it: the neighbours meet at right angles already, and nothing
     // stands in for the missing face.
     let err = ogeom::boolean::remove_faces(&mut model, &block, &faces[..1], T).unwrap_err();
     assert!(
@@ -191,7 +191,7 @@ fn edge_near(model: &Model, solid: &Shape, at: Point) -> Shape {
 /// edges together used to elect "the sides" across both features and die
 /// recovering a nonsense edge. Grouped by shared edges, each feature runs
 /// the whole machinery on the previous result, and the box comes back
-/// sharp — exactly, both wounds.
+/// sharp: exactly, both wounds.
 #[test]
 fn two_separate_fillets_remove_in_one_call() {
     let mut model = Model::new();
@@ -232,8 +232,8 @@ fn two_separate_fillets_remove_in_one_call() {
     );
 }
 
-/// Two blends meeting at a box corner — `fillet_edges` on two top edges,
-/// the later band trimmed against the earlier — removed in one call: each
+/// Two blends meeting at a box corner (`fillet_edges` on two top edges,
+/// the later band trimmed against the earlier) removed in one call: each
 /// band recovers its own crease from its side planes, the two creases meet
 /// where one pierces the other's side, that corner is one vertex for both,
 /// and the box comes back to the last bit.
@@ -277,7 +277,7 @@ fn two_meeting_fillets_remove_in_one_call() {
 /// stands flush against the first band, and the feature is the two bands
 /// *and* that cap. The cap borders one wall and two removed faces; it
 /// joins its band's crease, whose end is then where the crease pierces the
-/// other band's side wall — the shared corner.
+/// other band's side wall: the shared corner.
 #[test]
 fn two_flush_fillets_and_their_cap_remove_in_one_call() {
     let mut model = Model::new();
@@ -583,8 +583,8 @@ fn edges_at_height(model: &Model, solid: &Shape, height: f64) -> Vec<Shape> {
         .collect()
 }
 
-/// A tangent chain of blends — a stadium's whole top rim rounded in one
-/// call, two straight bands and two semicircular ones meeting flush —
+/// A tangent chain of blends (a stadium's whole top rim rounded in one
+/// call, two straight bands and two semicircular ones meeting flush)
 /// removed in one call. At a tangent junction neither band's crease
 /// pierces the other's wall: the straight crease grazes the round wall,
 /// and the round crease grazes the flat one. The corner is where the two
@@ -628,8 +628,8 @@ fn a_tangent_chain_of_blends_removes_in_one_call() {
     assert!((volume(&model, &restored) - before).abs() < 1e-6);
 }
 
-/// The whole rim of a box top rounded in one call — four bands meeting at
-/// four corners — and removed in one call: every corner is where one
+/// The whole rim of a box top rounded in one call (four bands meeting at
+/// four corners) and removed in one call: every corner is where one
 /// crease pierces the wall of the next, and the box comes back sharp.
 #[test]
 fn a_loop_of_four_fillets_removes_in_one_call() {

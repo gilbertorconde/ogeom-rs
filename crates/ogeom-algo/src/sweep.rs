@@ -8,7 +8,7 @@
 //! # The top is the bottom, moved
 //!
 //! The far end of a prism is not a copy of the near end. It is the *same*
-//! topology node at a different [`Location`] — the shape triple's whole reason
+//! topology node at a different [`Location`], the shape triple's whole reason
 //! for existing (`docs/DATA_MODEL.md` §2). A copy would double the geometry, and
 //! then a later edit would have to find and fix both. Sharing means the two ends
 //! of a prism cannot drift apart, because there is only one of them.
@@ -21,7 +21,7 @@
 //!
 //! A swept edge is *both* consumed and generative: it survives as the bottom of
 //! the prism and it generates the lateral face. Recording only one of those is
-//! the classic way to break downstream naming — a reference to "that edge"
+//! the classic way to break downstream naming: a reference to "that edge"
 //! resolves to nothing, or a reference to "the face from that edge" does.
 
 use std::collections::HashMap;
@@ -109,7 +109,7 @@ pub fn make_prism(
 /// Sweep a planar face into a tapered prism: every wall leans by `taper`.
 ///
 /// The draft-prism semantics: each section is the profile's own offset at
-/// the rate the taper names — the outer loop outward, holes inward — so a
+/// the rate the taper names (the outer loop outward, holes inward), so a
 /// positive taper widens the far end and narrows every hole, and each wall
 /// makes exactly `taper` with the travel. The far ring is genuinely new
 /// topology: a taper breaks the plain prism's the-top-is-the-bottom-moved
@@ -122,7 +122,7 @@ pub fn make_prism(
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
 /// profile is not a planar face, the travel is not square to it, a profile
 /// edge is neither straight nor a full circle (the curved-wall taper needs a
-/// fitted ruling — docs/PARITY.md, offset.sweeps), or the taper collapses a
+/// fitted ruling; see docs/PARITY.md, offset.sweeps), or the taper collapses a
 /// loop over the height.
 pub fn make_prism_tapered(
     model: &mut Model,
@@ -188,7 +188,7 @@ pub fn make_prism_tapered(
             let circle = c.circle();
             // Which way is away from the material, by measurement: probe a
             // little outside the ring and ask the face. Windings are not to
-            // be trusted — a hole's wire may come wound either way.
+            // be trusted: a hole's wire may come wound either way.
             let start = c.point_at(range.0, tol)?;
             let radial = (start - circle.centre()) / circle.radius();
             let sigma = away_sign(model, profile, start, radial, circle.radius(), tol)?;
@@ -241,7 +241,7 @@ pub fn make_prism_tapered(
                 ogeom_bail!(
                     Construction,
                     "a tapered wall over an edge that is neither straight nor \
-                     a full circle needs a fitted ruling — docs/PARITY.md, \
+                     a full circle needs a fitted ruling; see docs/PARITY.md, \
                      offset.sweeps"
                 );
             };
@@ -497,8 +497,8 @@ fn prism_over_face(
 ) -> OgeomResult<Built> {
     // Which side of the profile the material lands on is decided by the sweep,
     // not by which way the profile was handed over. A profile facing against
-    // the sweep does not describe a different solid — it describes the same one
-    // from the other side — so it is turned round here and everything below
+    // the sweep does not describe a different solid (it describes the same one
+    // from the other side), so it is turned round here and everything below
     // proceeds as if it had faced along all along.
     //
     // Left unturned, both end caps present the wrong side: the mesh still
@@ -635,8 +635,8 @@ fn prism_over_wire(
 /// One edge swept into one face.
 ///
 /// The face's surface is the extrusion of the edge's own 3D curve, so the
-/// lateral surface is exact for whatever the edge was — a line gives a plane, an
-/// arc gives a cylinder, a spline gives an extruded spline — rather than
+/// lateral surface is exact for whatever the edge was (a line gives a plane, an
+/// arc gives a cylinder, a spline gives an extruded spline) rather than
 /// everything becoming a plane through an approximation.
 fn prism_over_edge(
     model: &mut Model,
@@ -666,7 +666,7 @@ fn prism_over_edge(
     // The surface is built from the edge's curve *where the edge actually is*.
     // Built from the stored curve instead, every side wall of a profile that
     // has been placed lands back at the placement's origin, while its two ends
-    // — which are the profile itself, at its own location — land correctly, so
+    // (the profile itself, at its own location) land correctly, so
     // the mesh comes apart along every lateral face at once.
     //
     // A placement may carry a uniform scale, and a scale rescales a curve's
@@ -684,12 +684,12 @@ fn prism_over_edge(
     let travel = vector.magnitude();
     let direction = ogeom_math::Direction::new(vector, tol)?;
     // A straight profile edge sweeps a plane, and the plane is built so its
-    // chart *is* the extrusion's — origin on the line, x along it, y along
-    // the travel — so every pcurve below serves either surface unchanged.
+    // chart *is* the extrusion's (origin on the line, x along it, y along
+    // the travel), so every pcurve below serves either surface unchanged.
     // Naming the plane it actually made is what lets the boolean's
     // same-domain resolution meet a prism wall as the plane it is.
-    // The chart the pcurves below are written in is the extrusion's — `u`
-    // the curve's own parameter, `v` the travel — and a canonical surface
+    // The chart the pcurves below are written in is the extrusion's (`u`
+    // the curve's own parameter, `v` the travel), and a canonical surface
     // whose chart differs carries a map from that chart to its own. A line
     // swept square to itself makes a plane whose chart *is* the
     // extrusion's; swept obliquely it makes a plane still, with the
@@ -734,8 +734,8 @@ fn prism_over_edge(
         && c.circle().frame().z().vector().dot(direction.vector()) >= 1.0 - tol.angular()
     {
         // A circular profile edge swept along its own axis is a cylinder,
-        // and on the circle's own frame the chart *is* the extrusion's —
-        // u the circle's angle, v the travel — so the pcurves below serve
+        // and on the circle's own frame the chart *is* the extrusion's
+        // (u the circle's angle, v the travel), so the pcurves below serve
         // either surface unchanged, and the boolean's same-domain
         // resolution meets a prism wall as the cylinder it is.
         let circle = c.circle();
@@ -760,7 +760,7 @@ fn prism_over_edge(
     // traversed from `hi` to `lo`, and the rail its walk starts at stands at
     // `u = hi`, not at `u = lo`.
     //
-    // Pinning the rails to `lo` and `hi` regardless — which is what this did —
+    // Pinning the rails to `lo` and `hi` regardless (which is what this did)
     // puts each rail's pcurve on the wrong side of the parameter rectangle, and
     // the boundary comes out as a bow tie enclosing nothing. The face then
     // fails to triangulate outright, while the topology looks perfect: the wire
@@ -793,7 +793,7 @@ fn prism_over_edge(
         tol,
     )?;
     if start_rail.is_same(&end_rail) {
-        // A closed profile edge — a full circle — starts and ends at one
+        // A closed profile edge (a full circle) starts and ends at one
         // vertex, so its two rails are one edge appearing at both `u = lo` and
         // `u = hi`. That is a seam, and it needs both pcurves: giving it one
         // would leave the face's boundary running up the same side twice and
@@ -842,7 +842,7 @@ fn prism_over_edge(
     // it follows the *curve* and not the wire's walk of it. An edge the wire
     // walks backwards therefore makes a face whose default side points into the
     // solid, and the occurrence has to be reversed to present the other one.
-    // Every profile with a mixed wire — four of a box's six faces — has some of
+    // Every profile with a mixed wire (four of a box's six faces) has some of
     // each, so this cannot be decided once for the profile.
     let face = if reversed { built.reversed() } else { built };
     model.set_derived(&face, std::slice::from_ref(edge), roles::SWEEP_SIDE)?;
@@ -866,13 +866,13 @@ struct Turn {
     /// than two faces.
     full: bool,
     /// Where the far end sits. The identity for a full turn, because there is
-    /// no far end — it is the near end again.
+    /// no far end; it is the near end again.
     displacement: Location,
 }
 
 /// Revolve a shape about `axis`, through `angle` radians.
 ///
-/// A face becomes a solid, a wire becomes a shell, an edge becomes a face —
+/// A face becomes a solid, a wire becomes a shell, an edge becomes a face:
 /// the same rule as [`make_prism`], turning instead of travelling. A full turn
 /// closes on itself: its two ends are the *same* profile, meeting along a seam,
 /// which is the topology [`make_cylinder`](crate::make_cylinder) produces for
@@ -888,7 +888,7 @@ struct Turn {
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the angle is
 /// not in `(0, 2pi]`, if the shape is of a kind that cannot be swept, if an
 /// edge of the profile has no 3D curve, if the profile meets the axis anywhere
-/// but at its ends — it would sweep through itself — or if the profile lies in
+/// but at its ends (it would sweep through itself), or if the profile lies in
 /// a surface the turn runs along, which encloses no volume.
 pub fn make_revolution(
     model: &mut Model,
@@ -912,7 +912,7 @@ pub fn make_revolution(
         angle,
         full,
         // One datum for the whole turn, so every entity at the far end shares a
-        // single placement — and none at all for a full turn, whose far end is
+        // single placement, and none at all for a full turn, whose far end is
         // its near end.
         displacement: if full {
             Location::identity()
@@ -980,7 +980,7 @@ fn revolution_over_face(
         );
     }
     // The sweep's material side follows the profile wire's own walk, so the
-    // walk is normalized to one hand — measured from the traversal itself,
+    // walk is normalized to one hand, measured from the traversal itself,
     // as the loop's area vector against the sweep tangent. The face's
     // stated normal cannot answer this: it speaks the carrier's chart,
     // and one loop reads as either hand depending on which way the chart
@@ -1035,7 +1035,7 @@ fn revolution_over_face(
 
     if turn.full {
         // A full turn has no ends. The profile is an interior cross-section of
-        // the result, not a face of it — so it is *deleted*, while still
+        // the result, not a face of it, so it is *deleted*, while still
         // generating everything its edges and vertices swept out. Reporting it
         // as surviving would leave a reference resolving to a face that is not
         // on the solid.
@@ -1071,7 +1071,7 @@ fn revolution_over_wire(
         history = history.then(&edge_history);
         // An edge lying along the axis turns onto itself. It contributes no
         // face, which is what makes a rectangle with one side on the axis
-        // revolve into a cylinder — three faces — rather than into a cylinder
+        // revolve into a cylinder (three faces) rather than into a cylinder
         // with a fourth face of no area down its middle.
         faces.extend(face);
     }
@@ -1131,8 +1131,8 @@ fn revolution_over_edge(
 
     // A profile line perpendicular to the axis stays at one height as it
     // turns: the face it sweeps is a region of a *plane*, and naming that
-    // plane — rather than dressing it as a revolution with a polar chart, a
-    // seam and a degenerate centre edge — is what lets a revolved rectangle
+    // plane, rather than dressing it as a revolution with a polar chart, a
+    // seam and a degenerate centre edge, is what lets a revolved rectangle
     // match `make_cylinder` face for face and edge for edge.
     if let ogeom_geom::Curve::Line(line) = &geometry
         && line
@@ -1174,7 +1174,7 @@ fn revolution_over_edge(
     let end_rail = revolved_rail(model, rails, edge, turn, true, tol)?;
 
     if start_rail.is_same(&end_rail) {
-        // A closed profile edge — revolving a circle makes a torus — returns to
+        // A closed profile edge (revolving a circle makes a torus) returns to
         // one vertex, so its two rails are one edge bounding the face across
         // both the bottom and the top of the parameter rectangle. That is a
         // seam in `v`, and it needs both pcurves for the same reason a seam in
@@ -1200,7 +1200,7 @@ fn revolution_over_edge(
     }
 
     // The profile edge itself runs up the sides. Both pcurves follow the
-    // curve's own parameterization — `lo` to `hi` — because a pcurve describes
+    // curve's own parameterization, `lo` to `hi`, because a pcurve describes
     // the edge and not the wire's walk of it.
     let displaced = edge.moved(&turn.displacement);
     if turn.full {
@@ -1235,7 +1235,7 @@ fn revolution_over_edge(
 
     // A revolution's normal is the *turn's* tangent crossed with the curve's,
     // because the angle is `u` and the curve is `v`. The prism's is the other
-    // way round, so the two disagree by a sign for the same walk — and an
+    // way round, so the two disagree by a sign for the same walk, and an
     // occurrence the wire walks forwards is the one that has to be reversed
     // here. It is not the surface that decides which side is material; it is
     // which way the profile's wire goes round.
@@ -1251,7 +1251,7 @@ fn revolution_over_edge(
     model.set_derived(&face, std::slice::from_ref(edge), roles::SWEEP_SIDE)?;
 
     let mut history = History::new();
-    // Both, not either — as for the prism. The edge makes the lateral face
+    // Both, not either, as for the prism. The edge makes the lateral face
     // *and* survives: on a partial turn as the far side, and on a full turn as
     // the seam, which is the same edge occurring twice on one face rather than
     // an edge that ceased to exist.
@@ -1271,8 +1271,8 @@ fn revolution_over_edge(
 /// surface meeting it has to be marched into a fitted curve where an exact
 /// section was available.
 ///
-/// Each frame below is built so the chart *is* the revolution's — `u` stays
-/// the angle turned from the profile's own meridian — so only `v` moves, and
+/// Each frame below is built so the chart *is* the revolution's (`u` stays
+/// the angle turned from the profile's own meridian), so only `v` moves, and
 /// it moves affinely, which is what lets the straight pcurves the caller
 /// writes stay straight. The returned pair is the profile's own `(lo, hi)`
 /// read in that `v`; `hi < lo` says the profile runs against the chart, which
@@ -1329,7 +1329,7 @@ fn canonical_revolution(
             let (v_lo, v_hi) = (0.0_f64, rise);
             let margin = rise.abs() * 0.1 + 1.0;
             // The window stops at the apex. Past it the radius would come back
-            // negative, which is the *other* nappe — a second surface wearing
+            // negative, which is the *other* nappe: a second surface wearing
             // this one's name, and nothing downstream expects to meet it.
             let apex = -r_lo / slope;
             let (mut low, mut high) = (v_lo.min(v_hi) - margin, v_lo.max(v_hi) + margin);
@@ -1343,14 +1343,14 @@ fn canonical_revolution(
         }
         // A circle in a meridian plane sweeps a torus, whose `v` is the angle
         // round the tube. The circle's own parameter is an angle too, so the
-        // two differ by a turn and possibly a sign — affine either way.
+        // two differ by a turn and possibly a sign; affine either way.
         ogeom_geom::Curve::Circle(c) => {
             let circle = c.circle();
             let (centre, normal) = (circle.frame().origin(), circle.frame().z().vector());
             let offset = radius_of(centre);
             let (major, minor) = (offset.magnitude(), circle.radius());
-            // The circle's plane must contain the axis — its normal square to
-            // the axis and to the offset — or the sweep is no torus. A tube
+            // The circle's plane must contain the axis (its normal square to
+            // the axis and to the offset), or the sweep is no torus. A tube
             // that reaches its own axis is a spindle, which this vocabulary
             // does not name and the revolution still describes.
             if normal.dot(along).abs() > tol.angular()
@@ -1516,7 +1516,7 @@ fn flat_revolution(
 /// The circle or arc one endpoint of the profile sweeps out.
 ///
 /// Shared between the two faces that meet along it, exactly as the prism's
-/// rails are — building one per face would leave every rail used once and the
+/// rails are; building one per face would leave every rail used once and the
 /// solid open along every corner.
 ///
 /// An endpoint *on* the axis sweeps out nothing, and gets a degenerate edge: it
@@ -1550,7 +1550,7 @@ fn revolved_rail(
     let from = base.transform(model.datums())?.apply(data.point);
 
     // A full turn brings the endpoint back to itself, so the rail is one closed
-    // edge named twice by the same vertex — which is what keeps "walk to the
+    // edge named twice by the same vertex, which is what keeps "walk to the
     // end" meaningful all the way round.
     let raised = if turn.full {
         base.clone()
@@ -1596,7 +1596,7 @@ const AXIS_SAMPLES: usize = 32;
 /// Where an edge stands in relation to the axis it is to be turned about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AxisRelation {
-    /// Clear of it, except possibly at its ends — which sweep out poles.
+    /// Clear of it, except possibly at its ends, which sweep out poles.
     Clear,
     /// Lying along it, so it sweeps out nothing at all.
     On,
@@ -1608,8 +1608,8 @@ enum AxisRelation {
 /// An edge *crossing* the axis sweeps out a surface that passes through itself,
 /// and the solid built on it is wrong in a way nothing downstream can detect:
 /// its volume is finite and plausible and counts part of space twice. That is
-/// refused. An edge lying *along* the axis sweeps out nothing — the inner side
-/// of a rectangle that revolves into a cylinder — and gets no face. An edge
+/// refused. An edge lying *along* the axis sweeps out nothing (the inner side
+/// of a rectangle that revolves into a cylinder) and gets no face. An edge
 /// merely touching the axis at an end sweeps out a pole, which is ordinary.
 ///
 /// Solved, not sampled. An earlier version sampled the radial vector at
@@ -1618,7 +1618,7 @@ enum AxisRelation {
 /// and the intersector did not exist yet. It does now, and the decision is
 /// exact in two layers: the intersector names every point where the curve
 /// meets the axis within tolerance, and the extrema machinery names every
-/// stationary nearest approach — which is what catches the case the sampling
+/// stationary nearest approach, which is what catches the case the sampling
 /// never could, a profile grazing the axis *tangentially* between samples,
 /// where the radial direction never reverses and no sample lands on the
 /// touch.
@@ -1721,7 +1721,7 @@ fn axis_relation(
 /// A rigid motion leaves a curve's parameterization alone; a uniform scale
 /// stretches it, because a line's parameter is a length. Rather than knowing
 /// which curve types do which, the parameter is placed by where it sits between
-/// the domain's ends — which is the same affine map in both cases, and the
+/// the domain's ends, which is the same affine map in both cases, and the
 /// identity when the two domains agree.
 fn rescale(u: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
     let span = from.1 - from.0;
@@ -1733,8 +1733,8 @@ fn rescale(u: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
 
 /// The edge one endpoint of the profile sweeps out.
 ///
-/// Shared between the two faces that meet along it — the previous edge's sweep
-/// and this one's — which is what makes the shell close. Building a rail per
+/// Shared between the two faces that meet along it (the previous edge's sweep
+/// and this one's), which is what makes the shell close. Building a rail per
 /// face instead leaves every one used once and the prism open along every
 /// corner.
 fn rail(
@@ -2186,7 +2186,7 @@ mod tests {
         // The defect this pins: the `-Z` face of a box has all four of its
         // edges reversed within its wire, and the `+Z` face has none. Sweeping
         // either along `+Z` describes the same solid, so the two had better
-        // agree about it — in face count, in mesh closure and in volume.
+        // agree about it: in face count, in mesh closure and in volume.
         for (role, centre) in [
             // The `+Z` face sits at z = 2 and sweeps to z = 5; the `-Z` face
             // sits at z = 0 and sweeps to z = 3.
@@ -2240,8 +2240,8 @@ mod tests {
 
     #[test]
     fn every_face_of_a_box_sweeps_into_a_solid_of_the_right_volume() {
-        // Four of the six have their wire's edges mixed — some forward, some
-        // reversed — which is the case a per-face flip would not have caught.
+        // Four of the six have their wire's edges mixed (some forward, some
+        // reversed), which is the case a per-face flip would not have caught.
         use crate::primitive::roles;
         let roles = [
             (roles::FACE_MIN_X, Vector::new(-3.0, 0.0, 0.0)),
@@ -2271,7 +2271,7 @@ mod tests {
     ///
     /// The corners run counter-clockwise about `-y`, so that is the plane's
     /// normal: a face whose wire winds against its own normal is inside out,
-    /// and would sweep into a solid that measures negative — which is a
+    /// and would sweep into a solid that measures negative, which is a
     /// property of the profile, not of the sweep.
     fn ring_profile(model: &mut Model, offset: f64, side: f64) -> Shape {
         let frame = Frame::new(
@@ -2334,7 +2334,7 @@ mod tests {
     #[test]
     fn a_square_revolved_a_full_turn_is_a_ring_that_agrees_with_itself() {
         // The case the reverted draft got wrong: correct topology, a closed
-        // shell, per-face triangulations matching Pappus — and twelve unshared
+        // shell, per-face triangulations matching Pappus, and twelve unshared
         // triangle edges at the seam, because the two sides of a face closed in
         // `u` did not weld together.
         let (offset, side) = (3.0_f64, 2.0_f64);
@@ -2348,7 +2348,7 @@ mod tests {
             counts(ShapeType::Edge),
             6,
             "a rail per profile vertex, and a seam only on the cylindrical \
-             walls — the flat annuli are plane faces bounded by their rails \
+             walls; the flat annuli are plane faces bounded by their rails \
              alone"
         );
         assert_eq!(counts(ShapeType::Vertex), 4, "a full turn adds none");
@@ -2466,7 +2466,7 @@ mod tests {
         // counts whichever way it was built. Each lateral face is one face
         // closed on itself at a seam rather than two halves; a side lying
         // along the axis turns onto itself and contributes no face; and a
-        // radial side sweeps a *plane* — the sweep names it as one, so the
+        // radial side sweeps a *plane*: the sweep names it as one, so the
         // caps are plane faces bounded by their rim circles alone, with no
         // seam and no degenerate centre, exactly as `make_cylinder` builds
         // them. Faces, edges and vertices all agree.
@@ -2536,7 +2536,7 @@ mod tests {
     #[test]
     fn a_wall_parallel_to_the_axis_names_the_cylinder_it_is() {
         // A ring profile runs one side up the axis's direction and the other
-        // back down it, so both senses occur in a single wire — which is what
+        // back down it, so both senses occur in a single wire, which is what
         // makes the chart's normal disagree with the revolution's on exactly
         // one of them, and the face's own flag carry the difference. If it did
         // not, one wall would stand inside out and the volume would come back
@@ -2591,7 +2591,7 @@ mod tests {
     #[test]
     fn a_triangle_touching_the_axis_revolves_into_a_cone() {
         // The endpoint on the axis sweeps out nothing, so its rail is a
-        // degenerate edge — an apex. Leaving it out would leave the flank's
+        // degenerate edge: an apex. Leaving it out would leave the flank's
         // boundary open along one side of its parameter rectangle with nothing
         // for the triangulator to trim to.
         let (radius, height) = (3.0_f64, 4.0_f64);
@@ -2657,7 +2657,7 @@ mod tests {
 
     #[test]
     fn a_frustum_profile_names_a_cone_on_each_leaning_side() {
-        // A cone the profile never brings to its apex, and both walls lean —
+        // A cone the profile never brings to its apex, and both walls lean:
         // one outward and one inward, so the two run opposite ways round the
         // chart and the face flag has to carry the difference for each.
         let mut model = Model::new();
@@ -2810,7 +2810,7 @@ mod tests {
     fn a_full_turn_consumes_the_profile_face_but_not_its_edges() {
         // The profile of a full turn is an interior cross-section of the
         // result: no face of the solid is it, so it is deleted. Its edges are a
-        // different matter — each survives as the seam of the face it made, and
+        // different matter: each survives as the seam of the face it made, and
         // reporting them deleted would break a reference to an edge that is
         // still right there.
         let mut model = Model::new();
@@ -2882,7 +2882,7 @@ mod tests {
         // The case the sampled check could never see, and the reason the
         // exact one replaced it. The bottom of this profile is the quadratic
         // Bezier x(t) = (1 - 3t)^2: it dips to touch the axis tangentially at
-        // t = 1/3 — not on any evenly spaced sample grid — and comes back
+        // t = 1/3 (not on any evenly spaced sample grid) and comes back
         // without ever changing side, so the radial direction never reverses
         // either. Sampling saw a profile clear of the axis; the extrema layer
         // sees the stationary approach that reaches it, and the revolution
@@ -3032,7 +3032,7 @@ mod tests {
             "and are still distinct, because their placements differ"
         );
 
-        // Four side faces, four rails, one wire, a shell and a solid — but no
+        // Four side faces, four rails, one wire, a shell and a solid, but no
         // second copy of the profile's four edges or four vertices.
         assert!(
             model.node_count() - before < 20,
@@ -3160,7 +3160,7 @@ mod tests {
         // parameter with it, because that parameter is a length. The edge's
         // range is in the stored curve's parameter and the lateral surface's
         // `u` is in the placed one's, so a range copied across unchanged would
-        // trim the surface at the wrong place — here, at half of it.
+        // trim the surface at the wrong place: here, at half of it.
         let mut model = Model::new();
         let face = square(&mut model, 2.0);
         let scaled = crate::transformed(
@@ -3191,14 +3191,14 @@ mod tests {
             "unexpected message: {err}"
         );
         // A wire has no side for the sweep to lie in, so the same vector is
-        // fine there — it makes a perfectly good open shell.
+        // fine there; it makes a perfectly good open shell.
         let wire = model.children_of(&face).unwrap()[0].clone();
         assert!(make_prism(&mut model, &wire, Vector::new(1.0, 1.0, 0.0), T).is_ok());
     }
 
     #[test]
     fn a_vertex_is_not_something_this_sweeps() {
-        // A vertex sweeps into an edge, which is a real operation — but it is
+        // A vertex sweeps into an edge, which is a real operation, but it is
         // not one this returns, and claiming otherwise by returning something
         // of the wrong kind would be worse than saying so.
         let mut model = Model::new();

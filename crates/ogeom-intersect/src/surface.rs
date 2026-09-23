@@ -11,7 +11,7 @@
 //! Three reasons, and the third is the one that matters.
 //!
 //! They are common. Plane against plane, plane against cylinder, sphere against
-//! sphere — a mechanical part is mostly these, and running a marching
+//! sphere: a mechanical part is mostly these, and running a marching
 //! intersector over a pair whose answer is a circle is slower and less accurate
 //! than writing down the circle.
 //!
@@ -27,7 +27,7 @@
 //! # What it reports
 //!
 //! Not just curves. Two surfaces can miss, touch at a point, meet along curves,
-//! or be the same surface — and those are four different answers that downstream
+//! or be the same surface, and those are four different answers that downstream
 //! code has to distinguish. A boolean that treats coincidence as "no
 //! intersection" produces a solid with a face missing.
 
@@ -62,7 +62,7 @@ pub enum Meeting {
 /// # Errors
 ///
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if this pair has no closed
-/// form — which is a statement about the pair, not a failure to compute. The
+/// form, which is a statement about the pair, not a failure to compute. The
 /// general marching intersector is what answers those, and it is gated on the
 /// benchmark this module makes possible.
 pub fn surface_surface(
@@ -213,7 +213,7 @@ fn plane_cylinder(
     let minor = cylinder.radius();
     let major = minor / along.abs();
     // The minor axis runs where the plane and a plane perpendicular to the axis
-    // agree — the cross of the two normals.
+    // agree: the cross of the two normals.
     let minor_direction =
         Direction::from_cross(plane.normal().vector(), axis.direction.vector(), tol)?;
     let major_direction =
@@ -274,7 +274,7 @@ fn coaxial_cylinders(
 ) -> OgeomResult<Meeting> {
     if !a.axis().is_coaxial(b.axis(), tol) {
         // Equal radii with intersecting axes: the one crossing whose quartic
-        // factors — into the two ellipses in the axes' bisector planes, each
+        // factors, into the two ellipses in the axes' bisector planes, each
         // an oblique plane section the plane machinery already speaks. The
         // ellipses cross at the two points where the cylinders are tangent;
         // that is the crossing's geometry, stated exactly rather than
@@ -373,12 +373,12 @@ fn coaxial_cylinder_sphere(
 /// parallels.
 ///
 /// The perpendicular slice is the only plane/torus configuration with a
-/// closed form worth the name — an oblique plane meets a torus in a quartic
+/// closed form worth the name: an oblique plane meets a torus in a quartic
 /// (with Villarceau's circles at exactly one magic tilt), and that is the
 /// marching intersector's business. The blend machinery lives on this case:
 /// a rolling ball's toroidal envelope is tangent to the plane it rolls on
 /// along a circle, and that tangency must be *reported as the circle it is*,
-/// the way a tangent plane reports its line on a cylinder — a tangential
+/// the way a tangent plane reports its line on a cylinder; a tangential
 /// answer with no curve in it would send the boolean above into a refusal.
 fn axial_plane_torus(
     plane: ogeom_math::Plane,
@@ -410,7 +410,7 @@ fn axial_plane_torus(
             },
         );
     }
-    // Two parallels, one either side of the tube — the inner one only where
+    // Two parallels, one either side of the tube, the inner one only where
     // the tube does not swallow the axis.
     let spread = minor.mul_add(minor, -(height * height)).max(0.0).sqrt();
     let circles: Vec<Curve> = [torus.major_radius() + spread, torus.major_radius() - spread]
@@ -474,8 +474,8 @@ fn coaxial_cylinder_torus(
 
 /// A plane square to a cone's axis: the parallel at that height, or the apex.
 ///
-/// The perpendicular slice is the configuration the rebuilds lean on — a
-/// drafted wall's cap, a chamfer cone against the face it melts into — and
+/// The perpendicular slice is the configuration the rebuilds lean on (a
+/// drafted wall's cap, a chamfer cone against the face it melts into), and
 /// the answer is a circle framed on the cone's own frame, so a caller
 /// re-deriving an edge finds its parameters where the old ones were. An
 /// oblique plane meets a cone in a conic, which is the marching
@@ -503,8 +503,8 @@ fn plane_cone(
         return Ok(Meeting::Touching(vec![cone.apex()]));
     }
     if radius < 0.0 {
-        // Past the apex the chart runs mirrored — the same points sit half a
-        // turn out of phase — and a parallel reported there would carry the
+        // Past the apex the chart runs mirrored (the same points sit half a
+        // turn out of phase), and a parallel reported there would carry the
         // wrong parameters into everything downstream. Deferred, not guessed.
         ogeom_bail!(
             NotDone,
@@ -523,7 +523,7 @@ fn plane_cone(
 /// the cylinder's radius.
 ///
 /// The radius function is linear in height, so it crosses any radius exactly
-/// once on the chart's own nappe — the parallel reported here. The mirrored
+/// once on the chart's own nappe: the parallel reported here. The mirrored
 /// crossing past the apex is real geometry, but its parameters run half a
 /// turn out of phase and a curve carrying them would poison every consumer;
 /// a face reaching past its own apex is not a configuration this vocabulary
@@ -576,7 +576,7 @@ fn coaxial_cones(
     }
     let axis = a.axis();
     // Both radius functions expressed against `a`'s height origin. The axes
-    // share a sense — `is_coaxial` checked — so the slopes compare directly.
+    // share a sense (`is_coaxial` checked), so the slopes compare directly.
     let lift = (b.axis().location - a.axis().location).dot(axis.direction.vector());
     let (slope_a, slope_b) = (a.half_angle().tan(), b.half_angle().tan());
     let (ref_a, ref_b) = (
@@ -593,7 +593,7 @@ fn coaxial_cones(
     }
     // One linear equation: where the radius lines cross on the charts' own
     // nappes. The mirrored-nappe crossings are real geometry with the wrong
-    // parameters — same reasoning as the cylinder — and stay deferred.
+    // parameters (same reasoning as the cylinder) and stay deferred.
     let height = (ref_b - ref_a) / (slope_a - slope_b);
     let radius = a.radius_at(height);
     if radius.abs() <= tol.confusion() {

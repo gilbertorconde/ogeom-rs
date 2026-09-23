@@ -41,7 +41,7 @@ fn a_fillet_on_a_spline_edge_rides_the_marched_blend() {
     let post = ogeom_algo::make_cylinder(&mut model, frame, 3.0, 10.0, T).unwrap();
     let joined = ogeom_bool::fuse(&mut model, &slab.shape, &post.shape, T).unwrap();
 
-    // The seat: the elliptical edge where the leaning post meets the top —
+    // The seat: the elliptical edge where the leaning post meets the top:
     // the post pierces the slab, so the bottom carries a second ellipse the
     // test must not grab.
     let edge = explore_unique(&model, &joined.shape, ShapeType::Edge)
@@ -120,7 +120,7 @@ fn a_fillet_on_a_spline_edge_rides_the_marched_blend() {
 fn the_seam_of_a_branch_cylinder_gains_a_marched_fillet() {
     // A branch standing on a larger drum: the seam is the fitted saddle
     // curve two cylinders trace, closed on itself, concave all the way
-    // round — the marched fillet's home ground.
+    // round: the marched fillet's home ground.
     let mut model = ogeom_topo::Model::new();
     let main = Frame::new(
         Point::new(-20.0, 0.0, 0.0),
@@ -133,7 +133,7 @@ fn the_seam_of_a_branch_cylinder_gains_a_marched_fillet() {
     let branch = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 20.0, T).unwrap();
     let joined = ogeom_bool::fuse(&mut model, &drum.shape, &branch.shape, T).unwrap();
 
-    // The seat: an arc of the fitted seam where the branch meets the drum —
+    // The seat: an arc of the fitted seam where the branch meets the drum:
     // the boolean splits the loop, but every arc rides the one closed curve
     // and the fillet re-opens it to the full turn.
     let edge = explore_unique(&model, &joined.shape, ShapeType::Edge)

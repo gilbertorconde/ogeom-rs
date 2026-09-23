@@ -1,7 +1,7 @@
 //! PMI: dimensions, geometric tolerances, datums, their targets, and the
 //! drawing of them.
 //!
-//! The machine-readable annotations AP242 calls *semantic* PMI — the values,
+//! The machine-readable annotations AP242 calls *semantic* PMI: the values,
 //! not the leader lines. A dimension carries what it measures and its
 //! plus/minus bounds; a geometric tolerance carries its kind, magnitude and
 //! the datums it references; a datum is a letter on a feature, and its
@@ -11,7 +11,7 @@
 //!
 //! And the *presentation* kind, which is the leader lines: where each
 //! annotation is drawn, in which plane, as which polylines. It is kept
-//! separate because it is separate — a drawing places its callouts where a
+//! separate because it is separate: a drawing places its callouts where a
 //! draughtsman put them, and neither half derives from the other. What ties
 //! them is [`Callout::annotates`], and a document may carry either alone.
 
@@ -31,19 +31,19 @@ pub enum MeasureKind {
 pub struct Dimension {
     /// What the file calls it: `diameter`, `linear distance`, …
     pub name: String,
-    /// The stated values — one for a plain dimension, several when the file
+    /// The stated values: one for a plain dimension, several when the file
     /// states a value with explicit bounds.
     pub values: Vec<f64>,
     /// Length or angle.
     pub kind: MeasureKind,
     /// The upper allowance, when a plus/minus tolerance applies.
     pub plus: Option<f64>,
-    /// The lower allowance — typically negative — when one applies.
+    /// The lower allowance (typically negative) when one applies.
     pub minus: Option<f64>,
     /// The topology the dimension measures, one group per feature: a size
     /// has one group, a location has one per end.
     pub features: Vec<Vec<TShapeId>>,
-    /// Whether the dimension runs *between* two features — a location —
+    /// Whether the dimension runs *between* two features (a location)
     /// rather than sizing one.
     pub location: bool,
 }
@@ -66,11 +66,11 @@ pub struct GeometricTolerance {
     /// The tolerance zone's magnitude.
     pub magnitude: f64,
     /// Zone and material-condition modifiers, as lower-case words:
-    /// `maximum_material_requirement`, `unequally_disposed`, … — the
+    /// `maximum_material_requirement`, `unequally_disposed`, …: the
     /// exchange vocabulary for Ⓜ, Ⓤ and their kin.
     pub modifiers: Vec<String>,
     /// The datum letters the tolerance references, in precedence order. A
-    /// composite reference — two datums acting as one, ISO's `A-B` — is a
+    /// composite reference (two datums acting as one, ISO's `A-B`) is a
     /// single entry with its labels hyphen-joined.
     pub datums: Vec<String>,
     /// The topology the tolerance controls.
@@ -127,8 +127,8 @@ impl Pmi {
 
 /// Where a datum is actually contacted: the target a fixture touches it at.
 ///
-/// A datum plane on a casting is not contacted over its whole face — it rests
-/// on three pads — and the drawing says so with targets: `A1`, `A2`, `A3`,
+/// A datum plane on a casting is not contacted over its whole face (it rests
+/// on three pads), and the drawing says so with targets: `A1`, `A2`, `A3`,
 /// each a point, a line or an area of stated size. The distinction matters to
 /// anything that inspects the part, because the datum it should establish is
 /// the one the targets define and not the nominal surface.
@@ -158,9 +158,9 @@ pub enum DatumTargetKind {
 /// One datum target: which datum, which target of it, and where.
 #[derive(Debug, Clone)]
 pub struct DatumTarget {
-    /// The datum's letter — `A` for `A1`.
+    /// The datum's letter: `A` for `A1`.
     pub datum: String,
-    /// The target's own number — `1` for `A1`.
+    /// The target's own number: `1` for `A1`.
     pub index: u32,
     /// Point, line, or area, with its size.
     pub kind: DatumTargetKind,
@@ -187,8 +187,8 @@ impl DatumTarget {
 /// *Presentation* PMI, as against the semantic kind above. The two are
 /// separate on purpose and in the file: the semantic annotation says a
 /// tolerance is `0.1` and controls this face, and the presentation says where
-/// its frame and leader are drawn. Neither derives from the other — a drawing
-/// places its callouts where a draughtsman put them — so a document that
+/// its frame and leader are drawn. Neither derives from the other (a drawing
+/// places its callouts where a draughtsman put them), so a document that
 /// wants both carries both, and [`Callout::annotates`] is the link between.
 #[derive(Debug, Clone)]
 pub struct Callout {

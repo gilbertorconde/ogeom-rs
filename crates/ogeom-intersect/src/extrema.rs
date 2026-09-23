@@ -2,20 +2,20 @@
 //!
 //! *Elsewhere* this is `Extrema` and the `GeomAPI_Extrema*` family. The
 //! consumer that drives it is minimum distance between shapes, which is
-//! `BRepExtrema` there and lives in `ogeom-algo` here — this module answers for
+//! `BRepExtrema` there and lives in `ogeom-algo` here; this module answers for
 //! the geometry, and the shape layer assembles the answer for topology.
 //!
 //! # What an extremum is, and what it is not
 //!
 //! An approach is *stationary* when the connecting vector is perpendicular to
-//! every tangent it meets — the derivative of the squared distance is zero in
+//! every tangent it meets: the derivative of the squared distance is zero in
 //! each parameter. Those are the only approaches this module reports. Two
 //! kinds of candidate are deliberately not here:
 //!
 //! - **Domain-end candidates.** A pair of segments whose closest points are
 //!   endpoint to endpoint has no interior stationary approach, and the answer
 //!   comes back empty. The endpoints are *points*, and points against curves
-//!   and surfaces are projections, which the caller owns — at the shape
+//!   and surfaces are projections, which the caller owns: at the shape
 //!   level, an edge's ends are vertices, and the vertex pairs cover exactly
 //!   these candidates. Folding them in here would answer the shape question
 //!   badly instead of the geometry question well.
@@ -43,7 +43,7 @@ pub struct Approach<A, B> {
     pub point_a: Point,
     /// The evaluated point on the second.
     pub point_b: Point,
-    /// The distance between them — the claim, checkable by evaluation.
+    /// The distance between them: the claim, checkable by evaluation.
     pub distance: f64,
 }
 
@@ -55,7 +55,7 @@ pub struct Extrema<A, B> {
     /// the back of the same list.
     pub approaches: Vec<Approach<A, B>>,
     /// Whether the nearest distance is attained along a locus rather than at
-    /// an isolated point — parallel lines, concentric circles, coaxial
+    /// an isolated point: parallel lines, concentric circles, coaxial
     /// quadrics. When set, the nearest approaches are representatives of the
     /// family, not the family.
     pub family: bool,
@@ -92,7 +92,7 @@ impl Default for ExtremaOptions {
 /// An untrimmed line or plane spans ±1e9; sixty-four samples across that
 /// resolve nothing a caller could want. The analytic line/line case answers
 /// without sampling, and everything else is refused with instructions rather
-/// than sampled into a wrong answer — the same stance `surface_bounds` takes
+/// than sampled into a wrong answer, the same stance `surface_bounds` takes
 /// on an unbounded plane.
 const WIDEST_DOMAIN: f64 = 1e8;
 
@@ -118,7 +118,7 @@ const MOST_SEEDS: usize = 256;
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the options
 /// are unusable; [`OgeomError::Domain`](ogeom_core::OgeomError::Domain) if a curve's
-/// domain is too wide to sample — trim it before asking.
+/// domain is too wide to sample; trim it before asking.
 pub fn extrema_curve_curve(
     a: &Curve,
     b: &Curve,
@@ -148,8 +148,8 @@ pub fn extrema_curve_curve(
         ogeom_bail!(Construction, "a curve failed to evaluate over its domain");
     }
 
-    // Local extrema of the sampled distance field seed the polish. Ties count
-    // — on a constant-distance locus everything ties, and the family is
+    // Local extrema of the sampled distance field seed the polish. Ties count:
+    // on a constant-distance locus everything ties, and the family is
     // exactly what the tied seeds go on to reveal.
     let mut seeds = Vec::new();
     for i in 0..sa.len() {

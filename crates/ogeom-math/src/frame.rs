@@ -69,7 +69,7 @@ pub struct Axis2 {
 
 /// A local coordinate system in space.
 ///
-/// The `z` direction is primary — it is the axis of revolution for a cylinder,
+/// The `z` direction is primary: it is the axis of revolution for a cylinder,
 /// the normal of a plane, the axis of a circle. `x` fixes where parameterization
 /// starts. `y` is derived and always consistent with the handedness.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -305,7 +305,7 @@ impl Frame {
 
     /// A right-handed frame with an arbitrary but deterministic first axis.
     ///
-    /// For geometry with rotational symmetry — a sphere, a full circle — the
+    /// For geometry with rotational symmetry (a sphere, a full circle), the
     /// choice of `x` is immaterial, and requiring the caller to invent one is
     /// noise.
     #[must_use]
@@ -369,7 +369,7 @@ impl Frame {
         self.origin
     }
 
-    /// The primary direction — the normal of a plane, the axis of a cylinder.
+    /// The primary direction: the normal of a plane, the axis of a cylinder.
     #[must_use]
     pub const fn z(&self) -> Direction {
         self.z
@@ -417,7 +417,7 @@ impl Frame {
 
     /// This frame with the primary direction reversed.
     ///
-    /// `x` is kept, so `y` must flip to preserve handedness — reversing a
+    /// `x` is kept, so `y` must flip to preserve handedness; reversing a
     /// plane's normal should not silently turn its parameterization inside out.
     #[must_use]
     pub const fn with_z_reversed(&self) -> Self {

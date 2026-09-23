@@ -5,15 +5,15 @@
 //!
 //! The entry points, by what is being intersected:
 //!
-//! - [`intersect_surfaces`] — surface/surface, the one `ogeom-bool` builds on.
+//! - [`intersect_surfaces`]: surface/surface, the one `ogeom-bool` builds on.
 //!   Analytic closed forms where they exist, with exact same-parameter
 //!   pcurves; the marching-and-fitting pipeline where they do not, with the
 //!   tolerance reported as a sum of stated parts.
-//! - [`intersect_curves_2d`] / [`intersect_curves`] — curve/curve in the
+//! - [`intersect_curves_2d`] / [`intersect_curves`]: curve/curve in the
 //!   plane and in space. The planar one is what boolean face splitting runs
 //!   on; the spatial one reports the gap each crossing achieved, because
 //!   space curves generically miss.
-//! - [`intersect_curve_surface`] — curve/surface, the well-posed system, and
+//! - [`intersect_curve_surface`]: curve/surface, the well-posed system, and
 //!   what the exact point-in-solid classifier will cast its rays with.
 //!
 //! The stages underneath are public because each is separately measurable:
@@ -22,15 +22,15 @@
 //!
 //! # The instruments
 //!
-//! **This crate was the project's single largest risk** — no Rust equivalent
-//! existed, and it is where prior open-source B-rep efforts failed — so it is
+//! **This crate was the project's single largest risk** (no Rust equivalent
+//! existed, and it is where prior open-source B-rep efforts failed), so it is
 //! held to instruments rather than trusted. They live in `tests/support/`,
 //! because measuring an intersector is not something a caller of one wants to
 //! do; what a caller wants is an intersector that has been measured.
 //!
 //! One scores accuracy: every point of every reported curve against both
 //! surfaces, with ground truth being the surfaces themselves rather than
-//! anyone else's answer. The other scores completeness — the surfaces are
+//! anyone else's answer. The other scores completeness: the surfaces are
 //! asked, by signed distance and the intermediate value theorem, where the
 //! intersection *must* be, and every such cell had better be reached by some
 //! branch. The second exists because the first cannot catch a missing answer:

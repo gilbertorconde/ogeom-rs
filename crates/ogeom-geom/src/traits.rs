@@ -12,7 +12,7 @@
 //! intersection is two lines of algebra and should never go through a marching
 //! intersector; a caller that wants that shortcut matches on the kind and takes
 //! it. The general path never has to know what it is looking at, so adding a
-//! surface type does not break existing algorithms — it only forgoes a
+//! surface type does not break existing algorithms; it only forgoes a
 //! shortcut until someone writes one.
 
 use ogeom_core::{OgeomResult, Tolerances};
@@ -34,7 +34,7 @@ pub enum Continuity {
     G2,
     /// Second derivatives agree exactly.
     C2,
-    /// Differentiable to any order — an analytic surface away from its
+    /// Differentiable to any order: an analytic surface away from its
     /// degeneracies.
     CInfinity,
 }
@@ -98,7 +98,7 @@ pub enum SurfaceKind {
 }
 
 impl SurfaceKind {
-    /// Whether this surface is a quadric — a plane, cylinder, cone or sphere.
+    /// Whether this surface is a quadric: a plane, cylinder, cone or sphere.
     ///
     /// Quadric pairs have closed-form intersections, which is worth a great
     /// deal: it is the difference between an exact conic and a marched
@@ -127,7 +127,7 @@ impl SurfaceKind {
 /// Implementors must guarantee:
 ///
 /// - [`Curve3d::domain`] returns `(a, b)` with `a < b`, both finite;
-/// - [`Curve3d::point_at`] and the derivative methods agree — `d1_at` is the
+/// - [`Curve3d::point_at`] and the derivative methods agree: `d1_at` is the
 ///   derivative of `point_at`, and so on;
 /// - a periodic curve's period is exactly its domain width.
 pub trait Curve3d {
@@ -245,8 +245,8 @@ pub trait Curve3d {
 /// A parametric curve in the plane.
 ///
 /// The same contract as [`Curve3d`], one dimension down. Kept as a separate
-/// trait rather than a generic parameter because pcurves — curves in a
-/// surface's parameter space — are used differently enough from spatial curves
+/// trait rather than a generic parameter because pcurves (curves in a
+/// surface's parameter space) are used differently enough from spatial curves
 /// that conflating them invites mistakes.
 pub trait Curve2d {
     /// The parameter interval over which the curve is defined.
@@ -304,7 +304,7 @@ pub trait Curve2d {
 
 /// A surface's point and its derivatives through second order, at one place.
 ///
-/// What a foot-point solve needs in one go — see [`Surface::jet_at`].
+/// What a foot-point solve needs in one go; see [`Surface::jet_at`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceJet {
     /// The point at the parameters asked for.
@@ -327,8 +327,8 @@ pub struct SurfaceJet {
 ///
 /// What curvature display, zebra analysis and a fillet's seat all ask.
 /// The principal directions are unit tangents in space, perpendicular to
-/// each other; at an umbilic — where every direction curves the same, as
-/// everywhere on a sphere or a plane — they are any perpendicular pair
+/// each other; at an umbilic (where every direction curves the same, as
+/// everywhere on a sphere or a plane) they are any perpendicular pair
 /// in the tangent plane, and [`SurfaceCurvature::is_umbilic`] says so.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceCurvature {
@@ -409,7 +409,7 @@ pub trait Surface {
     ///
     /// It is not right for a tensor-product patch, where each accessor
     /// re-locates the knot spans, rebuilds the basis functions and sums the
-    /// control grid again — three times, for numbers the order-two table
+    /// control grid again, three times, for numbers the order-two table
     /// already holds. Anything walking a surface and asking for all six at a
     /// point, as a foot-point solve does at every step, pays that over and
     /// over. Such surfaces override this.
@@ -418,7 +418,7 @@ pub trait Surface {
     /// its point by de Boor and its derivatives by basis functions, and those
     /// reassociate differently; the combined answer may differ from the
     /// separate accessors' in the last ulp. Callers needing one consistent
-    /// jet — every value from the same evaluation — should use this and not
+    /// jet (every value from the same evaluation) should use this and not
     /// mix it with the accessors at the same parameters.
     ///
     /// # Errors
@@ -461,7 +461,7 @@ pub trait Surface {
     /// # Errors
     ///
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) at a
-    /// degeneracy — a pole or an apex — where the tangents determine no normal.
+    /// degeneracy (a pole or an apex) where the tangents determine no normal.
     fn normal_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<Direction> {
         let (du, dv) = self.d1_at(u, v, tol)?;
         // Compared against the square of the larger tangent: at a pole one
@@ -549,10 +549,10 @@ pub trait Surface {
     }
 
     /// Bring `(u, v)` into the domain, wrapping in whichever directions are
-    /// periodic — or closed.
+    /// periodic, or closed.
     ///
-    /// A surface that merely closes on itself — a clamped B-spline tube
-    /// whose first and last control columns coincide — has the same points
+    /// A surface that merely closes on itself (a clamped B-spline tube
+    /// whose first and last control columns coincide) has the same points
     /// at both ends of its domain exactly as a periodic one does, and a
     /// parameter a whole period past the end names a point it has. A face
     /// whose trim runs right round such a tube has a ring that straddles
@@ -569,8 +569,8 @@ pub trait Surface {
     fn normalize_parameters(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<(f64, f64)> {
         // Every evaluation of every surface passes through here, so the
         // in-range path is kept to the two comparisons it always was, and
-        // everything rarer — wrapping a periodic direction, wrapping a
-        // closed one, refusing — lives out of line. Folding the rare cases
+        // everything rarer (wrapping a periodic direction, wrapping a
+        // closed one, refusing) lives out of line. Folding the rare cases
         // into one closure with a `&dyn Fn` for closure cost a tenth of an
         // assembly's meshing time, measured, for nothing on the common path.
         let ((ua, ub), (va, vb)) = self.domain();
@@ -591,8 +591,8 @@ pub trait Surface {
     /// A parameter outside its domain, or on a periodic direction: wrapped
     /// where the direction repeats or closes on itself, refused otherwise.
     ///
-    /// A surface that merely closes on itself — a clamped B-spline tube
-    /// whose first and last control columns coincide — has the same points
+    /// A surface that merely closes on itself (a clamped B-spline tube
+    /// whose first and last control columns coincide) has the same points
     /// at both ends of its domain exactly as a periodic one does, and a
     /// parameter a whole period past the end names a point it has. A face
     /// whose trim runs right round such a tube has a ring that straddles
@@ -637,8 +637,8 @@ pub trait Surface {
 
 /// Geometry that can be moved by a similarity.
 ///
-/// Separate from the evaluation traits because a *view* of geometry — a
-/// borrowed adaptor over someone else's data — can be evaluated but not moved.
+/// Separate from the evaluation traits because a *view* of geometry (a
+/// borrowed adaptor over someone else's data) can be evaluated but not moved.
 pub trait Transformable: Sized {
     /// This geometry moved by `t`.
     ///
@@ -654,7 +654,7 @@ pub trait Reversible: Sized {
     /// This geometry with its parameter direction reversed.
     ///
     /// The domain is preserved, so a curve reversed still runs over the same
-    /// interval — only the direction of travel changes. Preserving the domain
+    /// interval; only the direction of travel changes. Preserving the domain
     /// matters because trimming ranges elsewhere refer to it.
     #[must_use]
     fn reversed(&self) -> Self;
@@ -686,7 +686,7 @@ mod tests {
             assert!(k.is_quadric(), "{k:?}");
             assert!(k.is_analytic(), "{k:?}");
         }
-        // A torus is analytic but quartic, not quadric — a distinction that
+        // A torus is analytic but quartic, not quadric, a distinction that
         // matters, since quadric pairs have closed-form intersections and
         // torus pairs do not.
         assert!(!SurfaceKind::Torus.is_quadric());

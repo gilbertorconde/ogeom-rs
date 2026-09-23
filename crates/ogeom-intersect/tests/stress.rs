@@ -5,14 +5,14 @@
 //! stay found:
 //!
 //! - coincident surfaces returned six confident little curves that existed
-//!   nowhere but in rounding — the tangency gate sat *below* the noise floor
+//!   nowhere but in rounding: the tangency gate sat *below* the noise floor
 //!   the Newton correction is allowed to leave;
 //! - a walk that ran into a surface's edge reported `Stalled` rather than
 //!   `LeftTheDomain`, because it converges on the boundary from inside and
 //!   never enters the strict band the crossing test uses;
 //! - the coverage instrument compared cell centres to polyline *vertices*, so
-//!   a perfectly traced straight line — whose points sit far apart, since
-//!   nothing bends — scored half missing.
+//!   a perfectly traced straight line (whose points sit far apart, since
+//!   nothing bends) scored half missing.
 
 #![allow(
     clippy::unwrap_used,
@@ -135,7 +135,7 @@ fn tangential_contact_yields_no_curves_and_the_analytic_path_names_it() {
 fn a_walk_that_reaches_the_edge_of_a_surface_says_so() {
     // Two parallel cylinders overlap in two straight lines that run off both
     // ends of the domain. The walk converges on the boundary from inside, so it
-    // stalls a fraction of a step short — which must not read as `Stalled`,
+    // stalls a fraction of a step short, which must not read as `Stalled`,
     // indistinguishable from a genuine singularity.
     let a = cylinder(Point::ORIGIN, Vector::Z, 1.0);
     let b = cylinder(Point::new(1.99, 0.0, 0.0), Vector::Z, 1.0);
@@ -158,7 +158,7 @@ fn a_walk_that_reaches_the_edge_of_a_surface_says_so() {
     let score = coverage(&a, &b, &found, 60, T).unwrap();
     assert!(
         score.complete(),
-        "a fully traced pair of lines scored {}/{} — the instrument is \
+        "a fully traced pair of lines scored {}/{}; the instrument is \
          measuring its own sampling again",
         score.covered,
         score.crossings
@@ -177,7 +177,7 @@ fn coverage_measures_the_curve_not_the_spacing_of_its_points() {
     let score = coverage(&a, &b, &found, 60, T).unwrap();
     assert!(
         score.complete(),
-        "{}/{} — cells between the sparse samples of a straight line were \
+        "{}/{}: cells between the sparse samples of a straight line were \
          counted as missed",
         score.covered,
         score.crossings
@@ -247,7 +247,7 @@ fn far_from_the_origin_the_answer_is_the_same() {
 #[test]
 fn the_mutual_blindness_of_seeding_and_coverage_is_a_fact_not_a_surprise() {
     // Two parallel cylinders overlapping by microns meet in two lines a few
-    // thousandths apart — thinner than a seeding cell *and* thinner than a
+    // thousandths apart, thinner than a seeding cell *and* thinner than a
     // coverage cell at the same resolution. The seeder misses them and the
     // instrument cannot see that it missed, because both look through the same
     // grid. Pinned so the limitation stays documented behaviour rather than

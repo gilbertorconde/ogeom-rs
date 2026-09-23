@@ -8,7 +8,7 @@
 //!
 //! Curves are stored in their millions in a real model, compared constantly,
 //! and eventually serialized. An enum makes each of those cheap: no allocation,
-//! no vtable, `Clone` and `PartialEq` derived, and — most usefully — exhaustive
+//! no vtable, `Clone` and `PartialEq` derived, and (most usefully) exhaustive
 //! matching, so adding a curve type produces a compile error at every site that
 //! needs to know rather than a silent fallthrough.
 //!
@@ -17,7 +17,7 @@
 //! silent fallthrough the enum exists to prevent: a new curve type would then
 //! compile everywhere and be mishandled everywhere. The cost is that adding a
 //! variant is a breaking change, which for a kernel this size is the right
-//! trade — a curve type nobody handles is worse than a version bump.
+//! trade: a curve type nobody handles is worse than a version bump.
 //!
 //! [`CurveKind`] *is* non-exhaustive, because matching on it is for opting into
 //! an analytic shortcut and a caller that does not recognise a kind should fall
@@ -107,7 +107,7 @@ pub struct ParabolaCurve {
 /// A helix about its frame's `z`, parameterized by turn angle.
 ///
 /// The point at `t` sits at angle `t` around the axis, radius out along the
-/// turned `x`, risen by `pitch·t/2π` along `z` — so one full turn advances
+/// turned `x`, risen by `pitch·t/2π` along `z`, so one full turn advances
 /// exactly one pitch, and a negative pitch winds the other hand. A non-zero
 /// `taper` advances the radius the same way and winds a cone instead. A
 /// helix is transcendental: no rational B-spline states it exactly, which
@@ -155,7 +155,7 @@ impl LineCurve {
     /// A line segment between two distinct points.
     ///
     /// The domain runs from zero to the distance between them, so the parameter
-    /// is arc length — which makes every length query along the segment exact.
+    /// is arc length, which makes every length query along the segment exact.
     ///
     /// # Errors
     ///
@@ -211,8 +211,8 @@ impl CircleCurve {
     /// Whether the curve runs backwards along its underlying circle.
     ///
     /// Part of the curve's state and not derivable from its circle, so
-    /// anything that has to reproduce this curve exactly — the native format
-    /// above all — needs to be able to read it.
+    /// anything that has to reproduce this curve exactly (the native format
+    /// above all) needs to be able to read it.
     #[must_use]
     pub const fn is_reversed(&self) -> bool {
         self.reversed
@@ -238,8 +238,8 @@ impl EllipseCurve {
     /// Whether the curve runs backwards along its underlying ellipse.
     ///
     /// Part of the curve's state and not derivable from its ellipse, so
-    /// anything that has to reproduce this curve exactly — the native format
-    /// above all — needs to be able to read it.
+    /// anything that has to reproduce this curve exactly (the native format
+    /// above all) needs to be able to read it.
     #[must_use]
     pub const fn is_reversed(&self) -> bool {
         self.reversed
@@ -297,8 +297,8 @@ impl HyperbolaCurve {
     /// Whether the curve runs backwards along its underlying hyperbola.
     ///
     /// Part of the curve's state and not derivable from its hyperbola, so
-    /// anything that has to reproduce this curve exactly — the native format
-    /// above all — needs to be able to read it.
+    /// anything that has to reproduce this curve exactly (the native format
+    /// above all) needs to be able to read it.
     #[must_use]
     pub const fn is_reversed(&self) -> bool {
         self.reversed
@@ -355,8 +355,8 @@ impl ParabolaCurve {
     /// Whether the curve runs backwards along its underlying parabola.
     ///
     /// Part of the curve's state and not derivable from its parabola, so
-    /// anything that has to reproduce this curve exactly — the native format
-    /// above all — needs to be able to read it.
+    /// anything that has to reproduce this curve exactly (the native format
+    /// above all) needs to be able to read it.
     #[must_use]
     pub const fn is_reversed(&self) -> bool {
         self.reversed
@@ -370,7 +370,7 @@ impl HelixCurve {
     ///
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
     /// the radius is not finite and positive, the pitch is not finite and
-    /// non-zero — a zero pitch is a circle, and there is a type for that —
+    /// non-zero (a zero pitch is a circle, and there is a type for that),
     /// or `turns` is not finite and positive.
     pub fn new(frame: Frame, radius: f64, pitch: f64, turns: f64) -> OgeomResult<Self> {
         if !turns.is_finite() || turns <= 0.0 {
@@ -422,7 +422,7 @@ impl HelixCurve {
     /// # Errors
     ///
     /// As [`HelixCurve::over`], and additionally if `taper` is not finite
-    /// or the radius runs non-positive anywhere on the interval — past the
+    /// or the radius runs non-positive anywhere on the interval; past the
     /// apex there is no cone to wind.
     pub fn conical(
         frame: Frame,
@@ -687,7 +687,7 @@ impl Curve3d for OffsetCurve {
 /// A pcurve composed with the surface it is drawn on: the space curve a
 /// trimming boundary actually traces.
 ///
-/// Everything is exact — the chain rule composes the pcurve's derivatives
+/// Everything is exact: the chain rule composes the pcurve's derivatives
 /// with the surface's, both of which the vocabulary carries to second
 /// order.
 #[derive(Debug, Clone, PartialEq)]
@@ -879,7 +879,7 @@ impl BSplineCurve {
     /// # Errors
     ///
     /// As [`BSplineCurve::rational`], and additionally if the trailing
-    /// `degree` controls do not repeat the leading ones — an unwrapped ring
+    /// `degree` controls do not repeat the leading ones; an unwrapped ring
     /// evaluated periodically would tear at the seam.
     pub fn periodic_from_parts(
         knots: KnotVector,
@@ -971,7 +971,7 @@ impl BSplineCurve {
     /// # Errors
     ///
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-    /// curve is periodic — its seam is nowhere — or does not close, its
+    /// curve is periodic (its seam is nowhere) or does not close, its
     /// two ends apart by more than a thousand confusions; as
     /// [`bspline::split`] if `u` is an end of the domain.
     pub fn reseamed_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Self> {
@@ -980,7 +980,7 @@ impl BSplineCurve {
         }
         let (start, end) = self.domain();
         let (head, tail) = (self.point_at(start, tol)?, self.point_at(end, tol)?);
-        // Closed to a thousand confusions — a marched section closes to
+        // Closed to a thousand confusions: a marched section closes to
         // its own march's tolerance, and a loop whose ends sit a fraction
         // of a micron apart is closed for every purpose the seam serves.
         if head.distance(tail) > tol.confusion() * 1e3 {
@@ -1008,8 +1008,8 @@ impl BSplineCurve {
     /// order continues as itself, and so does a rational arc's homogeneous
     /// polynomial: a circle arc continued at order two stays on its circle.
     ///
-    /// The length is met to first order — the parameter span is the length
-    /// over the speed at the end — so a curve whose speed changes along the
+    /// The length is met to first order (the parameter span is the length
+    /// over the speed at the end), so a curve whose speed changes along the
     /// continuation runs a little short or long of it. Extended at the
     /// start, the original run keeps its parameters and the domain grows
     /// downward.
@@ -1017,7 +1017,7 @@ impl BSplineCurve {
     /// # Errors
     ///
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-    /// curve is periodic — it has no end to continue from — or stands still
+    /// curve is periodic (it has no end to continue from) or stands still
     /// at that end; as [`bspline::extend`].
     pub fn extended(
         &self,
@@ -1115,8 +1115,8 @@ impl TrimmedCurve {
     /// Whether the curve runs backwards along its underlying curve.
     ///
     /// Part of the curve's state and not derivable from its basis curve, so
-    /// anything that has to reproduce this curve exactly — the native format
-    /// above all — needs to be able to read it.
+    /// anything that has to reproduce this curve exactly (the native format
+    /// above all) needs to be able to read it.
     #[must_use]
     pub const fn is_reversed(&self) -> bool {
         self.reversed
@@ -1553,7 +1553,7 @@ impl Transformable for Curve {
                     t.apply_direction(c.axis.direction, tol)?,
                 ),
                 // The parameter is a length, so a scaling rescales the domain
-                // with it — otherwise the trimmed extent would silently change.
+                // with it; otherwise the trimmed extent would silently change.
                 domain: (
                     c.domain.0 * t.scale_factor().abs(),
                     c.domain.1 * t.scale_factor().abs(),
@@ -1830,7 +1830,7 @@ mod tests {
         assert_relative_eq!(after_one_turn.y, 0.0, epsilon = 1e-12);
         assert_relative_eq!(after_one_turn.z - start.z, 2.0, epsilon = 1e-12);
 
-        // Closed-form length: constant speed times swept angle — checked
+        // Closed-form length: constant speed times swept angle, checked
         // against a fine chordal sum.
         let exact = helix.arc_length(0.0, 2.0 * tau);
         assert_relative_eq!(exact, 2.0 * tau * 3.0f64.hypot(2.0 / tau), epsilon = 1e-12);
@@ -1903,7 +1903,7 @@ mod tests {
         use ogeom_math::{Cylinder, Point2};
 
         // The pcurve u = t, v = pitch·t/2π on a cylinder chart lifts to
-        // exactly the helix with that pitch — two constructions, no shared
+        // exactly the helix with that pitch: two constructions, no shared
         // code path, one curve.
         let radius = 3.0;
         let pitch = 2.0;
@@ -2224,7 +2224,7 @@ mod tests {
             Point::new(3.0, 1.0, 0.0),
             Point::new(4.0, 0.0, 0.0),
         ];
-        // Degree 3 with simple interior knots is C2 there — not C-infinity,
+        // Degree 3 with simple interior knots is C2 there, not C-infinity,
         // which would be a false claim about a piecewise polynomial.
         let smooth = BSplineCurve::new(
             KnotVector::clamped_uniform(3, control.len()).unwrap(),

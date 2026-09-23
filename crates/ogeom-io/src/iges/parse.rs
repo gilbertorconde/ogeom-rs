@@ -2,7 +2,7 @@
 //!
 //! IGES is a 1980s fixed-column format, and the parser honours that rather
 //! than fighting it: a file is a deck of 80-column records, column 73 names
-//! the section — Start, Global, Directory, Parameter, Terminate — and columns
+//! the section (Start, Global, Directory, Parameter, Terminate) and columns
 //! 74–80 number the record within its section. The Directory section holds
 //! two fixed-format lines of eight-character fields per entity; the Parameter
 //! section holds free-format values whose delimiters the Global section
@@ -12,7 +12,7 @@
 //! Everything here is *structure*; meaning belongs to [`super::read`]. The
 //! one interpretation this layer performs is the pointer convention: a
 //! parameter that references another entity holds that entity's directory
-//! sequence number — always odd, since each entity owns two directory lines —
+//! sequence number (always odd, since each entity owns two directory lines),
 //! and a negative value carries orientation or dependency context the
 //! consumer may use, so the sign is preserved.
 
@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 /// One parameter value from the parameter data section.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
-    /// An integer — which is also how pointers arrive.
+    /// An integer, which is also how pointers arrive.
     Int(i64),
     /// A real, accepting both `E` and Fortran `D` exponents.
     Real(f64),
@@ -67,7 +67,7 @@ impl Value {
 /// One entity: its directory entry fields and its parameters.
 #[derive(Debug, Clone)]
 pub struct Entity {
-    /// The entity type number — 100 is a circular arc, 126 a B-spline curve.
+    /// The entity type number: 100 is a circular arc, 126 a B-spline curve.
     pub kind: i64,
     /// The form number, which selects among an entity type's variants.
     pub form: i64,
@@ -90,7 +90,7 @@ pub struct Entity {
 }
 
 impl Entity {
-    /// Parameter `i` (0-based), or `Default` past the end — trailing defaults
+    /// Parameter `i` (0-based), or `Default` past the end; trailing defaults
     /// are legitimately omitted by writers.
     pub fn at(&self, i: usize) -> &Value {
         static DEFAULT: Value = Value::Default;

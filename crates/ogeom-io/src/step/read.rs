@@ -1,11 +1,11 @@
 //! From parsed exchange structure to a living model.
 //!
-//! The reader walks every `MANIFOLD_SOLID_BREP` — `BREP_WITH_VOIDS` is one,
-//! by subtype — and every `SHELL_BASED_SURFACE_MODEL`, and rebuilds them
+//! The reader walks every `MANIFOLD_SOLID_BREP` (`BREP_WITH_VOIDS` is one,
+//! by subtype) and every `SHELL_BASED_SURFACE_MODEL`, and rebuilds them
 //! bottom-up:
 //! points, placements, curves and surfaces into geometry; vertices, edges,
 //! loops, faces and shells into topology, shared exactly as the file shares
-//! them — a vertex referenced by eight edges is one vertex here too, which is
+//! them: a vertex referenced by eight edges is one vertex here too, which is
 //! what lets a closed shell close. Edge ranges are re-derived on this
 //! kernel's own parameterizations from the vertex geometry, because STEP's
 //! parameterizations are its own business and carrying them over blind is
@@ -13,7 +13,7 @@
 //!
 //! What the reader does not understand it *counts*: every instance never
 //! visited lands in the report's skipped table by keyword, and every
-//! compromise — a face without a pcurve, a shell that does not close — is a
+//! compromise (a face without a pcurve, a shell that does not close) is a
 //! warning with the instance number in it. An import that succeeded with
 //! three warnings is a different thing from one that succeeded, and the
 //! report is what keeps the difference visible.
@@ -71,7 +71,7 @@ pub struct StepReport {
     /// Faces that read without a complete trim: an edge's boundary sat too
     /// far from the surface for any honest pcurve (beyond the one-millimetre
     /// healing cap), so the face will refuse to triangulate. Deduplicated,
-    /// in file order — the structured form of the warnings that name them,
+    /// in file order: the structured form of the warnings that name them,
     /// carrying the face itself so the instructed follow-up needs no search.
     /// `check` reports the same faces as broken from the model side. A
     /// refused id whose face never finished building has nothing to act on
@@ -87,7 +87,7 @@ pub struct WarningSummary {
     pub kind: &'static str,
     /// How many times it happened.
     pub count: usize,
-    /// The worst measured value among them — a distance, for every kind
+    /// The worst measured value among them: a distance, for every kind
     /// that measures one; zero where none applies.
     pub worst: f64,
     /// One entity id to look at first.
@@ -97,7 +97,7 @@ pub struct WarningSummary {
 /// A face the reader could not trim, with the shape to act on.
 #[derive(Debug, Clone)]
 pub struct UntrimmedFace {
-    /// The file's id for the face — the same id the warnings name.
+    /// The file's id for the face: the same id the warnings name.
     pub entity: u64,
     /// The face as built; hand it to `ogeom_heal::fix_face_pcurves` with
     /// the cap the situation deserves.
@@ -110,8 +110,8 @@ pub struct StepImport {
     /// The document everything was built into: the model, plus the file's
     /// product structure, names and colours.
     pub document: ogeom_doc::Document,
-    /// One shape per `MANIFOLD_SOLID_BREP` — `BREP_WITH_VOIDS` included,
-    /// its cavities among its shells — in file order.
+    /// One shape per `MANIFOLD_SOLID_BREP` (`BREP_WITH_VOIDS` included,
+    /// its cavities among its shells), in file order.
     pub solids: Vec<Shape>,
     /// One shape per `SHELL_BASED_SURFACE_MODEL`, in file order: its shell,
     /// or a compound of its shells when it names several.
@@ -132,7 +132,7 @@ pub struct StepImport {
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the file does
 /// not parse, contains no solid, or a solid's structure is broken in a way
 /// topology cannot represent. Faces the reader cannot complete become
-/// warnings, not errors — the report says exactly what was compromised.
+/// warnings, not errors; the report says exactly what was compromised.
 pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
     let exchange = super::parse::parse(text)?;
     let mut reader = Reader {
@@ -197,8 +197,8 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
             shells.push(shell);
         }
     }
-    // Every widening the reader made — an edge's tolerance recording how far
-    // its pcurves sit from its curve — reaches the vertices that bound it,
+    // Every widening the reader made (an edge's tolerance recording how far
+    // its pcurves sit from its curve) reaches the vertices that bound it,
     // and a face's reaches its edges: the containment rule the checker holds
     // a solid to, kept by the reader that built it.
     for body in solids.iter().chain(shells.iter()) {
@@ -269,8 +269,8 @@ type BuiltEdge = (Shape, Curve, (f64, f64), bool);
 
 /// A pcurve derived ahead of the face that needs it.
 ///
-/// Deriving one is a pure function of a curve, its range and a surface — no
-/// model, no order — and on a real assembly it is 95% of the time spent
+/// Deriving one is a pure function of a curve, its range and a surface (no
+/// model, no order), and on a real assembly it is 95% of the time spent
 /// building solids. So it is done for a whole solid at once, off the walk
 /// that attaches it.
 enum PreparedPcurve {
@@ -292,7 +292,7 @@ struct Reader<'a> {
     exchange: &'a Exchange,
     model: Model,
     report: StepReport,
-    /// Radians per file angle unit — degrees are common.
+    /// Radians per file angle unit; degrees are common.
     angle_scale: f64,
     /// One slot per possible instance id: the reader touches instances
     /// millions of times, and a direct index beats hashing every touch.
@@ -311,14 +311,14 @@ struct Reader<'a> {
     /// kind → (count, worst, exemplar), folded into the report's summary.
     tallies: HashMap<&'static str, (usize, f64, u64)>,
     /// Usage → its `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION`, built once.
-    /// The lookup used to rescan the whole exchange per assembly edge —
+    /// The lookup used to rescan the whole exchange per assembly edge:
     /// O(usages × entities), 333 × 457 k on one reporting assembly, which
     /// was three quarters of the entire document build.
     cdsr_of_nauo: Option<HashMap<u64, u64>>,
     /// Definition → its `PROPERTY_DEFINITION`s, and property → its
     /// `SHAPE_DEFINITION_REPRESENTATION`s, built together once. The datum
     /// target lookup used to rescan the whole exchange per property *per
-    /// target* — the same quadratic shape the assembly index retired, one
+    /// target*: the same quadratic shape the assembly index retired, one
     /// storey deeper. Each list ascends by id, so whichever entry answers
     /// is the one the old scan would have reached first.
     properties_of_definition: Option<HashMap<u64, Vec<u64>>>,
@@ -341,7 +341,7 @@ impl Reader<'_> {
         })
     }
 
-    /// A face's arguments — name, bounds, surface, sense — whether the file
+    /// A face's arguments (name, bounds, surface, sense), whether the file
     /// wrote it as the `ADVANCED_FACE` every modern writer uses or as the
     /// plain `FACE_SURFACE` it specialises, which carries the same four.
     fn face_args(&mut self, id: u64) -> OgeomResult<Vec<Arg>> {
@@ -375,12 +375,12 @@ impl Reader<'_> {
 
     /// The unit instances the representation context actually assigns.
     ///
-    /// A file may carry both a radian and a degree — definition and
-    /// conversion — and which applies is not a matter of existence but of
+    /// A file may carry both a radian and a degree (definition and
+    /// conversion), and which applies is not a matter of existence but of
     /// assignment: `GLOBAL_UNIT_ASSIGNED_CONTEXT` lists the ones in force.
     fn assigned_units(&self) -> Vec<u64> {
-        // A file may carry several unit contexts — inches for the model,
-        // millimetres for its annotation sheet — and the shapes' own
+        // A file may carry several unit contexts (inches for the model,
+        // millimetres for its annotation sheet), and the shapes' own
         // representations name the one their coordinates mean. That context
         // goes first; the rest follow in entity order, so the answer never
         // depends on how a map happens to iterate.
@@ -495,7 +495,7 @@ impl Reader<'_> {
         1.0
     }
 
-    /// Radians per file angle unit — the same dance as length, for the files
+    /// Radians per file angle unit: the same dance as length, for the files
     /// that measure their cones in degrees.
     fn angle_unit_scale(&mut self) -> f64 {
         let assigned = self.assigned_units();
@@ -592,7 +592,7 @@ impl Reader<'_> {
         let radius_arg = |args: &[Arg], i: usize| args.get(i).and_then(Arg::number);
         // B-spline surfaces arrive two ways: a simple instance with every
         // attribute in one list, or a complex instance whose parts each
-        // carry their own slice — the rational form always the latter.
+        // carry their own slice, the rational form always the latter.
         {
             let (base, knots_part, weights) = {
                 let instance = self.instance(id)?;
@@ -684,7 +684,7 @@ impl Reader<'_> {
             "SURFACE_OF_LINEAR_EXTRUSION" => {
                 // A curve swept along a vector, unbounded either way. A
                 // file writes a drum's wall this way as often as it writes a
-                // cylinder — a circle swept along its own axis — and a wall
+                // cylinder (a circle swept along its own axis) and a wall
                 // as a line swept: those are read as the cylinder and the
                 // plane they are, exact and known everywhere downstream.
                 // Anything else sweeps as itself, over a window the face's
@@ -697,7 +697,7 @@ impl Reader<'_> {
                 };
                 let vector = self.args(args[2].reference().unwrap_or(0), "VECTOR")?;
                 let direction = self.direction(vector[1].reference().unwrap_or(0))?;
-                // Parallel to the file's own precision in directions — a
+                // Parallel to the file's own precision in directions: a
                 // writer states an axis to nine digits, a whisker off the
                 // sweep it meant to be exactly along.
                 let parallel =
@@ -937,7 +937,7 @@ impl Reader<'_> {
                 )
             }
             "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" => {
-                // A curve dressed in its surface associations — what every
+                // A curve dressed in its surface associations: what every
                 // exporter derived from the reference kernel writes for
                 // every edge. The 3D curve is the first argument; the
                 // pcurve list is advisory and this reader re-derives its
@@ -975,7 +975,7 @@ impl Reader<'_> {
     /// An `EDGE_CURVE`, built once, curve-forward.
     ///
     /// Returns the edge, its curve, its range, and whether STEP's edge
-    /// direction runs *against* the curve — which each use folds into its
+    /// direction runs *against* the curve, which each use folds into its
     /// own orientation.
     fn edge(&mut self, id: u64) -> OgeomResult<Option<BuiltEdge>> {
         if let Some(found) = self.edges.get(&id) {
@@ -1023,7 +1023,7 @@ impl Reader<'_> {
                     ((a, b + period), false)
                 } else if b < a - self.tol.parametric() {
                     // The vertices stand at descending parameters on an
-                    // open curve whatever the sense flag says — a
+                    // open curve whatever the sense flag says: a
                     // mesh-to-STEP converter writes every edge forward and
                     // lets the line run the other way. The edge is built
                     // along the curve's own parameter and runs against it.
@@ -1043,8 +1043,8 @@ impl Reader<'_> {
                 // hold the endpoints to it.
                 //
                 // A closed edge whose one vertex sits on the curve but away
-                // from its seam — a fitted loop written with its start
-                // wherever the fit began, the vertex millimetres along it —
+                // from its seam (a fitted loop written with its start
+                // wherever the fit began, the vertex millimetres along it)
                 // would otherwise be held to a seam the vertex misses by
                 // that much, and the vertex's tolerance widened to say so.
                 // The seam is moved to the vertex instead: the same curve,
@@ -1079,9 +1079,9 @@ impl Reader<'_> {
                     || tail_miss > self.tol.confusion() * 10.0
                 {
                     // An open edge whose vertices stand *on* the curve but
-                    // short of its ends — a file that writes the whole
+                    // short of its ends (a file that writes the whole
                     // spline and lets the vertices say where the edge
-                    // stops, millimetres in — takes the window between the
+                    // stops, millimetres in) takes the window between the
                     // vertices' own feet. Held to the whole curve, the edge
                     // overshoots its neighbours and the face it bounds draws
                     // as nothing at all.
@@ -1119,7 +1119,7 @@ impl Reader<'_> {
         };
         // Real files are imprecise, and NIST's own readme says so of these.
         // Where the curve's end misses its vertex by more than the default
-        // tolerance, the vertex's tolerance *grows* to state the gap — the
+        // tolerance, the vertex's tolerance *grows* to state the gap; the
         // data model's growing tolerances are exactly for this, and the
         // warning keeps the healing visible.
         for (vertex, t) in [(&vlo, range.0), (&vhi, range.1)] {
@@ -1205,7 +1205,7 @@ impl Reader<'_> {
                 instance.part("VERTEX_LOOP").map(<[Arg]>::to_vec)
             } {
                 // A loop of one vertex: a pole or an apex. It has no edges,
-                // but it still bounds the face in parameter space — as a
+                // but it still bounds the face in parameter space, as a
                 // degenerate edge running across the chart at the row the
                 // point collapses to, exactly as native cones and spheres
                 // are built.
@@ -1304,8 +1304,8 @@ impl Reader<'_> {
             .cloned()
             .unwrap_or(surface);
 
-        // A periodic face bound only by closed rings — a cylinder band
-        // between two circles — arrives without a seam edge, which is a
+        // A periodic face bound only by closed rings (a cylinder band
+        // between two circles) arrives without a seam edge, which is a
         // legitimate STEP shape and an open rectangle in this kernel's
         // chart. The seam is synthesised the way native cylinders build it:
         // one edge at the period join, appearing in the wire twice.
@@ -1314,14 +1314,14 @@ impl Reader<'_> {
             && let [(e_lo, _v_lo), (e_hi, _v_hi)] =
                 closed_ring_edges(&self.model, &wires)?.as_slice()
             // Only rings that are parallels of the surface make a band.
-            // Two closed circles that merely lie on it — a button head's
+            // Two closed circles that merely lie on it (a button head's
             // rims, square to the screw on a sphere whose chart runs along
-            // z — bound a legitimate face on their own, nested loops in the
+            // z) bound a legitimate face on their own, nested loops in the
             // chart, and take the ordinary path below without a word.
             && ogeom_algo::rings_are_parallels(&self.model, &surface, &[e_lo, e_hi], self.tol)?
         {
             {
-                // The band construction is ogeom-algo's make_revolution_band —
+                // The band construction is ogeom-algo's make_revolution_band:
                 // one authority shared with the healer. Anything it refuses
                 // (a spline ring, ring vertices at different angles, a
                 // surface with no closed-form iso-curve) becomes a warning
@@ -1353,7 +1353,7 @@ impl Reader<'_> {
         }
 
         // A cone face bounded by a *single* closed ring: the apex is the
-        // other boundary, and some files simply never write it — no vertex
+        // other boundary, and some files simply never write it: no vertex
         // loop, nothing. The geometry leaves one choice of what the face
         // means, so the apex is synthesised and the band built as if the
         // file had said so.
@@ -1407,7 +1407,7 @@ impl Reader<'_> {
         Ok((loop_id, forward))
     }
 
-    /// Attach this face's pcurve — or both seam sides — to an edge.
+    /// Attach this face's pcurve (or both seam sides) to an edge.
     #[allow(clippy::too_many_arguments)]
     /// One use a bound makes of an edge: the edge as the loop walks it, the
     /// edge as it was built, the file's id for it, and its curve and range.
@@ -1416,9 +1416,9 @@ impl Reader<'_> {
     /// The window a reader gives a plane, a cylinder or a cone is a
     /// convention: those surfaces are unbounded, and [`SURFACE_EXTENT`] is
     /// a guess at how far past its own geometry a file will reach. A file
-    /// can falsify the guess — a real assembly places a cylinder's own
+    /// can falsify the guess: a real assembly places a cylinder's own
     /// origin half a kilometre from the part it belongs to, so the trim's
-    /// height parameter runs to −5e5 where the window stopped at −1e5 —
+    /// height parameter runs to −5e5 where the window stopped at −1e5,
     /// and then the surface refuses to be evaluated where its own face
     /// lies, and the face draws as a hole.
     ///
@@ -1520,8 +1520,8 @@ impl Reader<'_> {
 
     /// One bound's images, chained around the face's chart.
     ///
-    /// Each is derived on its own — the exact projection where the pair has
-    /// a closed form, the fitted one where it does not — and a periodic
+    /// Each is derived on its own (the exact projection where the pair has
+    /// a closed form, the fitted one where it does not), and a periodic
     /// chart then leaves a branch to choose. Chosen edge by edge the choice
     /// is arbitrary and the wire comes apart: a drilled block's bore wall
     /// reads back with one rim two whole turns from the other, both the
@@ -1531,7 +1531,7 @@ impl Reader<'_> {
     ///
     /// A seam falls out of the same walk. The wire uses it twice, up one
     /// column of the chart and down the other, and those columns are one
-    /// image a period apart — so the walk finds both, and the use that runs
+    /// image a period apart, so the walk finds both, and the use that runs
     /// forward is the forward side. Where it cannot, because the chart
     /// closes without being periodic, the other column goes a chart's width
     /// over as it always did.
@@ -1643,7 +1643,7 @@ impl Reader<'_> {
         };
         // Claimed rather than derived, where the pass at the head of the solid
         // already did it. The fallbacks below stay exactly as they were, for
-        // the faces no pass covered — a face reached outside a solid walk, or
+        // the faces no pass covered: a face reached outside a solid walk, or
         // one whose preparation refused.
         if let Some(prepared) = self.pcurves.remove(&(face_id, edge_id)) {
             match prepared {
@@ -1682,7 +1682,7 @@ impl Reader<'_> {
             match ogeom_intersect::exact_pcurve_over(curve, range, surface, self.tol).map(widen) {
                 Some(exact) => exact,
                 None => {
-                    // No closed form — a spline surface, or a combination the
+                    // No closed form: a spline surface, or a combination the
                     // projection table lacks. The pcurve is *fitted at the
                     // curve's own parameters*: sample the edge, project each
                     // sample into the chart, fit the trace with the parameters
@@ -1825,8 +1825,8 @@ impl Reader<'_> {
 
     /// Derive every pcurve this solid's faces will want, in parallel.
     ///
-    /// Deriving one is a pure function of a curve, its range and a surface —
-    /// it reads no model and depends on no order — and measured on a 330-solid
+    /// Deriving one is a pure function of a curve, its range and a surface:
+    /// it reads no model and depends on no order, and measured on a 330-solid
     /// assembly it is 95% of the time spent building solids. The walk that
     /// follows attaches them, in file order, exactly as it did when it derived
     /// them itself.
@@ -1946,15 +1946,15 @@ impl Reader<'_> {
 
     /// The solid a `MANIFOLD_SOLID_BREP` names: its shell's faces, sewn.
     ///
-    /// `BREP_WITH_VOIDS` is the same entity with cavities — a subtype of
+    /// `BREP_WITH_VOIDS` is the same entity with cavities: a subtype of
     /// `MANIFOLD_SOLID_BREP`, so its first two attributes are the name and
     /// the outer shell, and a third names the shells that bound the voids.
     /// A reader matching on the leading keyword alone does not see it, and
-    /// the part simply vanishes — a printed housing with six cavities in
+    /// the part simply vanishes: a printed housing with six cavities in
     /// it read as no body at all, its thirteen hundred faces with it. The
     /// voids join the solid as shells of their own, oriented as
     /// the file orients them, so every normal points away from the
-    /// material — out of the body on the outside, into the cavity within.
+    /// material: out of the body on the outside, into the cavity within.
     fn solid(&mut self, id: u64) -> OgeomResult<Shape> {
         let instance = self.instance(id)?;
         let args = instance
@@ -2000,8 +2000,8 @@ impl Reader<'_> {
     /// sewn from its faces, a compound of them when there are several.
     ///
     /// A surface body is what a modeller exports for a part built from
-    /// faces rather than from a solid — a motor coupler drawn as
-    /// seventy-three single-face bodies is a real case — and a reader that
+    /// faces rather than from a solid (a motor coupler drawn as
+    /// seventy-three single-face bodies is a real case), and a reader that
     /// walks only `MANIFOLD_SOLID_BREP` leaves such a part invisible. The
     /// shells stay shells: the file did not call them solids, and a closed
     /// one is still the file's surface model, not this reader's promotion.
@@ -2034,7 +2034,7 @@ impl Reader<'_> {
     /// one of them could be read.
     ///
     /// An `ORIENTED_CLOSED_SHELL` is a use of another shell the other way
-    /// round — how a solid's voids are named — and resolves to that shell,
+    /// round (how a solid's voids are named) and resolves to that shell,
     /// reversed when the use says so.
     fn shell(&mut self, shell_id: u64) -> OgeomResult<Option<Shape>> {
         let shell_instance = self.instance(shell_id)?;
@@ -2080,7 +2080,7 @@ impl Reader<'_> {
     /// Assemble the document: the model, plus everything the file says about
     /// products, assemblies, placements and appearance.
     ///
-    /// Takes the model out of the reader — geometry reading is over by the
+    /// Takes the model out of the reader; geometry reading is over by the
     /// time structure is read. Structure that resists becomes a warning and a
     /// flat document, never an error: the geometry is already good, and a
     /// mangled product tree should not take it down.
@@ -2156,7 +2156,7 @@ impl Reader<'_> {
         // A product's solids may live one representation over: AP203 files
         // routinely tie the product to a bare axis representation and hang
         // the B-rep off it through a plain SHAPE_REPRESENTATION_RELATIONSHIP.
-        // Only the plain ones are followed — the transformation-carrying kind
+        // Only the plain ones are followed; the transformation-carrying kind
         // is an assembly edge, and following it would leak one product's
         // geometry into another.
         let mut linked: HashMap<u64, Vec<u64>> = HashMap::new();
@@ -2276,8 +2276,8 @@ impl Reader<'_> {
             .ok()?
             .get(2)
             .and_then(Arg::reference)?;
-        // The formation, plain or with its source named — a mesh converter's
-        // habit, and a modeller's for an assembly's parts — carries the
+        // The formation, plain or with its source named (a mesh converter's
+        // habit, and a modeller's for an assembly's parts) carries the
         // product in its third slot either way, whether it stands alone or
         // as one part of a complex instance.
         let product = [
@@ -2432,7 +2432,7 @@ impl Reader<'_> {
                 let assembly = document.add_assembly(&entry.name);
                 ids.insert(entry.pd, assembly);
                 // An assembly with its own geometry keeps it as a body part
-                // placed at identity — rare, but files do it.
+                // placed at identity: rare, but files do it.
                 if let Some(shape) = shape {
                     let body = document.add_part(format!("{}-body", entry.name), shape);
                     let _ = document.add_instance(assembly, body, Transform::IDENTITY, None);
@@ -2591,7 +2591,7 @@ impl Reader<'_> {
         let items_for = |aspect: u64| -> Vec<ogeom_topo::TShapeId> {
             // Three relationship steps: a composite aspect holds components,
             // a derived aspect sits behind a composite, and a datum one link
-            // behind its features — the deepest chain the corpus exhibits.
+            // behind its features: the deepest chain the corpus exhibits.
             let mut reach = vec![aspect];
             for _ in 0..3 {
                 let mut next = reach.clone();
@@ -2808,8 +2808,8 @@ impl Reader<'_> {
         }
 
         // Datum targets: the pads a datum is actually established at. The
-        // target's identifier is the letter's number — `A1` is target 1 of
-        // datum A — and its placement and size come through the shape
+        // target's identifier is the letter's number (`A1` is target 1 of
+        // datum A), and its placement and size come through the shape
         // representation the feature is associated with.
         let mut targets = self.ids_with("PLACED_DATUM_TARGET_FEATURE");
         targets.sort_unstable();
@@ -2830,7 +2830,7 @@ impl Reader<'_> {
         pmi
     }
 
-    /// Saved views: every *named* draughting model is one — the unnamed one
+    /// Saved views: every *named* draughting model is one; the unnamed one
     /// is the annotation-plane container this writer emits itself. The
     /// camera item gives the frame; the callout items give the subset.
     fn views(&mut self) -> Vec<ogeom_doc::View> {
@@ -3008,8 +3008,8 @@ impl Reader<'_> {
         // Which semantic annotation each callout draws. The association names
         // the annotation's own STEP id, so the link is made by matching that
         // against the ids the semantic pass already resolved.
-        // A callout may be associated more than once — once with the shape
-        // aspect the annotation is *about*, once with the annotation itself —
+        // A callout may be associated more than once (once with the shape
+        // aspect the annotation is *about*, once with the annotation itself),
         // so every association is kept and the first that resolves to a
         // semantic annotation is the answer.
         let mut draws: HashMap<u64, Vec<u64>> = HashMap::new();
@@ -3092,7 +3092,7 @@ impl Reader<'_> {
     ///
     /// The drawn geometry of one annotation is a *set*: a frame's box, its
     /// leader, its text strokes, each its own curve set over its own
-    /// coordinates list, gathered under one item — which may itself be
+    /// coordinates list, gathered under one item, which may itself be
     /// repositioned by a placement, and that placement is applied here rather
     /// than left for a consumer to discover.
     fn tessellated_polylines(&mut self, item: u64, depth: usize) -> Vec<Vec<Point>> {
@@ -3248,7 +3248,7 @@ impl Reader<'_> {
 
     /// A dimensional characteristic's name, kind and aspects.
     ///
-    /// Sizes apply to one feature; locations — linear or angular — run
+    /// Sizes apply to one feature; locations (linear or angular) run
     /// between two. `ANGULAR_SIZE` and `ANGULAR_LOCATION` are the same
     /// shapes with an extra angle-selection argument at the end.
     fn dimension_shape(&mut self, dim: u64) -> (String, bool, Vec<u64>) {
@@ -3361,7 +3361,7 @@ fn collect_refs(args: &[Arg], out: &mut Vec<u64>) {
 }
 
 /// The chart coordinates of a point on an analytic surface, by closed-form
-/// inversion — `None` for surfaces that need iterative projection.
+/// inversion; `None` for surfaces that need iterative projection.
 /// For a two-wire periodic face: each wire's single closed edge with its
 /// vertex, empty when the shape is anything else.
 fn closed_ring_edges(model: &Model, wires: &[Shape]) -> OgeomResult<Vec<(Shape, Shape)>> {

@@ -22,7 +22,7 @@ fn volume(model: &Model, shape: &ogeom::topo::Shape) -> f64 {
 }
 
 /// Coaxial cylinders sharing one surface: flush stack, partial overlap,
-/// and the cut — the curved same-domain family, held to closed forms.
+/// and the cut: the curved same-domain family, held to closed forms.
 #[test]
 fn curved_same_domain_pairs_unify() {
     let pi = core::f64::consts::PI;
@@ -88,8 +88,8 @@ fn curved_same_domain_pairs_unify() {
 }
 
 /// Contact confined to one edge or one vertex: the fuse of edge-touching
-/// boxes is one valid solid of both volumes — the shared edge is the
-/// non-manifold seam the model permits — and cutting a corner-touching
+/// boxes is one valid solid of both volumes (the shared edge is the
+/// non-manifold seam the model permits), and cutting a corner-touching
 /// tool removes nothing.
 #[test]
 fn edge_and_vertex_contact_pass_through_the_boolean() {
@@ -126,8 +126,8 @@ fn edge_and_vertex_contact_pass_through_the_boolean() {
 }
 
 /// A ball seated in a bore touches it along the equator and crosses it
-/// nowhere. The boolean keeps that curve out of its arithmetic — a contact
-/// carries no parity, so nothing is inside on one side of it — and the
+/// nowhere. The boolean keeps that curve out of its arithmetic (a contact
+/// carries no parity, so nothing is inside on one side of it), and the
 /// section still reports it, because the curve is there.
 #[test]
 fn a_tangential_contact_is_sectioned_but_not_classified() {
@@ -174,8 +174,8 @@ fn a_tangential_contact_is_sectioned_but_not_classified() {
     );
 }
 
-/// A sphere's chart is bounded above and below by *poles* — edges that are
-/// points in space — and by a seam it meets twice. Leave the poles out of
+/// A sphere's chart is bounded above and below by *poles* (edges that are
+/// points in space) and by a seam it meets twice. Leave the poles out of
 /// the arrangement and the chart has no top or bottom, so nothing can be
 /// arranged inside it and every boolean over a ball fails, whether or not
 /// the ball is anywhere near the other solid. They are in it.
@@ -249,8 +249,8 @@ fn a_ball_is_boolean_material_like_anything_else() {
 }
 
 /// A ball resting exactly on a lid touches it at one point. A point bounds
-/// no material — there is no side of it that is inside on one hand and
-/// outside on the other — so the boolean carries the touch instead of
+/// no material (there is no side of it that is inside on one hand and
+/// outside on the other), so the boolean carries the touch instead of
 /// refusing it, and what comes back is both volumes joined at that point.
 #[test]
 fn a_point_touch_is_carried_rather_than_refused() {
@@ -295,8 +295,8 @@ fn a_fitted_edge_on_a_shared_cylinder_still_melts_the_same_domain_contact() {
     // the top by a crossing cylinder: its wall's upper edges are marched,
     // fitted curves with fitted pcurves, which no closed-form projection can
     // carry into the other wall's chart. The same-domain melt used to refuse
-    // exactly here; now the stored pcurve — which on the identical chart
-    // already is the projection — stands in, and the fuse of a contained
+    // exactly here; now the stored pcurve (which on the identical chart
+    // already is the projection) stands in, and the fuse of a contained
     // solid comes out as the container.
     let mut model = Model::new();
 
@@ -336,7 +336,7 @@ fn a_fitted_edge_on_a_shared_cylinder_still_melts_the_same_domain_contact() {
         "fusing a contained drum should give the container: {measured} vs {before}"
     );
     // Every face of the contained drum melted rather than surviving as a
-    // skin. The wall stays split where the contained drum's rim touched it —
+    // skin. The wall stays split where the contained drum's rim touched it:
     // one face more than the container had, none of them inside.
     assert_eq!(
         explore_unique(&model, &fused.shape, ShapeType::Face)
@@ -352,7 +352,7 @@ fn a_fitted_edge_on_a_shared_cylinder_still_melts_the_same_domain_contact() {
 /// A scaled copy shares whole planes with its original, and the shared
 /// regions nest rather than match: the small box's faces at the origin lie
 /// strictly inside the big box's. The contact is real same-domain contact,
-/// so it has to reach the melt — which it only does while the scale is
+/// so it has to reach the melt, which it only does while the scale is
 /// carried as the placement it is, since a restated plane no longer says it
 /// is one and no closed form recognizes the pair.
 #[test]
@@ -446,7 +446,7 @@ fn a_doubled_copy_slid_along_its_shared_plane_fuses_over_a_partial_contact() {
 /// A cylinder seated on the face it pierces: the two solids share the plane
 /// they both stand on, and the cylinder's cap lies strictly inside the
 /// block's bottom face. Both arguments therefore describe that one disk, and
-/// exactly one of the two descriptions may survive — the question `cut` never
+/// exactly one of the two descriptions may survive: the question `cut` never
 /// has to ask, which is why it closed while `common` did not.
 #[test]
 fn a_cylinder_seated_on_the_face_it_pierces_shares_only_the_segment_between_them() {
@@ -503,7 +503,7 @@ fn a_cylinder_seated_on_the_face_it_pierces_shares_only_the_segment_between_them
         "the shared post is not valid"
     );
     // The post the block's height cuts out of the cylinder: two disks and the
-    // wall between them. Three faces — a fourth would be the shared disk
+    // wall between them. Three faces; a fourth would be the shared disk
     // described twice.
     assert_eq!(
         explore_unique(&model, &shared.shape, ShapeType::Face)
@@ -532,7 +532,7 @@ fn a_cylinder_seated_on_the_face_it_pierces_shares_only_the_segment_between_them
 }
 
 /// A shear is the transform a placement cannot express, so the body is
-/// restated as patches — correctly; there is no other way to carry a box's
+/// restated as patches, correctly; there is no other way to carry a box's
 /// planes under one. What the patches lose is the *word* plane, and
 /// coincidence is decided on what the geometry says: nothing answers `Same`
 /// for two patches, so the pair went to the marcher, which documents that it
@@ -622,9 +622,9 @@ fn a_box_cut_flush_with_a_bracket_s_wall_paves_the_end_face() {
             .shape;
         let diagnosis = ogeom::algo::check(&model, &cut, T).unwrap();
         assert!(diagnosis.is_valid(), "{label}: {:?}", diagnosis.problems);
-        // Every placement lies wholly within the bracket — through the
-        // wall too, the wall's material starting where the leg's top ends
-        // — so the tool takes exactly its own volume.
+        // Every placement lies wholly within the bracket (through the
+        // wall too, the wall's material starting where the leg's top ends),
+        // so the tool takes exactly its own volume.
         let want = 6.0 - size.0 * size.1 * size.2;
         let got = volume(&model, &cut);
         assert!((got - want).abs() < 1e-3, "{label}: {got} against {want}");

@@ -1,25 +1,25 @@
 //! Canonical simplification: recognizing that exact geometry is secretly
-//! analytic — a B-spline surface that *is* a cylinder becomes the cylinder.
+//! analytic: a B-spline surface that *is* a cylinder becomes the cylinder.
 //!
 //! The input is exact geometry, not samples of unknown provenance: the
 //! decision is made against the surface's own equation, sampled on its own
 //! chart, with its own normals. That is what separates this from reverse
-//! engineering — nothing is guessed about what the data means, only checked
+//! engineering: nothing is guessed about what the data means, only checked
 //! against a candidate the estimators propose. A candidate is accepted when
 //! **every** sample sits within the caller's stated tolerance of it, and the
 //! certificate is the worst deviation actually measured; a surface that is
 //! genuinely free-form at that tolerance stays what it is.
 //!
 //! Why it matters: exchange formats routinely spell a cylinder out pointwise,
-//! and every algorithm downstream — intersection, blending, the boolean's
-//! closed forms — is faster and exacter on the analytic carrier. The
+//! and every algorithm downstream (intersection, blending, the boolean's
+//! closed forms) is faster and exacter on the analytic carrier. The
 //! reference keeps this in its healing layer for the same reason.
 //!
 //! The estimators are classical, and shared with the sample-based recognizer
 //! that lives outside the kernel: a plane is the mean normal; a sphere's
 //! centre is where the normal lines meet, in least squares; a cylinder's
-//! axis is the direction the normals avoid — their covariance's smallest
-//! eigenvector — and a cone adds the linear taper of radius against height.
+//! axis is the direction the normals avoid (their covariance's smallest
+//! eigenvector), and a cone adds the linear taper of radius against height.
 
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -69,13 +69,13 @@ pub enum Simplified {
 pub struct CanonicalReport {
     /// One entry per face whose surface became analytic.
     pub simplified: Vec<Simplified>,
-    /// Faces examined and left as they were — already analytic, or
+    /// Faces examined and left as they were: already analytic, or
     /// genuinely free-form at the stated tolerance.
     pub untouched: usize,
 }
 
-/// Replace every free-form surface in `shape` that is secretly analytic —
-/// within `tolerance` — by the plane, cylinder, cone or sphere it is.
+/// Replace every free-form surface in `shape` that is secretly analytic,
+/// within `tolerance`, by the plane, cylinder, cone or sphere it is.
 ///
 /// Faces are rebuilt on the recognized carrier with exact pcurves; their
 /// edges' space curves are untouched, because the curves were never wrong.
@@ -150,7 +150,7 @@ pub fn canonical_simplify(
             }
         };
         // Rebuild the face on the carrier from its own boundary. The edges'
-        // space curves never lied about *where* they run — but a rim spelt
+        // space curves never lied about *where* they run, but a rim spelt
         // as a B-spline that is exactly a circle becomes the circle first,
         // or the exact-pcurve machinery has nothing to project in closed
         // form. Curve recognition is held to the same certificate as the
@@ -287,7 +287,7 @@ fn worst_of(points: &[Point], f: impl Fn(Point) -> f64) -> f64 {
 }
 
 /// The edge, its free-form curve replaced by the line or circle it verifiably
-/// is — or the edge itself when it is analytic already or genuinely free.
+/// is, or the edge itself when it is analytic already or genuinely free.
 fn simplified_edge(
     model: &mut Model,
     edge: &Shape,
@@ -382,7 +382,7 @@ fn simplified_edge(
                     };
                     let (t0, t1) = if closed {
                         // The frame's x-axis runs through the start by
-                        // construction, so its angle is zero — computed, it
+                        // construction, so its angle is zero; computed, it
                         // is −ε, which rem_euclid folds to τ and the range
                         // overflows the domain by a full turn.
                         (0.0, core::f64::consts::TAU)

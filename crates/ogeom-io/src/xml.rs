@@ -4,9 +4,9 @@
 //! meshes are thousands of `<vertex x=… y=… z=…/>`, and what matters is
 //! the element names, their attributes, and which namespace each belongs
 //! to, since the core specification and its extensions share element
-//! names and tell them apart only by namespace. This reads exactly that —
-//! start and end tags, attributes with their entity escapes resolved,
-//! namespace prefixes resolved to their URIs — and skips text, comments,
+//! names and tell them apart only by namespace. This reads exactly that
+//! (start and end tags, attributes with their entity escapes resolved,
+//! namespace prefixes resolved to their URIs) and skips text, comments,
 //! processing instructions, CDATA and the document type, none of which a
 //! model part carries meaning in.
 

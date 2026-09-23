@@ -4,15 +4,15 @@
 //! Both exist because geometry arrives disconnected. An imported file gives a
 //! pile of faces that *touch* but share nothing; a sketch gives edges in
 //! whatever order they were drawn. Topologically these are unrelated pieces,
-//! and every algorithm that walks a boundary treats them that way — a shell of
+//! and every algorithm that walks a boundary treats them that way: a shell of
 //! faces that merely abut has a free edge everywhere two of them meet, encloses
 //! no volume, and cannot be classified against.
 //!
 //! # Sewing is a topological operation, not a geometric one
 //!
 //! It does not move anything. Two edges within tolerance of each other are
-//! decided to be *one* edge, and every face that used either uses that one
-//! — so the shell closes because the topology says so, not because the geometry
+//! decided to be *one* edge, and every face that used either uses that one,
+//! so the shell closes because the topology says so, not because the geometry
 //! was nudged until it did. A version that moved geometry to close gaps would
 //! be a repair, would need to decide which of two positions is right, and would
 //! quietly invalidate every tolerance in the neighbourhood.
@@ -47,12 +47,12 @@ pub mod roles {
 /// Put a bag of edges into an order that walks them end to end.
 ///
 /// Reverses an edge where the chain reaches its far end first, so the result is
-/// a path rather than a set. [`make_wire`] then accepts it — it checks that
+/// a path rather than a set. [`make_wire`] then accepts it: it checks that
 /// consecutive edges meet, and a bag in the order it happened to be built in
 /// almost never does.
 ///
 /// Follows the chain from one end. Where an end meets more than two edges the
-/// path is genuinely ambiguous — that is a branching network, not a wire — and
+/// path is genuinely ambiguous (that is a branching network, not a wire), and
 /// this refuses rather than picking one, because picking one silently discards
 /// the branch nobody asked it to drop.
 ///
@@ -190,8 +190,8 @@ pub struct Sewn {
 
 /// Sew free faces into shells by finding the edges they share.
 ///
-/// Two edges are the same edge when their ends coincide within tolerance —
-/// either way round — *and* a point along them does too. The midpoint test is
+/// Two edges are the same edge when their ends coincide within tolerance
+/// (either way round) *and* a point along them does too. The midpoint test is
 /// what stops two different arcs between the same pair of vertices from being
 /// merged into one, which is a real case: the two halves of a circle share both
 /// ends.
@@ -215,7 +215,7 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
     }
     model.begin_operation();
 
-    // Vertices first, and this is not an optimisation — it is what makes the
+    // Vertices first, and this is not an optimisation; it is what makes the
     // rest work. Deciding that two edges are one edge leaves the *neighbouring*
     // edges ending at the vertices they always had, which sit at the same
     // places as the survivor's but are different nodes. A wire built from that
@@ -312,8 +312,8 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
     // face that used the replaced one loses its description in parameter space
     // and stops being triangulable.
     //
-    // Carrying is not copying. When the merge *flipped* — the two edges run
-    // opposite ways — the dropped edge's pcurve traverses the shared points
+    // Carrying is not copying. When the merge *flipped* (the two edges run
+    // opposite ways), the dropped edge's pcurve traverses the shared points
     // backwards relative to the survivor's own curve, and copied unchanged it
     // makes the survivor's face walk one edge of its boundary the wrong way:
     // the parameter-space ring zigzags to zero area and the face stops being
@@ -323,7 +323,7 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
     // traversal exactly is swapping the stored range's ends.
     //
     // Nor is it copying when the two edges describe one curve at different
-    // paces — a fitted rim against the exact circle it traces, which the
+    // paces: a fitted rim against the exact circle it traces, which the
     // match admits by asking each middle to lie on the other's stretch. The
     // dropped edge's pcurve is same-parameter with the *dropped* curve; on
     // the survivor's parameter it drifts along the edge, and a face walks
@@ -571,8 +571,8 @@ fn repaced_carry(
             // The foot's parameter on the dropped curve, then through the
             // proportional map onto the pcurve's own window. On a curve that
             // closes on itself the foot may come back a turn away from the
-            // stretch — a rim's last piece, seen from its own points, sits
-            // at the start of the loop as much as at its end — and is
+            // stretch (a rim's last piece, seen from its own points, sits
+            // at the start of the loop as much as at its end) and is
             // carried across the turn before it is clamped.
             let (lo, hi) = (dlo.min(dhi), dlo.max(dhi));
             let (da, db) = dropped_fp.curve.domain();
@@ -694,7 +694,7 @@ fn reversed_repr(repr: EdgeRepr) -> EdgeRepr {
 /// Rebuild every edge whose bounding vertices were merged away.
 ///
 /// An edge's bounds live in its node, so an edge cannot be pointed at a
-/// different vertex — it has to be built again. Its data comes across whole,
+/// different vertex; it has to be built again. Its data comes across whole,
 /// representations included, so the new edge describes itself exactly as the
 /// old one did and only its ends have changed.
 fn rebuild_edges(
@@ -749,7 +749,7 @@ struct Fingerprint {
     range: (f64, f64),
     /// How far this edge's own stated tolerances let it stray: the widest of
     /// the edge's and its vertices'. An edge whose junction was welded across
-    /// a recorded gap carries that gap here, and the comparison honours it —
+    /// a recorded gap carries that gap here, and the comparison honours it:
     /// per-entity tolerances are the data model's, not a nicety of import.
     width: f64,
 }
@@ -781,11 +781,11 @@ impl Fingerprint {
         let reach = tol.confusion().max(self.width).max(other.width);
         let near = |a: Point, b: Point| a.distance(b) <= reach;
         // The midpoint is not a nicety. Two arcs between the same pair of
-        // vertices — the two halves of a circle — agree at both ends and are
+        // vertices (the two halves of a circle) agree at both ends and are
         // not the same edge, and merging them would fuse a shape to itself.
         // Two descriptions of one curve need not agree on where its middle
-        // *parameter* falls — a fitted rim against the exact circle it
-        // traces paces itself differently — so each middle is asked to lie
+        // *parameter* falls (a fitted rim against the exact circle it
+        // traces paces itself differently), so each middle is asked to lie
         // on the other's stretch instead, which the far half of a circle
         // still fails.
         if !near(self.middle, other.middle)
@@ -1270,7 +1270,7 @@ mod tests {
             7,
             "the shared edge is one edge now, not two"
         );
-        // A sheet, so it still has a boundary — six free edges round the
+        // A sheet, so it still has a boundary: six free edges round the
         // outside, and the shared one is not among them.
         assert_eq!(sewn.free_edges.len(), 6);
         assert!(!is_shell_closed(&model, &sewn.shells[0]).unwrap());
@@ -1308,7 +1308,7 @@ mod tests {
     #[test]
     fn a_boxs_faces_taken_apart_and_sewn_back_close_again() {
         // The end-to-end case. The faces already share edges here, so what is
-        // under test is that sewing does not *break* a shell that was closed —
+        // under test is that sewing does not *break* a shell that was closed,
         // and that the mesh still agrees with the topology afterwards, which is
         // the check a re-built face is most likely to fail.
         let mut model = Model::new();
@@ -1397,13 +1397,13 @@ mod tests {
         // Six faces of a unit cube, each built loose with its own vertices
         // and pre-attached pcurves, wound counter-clockwise around the
         // outward normal as a shell is. Sewing merges all twelve edge pairs,
-        // and every merge is *flipped* — the two faces walk their shared
+        // and every merge is *flipped*: the two faces walk their shared
         // edge opposite ways. A carried pcurve copied unchanged then makes
         // the losing face walk edges backwards in parameter space; with
         // several such edges in one ring the boundary zigzags, and faces
         // stop triangulating or triangulate degenerately. Two squares are
-        // not enough to see it — a single backwards two-point edge self-heals
-        // in ring assembly — which is why this test is a cube.
+        // not enough to see it (a single backwards two-point edge self-heals
+        // in ring assembly), which is why this test is a cube.
         //
         // The carry must reverse with the merge: consumers map 3D parameters
         // onto the pcurve range proportionally, so swapping the stored

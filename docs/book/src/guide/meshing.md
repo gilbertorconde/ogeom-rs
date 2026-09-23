@@ -2,41 +2,48 @@
 
 ## Meshing
 
-`ogeom::mesh::tessellate` triangulates a shape at a stated `Deflection` —
-the maximum distance the mesh may stand off the exact geometry, with an
-angular bound alongside. The triangulation attaches to the model
-(`triangulation_of`, `polyline_of` read it back), so a shape carries its
-mesh the way it carries its geometry. `simplify` decimates an existing
-mesh toward a `Target`; `hatch_face` cross-hatches a face for section
-fills.
+`ogeom::mesh::tessellate` triangulates a shape at a given `Deflection`:
+the maximum distance between the mesh and the exact geometry, plus an
+angular bound.
 
-`triangulate` returns one welded mesh for a whole shape. A viewer that
-keeps one mesh per face, to pick and colour faces, meshes them one at a
-time — and must still agree with each face's neighbours along every
-shared edge, or the pieces crack apart where a narrow face drew its edges
-finer than asked. `edge_chords_for` answers that agreement once per shape,
-and `triangulate_face_with` draws each face to it; `tessellate` stores its
-faces the same way.
+- The triangulation is stored on the model. Read it back with
+  `triangulation_of` and `polyline_of`.
+- `triangulate` returns one welded mesh for a whole shape.
+- `simplify` decimates an existing mesh toward a `Target`.
+- `hatch_face` cross-hatches a face, for section fills.
 
-Deflection is the honesty parameter throughout: everything downstream
-that consumes the mesh — [mass properties](measurement.md), the mesh
-exchange formats — inherits exactly the error you chose here, no more
-and no less.
+### One mesh per face
+
+A viewer that picks and colours individual faces needs one mesh per face.
+Adjacent face meshes must use the same points along every shared edge, or
+cracks appear (for example where a narrow face samples its edges more
+finely than requested).
+
+1. Call `edge_chords_for` once per shape to fix the shared edge points.
+2. Call `triangulate_face_with` for each face using those points.
+
+`tessellate` stores its faces the same way.
+
+### Deflection controls accuracy downstream
+
+Everything that consumes the mesh ([mass properties](measurement.md), the
+mesh exchange formats) carries exactly the error you chose here.
 
 ## Drawings
 
-`ogeom::hlr` turns solids into 2D drawings the classical way: exact
-hidden-line removal, not a rendered picture.
+`ogeom::hlr` produces 2D drawings by exact hidden-line removal (not a
+rendered image).
 
-- **`project`** takes shapes and a view direction and returns a
-  `Drawing` of `DrawnCurve`s, each tagged with its `Visibility` (visible
-  or hidden) and its `Source` — which model edge, silhouette or outline
-  produced it. Silhouettes of curved faces are marched on the exact
-  surfaces.
-- **`section`** cuts a shape with a plane and returns the `SectionView` —
-  the cut face outlines ready for hatching; `broken_section` is the
-  partial-depth variant.
+- **`project`** takes shapes and a view direction and returns a `Drawing`
+  of `DrawnCurve`s. Each curve has:
+  - a `Visibility` (visible or hidden);
+  - a `Source`: the model edge, silhouette or outline that produced it.
 
-The `Source` tag on every drawn curve is what makes drawings live: a
-dimension attached to a drawn line can find the model edge it measures
-after a rebuild, through the same history machinery everything else uses.
+  Silhouettes of curved faces are traced on the exact surfaces.
+- **`section`** cuts a shape with a plane and returns a `SectionView` with
+  the cut face outlines, ready for hatching.
+- **`broken_section`** is the partial-depth variant.
+
+Because each drawn curve has a `Source`, a dimension attached to a drawn
+line can find the model edge it measures after a rebuild, using the same
+history as every other operation.

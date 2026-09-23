@@ -11,7 +11,7 @@
 //!
 //! So the walk lives here once, over a [`Condition`], and what changes per
 //! problem is the condition's own residual and derivatives. The step control,
-//! the stall reporting and the closure test are written once and inherited —
+//! the stall reporting and the closure test are written once and inherited,
 //! which matters, because they are the parts that took the longest to get
 //! right and would be the easiest to get subtly wrong a second time.
 //!
@@ -19,14 +19,14 @@
 //!
 //! `n` unknowns and `n − 1` equations. That shortfall is not an oversight: the
 //! solution set of `n − 1` equations in `n` unknowns *is* a curve, which is
-//! what there is to follow. The walker supplies the missing equation itself —
-//! a plane across the direction of travel, saying how far along to land — and
+//! what there is to follow. The walker supplies the missing equation itself
+//! (a plane across the direction of travel, saying how far along to land), and
 //! that is what turns "somewhere on the curve" into "the next point".
 //!
 //! The direction of travel comes free. The curve's tangent in parameter space
 //! is the null vector of the condition's own Jacobian, and a condition that
-//! has a cheaper or more careful formula for it — the intersector does, and
-//! uses it to refuse a crossing too shallow to trust — says so by overriding
+//! has a cheaper or more careful formula for it (the intersector does, and
+//! uses it to refuse a crossing too shallow to trust) says so by overriding
 //! [`Condition::tangent`].
 
 use crate::march::{Marching, Stopped};
@@ -45,7 +45,7 @@ pub trait Condition {
     /// Where a parameter vector puts the curve in space.
     fn position(&self, x: &[f64], tol: Tolerances) -> Option<Point>;
 
-    /// How the position moves with each unknown — one vector per unknown.
+    /// How the position moves with each unknown: one vector per unknown.
     ///
     /// The walker needs this to write its own travel equation, which is a
     /// statement about where the *point* goes rather than about the
@@ -65,7 +65,7 @@ pub trait Condition {
     /// Whether a parameter vector has left that region.
     fn outside(&self, x: &[f64], tol: Tolerances) -> bool;
 
-    /// Whether it is at the edge of it — which is how a stall at a boundary is
+    /// Whether it is at the edge of it, which is how a stall at a boundary is
     /// told apart from a stall at a singularity.
     fn near_edge(&self, x: &[f64]) -> bool;
 
@@ -80,7 +80,7 @@ pub trait Condition {
     /// claim, and a load-bearing one: where two surfaces touch, the cross
     /// product of their normals swaps sides, and a walker that quietly turned
     /// it back round would march from one branch onto the other straight
-    /// through the tangency — two thin curves through two touching points
+    /// through the tangency: two thin curves through two touching points
     /// coming back as one confident loop that is on neither of them. The flip
     /// is the signal, not noise.
     fn tangent_is_oriented(&self) -> bool {
@@ -92,7 +92,7 @@ pub trait Condition {
     /// The default derives it from the condition's own Jacobian: the tangent
     /// in parameter space is that matrix's null vector, and the space tangent
     /// is the position gradient applied to it. A condition with a cheaper or
-    /// more careful formula overrides this — and "more careful" is not
+    /// more careful formula overrides this, and "more careful" is not
     /// hypothetical, since the null vector says nothing about whether the
     /// direction it found is real or is the residual's own noise.
     fn tangent(&self, x: &[f64], tol: Tolerances) -> Option<Vector> {
@@ -305,7 +305,7 @@ fn oriented<C: Condition + ?Sized>(
 ) -> Option<Vector> {
     let direction = condition.tangent(at, tol)?;
     if condition.tangent_is_oriented() {
-        // The condition's own sign, kept exactly — including where it flips.
+        // The condition's own sign, kept exactly, including where it flips.
         return Some(direction * sense);
     }
     let along = match heading {
@@ -366,7 +366,7 @@ fn correct<C: Condition + ?Sized>(
 /// The null vector of an `(n − 1) × n` matrix: the generalized cross product.
 ///
 /// Component `i` is the determinant of the matrix with column `i` struck out,
-/// signed by `(−1)^i` — which is exactly the cross product for `n = 3` and the
+/// signed by `(−1)^i`, which is exactly the cross product for `n = 3` and the
 /// perpendicular for `n = 2`, and is the direction the curve runs for any `n`.
 /// `None` where the matrix has full rank, which means the "curve" is a point
 /// and there is nothing to follow.
@@ -434,7 +434,7 @@ mod tests {
     const T: Tolerances = Tolerances::millimetres();
 
     /// A circle of radius `r` about the origin in the `z = h` plane, posed in
-    /// three unknowns — the point's own coordinates — with two equations. A
+    /// three unknowns (the point's own coordinates) with two equations. A
     /// deliberately silly condition, chosen because its answer is known
     /// exactly and its Jacobian has nothing in common with a surface pair's.
     struct CircleAt {
@@ -474,7 +474,7 @@ mod tests {
     }
 
     /// The walker follows a condition it has never heard of, closes the loop,
-    /// and lands on the circle to the chord it was given — the tangent coming
+    /// and lands on the circle to the chord it was given, the tangent coming
     /// from the null space alone, since this condition supplies no formula.
     #[test]
     fn a_condition_the_walker_knows_nothing_about_is_followed_to_its_chord() {

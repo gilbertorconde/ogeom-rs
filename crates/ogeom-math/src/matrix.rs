@@ -1,4 +1,4 @@
-//! Small dense matrices — the linear part of a transform.
+//! Small dense matrices: the linear part of a transform.
 //!
 //! Fixed 3×3 and 2×2, row-major, stored inline. Deliberately not general: these
 //! sit on the hot path of every transform application in the kernel, and the
@@ -189,8 +189,9 @@ impl Matrix3 {
     /// singular.
     ///
     /// Singularity is a question of numerical conditioning, not of modelling
-    /// tolerance, so this takes no [`Tolerances`](ogeom_core::Tolerances). The determinant is compared
-    /// against the rounding error incurred computing it: for an `n x n` matrix
+    /// tolerance, so this takes no [`Tolerances`](ogeom_core::Tolerances).
+    /// The determinant is compared against the rounding error incurred
+    /// computing it: for an `n x n` matrix
     /// with entries bounded by `s`, that is on the order of `n * n! * eps *
     /// s^n`. The bound scales with the entries and has no absolute floor,
     /// because a matrix scaled by `1e-3` has a determinant scaled by `1e-9` and
@@ -228,7 +229,7 @@ impl Matrix3 {
         ]))
     }
 
-    /// Whether the matrix is orthonormal — its rows form an orthonormal basis,
+    /// Whether the matrix is orthonormal: its rows form an orthonormal basis,
     /// so it represents a rotation or a reflection and its inverse is its
     /// transpose.
     #[must_use]
@@ -503,7 +504,7 @@ mod tests {
     #[test]
     fn singularity_threshold_is_relative_not_absolute() {
         // A well-conditioned matrix scaled down by 1e-3 has a determinant of
-        // 1e-9 — below an absolute confusion threshold, but perfectly
+        // 1e-9, below an absolute confusion threshold, but perfectly
         // invertible. An absolute test would reject it.
         let m = Matrix3::IDENTITY * 1e-3;
         assert_relative_eq!(m.determinant(), 1e-9, max_relative = 1e-12);

@@ -2,7 +2,7 @@
 //!
 //! What this crate writes it reads, and what *another* writer might have
 //! written it also reads: the indirection is the format, so the tests give the
-//! reader documents built deliberately in the forms a writer chooses —
+//! reader documents built deliberately in the forms a writer chooses:
 //! interleaved with a stride, indices as unsigned shorts, normals as
 //! normalized signed bytes, a sparse accessor over a base, a node hierarchy
 //! with a matrix and with translation–rotation–scale.
@@ -24,7 +24,7 @@ fn block_mesh() -> Triangulation {
     ogeom::mesh::triangulate(&model, &block, Deflection::default(), T).unwrap()
 }
 
-/// The signed volume a closed triangle soup encloses — the one claim a mesh
+/// The signed volume a closed triangle soup encloses: the one claim a mesh
 /// format really makes.
 fn volume(m: &Triangulation) -> f64 {
     m.triangles
@@ -113,7 +113,7 @@ fn the_indirection_a_writer_chooses_is_read_as_it_finds_it() {
         [0.0, 0.0, 4.0],
     ];
     // Interleaved: twelve bytes of position, then three signed bytes of
-    // normal and one of padding — a sixteen-byte stride, which is the shape
+    // normal and one of padding, a sixteen-byte stride, which is the shape
     // an aligned writer picks.
     let normals: [[i8; 3]; 4] = [[0, 0, -127], [127, 0, 0], [0, 127, 0], [0, 0, 127]];
     let mut binary: Vec<u8> = Vec::new();
@@ -247,7 +247,7 @@ fn a_sparse_accessor_overrides_the_base_it_sits_on() {
         "the same tetrahedron, three quarters of it sparse: {}",
         volume(mesh)
     );
-    // No normals were given, so the triangles' own were worked out — and they
+    // No normals were given, so the triangles' own were worked out, and they
     // point outward, which is what the winding says.
     assert_eq!(mesh.normals.len(), 4);
     for n in &mesh.normals {
@@ -314,7 +314,7 @@ fn nodes_place_their_meshes_and_normals_survive_an_uneven_scale() {
         (hi[1] - 5.0).abs() < 1e-2 && (hi[2] - 2.5).abs() < 1e-2,
         "{lo:?} {hi:?}"
     );
-    // Volume scales by the determinant, which here is one — so the claim is
+    // Volume scales by the determinant, which here is one, so the claim is
     // against the mesh that went in, not against the ball it approximates:
     // the reader changed the placement and nothing else.
     let want = volume(&mesh);
@@ -325,13 +325,13 @@ fn nodes_place_their_meshes_and_normals_survive_an_uneven_scale() {
     );
 
     // And the normals came through the inverse transpose. For `diag(2, 1, ½)`
-    // that is `diag(½, 1, 2)` up to a factor, which normalizing removes — and
+    // that is `diag(½, 1, 2)` up to a factor, which normalizing removes; and
     // it is a genuinely different direction from the scale's own, which is
     // what the second assertion holds it to.
     let mut differed = 0;
     for (before, after) in mesh.normals.iter().zip(&back.normals) {
-        // A mesh may carry a vertex whose normal is undefined — a sphere's
-        // pole is one — and a direction nothing stated is not one to check.
+        // A mesh may carry a vertex whose normal is undefined (a sphere's
+        // pole is one), and a direction nothing stated is not one to check.
         if (before.magnitude() - 1.0).abs() > 1e-9 {
             continue;
         }

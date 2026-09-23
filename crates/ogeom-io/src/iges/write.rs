@@ -1,14 +1,14 @@
 //! From a document to an IGES deck.
 //!
-//! The writer emits manifold solid B-rep objects — entity 186 over shells
+//! The writer emits manifold solid B-rep objects (entity 186 over shells
 //! (514), faces (510), loops (508), one edge list (504) and one vertex list
-//! (502) per solid — with surfaces in their analytic spellings where IGES has
+//! (502) per solid), with surfaces in their analytic spellings where IGES has
 //! one and as rational B-splines (128) where it does not. Curves defined in a
 //! plane of their own, arcs and ellipses, are written in definition space
 //! with a transformation matrix (124) carrying them to model space, which is
 //! how the format wants them.
 //!
-//! Everything is written in millimetres, model space, with geometry baked —
+//! Everything is written in millimetres, model space, with geometry baked:
 //! the same decision the STEP writer made: a file carries positions, not this
 //! kernel's location chains.
 
@@ -27,7 +27,7 @@ use std::collections::HashMap;
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
 /// document holds no solid, or a solid carries geometry with no IGES
-/// spelling here yet — the error names the entity and the parity row.
+/// spelling here yet; the error names the entity and the parity row.
 pub fn write_iges(document: &ogeom_doc::Document, tol: Tolerances) -> OgeomResult<String> {
     let mut writer = Writer {
         model: document.model(),
@@ -212,7 +212,7 @@ impl Writer<'_> {
             ogeom_bail!(
                 Construction,
                 "a face whose every boundary is degenerate cannot be written \
-                 as IGES — docs/PARITY.md, io.iges"
+                 as IGES; see docs/PARITY.md, io.iges"
             );
         }
         let mut params = format!("{},{},1", self.de(surface_entity), loop_entities.len());
@@ -229,8 +229,8 @@ impl Writer<'_> {
         }))
     }
 
-    /// A wire as a loop (508), or `None` when every edge in it is degenerate
-    /// — a pole has no curve, and the reader rebuilds chart degeneracies
+    /// A wire as a loop (508), or `None` when every edge in it is degenerate:
+    /// a pole has no curve, and the reader rebuilds chart degeneracies
     /// from the surface itself.
     fn wire(&mut self, wire: &Shape) -> OgeomResult<Option<usize>> {
         let children = self.model.ordered_children_of(wire)?;
@@ -288,7 +288,7 @@ impl Writer<'_> {
             1 => (vertices[0].clone(), vertices[0].clone()),
             _ => (vertices[0].clone(), vertices[vertices.len() - 1].clone()),
         };
-        // Each vertex carries its own composed placement — children_of has
+        // Each vertex carries its own composed placement; children_of has
         // already folded the edge's chain in, and an instanced vertex (a
         // prism's top corner is its bottom corner, moved) adds a hop of its
         // own that the edge's placement alone would drop.
@@ -399,7 +399,7 @@ impl Writer<'_> {
             Curve::BSpline(b) => self.nurbs_curve(b, range),
             other => {
                 // The exact conversion carries anything with a closed NURBS
-                // form; what has none — a helix — is refused by name there.
+                // form; what has none (a helix) is refused by name there.
                 let bspline = other.to_bspline_over(range, self.tol)?;
                 self.nurbs_curve(&bspline, ogeom_geom::Curve3d::domain(&bspline))
             }
@@ -739,7 +739,7 @@ impl Writer<'_> {
     }
 }
 
-/// A rigid transform quantized to bits, for per-placement deduplication —
+/// A rigid transform quantized to bits, for per-placement deduplication,
 /// the same probe the STEP writer uses.
 fn transform_bits(t: &Transform) -> [u64; 3] {
     let p = t.apply(Point::new(0.123_456_789, 9.87, -3.21));
@@ -779,7 +779,7 @@ fn fmt(v: f64) -> String {
 /// The reader joins a parameter record's data columns as they stand,
 /// padding included, so a parameter is never split where padding would
 /// land inside it: one that does not fit starts a new record. One longer
-/// than a whole record — only a long name can be — fills every record it
+/// than a whole record (only a long name can be) fills every record it
 /// crosses to exactly 64 columns, so the pieces rejoin with nothing
 /// between them.
 fn wrap_params(text: &str) -> Vec<String> {

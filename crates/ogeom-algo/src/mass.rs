@@ -1,13 +1,13 @@
 //! Mass properties: how much there is, where its centre is, and how it resists
 //! being spun.
 //!
-//! Three measures, one for each dimension a shape can have — the length of its
-//! edges, the area of its faces, the volume it encloses — each with the centre
+//! Three measures, one for each dimension a shape can have (the length of its
+//! edges, the area of its faces, the volume it encloses), each with the centre
 //! of that measure and the inertia tensor about that centre.
 //!
 //! # Computed from the tessellation, and why
 //!
-//! A polyhedron's volume has a closed form and a cylinder's does not — not
+//! A polyhedron's volume has a closed form and a cylinder's does not, not
 //! once it is trimmed by arbitrary wires. An implementation exact for planar
 //! faces would be right for a box, right for a wedge, and quietly wrong for
 //! anything curved, with nothing in the answer to say which case it was. So
@@ -16,12 +16,12 @@
 //!
 //! That makes the error bounded and stated rather than hidden. Halving the
 //! deflection and seeing the answer move tells a caller exactly how much to
-//! trust it — [`MassProperties::deflection`] is what makes that check possible.
+//! trust it; [`MassProperties::deflection`] is what makes that check possible.
 //!
 //! # The one formula
 //!
-//! Length, area and volume all reduce to summing over simplices — segments,
-//! triangles, tetrahedra — and the second moment of a simplex has the same
+//! Length, area and volume all reduce to summing over simplices (segments,
+//! triangles, tetrahedra), and the second moment of a simplex has the same
 //! shape in every dimension:
 //!
 //! ```text
@@ -48,7 +48,7 @@ pub struct MassProperties {
     /// out negative, which says the shell is inside out rather than that the
     /// solid has negative volume, so that case is an error instead.
     pub mass: f64,
-    /// The centre of the measure — the centroid, or centre of mass at uniform
+    /// The centre of the measure: the centroid, or centre of mass at uniform
     /// density.
     pub centre: Point,
     /// The inertia tensor about [`MassProperties::centre`], at unit density.
@@ -105,7 +105,7 @@ impl MassProperties {
     ///
     /// The eigenvectors of a symmetric tensor, so the axes are orthogonal. A
     /// shape with rotational symmetry has repeated moments and the axes in that
-    /// plane are arbitrary but still orthogonal — which is correct, not a
+    /// plane are arbitrary but still orthogonal, which is correct, not a
     /// failure: any pair of perpendicular axes in that plane is principal.
     ///
     /// # Errors
@@ -144,7 +144,7 @@ impl MassProperties {
 
 /// The length of a shape's edges, and how it is distributed.
 ///
-/// Every distinct edge counts once, however many faces it bounds — the wire
+/// Every distinct edge counts once, however many faces it bounds: the wire
 /// frame of the shape, not a tally weighted by use.
 ///
 /// # Errors
@@ -244,8 +244,8 @@ pub fn volume_properties(
         );
     }
 
-    // The apex every tetrahedron is built on. Any point serves — the signs
-    // cancel outside the enclosed region wherever it sits — so it is a point on
+    // The apex every tetrahedron is built on. Any point serves (the signs
+    // cancel outside the enclosed region wherever it sits), so it is a point on
     // the mesh, which keeps the tetrahedra the size of the shape instead of the
     // size of its distance from the world origin.
     let apex = mesh.positions[0];
@@ -305,7 +305,7 @@ impl ExactFace {
 
     /// How much of its chart the region covers, for telling a face's outer
     /// boundary from its holes. A wire's place in the face's list does not
-    /// say which it is — a ring's annulus arrives inner ring first — and a
+    /// say which it is (a ring's annulus arrives inner ring first), and a
     /// hole is inside the boundary it is a hole in, so it covers less.
     fn chart_area(&self) -> f64 {
         match self {
@@ -325,10 +325,10 @@ impl ExactFace {
 ///
 /// The integrands over an analytic surface's chart are trigonometric
 /// polynomials, and panels no wider than a quarter turn under the ten-point
-/// Gauss rule integrate them to rounding — exact in every sense that
+/// Gauss rule integrate them to rounding, exact in every sense that
 /// matters, with `deflection` reported as zero. The first face that resists
-/// — a non-analytic surface, a trim that is not a chart rectangle or a disc
-/// — returns `None`, and the caller falls back to the tessellation with its
+/// (a non-analytic surface, a trim that is not a chart rectangle or a disc)
+/// returns `None`, and the caller falls back to the tessellation with its
 /// stated chord.
 fn exact_volume_properties(
     model: &Model,
@@ -359,7 +359,7 @@ fn exact_volume_properties(
         return Ok(None);
     }
     // The divergence theorem needs a closed boundary; topology says whether
-    // it has one. A shape with no shell at all — a bare face — has nothing
+    // it has one. A shape with no shell at all (a bare face) has nothing
     // to close, and falls back to the mesh path, which refuses it properly.
     let shells = explore_unique(model, shape, ShapeType::Shell)?;
     if shells.is_empty() {
@@ -481,7 +481,7 @@ fn reference_point(faces: &[ExactFace], tol: Tolerances) -> OgeomResult<Point> {
 /// Drive the callback over every quadrature sample of a face.
 ///
 /// The callback receives the world point and the outward-signed `n dA`
-/// already weighted — summing the callback's contributions *is* the
+/// already weighted; summing the callback's contributions *is* the
 /// integral.
 fn integrate_face(
     face: &ExactFace,
@@ -591,7 +591,7 @@ fn gauss2(a: f64, b: f64, c: f64, d: f64, f: &mut dyn FnMut(f64, f64, f64)) {
     );
     // Weight of node i: integrate a basis that is 1 at that sample order.
     // Simpler: the rule is linear, so the weight is the integral of the
-    // indicator sequence — recovered by a second pass per node.
+    // indicator sequence, recovered by a second pass per node.
     for (i, entry) in us.iter_mut().enumerate() {
         let mut k = 0;
         let w = ogeom_math::gauss_legendre(
@@ -641,7 +641,7 @@ fn gauss2(a: f64, b: f64, c: f64, d: f64, f: &mut dyn FnMut(f64, f64, f64)) {
 /// boundary carries its own sign and every inner one the opposite, which
 /// is what a hole *is* under the divergence theorem. So a plate with a
 /// bore in it is a rectangle less a disc, and a tube's end face a disc
-/// less a disc — neither of which had to be meshed, and both of which
+/// less a disc, neither of which had to be meshed, and both of which
 /// were.
 fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<Vec<ExactFace>>> {
     let Some(node) = model.node(face) else {
@@ -716,19 +716,19 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
 /// Whether the faces agree with each other about which way is out.
 ///
 /// The flag on a face is the only thing that says which side of its surface
-/// the material is on — no winding in this kernel says it, and the wires
+/// the material is on; no winding in this kernel says it, and the wires
 /// are wound however their builder wound them. But the flags can be asked
 /// *about each other*: an edge between two faces is walked by one of them
 /// with the material on its left and by the other with the material on its
 /// left too, so the two walks run opposite ways along it. Each face's walk
 /// is its outward normal crossed into the direction the material lies from
-/// the edge, and both of those are had for the asking — the normal from the
+/// the edge, and both of those are had for the asking: the normal from the
 /// flag, the material's direction from the chart, since a face's region
 /// lies around the middle of the boundary that encloses it.
 ///
 /// A part in the corpus has a bore wall whose flag points into the solid.
 /// The tessellator repairs such a shell, flipping whichever side of the
-/// disagreement is in the minority, and the closed-form integral cannot —
+/// disagreement is in the minority, and the closed-form integral cannot:
 /// it would hand the bore back as material, a third of that part's volume.
 /// So where the flags disagree this says so and the mesh is asked instead.
 ///
@@ -866,8 +866,8 @@ fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<boo
     }
     for (edge, uses) in &walks {
         // An edge one face walks twice is that face's own seam, however it
-        // is written down — a canonicalised drum keeps its as an ordinary
-        // pcurve used twice — and one face's seam says nothing about
+        // is written down (a canonicalised drum keeps its as an ordinary
+        // pcurve used twice), and one face's seam says nothing about
         // whether two faces agree.
         if uses.iter().all(|(_, owner, _)| *owner == uses[0].1) {
             continue;
@@ -956,7 +956,7 @@ fn exact_wire(
                         // One circle's arcs, however many pieces the
                         // boundary arrives in. A boolean splits a closed rim
                         // to give the arrangement's walker somewhere to
-                        // start — even a rim it never touched — and the disc
+                        // start, even a rim it never touched, and the disc
                         // those arcs bound is the same disc the whole turn
                         // bounded. The spans are summed and the total asked
                         // for a turn, so a fan of arcs that does not close
@@ -1033,7 +1033,7 @@ fn exact_wire(
         // And the arcs must *tile* the turn rather than add up to one. A
         // reader that re-bases each edge's range onto its own curve can
         // leave two arcs both starting at the circle's zero, one a quarter
-        // of it and one three quarters — which sums to a turn while
+        // of it and one three quarters, which sums to a turn while
         // covering a quarter of the circle twice and half of it never. Each
         // arc end meets exactly one other where they genuinely chain.
         let reach = tol.confusion() * 10.0;
@@ -1067,7 +1067,7 @@ fn exact_wire(
     }
 
     // A chart rectangle: every segment axis-aligned and on the hull's edge.
-    // A torus's face is all seam and has no segments at all — two columns
+    // A torus's face is all seam and has no segments at all: two columns
     // and two rows, which are the rectangle.
     if segments.is_empty() && columns.is_empty() && rows.is_empty() {
         return Ok(None);
@@ -1185,7 +1185,7 @@ impl Accumulator {
         self.mass += measure;
         self.first += sum * (measure / count);
 
-        // ∫ x_i x_j = m/(n(n+1)) · [ Σ p p_ᵀ + (Σ p)(Σ p)ᵀ ] — see the module
+        // ∫ x_i x_j = m/(n(n+1)) · [ Σ p p_ᵀ + (Σ p)(Σ p)ᵀ ]; see the module
         // docs. The n(n+1) is the barycentric integral collapsing.
         let scale = measure / (count * (count + 1.0));
         let mut term = outer(sum, sum);
@@ -1209,7 +1209,7 @@ impl Accumulator {
             scale_matrix(Matrix3::IDENTITY, trace),
             scale_matrix(self.second, -1.0),
         );
-        // Then shift to the centre — the reverse of `inertia_about`.
+        // Then shift to the centre, the reverse of `inertia_about`.
         let inertia = add(
             about_reference,
             scale_matrix(displacement_term(self.mass, offset), -1.0),
@@ -1445,7 +1445,7 @@ mod tests {
     fn a_part_a_long_way_from_the_origin_keeps_its_precision() {
         // The reason the moments are accumulated about a point on the shape.
         // About the world origin the two terms of the inertia agree to twelve
-        // digits at this distance and their difference keeps four — the answer
+        // digits at this distance and their difference keeps four, so the answer
         // would come back with a few percent of noise in it, or negative.
         let mut model = Model::new();
         let far = Frame::new(
@@ -1530,7 +1530,7 @@ mod tests {
     fn a_sphere_converges_on_the_volume_a_sphere_has() {
         // The case a planar-exact implementation would get quietly wrong. The
         // tessellation inscribes the sphere, so the volume comes in under the
-        // truth and climbs as the deflection tightens — and the deflection is
+        // truth and climbs as the deflection tightens, and the deflection is
         // reported, so a caller can see how far under.
         use crate::build::make_natural_face;
         use ogeom_geom::SphereSurface;

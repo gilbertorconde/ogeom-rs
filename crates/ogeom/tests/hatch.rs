@@ -1,5 +1,5 @@
 //! Hatching a trimmed face: the lines stop at the boundary and skip the
-//! hole, and their total length is the area divided by the spacing —
+//! hole, and their total length is the area divided by the spacing:
 //! Cavalieri doing the bookkeeping.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 

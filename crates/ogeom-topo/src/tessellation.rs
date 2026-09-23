@@ -2,7 +2,7 @@
 //!
 //! A triangulation is a *representation* of a face, not a replacement for it
 //! (`docs/DATA_MODEL.md` §6). It lives here, beside the entity data, because
-//! that is what it belongs to — a face holds one the way an edge holds a
+//! that is what it belongs to: a face holds one the way an edge holds a
 //! pcurve, and the algorithms that build it live a layer up in `ogeom-mesh`.
 //!
 //! Everything here is plain data with the queries that read it. Nothing here
@@ -87,7 +87,7 @@ impl Triangulation {
     /// outward: each triangle contributes the signed volume of the tetrahedron
     /// it forms with the origin, and the contributions cancel except over the
     /// enclosed region. An open mesh gives a number with no meaning, and a mesh
-    /// wound inward gives the negative — which is why
+    /// wound inward gives the negative, which is why
     /// [`Triangulation::is_closed`] exists to be asked first.
     #[must_use]
     pub fn volume(&self) -> f64 {
@@ -120,7 +120,7 @@ impl Triangulation {
     /// Looser: an edge may legitimately carry four triangles. Where two
     /// faces meet along a short edge that discretizes into several segments,
     /// each can fill the sliver between the polyline and its own chord, and
-    /// the chord then belongs to both — four triangles round one edge, two
+    /// the chord then belongs to both: four triangles round one edge, two
     /// crossing each way. There is no hole there and the volume is right;
     /// demanding exactly two refuses a mesh for being non-manifold when
     /// nothing was asked about manifoldness. Sixty-four bodies of one real
@@ -149,9 +149,9 @@ impl Triangulation {
     ///
     /// The second pass after [`Triangulation::welded`]: interior edges are
     /// already manifold, and touching them at a widened tolerance would eat
-    /// real features. Borders are where imported slop lives — an edge's curve
+    /// real features. Borders are where imported slop lives (an edge's curve
     /// and its neighbour's disagree by the file's own tolerance, which the
-    /// model records on the edge — so only vertices on unmatched triangle
+    /// model records on the edge), so only vertices on unmatched triangle
     /// edges are candidates, merged to their nearest counterpart within
     /// `reach`.
     #[must_use]
@@ -239,7 +239,7 @@ impl Triangulation {
     ///
     /// The T-junction repair that follows [`Triangulation::border_welded`]:
     /// after welding, two faces' border chains share their vertices but may
-    /// subdivide the same stretch differently — one face's segment spans two
+    /// subdivide the same stretch differently: one face's segment spans two
     /// of its neighbour's. Splitting the long segment *at the neighbour's own
     /// vertex index* makes the chains segment-for-segment identical, which is
     /// what closure counts. No positions move and none are added.
@@ -352,7 +352,7 @@ impl Triangulation {
     /// Merge vertices that coincide within `tol`, rewiring the triangles.
     ///
     /// Faces are triangulated independently, so a shared edge produces two
-    /// copies of every boundary vertex — at identical positions, since both
+    /// copies of every boundary vertex, at identical positions, since both
     /// came from the same edge discretization, but as separate entries. Merging
     /// them is what turns a pile of face meshes into one closed surface, and
     /// what lets [`Triangulation::is_closed`] answer truthfully.
@@ -490,7 +490,7 @@ mod tests {
         // Two tetrahedra sharing the edge 0-1, each closed and outward. The
         // shared edge carries four triangles, two crossing each way. It is
         // not a manifold and it is certainly closed, and its volume is both
-        // halves — which is the case a count of uses refuses and the one a
+        // halves, which is the case a count of uses refuses and the one a
         // real assembly produces where two faces fill a sliver with the same
         // chord.
         let mut pair = solid.clone();

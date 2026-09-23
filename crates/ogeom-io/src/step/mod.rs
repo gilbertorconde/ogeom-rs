@@ -1,4 +1,4 @@
-//! STEP exchange files — ISO 10303.
+//! STEP exchange files: ISO 10303.
 //!
 //! *Elsewhere* this is `STEPControl` and everything under it. Two layers,
 //! deliberately separate: [`parse`] understands Part 21, the exchange

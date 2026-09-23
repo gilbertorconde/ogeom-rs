@@ -6,18 +6,18 @@
 //! mend is known for, diagnose again, and say what changed and what did
 //! not. Nothing is moved that the model's own tolerances do not already
 //! call the same place, and nothing is dropped that the model says is
-//! there — a face with area is a face, whatever its shape.
+//! there: a face with area is a face, whatever its shape.
 //!
 //! What is mended, in order:
 //!
 //! - a wire whose edges are not end to end is put in the order that
 //!   walks them, where one exists;
-//! - an edge shorter than its own vertices' tolerances — the two ends
-//!   the same point by the model's own admission — is collapsed, its two
+//! - an edge shorter than its own vertices' tolerances (the two ends
+//!   the same point by the model's own admission) is collapsed, its two
 //!   vertices made one;
 //! - an edge with no pcurve on a face it bounds is given the trim
 //!   projection can honestly fit, as the readers do;
-//! - loose faces — a compound of them, or an open shell — are sewn where
+//! - loose faces (a compound of them, or an open shell) are sewn where
 //!   they share edges;
 //! - tolerances are tightened to what the geometry needs.
 //!
@@ -71,7 +71,7 @@ pub struct Fixed {
     pub report: FixReport,
 }
 
-/// The cap on how far a fitted trim may sit from its surface — the
+/// The cap on how far a fitted trim may sit from its surface: the
 /// readers' own, a millimetre at unit scale.
 const TRIM_CAP: f64 = 1e7;
 
@@ -132,8 +132,8 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
 
     let tolerances_reduced = reduce_tolerances(model, &current, tol)?;
     // Last, because every step above may leave a vertex tighter than an
-    // edge it bounds — a reduction tightens edges and faces, never below
-    // what they bound, but a shape can arrive broken — and containment is
+    // edge it bounds (a reduction tightens edges and faces, never below
+    // what they bound, but a shape can arrive broken), and containment is
     // established only by widening what is bounded.
     let tolerances_widened = ogeom_algo::restore_containment(model, &current)?;
     let after = check(model, &current, tol)?;
@@ -167,7 +167,7 @@ fn reorder_wires(
         if edges.len() < 2 || walks_end_to_end(model, &edges, tol)? {
             continue;
         }
-        // A bag that is no path at all — a branch, a gap — is left as it
+        // A bag that is no path at all (a branch, a gap) is left as it
         // is and reported by the diagnosis; reordering cannot mend it.
         let Ok(ordered) = order_edges(model, &edges, tol) else {
             continue;

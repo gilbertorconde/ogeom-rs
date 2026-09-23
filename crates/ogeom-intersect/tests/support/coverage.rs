@@ -4,7 +4,7 @@
 //!
 //! [`benchmark`](crate::benchmark) measures accuracy: every point of every
 //! reported curve lies on both surfaces. That is necessary and it is not
-//! sufficient — an intersector that found one of two circles and traced it
+//! sufficient: an intersector that found one of two circles and traced it
 //! perfectly scores perfectly, and the answer is still half missing. Accuracy
 //! cannot see a branch that was never looked at, because there is nothing wrong
 //! with the points it did report.
@@ -16,7 +16,7 @@
 //!
 //! Sample one surface into cells. For each cell, take the signed distance from
 //! its corners to the other surface. Where that sign changes across a cell, the
-//! other surface passes through it — no intersector was consulted to establish
+//! other surface passes through it; no intersector was consulted to establish
 //! that, it follows from the intermediate value theorem and two closed-form
 //! distance functions. So the intersection curve crosses that cell, and some
 //! reported branch had better cross it too.
@@ -26,8 +26,8 @@
 //!
 //! # What it cannot see
 //!
-//! A branch entirely inside one cell — a tiny loop where two surfaces barely
-//! graze — changes no corner's sign and is invisible here, exactly as it is
+//! A branch entirely inside one cell (a tiny loop where two surfaces barely
+//! graze) changes no corner's sign and is invisible here, exactly as it is
 //! invisible to the seeding it is checking. Both get better with a finer grid
 //! and neither is exact, so a clean completeness score at one resolution is a
 //! statement about that resolution. The score carries the grid it was measured
@@ -58,7 +58,7 @@ pub struct Coverage {
     /// The grid the measurement was taken at.
     ///
     /// Carried with the result because completeness is only ever a statement
-    /// about a resolution — a branch narrower than a cell is invisible to this
+    /// about a resolution: a branch narrower than a cell is invisible to this
     /// and to the seeding it is checking.
     pub grid: usize,
 }
@@ -72,7 +72,7 @@ impl Coverage {
 
     /// The share of crossings covered, from zero to one.
     ///
-    /// One when nothing was crossed, since nothing was missed either — the
+    /// One when nothing was crossed, since nothing was missed either; the
     /// alternative is a division by zero dressed up as a failure.
     #[must_use]
     pub fn fraction(&self) -> f64 {
@@ -89,8 +89,8 @@ impl Coverage {
 /// Measure how much of the intersection a set of branches actually found.
 ///
 /// `grid` is how finely the first surface is sampled. Both surfaces need a
-/// *signed* distance for this to mean anything — the sign change is the whole
-/// method — so a pair without one is refused rather than scored.
+/// *signed* distance for this to mean anything (the sign change is the whole
+/// method), so a pair without one is refused rather than scored.
 ///
 /// # Errors
 ///
@@ -221,7 +221,7 @@ fn bounded(surface: &SurfaceGeometry) -> ((f64, f64), (f64, f64)) {
 
 /// The signed distance to a surface, where that means something.
 ///
-/// `None` for a surface with no inside — a cone's two nappes and a spindle
+/// `None` for a surface with no inside: a cone's two nappes and a spindle
 /// torus's folded branch have no consistent side, and inventing one would put
 /// a sign change where there is no crossing.
 fn signed_distance(surface: &SurfaceGeometry, p: Point) -> Option<f64> {

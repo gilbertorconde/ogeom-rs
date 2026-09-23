@@ -6,7 +6,7 @@
 //! - **Composition is concatenation.** No matrix product, and no drift from
 //!   composing the same placement a thousand times down an assembly tree.
 //! - **Identity is structural.** Two shapes are at the same place when their
-//!   chains match — decided by comparing a handful of integers rather than
+//!   chains match, decided by comparing a handful of integers rather than
 //!   sixteen floats against a tolerance. That is what lets ten thousand
 //!   identical fasteners share one piece of geometry *and* be recognisable as
 //!   instances of it.
@@ -15,7 +15,7 @@
 //!
 //! The composed [`Transform`] is derived on demand. It is deliberately *not*
 //! cached inside the location: a location is used as a hash key, and a value
-//! with interior mutability has no business being one — the hazard being that
+//! with interior mutability has no business being one, the hazard being that
 //! a key's hash can change while it sits in a map. Composing a chain is a few
 //! transform products, and chains are short; a caller that finds it hot can
 //! memoize outside.
@@ -35,13 +35,13 @@ pub type DatumId = Key<Datum>;
 
 /// The store of transforms that [`Location`] chains refer into.
 ///
-/// One per document. Interning is not an optimisation here — it is what gives
+/// One per document. Interning is not an optimisation here; it is what gives
 /// placements a stable notion of sameness, since two chains naming the same
 /// datum are known to agree without any floating-point comparison.
 ///
 /// # Handles are relative to their store, and know it
 ///
-/// A [`DatumId`] means nothing without the store that issued it — and it says
+/// A [`DatumId`] means nothing without the store that issued it, and it says
 /// which one that was. A handle from another store resolves to `None` rather
 /// than to whatever transform happens to sit at that index, so mixing
 /// documents is an error that shows up where it happens rather than a wrong
@@ -95,7 +95,7 @@ impl DatumStore {
 
     /// Whether the arena has only ever been appended to.
     ///
-    /// The precondition for extending the store by offset — see
+    /// The precondition for extending the store by offset; see
     /// [`Arena::is_dense`].
     pub(crate) fn is_dense(&self) -> bool {
         self.arena.is_dense()
@@ -116,7 +116,7 @@ impl DatumStore {
 /// two, and its inverse is the same entry with the sign flipped.
 /// Equality and hashing are structural: two locations agree when their chains
 /// match entry for entry. Deliberately *not* a comparison of the composed
-/// transforms — that would be a tolerance question, and the answer would depend
+/// transforms; that would be a tolerance question, and the answer would depend
 /// on rounding rather than on what the model says.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Location {
@@ -171,7 +171,7 @@ impl Location {
 
     /// This placement followed by `inner`.
     ///
-    /// `outer.then(inner)` applies `inner` first, then `outer` — the same order
+    /// `outer.then(inner)` applies `inner` first, then `outer`, the same order
     /// as transform composition, so a sub-shape's placement composed with its
     /// parent's reads the way the tree does.
     ///
@@ -215,7 +215,7 @@ impl Location {
     ///
     /// For absorbing one document's parts into another: the chain's indices
     /// were local to the source document, and its datums are about to land
-    /// `offset` slots into the target's store. The handles stay unscoped —
+    /// `offset` slots into the target's store. The handles stay unscoped;
     /// binding is a separate, later step.
     pub(crate) fn with_datum_offset(&self, offset: u32) -> Self {
         Self {
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn repeated_composition_does_not_grow_the_chain() {
         // A placement applied a hundred times is one entry with a power of 100,
-        // not a hundred entries — so an assembly that nests deeply stays cheap
+        // not a hundred entries, so an assembly that nests deeply stays cheap
         // to compare and to store.
         let (s, a, _) = store();
         let mut l = Location::identity();
@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn the_datum_store_does_not_deduplicate() {
         // Deduplicating would mean deciding two matrices are equal, which is a
-        // tolerance question — precisely the one the chain exists to avoid.
+        // tolerance question, precisely the one the chain exists to avoid.
         let mut s = DatumStore::new();
         let t = Transform::translation(Vector::X);
         let a = s.insert(t);

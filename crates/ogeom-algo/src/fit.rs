@@ -6,14 +6,14 @@
 //!
 //! # Which one you want
 //!
-//! Interpolation is right when the points are exact — corners of a profile, a
+//! Interpolation is right when the points are exact: corners of a profile, a
 //! path a machine must visit. It is wrong for measured data, because it fits
 //! the noise as faithfully as the signal, and the wiggles it invents between
 //! samples can be large.
 //!
 //! Approximation is right when the points are samples of something smoother
 //! than they are. It also *cannot* be told to use as many control points as
-//! there are data points — at that ratio the least-squares system is the
+//! there are data points; at that ratio the least-squares system is the
 //! interpolation system, and calling one function and getting the other is a
 //! trap. That case is refused with a message pointing at [`interpolate`].
 //!
@@ -60,7 +60,7 @@ pub enum Spacing {
 ///
 /// The half of fitting the fixed-count functions cannot do: the caller names
 /// how wrong the curve may be, and the fit decides how many control points
-/// that costs — refining where the error concentrates, so a profile that is
+/// that costs, refining where the error concentrates, so a profile that is
 /// straight with one tight corner gets its knots in the corner.
 ///
 /// Returns the curve and the error actually reached. If the target could not
@@ -83,8 +83,8 @@ pub fn approximate_within(
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if there are fewer
-/// points than the degree requires, if two consecutive points coincide — which
-/// leaves a parameter interval of zero and a singular system — or if the system
+/// points than the degree requires, if two consecutive points coincide (which
+/// leaves a parameter interval of zero and a singular system), or if the system
 /// turns out singular anyway.
 pub fn interpolate(
     points: &[Point],
@@ -130,7 +130,7 @@ pub fn interpolate(
 /// Fit a B-spline that passes *near* the points, with `control_count` control
 /// points.
 ///
-/// The first and last points are interpolated exactly — a fitted curve that
+/// The first and last points are interpolated exactly: a fitted curve that
 /// does not start where the data starts is almost never wanted, and the ends
 /// are where a free least-squares fit goes worst.
 ///
@@ -163,7 +163,7 @@ pub fn approximate(
         ogeom_bail!(
             Construction,
             "approximating {} points with {control_count} control points is not \
-             an approximation — at that ratio the least-squares system *is* the \
+             an approximation: at that ratio the least-squares system *is* the \
              interpolation system. Use `interpolate`",
             points.len()
         );
@@ -314,7 +314,7 @@ fn solve(matrix: &nalgebra::DMatrix<f64>, rhs: &[Point]) -> OgeomResult<Vec<Poin
 
     // LU with partial pivoting. The collocation matrix is banded and diagonally
     // dominant for a sensible parameterization, so this is stable; the failure
-    // it does report — a singular system — means the points or the knots were
+    // it does report (a singular system) means the points or the knots were
     // degenerate, which is worth an error rather than a plausible answer.
     let Some(x) = matrix.clone().lu().solve(&b) else {
         ogeom_bail!(
@@ -370,7 +370,7 @@ mod tests {
     fn an_interpolant_through_collinear_points_is_the_line_they_lie_on() {
         // A curve that wanders off a straight run of points is the classic
         // parameterization failure, and it is invisible at the points
-        // themselves — only between them.
+        // themselves, only between them.
         let points: Vec<Point> = (0..8).map(|i| Point::new(f64::from(i), 0.0, 0.0)).collect();
         let curve = interpolate(&points, 3, Spacing::Centripetal, T).unwrap();
 

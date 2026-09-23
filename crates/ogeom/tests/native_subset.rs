@@ -16,7 +16,7 @@ fn volume(model: &Model, shape: &ogeom::topo::Shape) -> f64 {
 }
 
 /// One box's snapshot out of a two-box model holds one box, and reads back
-/// as that box — while both roots still round-trip whole.
+/// as that box, while both roots still round-trip whole.
 #[test]
 fn a_snapshot_of_one_root_is_a_fraction_and_round_trips() {
     let mut model = Model::new();

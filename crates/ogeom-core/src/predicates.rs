@@ -12,13 +12,13 @@
 //! [`Exact`] gives them.
 //!
 //! They do **not** settle the CAD problem. The intersection curve of two NURBS
-//! surfaces is transcendental — there is no exact value to be exact about. That
+//! surfaces is transcendental; there is no exact value to be exact about. That
 //! is why per-entity tolerances exist (`docs/DATA_MODEL.md` §5) and why they
 //! cannot be traded away for better predicates. Predicates make the decidable
 //! parts decidable; tolerances carry the rest.
 //!
-//! Use exact predicates where the question is genuinely combinatorial —
-//! triangulation, point-in-polygon, orientation of a planar facet — and do not
+//! Use exact predicates where the question is genuinely combinatorial
+//! (triangulation, point-in-polygon, orientation of a planar facet), and do not
 //! reach for them expecting surface intersection to become robust.
 
 /// The sign of a predicate's determinant.
@@ -26,7 +26,7 @@
 pub enum Sign {
     /// Determinant is negative.
     Negative,
-    /// Determinant is zero — degenerate: collinear, coplanar, cocircular.
+    /// Determinant is zero (degenerate): collinear, coplanar, cocircular.
     Zero,
     /// Determinant is positive.
     Positive,
@@ -265,7 +265,7 @@ mod tests {
         let c = [24.000_000_000_000_004, 24.0];
 
         assert_eq!(Exact::orient2d(a, b, c), Sign::Negative);
-        // Not asserting Fast is wrong here — the point is that Exact is
+        // Not asserting Fast is wrong here; the point is that Exact is
         // trustworthy at this scale and the algorithms depend on that.
         assert!(!Exact::orient2d(a, b, c).is_zero());
     }

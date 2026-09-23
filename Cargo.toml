@@ -116,7 +116,7 @@ opt-level = 2
 
 # `package."*"` above covers dependencies and *not* workspace members, so
 # without this the kernel's own fifteen crates compiled unoptimised for every
-# `cargo test` — and a kernel is arithmetic end to end. The heaviest suite,
+# `cargo test`, and a kernel is arithmetic end to end. The heaviest suite,
 # eleven real b-reps read and meshed, spent 165 s that way and spends 29 s
 # here.
 #

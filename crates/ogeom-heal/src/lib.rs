@@ -1,4 +1,4 @@
-//! Shape healing — analysis, fixing and upgrading.
+//! Shape healing: analysis, fixing and upgrading.
 //!
 //! *Elsewhere:* `ShapeFix`, `ShapeAnalysis`, `ShapeUpgrade`, `ShapeBuild`,
 //! `ShapeConstruct` and `ShapeExtend`.

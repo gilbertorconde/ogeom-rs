@@ -1,7 +1,7 @@
 //! A STEP file's surface of linear extrusion: a curve swept along a
 //! vector, which a file writes for a drum's wall as often as it writes a
-//! cylinder. Read as what it is — a cylinder where a circle is swept along
-//! its own axis, the swept surface itself otherwise — and measured.
+//! cylinder. Read as what it is (a cylinder where a circle is swept along
+//! its own axis, the swept surface itself otherwise) and measured.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -18,8 +18,8 @@ fn volume(model: &Model, shape: &Shape) -> f64 {
         .mass
 }
 
-/// A drum written by this kernel, its wall restated as `swept` — a curve
-/// entity spelled over the wall's own placement — swept along the drum's
+/// A drum written by this kernel, its wall restated as `swept` (a curve
+/// entity spelled over the wall's own placement) swept along the drum's
 /// axis. The substitution keeps every other entity as written.
 fn drum_with_wall_swept(swept: &str) -> String {
     let mut model = Model::new();
@@ -102,8 +102,8 @@ fn a_circle_swept_along_its_axis_reads_as_the_cylinder_it_is() {
     );
 }
 
-/// Anything else sweeps as itself — an ellipse here, drawn round to the
-/// same drum so the volume is known — and the face it bounds draws and
+/// Anything else sweeps as itself (an ellipse here, drawn round to the
+/// same drum so the volume is known), and the face it bounds draws and
 /// measures, its trims fitted by projection over a window the face's own
 /// edges size.
 #[test]

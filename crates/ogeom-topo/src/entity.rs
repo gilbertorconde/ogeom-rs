@@ -4,7 +4,7 @@
 //!
 //! # Tolerances are per entity
 //!
-//! Every vertex, edge and face carries its own [`Tolerance`] — the radius
+//! Every vertex, edge and face carries its own [`Tolerance`]: the radius
 //! within which it is considered to lie. Operations may only widen one, and the
 //! containment rule `tol(vertex) >= tol(edge) >= tol(face)` holds between
 //! entities in a boundary relationship ([`check_containment`]).
@@ -16,7 +16,7 @@
 //!
 //! # An edge carries a list of representations
 //!
-//! Not one curve — a list. A single edge holds a 3D curve, *one pcurve per
+//! Not one curve: a list. A single edge holds a 3D curve, *one pcurve per
 //! adjacent face*, two pcurves where it is a seam on a closed surface, and
 //! cached polylines. Face splitting during a boolean happens in a surface's
 //! 2D parameter space, so without a pcurve on each face there is nothing to
@@ -140,7 +140,7 @@ impl GeometryStore {
 
     /// Whether every arena has only ever been appended to.
     ///
-    /// The precondition for extending the store by offset — see
+    /// The precondition for extending the store by offset; see
     /// [`Arena::is_dense`](ogeom_core::Arena::is_dense).
     pub(crate) fn is_dense(&self) -> bool {
         self.curves.is_dense()
@@ -241,7 +241,7 @@ pub(crate) struct GeometryScopes {
     pub triangulations: u32,
 }
 
-/// Where each kind of geometry landed in an append — the lengths of the
+/// Where each kind of geometry landed in an append: the lengths of the
 /// receiving arenas before it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct GeometryOffsets {
@@ -262,7 +262,7 @@ pub(crate) fn arena_len<T>(arena: &ogeom_core::Arena<T>) -> u32 {
     u32::try_from(arena.len()).expect("arena exceeded u32::MAX slots")
 }
 
-/// Whether a key is unscoped and at generation zero — the state a reader
+/// Whether a key is unscoped and at generation zero: the state a reader
 /// leaves handles in, and the only state an absorb accepts.
 pub(crate) fn key_is_unbound<T>(key: ogeom_core::Key<T>) -> bool {
     key.scope() == ogeom_core::UNSCOPED && key.generation() == 0
@@ -289,7 +289,7 @@ pub(crate) fn shifted_key<T>(key: ogeom_core::Key<T>, offset: u32) -> ogeom_core
 
 /// One way of describing where an edge runs.
 ///
-/// An edge holds several at once, and they must agree — see
+/// An edge holds several at once, and they must agree; see
 /// [`EdgeData::same_parameter`].
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -316,8 +316,8 @@ pub enum EdgeRepr {
     },
     /// The edge as a seam on a closed surface, needing two pcurves.
     ///
-    /// A seam runs along a surface's closure — a cylinder's join, a sphere's
-    /// date line — where the same points have two parameter values. One pcurve
+    /// A seam runs along a surface's closure (a cylinder's join, a sphere's
+    /// date line) where the same points have two parameter values. One pcurve
     /// per side; a single one could not express both, and using only one leaves
     /// the face split open along the seam.
     Seam {
@@ -359,7 +359,7 @@ pub enum EdgeRepr {
         ///
         /// Kept, not discarded. A face's cached triangulation has to place its
         /// boundary vertices where this polyline puts them, and it reaches them
-        /// through its own pcurve — so it needs the parameters, not just the
+        /// through its own pcurve, so it needs the parameters, not just the
         /// points. Without them the two caches drift and the stored mesh has
         /// gaps that the exact geometry does not.
         parameters: Vec<f64>,
@@ -468,7 +468,7 @@ impl EdgeRepr {
         }
     }
 
-    /// Whether every handle here is unscoped and at generation zero — the
+    /// Whether every handle here is unscoped and at generation zero: the
     /// state a reader leaves them in, and the only state an absorb accepts.
     pub(crate) fn is_unbound(&self) -> bool {
         let local_location = |location: &Location| {
@@ -606,7 +606,7 @@ pub struct EdgeData {
     pub representations: SmallVec<[EdgeRepr; 3]>,
     /// Whether the representations agree on parameterization.
     ///
-    /// A *claim*, and one that can be false — see [`EdgeData::same_parameter`].
+    /// A *claim*, and one that can be false; see [`EdgeData::same_parameter`].
     same_parameter: bool,
     /// Whether the edge has no length: a cone's apex, a sphere's pole.
     ///
@@ -657,8 +657,8 @@ impl EdgeData {
     /// nearly every algorithm evaluates whichever representation is convenient
     /// and assumes the answer is interchangeable.
     ///
-    /// It can be false — an imported edge whose pcurve was fitted independently
-    /// of its 3D curve routinely is — which is why it is a flag to be checked
+    /// It can be false (an imported edge whose pcurve was fitted independently
+    /// of its 3D curve routinely is), which is why it is a flag to be checked
     /// rather than an invariant to be assumed.
     #[must_use]
     pub const fn same_parameter(&self) -> bool {
@@ -693,8 +693,8 @@ impl EdgeData {
     /// The representation in `surface`'s parameter space for an occurrence at
     /// `location`.
     ///
-    /// One edge node can bound one face at more than one placement — the top
-    /// and bottom of a prism are the same edge, moved — and those two
+    /// One edge node can bound one face at more than one placement (the top
+    /// and bottom of a prism are the same edge, moved), and those two
     /// occurrences run along different lines of the same parameter space. Asked
     /// by surface alone, the lookup returns whichever was attached first and
     /// both ends of the prism collapse onto one.

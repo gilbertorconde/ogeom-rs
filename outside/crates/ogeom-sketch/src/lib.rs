@@ -6,7 +6,7 @@
 //!
 //! Diagnosis matters as much as solving. An over-constrained sketch must report
 //! *which* constraints conflict, and an under-constrained one *which* degrees of
-//! freedom remain — a solver that only reports success or failure pushes the real
+//! freedom remain. A solver that only reports success or failure pushes the real
 //! work back onto the user.
 //!
 //! No conventional CAD kernel ships this; applications built on them each supply

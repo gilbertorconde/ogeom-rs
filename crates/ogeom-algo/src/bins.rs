@@ -48,7 +48,7 @@ impl Bins {
     }
 
     /// Every entry binned within `radius` of `p` on each axis, in ascending
-    /// order — a superset of the entries whose point lies that close — or
+    /// order (a superset of the entries whose point lies that close), or
     /// `None` when the grid cannot answer: the cell is unusable, the radius
     /// is not finite, or it spans more cells than a walk over every entry
     /// would cost.

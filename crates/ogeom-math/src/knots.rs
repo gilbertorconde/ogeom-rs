@@ -1,8 +1,8 @@
 //! Knot vectors and B-spline basis functions.
 //!
 //! The basis is the foundation of every free-form curve and surface in the
-//! kernel. Everything else — de Boor evaluation, knot insertion, degree
-//! elevation, Bézier decomposition — is built on the functions here.
+//! kernel. Everything else (de Boor evaluation, knot insertion, degree
+//! elevation, Bézier decomposition) is built on the functions here.
 //!
 //! # Representation
 //!
@@ -14,7 +14,7 @@
 //! Repeated knots must be bit-identical, and every operation here preserves
 //! that: knot insertion copies the inserted value rather than recomputing it.
 //! Multiplicity is therefore an exact question, not a tolerance one, which
-//! matters because multiplicity determines continuity — a knot of multiplicity
+//! matters because multiplicity determines continuity: a knot of multiplicity
 //! `p` in a degree-`p` curve is a corner, and "nearly a corner" is not a thing.
 //!
 //! # Conventions
@@ -50,7 +50,7 @@ impl KnotVector {
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
     /// sequence is too short for the degree, is not non-decreasing, contains a
     /// non-finite value, or has an interior knot of multiplicity greater than
-    /// the degree — which would disconnect the curve rather than merely make it
+    /// the degree, which would disconnect the curve rather than merely make it
     /// sharp.
     pub fn new(knots: Vec<f64>, degree: usize) -> OgeomResult<Self> {
         if degree == 0 {
@@ -132,7 +132,7 @@ impl KnotVector {
     /// A clamped knot vector from parameter values, for interpolation.
     ///
     /// Uses the averaging rule, which places interior knots so that the
-    /// resulting interpolation system is well conditioned — a uniform vector
+    /// resulting interpolation system is well conditioned; a uniform vector
     /// over unevenly spaced parameters gives a nearly singular one.
     ///
     /// # Errors
@@ -295,7 +295,7 @@ impl KnotVector {
     /// The `degree + 1` non-zero basis functions at `u`.
     ///
     /// Entry `i` is the value of basis function `span - degree + i`. They are
-    /// non-negative and sum to exactly one up to rounding — the partition of
+    /// non-negative and sum to exactly one up to rounding: the partition of
     /// unity, which is what makes a B-spline curve lie in the convex hull of its
     /// control points.
     ///
@@ -488,8 +488,8 @@ impl KnotVector {
     /// mirrored. Reversing a curve reverses its knots and its control points
     /// together.
     ///
-    /// Multiplicity is preserved *exactly* — equal knots map through the same
-    /// arithmetic and so stay equal — which is what continuity depends on. The
+    /// Multiplicity is preserved *exactly* (equal knots map through the same
+    /// arithmetic and so stay equal), which is what continuity depends on. The
     /// interior knot *values* are not bit-exactly restored by reversing twice,
     /// since `a + b - k` is not an exact involution in floating point; they
     /// return to within one ulp.
@@ -654,7 +654,7 @@ mod tests {
     #[test]
     fn basis_derivatives_sum_to_zero() {
         // The basis sums to one everywhere, so every derivative of that sum is
-        // identically zero — a strong check on the whole recurrence.
+        // identically zero: a strong check on the whole recurrence.
         let k = cubic();
         for i in 0..=50 {
             let u = f64::from(i) / 50.0;

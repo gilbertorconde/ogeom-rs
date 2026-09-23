@@ -1,7 +1,7 @@
 //! The pickable scene: a shape flattened for questions from the screen.
 //!
 //! Selection answers geometry's questions backwards. Modelling asks "where
-//! is this face"; a pointer asks "which face is *here*" — and wants the
+//! is this face"; a pointer asks "which face is *here*", and wants the
 //! answer at sub-shape granularity, nearest first, thousands of times a
 //! second. So the shape is flattened once: every face triangulated with a
 //! record of which face owns which triangles, every edge discretized, every
@@ -41,7 +41,7 @@ pub struct Hit {
     pub position: Point,
     /// The distance along the ray, for depth ordering.
     pub distance: f64,
-    /// The index of the struck triangle — stable across the scene's life,
+    /// The index of the struck triangle, stable across the scene's life,
     /// resolvable back to its face through [`Pickable::triangle_face`].
     pub triangle: usize,
     /// Whether [`Hit::position`] and [`Hit::distance`] were refined onto
@@ -128,7 +128,7 @@ pub struct Pickable {
     positions: Vec<Point>,
     triangles: Vec<[u32; 3]>,
     faces: Vec<FaceRecord>,
-    /// For each triangle, the index into `faces` — the stable mapping.
+    /// For each triangle, the index into `faces`: the stable mapping.
     owner: Vec<u32>,
     edges: Vec<EdgeRecord>,
     vertices: Vec<VertexRecord>,
@@ -144,13 +144,13 @@ impl Pickable {
     /// Flatten a shape for picking at the given deflection.
     ///
     /// The deflection is the level of detail: a scene for a distant view
-    /// can be built coarse and cheap, one for close work fine — several
+    /// can be built coarse and cheap, one for close work fine; several
     /// scenes over the same shape are independent and each keeps its own
     /// stable triangle indices.
     ///
     /// # Errors
     ///
-    /// As [`triangulate_face`] — a face that cannot be triangulated cannot
+    /// As [`triangulate_face`]: a face that cannot be triangulated cannot
     /// be picked, and saying so beats silently ignoring it.
     pub fn build(
         model: &Model,
@@ -231,7 +231,7 @@ impl Pickable {
         })
     }
 
-    /// The face that produced a triangle — the stable mapping back from
+    /// The face that produced a triangle: the stable mapping back from
     /// tessellation to topology.
     #[must_use]
     pub fn triangle_face(&self, triangle: usize) -> Option<&Shape> {
@@ -246,11 +246,11 @@ impl Pickable {
     }
 
     /// Draft analysis: each face's signed angle range against a pull
-    /// direction, sampled at this scene's triangles — the deflection the
+    /// direction, sampled at this scene's triangles; the deflection the
     /// scene was built at is the sampling, stated by construction.
     ///
     /// The angle at a sample is `asin(n · pull)`: positive where the face
-    /// tilts its outward normal along the pull — drafted — negative where
+    /// tilts its outward normal along the pull (drafted), negative where
     /// it undercuts, zero on a straight wall.
     #[must_use]
     pub fn draft_analysis(&self, pull: ogeom_math::Direction) -> Vec<FaceDraft> {
@@ -287,10 +287,10 @@ impl Pickable {
 
     /// Thickness analysis: for each face, the least material depth found by
     /// casting inward from its triangle centroids to the first opposite
-    /// wall — sampled at this scene's own triangles, as fine as its
+    /// wall, sampled at this scene's own triangles, as fine as its
     /// deflection.
     ///
-    /// Faces whose inward rays strike nothing — an open sheet — report
+    /// Faces whose inward rays strike nothing (an open sheet) report
     /// infinity, which is the honest answer for material with no far side.
     #[must_use]
     pub fn thickness_analysis(&self) -> Vec<FaceThickness> {
@@ -343,7 +343,7 @@ impl Pickable {
     /// How many faces the scene holds.
     ///
     /// Faces are numbered in traversal order at build time, so the same index
-    /// names the same face in every scene built over one shape — which is what
+    /// names the same face in every scene built over one shape, which is what
     /// lets a [`PickHierarchy`] carry an answer from one level to another.
     #[must_use]
     pub fn face_count(&self) -> usize {
@@ -357,7 +357,7 @@ impl Pickable {
     }
 
     /// Which faces this scene's tessellation brings within `slack` of the
-    /// ray — a *conservative* answer, by which nothing that could be hit is
+    /// ray: a *conservative* answer, by which nothing that could be hit is
     /// left out.
     ///
     /// Conservative is the whole point. A coarse tessellation stands within
@@ -410,7 +410,7 @@ impl Pickable {
 
     /// Every hit along a ray, nearest first.
     ///
-    /// `aperture` is the pick radius in world units — how close the ray
+    /// `aperture` is the pick radius in world units: how close the ray
     /// must pass to an edge or vertex of the struck face to resolve to it
     /// instead of the face. Zero apertures pick faces only.
     #[must_use]
@@ -500,8 +500,8 @@ impl Pickable {
     /// The tessellation finds the hits and orders them; the analytic
     /// surface then answers *where*, exactly: the ray is intersected with
     /// the struck face's own geometry and the crossing nearest the mesh
-    /// answer replaces it. A hit whose exact refinement resolves nothing —
-    /// a grazing ray, a surface kind the intersector seeds poorly — keeps
+    /// answer replaces it. A hit whose exact refinement resolves nothing
+    /// (a grazing ray, a surface kind the intersector seeds poorly) keeps
     /// the tessellated answer and says so through [`Hit::refined`].
     #[must_use]
     pub fn pick_refined(&self, ray: Ray, aperture: f64, tol: Tolerances) -> Vec<Hit> {
@@ -512,7 +512,7 @@ impl Pickable {
     /// Put already-found hits onto their faces' exact surfaces.
     ///
     /// Separated from [`Pickable::pick_refined`] because refining is per hit
-    /// and knows nothing about how the hits were found — which is what lets a
+    /// and knows nothing about how the hits were found, which is what lets a
     /// [`PickHierarchy`] narrow the search and refine the same way.
     #[must_use]
     pub fn refine(&self, hits: Vec<Hit>, ray: Ray, tol: Tolerances) -> Vec<Hit> {
@@ -749,7 +749,7 @@ impl PickHierarchy {
     ///
     /// As [`Pickable::build`], plus
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if no
-    /// deflection is given — a hierarchy of no levels answers nothing.
+    /// deflection is given; a hierarchy of no levels answers nothing.
     pub fn build(
         model: &Model,
         shape: &Shape,
@@ -800,7 +800,7 @@ impl PickHierarchy {
         &self.levels[0]
     }
 
-    /// The coarsest level no coarser than `chord` — what a view at that
+    /// The coarsest level no coarser than `chord`: what a view at that
     /// detail should be asked, without building anything new.
     #[must_use]
     pub fn for_chord(&self, chord: f64) -> &Pickable {
@@ -812,7 +812,7 @@ impl PickHierarchy {
         self.finest()
     }
 
-    /// Every hit along a ray, nearest first — the finest level's answer,
+    /// Every hit along a ray, nearest first: the finest level's answer,
     /// reached by ruling faces out on the coarser ones first.
     #[must_use]
     pub fn pick(&self, ray: Ray, aperture: f64) -> Vec<Hit> {

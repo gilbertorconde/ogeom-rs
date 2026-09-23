@@ -1,6 +1,6 @@
 //! The general surface/surface intersector: seed, then walk.
 //!
-//! Where two surfaces meet has no closed form in general — the curve is
+//! Where two surfaces meet has no closed form in general: the curve is
 //! transcendental, and `docs/DATA_MODEL.md` §9 is blunt about the consequence:
 //! there is no exact answer to be exact about, which is why the topology carries
 //! tolerances. What there is instead is a curve that can be *followed*, one
@@ -11,13 +11,13 @@
 //! **Finding a branch** and **following one** fail in completely different ways,
 //! and lumping them together is how an intersector comes to look better than it
 //! is. A tracer that follows one branch beautifully while never noticing the
-//! second reports a smooth, accurate, *wrong* answer — and the obvious accuracy
+//! second reports a smooth, accurate, *wrong* answer, and the obvious accuracy
 //! measure, "is every point on both surfaces", scores it perfectly.
 //!
 //! So [`seeds`] and [`trace`] are separate, separately testable, and separately
 //! measured. Seeding is polyhedral: both surfaces are sampled into triangles and
 //! the triangle pairs that cross give starting points. It finds a branch if the
-//! sampling resolves it, and *misses one thinner than the grid* — which is a
+//! sampling resolves it, and *misses one thinner than the grid*, which is a
 //! real limitation with a knob attached rather than a mystery.
 //!
 //! # Following the curve
@@ -27,7 +27,7 @@
 //! along it and you leave both surfaces slightly; a Newton correction brings you
 //! back.
 //!
-//! The correction has four unknowns — two parameters on each surface — and three
+//! The correction has four unknowns (two parameters on each surface) and three
 //! equations, `A(u1,v1) = B(u2,v2)`. That is deliberately one short, because the
 //! solution set *is* the curve and pinning it to a point needs one more
 //! condition. The fourth is a plane across the direction of travel: it says how
@@ -111,7 +111,7 @@ pub enum Stopped {
     Closed,
     /// It reached the edge of one surface's domain.
     LeftTheDomain,
-    /// The correction stopped converging — a tangency or a singular point.
+    /// The correction stopped converging: a tangency or a singular point.
     ///
     /// Reported rather than pushed through. Marching past a point where the two
     /// normals are parallel is how a tracer jumps onto the wrong branch, and a
@@ -190,7 +190,7 @@ pub fn seeds(
             // spacing is the *finer* surface's grid: two distinct branches
             // closer than that were never going to be told apart by this
             // sampling anyway, while the coarser surface's cells say nothing
-            // about how far apart branches can be — a plane's clamped domain
+            // about how far apart branches can be: a plane's clamped domain
             // spans a million units, and its cell would merge every branch
             // through a blend into one.
             let apart = span(a).min(span(b)) / f64::from(u32::try_from(options.grid).unwrap_or(1));
@@ -211,7 +211,7 @@ pub fn seeds(
 ///
 /// A branch crossing many sampling cells produces many seeds, and tracing from
 /// any of them gives the same curve. So a seed already lying on something
-/// traced is dropped rather than followed again — which is what makes the
+/// traced is dropped rather than followed again, which is what makes the
 /// *number* of branches returned meaningful, and it is the number a boolean
 /// will act on.
 ///
@@ -236,7 +236,7 @@ pub fn branches(
         {
             continue;
         }
-        // A seed that will not trace — a tangency — is reported by being
+        // A seed that will not trace (a tangency) is reported by being
         // absent rather than by an error, since the other branches are still
         // real answers.
         if let Ok(branch) = trace(a, b, seed, options, tol)
@@ -249,12 +249,12 @@ pub fn branches(
     Ok(stitch_stalled(out, a, b, options, tol))
 }
 
-/// Below this sine the surfaces count as tangent at a point — the
+/// Below this sine the surfaces count as tangent at a point: the
 /// branch-point certificate a stall end must carry to participate in
 /// stitching.
 const BRANCH_POINT_SINE: f64 = 0.05;
 
-/// The sine of the normal angle at a contact — the transversality measure.
+/// The sine of the normal angle at a contact: the transversality measure.
 fn crossing_sine(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
@@ -273,7 +273,7 @@ fn crossing_sine(
 
 /// Whether a stalled trace is a fragment rather than a curve.
 ///
-/// Coincident or near-coincident surfaces defeat the tangency check at a seed —
+/// Coincident or near-coincident surfaces defeat the tangency check at a seed:
 /// rounding in the corrected parameters leaves the two normals a whisker apart,
 /// the walk takes a couple of steps, and then stalls where the arithmetic gives
 /// out. What comes back lies on both surfaces perfectly and describes nothing:
@@ -281,7 +281,7 @@ fn crossing_sine(
 ///
 /// A stalled branch shorter than a handful of chords carries no information the
 /// seed did not, so it is noise from a degenerate configuration and dropped. A
-/// *real* stalled branch — one that ran into a genuine tangency — has length
+/// *real* stalled branch (one that ran into a genuine tangency) has length
 /// behind it and is kept, because a truncated real answer is still an answer.
 ///
 /// The marcher is deliberately not a coincidence detector: for the pairs with
@@ -302,7 +302,7 @@ fn is_fragment(branch: &Traced, options: Marching) -> bool {
 /// Whether a traced branch passes within a distance of a point.
 ///
 /// Measured against the polyline's *segments*, not its vertices. The vertices
-/// are a marching step apart — far more than the chord tolerance — so a seed
+/// are a marching step apart (far more than the chord tolerance), so a seed
 /// sitting neatly between two of them looks distant from both, and comparing to
 /// vertices alone reported one circle nine times.
 fn passes_near(branch: &Traced, p: Point, reach: f64) -> bool {
@@ -386,7 +386,7 @@ pub fn trace(
         Stopped::LeftTheDomain
     };
     // A loop cut at a seam. A closed patch is clamped, not periodic: a
-    // section that runs round it — a rim's circle on a converted drum —
+    // section that runs round it (a rim's circle on a converted drum)
     // is walked from the seed to the seam one way and to the seam the
     // other, each walk stopping a fraction of a step short of it, and the
     // two ends meet where the surface closes on itself. That is the whole
@@ -415,7 +415,7 @@ pub fn trace(
 /// equations saying the two points coincide.
 ///
 /// The intersector's own walk goes through [`crate::walk`] like everything
-/// else, and what is *not* generic lives here — the domain clamps a surface
+/// else, and what is *not* generic lives here: the domain clamps a surface
 /// pair needs, and the tangent, which the intersector computes from the two
 /// normals rather than from the null space so that it can refuse a crossing
 /// too shallow to be more than the correction's own noise.
@@ -521,7 +521,7 @@ fn walk(
 ///
 /// One microradian, and the number is set by the *correction*, not by taste.
 /// `correct` accepts a residual up to the confusion tolerance, so the two
-/// parameter points of a contact can disagree by that much in space — and on
+/// parameter points of a contact can disagree by that much in space, and on
 /// coincident or near-coincident surfaces, that disagreement shows up as a
 /// spurious angle between the two computed normals of about the residual over
 /// the local feature size. A gate below that floor reads the correction's own
@@ -531,8 +531,8 @@ fn walk(
 /// So below this angle the marcher cannot tell an ultra-shallow crossing from
 /// coincidence, and refuses both rather than guessing. A genuine crossing
 /// shallower than a microradian is also one the Newton correction cannot
-/// reliably follow — its travel constraint becomes numerically dependent on
-/// the surface-gap rows at exactly the same rate — so the gate refuses what
+/// reliably follow (its travel constraint becomes numerically dependent on
+/// the surface-gap rows at exactly the same rate), so the gate refuses what
 /// could not have been followed anyway.
 const SHALLOWEST: f64 = 1e-6;
 
@@ -540,7 +540,7 @@ const SHALLOWEST: f64 = 1e-6;
 ///
 /// The cross product of the two normals: the one direction lying in both
 /// tangent planes. `None` where the normals are parallel to within
-/// [`SHALLOWEST`] — the surfaces are tangent or coincident there, and the
+/// [`SHALLOWEST`]: the surfaces are tangent or coincident there, and the
 /// intersection has no direction the marcher can trust.
 fn tangent_at(
     a: &SurfaceGeometry,
@@ -557,7 +557,7 @@ fn tangent_at(
     // uncertainty, the squared cross magnitude is computed as an enclosure,
     // and only a crossing *certainly* above the floor is followed. A sine
     // inside the enclosure's undecided band is exactly the case the floor
-    // exists for — the correction's own noise masquerading as an angle —
+    // exists for (the correction's own noise masquerading as an angle),
     // and it is refused with a certificate instead of a guess.
     let floor = tol.angular().max(SHALLOWEST);
     let widen = |value: f64| ogeom_math::Interval::about(value, tol.confusion());
@@ -589,7 +589,7 @@ fn normal_at(surface: &SurfaceGeometry, at: (f64, f64), tol: Tolerances) -> Opti
 ///
 /// Three equations say the two surface points coincide; the fourth says how far
 /// along the direction of travel to land. Without that fourth the system is
-/// underdetermined — its solution set *is* the curve — and Newton would wander
+/// underdetermined (its solution set *is* the curve), and Newton would wander
 /// along it instead of converging to a point.
 ///
 /// `constraint` is `(anchor, direction, distance)`. Without one, the guess
@@ -680,7 +680,7 @@ fn clamp(surface: &SurfaceGeometry, u: f64, v: f64) -> (f64, f64) {
 /// Whether a parameter sits close enough to a non-periodic edge that a stalled
 /// walk there means the edge rather than a singularity.
 ///
-/// The band is a fraction of the domain's own span — a walk stalls within a
+/// The band is a fraction of the domain's own span: a walk stalls within a
 /// step of the boundary, and the step is far larger than the strict band
 /// [`outside`] uses to decide a point has actually crossed.
 fn near_edge(surface: &SurfaceGeometry, at: (f64, f64)) -> bool {
@@ -795,7 +795,7 @@ fn overlap(a: &Cell, b: &Cell, margin: f64) -> bool {
 /// A point where two triangles cross, if they do.
 ///
 /// Each triangle's edges are tested against the other's plane and then against
-/// the triangle itself. Only an approximate answer is needed — it is a seed, and
+/// the triangle itself. Only an approximate answer is needed: it is a seed, and
 /// the Newton correction that follows is what makes it a point on the curve.
 fn triangles_cross(a: &Cell, b: &Cell) -> Option<Point> {
     for (edges, target) in [(a, b), (b, a)] {
@@ -873,7 +873,7 @@ impl Arc {
     }
 }
 
-/// Whether a stalled branch is transversal *somewhere* in its interior —
+/// Whether a stalled branch is transversal *somewhere* in its interior:
 /// the certificate that it is a curve passing branch points rather than
 /// tangential-contact debris. A plane resting on a torus produces
 /// fragments tangent along their whole length; a real curve through a
@@ -894,7 +894,7 @@ fn interior_is_transversal(
 }
 
 /// Join stalled fragments that meet at branch points into the curves they
-/// belong to — the stitching an earlier plan owed, now delivered.
+/// belong to: the stitching an earlier plan owed, now delivered.
 ///
 /// Where the two normals become parallel the intersection has no single
 /// direction: the walk stalls there, wanders in place while the correction
@@ -904,8 +904,8 @@ fn interior_is_transversal(
 /// cut every fragment at its branch-point visits, which trims the wander
 /// and separates the arcs a walk-through glued together; drop debris and
 /// duplicate coverage; then, at each branch point, pair arc ends whose
-/// tangents continue one another — a smooth curve crosses the singularity
-/// collinearly, and the crossing curve turns through the crossing angle —
+/// tangents continue one another (a smooth curve crosses the singularity
+/// collinearly, and the crossing curve turns through the crossing angle)
 /// and chain the pairs into whole curves, closing the loops that close.
 ///
 /// Only fragments transversal somewhere in their interior participate:
@@ -1058,7 +1058,7 @@ fn stitch_stalled(
         loop {
             seen_back[first] = true;
             // Forward traversal enters an arc at its head, reversed at its
-            // tail — so the entry end is named by the orientation flag.
+            // tail, so the entry end is named by the orientation flag.
             let Some(entry) = end_index(first, first_reversed) else {
                 break;
             };
@@ -1139,7 +1139,7 @@ fn stitch_stalled(
     out
 }
 
-/// Newton projection of a point onto a surface, warm-started — the local
+/// Newton projection of a point onto a surface, warm-started: the local
 /// tool the tangential walker corrects with.
 fn nearest_on(
     surface: &SurfaceGeometry,
@@ -1173,7 +1173,7 @@ fn nearest_on(
     Some(((u, v), surface.point_at(u, v, tol).ok()?))
 }
 
-/// Trace tangential contact along a curve — the walker an earlier plan
+/// Trace tangential contact along a curve: the walker an earlier plan
 /// owed, following the valley of the gap function rather than a crossing.
 ///
 /// Where two surfaces touch along a whole curve there is no transversal
@@ -1182,12 +1182,12 @@ fn nearest_on(
 /// still a curve, and it is the locus where the *gap* between the surfaces
 /// stays zero. This walker steps along the contact and corrects each step
 /// transversally: project the candidate onto the first surface, project
-/// that onto the second, and slide on the first surface to close the gap —
+/// that onto the second, and slide on the first surface to close the gap:
 /// a minimization, not a root-find, because at tangency the gap touches
 /// zero without crossing it.
 ///
 /// The seed must be a genuine contact: on both surfaces within tolerance
-/// and near-tangent there. A transversal crossing is refused — the
+/// and near-tangent there. A transversal crossing is refused; the
 /// ordinary walker owns those.
 ///
 /// # Errors
@@ -1488,7 +1488,7 @@ mod tests {
             found.len(),
             2,
             "two equal cylinders crossing at right angles meet in two closed \
-             curves — the Steinmetz solid's seams"
+             curves: the Steinmetz solid's seams"
         );
 
         let mut worst = 0.0_f64;
@@ -1596,8 +1596,8 @@ mod tests {
     #[test]
     fn the_number_of_branches_is_the_number_there_are() {
         // The failure the accuracy measure cannot see. Every point of one
-        // circle is on both surfaces, so returning one of two scores perfectly
-        // — the count is the only thing that catches it.
+        // circle is on both surfaces, so returning one of two scores perfectly;
+        // the count is the only thing that catches it.
         let options = Marching {
             chord: 1e-5,
             ..Marching::default()

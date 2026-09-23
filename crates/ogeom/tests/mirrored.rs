@@ -88,7 +88,7 @@ fn a_body_fuses_with_its_mirror_across_the_shared_face() {
 fn a_mirrored_drum_fuses_through_its_fitted_images() {
     // A curved body under a reflection: the boolean restates it in world
     // coordinates first, and whatever pcurves that restatement had to fit
-    // carry their slop on the record — the melt's snap reaches it, or the
+    // carry their slop on the record: the melt's snap reaches it, or the
     // contact dangles a hair from the boundary it paved.
     let mut model = ogeom_topo::Model::new();
     let drum = ogeom_algo::make_cylinder(

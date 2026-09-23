@@ -10,8 +10,8 @@ use ogeom_topo::{EdgeRepr, Model, Shape, ShapeType};
 
 const T: Tolerances = Tolerances::millimetres();
 
-/// One part wearing four features — a drilled, filleted, chamfered, pocketed
-/// block — read back from nothing but its topology.
+/// One part wearing four features (a drilled, filleted, chamfered, pocketed
+/// block) read back from nothing but its topology.
 #[test]
 fn a_worked_block_confesses_the_features_that_made_it() {
     let mut model = Model::new();
@@ -19,7 +19,7 @@ fn a_worked_block_confesses_the_features_that_made_it() {
         .unwrap()
         .shape;
 
-    // Round one top edge while it is still pristine — blending an edge of a
+    // Round one top edge while it is still pristine; blending an edge of a
     // face already carrying holes, or blending twice on one body, is the
     // marching intersector's territory, not recognition's.
     let round_edge = edge_near(&model, &block, Point::new(20.0, 0.0, 12.0));
@@ -88,7 +88,7 @@ fn a_rim_fillet_is_a_toroidal_fillet() {
     let post = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 8.0, 12.0, T)
         .unwrap()
         .shape;
-    // The rim circle's curve midpoint sits on the far side of the drum —
+    // The rim circle's curve midpoint sits on the far side of the drum;
     // nearest-midpoint selection aims there, not at the seam.
     let rim = edge_near(&model, &post, Point::new(-8.0, 0.0, 12.0));
     let rounded = ogeom_fillet::fillet_edge(&mut model, &post, &rim, 2.5, T)
@@ -106,7 +106,7 @@ fn a_rim_fillet_is_a_toroidal_fillet() {
     assert!(!fillet.concave);
 }
 
-/// The corpus speaks the same language — and the recognizer stays honest
+/// The corpus speaks the same language, and the recognizer stays honest
 /// about it. The smallest NIST part's annular groove is confessed as a
 /// pocket; its two torus rims, tangent to their walls but meeting the top
 /// face at a deliberate seventy-three degrees, are *partial* rounds, not

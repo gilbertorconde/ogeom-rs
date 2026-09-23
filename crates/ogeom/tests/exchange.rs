@@ -141,8 +141,8 @@ fn signed_volume(mesh: &ogeom::topo::Triangulation) -> f64 {
         .sum()
 }
 
-/// A package as a slicer writes it — deflated entries streamed with their
-/// sizes after the data, the start part named by the relationships — reads
+/// A package as a slicer writes it (deflated entries streamed with their
+/// sizes after the data, the start part named by the relationships) reads
 /// to one cube, placed by its build item and coloured by its material.
 #[test]
 fn a_deflated_3mf_package_reads() {
@@ -246,9 +246,9 @@ fn per_triangle_colours_and_supports_are_read_with_a_warning() {
     assert!(import.warnings.iter().any(|w| w.contains("support")));
 }
 
-/// A package as a streaming writer lays it out whatever its size — ZIP64
+/// A package as a streaming writer lays it out whatever its size (ZIP64
 /// end record and locator, every size and offset saturated in the headers
-/// and carried in ZIP64 extra fields — reads to the same cube as the
+/// and carried in ZIP64 extra fields) reads to the same cube as the
 /// classic form of the same package, whose entries stream their sizes in
 /// data descriptors instead.
 #[test]

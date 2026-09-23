@@ -180,8 +180,8 @@ fn a_draft_that_swallows_the_apex_is_refused_by_name() {
 
 #[test]
 fn the_angles_sign_picks_inward_or_outward() {
-    // Positive narrows the solid in the pull direction, negative widens it
-    // — the two wedges mirror about the undrafted volume.
+    // Positive narrows the solid in the pull direction, negative widens it;
+    // the two wedges mirror about the undrafted volume.
     let mut measured = Vec::new();
     for angle in [10.0_f64, -10.0] {
         let mut model = ogeom_topo::Model::new();
@@ -436,7 +436,7 @@ fn a_draft_that_folds_the_wall_refuses_by_name() {
 }
 
 /// The angle a fitted wall's rulings make with `pull`, sampled at three
-/// heights up the middle of its chart: the draft angle, by definition — a
+/// heights up the middle of its chart: the draft angle, by definition: a
 /// drafted wall is ruled along the pull turned by the draft, whatever its
 /// hinge does.
 fn leans_of(
@@ -527,8 +527,8 @@ fn a_drum_drafts_about_an_oblique_neutral() {
     }
 }
 
-/// A wall on a raw fitted patch — a skinned loft's, with no ruling to turn
-/// — drafts the same way, and comes out the frustum a drafted cylinder is.
+/// A wall on a raw fitted patch (a skinned loft's, with no ruling to turn)
+/// drafts the same way, and comes out the frustum a drafted cylinder is.
 #[test]
 fn a_fitted_patch_wall_drafts_to_the_requested_angle() {
     let mut model = ogeom_topo::Model::new();

@@ -1,6 +1,6 @@
 //! Property tests for the analytic primitives.
 //!
-//! The laws here are the defining ones — the properties that make a shape that
+//! The laws here are the defining ones: the properties that make a shape that
 //! shape, checked independently of how it is stored: the focal sum of an
 //! ellipse, the constant distance of a sphere, the invariance of every shape
 //! under a similarity.
@@ -41,7 +41,7 @@ fn radius() -> impl Strategy<Value = f64> {
     0.01f64..100.0
 }
 
-/// Similarities only — the transforms under which analytic shapes survive.
+/// Similarities only: the transforms under which analytic shapes survive.
 fn similarity() -> impl Strategy<Value = Transform> {
     prop_oneof![
         vector().prop_map(Transform::translation),

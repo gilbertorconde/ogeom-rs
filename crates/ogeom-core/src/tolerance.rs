@@ -2,10 +2,10 @@
 //!
 //! See `docs/DATA_MODEL.md` §5 and §9. Two separate things live here:
 //!
-//! - **Global constants** — the thresholds at which the kernel decides two
+//! - **Global constants**: the thresholds at which the kernel decides two
 //!   things are "the same". [`Tolerances`] carries them, parameterised by the
 //!   model's unit scale.
-//! - **Per-entity tolerances** — [`Tolerance`], the radius attached to an
+//! - **Per-entity tolerances**: [`Tolerance`], the radius attached to an
 //!   individual vertex, edge or face, together with the containment rule that
 //!   relates them.
 //!
@@ -31,7 +31,7 @@ pub struct Tolerances {
 pub const CONFUSION: f64 = 1e-7;
 /// Two directions closer than this in angle are parallel. Dimensionless.
 ///
-/// Deliberately tight — near the limit of what `f64` can distinguish. It is the
+/// Deliberately tight: near the limit of what `f64` can distinguish. It is the
 /// right threshold for comparing directions that were *stored*, such as two
 /// surface axes read back from a model. It is the wrong one for comparing
 /// directions *computed* through subtraction of nearby coordinates, where the
@@ -151,8 +151,8 @@ impl Tolerances {
 /// The tolerance carried by a single vertex, edge or face: the radius within
 /// which the entity is considered to lie.
 ///
-/// Always finite and non-negative. Operations may only widen it — see
-/// [`Tolerance::widen`] — because narrowing a tolerance asserts an accuracy the
+/// Always finite and non-negative. Operations may only widen it (see
+/// [`Tolerance::widen`]) because narrowing a tolerance asserts an accuracy the
 /// geometry does not have.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Tolerance(f64);

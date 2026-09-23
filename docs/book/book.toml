@@ -1,5 +1,5 @@
 [book]
-title = "ogeom — a B-rep CAD kernel in Rust"
+title = "ogeom: a B-rep CAD kernel in Rust"
 authors = ["Gilberto Conde"]
 language = "en"
 src = "src"

@@ -3,17 +3,17 @@
 //! `docs/DATA_MODEL.md` §7. Every operation in this crate and above it reports
 //! three things about each shape it was given:
 //!
-//! - **generated** — new entities made *from* it that did not exist before. A
+//! - **generated**: new entities made *from* it that did not exist before. A
 //!   prism's side faces are generated from the profile's edges.
-//! - **modified** — what it *became*. A face split in two is modified into both
+//! - **modified**: what it *became*. A face split in two is modified into both
 //!   halves.
-//! - **deleted** — it has no image in the result at all.
+//! - **deleted**: it has no image in the result at all.
 //!
 //! This is not bookkeeping for its own sake. A parametric application records
 //! "fillet *that* edge" and must still find that edge after the model is
 //! rebuilt with different dimensions; it does so by walking history. Half-
-//! populated history does not error — it reopens the document with the wrong
-//! faces filleted — which is why every operation populates it from the commit
+//! populated history does not error; it reopens the document with the wrong
+//! faces filleted, which is why every operation populates it from the commit
 //! that introduces it rather than later.
 //!
 //! # Composition is the hard part
@@ -30,7 +30,7 @@ use ogeom_topo::{SameKey, Shape};
 
 /// A record of what one operation, or a chain of them, did.
 ///
-/// Keyed by [`SameKey`] — node and placement, ignoring orientation. An edge and
+/// Keyed by [`SameKey`]: node and placement, ignoring orientation. An edge and
 /// its reverse are the same edge, and history about one is history about both;
 /// keying on orientation would silently split every record in two.
 #[derive(Debug, Clone, Default)]
@@ -83,7 +83,7 @@ impl History {
     /// the same shape, so the two can never disagree.
     ///
     /// Deletion and *generation* are a different matter, and coexist freely: a
-    /// swept profile edge is consumed by the sweep — deleted — while generating
+    /// swept profile edge is consumed by the sweep (deleted) while generating
     /// the side face that grew from it. Anything that treats a deletion as the
     /// end of the story about a shape loses that face's ancestry.
     pub fn delete(&mut self, input: &Shape) {
@@ -178,7 +178,7 @@ impl History {
     ///
     /// The subtlety is telling *unchanged* from *modified into itself*. A shape
     /// neither step touched must come out with no record at all, not a
-    /// modification saying it became itself — otherwise composing with an empty
+    /// modification saying it became itself; otherwise composing with an empty
     /// history would invent records, and composition would not have an
     /// identity. So a modification is recorded only when one of the two steps
     /// actually reported one.
@@ -284,7 +284,7 @@ impl Built {
 
     /// A result of an operation that had no inputs to report on.
     ///
-    /// For a primitive built from numbers rather than from existing topology —
+    /// For a primitive built from numbers rather than from existing topology,
     /// there is nothing for the history to say.
     #[must_use]
     pub fn from_nothing(shape: Shape) -> Self {
@@ -437,7 +437,7 @@ mod tests {
     #[test]
     fn composition_carries_generated_entities_forward() {
         // The first step generates b from a; the second turns b into c. What a
-        // generated from the pair is c, not b — the intermediate is gone.
+        // generated from the pair is c, not b; the intermediate is gone.
         let (_, s) = shapes(3);
         let (a, b, c) = (&s[0], &s[1], &s[2]);
 
@@ -536,7 +536,7 @@ mod tests {
     fn a_consumed_shape_still_reports_what_it_generated() {
         // A sweep consumes its profile edge and grows a side face from it. Both
         // facts are true at once, and losing the second loses that face's
-        // ancestry — which is what a rebuild needs to find it again.
+        // ancestry, which is what a rebuild needs to find it again.
         let (_, s) = shapes(2);
         let (edge, face) = (&s[0], &s[1]);
 

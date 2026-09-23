@@ -1,6 +1,6 @@
 //! The approximation stage: a traced branch becomes curves.
 //!
-//! A traced branch is a polyline with a stated chord tolerance — honest, and
+//! A traced branch is a polyline with a stated chord tolerance: honest, and
 //! not what anything downstream wants to hold. An edge wants a curve in space;
 //! a face wants that curve in its *own parameter space*, because splitting a
 //! face happens there and a curve the face cannot express is a curve it cannot
@@ -9,7 +9,7 @@
 //! So one branch becomes three fits sharing one tolerance: the 3D curve, and
 //! one pcurve per surface, each fitted from the samples the tracer already
 //! recorded. The tracer kept the parameters on both surfaces at every point
-//! precisely for this moment — re-deriving them here would be a projection per
+//! precisely for this moment; re-deriving them here would be a projection per
 //! point, solving again what the marcher already solved.
 //!
 //! # The tolerance story, stated once
@@ -18,13 +18,13 @@
 //! sits within its chord tolerance of the true intersection, and the fit sits
 //! within its own reported error of the trace. Both numbers are carried, and
 //! the total is what an edge built on this curve must widen its tolerance to.
-//! Nothing here rounds a miss up to a hit — a fit that could not reach its
+//! Nothing here rounds a miss up to a hit; a fit that could not reach its
 //! target says so, and the caller decides whether the looser curve is usable.
 //!
 //! # Seams
 //!
 //! A branch crossing a periodic surface's seam has parameter samples that jump
-//! by a period — the pcurve polyline tears even though the curve in space is
+//! by a period: the pcurve polyline tears even though the curve in space is
 //! smooth. The samples are unwrapped before fitting: each step is folded to
 //! the nearest image, so the pcurve runs continuously past the seam and may
 //! legitimately leave `[0, 2π)`. That is what a pcurve on a periodic surface
@@ -80,7 +80,7 @@ pub fn approximate_branch(
 
     // Marching correction can leave consecutive samples closer than the
     // rounding it converged within, and two samples at one chord-length
-    // parameter are a knot span with no data in it — the fitting system
+    // parameter are a knot span with no data in it: the fitting system
     // reports itself singular where the real defect is the duplicate. Thin
     // them here, where the trace's own step says what "too close" means.
     let mut points: Vec<ogeom_math::Point> = Vec::with_capacity(branch.points.len());
@@ -101,7 +101,7 @@ pub fn approximate_branch(
         ogeom_bail!(Construction, "a branch of coincident points is not a curve");
     }
 
-    // One fit in seven dimensions — the curve and both parameter images
+    // One fit in seven dimensions: the curve and both parameter images
     // together. Fitted separately, each fit's parameter correction drifts
     // its parameterization independently and the three results silently stop
     // being same-parameter: the boolean found pcurves claiming 1e-7 that
@@ -142,7 +142,7 @@ pub fn approximate_branch(
 /// The fitted pcurve's error, converted back into space.
 ///
 /// The pcurve was fitted in parameter units, against a scale estimated from
-/// the whole branch — but the surface's stretch varies along the curve, so an
+/// the whole branch, but the surface's stretch varies along the curve, so an
 /// error acceptable in parameter units may be worse in millimetres where the
 /// surface stretches hardest. This converts the fit's parameter-space error
 /// through the local stretch at samples along the pcurve and reports the
@@ -264,8 +264,8 @@ mod tests {
 
     /// The distance of a fitted curve from both surfaces, sampled densely.
     ///
-    /// This is the measure the whole stage exists for: the *fit* — not the
-    /// polyline it came from — is what downstream code holds, so the fit is
+    /// This is the measure the whole stage exists for: the *fit* (not the
+    /// polyline it came from) is what downstream code holds, so the fit is
     /// what must lie on both surfaces.
     fn fitted_deviation(a: &SurfaceGeometry, b: &SurfaceGeometry, curve: &BSplineCurve) -> f64 {
         let off = |surface: &SurfaceGeometry, p: Point| match surface {
@@ -290,7 +290,7 @@ mod tests {
     fn a_fitted_branch_lies_on_both_surfaces_to_the_stated_total() {
         // The tolerance story end to end: trace within 1e-5, fit within 1e-4,
         // so the fitted curve is within the sum of the two of the true
-        // intersection — measured against the surfaces, not the polyline.
+        // intersection, measured against the surfaces, not the polyline.
         let a = sphere(3.0);
         let b = cylinder(1.5);
         let found = branches(&a, &b, options(), T).unwrap();

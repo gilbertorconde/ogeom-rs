@@ -1,19 +1,19 @@
 //! The medial axis of a planar region: the locus of centres of maximal
-//! inscribed circles — what tool-path generation and midline extraction are
+//! inscribed circles: what tool-path generation and midline extraction are
 //! built on.
 //!
 //! For a **convex** polygon the medial axis coincides with the straight
 //! skeleton, and the shrinking-polygon construction computes it exactly:
 //! every edge moves inward at unit speed, every vertex rides its angular
-//! bisector, and each event — two neighbouring bisectors meeting — retires
+//! bisector, and each event (two neighbouring bisectors meeting) retires
 //! an edge and starts a new skeleton branch. Convexity is what makes this
 //! exact: no reflex vertex, so no split events, so every branch is a
 //! straight segment between circumcentre-like meets.
 //!
 //! Everything else is refused by name: a face with holes, a reflex corner,
-//! a curved boundary. Each of those changes the mathematics — holes and
+//! a curved boundary. Each of those changes the mathematics (holes and
 //! reflex corners introduce split events, arcs introduce parabolic
-//! bisectors — and a wrong axis is worse than a named refusal, because tool
+//! bisectors), and a wrong axis is worse than a named refusal, because tool
 //! paths gouge quietly.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -27,7 +27,7 @@ pub struct MedialAxis {
     /// The skeleton's segments, each an inward branch: from a boundary
     /// vertex or an earlier meet, to a meet or the centre.
     pub segments: Vec<(Point, Point)>,
-    /// The inscribed-circle radius at each segment's inner end — the
+    /// The inscribed-circle radius at each segment's inner end: the
     /// clearance a tool of that radius has there.
     pub clearance: Vec<f64>,
 }
@@ -151,7 +151,7 @@ pub fn medial_axis(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<
             let Some(meet) = ray_meet(pi, bi, pj, bj) else {
                 continue;
             };
-            // The event time is the inward distance of the shared edge —
+            // The event time is the inward distance of the shared edge:
             // both riders reach the meet as that edge's offset sweeps it.
             let speed_i = rider_speed(ei_in, ei_out);
             let t = ti + (meet - pi).magnitude() / speed_i;
@@ -209,7 +209,7 @@ fn bisector_dir(e_in: Vector2, e_out: Vector2) -> Vector2 {
 /// How fast a rider moves along its bisector per unit of inward offset.
 fn rider_speed(e_in: Vector2, e_out: Vector2) -> f64 {
     // The bisector makes angle θ/2 with each edge normal, where θ is the
-    // turn; unit inward speed of the edges means 1/cos(θ/2) along it — but
+    // turn; unit inward speed of the edges means 1/cos(θ/2) along it, but
     // 1/sin(half interior angle) in edge terms. Derived from the offset of
     // both edges staying on the rider.
     let n_in = Vector2::new(-e_in.y, e_in.x);

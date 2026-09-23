@@ -3,17 +3,17 @@
 //!
 //! The geometry-level conversions are exact and were done long ago; what a
 //! *shape* needs is the operator that walks it and restates every dependent
-//! description, because conversion necessarily reparameterizes — a circle's
+//! description, because conversion necessarily reparameterizes: a circle's
 //! parameter is its angle and a rational quadratic's is not. So every edge's
 //! range moves to its converted curve's domain, and every pcurve is
 //! re-derived against a surface whose parameterization has also moved.
-//! Re-deriving a pcurve is a *fit* — at the edge's own parameters, so
-//! same-parameter holds by construction — which is why this waited for the
+//! Re-deriving a pcurve is a *fit* (at the edge's own parameters, so
+//! same-parameter holds by construction), which is why this waited for the
 //! adaptive fitting core.
 //!
 //! The affine operator rides on top: an affine map moves a B-spline's
 //! control points and nothing else, so the parameterizations of the
-//! converted shape survive the transform untouched — including every fitted
+//! converted shape survive the transform untouched, including every fitted
 //! pcurve, which is the point of converting first.
 
 use crate::build::{attach_pcurve, attach_seam, make_edge_between, make_face_on};
@@ -35,8 +35,8 @@ type ChartWindow = ((f64, f64), (f64, f64));
 
 /// Rebuild a solid with every surface and curve in B-spline form.
 ///
-/// The result is a new solid in world coordinates — every occurrence
-/// placement baked in — whose geometry is exactly the original's wherever
+/// The result is a new solid in world coordinates (every occurrence
+/// placement baked in), whose geometry is exactly the original's wherever
 /// the conversions are exact (everywhere but the fitted pcurves, whose error
 /// is bounded by the fit target derived from the tolerance). History records
 /// each original face modified into its converted twin.
@@ -56,7 +56,7 @@ pub fn to_nurbs(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResul
 /// every surface and curve in its own analytic vocabulary.
 ///
 /// A uniform-scale placement carries a cylinder to a cylinder and a line to
-/// a line — `Transformable` states each exactly — but the stored pcurves
+/// a line (`Transformable` states each exactly), but the stored pcurves
 /// describe the *old* parameterizations. This rebuild restates the geometry
 /// in world space and re-derives every pcurve against it, exact where the
 /// chart alignment allows and projection-fitted with recorded slop where
@@ -75,14 +75,14 @@ pub fn baked_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomRe
 /// A shear or an uneven scale is not a placement: it carries a circle to an
 /// ellipse and a sphere to something with no analytic name here, so the
 /// shape is converted to its exact B-spline form and the *control points*
-/// are moved — which an affine map does exactly. The pcurves fitted during
+/// are moved, which an affine map does exactly. The pcurves fitted during
 /// conversion survive untouched, because an affine map does not
 /// reparameterize.
 ///
 /// A similarity is the other case, and it is a placement. The kernel's own
-/// types already draw that line — [`Transform`](ogeom_math::Transform) is a
+/// types already draw that line: [`Transform`](ogeom_math::Transform) is a
 /// similarity by construction and is kept apart from [`GeneralTransform`]
-/// precisely so analytic geometry survives one — so a similarity handed in
+/// precisely so analytic geometry survives one, so a similarity handed in
 /// here is applied as the placement it is. Converting it would be worse than
 /// wasteful: a restated plane is still that plane but no longer *says* so,
 /// and coincidence downstream is decided on what the geometry says. Two
@@ -330,7 +330,7 @@ fn rebuild(
                             Ok(uv)
                         };
                         let bounds = model.children_of(&new_edge)?;
-                        // A closed edge — a rim — has one vertex at both
+                        // A closed edge (a rim) has one vertex at both
                         // ends, and near a seam its single chart image is
                         // one side's; pinning both ends there would fold the
                         // ring. Its trace closes on its own.
@@ -344,7 +344,7 @@ fn rebuild(
                                 Some(uv_of(model, &mut corner_uv, &bounds[bounds.len() - 1])?),
                             )
                         };
-                        // Exact wherever the chart has a closed form — the
+                        // Exact wherever the chart has a closed form: the
                         // melt downstream compares these images against
                         // exact geometry, and a fitted stand-in for a
                         // closed-form projection carries slop for nothing.
@@ -366,7 +366,7 @@ fn rebuild(
                                     tol,
                                 )?;
                                 // The fit's honest slop rides the edge, so
-                                // every downstream filter widens by it —
+                                // every downstream filter widens by it,
                                 // and rides its vertices, which bound the
                                 // edge and cannot be held tighter than it.
                                 let widened = if let Some(node) = model.node_mut(&new_edge)
@@ -443,7 +443,7 @@ fn convert_edge(
     use ogeom_geom::Transformable as _;
     let placed = geometry.transformed(&placement, tol)?;
     // A placement with scale rescales a length-parameterized curve's domain
-    // — the same rule `transformed` itself applies — so the edge's range
+    // (the same rule `transformed` itself applies), so the edge's range
     // must move with it or the conversion covers only part of the edge.
     let stretch = placement.scale_factor().abs();
     let range_on_placed = match &geometry {
@@ -473,7 +473,7 @@ fn convert_edge(
         (placed, range_on_placed)
     };
     // Vertices are shared across every edge that meets them: cached by the
-    // old node and the old vertex's own mapped point — the same bits every
+    // old node and the old vertex's own mapped point: the same bits every
     // neighbouring edge computes, unlike each spline's evaluated end.
     let old = model.children_of(edge)?;
     if old.is_empty() {
@@ -494,7 +494,7 @@ fn convert_edge(
             .entry((occurrence.node(), point_bits(at)))
             .or_insert_with(|| make_vertex(model, at).shape)
             .clone();
-        // The old vertex's recorded slop — a file's, or a fit's — is the
+        // The old vertex's recorded slop (a file's, or a fit's) is the
         // new one's too: the curves it meets are the same curves, moved
         // exactly, and a vertex born at the default tolerance would refuse
         // the edge its twin accepted.
@@ -619,8 +619,8 @@ fn exact_iso_pcurve(
     let mut b = Point2::new(b.parameters.0, b.parameters.1);
     let row = d.vector().y.abs() <= 1e-12;
     if row {
-        // A row's v is one value; the endpoints agree up to projection noise
-        // — and a full-width row on a closed chart runs edge to edge, its
+        // A row's v is one value; the endpoints agree up to projection noise,
+        // and a full-width row on a closed chart runs edge to edge, its
         // seam-side endpoints snapped to the chart's own edges.
         let v = f64::midpoint(a.y, b.y);
         a.y = v;
@@ -629,7 +629,7 @@ fn exact_iso_pcurve(
         // On the closure both chart edges image the same point, and the
         // projection answers with either: a half circle from the seam
         // round the back was drawn as the segment from the seam to the
-        // half-way column — the *front* half, mirrored — and the wall's
+        // half-way column (the *front* half, mirrored), and the wall's
         // ring lost its far side. The edge's own interior decides which
         // column a seam endpoint is: the image of a point a little way in
         // from that end lies on the same side of the chart.
@@ -750,8 +750,8 @@ fn degenerate_row(
 ///
 /// The face's pcurves say which part of the surface the face actually uses;
 /// converting the whole declared domain would spend the patch's parameter
-/// range on empty plane. Kinds whose windows are structural — a sphere's, a
-/// torus's, the closed direction of a cylinder — keep them.
+/// range on empty plane. Kinds whose windows are structural (a sphere's, a
+/// torus's, the closed direction of a cylinder) keep them.
 fn bounded_to_face(
     model: &Model,
     face: &Shape,

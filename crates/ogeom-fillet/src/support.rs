@@ -1,10 +1,10 @@
 //! Shared scaffolding for the subtractive blends.
 //!
 //! A chamfer and a constant-radius fillet on a straight edge between planar
-//! faces differ only in the face that replaces the edge — a bevel plane for
-//! one, a tangent cylinder for the other. Everything around that face — the
+//! faces differ only in the face that replaces the edge: a bevel plane for
+//! one, a tangent cylinder for the other. Everything around that face (the
 //! seat on the solid, the legs running along the adjacent faces, faces
-//! assembled from explicit curves with exact pcurves — is one piece of
+//! assembled from explicit curves with exact pcurves) is one piece of
 //! scaffolding, kept here so the two operations cannot drift apart.
 
 use ogeom_algo::{make_edge, make_edge_between, make_revolution_band, make_vertex};
@@ -25,7 +25,7 @@ pub(crate) struct Seat {
     pub along: Vector,
     /// Outward unit normals of the two faces, in discovery order.
     pub normals: [Vector; 2],
-    /// The two faces themselves, in the same order — so a caller naming a
+    /// The two faces themselves, in the same order, so a caller naming a
     /// face can find which leg it owns.
     pub faces: [Shape; 2],
     /// Whether the edge is convex: material inside the dihedral, so a blend
@@ -35,7 +35,7 @@ pub(crate) struct Seat {
 
 impl Seat {
     /// On face `i`, the unit direction perpendicular to the edge that walks
-    /// away from the *other* face — into the material the blend cuts back
+    /// away from the *other* face, into the material the blend cuts back
     /// along.
     pub fn leg(&self, i: usize, tol: Tolerances) -> OgeomResult<Vector> {
         let own = self.normals[i];
@@ -56,7 +56,7 @@ impl Seat {
 /// Whether `candidate` is the same edge occurrence as `edge`: the same node,
 /// placed the same way in the world. Two references through different
 /// location paths that compose to one placement are the same occurrence; the
-/// same node re-instanced elsewhere — a prism's profile edge at both caps —
+/// same node re-instanced elsewhere (a prism's profile edge at both caps)
 /// is not.
 pub(crate) fn same_occurrence(
     model: &Model,
@@ -119,7 +119,7 @@ pub(crate) fn edge_curve(
 ///
 /// Refuses concave and tangent edges: the wedge these blends subtract lies in
 /// the material only when the edge is convex. A concave blend *adds* material
-/// and is a different construction — docs/PARITY.md, fillet.edge-blends.
+/// and is a different construction; see docs/PARITY.md, fillet.edge-blends.
 ///
 /// # Errors
 ///
@@ -192,8 +192,8 @@ pub(crate) fn planar_seat(
     };
     // Convexity is read from the face itself, not derived from the normals:
     // the leg construction cannot answer it, because it *chooses* its side.
-    // Which way the first face actually extends from the edge — sampled
-    // against its own trim — leans behind the other face's plane on a convex
+    // Which way the first face actually extends from the edge (sampled
+    // against its own trim) leans behind the other face's plane on a convex
     // edge and in front of it on a concave one.
     let raw = {
         let t = normals[0].cross(along);
@@ -254,7 +254,7 @@ pub(crate) fn planar_seat(
 pub(crate) struct RevolvedSeat {
     /// The rim's centre.
     pub centre: Point,
-    /// The rim's radius — also the wall's.
+    /// The rim's radius, also the wall's.
     pub radius: f64,
     /// The cap's outward unit normal.
     pub up: Vector,
@@ -263,8 +263,8 @@ pub(crate) struct RevolvedSeat {
     pub x_ref: Direction,
     /// The wall's outward radial sign: `+1` material inside, `-1` a bore.
     pub sigma: f64,
-    /// `+1` when the wall extends away from the cap's outward side — the rim
-    /// configurations — and `-1` alongside it, the concave seats.
+    /// `+1` when the wall extends away from the cap's outward side (the rim
+    /// configurations) and `-1` alongside it, the concave seats.
     pub tau: f64,
     /// The planar cap.
     pub cap_face: Shape,
@@ -395,8 +395,8 @@ pub(crate) fn revolved_seat(
     let up = up_raw / up_raw.magnitude();
 
     // Which side of the cap the wall extends: read from the wall band's other
-    // ring. `tau` positive means away from the cap's outward side — the rim
-    // configurations — and negative means alongside it, the concave seats.
+    // ring. `tau` positive means away from the cap's outward side (the rim
+    // configurations) and negative means alongside it, the concave seats.
     let tau = {
         let mut side = None;
         for e in explore(model, &wall_face, Filter::OfType(ShapeType::Edge))? {
@@ -404,7 +404,7 @@ pub(crate) fn revolved_seat(
                 continue;
             }
             // Any circular edge of the wall at another height says which
-            // side the wall extends — whether the ring survives as one
+            // side the wall extends: whether the ring survives as one
             // closed edge or as the arcs a boolean rebuilt it into.
             let Ok((curve, _)) = edge_curve(model, &e, tol) else {
                 continue;
@@ -442,7 +442,7 @@ pub(crate) fn revolved_seat(
 
 /// The flanks every revolved wedge shares: the band of the wall down to the
 /// tangency ring, the annulus of the cap out to its own, and the three rings
-/// bounding them. Only the face between the two tangency rings differs —
+/// bounding them. Only the face between the two tangency rings differs:
 /// a quarter-tube for the fillet, a cone for the chamfer.
 pub(crate) struct RevolvedFlanks {
     /// The band of the wall between the rim and `wall_ring`.
@@ -456,7 +456,7 @@ pub(crate) struct RevolvedFlanks {
 }
 
 /// Build the flanks: legs `wall_depth` down the wall and in to `cap_rho`
-/// along the cap, each coincident with the solid's own face — aligned when
+/// along the cap, each coincident with the solid's own face, aligned when
 /// subtracting and opposed when fusing, which is what the melt needs.
 pub(crate) fn revolved_flanks(
     model: &mut Model,
@@ -548,7 +548,7 @@ pub(crate) fn on_face_side(
 /// length, joining two existing vertices.
 ///
 /// A wire chains through shared vertex *objects*, not through coincident
-/// coordinates — which is why this takes the vertices and not just the
+/// coordinates, which is why this takes the vertices and not just the
 /// points.
 pub(crate) fn segment_between(
     model: &mut Model,
@@ -576,7 +576,7 @@ pub(crate) fn face_from_edges(
     Ok(ogeom_algo::make_face_with_pcurves(model, surface, &[edges.to_vec()], tol)?.shape)
 }
 
-/// Sew the wedge's faces, demand a closed shell, and apply it to the solid —
+/// Sew the wedge's faces, demand a closed shell, and apply it to the solid:
 /// subtracted on a convex edge, fused on a concave one. Either way the
 /// history reads the same truth: the edge the blend replaces is gone.
 pub(crate) fn apply_wedge(
@@ -605,7 +605,7 @@ pub(crate) fn apply_wedge(
 
 /// A planar face over explicit corners, with `outward` as its plane normal.
 ///
-/// The corners must be coplanar and `outward` perpendicular to them — the
+/// The corners must be coplanar and `outward` perpendicular to them: the
 /// callers know both by construction, which is why this takes the normal
 /// instead of rediscovering it.
 pub(crate) fn planar_face(

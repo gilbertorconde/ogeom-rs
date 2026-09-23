@@ -156,7 +156,7 @@ mod accuracy {
     #[test]
     fn every_closed_form_lands_on_both_surfaces() {
         // The gate's own measurement, run as an assertion. Every point of every
-        // reported curve is on both surfaces to machine precision — which is
+        // reported curve is on both surfaces to machine precision, which is
         // the defining property of an intersection curve and the only one that
         // can be checked without a second implementation to compare against.
         let report = measure_all(&corpus(), T);
@@ -205,7 +205,7 @@ mod accuracy {
         let expected = 0.2_f64.tan().mul_add(2.0, 3.0);
         assert!((circle.circle().radius() - expected).abs() < 1e-12);
 
-        // Through the apex it is a touch — a point, not a zero-length curve.
+        // Through the apex it is a touch: a point, not a zero-length curve.
         let apex_height = -3.0 / 0.2_f64.tan();
         assert!(matches!(
             surface_surface(
@@ -485,7 +485,7 @@ mod completeness {
         // The test that makes the instrument worth having. A completeness
         // measure that always says "complete" looks exactly like a correct one
         // until something is actually missing, so the negative control is not
-        // optional — it is the only evidence the thing works.
+        // optional; it is the only evidence the thing works.
         let a = sphere(Point::ORIGIN, 3.0);
         let b = cylinder(Vector::Z, 1.5);
 

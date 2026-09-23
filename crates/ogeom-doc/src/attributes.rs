@@ -6,8 +6,8 @@
 //! body is meant to be cut from, the layers a drawing organizes itself by,
 //! and the mass-property check values an exchange partner records so the
 //! receiver can verify a translation did not quietly lose a boss. The
-//! document stores and round-trips them; computing anything — a volume to
-//! compare against a validation record — stays with the code that owns the
+//! document stores and round-trips them; computing anything (a volume to
+//! compare against a validation record) stays with the code that owns the
 //! geometry.
 
 use ogeom_math::Point;
@@ -49,7 +49,7 @@ impl MaterialId {
 /// A material: what a body is meant to be made of.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Material {
-    /// The name — "AISI 304", "PA12".
+    /// The name: "AISI 304", "PA12".
     pub name: String,
     /// Density in kilograms per cubic metre, where known.
     pub density: Option<f64>,
@@ -91,7 +91,7 @@ pub struct ValidationProperties {
 }
 
 impl ValidationProperties {
-    /// Whether another set of values agrees within a relative tolerance —
+    /// Whether another set of values agrees within a relative tolerance,
     /// the centroid compared against the body's own size, taken from the
     /// cube root of its volume.
     #[must_use]
@@ -125,7 +125,7 @@ pub enum TextureMapping {
 /// The image itself is *named*, not carried. A kernel that read image files
 /// would have opinions about formats, colour spaces and decoding that
 /// belong to a renderer; what a document needs to persist and exchange is
-/// which image, laid on how, at what scale — which is what this is.
+/// which image, laid on how, at what scale, which is what this is.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Texture {
     /// Where the image is: a path or a URI, as the file said it.

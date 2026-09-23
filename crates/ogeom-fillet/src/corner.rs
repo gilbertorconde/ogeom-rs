@@ -4,7 +4,7 @@
 //! At a corner one ball touches, that region's tip is a point and the
 //! rounded corner is one spherical patch; at a corner no single ball
 //! touches, the tip is a few points joined by short ridges, and the
-//! rounded corner is a sphere at each and a cylinder along each ridge —
+//! rounded corner is a sphere at each and a cylinder along each ridge:
 //! the exact envelope of the rolling ball, where the setback family fits
 //! a plate through the bands' ends instead.
 //!
@@ -26,12 +26,12 @@ use ogeom_topo::{Model, Shape, ShapeType};
 /// followed by this call round the vertex the setback way, and the
 /// `b2_three_fillets_and_the_corner_tool_round_the_vertex` pin measures
 /// the result against a closed form. At a vertex of more edges the corner
-/// goes first and the fillets follow — four bands built before the corner
-/// crash into each other at a pyramid's apex — and the block is the
+/// goes first and the fillets follow (four bands built before the corner
+/// crash into each other at a pyramid's apex) and the block is the
 /// polyhedron of the N host planes and the N planes square to the edges.
 ///
-/// A vertex whose planes share no tangent ball — a rectangular pyramid's
-/// apex, any general N-edged vertex — is rounded by the envelope of every
+/// A vertex whose planes share no tangent ball (a rectangular pyramid's
+/// apex, any general N-edged vertex) is rounded by the envelope of every
 /// ball a radius in from all of them: a sphere at each vertex of the
 /// region the ball's centre may occupy and a cylinder along each ridge
 /// between two of them, each cut with its own compartment, the spheres
@@ -44,7 +44,7 @@ use ogeom_topo::{Model, Shape, ShapeType};
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
 /// vertex is not a vertex of the solid; if fewer than three planes pass
 /// through it (a curved-edged corner is the setback family's, still
-/// owed — docs/PARITY.md, fillet.edge-blends); if the region the ball's
+/// owed; see docs/PARITY.md, fillet.edge-blends); if the region the ball's
 /// centre may occupy has a tip vertex touching more than three planes
 /// without one ball touching all of the corner's, or with other than three
 /// edges leaving it; or if the corner turns out concave, where a ball adds
@@ -73,16 +73,16 @@ pub fn round_vertex(
     };
     // Where the vertex stands, not where its node was built: a prism's far
     // end is its near end moved, and read unplaced the far corner is the
-    // near one — the tool rounded the wrong corner of the solid.
+    // near one: the tool rounded the wrong corner of the solid.
     let corner = vertex.transform(model.datums())?.apply(raw);
 
     // The corner's frame comes from the planes that pass through the
-    // vertex's point — not from the vertex's own adjacency, which the very
+    // vertex's point, not from the vertex's own adjacency, which the very
     // sequence this tool serves destroys: after three fillets the tip is
     // consumed, but the three shrunk planes still contain the corner, and
     // still say exactly which corner it was. The vertex argument may
-    // therefore come from an earlier state of the solid — the sharp box's
-    // corner captured before the fillets — and anchors the history. Each
+    // therefore come from an earlier state of the solid (the sharp box's
+    // corner captured before the fillets) and anchors the history. Each
     // plane's material side is read off its face, which the fillets shrink
     // but never turn over.
     let mut m: Vec<Vector> = Vec::new();
@@ -114,19 +114,19 @@ pub fn round_vertex(
             Construction,
             "round_vertex speaks the planar corner: at least three planes \
              must pass through the vertex, found {n}; the curved-edged corner \
-             is the setback family's, still owed — docs/PARITY.md, \
+             is the setback family's, still owed; see docs/PARITY.md, \
              fillet.edge-blends"
         );
     }
     // The ball's centre: the point a radius in from every plane. Three
     // planes that span always hold one; more only when they share a
-    // tangent ball, which the least-squares fit's residual tells — a
+    // tangent ball, which the least-squares fit's residual tells: a
     // square pyramid's apex does, a general N-edged vertex does not, and
     // that vertex is owed the general setback patch instead.
     let centre_for = |m: &[Vector]| -> Option<(Point, f64)> {
         // m_k · (c − corner) = radius over all k: solved directly for
         // three planes, through the normal equations for more. The direct
-        // solve is kept for three not for speed but for its last bit — the
+        // solve is kept for three not for speed but for its last bit: the
         // boolean's paving at the touch points is still sensitive to an
         // ulp of the centre, and the oblique corner closes on the direct
         // solve's value.
@@ -287,7 +287,7 @@ pub fn round_vertex(
     let inward_of = |k: usize| m[ring[k % n]];
 
     // The block: the corner bounded by its N host planes and, through the
-    // ball's centre, the N planes square to its edges — where each band's
+    // ball's centre, the N planes square to its edges, where each band's
     // circle and the ball's own rim coincide, so the cut ends the band and
     // starts the patch on one curve. On a square corner it is the box of
     // side `radius`; on an oblique one a hexahedron; at a pyramid's apex a
@@ -297,7 +297,7 @@ pub fn round_vertex(
     //
     // The ball on the corner's axes: a pole at one corner of the patch it
     // leaves and its seam meridian out past the block through the first
-    // edge — the pole axis is the inward normal of the host plane holding
+    // edge: the pole axis is the inward normal of the host plane holding
     // the first two edges, the third edge itself on a square corner.
     //
     // Which edge is first and which way the ring runs is the tool's
@@ -306,8 +306,8 @@ pub fn round_vertex(
     // and the ball wear decide where a rim is exact and where fitted, where
     // a seam falls against a patch arc, and at an oblique corner two of the
     // six labellings still die in the cut. So the tool is offered on each
-    // labelling in turn and the first that closes stands — every one of
-    // them is the same exact construction — and the corner is refused by
+    // labelling in turn and the first that closes stands (every one of
+    // them is the same exact construction) and the corner is refused by
     // name only when none does. A failed attempt's nodes stay in the model
     // unreferenced, under their own operation. The boolean closing all of
     // them is owed (docs/PARITY.md, fillet.edge-blends).
@@ -443,17 +443,17 @@ struct Ridge {
 ///
 /// The ball's centre may sit anywhere a radius in from every host plane:
 /// a convex region whose tip, at a vertex one ball touches, is a single
-/// point, and otherwise a few points joined by short edges — a rectangular
+/// point, and otherwise a few points joined by short edges: a rectangular
 /// pyramid's apex has two, joined along the two long slopes. The rounded
 /// corner is the envelope of every ball centred in that region: a sphere
 /// at each tip vertex, a cylinder along each edge between them, and the
 /// host planes themselves elsewhere. Exact, constant-radius, and what the
-/// rolling ball leaves — where a plate would be fitted through the bands'
+/// rolling ball leaves, where a plate would be fitted through the bands'
 /// ends instead.
 ///
 /// Each piece is cut with its own block: at a tip vertex, the corner
 /// bounded by its three planes and the three planes through the centre
-/// square to its edges, less the ball — the one-ball tool exactly — and
+/// square to its edges, less the ball (the one-ball tool exactly) and
 /// along an edge between two centres, the prism over the kite of the
 /// virtual crease, the two touch points and the centre, between the two
 /// planes square to the edge, less the cylinder. The compartments tile
@@ -510,7 +510,7 @@ fn setback_corner(
     }
     // Each tip vertex's edges: along every pair of its planes, the way the
     // rest of its planes allow; bounded where another plane becomes
-    // tangent — a ridge to the tip vertex there — and a ray otherwise, the
+    // tangent (a ridge to the tip vertex there) and a ray otherwise, the
     // way an original edge's band runs. A ray that lies along no original
     // edge, or a vertex with other than three edges, is a corner this tool
     // does not speak.
@@ -630,7 +630,7 @@ fn setback_corner(
             );
         }
         // In ring order, consecutive edges sharing a plane, so that host t
-        // holds edges t and t+1 — the labelling the ball's frame is read
+        // holds edges t and t+1: the labelling the ball's frame is read
         // off, its pole along a host and its seam out through an edge.
         let shared = |x: &[usize; 2], y: &[usize; 2]| -> Option<usize> {
             x.iter().copied().find(|p| y.contains(p))
@@ -695,8 +695,8 @@ fn setback_corner(
         history = history.then(&tool.history).then(&cut.history);
         rounded = cut.shape;
     }
-    // The cylinder along each ridge: the flush fillet of a virtual crease —
-    // the line the two planes it touches would meet along — between the
+    // The cylinder along each ridge: the flush fillet of a virtual crease (
+    // the line the two planes it touches would meet along) between the
     // planes square to the ridge through its two centres, which are the
     // caps' own planes. The planar fillet builds that wedge face by face,
     // band, legs and caps, and melts it; the caps meet the spheres' rims
@@ -756,8 +756,8 @@ fn setback_corner(
 ///
 /// Its corners are the feasible meetings of three planes; each plane's
 /// face is those of its corners that lie on it, walked round the face's
-/// centroid. The polyhedron builder checks what this hands it — planarity,
-/// every edge shared by two faces — so a set of half-spaces that bounds
+/// centroid. The polyhedron builder checks what this hands it (planarity,
+/// every edge shared by two faces) so a set of half-spaces that bounds
 /// nothing, or bounds a sliver, is refused rather than built.
 fn convex_block(
     model: &mut Model,
@@ -865,8 +865,8 @@ fn ball_centre(corner: Point, m: &[Vector; 3], radius: f64) -> Option<Point> {
 ///
 /// Host `t` holds edges `t` and `t + 1`. The ball's pole stands along a
 /// host's normal and its seam meridian runs out through the first of that
-/// host's edges — in a rim plane, so the seam doubles as a trim rather
-/// than crossing a patch — and every labelling is offered in turn, the
+/// host's edges (in a rim plane, so the seam doubles as a trim rather
+/// than crossing a patch) and every labelling is offered in turn, the
 /// first that closes standing. A cut that closes on a tool reaching past
 /// its own block is a wrong tool, not a closed one, and is passed over
 /// too.
@@ -885,9 +885,9 @@ fn ball_block(
     let n = directions.len();
     let mut last: Option<ogeom_core::OgeomError> = None;
     // The ball's frames, best first. Along a ridge, the ridge's rim plane
-    // is the sphere's equator, both poles stand outside the patch — the
+    // is the sphere's equator, both poles stand outside the patch (the
     // patch lies on the corner's side of every rim plane, the poles on
-    // the ridge's own axis either side of it — and a seam meridian turned
+    // the ridge's own axis either side of it) and a seam meridian turned
     // away from the corner never crosses it; the ridge fillet's cap, in
     // that same rim plane, then meets the sphere on a circle the chart
     // images exactly. Then the classic labellings: the pole along host t,
@@ -895,7 +895,7 @@ fn ball_block(
     // The patch's corners are the touch points, a radius from the centre
     // against each host; a frame is judged by how far its seam meridian
     // keeps from every corner in longitude about the pole, and a pole the
-    // patch itself contains — inside every rim plane's kept side — is no
+    // patch itself contains (inside every rim plane's kept side) is no
     // frame at all, since a chart's degenerate point cannot stand inside
     // a face. Either sense of every ridge is offered, with the seam turned
     // from the corner or from the corners' mean, the clearest first.

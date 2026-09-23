@@ -1,4 +1,4 @@
-//! AP242 semantic PMI: the values, not the leader lines — read from NIST's
+//! AP242 semantic PMI: the values, not the leader lines, read from NIST's
 //! own annotated part and carried through the writer intact.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
@@ -178,7 +178,7 @@ fn pmi_round_trips_through_the_writer() {
 }
 
 /// §E2: the *presentation* half. NIST's part draws its annotations, and what
-/// it draws is read — the callouts, the plane each is drawn in, and the
+/// it draws is read: the callouts, the plane each is drawn in, and the
 /// polylines that make the frame, the leader and the strokes of the text.
 #[test]
 fn the_drawn_annotations_are_read_with_the_annotations_they_draw() {
@@ -241,7 +241,7 @@ fn the_drawn_annotations_are_read_with_the_annotations_they_draw() {
     assert_eq!(pmi.tolerances[at].kind, "flatness");
 
     // What a callout draws is *flat*, in a plane parallel to the one the
-    // annotation is anchored in — this file offsets the drawing from that
+    // annotation is anchored in; this file offsets the drawing from that
     // plane, which is its own arrangement and not something to assume away.
     // The claim is the one that checks the reader's work: the item's own
     // repositioning was applied, so every point of one callout shares one

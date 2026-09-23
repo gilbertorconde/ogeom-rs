@@ -5,8 +5,8 @@
 //! re-orthonormalized, while a quaternion only needs renormalizing, and there is
 //! no meaningful way to interpolate two rotation matrices directly.
 //!
-//! [`Quaternion`] is not constrained to unit length by construction — the
-//! arithmetic needs unnormalized intermediates — but every rotation operation
+//! [`Quaternion`] is not constrained to unit length by construction (the
+//! arithmetic needs unnormalized intermediates), but every rotation operation
 //! either requires or restores unit length, and says which in its
 //! documentation.
 

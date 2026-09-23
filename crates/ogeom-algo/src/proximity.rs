@@ -9,11 +9,11 @@
 //! # The assembly argument
 //!
 //! The nearest distance between two shapes is attained either at an interior
-//! stationary approach of a pair of elements, or on some element's boundary —
+//! stationary approach of a pair of elements, or on some element's boundary,
 //! and an element's boundary is itself an element: a face's boundary is its
 //! edges, an edge's boundary is its vertices. So walking every pair of
-//! elements — vertex against vertex, edge and face; edge against edge and
-//! face; face against face — with stationary approaches for the interiors and
+//! elements (vertex against vertex, edge and face; edge against edge and
+//! face; face against face) with stationary approaches for the interiors and
 //! projections for the points covers every candidate, and the geometry level
 //! is allowed to answer "no interior approach" honestly because the pair that
 //! owns the boundary case is in the same sweep.
@@ -26,7 +26,7 @@
 //! # What the distance is between
 //!
 //! Boundaries. A shape strictly inside another reports the gap between their
-//! boundaries, not zero — whether a point is *inside* a solid is
+//! boundaries, not zero: whether a point is *inside* a solid is
 //! [`classify_in_solid_exact`](crate::classify_in_solid_exact)'s question,
 //! and conflating the two would make this answer wrong for the shells it is
 //! right for.
@@ -73,7 +73,7 @@ enum Element {
 }
 
 /// A face's surface twice over: in world space for the extrema, and local
-/// with its placement and rings for the trim test — parameters on a
+/// with its placement and rings for the trim test. Parameters on a
 /// transformed surface need not match the rings, which live in the stored
 /// surface's parameter space, so the trim question is always asked locally.
 struct Prepared {
@@ -126,7 +126,7 @@ pub fn distance_between_shapes(
         if d - least > tol.confusion() {
             continue;
         }
-        // The same nearest pair arrives from several element pairs — a corner
+        // The same nearest pair arrives from several element pairs: a corner
         // is on a vertex, three edges and three faces at once. Keep the first
         // at each location.
         if pairs.iter().any(|known| {
@@ -223,7 +223,7 @@ fn approach(
 
 /// Whether a world-space point on a face's surface lands inside its trimming.
 ///
-/// Asked in the stored surface's own parameter space — the point is carried
+/// Asked in the stored surface's own parameter space: the point is carried
 /// into the face's frame and projected there, exactly as `classify_on_face`
 /// does it, because rings and world-surface parameters need not agree under a
 /// placement that scales. Too near the boundary counts as outside: the edge
@@ -240,7 +240,7 @@ fn inside_trim(face: &Prepared, world_point: Point, tol: Tolerances) -> OgeomRes
     Ok(inside_boundary(&face.rings, at))
 }
 
-/// The rings' polylining error, spatially — the trim test's uncertainty band.
+/// The rings' polylining error, spatially: the trim test's uncertainty band.
 const RING_CHORD: f64 = 1e-3;
 
 /// Every element of a shape, with world-space geometry.
@@ -302,8 +302,8 @@ fn elements(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<El
         };
         let placement = face.transform(model.datums())?;
         let rings = face_boundary(model, &face, ring_deflection, tol)?;
-        // The stored surface may declare an enormous domain — a plane spans
-        // ±1e9 — and the extrema layer rightly refuses to sample that. The
+        // The stored surface may declare an enormous domain (a plane spans
+        // ±1e9), and the extrema layer rightly refuses to sample that. The
         // face only uses what its rings enclose, so the surface handed over
         // is trimmed to their parameter bound, with a margin for the rings'
         // own polylining, before being carried into world space.
@@ -326,7 +326,7 @@ fn elements(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<El
 /// The margin is proportional to the used span: the exact boundary lies
 /// within the rings' polylining of it, and `inside_trim` already treats the
 /// near-boundary band as the edges' territory, so the margin only has to
-/// keep the whole face inside the restriction — it does not have to be
+/// keep the whole face inside the restriction; it does not have to be
 /// tight.
 fn restrict_to_rings(
     surface: &SurfaceGeometry,
@@ -344,7 +344,7 @@ fn restrict_to_rings(
         }
     }
     if u.0 > u.1 || v.0 > v.1 {
-        // No rings — a naturally closed face uses its whole domain.
+        // No rings: a naturally closed face uses its whole domain.
         return Ok(surface.clone());
     }
     let margin_u = (u.1 - u.0).mul_add(0.05, tol.parametric());
@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn parallel_cylinders_meet_wall_to_wall() {
-        // The nearest locus is a pair of facing rulings — a family at the
+        // The nearest locus is a pair of facing rulings: a family at the
         // geometry level, a representative pair here, with the distance exact.
         let mut model = Model::new();
         let a = make_cylinder(&mut model, Frame::WORLD, 1.0, 4.0, T).unwrap();

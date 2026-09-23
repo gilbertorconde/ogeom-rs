@@ -3,7 +3,7 @@
 //! A pocket is a prism cut into a solid; a pad is the same prism fused onto
 //! it; a rib is a thin pad; a slot is a pocket that runs out of both ends;
 //! a revolved feature turns a profile instead of sweeping it. None of these
-//! is a new geometric construction — each is a sweep and a boolean, and
+//! is a new geometric construction; each is a sweep and a boolean, and
 //! what makes it a *feature* is that the operation says which it was and
 //! carries the profile through the history.
 //!
@@ -29,8 +29,8 @@ pub enum Feature {
 
 /// Sweep `profile` along `vector` and add or remove the result.
 ///
-/// The profile is a face — a wire is not a tool, it is the boundary of one
-/// — and the sweep is the ordinary prism, so the feature's walls are ruled
+/// The profile is a face (a wire is not a tool, it is the boundary of one),
+/// and the sweep is the ordinary prism, so the feature's walls are ruled
 /// exactly as its profile's edges are. A pocket deeper than the material
 /// simply cuts through; a pad shorter than nothing is refused.
 ///
@@ -62,7 +62,7 @@ pub fn feature_prism(
 ///
 /// # Errors
 ///
-/// As [`feature_prism`], plus whatever the revolution refuses — an angle
+/// As [`feature_prism`], plus whatever the revolution refuses: an angle
 /// outside `(0, 2π]`, or a profile the axis passes through.
 pub fn feature_revol(
     model: &mut Model,

@@ -1,7 +1,7 @@
 //! The marching blend: a rolling ball followed by solving where it touches.
 //!
-//! The analytic seats — an edge between two planes, a plane and a cylinder in
-//! the configurations that give a torus — are built from their own closed
+//! The analytic seats (an edge between two planes, a plane and a cylinder in
+//! the configurations that give a torus) are built from their own closed
 //! forms elsewhere. This is the general one, and the formulation matters more
 //! than the marching does.
 //!
@@ -15,14 +15,14 @@
 //! as same-domain later.
 //!
 //! So the section's two endpoints are solved for directly. The unknowns are
-//! `(u₁, v₁)` on the first support and `(u₂, v₂)` on the second — the two
+//! `(u₁, v₁)` on the first support and `(u₂, v₂)` on the second: the two
 //! points where the ball touches. Three equations say the ball's centre is the
 //! same point computed from either side,
 //!
 //! > `P₁ + r·n₁ = P₂ + r·n₂`
 //!
-//! and the fourth ties the section to a **guide** — the edge being blended, or
-//! any curve running along the seat — by requiring it to lie in the plane
+//! and the fourth ties the section to a **guide** (the edge being blended, or
+//! any curve running along the seat) by requiring it to lie in the plane
 //! through the guide point normal to the guide's tangent.
 //!
 //! What comes out is worth the change: the tangency curves emerge **in the
@@ -32,7 +32,7 @@
 //! # Marched by the shared walker
 //!
 //! The guide's parameter joins the unknowns as a fifth, which makes the system
-//! four equations in five — a curve — and that is what
+//! four equations in five (a curve) and that is what
 //! [`ogeom_intersect::walk`] follows. So the step control, the stall reporting
 //! and the closure test are the intersector's own, inherited rather than
 //! written a second time, and the step is set by the sag of the *tangency
@@ -48,8 +48,8 @@ use ogeom_math::{Point, Vector, solve};
 ///
 /// A rolling ball sits at `P + s·r·n` for one sign `s` per support: outward
 /// for a convex seat, inward for a concave one, and one of each where the
-/// blend runs along a step. The pair is not guessed from the normals —
-/// normals cannot tell a step from a slot — but tried, and the combination
+/// blend runs along a step. The pair is not guessed from the normals (
+/// normals cannot tell a step from a slot) but tried, and the combination
 /// that gives a ball genuinely touching both is the seat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sides {
@@ -87,7 +87,7 @@ impl Sides {
 /// one is a different thing for a caller to do about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlendStop {
-    /// The seat closed on itself — a blend all the way round a rim.
+    /// The seat closed on itself: a blend all the way round a rim.
     Closed,
     /// The section reached the boundary of the first support.
     LeftTheFirstSupport,
@@ -100,7 +100,7 @@ pub enum BlendStop {
     /// The two tangency points collapsed onto each other: the radius is too
     /// large for the local geometry and the ball is not seated but wedged.
     SectionCollapsed,
-    /// The correction stopped converging — a tangency or a singular point on
+    /// The correction stopped converging: a tangency or a singular point on
     /// one of the supports.
     Stalled,
     /// The step ceiling, which means the answer is *incomplete* rather than
@@ -111,7 +111,7 @@ pub enum BlendStop {
 /// One marched blend: where the ball touched, and where its centre went.
 #[derive(Debug, Clone)]
 pub struct MarchedBlend {
-    /// The ball's centre at each station — the blend's spine.
+    /// The ball's centre at each station: the blend's spine.
     pub spine: Vec<Point>,
     /// Where it touched the first support, in that support's own parameters.
     ///
@@ -125,7 +125,7 @@ pub struct MarchedBlend {
     pub touch_first: Vec<Point>,
     /// And on the second.
     pub touch_second: Vec<Point>,
-    /// The guide parameter at each station — where along the seat the
+    /// The guide parameter at each station: where along the seat the
     /// section stands. An open blend's run-out is built from its ends.
     pub along: Vec<f64>,
     /// Which side of each support the ball rolled on.
@@ -157,7 +157,7 @@ impl MarchedBlend {
 /// Follow a rolling ball of `radius` seated between two supports, guided by
 /// `guide`.
 ///
-/// The guide is the curve the sections stand square to — the edge being
+/// The guide is the curve the sections stand square to: the edge being
 /// blended, or any curve running along the seat. It decides *where* the
 /// sections are, not what they are: the ball's own contact conditions decide
 /// that, and a guide that is merely near the seat gives the same blend as one
@@ -168,7 +168,7 @@ impl MarchedBlend {
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
 /// radius or the settings are unusable.
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if no seating of
-/// the ball can be found at the guide's start — which is the honest answer for
+/// the ball can be found at the guide's start, which is the honest answer for
 /// a radius the corner cannot hold, and names that rather than marching a
 /// system that is not solved.
 pub fn march_blend(
@@ -193,8 +193,8 @@ pub fn march_blend(
 
 /// As [`march_blend`], with the ball's sides named by the caller.
 ///
-/// The four seatings are four different balls — a fillet's rides the
-/// material's own side of each support, a carving ball the opposite — and a
+/// The four seatings are four different balls (a fillet's rides the
+/// material's own side of each support, a carving ball the opposite) and a
 /// caller that knows its seat should say so rather than take whichever
 /// converges first.
 ///
@@ -217,7 +217,7 @@ pub fn march_blend_sided(
 ///
 /// The default seat solves at the guide domain's midpoint, which serves a
 /// guide that runs along the seat end to end. A caller whose guide is a
-/// reconstructed loop — a conic arc re-opened to its full period — knows the
+/// reconstructed loop (a conic arc re-opened to its full period) knows the
 /// loop runs through territory that is not seat at all, and names a
 /// parameter that is: the walker still covers the whole loop from wherever
 /// it starts.
@@ -350,7 +350,7 @@ fn why(
 }
 
 /// The ball's exact section at one guide parameter: the seat solve, held at
-/// `at`. What a run-out cap stands on — the marched stations bracket the
+/// `at`. What a run-out cap stands on: the marched stations bracket the
 /// edge's own end, and the cap wants the section exactly there.
 #[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
 pub(crate) fn seat_section(
@@ -398,7 +398,7 @@ fn seat(
         f64::midpoint(lo, hi)
     });
     // A caller with a neighbouring station names the basin; a bare
-    // projection can land the Newton on a different seating entirely — the
+    // projection can land the Newton on a different seating entirely: the
     // far side of a drum holds one too.
     let start = match near {
         Some(uv) => [uv[0], uv[1], uv[2], uv[3], at],
@@ -497,7 +497,7 @@ struct BallContact<'s> {
     radius: f64,
     guide: &'s Curve,
     sides: Sides,
-    /// Whether the guide comes back to its start — by parameterization or,
+    /// Whether the guide comes back to its start, by parameterization or,
     /// for a fitted seam whose curve is clamped, by geometry. A looping
     /// guide has no end to stop at; the march wraps its parameter and lets
     /// the points say when it is back.
@@ -552,8 +552,8 @@ impl Condition for BallContact<'_> {
         // square to the guide. Stated with the *unnormalized* tangent, which
         // is the same plane and a simpler derivative.
         // A looping guide is evaluated on its loop: the walker's trial step
-        // may propose a parameter a hair past the end, and a fitted loop —
-        // closed, not periodic — refuses it, so the step fails and the march
+        // may propose a parameter a hair past the end, and a fitted loop (
+        // closed, not periodic) refuses it, so the step fails and the march
         // stalls at the join instead of crossing it.
         let w = {
             let (lo, hi) = self.guide.domain();
@@ -655,7 +655,7 @@ fn unit_normal(surface: &SurfaceGeometry, u: f64, v: f64, tol: Tolerances) -> Op
 ///
 /// Exactly, from the surface's own second derivatives: with `c = Sᵤ × Sᵥ` the
 /// unnormalized normal, `∂n/∂u` is the part of `∂c/∂u` across `n`, over
-/// `|c|` — the projection is what keeps a unit vector unit.
+/// `|c|`: the projection is what keeps a unit vector unit.
 fn normal_and_derivatives(
     surface: &SurfaceGeometry,
     u: f64,
@@ -676,7 +676,7 @@ fn normal_and_derivatives(
     Some((n, across(dcu), across(dcv)))
 }
 
-/// Whether a chart direction comes back on itself: periodic, or closed —
+/// Whether a chart direction comes back on itself: periodic, or closed;
 /// a converted cylinder's patch meets itself at its seam without being
 /// periodic, and a march that stopped at that seam would call a wall's
 /// own join a run-out.
@@ -713,7 +713,7 @@ fn beyond(surface: &SurfaceGeometry, at: (f64, f64), tol: Tolerances) -> bool {
         || (!wrap_v && (at.1 < va - band || at.1 > vb + band))
 }
 
-/// Whether it is at the edge of one — which is how a run-out is told from a
+/// Whether it is at the edge of one, which is how a run-out is told from a
 /// singularity.
 fn at_edge(surface: &SurfaceGeometry, at: (f64, f64)) -> bool {
     let ((ua, ub), (va, vb)) = surface.domain();

@@ -235,7 +235,7 @@ fn a_filleted_box_shells_blend_and_all() {
 fn a_cone_offsets_to_the_parallel_cone_apex_and_all() {
     // Base radius 3, height 4: the 3-4-5 cone. Offset by 0.5, the lateral
     // surface becomes the parallel cone, the base drops by the amount, and
-    // the apex — a vertex with no normal to offer — lands on the parallel
+    // the apex (a vertex with no normal to offer) lands on the parallel
     // cone's own apex, 0.5 / sin over the old one.
     let mut model = ogeom_topo::Model::new();
     let cone = ogeom_algo::make_cone(&mut model, Frame::WORLD, 3.0, 0.0, 4.0, T).unwrap();
@@ -273,7 +273,7 @@ fn a_cone_offsets_to_the_parallel_cone_apex_and_all() {
 #[test]
 fn a_rim_filleted_cylinder_offsets_with_its_toroidal_band() {
     // The fillet's torus keeps its centre circle and grows its tube, which
-    // preserves the tangencies — so the offset part is the rim-filleted
+    // preserves the tangencies, so the offset part is the rim-filleted
     // version of the offset cylinder, and the same closed form prices it.
     let mut model = ogeom_topo::Model::new();
     let (radius, height, blend, w) = (2.0, 4.0, 0.5, 0.3);

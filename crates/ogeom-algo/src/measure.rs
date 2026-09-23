@@ -9,7 +9,7 @@
 //!
 //! - a line's bound is its endpoints, which is exact;
 //! - a spline's is its control points, which is guaranteed by the convex hull
-//!   property — the curve never leaves the hull of its control polygon;
+//!   property: the curve never leaves the hull of its control polygon;
 //! - an analytic curve or surface's is computed from its own definition;
 //! - a *trimmed* piece falls back to the bound of the whole, which is loose but
 //!   never wrong.
@@ -28,7 +28,7 @@ use ogeom_topo::{EdgeRepr, Model, NodeData, Orientation, Shape, ShapeType, explo
 /// A guaranteed bound for a space curve.
 ///
 /// Loose for a trimmed curve, which reports the bound of the whole rather than
-/// of the piece — never wrong, and tightening it would mean solving for the
+/// of the piece: never wrong, and tightening it would mean solving for the
 /// extremes of the trimmed range, which is the same work as an intersection.
 ///
 /// # Errors
@@ -60,7 +60,7 @@ pub fn curve_bounds(curve: &Curve, tol: Tolerances) -> OgeomResult<Aabb> {
         }
 
         // A helix never leaves its cylinder, and its rise over the trimmed
-        // angle interval is linear — so the cylinder's box over that rise
+        // angle interval is linear, so the cylinder's box over that rise
         // contains it, tight along the axis and whole-circle-loose across,
         // the same convention the circle uses.
         Curve::Helix(h) => {
@@ -118,9 +118,9 @@ pub fn curve_bounds(curve: &Curve, tol: Tolerances) -> OgeomResult<Aabb> {
 /// [`curve_bounds`] answers for the whole curve, which is the right answer
 /// to a different question: a line's carrier runs to the ends of the
 /// world, and an imported edge sits on a stretch of it a few millimetres
-/// long. Where the range can be honoured exactly it is — a segment is the
+/// long. Where the range can be honoured exactly it is (a segment is the
 /// hull of its two ends, an arc the hull of its ends and whichever of its
-/// frame's four extremes it sweeps past — and where it cannot, the whole
+/// frame's four extremes it sweeps past), and where it cannot, the whole
 /// curve's bound stands, which is still a bound.
 ///
 /// # Errors
@@ -372,14 +372,14 @@ pub fn shape_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResul
         NodeData::Face(f) => {
             // A face's boundary is bounded by the wires below it, so what
             // the face itself has to add is only where its surface bulges
-            // past that boundary — a dome past its equator. A trimmed face
+            // past that boundary: a dome past its equator. A trimmed face
             // whose carrier runs to the ends of the world must not bring
             // the carrier: an imported plane's window spans kilometres, and
             // a cylinder's height domain more, and either would drown every
             // consumer that asks a body how big it is.
             //
-            // A face with no boundary at all — a whole sphere, a natural
-            // face — has nothing below it and keeps its surface's bound.
+            // A face with no boundary at all (a whole sphere, a natural
+            // face) has nothing below it and keeps its surface's bound.
             let own = match model.geometry().surface(f.surface) {
                 Some(surface) if !model.children_of(shape)?.is_empty() => {
                     patch_bulge(model, shape, surface, f.surface, tol)?
@@ -403,9 +403,9 @@ pub fn shape_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResul
 ///
 /// A flat or ruled patch reaches nowhere: every one of its points lies on a
 /// straight line between two points of its own boundary, so the boundary's
-/// bound holds it and this adds nothing. A sphere's or a torus's does — the
+/// bound holds it and this adds nothing. A sphere's or a torus's does (the
 /// button head of a screw is a sphere zone whose apex is a bulge between
-/// its rims, three millimetres past the hull of every vertex it has — and
+/// its rims, three millimetres past the hull of every vertex it has), and
 /// for those the bulge is exactly where the surface reaches its own extreme
 /// along each axis, when that point lies inside the face's trim.
 ///
@@ -432,7 +432,7 @@ fn patch_bulge(
         // A patch's whole net is honest and can still be useless. A patch
         // whose `u` knots run from −80 to 1 and whose `v` run to 85 after
         // four spans inside the first two carries a face in the last unit
-        // of each, and the whole net bounds it seven metres across — which
+        // of each, and the whole net bounds it seven metres across, which
         // is what a viewer frames a scene to, so the part it belongs to
         // draws as a speck. The trim says which part of the net can matter.
         SurfaceGeometry::BSpline(spline) => {
@@ -509,9 +509,9 @@ fn patch_bulge(
 /// patch above runs its `u` knots from −80 to 1, and the control
 /// points that shape the last unit also shape the eighty before it, so they
 /// sit a hundred and seventy millimetres from a part sixty across. The
-/// patch is cut down to the rectangle instead — knots raised to full
+/// patch is cut down to the rectangle instead (knots raised to full
 /// multiplicity at each edge, which is what makes the control points either
-/// side independent — and the piece that remains carries its own net, tight
+/// side independent), and the piece that remains carries its own net, tight
 /// around the only part of the surface the trim can reach.
 ///
 /// A cut that cannot be made (an edge already at the domain's own end, or a
@@ -581,7 +581,7 @@ fn cut_to(
 /// A face's trim as polygons in its surface's chart, sampled from the
 /// pcurves, which is what a trim is written as.
 ///
-/// The rectangle they span is not the trim — a screw's button head is a cap
+/// The rectangle they span is not the trim: a screw's button head is a cap
 /// of a sphere whose own axis is not the cap's, so its rim wanders across
 /// the chart and the box around it holds most of a hemisphere. What a bulge
 /// has to be asked is whether it stands inside the outline itself.
@@ -598,8 +598,8 @@ fn chart_outline(
         let mut ring: Vec<ogeom_math::Point2> = Vec::new();
         // In the wire's own order, because a polygon is a walk and not a
         // bag of pieces. Which column a seam's occurrence takes is decided
-        // by the ring — the side whose start continues where the walk has
-        // got to — as the tessellator decides it, since no flag can.
+        // by the ring (the side whose start continues where the walk has
+        // got to), as the tessellator decides it, since no flag can.
         for edge in model.ordered_children_of(&wire)? {
             let Some(repr) = model
                 .node(&edge)
@@ -678,7 +678,7 @@ fn inside_outline(outline: &[Vec<ogeom_math::Point2>], at: ogeom_math::Point2) -
                 crossings += 1;
             }
         }
-        // Rings arrive open — the sampling walks each edge — so the closing
+        // Rings arrive open (the sampling walks each edge), so the closing
         // step is counted too.
         if let (Some(first), Some(last)) = (ring.first(), ring.last())
             && (first.y > at.y) != (last.y > at.y)
@@ -695,7 +695,7 @@ fn inside_outline(outline: &[Vec<ogeom_math::Point2>], at: ogeom_math::Point2) -
     crossings % 2 == 1
 }
 
-/// A bound for a shape built only from its vertices./// A bound for a shape built only from its vertices.
+/// A bound for a shape built only from its vertices.
 ///
 /// Tighter than [`shape_bounds`] for a solid whose faces sit on unbounded
 /// surfaces, and *not* a guarantee: a curved edge bulges past its own
@@ -722,7 +722,7 @@ pub fn vertex_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResu
 ///
 /// An axis-aligned box around a long thin rod lying diagonally is mostly empty;
 /// this one is not. The cost is that testing a point against it is a transform
-/// and then a comparison, rather than six comparisons — so [`Aabb`] stays the
+/// and then a comparison, rather than six comparisons, so [`Aabb`] stays the
 /// default and this is for when the emptiness matters, which is broad-phase
 /// rejection and anything that quotes a shape's real extent.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -777,8 +777,8 @@ impl Obb {
 
 /// An oriented bound for a shape, from the spread of its geometry.
 ///
-/// The axes come from the covariance of sampled points — the directions the
-/// shape is most and least spread along — and the extents are then measured
+/// The axes come from the covariance of sampled points (the directions the
+/// shape is most and least spread along), and the extents are then measured
 /// along those axes, so the box is tight even though the fit is not exact.
 ///
 /// **Not a guarantee, unlike [`shape_bounds`].** It is built from samples, so a
@@ -824,7 +824,7 @@ pub fn oriented_bounds(
         );
     }
     // The covariance frame is centred on the mean, which is not the middle of
-    // the extent — a shape with more detail at one end pulls it. Recentring is
+    // the extent: a shape with more detail at one end pulls it. Recentring is
     // what makes the half-extents symmetric and the box actually tight.
     let middle = (low + high) * 0.5;
     let centre = frame.to_world(Point::ORIGIN + middle);
@@ -907,7 +907,7 @@ pub fn face_normal(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<
 /// "A thousandth of the part" survives the part being modelled in metres rather
 /// than millimetres, and being scaled after it was drawn; an absolute chord
 /// does not. [`Deflection::relative`](ogeom_mesh::Deflection::relative) does the
-/// arithmetic once a size is known — this is what finds the size, which is the
+/// arithmetic once a size is known; this is what finds the size, which is the
 /// part a caller should not have to get right.
 ///
 /// The measure is the bounding box's *diagonal*, not its longest side: a thin
@@ -926,7 +926,7 @@ pub fn relative_deflection(
     tol: Tolerances,
 ) -> OgeomResult<ogeom_mesh::Deflection> {
     // A deflection says how closely a polyline should follow a curve, or a
-    // triangle a surface. A shape with neither has nothing for it to be about —
+    // triangle a surface. A shape with neither has nothing for it to be about,
     // and it is not enough to look at the size, because a lone vertex *does*
     // have a bound: its own tolerance. A fraction of that is a chord of about
     // 1e-10, which is not a small answer, it is a meaningless one.
@@ -952,7 +952,7 @@ pub fn relative_deflection(
 /// A frame whose axes are the directions a point set is most spread along.
 ///
 /// The eigenvectors of the covariance, largest spread first. Falls back to the
-/// world frame when the points are too few or too degenerate to say — a fit
+/// world frame when the points are too few or too degenerate to say: a fit
 /// that cannot decide should return something usable rather than fail, since
 /// the caller then measures extents along whatever axes it gets and still
 /// bounds the shape.
@@ -973,7 +973,7 @@ fn spread_frame(points: &[Point], tol: Tolerances) -> Frame {
 
 /// The plane that best fits a point set: its centroid, and the normal to it.
 ///
-/// The eigenvector of the covariance with the *smallest* eigenvalue — the
+/// The eigenvector of the covariance with the *smallest* eigenvalue: the
 /// direction the points vary along least. `None` when there is nothing to fit.
 ///
 /// Fitting says nothing about whether the points are actually planar. Every set
@@ -1042,9 +1042,9 @@ pub struct Projection {
 /// The nearest point on a curve to `target`.
 ///
 /// Samples the domain to bracket the minimum, then refines. The sampling is not
-/// decoration: the distance function along a curve is generally multi-modal —
-/// a point inside a circle is equidistant from every part of it, and a point
-/// near a spline's inflection has two competing minima — so starting a local
+/// decoration: the distance function along a curve is generally multi-modal
+/// (a point inside a circle is equidistant from every part of it, and a point
+/// near a spline's inflection has two competing minima), so starting a local
 /// method from one guess finds whichever basin it happens to land in. The
 /// sample count sets how fine a feature can be resolved, and is stated rather
 /// than hidden.
@@ -1071,8 +1071,8 @@ pub fn project_on_curve(
     // Coarse scan, then every local minimum of it refined, not only the
     // best sample's bracket: the nearest sample and the nearest point need
     // not share a bracket. A short stretch of a long fitted curve, seen
-    // from its own middle, puts the three samples nearest to it — the
-    // stretch's two ends and the curve's far end, if the curve closes — at
+    // from its own middle, puts the three samples nearest to it (the
+    // stretch's two ends and the curve's far end, if the curve closes) at
     // the same distance to within rounding, and the one that wins by a
     // hair may bracket nothing. The samples are cheap; the brackets that
     // dip are few.
@@ -1173,7 +1173,7 @@ type Row = smallvec::SmallVec<[(f64, f64, f64); 64]>;
 /// A seed scan that keeps the grid's local minima, row by row.
 ///
 /// Three rows are enough to know whether a cell of the middle one beats
-/// its eight neighbours, so the scan never holds the grid — a projection
+/// its eight neighbours, so the scan never holds the grid: a projection
 /// onto a thread flank seeds thousands of cells, and a caller projecting
 /// every sample of an edge would pay that grid each time.
 #[derive(Debug, Default)]
@@ -1213,7 +1213,7 @@ impl Scan {
 /// chord between neighbouring seeds, a seed on the turn above sits nearer
 /// the target than the seed a half-span along the right turn; Newton then
 /// converges faithfully on the wrong turn. So a scan keeps a handful of
-/// candidates, one per basin — a cell that beats its eight neighbours —
+/// candidates, one per basin (a cell that beats its eight neighbours),
 /// and the refinement runs from each, nearest first, until one lands.
 #[derive(Debug, Default, Clone, Copy)]
 struct Starts {
@@ -1318,8 +1318,8 @@ impl Starts {
 
 /// Where to seed a projection in each direction.
 ///
-/// A fitted surface can carry hundreds of knot spans in one direction — a
-/// thread flank swept two hundred turns down a lead screw has 1261 — and a
+/// A fitted surface can carry hundreds of knot spans in one direction (a
+/// thread flank swept two hundred turns down a lead screw has 1261), and a
 /// grid of sixteen or ninety-six seeds lands turns away from the nearest
 /// point, where Newton converges faithfully onto the wrong flank. So a
 /// patch is seeded *by its spans*, never by its domain: every span gets its
@@ -1339,7 +1339,7 @@ fn seed_lines(surface: &SurfaceGeometry, samples: usize) -> (Vec<f64>, Vec<f64>)
     // knot but the first inside the last unit, and its face occupies a
     // tenth of that unit. A grid spread evenly over that domain puts one
     // seed in the whole region the face lives in, and a projection seeded
-    // a knot span away lands wherever Newton takes it — four millimetres
+    // a knot span away lands wherever Newton takes it, four millimetres
     // out, on an edge that sits on the surface. So the seeds follow the
     // spans: each one gets its share, however wide the file made it.
     (
@@ -1379,7 +1379,7 @@ fn per_span(knots: &[f64], budget: usize, cap: usize) -> Vec<f64> {
 /// A surface's seeding grid, built once and asked many times.
 ///
 /// [`project_on_surface`] evaluates the same grid of surface points for
-/// every call — hundreds of evaluations per projection, identical each
+/// every call: hundreds of evaluations per projection, identical each
 /// time. A caller projecting *many* targets onto *one* surface builds the
 /// grid once and each projection reduces to a nearest-seed scan plus the
 /// Newton polish: the same seeds, the same refinement, the same answer to
@@ -1412,7 +1412,7 @@ impl SurfaceSeeds {
         Ok(Self { rows })
     }
 
-    /// Project `target`, seeded from the stored grid — bit-identical to
+    /// Project `target`, seeded from the stored grid, bit-identical to
     /// [`project_on_surface`] at the same sample count.
     ///
     /// # Errors
@@ -1441,8 +1441,8 @@ impl SurfaceSeeds {
 /// The nearest point on a surface to `target`, starting from a guess.
 ///
 /// [`project_on_surface`] brackets with a grid before refining. A caller
-/// walking *along* something — the samples of a curve being projected into a
-/// chart — already has a far better guess than any grid: where the previous
+/// walking *along* something (the samples of a curve being projected into a
+/// chart) already has a far better guess than any grid: where the previous
 /// sample landed. Neighbouring samples of a curve are neighbouring points of
 /// the surface, so the refinement starts inside the right basin and converges
 /// in a few steps, and the grid's hundreds of evaluations per sample are not
@@ -1471,8 +1471,8 @@ pub fn project_on_surface_from(
 /// surface's domain. A periodic direction wraps; a bounded one clamps, and a
 /// coordinate held against its bound by the step is pinned there while the
 /// other one keeps solving on its own. Without that, every edge that runs
-/// along a face's boundary — the outer helix of a thread flank sits exactly
-/// on the flank's `u` bound — pushes the unconstrained foot a hair outside
+/// along a face's boundary (the outer helix of a thread flank sits exactly
+/// on the flank's `u` bound) pushes the unconstrained foot a hair outside
 /// the domain, and a solver that then rejects the whole answer hands back
 /// its seed, turns away from the true foot.
 ///
@@ -1693,7 +1693,7 @@ pub fn project_on_planar_curve(
 /// `points`.
 ///
 /// A surface's extent is a *window*, not a trim. Anything built on the surface
-/// — a face, a pcurve, a projection — has to evaluate inside it, and a window
+/// (a face, a pcurve, a projection) has to evaluate inside it, and a window
 /// clamped tight around whatever was measured last will refuse the boundary of
 /// the very region it was measured from. That failure is unhelpfully quiet: it
 /// arrives as a domain error from an evaluation deep inside triangulation,
@@ -1707,7 +1707,7 @@ pub fn project_on_planar_curve(
 ///
 /// Only the *bounded* directions can be widened, and only they need to be: a
 /// periodic direction already covers its whole turn. A surface with no bounded
-/// direction — a sphere, a torus — comes back as it went in, and so does one
+/// direction (a sphere, a torus) comes back as it went in, and so does one
 /// given no points.
 ///
 /// # Errors
@@ -1848,7 +1848,7 @@ mod tests {
     #[test]
     fn a_guess_in_the_wrong_basin_reports_its_distance_honestly() {
         // The other half of the contract: a bad guess is not silently wrong,
-        // it comes back with a distance the caller can reject on — which is
+        // it comes back with a distance the caller can reject on, which is
         // exactly what the exchange readers do before keeping it.
         let cylinder = SurfaceGeometry::Cylinder(
             CylinderSurface::new(Cylinder::new(Frame::WORLD, 2.0, T).unwrap(), (-5.0, 5.0))
@@ -1863,7 +1863,7 @@ mod tests {
         );
     }
 
-    /// A curve sampled densely — the ground truth a bound must contain.
+    /// A curve sampled densely: the ground truth a bound must contain.
     fn dense_points(curve: &Curve, n: usize) -> Vec<Point> {
         let (a, b) = curve.domain();
         (0..=n)
@@ -1965,7 +1965,7 @@ mod tests {
         for p in dense_points(&curve, 200) {
             assert!(bound.contains(p));
         }
-        // And the curve really does stay well inside — the bound is loose, in
+        // And the curve really does stay well inside; the bound is loose, in
         // the safe direction.
         let peak = dense_points(&curve, 200)
             .iter()
@@ -2072,7 +2072,7 @@ mod tests {
     #[test]
     fn the_vertex_bound_of_a_box_is_tight_and_the_full_bound_contains_it() {
         // A box's faces sit on planes trimmed to the box, so the two agree
-        // closely here — but the vertex bound is documented as an estimate, and
+        // closely here, but the vertex bound is documented as an estimate, and
         // the full bound is the one that guarantees containment.
         let mut model = Model::new();
         let built = make_box(&mut model, Frame::WORLD, (2.0, 3.0, 4.0), T).unwrap();
@@ -2118,7 +2118,7 @@ mod tests {
     }
 
     /// A patch has no carrier past its net; widened to hold a point past
-    /// one side, it is continued that way — and only that way — until the
+    /// one side, it is continued that way (and only that way) until the
     /// point projects onto it.
     #[test]
     fn a_patch_widened_to_hold_a_point_is_continued_to_it() {
@@ -2164,7 +2164,7 @@ mod tests {
             v1 > just_past.z && v0 <= 0.0,
             "the window holds the point and gives nothing back: ({v0}, {v1})"
         );
-        // The window grows by the floor — a thousand confusions — and this is
+        // The window grows by the floor (a thousand confusions), and this is
         // the case that says why there is a floor at all. Projection clamps to
         // the window it is measuring, so a point that overshoots by 1e-6 comes
         // back at the old edge and the proportional term sees a span of zero.
@@ -2273,7 +2273,7 @@ mod tests {
     #[test]
     fn shared_seeds_project_to_the_bit_where_the_per_call_grid_lands() {
         // The contract SurfaceSeeds sells: same seeds, same Newton, same
-        // answer to the bit — while the grid is evaluated once instead of
+        // answer to the bit, while the grid is evaluated once instead of
         // once per target. A cylinder exercises the periodic axis and the
         // straight one together.
         let cylinder = Cylinder::new(Frame::WORLD, 2.0, T).unwrap();
@@ -2320,7 +2320,7 @@ mod tests {
     /// and whose `v` knots stop at 85 after four spans inside the first
     /// two: one enormous span beside the spans that hold the shape. Its
     /// face lives in the last unit of each, and the whole net bounded it
-    /// seven metres across — which is what a viewer frames a scene to, so
+    /// seven metres across, which is what a viewer frames a scene to, so
     /// the part it belongs to drew as a speck.
     ///
     /// The control points are not near the surface they shape here: the one
@@ -2567,14 +2567,14 @@ mod deflection_tests {
         // Not exactly a thousand: `shape_bounds` is a *guaranteed* bound, so it
         // includes each entity's tolerance, and that padding is a larger share
         // of a one-unit box than of a thousand-unit one. Which is the right
-        // behaviour — the padding is really there.
+        // behaviour: the padding is really there.
         assert_relative_eq!(b.chord / a.chord, 1000.0, max_relative = 1e-3);
         assert_relative_eq!(a.chord, 3.0_f64.sqrt() * 1e-3, max_relative = 1e-3);
     }
 
     #[test]
     fn a_shape_with_no_extent_has_no_fraction_of_itself() {
-        // A lone vertex *does* have a bound — its own tolerance — so the guard
+        // A lone vertex *does* have a bound (its own tolerance), so the guard
         // cannot be about size. It is about whether there is a curve or a
         // surface for a deflection to describe.
         let mut model = Model::new();

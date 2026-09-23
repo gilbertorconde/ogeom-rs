@@ -2,7 +2,7 @@
 //!
 //! Three formats, one philosophy carried over from the DXF writer: the
 //! functions take bare tessellations rather than a model, so anything that
-//! produces a [`Triangulation`] — a solid, one face, a healed import —
+//! produces a [`Triangulation`] (a solid, one face, a healed import)
 //! exports without this module knowing where it came from. glTF is written
 //! as GLB, the single-file binary form, with positions, normals, indices
 //! and an optional base colour per mesh; OBJ and PLY are the plain-text
@@ -15,7 +15,7 @@
 //! glTF is the sharp case: its geometry reaches the file through accessors
 //! over buffer views over buffers, any of which may stride, offset, use any
 //! of six component types, scale integers into fractions, or be overridden
-//! piecewise by a sparse block — and the whole is placed by a node hierarchy
+//! piecewise by a sparse block, and the whole is placed by a node hierarchy
 //! stated as a matrix or as translation, rotation and scale. All of that is
 //! read. What is not read is refused by name rather than approximated.
 
@@ -49,11 +49,11 @@ impl<'a> ExportMesh<'a> {
 
 // --- glTF 2.0 (GLB) ----------------------------------------------------------
 
-/// Write meshes as a GLB — glTF 2.0's single-file binary form.
+/// Write meshes as a GLB: glTF 2.0's single-file binary form.
 ///
 /// One buffer, one node per mesh under one scene; positions and normals as
 /// `f32` vectors, indices as `u32`, and a metallic–roughness material with
-/// the base colour where one was given. Empty meshes are skipped — a node
+/// the base colour where one was given. Empty meshes are skipped; a node
 /// with nothing to draw is not something a viewer should be handed.
 #[must_use]
 pub fn write_glb(meshes: &[ExportMesh<'_>]) -> Vec<u8> {
@@ -322,8 +322,8 @@ pub fn write_ply(export: &ExportMesh<'_>) -> String {
 
 /// Read an OBJ into a triangulation.
 ///
-/// Vertices, faces and vertex normals; everything else — materials, groups,
-/// texture coordinates, smoothing — is a statement about *rendering* a mesh
+/// Vertices, faces and vertex normals; everything else (materials, groups,
+/// texture coordinates, smoothing) is a statement about *rendering* a mesh
 /// rather than about the mesh, and is skipped rather than half-honoured. A
 /// face of more than three vertices is fanned from its first, which is what
 /// a convex polygon means and what OBJ writers emit.
@@ -385,7 +385,7 @@ pub fn read_obj(text: &str) -> ogeom_core::OgeomResult<Triangulation> {
         ogeom_core::ogeom_bail!(Construction, "the file carries no vertices");
     }
     // A vertex whose normal the file did not give takes the average of the
-    // triangles it belongs to — the same answer the writer would have had.
+    // triangles it belongs to, the same answer the writer would have had.
     let mut resolved = vec![ogeom_math::Vector::ZERO; positions.len()];
     for (i, held) in normal_of.iter().enumerate() {
         if let Some(n) = held.and_then(|n| normals.get(n)) {
@@ -780,14 +780,14 @@ pub struct ImportedMesh {
     pub name: Option<String>,
 }
 
-/// Read a GLB — glTF 2.0's single-file binary form.
+/// Read a GLB: glTF 2.0's single-file binary form.
 ///
 /// The whole indirection is honoured, because a writer chooses it and a
 /// reader does not get to assume: a primitive names accessors, an accessor
 /// names a buffer view and a component type, a view names a buffer and may
 /// stride over it, and any of them may be replaced piecewise by a *sparse*
-/// block. Every component type the standard defines is read — signed and
-/// unsigned bytes, shorts, unsigned ints and floats — with `normalized`
+/// block. Every component type the standard defines is read (signed and
+/// unsigned bytes, shorts, unsigned ints and floats), with `normalized`
 /// honoured where it is set, which is the difference between a colour of
 /// `255` and a colour of `1`.
 ///
@@ -812,7 +812,7 @@ pub fn read_glb(bytes: &[u8]) -> ogeom_core::OgeomResult<Vec<ImportedMesh>> {
     read_gltf_document(&document, binary.as_deref())
 }
 
-/// Read a `.gltf` — the JSON form, whose buffers are data URIs.
+/// Read a `.gltf`: the JSON form, whose buffers are data URIs.
 ///
 /// A buffer with an external `uri` is refused by name: this function is handed
 /// bytes, not a directory, and quietly producing a mesh with no positions
@@ -961,7 +961,7 @@ fn read_gltf_document(
     let nodes = document.get("nodes").map_or(&[][..], Json::items);
     let materials = document.get("materials").map_or(&[][..], Json::items);
 
-    // The nodes the scene names, or — for a document with no scene at all —
+    // The nodes the scene names, or (for a document with no scene at all)
     // every node, which is what a reader can honestly do with one.
     let scene = document
         .index_at("scene")
@@ -1027,7 +1027,7 @@ fn read_gltf_document(
 /// A node's placement: three basis columns and a translation.
 ///
 /// Not the kernel's own `Transform`, and deliberately: a glTF node may scale
-/// unevenly, which is not a placement at all — it carries a circle to an
+/// unevenly, which is not a placement at all: it carries a circle to an
 /// ellipse. What comes out of a glTF file is a *mesh*, where an uneven scale
 /// is nothing worse than three multiplications, so the reader carries the
 /// affine map plainly and applies it to points and normals.
@@ -1068,7 +1068,7 @@ impl Placement {
     /// normal normal to a surface an uneven scale has stretched.
     ///
     /// Built from the cofactors, which *is* the inverse transpose up to the
-    /// determinant — and a normal is renormalized anyway, so the factor does
+    /// determinant, and a normal is renormalized anyway, so the factor does
     /// not matter and the singular case does not divide.
     fn normal(self, n: Vector) -> Vector {
         let [a, b, c] = self.columns;
@@ -1104,7 +1104,7 @@ fn node_transform(node: &crate::json::Json) -> ogeom_core::OgeomResult<Placement
             translation: Vector::new(values[12], values[13], values[14]),
         });
     }
-    // Scale first, then rotate, then translate — the order the standard sets.
+    // Scale first, then rotate, then translate: the order the standard sets.
     let mut placement = Placement::IDENTITY;
     if let Some(scale) = node.get("scale") {
         let [x, y, z] = triple(scale, "scale")?;
@@ -1168,8 +1168,8 @@ fn quaternion_placement(x: f64, y: f64, z: f64, w: f64) -> Placement {
 
 /// One primitive as a triangulation, placed by its node.
 ///
-/// `None` where the primitive draws nothing — no positions, or no triangles
-/// once the indices are read — which is a thing a document may legitimately
+/// `None` where the primitive draws nothing (no positions, or no triangles
+/// once the indices are read), which is a thing a document may legitimately
 /// contain and not a thing to hand on as a mesh.
 fn read_primitive(
     primitive: &crate::json::Json,
@@ -1245,7 +1245,7 @@ fn read_primitive(
 
     let indices: Vec<u32> = match primitive.index_at("indices") {
         // A primitive with no indices draws its vertices in order, three at a
-        // time — which the standard says and a reader has to honour.
+        // time, which the standard says and a reader has to honour.
         None => (0..u32::try_from(positions.len()).unwrap_or(u32::MAX)).collect(),
         Some(index) => {
             let raw = read_accessor(index, accessors, views, buffers)?;
@@ -1354,7 +1354,7 @@ struct AccessorValues {
 /// Read an accessor: its buffer view, its component type, its stride, and the
 /// sparse block that overrides part of it.
 ///
-/// An accessor with no buffer view is all zeros — which the standard says and
+/// An accessor with no buffer view is all zeros, which the standard says and
 /// which is exactly what a sparse accessor over nothing means.
 fn read_accessor(
     index: usize,
@@ -1400,7 +1400,7 @@ fn read_accessor(
     }
 
     // The sparse block: a run of indices, and the elements to put at them.
-    // It comes *after* the dense read, because that is what "sparse" means —
+    // It comes *after* the dense read, because that is what "sparse" means:
     // a document may give a base and then override part of it.
     if let Some(sparse) = accessor.get("sparse") {
         let sparse_count = sparse.index_at("count").unwrap_or(0);

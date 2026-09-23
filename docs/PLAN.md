@@ -1,689 +1,782 @@
 # Plan
 
-What is left to build, why each piece is not built yet, and how each one gets
-done. This replaces the scope map, which had become a record of finished work
-with the unfinished part scattered through it.
+This file lists what is left to build, why each piece is not built yet, and how
+each one gets done. It replaces the old scope map, which had become a record of
+finished work with the unfinished parts scattered through it.
 
-What is built: topology and the geometry vocabulary, the intersector, the
+**Already built:** topology and the geometry vocabulary, the intersector, the
 boolean, healing, blending, offsets and sweeps, tessellation, drawings, the
-document layer, and STEP, STL, DXF, glTF, OBJ, PLY, VRML and 3MF exchange.
+document layer, and exchange for STEP, STL, DXF, glTF, OBJ, PLY, VRML and 3MF.
 
-What follows is the remainder, and it is now *derived rather than
-remembered*: `docs/PARITY.md` audits every public header of the reference's
-modelling modules against 97 named capabilities, the gate in
-`tools/check.sh` holds the audit to its evidence, and every `absent` and
-`partial` row there anchors back into a section here. This document keeps
-the *how* — what each gap needs and why it is not built yet; the ledger
-keeps the *what*. An item missing from both is a gate failure, not an
-oversight.
+**How the remainder is tracked.** The remaining work is *derived*, not
+remembered:
+
+- `docs/PARITY.md` audits every public header of the reference kernel's
+  modelling modules against 98 named capabilities.
+- The gate in `tools/check.sh` holds the audit to its evidence.
+- Every `absent` and `partial` row in the ledger points back to a section here.
+
+The ledger records *what* is missing. This file records *how*: what each gap
+needs and why it is not built yet. An item missing from both is a gate failure,
+not an oversight.
 
 ## How this project works
 
-These are the rules the work is held to. They are not aspirations; every one
-of them has rejected a patch.
+These rules are enforced. Every one of them has caused a patch to be rejected.
 
-- **Measured, not asserted.** A claim about geometry is made by a test that
+- **Measured, not asserted.** A claim about geometry is backed by a test that
   measures it against a closed form, a published value, or an independent
   computation. "It looks right" is not a result.
-- **An approximation that says so is allowed; one that does not is not.**
-  Sampling, fitting and stated tolerances are fine, *stated*. A number that
-  hides its own error is not.
-- **Refusals are by name, and pinned.** Where the kernel cannot do
-  something, it says which thing and why, in the error text, and a test
-  holds it to that. A silent wrong answer is the only unacceptable outcome.
-- **No stubs.** Either it is implemented, or it is in this document.
+- **An approximation must say so.** Sampling, fitting and tolerances are fine
+  when they are *stated*. A number that hides its own error is not.
+- **Refusals are by name, and pinned.** When the kernel cannot do something,
+  the error text says which thing and why, and a test holds it to that. A silent
+  wrong answer is the only unacceptable outcome.
+- **No stubs.** Either a thing is implemented, or it is in this document.
 - **Scope is parity with the reference kernel's modelling modules, and nothing
-  else.** `docs/SCOPE.md` is normative and says how a case is decided. Parity is
-  a claim about capability rather than structure; usage data sequences the work
-  and never sets its bounds.
-- **Independence.** See `CONTRIBUTING.md`. Nothing here links against,
-  bundles or imports another kernel, and the design is arrived at here rather
-  than mirrored from one. The field's vocabulary is used throughout, because
-  that is how the field talks about itself.
+  else.** `docs/SCOPE.md` is normative and says how to decide a case. Parity is
+  about capability, not structure. Usage data sets the order of work, never its
+  bounds.
+- **Independence.** See `CONTRIBUTING.md`. Nothing here links against, bundles
+  or imports another kernel, and the design is worked out here, not mirrored.
+  The field's vocabulary is used throughout, because that is how the field
+  talks about itself.
 
 ## The remaining work
 
-### A. The boolean's interference table — **A1–A5 closed**
+### A. The boolean's interference table (A1 to A5 closed)
 
-Five otherwise unrelated gaps, held to be one family. Each is pinned by a
-measured test in `crates/ogeom/tests/boolean_interference.rs`, written before
-the change and asserting volumes against closed forms, not merely that no
-error came back. All five pass.
+A1 to A5 were five unrelated-looking gaps, treated as one family. Each is
+pinned by a measured test in `crates/ogeom/tests/boolean_interference.rs`. The
+tests were written before the fix and check volumes against closed forms, not
+just that no error came back. All five pass.
 
 **The gaps, and what each turned out to be.**
 
-*A1, a tool flush with the part* — refill a bore with the cylinder that cut
-it, ends flush with the faces it broke. Two things: an overlap between two
-*curves* was being read as an overlap between the two *edges*, so a hole's
-arc and the disc filling it paved each other at the turn's ends rather than
-the arc's and the two sides sewed against different subdivisions; and the
-rule for which copy of a coincident pair to keep was stated by argument
-identity rather than by region, so the tool's cap — filling a hole the part
-has no face for at all — was dropped and the result had a hole in it. The
-substitution is now by containment: a piece is dropped only where a piece of
-the other argument genuinely stands where it does.
+*A1: a tool flush with the part.* Refill a bore with the cylinder that cut it,
+with ends flush with the faces it broke. Two causes:
 
-*A2, a section through a chart pole* — a plane cutting a ball on its own
-axis. Two things again. The section's ends land exactly on the poles, and an
-*open* section's own end is its domain end, which the rebuild was folding
-round to the domain start — the far pole, eight radii away. And the section
-itself was being marched, because a meridian's chart image has no closed
-form: its longitude jumps half a turn at each pole. Each *half* does have
-one, and it is a straight line — writing the sphere's axis as
-`Z = cos α·X + sin α·Y` in the circle's own frame, the latitude is
-`asin(cos(t − α))`, which on `t − α ∈ [0, π]` is exactly `π/2 − (t − α)`,
-affine in the circle's own parameter. So the section is cut at the poles the
-face's own degenerate edges name, and each half comes back exact rather than
-fitted. The plane's half ball is now measured against `2πr³/3`, not against
-a marched approximation of it.
+- An overlap between two *curves* was read as an overlap between the two
+  *edges*. A hole's arc and the disc filling it matched each other at the
+  circle's ends instead of at the arc's ends, so the two sides were sewn
+  against different subdivisions.
+- The rule for which copy of a coincident pair to keep was based on which
+  argument it came from, not on region. So the tool's cap, which fills a hole
+  the part has no face for, was dropped, and the result had a hole in it.
 
-*A3, a ball on a box's corner vertex* — three placements: tangent at the
-vertex from outside, centred on it (where the closed form is an octant), and
-with the vertex exactly on the sphere so that all three of the box's faces
-cut the ball through one point. The last is a triple point, and what it
-needed was the seam: a crossing found on a periodic curve comes back in
-`[0, 2π)` while the seam edge covers `[-π/2, π/2]`, so every crossing on it
-was outside its range, discarded, and the seam never split where the chain
-of section arcs actually met it.
+Fix: substitution is now by containment. A piece is dropped only where a piece
+of the other argument actually occupies the same place.
 
-*A4, a section through tangential contact* — a plane through a bore's axis
-meets the wall along its rulings, and one of those rulings *is* the wall's
-own seam. The exclusion for "this section is already boundary" was global,
-so the ruling vanished from the plane too — where it is not boundary at all
-but the curve separating the two halves the section leaves. It is now
-recorded per face, and a section is dropped only from the face that already
-carries it, either as a boundary edge or as a contact strand. This buys the
-drawing feature D2 as well.
+*A2: a section through a chart pole.* A plane cuts a ball through its own axis.
+Two causes:
 
-*A5, a shell around a three-cylinder tip* — the corner block less the ball,
-which is the tool the three-blend corner needs. The block's three far planes
-are *tangent* to the ball, at exactly the three vertices adjacent to the
-corner; the near three cut it in a meridian, a meridian along the seam, and
-the equator. What it needed was the same lesson as A1 one level up: an
-overlap between a section and a boundary edge must be clipped to the range
-the *edge* covers. A sphere's seam and the far half of the same great circle
-lie on one curve, and reading the whole curve as boundary made the meridian
-opposite the seam disappear — which is the octant's own edge.
+- The section's ends land exactly on the poles. An *open* section's end is its
+  domain end, but the rebuild was wrapping it round to the domain start: the
+  far pole, eight radii away.
+- The section was being marched, because a meridian's chart image has no
+  closed form (its longitude jumps half a turn at each pole). Each *half* does
+  have one, and it is a straight line. Write the sphere's axis as
+  `Z = cos α·X + sin α·Y` in the circle's own frame. The latitude is then
+  `asin(cos(t − α))`, which for `t − α ∈ [0, π]` is exactly `π/2 − (t − α)`:
+  affine in the circle's own parameter.
 
-**What this says about the shape.** The plan proposed an `Interference`
-table built before any splitting and a build phase with no classifier in it.
-That structure was *not* built, and it is worth being exact about why. Four
-of the table's five stated properties turned out to be the load-bearing
-ones, and each is now enforced where the question is actually asked:
-coincidence identified rather than rediscovered (the overlap correspondence
-between two descriptions of one circle is now stated, and clipped to the
-ranges the edges cover); an interference range that excludes what its edge
-does not reach; degeneracies consumed before the stage that cannot handle
-them, rather than after; and substitution by region rather than by name. The
-fifth — a per-face state cache that lets the build phase read a
-classification instead of probing for it — is not built, and the ray
-classifier is still there. It was not what any of A1–A5 needed. It remains
-the right thing to do for *speed*, and the case that would force it for
-correctness has not been produced.
+Fix: the section is cut at the poles named by the face's own degenerate edges,
+and each half comes back exact, not fitted. The half ball is now measured
+against `2πr³/3`, not against a marched approximation of it.
 
-**A caution worth keeping.** Mature implementations of this design still
-state that a face's classification can depend on which point of the face is
-chosen, and still keep an open-ended list of configurations that defeat
-them. Nothing here changes that. What closed is five named configurations,
-each with a test that will say so if it reopens.
+*A3: a ball on a box's corner vertex.* Three placements:
 
-> **A7 — four faults behind one family of refusals.** **Closed.** A
-> downstream front end brought four failures that all read as boolean gaps
-> and were not all boolean gaps. Each is now pinned:
-> `crates/ogeom/tests/mirrored.rs`,
+- tangent at the vertex from outside;
+- centred on the vertex (the closed form is an octant);
+- with the vertex exactly on the sphere, so that all three of the box's faces
+  cut the ball through one point.
+
+The last is a triple point, and the problem was the seam. A crossing found on a
+periodic curve comes back in `[0, 2π)`, but the seam edge covers
+`[-π/2, π/2]`. Every crossing on the seam was therefore out of range and
+discarded, and the seam was never split where the chain of section arcs met it.
+
+*A4: a section through tangential contact.* A plane through a bore's axis meets
+the wall along its rulings, and one of those rulings *is* the wall's own seam.
+The rule "this section is already boundary" was applied globally, so the
+ruling also vanished from the plane. On the plane it is not boundary at all: it
+is the curve separating the two halves the section leaves.
+
+Fix: the rule is now recorded per face. A section is dropped only from the face
+that already carries it, as a boundary edge or as a contact strand. This also
+enables drawing feature D2.
+
+*A5: a shell around a three-cylinder tip.* The corner block minus the ball,
+which is the tool the three-blend corner needs.
+
+- The block's three far planes are *tangent* to the ball, exactly at the three
+  vertices next to the corner.
+- The three near planes cut it in a meridian, a meridian along the seam, and
+  the equator.
+
+The fix is the A1 lesson one level up: an overlap between a section and a
+boundary edge must be clipped to the range the *edge* covers. A sphere's seam
+and the far half of the same great circle lie on one curve. Treating the whole
+curve as boundary made the meridian opposite the seam disappear, and that
+meridian is the octant's own edge.
+
+**What this says about the design.** The plan proposed an `Interference` table
+built before any splitting, and a build phase with no classifier. That
+structure was *not* built. The reason:
+
+- Four of the table's five stated properties turned out to be the essential
+  ones, and each is now enforced where the question is actually asked:
+  - coincidence is identified, not rediscovered (the overlap correspondence
+    between two descriptions of one circle is now stated, and clipped to the
+    ranges the edges cover);
+  - an interference range excludes what its edge does not reach;
+  - degeneracies are handled before the stage that cannot handle them, not
+    after;
+  - substitution is by region, not by name.
+- The fifth, a per-face state cache that lets the build phase read a
+  classification instead of probing for it, is not built. The ray classifier is
+  still there. None of A1 to A5 needed it. It is still the right thing to do
+  for *speed*, but no case has yet been found that needs it for correctness.
+
+**A caution.** Mature implementations of this design still say that a face's
+classification can depend on which point of the face is chosen, and still keep
+an open-ended list of configurations that defeat them. Nothing here changes
+that. What closed is five named configurations, each with a test that will
+catch it if it reopens.
+
+> **A7: four faults behind one family of refusals.** **Closed.** A downstream
+> front end reported four failures. All looked like boolean gaps; not all were.
+> Each is now pinned in `crates/ogeom/tests/mirrored.rs`,
 > `crates/ogeom/tests/boolean_contact.rs` and `crates/ogeom/tests/groove.rs`.
 >
-> The two that were never the boolean's. A *copy* applied every stored
-> placement and orientation twice — it recursed on occurrences that already
-> carried the parent's, stored those, and composed the parent's on again. A
-> doubled placement only misplaces; a doubled orientation takes a wire apart,
-> since reversing one reverses the walk as well as each edge and only the
-> second half of that survives a re-composition. A box cannot show it, having
-> nothing stored reversed or displaced; a prism can, its near cap being the
-> profile reversed and its far cap that same node moved. And
-> `general_transformed_shape` converted every surface to a B-spline for any
-> general transform, though a similarity is a placement and the kernel's own
-> types say which is which. The cost was not the conversion but the silence
-> after it: a restated plane is still that plane and no longer *says* so,
-> `surface_surface` has no closed form for a plane against a patch, and the
-> coincidence went unrecognized — so the marcher, which documents that it is
-> deliberately not a coincidence detector, was handed a coincident pair, and
-> a face lying on the other solid's boundary reached the classifier with no
-> partner to compare sides against. Both surfaced as boolean refusals two
-> stages downstream of themselves.
+> **Two that were not the boolean's fault.**
 >
-> The two that were. A revolved wall *parallel* to the turn's axis is a
-> cylinder, and `revolution_over_edge` named only the plane its perpendicular
-> case makes. A revolution is a surface nothing has a closed form for, so a
-> ring could never melt against the cylinder it is and every plane meeting it
-> was marched into a fitted curve where an exact ruling stood — which is what
-> left a groove cut through a block unable to close. It is named now, on a
-> frame whose chart is the revolution's own, so only `v` moves and it moves
-> affinely; a profile running against the axis puts the chart's normal
-> opposite the revolution's, and the face's flag carries that, which a
-> rectangular profile exercises in a single ring. The oblique line and the
-> meridian circle are named the same way — a cone measured from where the
-> profile's own low end stands, so its reference radius is one the profile
-> states, with its window stopped at the apex because past it the radius
-> comes back negative and that is the *other* nappe; and a torus whose `v` is
-> the angle round the tube, which the circle's own parameter gives up to a
-> turn and a sign. A revolved cone and a revolved torus now stand on the same
-> surfaces the primitives build them from, and say so.
+> - *A copy applied every stored placement and orientation twice.* It recursed
+>   on occurrences that already carried the parent's placement, stored those,
+>   and then composed the parent's on again. A doubled placement only misplaces
+>   a shape. A doubled orientation breaks a wire apart: reversing a wire
+>   reverses the walk as well as each edge, and only the second half of that
+>   survives re-composition. A box cannot show the bug, because nothing in it is
+>   stored reversed or displaced. A prism can: its near cap is the profile
+>   reversed, and its far cap is the same node moved.
+> - *`general_transformed_shape` converted every surface to a B-spline for any
+>   general transform*, even though a similarity is a placement and the
+>   kernel's own types say which is which. The conversion itself was not the
+>   cost. The cost was that a restated plane is still that plane but no longer
+>   *says* so. `surface_surface` has no closed form for a plane against a patch,
+>   so the coincidence went unrecognized. The marcher (which is documented as
+>   deliberately not a coincidence detector) was handed a coincident pair, and
+>   a face lying on the other solid's boundary reached the classifier with no
+>   partner to compare sides against.
 >
-> Last, the interior probes a piece offers. They varied the scanline's
-> *height* and always took each interval's midpoint, so a piece symmetric
-> about a chart-vertical line — a cylinder band, a revolved wall, a chart
-> rectangle — offered the same column at every height, and a solid touching it
-> down that column met every probe at once. The probes now vary along the
-> scanline too, and are ranked so that a different column comes before a
-> further height: the roomiest candidate in each distinct column first, then
-> the rest by room. It is the same rule the quarter *heights* already stated,
-> applied to the width.
+> Both showed up as boolean refusals two stages after the real fault.
 >
-> One thing this pass corrected rather than closed: which coincident piece
-> stands in for which is decided by asking whether one piece's probe lies
-> inside another piece's outline, and that was asked with the test for
-> *strands*, which close only jointly. A piece's outline is a single ring that
-> does not repeat its first point, so the segment closing it went uncounted
-> and a point the ring plainly encloses came back outside whenever the ray
-> crossed exactly there. `common` then kept both descriptions of one disk
-> while `cut`, which never asks, closed — which is the shape the report had.
+> **Two that were the boolean's.**
 >
-> **Coincidence where there is no closed form.** A sheared copy sharing a
-> plane with its original used to reach the same refusal, and it is not that
-> case at all: the surfaces are B-splines by necessity rather than by
-> oversight, nothing answers `Same` for two patches, and the marcher — which
-> documents that it is not a coincidence detector, and has no crossing to
-> trace over a coincident pair — was handed it anyway. It came back with a
-> section made of noise, and the boolean refused for edge or vertex contact
-> some seconds later.
+> - *Revolved surfaces were not recognized as the analytic surfaces they are.*
+>   A revolved wall *parallel* to the axis is a cylinder, but
+>   `revolution_over_edge` only named the plane produced by the perpendicular
+>   case. Nothing has a closed form against a general surface of revolution, so
+>   a ring could never merge with the cylinder it is, and every plane meeting it
+>   was marched into a fitted curve where an exact ruling existed. That is why a
+>   groove cut through a block could not close. Now:
+>   - The cylinder is named, on a frame whose chart is the revolution's own, so
+>     only `v` changes and it changes affinely. A profile running against the
+>     axis puts the chart's normal opposite the revolution's; the face's flag
+>     records that. A rectangular profile tests this in a single ring.
+>   - The oblique line gives a cone. It is measured from the profile's own low
+>     end, so its reference radius is one the profile states. Its window stops
+>     at the apex, because past it the radius goes negative and that is the
+>     *other* nappe.
+>   - The meridian circle gives a torus whose `v` is the angle round the tube,
+>     which the circle's own parameter gives up to a full turn and a sign.
+>   - A revolved cone and a revolved torus now use the same surfaces the
+>     primitives build them from, and say so.
+> - *Interior probes.* They varied the scanline's *height* but always took each
+>   interval's midpoint. So a piece symmetric about a vertical line in its chart
+>   (a cylinder band, a revolved wall, a chart rectangle) offered the same column
+>   at every height, and a solid touching it along that column hit every probe
+>   at once. The probes now also vary along the scanline, ranked so a different
+>   column comes before another height: the roomiest candidate in each distinct
+>   column first, then the rest by room. This is the rule the quarter *heights*
+>   already used, applied to the width.
 >
-> Coincidence is now measured, but only for the pairs the closed forms have
-> already declined, and only over the region the two actually share: sampled
-> on the smaller window, since a plane's own runs for a billion units and a
-> grid over it samples nothing, and a sample whose foot lands on the rim of
-> the other is skipped rather than counted against, because a distance
-> measured to a rim is about the window and not about the surface. The
-> failure is one-sided — a pair that crosses puts interior samples well off
-> the other, so it cannot pass, and a pair this cannot resolve marches as it
-> did. What comes back for the sheared copy is the refusal the filler already
-> had written for it, in a few hundred microseconds rather than forty seconds.
+> **One correction (not a closure).** Which coincident piece stands in for which
+> is decided by asking whether one piece's probe lies inside another piece's
+> outline. That was asked with the test meant for *strands*, which close only
+> jointly. A piece's outline is a single ring that does not repeat its first
+> point, so the closing segment was not counted, and a point clearly inside the
+> ring came back outside whenever the ray crossed exactly there. `common` then
+> kept both descriptions of one disk, while `cut`, which never asks, closed.
+> That matches the reported shape.
 >
-> Resolving that case, rather than refusing it, wants a same-domain contact
-> whose edges project into a *fitted* chart, which is the pcurve-fitting
-> question and not this one.
+> **Coincidence where there is no closed form.** A sheared copy sharing a plane
+> with its original used to reach the same refusal, but it is a different case.
+> The surfaces are B-splines by necessity, not by oversight, and nothing answers
+> `Same` for two patches. The marcher (documented as not a coincidence detector,
+> and with no crossing to trace over a coincident pair) was handed the pair
+> anyway. It returned a section made of noise, and the boolean refused for edge
+> or vertex contact some seconds later.
+>
+> Coincidence is now measured, with limits:
+>
+> - only for pairs the closed forms have already declined;
+> - only over the region the two surfaces actually share, sampled on the
+>   smaller window (a plane's own window runs for a billion units, so a grid
+>   over it samples nothing);
+> - a sample whose foot lands on the rim of the other surface is skipped, not
+>   counted against, because a distance measured to a rim is about the window,
+>   not the surface.
+>
+> The test can only fail one way. A crossing pair puts interior samples well
+> off the other surface, so it cannot pass, and a pair the test cannot resolve
+> is marched as before. The sheared copy now gets the refusal the filler already
+> had written for it, in a few hundred microseconds instead of forty seconds.
+>
+> Resolving that case, instead of refusing it, needs a same-domain contact
+> whose edges project into a *fitted* chart. That is the pcurve-fitting
+> question, not this one.
 >
 > **What remains, and what the refusal means.** A piece that lies on the other
-> solid's boundary with no coincident partner face whose trim accepts its probe
-> is still refused by name, and what reaches it now is the configuration the
-> text describes: genuine edge or vertex contact, confined to a line or a
-> point, where there is no shared *region* for a partner to be found in and the
-> two normals it would compare do not exist.
+> solid's boundary, with no coincident partner face whose trim accepts its
+> probe, is still refused by name. What reaches that refusal now is the
+> configuration its text describes: genuine edge or vertex contact, confined to
+> a line or a point. There is no shared *region* in which to find a partner, and
+> the two normals it would compare do not exist.
 >
-> One thing sits in the wrong crate and is worth saying so. The measurement
-> above belongs to the intersector, which owns `Same` — but the projection it
-> needs lives in `ogeom-algo`, which depends on the intersector rather than
-> the other way about, so it is done in the boolean, next to the apartness
-> test it mirrors. Moving `project_on_surface` down into `ogeom-geom` would
-> let the intersector answer for itself, and every caller of
-> `intersect_surfaces` would get the same benefit instead of only this one.
+> **Code in the wrong crate.** The measurement above belongs in the
+> intersector, which owns `Same`. But the projection it needs lives in
+> `ogeom-algo`, which depends on the intersector, not the other way round. So it
+> is done in the boolean, next to the apartness test it mirrors. Moving
+> `project_on_surface` down into `ogeom-geom` would let the intersector answer
+> for itself, and every caller of `intersect_surfaces` would benefit, not only
+> this one.
 
 
 ### B. Blending
 
-**B1 — the marching blend.** **Done.** `march_blend` solves the section's two
-endpoints directly, as the entry called for: unknowns `(u₁, v₁)` and
-`(u₂, v₂)`, three equations saying the ball's centre is the same point from
-either side, and a fourth tying the section to a guide. The tangency curves
-come back **in the supports' own parameters**, which is the whole point — a
-pcurve fitted through them is a pcurve of the curve rather than of a
-projection of it, and the test holds that to `1e-12` rather than to a
-projection tolerance.
+**B1: the marching blend.** **Done.** `march_blend` solves directly for the
+section's two endpoints, as the entry specified:
 
-Two things the entry did not say, both from building it.
+- unknowns `(u₁, v₁)` and `(u₂, v₂)`;
+- three equations saying the ball's centre is the same point from either side;
+- a fourth tying the section to a guide.
 
-*The guide's parameter is a fifth unknown, not a loop counter.* Four equations
-in five unknowns is a curve, which is exactly what the shared walker follows —
-so the step control, the stall reporting and the closure test are the
-intersector's own, and the step is set by the sag of the tangency curve being
-walked rather than by a guess at how finely to sample the guide. A guide that
-closes on itself has its parameter wrapped and the *geometry* decides when the
-march is back where it started.
+The tangency curves come back **in the supports' own parameters**, which is
+the point. A pcurve fitted through them is a pcurve of the actual curve, not of
+a projection of it, and the test holds that to `1e-12`, not to a projection
+tolerance.
 
-*The seat is tried, not assumed.* Which side of each support the ball rolls on
-is one sign apiece, and normals cannot tell a step from a slot; all four
-combinations are solved and the one seating a ball that touches two distinct
-points wins. A radius the corner cannot hold seats none of them, and that is
-what the refusal says.
+Three things the entry did not say, learned while building it:
 
-*The states,* which the formulation gives for free and which are now the stop
-reasons a caller acts on: closed, left the first support, the second, both at
-once — a corner rather than a run-out — ran past the guide, the section
-collapsed because the radius is too large for the local geometry, stalled, and
-ran out of steps. What remains is *unhooked*: carrying a blend that leaves one
-support's boundary onto the face next door, which is a topological continuation
-rather than a state of the solver, and is B2's business.
+- *The guide's parameter is a fifth unknown, not a loop counter.* Four
+  equations in five unknowns define a curve, which is exactly what the shared
+  walker follows. So step control, stall reporting and the closure test are
+  the intersector's own. The step size is set by the sag of the tangency curve
+  being walked, not by a guess at how finely to sample the guide. For a closed
+  guide, the parameter wraps and the *geometry* decides when the march is back
+  where it started.
+- *The seat is tried, not assumed.* Which side of each support the ball rolls
+  on is one sign per support, and normals cannot tell a step from a slot. All
+  four combinations are solved, and the one that seats a ball touching two
+  distinct points wins. If the corner cannot hold the radius, none of them
+  seats, and the refusal says so.
+- *The stop states* come free with the formulation and are now the stop reasons
+  a caller acts on: closed; left the first support; left the second; left both
+  at once (a corner, not a run-out); ran past the guide; section collapsed
+  (radius too large for the local geometry); stalled; ran out of steps. Still
+  missing is *unhooked*: carrying a blend that leaves one support's boundary
+  onto the neighbouring face. That is a topological continuation, not a solver
+  state, and it belongs to B2.
 
-Measured on a cylinder square on a plane against the torus's own arithmetic,
-and on one meeting a plane at twenty degrees — which has no closed form, which
-is why it needs marching — against the ball's own definition at every station.
+Measured on a cylinder square to a plane, against the torus's own arithmetic;
+and on a cylinder meeting a plane at twenty degrees (no closed form, which is
+why it needs marching), against the ball's own definition at every station.
 
-**B2 — corners where blends meet.** **Done for the three-blend vertex**, the
-family's centre of gravity: three sequential fillets at a box corner —
-which chain cleanly, an assumed impossibility that wasn't — take the A5
-tool, and `b2_three_fillets_and_the_corner_tool_round_the_vertex` measures
-the rounded vertex against a closed form derived by inclusion–exclusion:
-within the corner cube every fillet prism's removal lies inside the
-spike's, so V = 10³ − 3(1−π/4)r²(10−r) − r³ + πr³/6. What remains of the
-family is the two-blend meeting and the N>3 setback vertex, neither of
-which the corner construction covers and neither of which is blocked by
-anything below it any more. Tracked as issue #18; the defeaturing corner
-family that shares its machinery is #19.
+**B2: corners where blends meet.** **Done for the three-blend vertex**, the
+core of the family.
 
-*The original entry, kept for its analysis:* The family is right: one blend running out at a
-face's boundary, two meeting — resolved by intersecting them or by extending
-both to a shared end — three, which is the setback vertex blend, and more,
-which no single construction covers.
+- Three sequential fillets at a box corner chain cleanly (this had been assumed
+  impossible, and is not).
+- They then take the A5 tool.
+- `b2_three_fillets_and_the_corner_tool_round_the_vertex` measures the rounded
+  vertex against a closed form derived by inclusion and exclusion. Within the
+  corner cube, each fillet prism's removal lies inside the spike's, so
+  V = 10³ − 3(1−π/4)r²(10−r) − r³ + πr³/6.
 
-The three-blend equal-radius tool is right too, and A5 measures it: the corner
+Still to do in this family: the two-blend meeting and the N>3 setback vertex.
+The corner construction covers neither, and nothing below them blocks either
+any more. Tracked as issue #18. The defeaturing corner family, which shares
+this machinery, is #19.
+
+*The original entry, kept for its analysis.*
+
+The family is: one blend running out at a face's boundary; two blends meeting
+(resolved by intersecting them, or by extending both to a shared end); three,
+which is the setback vertex blend; and more, which no single construction
+covers.
+
+The three-blend equal-radius tool is also right, and A5 measures it. The corner
 block running from the ball's centre out past the corner, *minus the ball*, is
-exactly the leftover spike, because anything in that block further from the
-centre than the ball lies outside one of the three fillet cylinders and was cut
-away when that edge was rounded.
+exactly the leftover spike. Anything in that block further from the centre than
+the ball lies outside one of the three fillet cylinders, and was cut away when
+that edge was rounded.
 
-What blocks it is **not** A5, which is closed. It is that **a corner blend is
-tangent to everything it rounds, by construction.** The ball sits at the
-radius from each of the three faces, so it touches each of them — and it is
-inscribed in each of the three fillet cylinders, so it touches those along
-whole circles. Applying the tool therefore asks the boolean for tangential
-contact in its hardest position: not a tangency in the interior of a face,
-which the boolean carries today and a ball seated in a bore pins, but one at a
-*vertex* of the tool's own spherical patch, where the octant's three corners
-are exactly the three points at which it touches the three planes. That
-surfaces as a dangling boundary strand rather than as a refusal by name, which
-is worse than either answering or refusing.
+What blocked it was **not** A5, which is closed. It is that **a corner blend is
+tangent to everything it rounds, by construction.**
 
-So the remaining work is one named thing, and it belongs to the boolean rather
-than to blending:
+- The ball sits at the radius from each of the three faces, so it touches each
+  of them.
+- It is inscribed in each of the three fillet cylinders, so it touches them
+  along whole circles.
 
-> **A6 — tangency at a face's own corner.** **Closed.** A face touching
-> another at a point that is a *vertex* of its own boundary — what every
-> corner blend asks for — now cuts, and
-> `a6_the_corner_tool_cuts_through_its_own_tangencies` measures the rounded
-> corner against its closed form. Three defects stacked under the one
-> symptom, and each fix is a rule rather than a patch. A seam edge bounds a
-> chart twice *only when the face wraps*: a sphere octant whose boundary is
-> the seam meridian uses one column, and the far copy — fed in
-> unconditionally before — dangled by construction; the decision is now
-> made once at gather, by chart connectivity, and the arrangement, the trim
-> tests and the rebuild all inherit it. A tangency was missed for want of a
-> pcurve: the tangent circle between the corner ball and a fillet cylinder
-> is a meridian through the sphere's poles, whose chart image has no closed
-> form — so `touching_along` now inverts sample points through the
-> surface's own closed forms when a pcurve is missing, sampling beside the
-> degeneracies rather than on them. And the degeneracy splitter stopped
-> only at the *face's* pole edges: a meridian section runs through both of
-> a sphere's poles, and a face owning only the north one still cannot
-> chart an arc that wraps through the south — the split points are now the
-> *surfaces'* chart degeneracies, wherever the trim reaches.
+Applying the tool therefore asks the boolean for tangential contact in its
+hardest position. Not a tangency inside a face (the boolean handles that today,
+and a ball seated in a bore pins it), but one at a *vertex* of the tool's own
+spherical patch: the octant's three corners are exactly the three points where
+it touches the three planes. This showed up as a dangling boundary strand, not
+as a refusal by name, which is worse than either answering or refusing.
 
-The closure that finished it, after A6 and the two stop-welds: sewing and
-validation now honour stated tolerances end to end. Edge fingerprints
-carry the widest tolerance their edge and vertices state and compare
-within it; vertex merging welds within stated reach and the survivor
-widens to answer for what it absorbed; and the validity check accepts a
-curve end within its *vertex's* tolerance, because that is the same
-acceptance construction applies — a checker stricter than the builder
-condemns what the builder rightly admitted and honestly recorded. The
-principle underneath all three is the data model's: tolerances only
-widen, are recorded where the disagreement was measured, and are then
-*believed*.
+So the remaining work was one named thing, and it belonged to the boolean, not
+to blending:
 
-Two things were built on the way and stand on their own. `march_blend` (B1)
-is above. And `exact_pcurve` now sees through a **trim**: a trim says *where*
-on a curve, not what it is, and since it shares its basis's parameter, its
-pcurve is the basis's own pcurve trimmed the same way — on every surface, since
-the answer does not depend on the surface. A fillet's end cap is a plane whose
-bounding edges are trimmed curves, and the boolean had been refusing that
-coincidence for want of putting a trimmed curve into a chart it plainly lies
-in.
+> **A6: tangency at a face's own corner.** **Closed.** A face touching another
+> at a point that is a *vertex* of its own boundary (which every corner blend
+> needs) now cuts. `a6_the_corner_tool_cuts_through_its_own_tangencies`
+> measures the rounded corner against its closed form. Three defects sat under
+> the one symptom, and each fix is a rule, not a patch:
+>
+> - *A seam edge bounds a chart twice only when the face wraps.* A sphere octant
+>   whose boundary is the seam meridian uses one column. The far copy was
+>   previously added unconditionally, and so dangled by construction. The
+>   decision is now made once, at gather time, by chart connectivity, and the
+>   arrangement, the trim tests and the rebuild all inherit it.
+> - *A tangency was missed for lack of a pcurve.* The tangent circle between the
+>   corner ball and a fillet cylinder is a meridian through the sphere's poles,
+>   whose chart image has no closed form. `touching_along` now inverts sample
+>   points through the surface's own closed forms when a pcurve is missing,
+>   sampling beside the degeneracies, not on them.
+> - *The degeneracy splitter stopped only at the face's pole edges.* A meridian
+>   section runs through both of a sphere's poles, and a face that owns only the
+>   north pole still cannot chart an arc that wraps through the south. The split
+>   points are now the *surfaces'* chart degeneracies, wherever the trim
+>   reaches.
+
+The final step, after A6 and the two stop-welds: sewing and validation now
+respect stated tolerances end to end.
+
+- Edge fingerprints carry the widest tolerance their edge and vertices state,
+  and compare within it.
+- Vertex merging welds within the stated reach, and the surviving vertex's
+  tolerance grows to cover what it absorbed.
+- The validity check accepts a curve end within its *vertex's* tolerance,
+  because construction applies the same acceptance. A checker stricter than the
+  builder would condemn what the builder correctly accepted and recorded.
+
+The principle behind all three comes from the data model: tolerances only
+grow, are recorded where the disagreement was measured, and are then *trusted*.
+
+Two things built along the way stand on their own:
+
+- `march_blend` (B1, above).
+- `exact_pcurve` now sees through a **trim**. A trim says *where* on a curve,
+  not what the curve is, and it shares its basis's parameter. So its pcurve is
+  the basis's own pcurve, trimmed the same way, on every surface. A fillet's end
+  cap is a plane whose bounding edges are trimmed curves, and the boolean had
+  been refusing that coincidence because it could not put a trimmed curve into
+  a chart it obviously lies in.
 
 ### C. Sweeping
 
-**C1 — evolved shapes.** **Done.** `make_evolved` sweeps a profile along a
-planar spine given as a wire or as a face: straight spine edges extrude the
-profile as prisms, arcs turn it about their own axes as revolutions, and each
-corner turns it about the corner through exactly the angle the spine turns
-there — the join the 2D offset makes, for the same reason. Every piece is
-exact; nothing is fitted.
+**C1: evolved shapes.** **Done.** `make_evolved` sweeps a profile along a
+planar spine, given as a wire or as a face:
 
-Two things the entry did not say. The assembly is a *union*, not a sew:
-consecutive pieces meet on the same placed profile, which is a coincident
-face, and identifying that is the boolean's own work rather than something to
-re-do here. And the face spine buys a volume by closing the *profile*, not by
-capping the sweep afterwards — an open profile whose two ends reach the spine
-face's plane is closed against it and swept as a section, so what comes back
-is a solid by construction. An open profile along a wire spine has no plane to
-close against, and is refused with the spine that would.
+- straight spine edges extrude the profile as prisms;
+- arcs turn it about their own axes as revolutions;
+- each corner turns it about the corner by exactly the angle the spine turns
+  there (the same join the 2D offset uses, for the same reason).
 
-Measured against closed forms: a square spine is four runs and four
-quarter-annulus wedges, and a bend is Pappus on its own annulus.
+Every piece is exact; nothing is fitted.
+
+Two things the entry did not say:
+
+- *The pieces are joined by a union, not by sewing.* Consecutive pieces meet on
+  the same placed profile, which is a coincident face, and identifying that is
+  the boolean's job; it is not redone here.
+- *A face spine gives a volume by closing the profile, not by capping the sweep
+  afterwards.* An open profile whose two ends reach the spine face's plane is
+  closed against that plane and swept as a section, so the result is a solid by
+  construction. An open profile along a wire spine has no plane to close
+  against, and is refused, naming the spine that would be needed.
+
+Measured against closed forms: a square spine gives four runs and four
+quarter-annulus wedges, and a bend obeys Pappus on its own annulus.
 
 ### D. Drawings
 
-**D1 — marched silhouettes.** **Done.** A surface with no closed-form
-silhouette — a torus, a spline — is *walked* rather than refused: the whole
-content of a silhouette is one equation on the surface's own chart,
+**D1: marched silhouettes.** **Done.** A surface with no closed-form silhouette
+(a torus, a spline) is now *walked* instead of refused. A silhouette is one
+equation on the surface's own chart:
 
 > `n(u, v) · d = 0`
 
-and one equation in two unknowns is a curve, which is what the shared walker
-follows. So it needed no new machinery, exactly as this entry said; the
-condition is thirty lines and everything else is inherited.
+One equation in two unknowns is a curve, which is what the shared walker
+follows. So, as this entry predicted, it needed no new machinery: the condition
+is thirty lines and the rest is inherited.
 
-Two things it did need, both found by measuring rather than by reading.
+It did need two things, both found by measurement:
 
-*The residual must be dimensionless.* Stated with the unnormalized `Sᵤ × Sᵥ`,
-the condition's residual carries the surface's own scale, so on a torus of
-radius eight the correction had to drive it below a *length* tolerance —
-a demand on the angle eight times tighter than anything asked for — and the
-walk answered by halving its step until it crawled. The unit normal, with its
-own exact derivative, fixes it.
+- *The residual must be dimensionless.* Written with the unnormalized
+  `Sᵤ × Sᵥ`, the residual carries the surface's own scale. On a torus of radius
+  eight, the correction had to push it below a *length* tolerance, which asks
+  for an angle eight times tighter than intended, and the walk kept halving its
+  step until it crawled. Using the unit normal, with its own exact derivative,
+  fixes this.
+- *The step control needs a length, and the face cannot supply one.* A full
+  torus face is bounded by a seam and a single vertex, so the bounding box of
+  its vertices is a point. Given that as a scale, the walk went round the ring a
+  ten-thousandth at a time and ran out of steps. The extent now comes from the
+  surface itself, sampled over its own chart.
 
-*The step control wants a length, and the face cannot supply one.* A full
-torus's face is bounded by a seam and a single vertex, so its vertices'
-bounding box is a point; fed that as a scale, the walk stepped round the whole
-ring a ten-thousandth at a time and ran out. The extent now comes from the
-surface itself, sampled over its own chart.
+Measured against the torus's equators seen down its axis (radii
+`major ± minor`, which is plain arithmetic). From an oblique direction, which
+has no closed form, it is measured against the defining property: the surface
+normal is perpendicular to the view at every returned point.
 
-Measured against the torus's own equators seen down its axis — radii
-`major ± minor`, which is arithmetic — and, from an oblique direction that has
-no closed form at all, against the defining property itself: the surface's
-normal is square to the view at every point of what comes back.
+**D2: the on-axis half-section.** **Done.**
 
-**D2 — the on-axis half-section.** **Done.** A4's boolean side cuts a bore on
-its own axis and reports the two rulings; the drawing side is
-`ogeom_hlr::half_section` — the plane's frame states the whole convention
-(`+z` removed over the `+x` half, the frame's `y` axis the split line) — with
-`ogeom_hlr::hatch` clipping the draughtsman's strokes to the section loops by
-the even-odd rule, holes interrupting the hatching exactly as they interrupt
-the material. The bored drum's half-section measures its wall's half-area and
-every stroke lands in material. Was issue #32.
+- The boolean side is A4: it cuts a bore on its own axis and reports the two
+  rulings.
+- The drawing side is `ogeom_hlr::half_section`. The plane's frame states the
+  whole convention: `+z` is removed over the `+x` half, and the frame's `y`
+  axis is the split line.
+- `ogeom_hlr::hatch` clips the hatching strokes to the section loops by the
+  even-odd rule, so holes interrupt the hatching exactly as they interrupt the
+  material.
+
+The bored drum's half-section measures its wall's half-area, and every stroke
+lands in material. This was issue #32.
 
 ### E. Documents
 
-**E2 — datum targets and presentation PMI.** **Done.** `DatumTarget` with its
-four kinds — point, line, rectangle, circle — placed and sized, tied to the
-datum it establishes; and `Callout`, which is the drawing: the plane an
-annotation is drawn in, the polylines that make its frame, leader and text,
-and which semantic annotation it is a picture of.
+**E2: datum targets and presentation PMI.** **Done.**
 
-Both directions in STEP, and the presentation half is read from NIST's own
-annotated part rather than only from what this writer emits — which is what
-found the shape of it: a callout's geometry is a *set* of tessellated curve
-sets, nested and repositioned by a placement of its own, over one-based
-indices into a coordinates list, and the link to the semantic annotation is
-made by instance identity rather than by matching a name two annotations may
-share. Twenty-three callouts come back with their planes and their 800-odd
-drawn points; fourteen link to an annotation, and the ones that do not are
-the file's own — a text note has nothing semantic behind it.
+- `DatumTarget`, with its four kinds (point, line, rectangle, circle), placed
+  and sized, and tied to the datum it establishes.
+- `Callout`, which is the drawing: the plane an annotation is drawn in, the
+  polylines that form its frame, leader and text, and which semantic
+  annotation it depicts.
 
-No style is written, which is a statement and not an omission: a style is
-about rendering, and this kernel keeps no draughting style model to have one
-from.
+Both are read and written in STEP. The presentation half is tested on NIST's
+own annotated part, not only on this writer's output, and that is how its
+structure was found:
 
-**E3 — saved views and standalone notes.** **Done.** `ogeom_doc::View` —
-a name, a camera frame, an optional clipping plane, and indices into the
-document's callouts, so restyling a callout restyles it in every view that
-shows it — and `ogeom_doc::Note`, text with an author attached to a product
-or the document. Both take part in undo like every other attribute, both
-persist in the native document format (callouts now persist there too,
-which the views made necessary), and views round-trip through STEP as the
-named draughting models they are there: camera placement in, callout
-membership by identity. A view without PMI is a camera bookmark and lives
-in the native format; STEP carries views alongside the PMI they present.
+- a callout's geometry is a *set* of tessellated curve sets, nested and
+  repositioned by its own placement, over one-based indices into a coordinates
+  list;
+- the link to the semantic annotation is by instance identity, not by matching
+  a name that two annotations may share.
+
+Twenty-three callouts come back with their planes and their 800 or so drawn
+points. Fourteen link to an annotation. The ones that do not are the file's
+own: a text note has nothing semantic behind it.
+
+No style is written. This is a decision, not an omission: a style is about
+rendering, and this kernel has no draughting style model to take one from.
+
+**E3: saved views and standalone notes.** **Done.**
+
+- `ogeom_doc::View`: a name, a camera frame, an optional clipping plane, and
+  indices into the document's callouts. Restyling a callout therefore restyles
+  it in every view that shows it.
+- `ogeom_doc::Note`: text with an author, attached to a product or to the
+  document.
+
+Both take part in undo like every other attribute, and both persist in the
+native document format. (Callouts now persist there too; views required it.)
+Views round-trip through STEP as the named draughting models they are in that
+format: camera placement is read, and callout membership is matched by
+identity. A view without PMI is a camera bookmark and lives in the native
+format. STEP carries views alongside the PMI they present.
 
 ### F. Exchange
 
-**F1 — the `.brep` interchange text format.** **Done.** Read and written from
-the format's own published specification: placements, the elementary and
-spline curves and surfaces in both dimensions, the trimmed and offset forms
-over them, and the whole topology encoding with its backward subshape
-numbering, orientations and placement references. Cached meshes are parsed
-and skipped; the per-record bookkeeping flags are read and dropped, since
-they describe the writing session rather than the shape.
+**F1: the `.brep` interchange text format.** **Done.** Read and written from
+the format's published specification. Covered:
 
-One thing the reader does not take on faith is whether an edge's
-representations agree on parameterization — that claim is what everything
-downstream relies on, so it is measured rather than believed, and a file can
-come back with it *established* where its writer never made it. A drilled
-block round-trips to a fixed point, byte for byte; a drum and a ball come
-back as a cylinder, a sphere and two degenerate poles; and a file written by
-hand against the specification reads as the square it describes.
+- placements;
+- elementary and spline curves and surfaces, in both dimensions;
+- the trimmed and offset forms over them;
+- the whole topology encoding, with its backward subshape numbering,
+  orientations and placement references.
 
-**F2 — IGES, both directions.** **Built**, from the published record layout,
-and held to eight measured round trips: planes, a periodic cylinder wall with
-its seam, a doubly periodic torus, a seam-only sphere whose poles the format
-cannot spell, a boolean result, a spline-walled prism through the rational
-B-spline entities, inch-unit scaling, and a refusal by name. The reader takes
-both kinds of file — manifold solid B-rep objects bottom-up, and the older
-surface files as trimmed faces sewn into shells, solids where they close —
-re-deriving edge ranges on this kernel's own parameterizations exactly as the
-STEP reader does. Twenty-nine entity types translate; the live figure and the
-refused remainder are the parity ledger's `io.iges` row.
+Cached meshes are parsed and skipped. The per-record bookkeeping flags are read
+and dropped, since they describe the writing session, not the shape.
 
-Coverage grows on demand, not on speculation: when a real file supplies an
+The reader does not trust a file's claim that an edge's representations agree
+on parameterization. Everything downstream relies on that claim, so it is
+measured, and a file can come back with it *established* even where its writer
+never set it.
+
+Results: a drilled block round-trips to a fixed point, byte for byte; a drum
+and a ball come back as a cylinder, a sphere and two degenerate poles; and a
+file written by hand against the specification reads as the square it
+describes.
+
+**F2: IGES, both directions.** **Built** from the published record layout, and
+held to eight measured round trips:
+
+1. planes;
+2. a periodic cylinder wall with its seam;
+3. a doubly periodic torus;
+4. a seam-only sphere whose poles the format cannot express;
+5. a boolean result;
+6. a spline-walled prism, through the rational B-spline entities;
+7. inch-unit scaling;
+8. a refusal by name.
+
+The reader handles both kinds of file: manifold solid B-rep objects, read
+bottom-up; and the older surface files, read as trimmed faces sewn into shells,
+and into solids where they close. It re-derives edge ranges on this kernel's
+own parameterizations, exactly as the STEP reader does. Twenty-nine entity
+types translate. The live figure and the refused remainder are in the parity
+ledger's `io.iges` row.
+
+Coverage grows on demand, not on speculation. When a real file contains an
 entity outside the set, an issue names the entity and the file, and the
-translation is built against that evidence — the policy issue #27 records.
-The table in the module is the single source; `tools/parity.py exchange`
+translation is built against that evidence. Issue #27 records this policy. The
+table in the module is the single source; `tools/parity.py exchange`
 regenerates the figure from it.
 
-Two findings came out of building it that reach past IGES. The exchange
-writers paired both of an edge's vertices with the edge's own placement,
-which quietly welds an instanced vertex — a prism's top corner is its bottom
-corner, moved — to its other placement; both writers now resolve each
-vertex's composed placement. And the fitted-pcurve machinery the STEP reader
-grew is now `ogeom-io`'s shared `pcurves` module, because the second reader
-needed exactly the first one's policy.
+Two findings from building it apply beyond IGES:
 
-**F3 — reading glTF.** **Done.** `read_glb` and `read_gltf`, with the whole
-indirection honoured because a writer chooses it and a reader does not get to
-assume: accessors over buffer views over buffers, byte strides, byte offsets
-at both levels, all six component types, `normalized` integers scaled into
-fractions, and the sparse block applied over the base it sits on. The scene's
-node hierarchy is walked and composed, stated as a matrix or as
-translation–rotation–scale, and normals come through the inverse transpose so
-an uneven scale leaves them normal. A `.gltf` document's data uris are decoded;
-an external file reference is refused, as are a non-triangle primitive mode,
-a Draco payload and a node that is its own descendant, each by name.
+- The exchange writers paired both of an edge's vertices with the edge's own
+  placement. This quietly welds an instanced vertex to its other placement (a
+  prism's top corner is its bottom corner, moved). Both writers now resolve
+  each vertex's composed placement.
+- The fitted-pcurve machinery the STEP reader had grown is now `ogeom-io`'s
+  shared `pcurves` module, because the second reader needed exactly the same
+  policy.
 
-It needed a JSON parser, which is now `ogeom_io::json` — the grammar and
-nothing else, no dependency, written because glTF's structure is JSON and
-`cargo build` still needs a Rust toolchain and nothing more.
+**F3: reading glTF.** **Done.** `read_glb` and `read_gltf` follow the whole
+indirection chain, because the writer chooses it and the reader cannot assume
+anything:
 
-**F5 — a closed spline wall through exchange.** **Done**, and the fix was
-one distinction: the fitted-pcurve unwrap engaged on *periodicity*, and a
-skinned loft's wall is a clamped B-spline that closes on itself without
-being periodic — projections near the joining column land in either copy,
-both right pointwise, and only continuity chooses. Unwrapping now engages
-on *closure*, in the shared module, so both exchange readers learned it at
-once — which `f5_a_closed_spline_wall_survives_both_formats` pins by
-demanding the two formats agree with each other a million times tighter
-than either must agree with the original.
+- accessors over buffer views over buffers;
+- byte strides, and byte offsets at both levels;
+- all six component types;
+- `normalized` integers scaled into fractions;
+- the sparse block applied over its base.
 
-**F4 — SAT, X\_T, JT.** Refused for want of public documentation. These are
-proprietary formats whose specifications are not published; implementing them
-would mean reverse-engineering files rather than reading a standard. If a
-specification becomes available the refusal lifts, and until then the honest
-answer is this row.
+The scene's node hierarchy is walked and composed, whether a node states a
+matrix or translation, rotation and scale. Normals go through the inverse
+transpose, so they stay normal under non-uniform scale. A `.gltf` document's
+data URIs are decoded. The following are refused, each by name: an external
+file reference, a non-triangle primitive mode, a Draco payload, and a node that
+is its own descendant.
+
+It needed a JSON parser, which is now `ogeom_io::json`: the grammar and nothing
+else, with no dependency. It was written because glTF's structure is JSON and
+`cargo build` must still need only a Rust toolchain.
+
+**F5: a closed spline wall through exchange.** **Done.** The fix was one
+distinction. The fitted-pcurve unwrap was triggered by *periodicity*. A skinned
+loft's wall is a clamped B-spline that closes on itself without being periodic.
+Projections near the joining column land in either copy; both are correct
+pointwise, and only continuity decides between them. Unwrapping is now
+triggered by *closure*, in the shared module, so both exchange readers gained
+it at once. `f5_a_closed_spline_wall_survives_both_formats` pins this by
+requiring the two formats to agree with each other a million times more
+tightly than either must agree with the original.
+
+**F4: SAT, X\_T, JT.** Refused for lack of public documentation. These are
+proprietary formats with unpublished specifications. Implementing them would
+mean reverse-engineering files instead of reading a standard. If a
+specification becomes available, the refusal lifts. Until then, this row is the
+honest answer.
 
 ### H. Defeaturing
 
-**H1 — removing a set of faces.** **Built**, as
-`ogeom_bool::remove_faces(model, solid, &[Shape], tol)`, and the two wounds
-close differently. A feature whose rim is an inner loop of a surviving face —
-a bore, a boss, a mid-face pocket — is wire surgery: the survivor is rebuilt
-without the rim wire, nothing re-intersected, and the drilled block comes
-back to its exact volume with **no overshoot at all**, because the face-set
-approach fills nothing — the boundary is resewn, and the sliver-band problem
-the tool-based approach paid ten microns to avoid never arises. A band
-feature — a fillet or chamfer along an edge — is the re-intersection case:
-the two side surfaces recover the edge the blend replaced, the end faces'
-own edges extend along their own curves to the corners the recovered edge
-pierces, and both the chamfered and the filleted box come back to the sharp
-box *exactly*, six faces, twelve edges, eight vertices.
+**H1: removing a set of faces.** **Built** as
+`ogeom_bool::remove_faces(model, solid, &[Shape], tol)`. The two kinds of gap
+close differently.
 
-One ordering lesson worth keeping: the ends rebuild before the sides,
-because extending a cap's dangling edge decides that edge for the side that
-shares it, and sewing rejoins them on the one node. Multiple simultaneous
-bands, bands meeting at corners (the B2/A6 family), and spline-surfaced
-neighbours are refused by name — the parity ledger's `bool.defeaturing`
-restriction is the live list, and issue #19 is its plan.
+- *A feature whose rim is an inner loop of a surviving face* (a bore, a boss, a
+  mid-face pocket) is wire surgery. The surviving face is rebuilt without the
+  rim wire, and nothing is re-intersected. The drilled block comes back to its
+  exact volume with **no overshoot at all**. The face-set approach fills
+  nothing: the boundary is resewn, so the sliver-band problem that the
+  tool-based approach paid ten microns to avoid never arises.
+- *A band feature* (a fillet or chamfer along an edge) is the re-intersection
+  case. The two side surfaces recover the edge the blend replaced, and the end
+  faces' own edges extend along their own curves to the corners that the
+  recovered edge pierces. Both the chamfered and the filleted box come back to
+  the sharp box *exactly*: six faces, twelve edges, eight vertices.
 
-What follows is the original entry, kept because the overshoot finding is a
-real measurement about the tool-based road not taken.
+One ordering lesson: the ends are rebuilt before the sides. Extending a cap's
+dangling edge decides that edge for the side that shares it, and sewing rejoins
+them on the one node.
 
-The operation was to be
-`remove_faces(model, solid, &[Shape], tol)` in **`ogeom-bool`**: given faces to
-delete, extend the neighbours that surrounded them, re-intersect the extensions
-against each other, and sew the result back into the shell. Face extension plus
-re-intersection is the fuse machinery already there; what is missing is the
-driver that decides which neighbours to extend and how far.
+Refused by name: several bands at once, bands meeting at corners (the B2/A6
+family), and spline-surfaced neighbours. The parity ledger's
+`bool.defeaturing` restriction is the live list, and issue #19 is its plan.
 
-It belongs to the boolean and not to a recognizer. A caller hands over faces —
-what those faces *mean* is the caller's business, and the operation must work on
-a solid whose history is gone. There was a `remove_feature(model, solid,
+*The original entry, kept because the overshoot finding is a real measurement
+of the tool-based approach that was not taken.*
+
+The operation was to be `remove_faces(model, solid, &[Shape], tol)` in
+**`ogeom-bool`**: given faces to delete, extend the neighbouring faces,
+re-intersect the extensions with each other, and sew the result back into the
+shell. Face extension plus re-intersection is the existing fuse machinery. What
+was missing is the driver that decides which neighbours to extend, and how far.
+
+It belongs to the boolean, not to a recognizer. The caller supplies faces; what
+those faces *mean* is the caller's business, and the operation must work on a
+solid whose history is gone. There used to be a `remove_feature(model, solid,
 &Feature, tol)` here that dispatched on a recognized feature and rebuilt the
 volume that feature described. That is a different operation with a different
-input, and it left with the recognizer; salvaging its code would have preserved
-the half that does not generalise.
+input, and it left with the recognizer. Reusing its code would have kept the
+half that does not generalise.
 
-One finding from it is worth keeping, because a face-set implementation will hit
-it again the moment it builds a tool that meets the solid at an opening:
+One finding from it is worth keeping, because a face-set implementation will
+hit it as soon as it builds a tool that meets the solid at an opening:
 
-> A filling tool flush with the faces it meets is a coincidence at every opening
-> at once, and the boolean does not assemble it. So the tool overshoots. But the
-> overshoot cannot be small, and this is the part that is not obvious: a margin
-> leaves a sliver band standing past the opening, and that band's interior probes
-> must be *decisively* outside the part, or the exact classifier finds every ray
-> from them grazing the face they sit against, exhausts its whole fan of
-> directions and answers `On` the slow way. A micron of overshoot is inside the
-> band the classifier reads as "on the boundary" and costs fifty seconds on a
-> part that takes a fifth of one otherwise; ten microns is outside it and costs
-> nothing. A hundred thousand confusion tolerances — ten microns at millimetre
-> tolerances — was the working figure, and the restored solid is larger than the
-> original by that times the openings' area.
+> A filling tool flush with the faces it meets is a coincidence at every
+> opening at once, and the boolean does not assemble it. So the tool must
+> overshoot. The non-obvious part is that the overshoot cannot be small:
+>
+> - A margin leaves a sliver band standing past the opening. That band's
+>   interior probes must be *clearly* outside the part. Otherwise the exact
+>   classifier finds every ray from them grazing the face they sit against,
+>   exhausts its whole fan of directions, and answers `On` the slow way.
+> - A micron of overshoot is inside the band the classifier reads as "on the
+>   boundary", and costs fifty seconds on a part that otherwise takes a fifth of
+>   a second. Ten microns is outside it and costs nothing.
+> - The working figure was a hundred thousand confusion tolerances (ten microns
+>   at millimetre tolerances). The restored solid is larger than the original by
+>   that amount times the openings' area.
 
-Any caller whose tolerance is tighter than the overshoot is the case to watch.
+Watch any caller whose tolerance is tighter than the overshoot.
 
 ### I. Canonical simplification
 
-**I1 — recognizing that exact geometry is secretly analytic.** **Done.**
-`ogeom_heal::canonical_simplify` samples each free-form surface on its own
-chart with its own normals, proposes plane, sphere, cylinder or cone from
-the classical estimators — the mean normal, the least-squares meeting of
-normal lines, the direction the normals avoid, the linear taper of radius
-against height — and accepts only when *every* sample verifies at the
-caller's tolerance, the certificate being the worst deviation actually
-measured. Free-form curves get the same treatment on the way, because a
-rim spelt as a B-spline that is exactly a circle must become the circle
-before the analytic surface has anything to project in closed form. A
-nurbsed drum comes back a cylinder at 1.8e-15 with its volume unchanged to
-the last bit; a skinned loft stays what it is. The reference's set —
-plane, cylinder, cone, sphere — is matched exactly; a torus candidate is
-out on both sides.
+**I1: recognizing that exact geometry is secretly analytic.** **Done.**
+`ogeom_heal::canonical_simplify` works as follows:
+
+- It samples each free-form surface on its own chart, with its own normals.
+- It proposes a plane, sphere, cylinder or cone using the classical
+  estimators: the mean normal, the least-squares meeting point of the normal
+  lines, the direction the normals avoid, and the linear taper of radius
+  against height.
+- It accepts only when *every* sample verifies at the caller's tolerance. The
+  certificate is the worst deviation actually measured.
+
+Free-form curves are simplified on the way too. A rim written as a B-spline
+that is exactly a circle must become the circle before the analytic surface
+can project it in closed form.
+
+Results: a drum converted to NURBS comes back as a cylinder at 1.8e-15, with its
+volume unchanged to the last bit; a skinned loft stays as it is. The reference
+kernel's set (plane, cylinder, cone, sphere) is matched exactly. Neither side
+proposes a torus.
 
 ### J. The medial axis
 
-**J1 — the medial axis of a planar region.** **Built for the convex
-polygonal case**, exactly: the shrinking-polygon construction — every edge
-inward at unit speed, every vertex riding its angular bisector, each event
-retiring an edge and starting a branch — with convexity as the honesty
-condition, because it is what excludes the split events the construction
-does not have. Held to closed forms: a rectangle's four diagonals and roof
-line to 1e-9, and a 3–4–5 triangle's branches meeting at the incenter with
-the inradius (a+b−c)/2 = 1 as the deepest clearance. Holes, reflex corners
-and arcs are refused by name; the parity row's restriction is the live
-worklist should a caller ever need the general region.
+**J1: the medial axis of a planar region.** **Built for the convex polygonal
+case**, exactly. It uses the shrinking-polygon construction:
+
+- every edge moves inward at unit speed;
+- every vertex rides its angular bisector;
+- each event retires an edge and starts a branch.
+
+Convexity is the validity condition, because it excludes the split events this
+construction does not handle. Held to closed forms:
+
+- a rectangle's four diagonals and roof line, to 1e-9;
+- a 3-4-5 triangle's branches meeting at the incenter, with the inradius
+  (a+b−c)/2 = 1 as the deepest clearance.
+
+Holes, reflex corners and arcs are refused by name. The parity row's
+restriction is the live worklist, if a caller ever needs the general region.
 
 ## Decisions, not gaps
 
-These are settled. They are here so nobody reopens them by accident.
+These are settled. They are listed so nobody reopens them by accident.
 
-- **A surface answers for its point and derivatives in one evaluation, and
-  says so agrees only to rounding.** A foot-point solve wants all six at the
-  same place, and a tensor-product patch answering three separate accessors
-  locates its spans, builds its basis functions and sums its control grid
-  three times over. [`Surface::jet_at`] answers from one order-two table —
-  worth 3–25% of a spline-rich STEP read, which is not nothing on the files
-  that take a minute. The price is stated rather than hidden: a patch sums its
-  point by de Boor and its derivatives by basis functions, those reassociate
-  differently, and `basis_derivatives` does not return identical lower-order
-  rows at different requested orders — so a jet may differ from the separate
-  accessors in the last ulp. Consistency within a jet is what a Newton step
-  needs and what the type guarantees; a caller must not mix a jet with the
-  accessors at the same parameters and expect the bits to match.
-- **A pcurve with no closed form is `None`, not a fit.** An exact curve
-  carrying a fitted pcurve would be a curve whose two descriptions disagree
-  by an amount nothing on it records. The consumer that needs one marches the
-  pair instead.
+- **A surface returns its point and derivatives in one evaluation, and states
+  that the result agrees with the separate accessors only to rounding.**
+  - A foot-point solve needs all six values at the same place. A
+    tensor-product patch answering three separate accessors locates its spans,
+    builds its basis functions and sums its control grid three times.
+  - [`Surface::jet_at`] answers from one order-two table. This saves 3 to 25%
+    of a spline-rich STEP read, which matters on files that take a minute.
+  - The price is stated, not hidden. A patch sums its point by de Boor and its
+    derivatives by basis functions. These reassociate differently, and
+    `basis_derivatives` does not return identical lower-order rows at different
+    requested orders. So a jet may differ from the separate accessors in the
+    last ulp.
+  - Consistency within a jet is what a Newton step needs, and what the type
+    guarantees. A caller must not mix a jet with the accessors at the same
+    parameters and expect identical bits.
+- **A pcurve with no closed form is `None`, not a fit.** An exact curve with a
+  fitted pcurve would have two descriptions that disagree by an amount nothing
+  records. The consumer that needs one marches the pair instead.
 - **A closed exact section partly outside a surface's extent is kept whole.**
   The restriction that matters is the face's trim, which is the boolean's own
-  2D stage; the surface extent is only a parameterization window, and cutting
-  there would split a curve where no boundary exists.
-- **Scaled placements in the boolean are refused, with instructions.** A
-  scale changes a surface's parameterization out from under its pcurves. Bake
-  it first — `baked_shape` does exactly that, and the boolean calls it.
-- **The crossing walker refuses tangential contact.** It is a crossing
-  walker; the tangential walker owns that case and the section pipeline
-  routes to it. The refusal stays pinned.
-- **Bi-tangent construction is subsumed** — the 2D repertoire in 2D, the
-  blend family's own envelope in 3D.
-- **Glue is subsumed** by the boolean's same-domain unification, which
-  already skips nothing it needs and unifies what glue would.
+  2D stage. The surface extent is only a parameterization window, and cutting
+  there would split a curve where there is no boundary.
+- **Scaled placements in the boolean are refused, with instructions.** A scale
+  changes a surface's parameterization underneath its pcurves. Bake it first:
+  `baked_shape` does exactly that, and the boolean calls it.
+- **The crossing walker refuses tangential contact.** It is a crossing walker.
+  The tangential walker owns that case, and the section pipeline routes to it.
+  The refusal stays pinned.
+- **Bi-tangent construction is subsumed**: by the 2D repertoire in 2D, and by
+  the blend family's own envelope in 3D.
+- **Glue is subsumed** by the boolean's same-domain unification, which already
+  skips nothing it needs and unifies what glue would.
 
 ## Order
 
-1. ~~**A** — the interference table.~~ **Done.** Five named failures closed,
-   B2 and D2 unblocked.
-2. ~~**C**, **E2**, **F3**~~ — **Done**, each in its own section. What their
-   completion left owed lives with the entries: D2's drawing side, B2's
-   two-blend meeting and N>3 setback vertex, and H1's refused-by-name list —
-   all filed, with the rest of the kernel's known debts, as issues #17–#32
-   (features #17–#22, performance #23–#26, the tail #27–#32). The tracker is
-   the state; this file stays the narrative.
+1. ~~**A**: the interference table.~~ **Done.** Five named failures closed; B2
+   and D2 unblocked.
+2. ~~**C**, **E2**, **F3**.~~ **Done**, each in its own section. What they left
+   owed is recorded with the entries: D2's drawing side, B2's two-blend meeting
+   and N>3 setback vertex, and H1's refused-by-name list. All of it is filed,
+   with the kernel's other known debts, as issues #17 to #32 (features #17 to
+   #22, performance #23 to #26, the tail #27 to #32). The tracker holds the
+   state; this file holds the narrative.
 3. ~~**The walker abstraction.**~~ **Done.** `ogeom_intersect::walk`: a
-   `Condition` in `n` unknowns and `n − 1` equations, and one walk over it.
-   The shortfall is the point — the solution set of `n − 1` equations in `n`
-   unknowns *is* a curve — and the walker supplies the missing equation
-   itself, a plane across the direction of travel. The direction comes free
-   as the Jacobian's null vector, so a condition need not know its own
-   tangent formula. Step control, stall reporting and closure are written
-   once. The intersector's own walk now goes through it, which is what says
-   it is general rather than merely present.
+   `Condition` in `n` unknowns with `n − 1` equations, and one walk over it.
+   - The missing equation is the point: the solution set of `n − 1` equations
+     in `n` unknowns *is* a curve. The walker supplies the last equation itself,
+     as a plane across the direction of travel.
+   - The direction comes free as the Jacobian's null vector, so a condition
+     does not need to know its own tangent formula.
+   - Step control, stall reporting and closure are written once.
+   - The intersector's own walk now goes through it, which shows it is general,
+     not just present.
 
-   One thing the abstraction had to be taught. A null vector's sign is
-   whatever the arithmetic gave it, so the walker keeps its own heading — but
-   the intersector's tangent is the cross product of two normals, whose sign
-   is the surfaces' own, and whose *flip* at a tangency is what stops the
-   march. Turned quietly back round, two thin curves through two touching
-   points came back as one confident loop lying on neither. So a condition
-   declares whether its tangent's sign is its own, and that declaration is
-   load-bearing.
-4. ~~**B1** — the marching blend.~~ **Done.** **B2**'s corner family is
-   down to the curved-edged corner: any convex planar vertex rounds, as
-   the exact envelope of the rolling ball where no single ball touches its
-   faces. What is left sits on **A6** — tangency at a face's own corner —
-   rather than on A5.
-5. ~~**D1** — marched silhouettes.~~ **Done**, and they were indeed a second
+   One thing the abstraction had to learn. A null vector's sign is arbitrary,
+   so the walker keeps its own heading. But the intersector's tangent is the
+   cross product of two normals, so its sign comes from the surfaces, and its
+   *flip* at a tangency is what stops the march. When the walker silently
+   turned it back round, two thin curves through two touching points came back
+   as one confident loop lying on neither. So a condition declares whether its
+   tangent's sign is meaningful, and that declaration matters.
+4. ~~**B1**: the marching blend.~~ **Done.** **B2**'s corner family is down to
+   the curved-edged corner. Any convex planar vertex rounds, as the exact
+   envelope of the rolling ball where no single ball touches all its faces.
+   What is left depends on **A6** (tangency at a face's own corner), not on A5.
+5. ~~**D1**: marched silhouettes.~~ **Done**. They were indeed a second
    condition for a walker that already existed.
-6. **F2** — IGES.
-7. **H1** — removing a set of faces.
+6. **F2**: IGES.
+7. **H1**: removing a set of faces.
 
-**F4** has no scheduled slot: it needs a document nobody has published.
+**F4** has no scheduled slot: it needs a specification nobody has published.
 
-**A debt paid.** Fifteen places in `crates/` used to refer the reader to
-"the deferred table", which no longer existed. All fifteen now point at
+**A debt paid.** Fifteen places in `crates/` used to point the reader to "the
+deferred table", which no longer existed. All fifteen now point to
 `docs/PARITY.md` rows by id, or state plainly that an earlier plan owed the
-thing and it was delivered. Six of them are inside error strings, so a
-refusal now names a row a reader can actually open.
+thing and it was delivered. Six of them are in error strings, so a refusal now
+names a row the reader can actually open.

@@ -1,7 +1,7 @@
 //! Normal projection: a wire dropped onto a shape along its faces' normals.
 //!
-//! The projection of a point onto a surface is its foot — the point where
-//! the displacement is perpendicular to both tangents — and the projection
+//! The projection of a point onto a surface is its foot (the point where
+//! the displacement is perpendicular to both tangents), and the projection
 //! of a curve is the curve through the feet. That curve almost never has a
 //! closed form, so it is sampled, fitted to a stated tolerance, and carries
 //! the pcurve fitted *with* it: same parameter in space and in the chart,
@@ -62,7 +62,7 @@ pub fn normal_projection(
     }
 
     // The faces to land on, with their surfaces in world space and their
-    // trims as chart rings — a foot outside the trim is on the surface but
+    // trims as chart rings: a foot outside the trim is on the surface but
     // not on the face, and landing there would be a projection onto
     // geometry the shape does not have.
     let mut seats: Vec<Seat> = Vec::new();
@@ -111,7 +111,7 @@ pub fn normal_projection(
         };
         // Walk the edge, landing each station on the nearest face that will
         // have it, and break the run wherever the face changes or nothing
-        // catches — each run becomes one projected edge.
+        // catches; each run becomes one projected edge.
         let mut run: Vec<(usize, Point, Point2)> = Vec::new();
         let mut runs: Vec<(usize, Vec<(Point, Point2)>)> = Vec::new();
         let mut flush = |run: &mut Vec<(usize, Point, Point2)>| {
@@ -145,8 +145,8 @@ pub fn normal_projection(
             let points: Vec<Point> = samples.iter().map(|(p, _)| *p).collect();
             let mut chart: Vec<Point2> = samples.iter().map(|(_, uv)| *uv).collect();
             // A periodic chart's parameters come back folded into the
-            // surface's own window, so a run crossing the seam arrives torn
-            // — and a fit through a tear is a fit through a jump it cannot
+            // surface's own window, so a run crossing the seam arrives torn,
+            // and a fit through a tear is a fit through a jump it cannot
             // make. Unwrapped, the run is continuous again.
             unwrap(&mut chart, &seats[seat].surface);
             // Fitted together, so the two descriptions share a parameter:

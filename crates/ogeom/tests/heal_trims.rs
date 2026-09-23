@@ -62,7 +62,7 @@ END-ISO-10303-21;
 fn a_face_the_reader_refused_heals_at_the_callers_cap() {
     let text = HOVER;
     let import = ogeom::io::read_step(text, T).unwrap();
-    // The report hands over the face itself — the instructed follow-up
+    // The report hands over the face itself; the instructed follow-up
     // needs no search.
     assert_eq!(import.report.untrimmed_faces.len(), 1);
     let refused = &import.report.untrimmed_faces[0];
@@ -118,7 +118,7 @@ fn a_face_the_reader_refused_heals_at_the_callers_cap() {
 
 /// The stronger fix: the hovering boundary *moves* onto its surface, the
 /// displacement recorded in widened tolerances, and the trims then fit as
-/// on-surface trims — the composition `reanchor_boundaries` then
+/// on-surface trims: the composition `reanchor_boundaries` then
 /// `fix_face_pcurves` that a 3 mm-off face deserves.
 #[test]
 fn a_hovering_boundary_reanchors_then_trims_then_meshes() {

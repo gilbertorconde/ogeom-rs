@@ -3,7 +3,7 @@
 //! *Elsewhere* these are `Geom2dAPI_InterCurveCurve` and `IntCurve` for the
 //! plane, and extrema-based crossing for space. The planar case is the
 //! load-bearing one: boolean face splitting happens in a surface's parameter
-//! space, and the curves it splits with are pcurves — so 2D curve/curve is the
+//! space, and the curves it splits with are pcurves, so 2D curve/curve is the
 //! operation the whole §8 pipeline stands on.
 //!
 //! # Two curves in space generically miss
@@ -12,14 +12,14 @@
 //! crossing is two points closer than a tolerance, not an exact common point,
 //! and pretending otherwise would make every 3D result empty. So the 3D
 //! answer reports the *gap* it achieved at each crossing, and the caller's
-//! tolerance decides what counts. The 2D answer reports gaps too — a solved
-//! crossing is still a pair of floats — but there the gap is rounding, not
+//! tolerance decides what counts. The 2D answer reports gaps too (a solved
+//! crossing is still a pair of floats), but there the gap is rounding, not
 //! geometry.
 //!
 //! # Overlap is an answer, not a failure
 //!
 //! Two collinear lines, two arcs of one circle: where the supports coincide,
-//! "the intersection points" do not exist — the intersection is a stretch of
+//! "the intersection points" do not exist; the intersection is a stretch of
 //! curve. That is reported as an overlap with the parameter ranges involved.
 //! Detected for the analytic same-support cases; two B-splines that happen to
 //! trace the same path are *not* detected as overlapping, and that limit is
@@ -54,7 +54,7 @@ pub struct Crossing<P> {
     pub gap: f64,
     /// How far along the curves this contact could honestly sit: zero for a
     /// transversal crossing, the length of the touching run where the curves
-    /// meet tangentially — there the closest approach is anywhere in a
+    /// meet tangentially: there the closest approach is anywhere in a
     /// valley the width of the gap, and a consumer placing a vertex at it
     /// owns that much doubt.
     pub reach: f64,
@@ -76,8 +76,8 @@ pub struct CurveIntersection<P> {
     pub crossings: Vec<Crossing<P>>,
     /// Stretches of shared support.
     ///
-    /// The analytic same-support cases — collinear lines, arcs of one
-    /// circle — come back exactly. In space, the sampling path also reports
+    /// The analytic same-support cases (collinear lines, arcs of one
+    /// circle) come back exactly. In space, the sampling path also reports
     /// a stretch along which the first curve's samples stay within the gap
     /// of the second, its ends bisected to parametric resolution and its
     /// correspondence stated by those ends alone: a fitted section tracing
@@ -128,7 +128,7 @@ impl Default for CurveCurveOptions {
 
 /// Where two planar curves meet.
 ///
-/// Analytic pairs — lines and circles — are answered in closed form, overlaps
+/// Analytic pairs (lines and circles) are answered in closed form, overlaps
 /// included. Everything else goes through sampling and Newton.
 ///
 /// # Errors
@@ -218,7 +218,7 @@ fn analytic_3d(
 /// actually cover.
 ///
 /// Both parts matter. A crossing is kept only where *both* parameters fall
-/// inside their window — on a periodic basis after whichever whole turn
+/// inside their window, on a periodic basis after whichever whole turn
 /// brings them there. An overlap is an interval on each side tied by an
 /// affine correspondence, so it is clipped on one side, carried across, and
 /// clipped again, and what comes back is the stretch both trims really share.
@@ -328,7 +328,7 @@ fn clipped_to_windows(
 
 /// Two circles tracing the same point set in space: the circle counterpart of
 /// collinear lines, and the one 3D circle pair the sampling path cannot
-/// answer — every sample is a hit, and "the crossings" do not exist. Distinct
+/// answer: every sample is a hit, and "the crossings" do not exist. Distinct
 /// circles return `None` and fall through to the general machinery, which
 /// handles genuinely crossing pairs.
 fn same_circle_3d(
@@ -353,7 +353,7 @@ fn same_circle_3d(
     // what a caller carrying a split across the pair relies on: `on_b`'s ends
     // are the parameters at which `b` stands where `a`'s own ends do. Phase
     // comes from where `a` starts on `b`, winding from whether the two run
-    // the same way there — and a pair written with opposite windings runs
+    // the same way there, and a pair written with opposite windings runs
     // `on_b` backwards, which is exactly the truth about them.
     let (lo, hi) = Curve3d::domain(a);
     let start = a.point_at(lo, tol).ok()?;
@@ -378,7 +378,7 @@ fn same_circle_3d(
 
 /// The *same description* twice: one curve object meeting itself, forward
 /// or reversed. A fitted seam reused as a wedge's apex ring is exactly this
-/// pair, and the sampling path — every sample a hit — cannot answer it, for
+/// pair, and the sampling path (every sample a hit) cannot answer it, for
 /// the same reason it cannot answer coincident circles. Equality here is
 /// structural, so two independent fits of one path still fall through to
 /// the general machinery, which is the honest place for them.
@@ -410,8 +410,8 @@ fn same_curve_3d(a: &Curve, b: &Curve) -> Option<CurveIntersection<Point>> {
 /// Two ellipses tracing the same point set in space: the ellipse counterpart
 /// of [`same_circle_3d`], and just as invisible to the sampling path. Unlike
 /// a circle, an ellipse's natural parameter is pinned to its major axis, so
-/// the correspondence is affine only when the two `x` axes line up — parallel
-/// or antiparallel — as well as the planes and radii; anything else falls
+/// the correspondence is affine only when the two `x` axes line up (parallel
+/// or antiparallel) as well as the planes and radii; anything else falls
 /// through to the general machinery.
 fn same_ellipse_3d(
     a: &ogeom_geom::EllipseCurve,
@@ -503,8 +503,8 @@ fn line_line_2d(
                 on_a: (lo, hi),
                 // Paired end to end with `on_a`, not sorted: two lines written in
                 // opposite directions run `on_b` backwards, and a consumer
-                // carrying a stretch across by the correspondence — the
-                // boolean clipping a contact to the edge it runs along —
+                // carrying a stretch across by the correspondence (the
+                // boolean clipping a contact to the edge it runs along)
                 // reads a sorted pair as the reflected stretch.
                 on_b: (back(lo), back(hi)),
             }],
@@ -701,8 +701,8 @@ fn line_line_3d(
                 on_a: (lo, hi),
                 // Paired end to end with `on_a`, not sorted: two lines written in
                 // opposite directions run `on_b` backwards, and a consumer
-                // carrying a stretch across by the correspondence — the
-                // boolean clipping a contact to the edge it runs along —
+                // carrying a stretch across by the correspondence (the
+                // boolean clipping a contact to the edge it runs along)
                 // reads a sorted pair as the reflected stretch.
                 on_b: (back(lo), back(hi)),
             }],
@@ -851,8 +851,8 @@ fn general_3d(
 
     // A tangential contact is one crossing, however many the polish
     // returns. Where two curves touch, the stationarity conditions go flat
-    // along the contact — every seed converges somewhere in a valley the
-    // width of the gap — and an arc ending on the line it is tangent to
+    // along the contact: every seed converges somewhere in a valley the
+    // width of the gap, and an arc ending on the line it is tangent to
     // comes back as thirty crossings inside a micron or two. Consecutive
     // crossings with the first curve staying within the gap of the second
     // all the way between them are the same contact, and the nearest
@@ -927,13 +927,13 @@ fn general_3d(
     // Every surviving crossing owns the valley it sits in: how far along the
     // first curve the second stays within the caller's gap. A transversal
     // crossing leaves the gap within a gap's length and says nothing; a
-    // tangential one — a line touching a fitted rim that wobbles about its
-    // circle by the fit's budget — stays inside for the root of gap times
+    // tangential one (a line touching a fitted rim that wobbles about its
+    // circle by the fit's budget) stays inside for the root of gap times
     // radius on either side, and the polish lands on whichever wobble's
     // floor it found. The consumer placing a vertex there owns that much
     // doubt, which the spread of several polished crossings only stated
-    // when there were several. A valley longer than a tangency's — the
-    // radius being at most the shorter curve's length — is a shared stretch
+    // when there were several. A valley longer than a tangency's (the
+    // radius being at most the shorter curve's length) is a shared stretch
     // the overlap pass speaks for, not a crossing's to own.
     let gap = options.gap.max(tol.confusion());
     let extent = {
@@ -959,7 +959,7 @@ fn general_3d(
 }
 
 /// Whether the first curve stays within the gap of the second all the way
-/// from one crossing to the next — three stations between them, each foot
+/// from one crossing to the next: three stations between them, each foot
 /// seeded from the crossings' own parameters.
 fn contact_between_3d(
     a: &Curve,
@@ -1154,8 +1154,8 @@ fn polish_2d(
 /// Gauss–Newton on the closest approach of two space curves.
 ///
 /// Three equations would be overdetermined for two unknowns, so the system is
-/// the two *stationarity* conditions — the gap vector perpendicular to both
-/// tangents — whose solutions are the local closest approaches. The gap test
+/// the two *stationarity* conditions (the gap vector perpendicular to both
+/// tangents), whose solutions are the local closest approaches. The gap test
 /// afterwards decides whether the approach found is a crossing.
 fn polish_3d(
     a: &Curve,
@@ -1598,8 +1598,8 @@ mod tests {
 
     /// Two descriptions of one circle overlap over the whole turn, and the
     /// overlap's two ranges *correspond*: `on_b`'s ends are where `b` stands
-    /// at `a`'s own ends. A caller carrying a split from one to the other —
-    /// the boolean, pairing a hole's arcs against the disc that fills them —
+    /// at `a`'s own ends. A caller carrying a split from one to the other
+    /// (the boolean, pairing a hole's arcs against the disc that fills them)
     /// reads that correspondence and gets the same point back, whatever phase
     /// and winding the two were written with.
     #[test]
@@ -1649,7 +1649,7 @@ mod tests {
     fn space_curves_cross_within_a_gap_and_report_it() {
         // Two circles that would cross in a shared plane, with one lifted a
         // hair out of it: the crossings become passes with a real, small gap
-        // that must be reported, not zeroed. (Not chain links — a first draft
+        // that must be reported, not zeroed. (Not chain links: a first draft
         // of this test used linked circles, and linked circles never approach:
         // passing through each other's *disks* is what linked means, and these
         // radii hold the curves a constant two units apart.)
@@ -1725,7 +1725,7 @@ mod tests {
         // A spline fitted along a circle's arc sits within its fit budget
         // of the circle everywhere, and "crosses" it at every wobble. The
         // sampling path reports the stretch as one overlap and keeps no
-        // crossing inside it — read as crossings, a section tracing the arc
+        // crossing inside it; read as crossings, a section tracing the arc
         // it was cut along shattered into hundreds of pieces.
         let circle: Curve = CircleCurve::new(Circle::new(Frame::WORLD, 4.0, T).unwrap()).into();
         let points: Vec<Point> = (0..=40)

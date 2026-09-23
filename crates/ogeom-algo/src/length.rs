@@ -14,7 +14,7 @@
 //!
 //! Placing a point *at* a length is the inverse of that integral, which has no
 //! closed form for anything but a line and a circle. It is solved rather than
-//! approximated — the length from the start is strictly increasing wherever the
+//! approximated: the length from the start is strictly increasing wherever the
 //! parameterization is regular, so a bracketed root find always converges, and
 //! there is no risk of the multiple-root trouble a general solve would have.
 //!
@@ -35,7 +35,7 @@ use ogeom_math::{Point, integrate, solve};
 ///
 /// Integrated from the curve's own speed, so it is the length of the *curve*
 /// rather than of a polyline that approximates it. A tessellated length is
-/// always short — every chord cuts a corner — and the shortfall is exactly what
+/// always short (every chord cuts a corner), and the shortfall is exactly what
 /// a deflection tolerance permits, which is far larger than this.
 ///
 /// # Errors
@@ -66,7 +66,7 @@ pub fn curve_length(curve: &Curve, range: (f64, f64), tol: Tolerances) -> OgeomR
 /// reached.
 ///
 /// The inverse of [`curve_length`]. `target` is measured from `range.0`, and
-/// must lie between zero and the curve's total length over the range — asking
+/// must lie between zero and the curve's total length over the range; asking
 /// for a point beyond the end is refused rather than clamped, because a
 /// clamped answer is indistinguishable from a correct one at the end.
 ///
@@ -155,7 +155,7 @@ pub fn points_by_count(
 ///
 /// The first point is at the start. The last is at the end *whatever the
 /// spacing divides to*, so the final gap is short rather than the curve being
-/// left unfinished — a distribution that stops before the end is a different
+/// left unfinished: a distribution that stops before the end is a different
 /// answer from the one asked for, and silently dropping the tail is how a
 /// toolpath ends up not reaching the edge of the material.
 ///
@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn length_is_measured_on_the_curve_not_on_a_polyline_through_it() {
         // The distinction that makes this worth having. A chord always cuts a
-        // corner, so a tessellated length is short — and short by whatever the
+        // corner, so a tessellated length is short, and short by whatever the
         // deflection permits, which is far more than this integral's error.
         let c = circle(1.0);
         let exact = TAU;
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn points_by_count_are_evenly_spaced_along_the_curve() {
-        // On a circle, even in length is even in angle — which is the check
+        // On a circle, even in length is even in angle, which is the check
         // that the inversion is doing its job rather than returning parameters.
         let c = circle(3.0);
         let points = points_by_count(&c, (0.0, TAU), 9, T).unwrap();

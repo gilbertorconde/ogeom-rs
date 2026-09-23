@@ -2,7 +2,7 @@
 //! a closed form.
 //!
 //! They are one family: every one of them is the classifier being asked where
-//! a piece stands at a place where the question has no answer — on a
+//! a piece stands at a place where the question has no answer: on a
 //! coincidence, at a chart degeneracy, in a cusp, on a tangency. They are
 //! written here before the interference table exists, so that what the table
 //! buys is a measurement and not an impression.
@@ -29,7 +29,7 @@ fn at(p: Point) -> Frame {
     Frame::new(p, Direction::Z, Direction::X, T).unwrap()
 }
 
-/// **A1 — a tool flush with the part.** A block with a bore through it,
+/// **A1: a tool flush with the part.** A block with a bore through it,
 /// refilled by the very cylinder that cut it. The tool's wall coincides with
 /// the bore's wall over its whole length and its caps are flush with the two
 /// faces the bore broke, so every piece of the tool lies *on* the part rather
@@ -79,7 +79,7 @@ fn a1_a_tool_flush_with_the_part_refills_the_bore() {
     );
 }
 
-/// **A2 — a section through a chart pole.** A plane through a ball's own axis
+/// **A2: a section through a chart pole.** A plane through a ball's own axis
 /// ends its section exactly at both poles, where the sphere's chart
 /// degenerates: a whole line of the chart is one point in space, and the
 /// pieces either side of the section meet there.
@@ -123,7 +123,7 @@ fn a2_a_section_through_both_poles_halves_the_ball() {
     );
 }
 
-/// **A3 — a ball on a box's corner vertex.** A vertex-against-face
+/// **A3: a ball on a box's corner vertex.** A vertex-against-face
 /// interference is a first-class thing; it has no business surfacing as an
 /// anomaly during face splitting.
 ///
@@ -204,8 +204,8 @@ fn a3_a_ball_on_a_corner_vertex_bounds_nothing() {
     }
 
     // The vertex exactly on the sphere, the ball straddling the corner. The
-    // closed form here is awkward — three overlapping caps meeting at the
-    // point — so the claim is an independent one: the two pieces the box cuts
+    // closed form here is awkward (three overlapping caps meeting at the
+    // point), so the claim is an independent one: the two pieces the box cuts
     // the ball into are the whole ball, and neither is empty.
     {
         let mut model = Model::new();
@@ -235,14 +235,14 @@ fn a3_a_ball_on_a_corner_vertex_bounds_nothing() {
     }
 }
 
-/// **A4 — a section through tangential contact.** The textbook half-section:
+/// **A4: a section through tangential contact.** The textbook half-section:
 /// a plane through a bore's axis. It meets the bore's wall along the wall's
 /// own rulings, and it meets the bore's rim circles at exactly the points
-/// those rulings end — a place where the crossing question is degenerate from
+/// those rulings end, a place where the crossing question is degenerate from
 /// every side at once.
 ///
-/// The measured claim is the half of the drilled block, and — because this is
-/// what the drawing feature D2 needs — a section whose curves are there.
+/// The measured claim is the half of the drilled block, and (because this is
+/// what the drawing feature D2 needs) a section whose curves are there.
 #[test]
 fn a4_an_on_axis_half_section_of_a_bore() {
     let mut model = Model::new();
@@ -301,7 +301,7 @@ fn a4_an_on_axis_half_section_of_a_bore() {
     assert_eq!(rulings, 2, "the plane cuts the wall along two rulings");
 }
 
-/// **A5 — a shell around a three-cylinder tip.** Three mutually perpendicular
+/// **A5: a shell around a three-cylinder tip.** Three mutually perpendicular
 /// cylinders of one radius meet at a box's corner: the three fillet surfaces a
 /// corner blend would leave. The tool that clears the leftover spike is the
 /// corner block minus the ball, and removing it is what fails.
@@ -366,14 +366,15 @@ fn a5_a_corner_block_less_a_ball_clears_the_spike() {
     );
 }
 
-/// A6 — tangency at a face's own corner. The three-blend corner tool — the
-/// corner block less the ball, which A5 measures — is tangent to everything
+/// A6: tangency at a face's own corner. The three-blend corner tool (the
+/// corner block less the ball, which A5 measures) is tangent to everything
 /// it rounds *by construction*: its spherical patch touches each of the
 /// box's three faces at a point that is a vertex of the patch's own
 /// boundary. Fed both chart columns of the octant's seam-meridian
 /// boundary, the arrangement would find the far one connected to nothing
-/// and the strand dangling. The cut answers, and the answer is measured against the closed form: the box less the
-/// corner block plus the ball's octant.
+/// and the strand dangling. The cut answers, and the answer is measured
+/// against the closed form: the box less the corner block plus the ball's
+/// octant.
 #[test]
 fn a6_the_corner_tool_cuts_through_its_own_tangencies() {
     let mut model = Model::new();

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""apisurf — read a reference CAD kernel's shape, and how applications use it.
+"""apisurf: read a reference CAD kernel's shape, and how applications use it.
 
 **Analysis tool. Not part of the build.** `scope` derives the parity index that
 `docs/SCOPE.md` defines; `profile` measures usage, which sequences work and
@@ -14,9 +14,9 @@ hot paths of real work, and therefore which deserve the earliest design
 attention, the earliest benchmarks, and the most careful API shape.
 
 What it is emphatically not good for: deciding what to build. Reference counts
-understate anything reached through a narrow facade — boolean operations show a
+understate anything reached through a narrow facade: boolean operations show a
 few dozen references and represent perhaps a fifth of a kernel's implementation
-effort — and they say nothing at all about capabilities the sampled application
+effort), and they say nothing at all about capabilities the sampled application
 implements for itself, such as constraint solving. See `docs/SCOPE.md`.
 
 Neither input is a dependency of this repository. Point it at whatever you have
@@ -37,14 +37,14 @@ Two passes:
 
 Two subcommands:
 
-``profile`` (the original behaviour) — needs libclang and both checkouts::
+``profile`` (the original behaviour): needs libclang and both checkouts::
 
     python3 tools/apisurf/apisurf.py profile \\
         --reference /path/to/kernel/src \\
         --consumer  /path/to/application \\
         --out docs/api_surface.json
 
-``scope`` — needs only the reference checkout, no libclang. Walks the
+``scope``: needs only the reference checkout, no libclang. Walks the
 reference's own module and toolkit manifests, applies the triage rules from
 `docs/SCOPE.md`, and emits the parity index every audit row is checked
 against::
@@ -116,7 +116,7 @@ def find_libclang() -> str | None:
 
 
 # ==========================================================================
-# scope — derive the parity index from the reference tree's own manifests
+# scope: derive the parity index from the reference tree's own manifests
 # ==========================================================================
 #
 # The primary key of the audit is OUR capabilities, not these headers; this
@@ -150,7 +150,7 @@ R2_CONTAINER_PKGS = frozenset({
 })
 
 # R3: operating-system and infrastructure surface. Memory, threads, streams,
-# strings, resources, persistence plumbing — the standard library's job, not a
+# strings, resources, persistence plumbing: the standard library's job, not a
 # geometry kernel's. The carve-out is cancellable progress, which is a kernel
 # API shape (ogeom-core's Watch) and not an OS abstraction.
 R3_INFRA_PKGS = frozenset({
@@ -178,8 +178,8 @@ R5_OCAF_DRIVERS = frozenset({
 # arguments together with "Of". Three shapes give it away: a container word
 # before the Of, a The-/My- prefixed segment (the dialect's naming for an
 # algorithm's own internals), or two Ofs chained. What survives is protected
-# by SEMANTIC_OF: names where "...Of..." is English — a surface of revolution,
-# an arc of a circle, a degree of freedom — are capabilities, not
+# by SEMANTIC_OF: names where "...Of..." is English (a surface of revolution,
+# an arc of a circle, a degree of freedom) are capabilities, not
 # instantiations.
 R1_OF = re.compile(r"Of[A-Z]")
 R1_CONTAINER_WORD = re.compile(
@@ -269,7 +269,7 @@ def triage(rows: list[dict]) -> None:
         else:
             r["bucket"], r["rule"] = "keep", ""
 
-    # Safety valve: a package the rules emptied still gets one keep row — a
+    # Safety valve: a package the rules emptied still gets one keep row: a
     # package that is nothing but instantiations of one algorithm (AppDef,
     # BRepApprox) is still a capability to audit, and silence here would hide
     # it. The namesake header is re-kept where there is one, else the first.
@@ -339,11 +339,11 @@ SCOPE_DEFAULT_PROFILE = "docs/api_surface.json"
 
 
 # ==========================================================================
-# profile — how one application exercises the reference (original behaviour)
+# profile: how one application exercises the reference (original behaviour)
 # ==========================================================================
 
 # --------------------------------------------------------------------------
-# Pass 1 — what the consumer includes
+# Pass 1: what the consumer includes
 # --------------------------------------------------------------------------
 
 def consumer_sources(consumer: str):
@@ -395,7 +395,7 @@ def collect_includes(consumer: str, ref_headers: dict) -> tuple[dict, dict, dict
 
 
 # --------------------------------------------------------------------------
-# Pass 2 — parse those headers, once
+# Pass 2: parse those headers, once
 # --------------------------------------------------------------------------
 
 def parse_reference(reference: str, headers: list[str], ref_headers: dict) -> dict:
@@ -431,8 +431,8 @@ def parse_reference(reference: str, headers: list[str], ref_headers: dict) -> di
             """Many kernels use a strict ``Pkg_Name`` convention, with the
             package's own static-utility class named plainly ``Pkg``.
 
-            Enforcing it filters out nested helpers with generic names —
-            ``Hasher``, ``Mesh``, ``Iterator`` — that would otherwise collide with
+            Enforcing it filters out nested helpers with generic names
+            (``Hasher``, ``Mesh``, ``Iterator``) that would otherwise collide with
             unrelated identifiers in the consumer and inflate counts badly.
             """
             return bool(name) and (name == pkg or name.startswith(pkg + "_"))
@@ -520,7 +520,7 @@ def parse_reference(reference: str, headers: list[str], ref_headers: dict) -> di
 
 
 # --------------------------------------------------------------------------
-# Pass 3 — which members does the consumer call?
+# Pass 3: which members does the consumer call?
 # --------------------------------------------------------------------------
 
 def scan_usage(consumer: str, index: dict) -> tuple[dict, dict, dict]:
@@ -539,7 +539,7 @@ def scan_usage(consumer: str, index: dict) -> tuple[dict, dict, dict]:
     type_refs = collections.Counter()
     member_calls = collections.Counter()
     enum_refs = collections.Counter()
-    qualified = collections.Counter()   # Class::member — unambiguous by construction
+    qualified = collections.Counter()   # Class::member, unambiguous by construction
 
     token_re = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\b')
     qual_re = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*::\s*([A-Za-z_][A-Za-z0-9_]*)')

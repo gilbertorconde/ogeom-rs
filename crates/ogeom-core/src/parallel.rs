@@ -3,12 +3,12 @@
 //!
 //! The rule that makes parallelism admissible here at all: **the answer must
 //! be bit-identical at any thread count.** [`map_ordered`] guarantees it
-//! structurally — each item is computed independently from shared read-only
+//! structurally: each item is computed independently from shared read-only
 //! input, results are collected in item order, and nothing about scheduling
 //! can reach the output. A stage that cannot meet that bar stays sequential.
 //!
 //! The thread count comes from [`threads`]: the machine's parallelism by
-//! default, overridable process-wide with [`set_threads`] — including down
+//! default, overridable process-wide with [`set_threads`], including down
 //! to one, which is also what tiny workloads collapse to on their own.
 //! Worker threads re-install the caller's progress watch, so cancellation
 //! reaches into the workers.
@@ -31,7 +31,7 @@ pub fn threads() -> usize {
 }
 
 /// Set the process-wide thread count for parallel stages. `0` restores the
-/// machine default. The answer never depends on this — only the wall clock
+/// machine default. The answer never depends on this; only the wall clock
 /// does.
 pub fn set_threads(count: usize) {
     THREADS.store(count, Ordering::Relaxed);
@@ -55,8 +55,8 @@ where
     }
 
     let snapshot = progress::snapshot();
-    // Work is *taken*, not dealt: expensive items cluster — one spline-heavy
-    // face's edges sit adjacent in a reader's job list — and a worker dealt
+    // Work is *taken*, not dealt: expensive items cluster (one spline-heavy
+    // face's edges sit adjacent in a reader's job list), and a worker dealt
     // that region as a contiguous chunk finishes last while the rest idle.
     // Each worker pulls the next undone index instead, so the wall clock
     // tracks the total work rather than the heaviest deal. The answer cannot

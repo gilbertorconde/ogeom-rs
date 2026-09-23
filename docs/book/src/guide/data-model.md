@@ -3,8 +3,8 @@
 This chapter is the kernel's normative data-model document, included
 verbatim from
 [`docs/DATA_MODEL.md`](https://github.com/gilbertorconde/ogeom-rs/blob/main/docs/DATA_MODEL.md).
-It is written for someone implementing against the model, and it is the
-reference the rest of this guide leans on.
+It is written for people implementing against the model. The rest of this
+guide refers to it.
 
 ---
 

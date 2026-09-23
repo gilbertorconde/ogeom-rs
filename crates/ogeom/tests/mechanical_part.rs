@@ -4,7 +4,7 @@
 //! an open tray, its corner edges chamfered, filleted at constant radius and
 //! filleted at a running radius, a lofted boss and a swept nozzle fused onto
 //! its floor. Every operation contributes a closed-form volume change, so
-//! the final part's volume is an exact sum — the end-to-end answer is
+//! the final part's volume is an exact sum: the end-to-end answer is
 //! checked against arithmetic, not against itself.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 

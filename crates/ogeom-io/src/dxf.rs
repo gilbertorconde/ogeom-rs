@@ -5,7 +5,7 @@
 //! `POLYLINE` per curve. Visible curves go on the `VISIBLE` layer with
 //! continuous lines; hidden curves on `HIDDEN`, dashed. The writer takes
 //! bare polylines rather than a drawing type, so anything that produces 2D
-//! curves — the hidden-line projector, a section outline, a sketch — writes
+//! curves (the hidden-line projector, a section outline, a sketch) writes
 //! without this crate knowing where they came from.
 
 use ogeom_math::Point2;
@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 /// Write polylines as an R12 DXF document.
 ///
 /// `visible` draws continuous on layer `VISIBLE`; `hidden` draws dashed on
-/// layer `HIDDEN`. Polylines with fewer than two points are skipped — a
+/// layer `HIDDEN`. Polylines with fewer than two points are skipped; a
 /// point is not a line in a drawing, here as everywhere.
 #[must_use]
 pub fn write_dxf(visible: &[Vec<Point2>], hidden: &[Vec<Point2>]) -> String {
@@ -165,11 +165,11 @@ pub struct DxfDrawing {
 ///
 /// `POLYLINE`/`VERTEX`/`SEQEND` and `LWPOLYLINE` become polylines; `LINE`
 /// becomes a polyline of two points. Layers are read by name: `HIDDEN`
-/// separates, everything else is visible — which is the convention this
+/// separates, everything else is visible, which is the convention this
 /// crate's own writer uses and the one a drawing's reader can act on
 /// without guessing at linetypes.
 ///
-/// Everything else in a DXF — blocks, text, dimensions, splines, hatches —
+/// Everything else in a DXF (blocks, text, dimensions, splines, hatches)
 /// is skipped. This reads *drawings as curves*, which is what a kernel has
 /// use for; it does not pretend to be a DXF application.
 ///

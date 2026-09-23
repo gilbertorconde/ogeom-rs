@@ -1,6 +1,6 @@
 //! Rendering a tessellation to an image, so that a wrong result is *visible*.
 //!
-//! Numeric checks catch what you thought to check. A picture catches the rest —
+//! Numeric checks catch what you thought to check. A picture catches the rest:
 //! a face wound inside out, a hole where two surfaces failed to meet, a seam
 //! that did not weld. Those have all been real defects in this kernel, and each
 //! would have been obvious in one frame.
@@ -9,7 +9,7 @@
 //!
 //! A real-time viewer needs a GPU, a windowing system and a driver, none of
 //! which a headless build has. That would make the viewer the one corner of the
-//! repository `tools/check.sh` cannot verify — and a visual check nobody can
+//! repository `tools/check.sh` cannot verify, and a visual check nobody can
 //! run in CI is a visual check nobody runs.
 //!
 //! So this renders in software, to an image, deterministically. It has no
@@ -37,7 +37,7 @@ pub struct Camera {
     pub eye: Point,
     /// What it looks at.
     pub target: Point,
-    /// Which way is up, as a reference — its component along the view is
+    /// Which way is up, as a reference; its component along the view is
     /// removed, so it need not be perpendicular.
     pub up: Vector,
     /// Vertical field of view, in radians.
@@ -65,7 +65,7 @@ impl Camera {
     /// A camera framing a shape's bounds from a given direction.
     ///
     /// Placed far enough back that the whole bound is inside the field of view,
-    /// with a margin — so the answer to "did it render" is never "it was
+    /// with a margin, so the answer to "did it render" is never "it was
     /// off-screen".
     ///
     /// # Errors
@@ -177,7 +177,7 @@ pub struct Style {
     /// The colour a surface facing *away* is drawn in.
     ///
     /// Not the same as the lit colour, and that is the point. A face wound
-    /// inside out still renders — it is not culled — and it renders in a colour
+    /// inside out still renders (it is not culled), and it renders in a colour
     /// that says so, because a hole where a face should be looks the same as a
     /// face that was never built, and an obviously wrong colour does not.
     pub reversed: [u8; 3],
@@ -202,7 +202,7 @@ impl Default for Style {
 /// Render a mesh.
 ///
 /// Painter-free: every triangle is depth-tested per pixel, so the result does
-/// not depend on the order the triangles arrive in. That matters for a test —
+/// not depend on the order the triangles arrive in. That matters for a test:
 /// a renderer whose output depends on triangle order cannot be compared against
 /// anything.
 ///
@@ -265,7 +265,7 @@ pub fn render(
         };
         let camera_space = corners.map(to_camera);
         // Nothing behind the eye. A triangle straddling the plane needs
-        // clipping, which this does not do — it is dropped, and the docs say
+        // clipping, which this does not do; it is dropped, and the docs say
         // so, because a partly-drawn triangle is worse than a missing one for
         // a picture whose job is to be trusted.
         if camera_space.iter().any(|c| c.z <= tol.confusion()) {

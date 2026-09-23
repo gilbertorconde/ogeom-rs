@@ -3,7 +3,7 @@
 //!
 //! Each case builds a solid with the kernel's own operations, writes it as an
 //! IGES manifold solid B-rep, reads the deck back, and measures the recovered
-//! solid's volume against the original's — not against a hope, against the
+//! solid's volume against the original's: not against a hope, against the
 //! number. The corpus covers the surface vocabulary a real file exercises:
 //! planes, a periodic cylinder wall with its seam, a torus, a boolean result
 //! carrying both, and a B-spline loft.
@@ -97,9 +97,9 @@ fn a_drilled_block_round_trips_through_its_boolean_faces() {
         .unwrap()
         .shape;
     let (original, recovered, _) = round_trip(model, solid);
-    // The wall's rims come back chained — each
+    // The wall's rims come back chained (each
     // image shifted by whole periods until its start meets the last one's
-    // end — so the chart is the rectangle it was, and the two solids
+    // end), so the chart is the rectangle it was, and the two solids
     // tessellate the same way. A tenth of a percent between them at this
     // chord is the mesh reading a torn chart.
     assert!(
@@ -195,7 +195,7 @@ fn a_sphere_round_trips_through_its_seam_only_boundary() {
             .mass;
     let exact = 4.0 / 3.0 * core::f64::consts::PI * 7.0_f64.powi(3);
     // An inscribed tessellation at chord ε on radius r reads low by about
-    // 3ε/r — every triangle sits up to ε inside — which at 0.01 on 7 is
+    // 3ε/r (every triangle sits up to ε inside), which at 0.01 on 7 is
     // 0.43%. The bound is that, with a third again for the sampling's
     // unevenness, and it is a statement about tessellation rather than
     // about the exchange: the same solid measured natively reads the same.
@@ -239,11 +239,11 @@ fn an_empty_deck_is_refused_by_name() {
     );
 }
 
-/// F5 — a closed spline wall through exchange, both formats. The skinned
+/// F5: a closed spline wall through exchange, both formats. The skinned
 /// loft's wall is a clamped B-spline that closes on itself without being
 /// periodic; projections near the joining column land in either copy, and
 /// only continuity chooses. The shared fitted-pcurve machinery unwraps by
-/// *closure*, so what one reader learns the other has too — and the pin is
+/// *closure*, so what one reader learns the other has too, and the pin is
 /// that both formats return the same solid, measured.
 #[test]
 fn f5_a_closed_spline_wall_survives_both_formats() {
@@ -296,8 +296,8 @@ fn f5_a_closed_spline_wall_survives_both_formats() {
 /// A periodic chart offers a branch per turn, all describing the same
 /// points, and a reader that derives each edge's image on its own has no
 /// reason to pick one over another. A drilled block came back with its
-/// bore wall's two rims whole turns apart — the right circles, neither
-/// meeting the seam the wire closes on — and nothing downstream said so:
+/// bore wall's two rims whole turns apart (the right circles, neither
+/// meeting the seam the wire closes on), and nothing downstream said so:
 /// the tessellator folds into the chart and copes, and the error showed up
 /// as a tenth of a percent of volume.
 ///

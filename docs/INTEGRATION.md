@@ -1,102 +1,100 @@
 # Integration
 
-**ogeom's product is its own API.** Integration layers for other
-languages and host applications are downstream, optional, and none of them
-constrains the kernel's design.
+**ogeom's product is its own API.** Integration layers for other languages and
+host applications are downstream and optional. None of them constrains the
+kernel's design.
 
-This file exists for one narrow purpose: to record what embedding a kernel into
-a real application demands, so that decisions taken now do not quietly foreclose
-it. Nothing here should ever *drive* work. It should only ever veto a design that
-would make embedding impossible.
+This file has one purpose: to record what embedding a kernel in a real
+application requires, so that today's decisions do not rule it out by accident.
+Nothing here should *drive* work. It can only veto a design that would make
+embedding impossible.
 
 ---
 
-## The design pressure worth taking seriously
+## The design pressure that matters
 
-Surveying a large application that embeds a B-rep kernel (~4,100 call sites)
-turned up one finding that generalises beyond it:
+We surveyed a large application that embeds a B-rep kernel (about 4,100 call
+sites). One finding applies beyond that application:
 
-**Consumers do not merely call a kernel. They extend it.** That survey found
-seven classes deriving from kernel types and overriding their virtuals — a shape
-subclass that intercepts every mutating member to keep an element map coherent,
-several operation subclasses, custom message and progress sinks.
+**Consumers do not just call a kernel. They extend it.** The survey found seven
+classes that derive from kernel types and override their virtual methods:
+
+- a shape subclass that intercepts every mutating member to keep an element map
+  consistent;
+- several operation subclasses;
+- custom message and progress sinks.
 
 Two consequences:
 
-1. **A pure C ABI is never sufficient** for a host that wants to specialise
-   kernel behaviour. Any C++ integration layer will need real classes with real
-   virtual dispatch on top of whatever FFI surface we expose.
-2. **Extension points belong in the design, not in the shim.** Progress
+1. **A pure C ABI is never enough** for a host that wants to specialise kernel
+   behaviour. A C++ integration layer will need real classes with real virtual
+   dispatch on top of the FFI surface.
+2. **Extension points belong in the kernel's design, not in the shim.** Progress
    reporting, cancellation, diagnostics, custom tolerance policy and history
-   observation should be traits in the Rust API. If a host has to subclass its
-   way to them, we designed them wrong.
+   observation should be traits in the Rust API. If a host has to subclass to
+   reach them, the design is wrong.
 
-That second point is the actionable one, and it is a kernel-side task rather than
-an integration-side one.
+The second point is the actionable one. It is kernel work, not integration work.
 
 ---
 
 ## What the kernel must already do
 
-Satisfied by `DATA_MODEL.md`. Listed with the consequence of drifting.
+`DATA_MODEL.md` covers all of these. Each row gives the consequence of getting
+it wrong.
 
 | Requirement | §  | Consequence of getting it wrong |
 |---|---|---|
 | Shape is `(tshape, location, orientation)` and cheap to copy | §1 | Every by-value shape parameter in every host becomes an allocation |
-| Location is a chain, not a flat matrix | §2 | Assembly instancing collapses; placement identity stops being decidable structurally |
-| Orientation composes on descent | §3 | Face normals flip inconsistently — silent, and catastrophic downstream |
-| `is_same` / `is_equal` / `is_partner` with matching hashers | §4 | Shape maps mis-key. Silent wrong answers |
-| Per-entity tolerances with the containment rule | §5 | Imported geometry cannot be modeled with at all |
+| Location is a chain, not a flat matrix | §2 | Assembly instancing breaks; placement identity can no longer be decided structurally |
+| Orientation composes on descent | §3 | Face normals flip inconsistently. This is silent, and catastrophic downstream |
+| `is_same` / `is_equal` / `is_partner` with matching hashers | §4 | Shape maps use the wrong keys. Silent wrong answers |
+| Per-entity tolerances with the containment rule | §5 | Imported geometry cannot be modelled with at all |
 | Edges carry a representation list including per-face pcurves | §6 | Boolean face splitting has nothing to split with |
 | `generated` / `modified` / `is_deleted` on every operation | §7 | **Downstream naming breaks silently and corrupts user documents** |
 | Stable provenance | §8 | References into a rebuilt model cannot be resolved at all |
 | `Result`, no exceptions, no signal conversion | §12 | Failures cannot be mapped cleanly into a host's error model |
 
-The history row is the one to watch, because it is the only failure mode above
-that is quiet. A parametric application records "fillet *that* edge" and resolves
-it after a rebuild by walking history. Half-populated history does not error — it
-reopens the document with the wrong faces filleted.
+Watch the history row most closely: it is the only failure above that is
+silent. A parametric application records "fillet *that* edge" and, after a
+rebuild, finds the edge again by walking history. Incomplete history does not
+raise an error. It reopens the document with the wrong faces filleted.
 
 ---
 
 ## Planned integration layers
 
-None of these are scheduled. They are listed so their requirements are visible.
+None of these is scheduled. They are listed so their requirements stay visible.
 
-**C ABI** (`og-capi`) — the foundation for everything else. Opaque handles, POD
-structs, explicit ownership. Straightforward once the native API is stable.
+| Layer | Notes |
+|---|---|
+| **C ABI** (`og-capi`) | The base for everything else. Opaque handles, POD structs, explicit ownership. Straightforward once the native API is stable. |
+| **Python** | By far the most valuable binding: it is how most people would try the kernel. Built with PyO3 over the native API, not over the C ABI. |
+| **C++** | Real classes with virtual methods over the C ABI, for hosts that want to specialise behaviour. |
+| **WASM** | The kernel is pure Rust with no C dependencies, so this is nearly free. Keep it that way: weigh WASM before adding any dependency that could break it. |
 
-**Python** — the highest-value binding by a wide margin: it is how most people
-would actually try this kernel. PyO3 over the native API, not over the C ABI.
+**Drop-in replacement for another kernel's headers.** This is technically
+possible: a source-compatible façade that exposes another kernel's class names
+and signatures, built into libraries with the names that kernel's build-system
+probes expect, so a consumer recompiles without code changes. It is feasible,
+large, and firmly a downstream project. It is a poor thing to design *toward*,
+for two reasons:
 
-**C++** — real classes with virtuals over the C ABI, for hosts that want to
-specialise behaviour.
-
-**Drop-in replacement for an existing kernel's headers** — technically possible:
-a source-compatible façade exposing another kernel's class names and signatures,
-built into libraries with the names that kernel's build-system probes expect, so
-a consumer recompiles without being edited. Feasible, large, and firmly a
-downstream project. Two things make it a poor thing to design *toward*:
-
-- it drags in the other kernel's mistakes wholesale, including the pointer
-  identity model that `DATA_MODEL.md` §8 exists to escape;
-- some things cannot be supported at all. Any host API that hands a raw shape
-  pointer to a third-party binding runtime requires binary layout compatibility,
-  which is not a goal and would poison the design if it were.
-
-**WASM** — the kernel is pure Rust with no C dependencies, so this is close to
-free and worth keeping that way. Weigh it before adding any dependency that
-would compromise it.
+- it imports the other kernel's mistakes wholesale, including the
+  pointer-identity model that `DATA_MODEL.md` §8 exists to avoid;
+- some things cannot be supported at all. A host API that passes a raw shape
+  pointer to a third-party binding runtime needs binary layout compatibility.
+  That is not a goal, and pursuing it would damage the design.
 
 ---
 
-## Rules that protect this without constraining it
+## Rules that protect integration without constraining the kernel
 
-1. The native Rust API is designed for Rust. No parameter exists because a
+1. The native Rust API is designed for Rust. No parameter exists just because a
    binding might want it.
-2. Extension points are traits in the native API — progress, cancellation,
+2. Extension points are traits in the native API: progress, cancellation,
    diagnostics, tolerance policy, history observation.
-3. No public type's design is compromised for C representability. The C ABI
-   deals in handles; that is its job.
-4. No dependency that would break WASM or introduce a C toolchain requirement,
-   without an explicit decision recorded here.
+3. No public type is compromised to make it representable in C. The C ABI deals
+   in handles; that is its job.
+4. No dependency that would break WASM or require a C toolchain, unless an
+   explicit decision is recorded here.

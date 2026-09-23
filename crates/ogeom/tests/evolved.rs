@@ -3,7 +3,7 @@
 //!
 //! Every claim is a closed form. A square spine with a square profile is
 //! prisms along the sides and quarter-turn wedges at the corners, and its
-//! volume is the sum of four boxes and four quarter-cylinders — which is a
+//! volume is the sum of four boxes and four quarter-cylinders, which is a
 //! volume nobody has to approximate.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
@@ -39,7 +39,7 @@ fn square_spine(model: &mut Model, side: f64) -> Shape {
 }
 
 /// A closed rectangular profile standing on the spine's start, in the plane
-/// `x = 0` — square to the spine's first run along `+x`, and containing the
+/// `x = 0`: square to the spine's first run along `+x`, and containing the
 /// spine's normal `z`, which is what the sweep requires. It stands *outside*
 /// the spine, from `y = -outer` to `y = -inner`, and rises to `height`.
 fn upright_profile(model: &mut Model, inner: f64, outer: f64, height: f64) -> Shape {
@@ -63,7 +63,7 @@ fn upright_profile(model: &mut Model, inner: f64, outer: f64, height: f64) -> Sh
 ///
 /// The spine runs counter-clockwise about `+z`, so every corner turns left by
 /// a right angle and the wedge is a quarter of an annulus of the profile's own
-/// cross-section — the join the 2D offset makes, for the same reason.
+/// cross-section: the join the 2D offset makes, for the same reason.
 #[test]
 fn a_square_spine_sweeps_prisms_and_quarter_turn_corners() {
     let mut model = Model::new();
@@ -96,7 +96,7 @@ fn a_square_spine_sweeps_prisms_and_quarter_turn_corners() {
 
 /// The same spine given as a *face*. The profile is now an open wire that
 /// starts and ends on the spine's own plane, so the sweep leaves that plane
-/// open — and the face says to close it there. What comes back is a volume
+/// open, and the face says to close it there. What comes back is a volume
 /// where the wire spine would leave a shell.
 #[test]
 fn a_face_spine_closes_the_sweep_into_a_volume() {
@@ -153,8 +153,8 @@ fn a_face_spine_closes_the_sweep_into_a_volume() {
 }
 
 /// An arc in the spine turns the profile about that arc's own axis, so the
-/// swept piece is exact rather than chorded. A quarter-round corner spine —
-/// two straight runs joined by an arc — is measured against the closed form
+/// swept piece is exact rather than chorded. A quarter-round corner spine (
+/// two straight runs joined by an arc) is measured against the closed form
 /// for its own annulus.
 #[test]
 fn an_arc_in_the_spine_turns_the_profile_about_its_own_axis() {
@@ -218,7 +218,7 @@ fn an_arc_in_the_spine_turns_the_profile_about_its_own_axis() {
 
     // Two straight runs, plus a quarter turn of the profile about the bend's
     // axis. The turned piece is an annular quarter whose radii are the bend
-    // offset by the profile's own reach — Pappus, exactly.
+    // offset by the profile's own reach: Pappus, exactly.
     let area = (outer - inner) * height;
     let pi = core::f64::consts::PI;
     let straight = area * (run + run);

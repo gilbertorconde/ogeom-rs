@@ -1,5 +1,5 @@
 //! The `.brep` interchange format: what the writer emits, the reader
-//! returns — and a file written by hand from the specification reads as the
+//! returns, and a file written by hand from the specification reads as the
 //! shape it describes.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
@@ -105,7 +105,7 @@ fn seams_and_poles_come_back_as_themselves() {
     let (back, shape) = ogeom::io::brep::read(&text, T).unwrap();
     assert_eq!(counts(&back, &shape), counts(&model, &both));
 
-    // The sphere is still a sphere and the cylinder still a cylinder — read
+    // The sphere is still a sphere and the cylinder still a cylinder, read
     // back as the surfaces they are, not fitted into splines.
     let kinds = |model: &Model, shape: &Shape| -> (usize, usize) {
         let faces = explore_unique(model, shape, ShapeType::Face).unwrap();
@@ -126,7 +126,7 @@ fn seams_and_poles_come_back_as_themselves() {
     assert_eq!(kinds(&back, &shape), kinds(&model, &both));
     assert_eq!(kinds(&back, &shape), (1, 1));
 
-    // And the degenerate edges — the sphere's poles — survived as degenerate
+    // And the degenerate edges (the sphere's poles) survived as degenerate
     // edges rather than as nothing.
     let poles = |model: &Model, shape: &Shape| -> usize {
         explore_unique(model, shape, ShapeType::Edge)
@@ -146,7 +146,7 @@ fn seams_and_poles_come_back_as_themselves() {
 
 #[test]
 fn a_file_written_by_hand_reads_as_the_square_it_describes() {
-    // Four vertices, four edges on four lines, one wire, one planar face —
+    // Four vertices, four edges on four lines, one wire, one planar face,
     // spelled out against the specification rather than produced by the
     // writer, so the reader is tested against the format and not against
     // its own dialect.

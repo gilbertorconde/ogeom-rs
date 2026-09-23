@@ -4,7 +4,7 @@
 //! named camera, and the subset of the drawn callouts meant to be visible
 //! from it. Real AP242 files use views to sort PMI by sheet, and reading
 //! them without views flattens a structure the author meant. A note is
-//! smaller still — text a person attached to the document or to a product,
+//! smaller still: text a person attached to the document or to a product,
 //! with no geometry behind it.
 //!
 //! Both are document data like colours and layers: they take part in undo,

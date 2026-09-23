@@ -1,8 +1,8 @@
 //! Positions in 2D and 3D.
 //!
 //! A point is affected by translation; a [`Vector`] is not. Keeping them
-//! distinct types means the compiler rejects the classic errors — translating a
-//! normal, adding two positions — rather than letting them produce plausible
+//! distinct types means the compiler rejects the classic errors (translating a
+//! normal, adding two positions) rather than letting them produce plausible
 //! nonsense.
 //!
 //! The algebra that results is the affine one: point − point is a vector, point

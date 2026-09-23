@@ -98,7 +98,7 @@ impl Vector {
         )
     }
 
-    /// Scalar triple product `self · (a × b)` — the signed volume of the
+    /// Scalar triple product `self · (a × b)`: the signed volume of the
     /// parallelepiped the three vectors span.
     #[must_use]
     pub fn triple(self, a: Self, b: Self) -> f64 {
@@ -296,13 +296,13 @@ impl Vector2 {
 
     /// Dot product.
     ///
-    /// Two terms, so no fused multiply-add — see [`Vector::cross`] for why.
+    /// Two terms, so no fused multiply-add; see [`Vector::cross`] for why.
     #[must_use]
     pub fn dot(self, other: Self) -> f64 {
         self.x * other.x + self.y * other.y
     }
 
-    /// The scalar cross product — the signed area of the parallelogram the two
+    /// The scalar cross product: the signed area of the parallelogram the two
     /// vectors span. Positive when `other` is counter-clockwise from `self`.
     #[must_use]
     pub fn cross(self, other: Self) -> f64 {
@@ -321,7 +321,7 @@ impl Vector2 {
         self.square_magnitude().sqrt()
     }
 
-    /// This vector rotated a quarter turn counter-clockwise. Exact — no
+    /// This vector rotated a quarter turn counter-clockwise. Exact: no
     /// trigonometry involved.
     #[must_use]
     pub const fn perpendicular(self) -> Self {

@@ -83,7 +83,7 @@ fn a_filleted_box_edge_gains_a_tangent_cylinder() {
 
     // Tangency is the point of a fillet: where the blend meets the top face
     // there is no crease. The two surfaces share their normal along the
-    // tangency line at (1.5, y, 2.0) — the cylinder's radial direction there
+    // tangency line at (1.5, y, 2.0): the cylinder's radial direction there
     // is +z, the plane's normal exactly +z.
     let tangent = Point::new(1.5, 1.0, 2.0);
     let touching = faces
@@ -309,7 +309,7 @@ fn a_concave_edge_gains_an_additive_fillet() {
 
 /// Two blends on one body: a chamfer and then a fillet on far-apart edges.
 /// The second blend's tools march against the first blend's faces, find no
-/// crossing, and that is the answer — apart — rather than a refusal.
+/// crossing, and that is the answer, apart, rather than a refusal.
 #[test]
 fn a_second_blend_lands_beside_the_first() {
     let mut model = ogeom_topo::Model::new();

@@ -4,7 +4,7 @@
 //! packages.
 //!
 //! The native format comes first, in Phase 1, because it is what the test suite
-//! round-trips through — not because anyone wants it.
+//! round-trips through, not because anyone wants it.
 //!
 //! STEP is the one with real external value: there is no production-grade Rust STEP
 //! importer today. Parsing is the easy 20% (`ruststep`/`espr` cover it); the other
@@ -13,8 +13,8 @@
 //!
 //! # Two formats, two things
 //!
-//! [`native`] carries a whole document — topology, geometry, placements,
-//! tolerances, provenance — and reads back as the same model, handles and all.
+//! [`native`] carries a whole document (topology, geometry, placements,
+//! tolerances, provenance) and reads back as the same model, handles and all.
 //! [`stl`] carries a triangle soup and loses everything else, which is the
 //! format's nature rather than a shortcoming of the writer.
 //!

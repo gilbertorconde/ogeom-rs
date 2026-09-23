@@ -2,8 +2,8 @@
 //!
 //! glTF's structure is JSON and its payload is binary, so reading one needs a
 //! parser. This is that parser and nothing more: the grammar as the standard
-//! for JSON states it — objects, arrays, strings with their escapes, numbers,
-//! the three literals — with no schema, no derive, and no dependency. It is
+//! for JSON states it (objects, arrays, strings with their escapes, numbers,
+//! the three literals) with no schema, no derive, and no dependency. It is
 //! here rather than in a general place because the only thing that needs it is
 //! the format that carries its own structure this way.
 //!
@@ -73,7 +73,7 @@ impl Json {
     /// A non-negative whole number as an index.
     ///
     /// `None` where the value is absent, not a number, negative, or not
-    /// whole — an index of `2.5` is a broken document, not a rounding.
+    /// whole; an index of `2.5` is a broken document, not a rounding.
     #[must_use]
     pub fn index(&self) -> Option<usize> {
         let v = self.number()?;
@@ -258,7 +258,7 @@ const fn utf8_width(lead: u8) -> usize {
     }
 }
 
-/// A `\uXXXX` escape, surrogate pairs included — a character outside the
+/// A `\uXXXX` escape, surrogate pairs included: a character outside the
 /// basic plane is written as two of them, and one alone is not a character.
 fn parse_escape(bytes: &[u8], at: &mut usize) -> OgeomResult<char> {
     let first = hex4(bytes, at)?;

@@ -1,5 +1,5 @@
 //! Canonical recognition: deciding that a set of points *is* a plane, a
-//! cylinder, a cone, a sphere or a torus — not that it resembles one.
+//! cylinder, a cone, a sphere or a torus, not that it resembles one.
 //!
 //! The input is samples with normals; the output is the canonical surface
 //! and the worst deviation actually measured, or nothing. A fit is easy;
@@ -14,7 +14,7 @@
 //! revolution, every normal line of which meets the axis: the axis is the
 //! line that best meets them all, found linearly in Plücker coordinates and
 //! reweighted against the few samples off the surface, and the kind's
-//! profile — a line, a slanted line — is then fitted in the plane through
+//! profile (a line, a slanted line) is then fitted in the plane through
 //! it. A torus's tube radius is read from how fast its normals turn, and its
 //! spine as the circle the samples land on when shifted back along their
 //! normals by that radius. Normals estimated from a mesh's facets are only
@@ -59,7 +59,7 @@ impl Canonical {
 pub struct Recognized {
     /// What the samples are.
     pub surface: Canonical,
-    /// The worst distance from any sample to it — measured, not promised.
+    /// The worst distance from any sample to it: measured, not promised.
     pub deviation: f64,
 }
 
@@ -111,7 +111,7 @@ pub(crate) fn is_flat(points: &[Point], tolerance: f64, tol: Tolerances) -> bool
 
 /// As [`recognize_points`], among the curved kinds only.
 ///
-/// `chords` are straight segments between samples — a mesh's edges —
+/// `chords` are straight segments between samples (a mesh's edges),
 /// which break ties among fits: samples on two equal coaxial circles lie
 /// as exactly on a sphere as on a cylinder, but the cylinder's rulings run
 /// between them and the mesh draws those as edges on the surface, midpoint
@@ -173,9 +173,9 @@ fn curved_fits(
     fits
 }
 
-/// The fit to take among those within the tolerance: the closest — a
+/// The fit to take among those within the tolerance: the closest (a
 /// small patch of a torus may sit within the tolerance of a sphere too,
-/// and the sphere would not extrapolate — unless a simpler kind ties it,
+/// and the sphere would not extrapolate) unless a simpler kind ties it,
 /// within twice the best or at the noise floor of a thousandth of the
 /// tolerance, since a torus can mimic a cylinder as closely as it likes.
 ///
@@ -205,11 +205,11 @@ fn choose(fits: &[Recognized], chords: &[(Point, Point)], tolerance: f64) -> Opt
 }
 
 /// A curved surface through samples of which a few are not on it: fitted,
-/// the tenth that miss the closest fit farthest dropped — a few corners
+/// the tenth that miss the closest fit farthest dropped (a few corners
 /// far off the surface pull a fit a long way, so a median cut would not
-/// isolate them — and fitted again, until what is left fits within the
+/// isolate them), and fitted again, until what is left fits within the
 /// tolerance or too little is left. Returns the surface and which samples
-/// it keeps, or — when nothing fits — how close the closest fit came.
+/// it keeps, or, when nothing fits, how close the closest fit came.
 pub(crate) fn recognize_trimmed(
     points: &[Point],
     normals: &[Vector],
@@ -349,8 +349,8 @@ fn revolution_axis(
     normals: &[Vector],
     tol: Tolerances,
 ) -> Option<(Point, Direction)> {
-    // Reweighted: a few samples off the surface — a flat face's corner met
-    // along a tangent line — have normal lines far from the axis, and in
+    // Reweighted: a few samples off the surface (a flat face's corner met
+    // along a tangent line) have normal lines far from the axis, and in
     // plain least squares those few decide it. Each round weighs a line by
     // how far it passes from the last round's axis, relative to the
     // typical miss.
@@ -555,7 +555,7 @@ fn fit_torus(points: &[Point], normals: &[Vector], tol: Tolerances) -> Option<Ca
     // The tube is the tighter of the torus's two curvatures, so its radius
     // is read from how fast the normals turn between samples: the largest
     // turn per unit distance, taken robustly as a high quantile over pairs.
-    // The search then runs finely within a factor of two of it — the
+    // The search then runs finely within a factor of two of it: the
     // spine's fit sharpens to a narrow valley at the true radius, which a
     // coarse sweep over every scale steps across.
     let stride = points.len().div_ceil(160).max(1);
@@ -760,8 +760,8 @@ fn refine(seed: Canonical, points: &[Point], hopeless: f64, tol: Tolerances) -> 
     )]
     let count = points.len() as f64;
     let mut slowed = false;
-    // A torus on a small patch is ill-conditioned — its tube and its sweep
-    // trade off against each other — and closes in slowly before it closes
+    // A torus on a small patch is ill-conditioned (its tube and its sweep
+    // trade off against each other) and closes in slowly before it closes
     // in fast: it gets the steps, and is never given up for slowing.
     let patient = matches!(seed, Canonical::Torus(_));
     let (steps_allowed, least_gain) = if patient { (60, 1e-10) } else { (30, 1e-4) };
@@ -858,8 +858,8 @@ mod tests {
         assert!((c.radius() - 7.5).abs() < 1e-7, "{c:?}");
     }
 
-    /// A small patch of a thick torus — a few millimetres of a tube ten
-    /// millimetres in radius, its normals tipped off true — is recognized
+    /// A small patch of a thick torus (a few millimetres of a tube ten
+    /// millimetres in radius, its normals tipped off true) is recognized
     /// as that torus, exactly: the tube radius lies far outside the patch's
     /// own size, and the fit has to find it anyway.
     #[test]

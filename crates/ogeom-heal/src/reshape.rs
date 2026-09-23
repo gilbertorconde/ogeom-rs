@@ -2,8 +2,8 @@
 //! one pass.
 //!
 //! Healing operations want to say "this edge becomes that one, this face
-//! goes away" and have the change ripple upward — every wire holding the
-//! edge rebuilt, every face holding the wire, up to the solid — without
+//! goes away" and have the change ripple upward (every wire holding the
+//! edge rebuilt, every face holding the wire, up to the solid) without
 //! each fix reimplementing the traversal. A [`Reshape`] collects the
 //! requests; [`Reshape::apply`] rebuilds bottom-up, sharing rebuilt nodes
 //! so a substituted edge is one new node however many faces reach it, and

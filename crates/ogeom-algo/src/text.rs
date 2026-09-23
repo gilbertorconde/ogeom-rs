@@ -1,7 +1,7 @@
 //! Text to wires: a built-in single-stroke engraving font.
 //!
 //! The glyphs are the kernel's own, defined here as polyline strokes on a
-//! six-by-nine grid — the shapes a CNC engraver or a drawing title block
+//! six-by-nine grid: the shapes a CNC engraver or a drawing title block
 //! wants, dependency-free and deterministic. Outline fonts are a file
 //! format problem: when a TTF reader arrives with the exchange work, its
 //! glyph outlines feed the same wire builder. Until then, what this speaks
@@ -282,7 +282,7 @@ fn glyph_of(c: char) -> Option<Glyph> {
 /// Build `text` as engraved wires in the `xy` plane of `frame`, `height`
 /// tall at the capitals, reading along `x`.
 ///
-/// The result is a compound of open wires — one per stroke — with history
+/// The result is a compound of open wires, one per stroke, with history
 /// generating each from nothing. A space advances; any other character the
 /// font does not carry refuses by name.
 ///

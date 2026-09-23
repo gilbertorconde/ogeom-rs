@@ -1,8 +1,8 @@
 //! The screen reaches into the model: a ray down a bore, a marquee over a
 //! pocket, an aperture on a corner.
 //!
-//! Every claim here is settled against the model's own geometry — the struck
-//! face *is* the drill's cylinder, at the drill's radius — rather than
+//! Every claim here is settled against the model's own geometry (the struck
+//! face *is* the drill's cylinder, at the drill's radius) rather than
 //! against some other module's opinion of what the part contains. A pick that
 //! agreed with a feature recognizer and disagreed with the surface it hit
 //! would be wrong in the way that matters.
@@ -89,7 +89,7 @@ fn a_ray_down_the_bore_strikes_the_drills_own_cylinder() {
     assert!((axis.x - 30.0).abs() < 1e-9 && (axis.y - 15.0).abs() < 1e-9);
 }
 
-/// A marquee over the pocket corner reaches its floor — the face whose plane
+/// A marquee over the pocket corner reaches its floor: the face whose plane
 /// is the depth the pocket was milled to.
 #[test]
 fn a_marquee_over_the_pocket_reaches_its_floor() {

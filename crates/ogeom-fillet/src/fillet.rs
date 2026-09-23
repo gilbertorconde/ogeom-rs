@@ -5,9 +5,9 @@
 //! same ball rolling around the rim where a cylindrical wall meets its
 //! perpendicular cap traces a torus. These are the blends whose *new* surface
 //! costs nothing, and both are built the same way: the chamfer's wedge with
-//! the bevel exchanged for the envelope — legs running along the faces to the
-//! tangency lines, and the envelope between them, every pcurve exact. The
-//! boolean then does what it did for the chamfer — the legs melt into the
+//! the bevel exchanged for the envelope (legs running along the faces to the
+//! tangency lines, and the envelope between them, every pcurve exact). The
+//! boolean then does what it did for the chamfer: the legs melt into the
 //! solid's own faces by same-domain resolution, and the envelope stays as
 //! the blend.
 
@@ -82,7 +82,7 @@ impl Mate {
 /// a vertex another leaves *tangentially*, the two are a chain and their
 /// caps stand flush in one plane; where it ends against the band of one
 /// that left the vertex some other way, the later seat runs on through
-/// that band and the cut trims the two against each other — two fillets
+/// that band and the cut trims the two against each other: two fillets
 /// meeting at a corner.
 fn fillet_edge_meeting(
     model: &mut Model,
@@ -101,8 +101,8 @@ fn fillet_edge_meeting(
         Curve::Line(_) => planar_fillet(model, solid, edge, radius, mates, tol),
         Curve::Circle(c) => {
             // A rim on a planar cap and its coaxial wall is the revolved
-            // blend's, exact; a circle on any other pair of hosts — a bore
-            // down a ball's axis, a ring's own rim — is a seat like any
+            // blend's, exact; a circle on any other pair of hosts (a bore
+            // down a ball's axis, a ring's own rim) is a seat like any
             // other for the march.
             let seat = match revolved_seat(model, solid, edge, &c, tol) {
                 Ok(seat) => seat,
@@ -116,7 +116,7 @@ fn fillet_edge_meeting(
             }
             // An open arc is two different seats: a piece a boolean split
             // off a full rim, whose blend must run the whole turn, or a rim
-            // that genuinely stops — a stadium's rounded end. The wall
+            // that genuinely stops: a stadium's rounded end. The wall
             // itself answers: probe it just below the arc's complement.
             let frame = seat.frame_at(seat.centre, tol)?;
             let angle_of = |t: f64| -> OgeomResult<f64> {
@@ -156,7 +156,7 @@ fn fillet_edge_meeting(
 ///
 /// At a tangent junction the neighbouring wedges' end caps stand in one
 /// plane with one cross-section, and the boolean's same-domain resolution
-/// melts them — the blends join without a seam face between them. Where
+/// melts them: the blends join without a seam face between them. Where
 /// two straight edges of the chain meet at a corner, the later seat runs
 /// on through the earlier blend's band and the cut trims the two bands
 /// against each other along their own intersection: two fillets meeting
@@ -164,19 +164,19 @@ fn fillet_edge_meeting(
 /// does not, since the flush-ended state is what the corner tool
 /// ([`round_vertex`](crate::round_vertex)) is built for. Where three or
 /// more edges of the chain meet at one vertex, the corner tool closes it
-/// with the rolling ball's own patch — the octant of a sphere at a box
+/// with the rolling ball's own patch (the octant of a sphere at a box
 /// corner, the envelope of spheres and cylinders at a vertex no single
-/// ball touches — rather than leaving the bands' caps standing. The corner
+/// ball touches) rather than leaving the bands' caps standing. The corner
 /// goes first and the bands stop flush against its patch: bands built
 /// first crash into each other at an apex. A corner the tool does not
-/// speak — a curved face through it, a concave vertex — keeps its caps,
+/// speak (a curved face through it, a concave vertex) keeps its caps,
 /// which is the honest picture of a corner no ball rolls around. Other
 /// junctions leave the wedges' caps standing likewise.
 ///
 /// Only two blends that round the same way trim each other. A wedge's cut
 /// would eat a fill, and a fill cannot run on through a wedge's band, so
-/// where a convex edge meets a concave one — an L-bracket's front edge at
-/// its re-entrant edge — whichever is asked first takes the corner and the
+/// where a convex edge meets a concave one (an L-bracket's front edge at
+/// its re-entrant edge) whichever is asked first takes the corner and the
 /// other stops flush against its rail. The two orders then land on
 /// different solids, each exact, because the corner is genuinely one
 /// rounding or the other and no ball rolls round both.
@@ -184,7 +184,7 @@ fn fillet_edge_meeting(
 /// # Errors
 ///
 /// As [`fillet_edge`] per edge, and additionally if an earlier blend
-/// consumed or split a later edge — a chain whose members interfere is
+/// consumed or split a later edge: a chain whose members interfere is
 /// refused rather than guessed at.
 pub fn fillet_edges(
     model: &mut Model,
@@ -214,7 +214,7 @@ pub fn fillet_edges(
     }
     corners.retain(|(_, count)| *count >= 3);
     // A corner the tool rounds, or the solid unchanged where it does not
-    // speak the corner — which keeps the bands' caps, as before.
+    // speak the corner, which keeps the bands' caps, as before.
     let round = |model: &mut Model, built: Built, vertex: &Shape| -> OgeomResult<Built> {
         match crate::corner::round_vertex(model, &built.shape, vertex, radius, tol) {
             Ok(rounded) => Ok(Built {
@@ -271,7 +271,7 @@ pub fn fillet_edges(
         .collect::<OgeomResult<_>>()?;
     for (index, edge) in edges.iter().enumerate() {
         // The edge as it stands on the current solid: itself on the first
-        // step, and afterwards whatever the earlier blends left of it — one
+        // step, and afterwards whatever the earlier blends left of it: one
         // re-found stand-in, or the pieces a blend running out across it
         // split it into, each of which is a seat of its own ending against
         // that blend's band, which is exactly the corner it then meets.
@@ -329,9 +329,9 @@ pub fn fillet_edges(
 /// `start_radius` at the edge's start to `end_radius` at its end.
 ///
 /// For a linear law on a straight edge between planes the rolling ball's
-/// envelope is *exactly* a rational B-spline surface — degree one along the
+/// envelope is *exactly* a rational B-spline surface (degree one along the
 /// edge, a rational quadratic arc across it, the control net affine in the
-/// radius — so nothing here is fitted. The tangency lines are straight, the
+/// radius), so nothing here is fitted. The tangency lines are straight, the
 /// legs stay planar, and the wedge subtracts through the boolean like its
 /// constant-radius siblings.
 ///
@@ -387,7 +387,7 @@ pub fn fillet_edge_variable(
     }
 
     // The sections at the two ends: everything else is affine between them.
-    // On a concave edge every direction above is already mirrored — the
+    // On a concave edge every direction above is already mirrored: the
     // arithmetic below cannot tell which case it serves.
     let radii = [start_radius, end_radius];
     let apex = [seat.start, seat.end];
@@ -502,7 +502,7 @@ pub fn fillet_edge_variable(
     let arc1 = arc_edge(model, 1)?;
 
     // The blend face on the registered surface, oriented so its outward side
-    // leaves the wedge — decided by measurement at the middle rather than by
+    // leaves the wedge, decided by measurement at the middle rather than by
     // convention.
     let blend = {
         let wire = ogeom_algo::make_wire(
@@ -586,8 +586,8 @@ fn planar_fillet(
 ) -> OgeomResult<Built> {
     let mut seat = planar_seat(model, solid, edge, tol)?;
     // A straight seat asked to meet runs out. Where the edge ends against
-    // a neighbouring blend — a band tangent to one of the hosts at the end
-    // vertex — the material past the end is that blend's own rounding, and
+    // a neighbouring blend (a band tangent to one of the hosts at the end
+    // vertex), the material past the end is that blend's own rounding, and
     // the seat carries on through it until the ball has left the solid; the
     // cut then trims the two bands against each other along their own
     // intersection, which is what two fillets meeting at a corner are. At
@@ -678,8 +678,8 @@ fn planar_fillet(
 
 /// The cylindrical blend of a seat, whatever found the seat.
 ///
-/// A blend's construction cares about the seat — where the ball rolls and
-/// which way the two planes face — and not at all about whether an edge of
+/// A blend's construction cares about the seat (where the ball rolls and
+/// which way the two planes face) and not at all about whether an edge of
 /// the solid runs along it. An edge gives one; two faces that share nothing
 /// give the same one through their planes' own intersection, and everything
 /// from here down is common to both.
@@ -692,7 +692,7 @@ pub(crate) fn seated_fillet(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     // Order the two faces so the blend arc sweeps positively about the edge
-    // direction — the cylinder's parameterization and every arc below then
+    // direction: the cylinder's parameterization and every arc below then
     // run from the first face's tangency line to the second's.
     let (first, second) = if seat
         .along
@@ -797,8 +797,8 @@ pub(crate) fn seated_fillet(
     let cap1 = cap(model, apex1, contact_a1, contact_b1, length, seat.along)?;
 
     // The blend face itself. A cylinder's natural normal points away from its
-    // axis — into this wedge, whose material lies between the cylinder and
-    // the apex — so the face enters the shell reversed.
+    // axis (into this wedge, whose material lies between the cylinder and
+    // the apex), so the face enters the shell reversed.
     let blend = {
         let frame = Frame::new(centre, along_dir, radial_dir, tol)?;
         let surface = CylinderSurface::new(Cylinder::new(frame, radius, tol)?, (0.0, length))?;
@@ -825,7 +825,7 @@ pub(crate) fn seated_fillet(
 /// Four seats, one parameterization. With `sigma` the wall's outward radial
 /// sign and `tau` telling whether the wall extends away from the cap's
 /// outward side, the tube's centre circle sits at radius `R − sigma tau r`,
-/// lifted `tau r` against the cap's normal — and `tau` alone decides whether
+/// lifted `tau r` against the cap's normal, and `tau` alone decides whether
 /// the wedge subtracts (the external rim and the hole's rim, both convex) or
 /// fuses (the boss base and the blind hole's floor, both concave). The wedge
 /// is always the same three revolved faces: a band of the wall, an annulus
@@ -853,7 +853,7 @@ fn revolved_fillet(
     let flanks = revolved_flanks(model, &seat, radius, tube_rho, tol)?;
 
     // The blend: the quarter-tube between the tangencies, its natural normal
-    // away from the tube's centre — into the wedge — so always reversed.
+    // away from the tube's centre (into the wedge), so always reversed.
     let blend_band = {
         let surface: SurfaceGeometry = TorusSurface::new(Torus::new(
             seat.frame_at(tube_level, tol)?,
@@ -872,7 +872,7 @@ fn revolved_fillet(
 /// The edge of `solid` standing where `edge` stood.
 ///
 /// A boolean rebuilds every face it splits with fresh edges and its history
-/// speaks of faces, not of them — so a chain's later edge is re-found by
+/// speaks of faces, not of them, so a chain's later edge is re-found by
 /// geometry: the solid's edges whose own samples all lie on the sought
 /// edge's curve. A trimmed survivor qualifies, and so does each piece an
 /// earlier blend running out across the edge left of it; every one is a
@@ -880,8 +880,8 @@ fn revolved_fillet(
 ///
 /// A corner, though, and not merely a line. An earlier blend's end cap can
 /// stand in one of the hosts' own planes and leave a fresh edge along the
-/// very line the sought one runs on — an L-bracket's front blend caps in
-/// the wall's plane, along the wall's own top line — and there the two
+/// very line the sought one runs on (an L-bracket's front blend caps in
+/// the wall's plane, along the wall's own top line) and there the two
 /// faces are tangent: a seam across one flat, no corner to round, and no
 /// part of what was asked for.
 fn refind_edges(
@@ -972,7 +972,7 @@ fn refind_edges(
 /// The same four-seat torus geometry as [`revolved_fillet`], restricted to
 /// the arc's angular window and closed by two planar end caps in the
 /// meridian half-planes at its ends. Every face is a chart rectangle or a
-/// planar triangle, every edge an arc or a segment, every pcurve exact —
+/// planar triangle, every edge an arc or a segment, every pcurve exact,
 /// which is what lets a chain's neighbouring wedges melt at their shared
 /// caps.
 fn revolved_arc_fillet(
@@ -1064,7 +1064,7 @@ fn revolved_arc_fillet(
         Ok(make_edge_between(model, curve, (0.0, sweep), from, to, tol)?.shape)
     };
     // The quarter meridian at `theta`, from the wall contact to the cap
-    // contact — the tube's own circle, in the meridian plane.
+    // contact: the tube's own circle, in the meridian plane.
     let quarter = |model: &mut Model, theta: f64, from: &Shape, to: &Shape| -> OgeomResult<Shape> {
         let dir = dir_at(theta);
         let centre_m = tube_level + dir * tube_rho;
@@ -1134,7 +1134,7 @@ fn revolved_arc_fillet(
     };
 
     // The blend: the quarter-tube patch over the window, reversed as the
-    // full rim's band is — its natural normal points into the wedge.
+    // full rim's band is: its natural normal points into the wedge.
     let blend_patch = {
         let surface: SurfaceGeometry = TorusSurface::new(Torus::new(
             wedge_frame_at(tube_level)?,
@@ -1153,7 +1153,7 @@ fn revolved_arc_fillet(
     };
 
     // The end caps: planar triangles in the meridian half-planes, outward
-    // along the rim's travel — behind it at the start, ahead at the end.
+    // along the rim's travel: behind it at the start, ahead at the end.
     let tangent_at = |theta: f64| seat.up.cross(dir_at(theta));
     let end_cap =
         |model: &mut Model, theta: f64, outward: Vector, edges: Vec<Shape>| -> OgeomResult<Shape> {

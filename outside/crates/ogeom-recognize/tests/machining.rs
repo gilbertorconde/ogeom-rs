@@ -104,7 +104,7 @@ fn a_drilled_pocketed_block_reads_as_a_drill_and_a_mill_and_undoes_to_a_block() 
         .unwrap()
         .mass;
     // Whole again, up to the ten microns each filling tool stands past its
-    // own opening — the overshoot `remove_feature` states and explains.
+    // own opening: the overshoot `remove_feature` states and explains.
     // Over this bore and this pocket that is three and a half cubic
     // millimetres on fourteen thousand, and it is *above* the original
     // rather than below it, which is what filling means.

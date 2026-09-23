@@ -41,7 +41,7 @@ fn a_document_steps_back_and_forward_through_its_own_checkpoints() {
     assert!(doc.redo());
     assert!(!doc.redo());
 
-    // The product survives all of it — it was there before the first
+    // The product survives all of it: it was there before the first
     // checkpoint, so no step back reaches past it.
     assert!(doc.products().any(|(_, p)| p.name == "block"));
     let _ = part;

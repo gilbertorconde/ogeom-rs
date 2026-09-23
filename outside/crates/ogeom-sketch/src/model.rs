@@ -5,8 +5,8 @@
 //! parameters, every circle one more for its radius; lines and arcs borrow
 //! their points rather than owning coordinates, so coincidence never has to
 //! be simulated by equations when the model can simply share. Each constraint
-//! contributes one or two residual rows — zero exactly when the constraint
-//! holds — and the solver's whole job is driving the stacked residual vector
+//! contributes one or two residual rows (zero exactly when the constraint
+//! holds), and the solver's whole job is driving the stacked residual vector
 //! to zero while the diagnosis reads the system's shape.
 
 use ogeom_core::{OgeomResult, ogeom_bail};
@@ -75,7 +75,7 @@ pub(crate) struct ArcData {
 ///
 /// Chosen when the constraint is added, from the geometry as it stands:
 /// circles overlapping a shared interior are tangent internally, circles
-/// apart tangent externally. Recording the side keeps the residual smooth —
+/// apart tangent externally. Recording the side keeps the residual smooth;
 /// a constraint that re-decided its own meaning every iteration would be a
 /// discontinuity the solver falls into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +88,7 @@ pub enum TangencySide {
 
 /// One constraint: the full 2D vocabulary.
 ///
-/// Driving dimensions are constraints carrying their value — [`Constraint::Distance`],
+/// Driving dimensions are constraints carrying their value: [`Constraint::Distance`],
 /// [`Constraint::Angle`], [`Constraint::Radius`]. Driven dimensions are the
 /// same quantities *read* instead of imposed: [`Sketch::measure_distance`]
 /// and its siblings evaluate without entering the system.
@@ -132,8 +132,8 @@ pub enum Constraint {
     Symmetric(PointId, PointId, LineId),
     /// An arc's two rim points at one radius from its centre.
     ///
-    /// Added automatically by [`Sketch::add_arc`] — an arc with two radii is
-    /// not an arc — and returned from it, so a diagnosis that names it names
+    /// Added automatically by [`Sketch::add_arc`] (an arc with two radii is
+    /// not an arc) and returned from it, so a diagnosis that names it names
     /// something the caller has seen.
     ArcRadii(ArcId),
 }
@@ -152,7 +152,7 @@ pub struct Sketch {
     pub(crate) circles: Vec<CircleData>,
     pub(crate) arcs: Vec<ArcData>,
     pub(crate) constraints: Vec<Constraint>,
-    /// Whether the last constraint is a soft objective — a drag target —
+    /// Whether the last constraint is a soft objective (a drag target)
     /// whose rows enter at a whisper of the weight.
     pub(crate) soft_last: bool,
 }
@@ -181,7 +181,7 @@ impl Sketch {
     /// # Errors
     ///
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-    /// endpoints are the same point — a line needs two.
+    /// endpoints are the same point; a line needs two.
     pub fn add_line(&mut self, a: PointId, b: PointId) -> OgeomResult<LineId> {
         self.check_point(a)?;
         self.check_point(b)?;
@@ -253,7 +253,7 @@ impl Sketch {
     /// Mark a point as construction geometry.
     ///
     /// Construction geometry constrains and is constrained exactly like the
-    /// rest — the flag says only that it is scaffolding, not profile, for
+    /// rest; the flag says only that it is scaffolding, not profile, for
     /// whoever consumes the solved sketch.
     ///
     /// # Errors
@@ -457,7 +457,7 @@ impl Sketch {
 
     /// Evaluate every constraint's residuals at `params` into `out`.
     ///
-    /// Direction residuals are sines of angles — dimensionless, bounded — so
+    /// Direction residuals are sines of angles (dimensionless, bounded), so
     /// they are multiplied by `scale`, the sketch's characteristic length,
     /// to stand in the same units as the distance rows. Without that, the
     /// rank analysis would weigh a metre of error in one row against a
@@ -635,7 +635,7 @@ impl Sketch {
         }
     }
 
-    /// The parameter indices one constraint's residuals can touch —
+    /// The parameter indices one constraint's residuals can touch:
     /// structural sparsity, exact by construction, because a constraint
     /// only ever reads the entities it names.
     pub(crate) fn parameters_of(&self, constraint: &Constraint) -> Vec<usize> {

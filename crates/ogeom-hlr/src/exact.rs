@@ -9,12 +9,12 @@
 //! turns perpendicular to the view, which for the elementary surfaces is a
 //! curve with a closed form: a great circle on a sphere, a pair of rulings
 //! on a cylinder or a cone. Visibility is decided by asking the *faces*
-//! whether anything stands between a point and the eye — an exact
+//! whether anything stands between a point and the eye: an exact
 //! curve/surface interference and a trim test, not a triangle count. What is
 //! still sampled is the drawing itself, because a drawing is polylines; the
 //! curves it samples and the classification it carries are exact.
 //!
-//! A surface whose silhouette has no closed form — a torus, a spline — is
+//! A surface whose silhouette has no closed form (a torus, a spline) is
 //! refused by name rather than approximated here. The polygonal path draws
 //! those, and says so.
 
@@ -43,7 +43,7 @@ pub struct Silhouette {
 /// the view: for a sphere the great circle whose plane the direction is
 /// normal to, for a cylinder the two rulings furthest to either side, for a
 /// cone the two rulings through its apex where the same holds. Planes have
-/// none — a plane either faces the eye or does not — and a face whose
+/// none (a plane either faces the eye or does not), and a face whose
 /// surface has no closed-form silhouette is refused by name.
 ///
 /// Each curve comes back trimmed to the stretch that lies within its own
@@ -122,7 +122,7 @@ pub fn silhouettes(
                 // is perpendicular to the view. The normal of a ruling at
                 // angle u is radial tilted by the half-angle, so the
                 // condition is a linear one in (cos u, sin u) and has two
-                // roots — or none, when the eye is inside the cone's own
+                // roots, or none, when the eye is inside the cone's own
                 // angle and nothing turns away.
                 let cone = c.cone();
                 let frame = cone.frame();
@@ -150,7 +150,7 @@ pub fn silhouettes(
                         .collect::<OgeomResult<Vec<Curve>>>()?
                 }
             }
-            // No closed form — a torus, a spline. The silhouette is still
+            // No closed form: a torus, a spline. The silhouette is still
             // one equation on the surface's own chart, and one equation in
             // two unknowns is a curve, so it is *walked* rather than refused.
             other => marched_silhouettes(other, along, tol)?,
@@ -172,7 +172,7 @@ pub fn silhouettes(
 /// The reflect lines of a shape under a light: where the surface turns away
 /// from the *light* rather than from the eye.
 ///
-/// The same locus as a silhouette, asked of a different direction — which is
+/// The same locus as a silhouette, asked of a different direction, which is
 /// what a reflect line is, and why the two share a construction. A surface
 /// inspected this way shows its own creases: the lines move a long way for a
 /// small change in curvature.
@@ -260,7 +260,7 @@ pub fn iso_curves(
 ///
 /// The edges and silhouettes are sampled at `deflection` to become
 /// polylines, because a drawing is polylines. What is not sampled is the
-/// *geometry* they sample — exact curves on the surfaces, not mesh edges —
+/// *geometry* they sample (exact curves on the surfaces, not mesh edges),
 /// or the classification, which asks the faces themselves whether anything
 /// stands between a point and the eye.
 ///
@@ -569,18 +569,18 @@ fn perpendicular(v: Vector, tol: Tolerances) -> OgeomResult<Direction> {
 /// A surface's silhouette, as a condition the shared walker can follow.
 ///
 /// The whole content of a silhouette is one equation on the surface's own
-/// chart — the normal is square to the view,
+/// chart: the normal is square to the view,
 ///
 /// > `n(u, v) · d = 0`
 ///
-/// — which is one equation in two unknowns, and one equation in two unknowns
+/// which is one equation in two unknowns, and one equation in two unknowns
 /// is a curve. So a torus's silhouette needs no machinery a surface
 /// intersection did not already need: it is the same walk, following a
 /// different condition.
 ///
 /// Stated with the **unit** normal, and that is not a detail. The
 /// unnormalized `Sᵤ × Sᵥ` has the same zero set and a simpler derivative, but
-/// its residual carries the surface's own scale — on a torus of radius eight
+/// its residual carries the surface's own scale: on a torus of radius eight
 /// the correction had to drive `|Sᵤ × Sᵥ| · d` below a *length* tolerance,
 /// which is a demand on the angle some eight times tighter than anything
 /// asked for, and the walk answered by halving its step until it crawled.
@@ -616,7 +616,7 @@ impl ogeom_intersect::walk::Condition for SilhouetteOn<'_> {
         }
         let normal = cross / length;
         // The unit normal's own derivative: the part of the unnormalized
-        // one's across the normal, over the length — the projection is what
+        // one's across the normal, over the length; the projection is what
         // keeps a unit vector unit.
         let across = |d: Vector| (d - normal * d.dot(normal)) / length;
         let du = across(suu.cross(sv) + su.cross(suv));
@@ -684,8 +684,8 @@ fn on_polyline(line: &[Point], p: Point) -> f64 {
 /// Seeded the way the intersector seeds: the chart is sampled on a grid and
 /// every sign change of `n · d` between neighbours is a starting point,
 /// refined onto the condition before the walk begins. That is the same
-/// limitation with the same knob on it — a silhouette loop smaller than one
-/// cell is stepped over — and it is stated rather than discovered.
+/// limitation with the same knob on it (a silhouette loop smaller than one
+/// cell is stepped over), and it is stated rather than discovered.
 ///
 /// The walked polylines are fitted to curves at `chord`, and the fit's own
 /// error is added to it, so what comes back carries a budget rather than a
@@ -792,7 +792,7 @@ fn marched_silhouettes(
         if walked.points.len() < 4 {
             continue;
         }
-        // Fitted, with the fit's own error added to the walk's chord — the
+        // Fitted, with the fit's own error added to the walk's chord; the
         // curve says what it is worth.
         let Ok(fitted) = ogeom_geom::fit::fit_points(&walked.points, 3, options.chord, tol) else {
             continue;

@@ -1,5 +1,5 @@
 //! The classical 2D constructions: circles tangent to three entities,
-//! tangent lines, and bisector curves — the straightedge-and-compass
+//! tangent lines, and bisector curves: the straightedge-and-compass
 //! repertoire, solved algebraically.
 //!
 //! One linearization carries the whole tangency family. A circle with
@@ -15,8 +15,8 @@
 //! Three constraints give three linear equations in at most four unknowns;
 //! the solution family is a line, and re-imposing `Q = |c|² − r²` is a
 //! quadratic along it. Enumerating the sides, solving, and *verifying every
-//! candidate against the literal tangency distances* — the linearization can
-//! manufacture roots the geometry rejects — yields exactly the classical
+//! candidate against the literal tangency distances* (the linearization can
+//! manufacture roots the geometry rejects) yields exactly the classical
 //! solution sets, Apollonius's eight included.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -30,7 +30,7 @@ use crate::vector::Vector2;
 /// An entity a construction can be tangent to, or equidistant from.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Target2 {
-    /// A point — a zero-radius circle for tangency, itself for distance.
+    /// A point: a zero-radius circle for tangency, itself for distance.
     Point(Point2),
     /// An unbounded line.
     Line(Axis2),
@@ -39,8 +39,8 @@ pub enum Target2 {
 }
 
 impl Target2 {
-    /// The distance from `p` to this target's own locus — for a circle, the
-    /// distance to its *boundary*.
+    /// The distance from `p` to this target's own locus (for a circle, the
+    /// distance to its *boundary*).
     #[must_use]
     pub fn distance_to(&self, p: Point2) -> f64 {
         match self {
@@ -58,7 +58,7 @@ pub enum Placement {
     Through,
     /// Touches a line target.
     Tangent,
-    /// Touches a circle target from outside — the circles exclude each
+    /// Touches a circle target from outside; the circles exclude each
     /// other.
     Outside,
     /// The solution contains the target circle.
@@ -116,7 +116,7 @@ fn sides_of(target: &Target2) -> &'static [f64] {
     }
 }
 
-/// Circles tangent to all three targets — the Apollonius family and its
+/// Circles tangent to all three targets: the Apollonius family and its
 /// degenerate relatives, every candidate verified against the literal
 /// tangency distances before it is returned.
 ///
@@ -156,7 +156,7 @@ pub fn circles_tangent_to_three(
     Ok(out)
 }
 
-/// Circles of a fixed radius tangent to two targets — the same machinery
+/// Circles of a fixed radius tangent to two targets: the same machinery
 /// with the radius row supplied.
 ///
 /// # Errors
@@ -275,8 +275,8 @@ fn solve_linear(rows: &[Row; 3], _tol: Tolerances) -> Vec<(Point2, f64)> {
 }
 
 /// With `Q` present: the 3×4 system's solution line, cut by the quadratic
-/// `|c|² − r² − Q = 0`. The null vector comes from the four 3×3 minors —
-/// the generalized cross product — and the particular solution from the
+/// `|c|² − r² − Q = 0`. The null vector comes from the four 3×3 minors
+/// (the generalized cross product) and the particular solution from the
 /// best-conditioned 3×3 subsystem with the remaining unknown pinned to
 /// zero.
 fn solve_with_q(rows: &[Row; 3], tol: Tolerances) -> Vec<(Point2, f64)> {
@@ -453,7 +453,7 @@ fn targets_coincide(a: &Target2, b: &Target2, tol: Tolerances) -> bool {
 /// The locus of points equidistant from two targets.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Bisector2 {
-    /// A single line — two points, or two parallel lines.
+    /// A single line: two points, or two parallel lines.
     Line(Axis2),
     /// The two angle bisectors of intersecting lines.
     Pair([Axis2; 2]),
@@ -462,7 +462,7 @@ pub enum Bisector2 {
     /// A point inside a circle, or nested circles: an ellipse.
     Ellipse(Ellipse2),
     /// A point outside a circle, or circles of unequal radius: a hyperbola.
-    /// The equidistant locus is the branch on the frame's `+x` side — toward
+    /// The equidistant locus is the branch on the frame's `+x` side, toward
     /// the point, or toward the smaller circle; the mirror branch comes with
     /// the conic but bisects nothing.
     Hyperbola(Hyperbola2),
@@ -476,7 +476,7 @@ pub enum Bisector2 {
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-/// targets coincide, or a point lies on a line or circle target — the locus
+/// targets coincide, or a point lies on a line or circle target; the locus
 /// then degenerates to something that is not a curve.
 pub fn bisector(a: &Target2, b: &Target2, tol: Tolerances) -> OgeomResult<Bisector2> {
     if targets_coincide(a, b, tol) {
@@ -658,7 +658,7 @@ fn perp(v: Vector2) -> Vector2 {
     Vector2::new(-v.y, v.x)
 }
 
-/// The component of `to − axis.location` along the line — the foot offset.
+/// The component of `to − axis.location` along the line: the foot offset.
 fn perp_foot_shift(axis: &Axis2, to: Point2) -> Vector2 {
     let along = axis.direction.vector();
     along * along.dot(to - axis.location)

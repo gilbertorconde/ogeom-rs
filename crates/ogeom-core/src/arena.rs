@@ -1,6 +1,6 @@
 //! Typed generational arenas.
 //!
-//! Topology lives in arenas rather than behind reference counting — see
+//! Topology lives in arenas rather than behind reference counting; see
 //! `docs/DATA_MODEL.md` §11. Keys are small, `Copy`, comparable and hashable,
 //! which is what makes stable entity identity possible at all.
 //!
@@ -13,7 +13,7 @@
 //!
 //! A generation catches a key that has outlived its slot. It cannot catch a key
 //! from a *different* arena, because index 3 generation 0 means something in
-//! every arena — so a handle from one document resolved against another comes
+//! every arena, so a handle from one document resolved against another comes
 //! back with whatever sits at that index, and answers confidently about the
 //! wrong entity. Nothing about the result says so.
 //!
@@ -35,7 +35,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Hands out arena identifiers.
 ///
-/// Starts at one so that zero can mean *unscoped* — the state of a key built
+/// Starts at one so that zero can mean *unscoped*: the state of a key built
 /// by a deserializer that does not yet know which arena it will belong to.
 static NEXT_SCOPE: AtomicU32 = AtomicU32::new(1);
 
@@ -109,7 +109,7 @@ impl<T> Key<T> {
     /// Deliberately narrow. Forging a handle is precisely what generations
     /// exist to prevent, and [`Arena::insert`] is what issues one within a
     /// process. But a file records the handles a document was written with, and
-    /// a reader that could not rebuild them would have to renumber everything —
+    /// a reader that could not rebuild them would have to renumber everything,
     /// which is to say, hand back a different document.
     ///
     /// A key made this way is not trusted: it resolves through [`Arena::get`]
@@ -178,7 +178,7 @@ pub struct Arena<T> {
     free_head: Option<u32>,
     len: usize,
     /// Which arena this is. [`UNSCOPED`] until the first insert, because
-    /// `new` is `const` and a counter cannot be read from one — and an arena
+    /// `new` is `const` and a counter cannot be read from one, and an arena
     /// with nothing in it has issued no keys to disagree with.
     scope: u32,
 }
@@ -398,7 +398,7 @@ impl<T> Arena<T> {
     /// every generation zero.
     ///
     /// When this holds, [`Arena::len`] is also the next index [`Arena::insert`]
-    /// will hand out — the precondition for extending the arena by offset,
+    /// will hand out: the precondition for extending the arena by offset,
     /// where a caller predicts the keys of entries it is about to append.
     #[must_use]
     pub fn is_dense(&self) -> bool {
@@ -556,7 +556,7 @@ mod scope_tests {
     fn a_key_from_one_arena_does_not_resolve_in_another() {
         // The whole reason the scope exists. Index 0 generation 0 means
         // something in every arena, so without it this lookup succeeds and
-        // answers about the wrong value — confidently, with nothing about the
+        // answers about the wrong value, confidently, with nothing about the
         // result to say so.
         let mut a: Arena<&str> = Arena::new();
         let mut b: Arena<&str> = Arena::new();
@@ -616,7 +616,7 @@ mod scope_tests {
 
     #[test]
     fn a_clone_answers_to_the_originals_handles() {
-        // A clone is the same document — a snapshot — so handles into it keep
+        // A clone is the same document (a snapshot), so handles into it keep
         // working. If it took a fresh identifier, every handle a caller held
         // would silently stop resolving after a clone.
         let mut a: Arena<u32> = Arena::new();

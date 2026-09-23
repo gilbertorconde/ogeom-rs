@@ -78,7 +78,7 @@ fn ring(model: &mut ogeom_topo::Model, seam_off: f64, flip: bool) -> ogeom_topo:
 #[test]
 fn a_revolution_stands_right_side_out_whichever_way_its_profile_winds() {
     // The material side follows the wire's own walk, measured from the
-    // traversal itself — both windings of one profile revolve into the same
+    // traversal itself: both windings of one profile revolve into the same
     // ring, right side out.
     for flip in [false, true] {
         let mut model = ogeom_topo::Model::new();
@@ -183,7 +183,7 @@ fn through_ring(model: &mut ogeom_topo::Model, seam_off: f64) -> ogeom_topo::Sha
 fn a_through_groove_cuts_out_of_both_faces_wherever_the_seam_parks() {
     // The blind groove's ring stops inside the block. This one passes clean
     // through it and out of both z faces, in four lobes, and its inner wall
-    // stands at the block's own height — so the block's top plane touches it
+    // stands at the block's own height, so the block's top plane touches it
     // along a single line. The walls are cylinders about the turn's axis, and
     // naming them as such is what lets the plane meet them in exact rulings
     // rather than in a marched curve carrying a fit error.
@@ -211,7 +211,7 @@ fn a_through_groove_cuts_out_of_both_faces_wherever_the_seam_parks() {
         assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
 
         // What the ring takes is its annulus clipped to z in [0, 6], twice its
-        // 2 mm thickness: the half annulus, less what stands above z = 6 —
+        // 2 mm thickness: the half annulus, less what stands above z = 6,
         // which is the outer circle's segment there, the inner circle being
         // tangent to that plane and contributing none.
         let pi = core::f64::consts::PI;

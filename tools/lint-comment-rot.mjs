@@ -28,9 +28,9 @@ const AS_JSON = flag("--json");
 const BASE = opt("--base", process.env.LINT_COMMENT_ROT_BASE ?? "origin/main");
 
 // Narration of change. Each pattern must be specific enough that a comment
-// describing present behaviour cannot trip it — a bare "now" is excluded for
+// describing present behaviour cannot trip it; a bare "now" is excluded for
 // that reason, since "now that the key is derived" is legitimate.
-// Tier 1 — gating rules. Every pattern here names a construction that cannot
+// Tier 1: gating rules. Every pattern here names a construction that cannot
 // describe present behaviour, so a hit is a defect rather than a judgement
 // call. Vocabulary that merely CAN signal rot is deliberately excluded: this
 // codebase edits documents, so "the removed feature", "no longer visible" and
@@ -41,7 +41,7 @@ const GATING = [
   // "used to" is history only when narration takes the code as its
   // grammatical subject: a pronoun or relative ("we/it/this/which/that
   // used to …"). "The queue used to copy image data" and "Used to convert
-  // from …" are the purpose reading — "employed to" — which no lookbehind
+  // from …" are the purpose reading ("employed to"), which no lookbehind
   // separates from history reliably, so noun-subject forms stay advisory.
   [/\b(?:we|it|this|which|that|they|there|you|code|logic)\s+used to\b/i, "used to"],
   [/\bformerly\b/i, "formerly"],
@@ -65,7 +65,7 @@ const GATING = [
   [/(?:^|[\s(\[])(?=[0-9a-f]{7,40}(?:[\s).,\]]|$))(?=[0-9]*[a-f])[0-9a-f]{7,40}(?=[\s).,\]]|$)/, "bare commit SHA"],
 ];
 
-// Tier 2 — advisory only, never gates. These fire on correct comments often
+// Tier 2: advisory only, never gates. These fire on correct comments often
 // enough that they are a review aid, not a rule. Enable with --pedantic.
 const ADVISORY = [
   [/\bused to\b/i, "used to (noun subject)"],
@@ -79,7 +79,7 @@ const ADVISORY = [
   // Matching only a following determiner or pronoun keeps the rule off the two
   // shapes where a semicolon earns its place: a list whose items carry commas,
   // and a literal that contains one, such as `text/html; charset=utf-8`.
-  // Parenthetical glosses — "(unordered; the CLI sorts by semver)" — still trip
+  // Parenthetical glosses, "(unordered; the CLI sorts by semver)", still trip
   // it, which is why this advises rather than gates.
   [
     /[a-z0-9)\]]{2};\s+(?:an?|the|it|its|this|that|these|those|they|we|you|there|one|each|every|only|otherwise|so|then|no|not|any|all|both|either|neither|his|her|their|our)\b/i,
@@ -237,7 +237,7 @@ function commentOf(line, l, state) {
 
 const PEDANTIC = flag("--pedantic");
 
-// Escape hatch for a comment that must quote the banned shapes — this lint's
+// Escape hatch for a comment that must quote the banned shapes: this lint's
 // own documentation, or a note reproducing a historical error string verbatim.
 const IGNORE = /lint-comment-rot:\s*ignore/i;
 
@@ -332,7 +332,7 @@ if (AS_JSON) {
 }
 
 if (violations.length === 0) {
-  console.log(`comment-rot lint: clean — no change-narration or provenance references in ${MODE_ALL ? "tree" : MODE_STAGED ? "staged" : "added"} comments.`);
+  console.log(`comment-rot lint: clean; no change-narration or provenance references in ${MODE_ALL ? "tree" : MODE_STAGED ? "staged" : "added"} comments.`);
   process.exit(0);
 }
 

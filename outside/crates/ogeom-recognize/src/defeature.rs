@@ -2,14 +2,14 @@
 //! it added.
 //!
 //! A recognized feature knows its own geometry, and for the features that
-//! are a *volume* — a hole, a pocket, a boss — that geometry is enough to
+//! are a *volume* (a hole, a pocket, a boss), that geometry is enough to
 //! rebuild the volume and undo the operation with the boolean. A hole is
 //! filled by the bore it is; a pocket by the prism its floor sweeps up to
 //! the material it was cut from; a boss is shaved by the same prism run the
 //! other way.
 //!
-//! The features that are a *shape* rather than a volume — a fillet, a
-//! round, a chamfer — are refused here by name. Undoing one means restoring
+//! The features that are a *shape* rather than a volume (a fillet, a
+//! round, a chamfer) are refused here by name. Undoing one means restoring
 //! the corner it eased, which is the blend's own wedge construction run
 //! backwards, and that belongs with the blends.
 
@@ -39,14 +39,14 @@ use crate::recognize::Feature;
 ///
 /// So: a hundred thousand confusions, ten microns at millimetre tolerances.
 /// The restored solid is larger than the original by that times the
-/// openings' area — a cubic millimetre for a ten-millimetre bore — and this
+/// openings' area (a cubic millimetre for a ten-millimetre bore), and this
 /// is the number to look at if a caller's tolerance is tighter than that.
 const OVERSHOOT: f64 = 1e5;
 
 /// Remove a recognized feature from the solid it was recognized on.
 ///
 /// A hole is filled, a pocket is filled, a boss is shaved. The result is the
-/// solid as it would have been without that operation — measured, not
+/// solid as it would have been without that operation, measured, not
 /// approximated: each tool is built from the feature's own surfaces.
 ///
 /// # Errors
@@ -101,7 +101,7 @@ pub fn remove_feature(
             Construction,
             "undoing a blend or a bevel means restoring the corner it eased, \
              which is the wedge construction run backwards and belongs with \
-             the blends — see docs/PLAN.md"
+             the blends; see docs/PLAN.md"
         ),
     }
 }
@@ -124,7 +124,7 @@ fn bore_of(model: &mut Model, face: &Shape, tol: Tolerances) -> OgeomResult<Opti
     // congruent one. A fresh perpendicular would make a cylinder equal in
     // every measurable way and different in its frame, which the
     // intersector then has to discover by marching two coaxial equal-radius
-    // cylinders — minutes of work to conclude what an identical frame says
+    // cylinders: minutes of work to conclude what an identical frame says
     // for free.
     let reference = Direction::new(placement.apply_vector(cylinder.frame().x().vector()), tol)?;
     let bound = extent(model, std::slice::from_ref(face))?;
@@ -143,7 +143,7 @@ fn bore_of(model: &mut Model, face: &Shape, tol: Tolerances) -> OgeomResult<Opti
         return Ok(None);
     }
     // Past each end by the overshoot the boolean needs to see a crossing
-    // rather than a coincidence — see `OVERSHOOT`. Exactly flush is the
+    // rather than a coincidence; see `OVERSHOOT`. Exactly flush is the
     // coincidence, and the arrangement will not resolve it at both ends of
     // a bore at once.
     let margin = OVERSHOOT * tol.confusion();

@@ -1,12 +1,12 @@
 //! 3MF: the mesh package, written with its own archive.
 //!
 //! A 3MF file is a ZIP holding three parts: the content-types declaration,
-//! a relationship pointing at the model, and the model itself — an XML
+//! a relationship pointing at the model, and the model itself: an XML
 //! document of meshes and the items that place them. The mesh half is
 //! ordinary; the archive is the part a kernel usually reaches for a library
 //! to do, and this does not.
 //!
-//! It writes *stored* entries — no compression — which the ZIP format has
+//! It writes *stored* entries (no compression), which the ZIP format has
 //! always allowed and every reader accepts: what a CAD kernel needs to
 //! write a ZIP is the container, not the codec. A file written this way is
 //! larger than one deflated, and says so by being what it is.
@@ -36,7 +36,7 @@ pub struct Object<'a> {
 
 /// Write meshes as a 3MF package.
 ///
-/// One object per mesh, one item per object, all in millimetres — the
+/// One object per mesh, one item per object, all in millimetres, the
 /// format's own default unit and this kernel's.
 #[must_use]
 pub fn write_3mf(objects: &[Object<'_>]) -> Vec<u8> {
@@ -114,7 +114,7 @@ fn escaped(text: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-/// A ZIP archive of stored — uncompressed — entries.
+/// A ZIP archive of stored (uncompressed) entries.
 ///
 /// Local header, data, then a central directory and its end record. Every
 /// field the format requires and none it does not: no data descriptors (the
@@ -463,7 +463,7 @@ pub struct ThreeMfObject {
     /// The mesh in millimetres, components flattened into it and the build
     /// item's transform applied.
     pub mesh: Triangulation,
-    /// The object's colour as the file writes it — sRGB, RGBA in `[0, 1]` —
+    /// The object's colour as the file writes it (sRGB, RGBA in `[0, 1]`),
     /// where every triangle carries the same one.
     pub colour: Option<[f64; 4]>,
 }
@@ -484,7 +484,7 @@ const MATERIAL: &str = "http://schemas.microsoft.com/3dmanufacturing/material/20
 const PRODUCTION: &str = "http://schemas.microsoft.com/3dmanufacturing/production/2015/06";
 const MODEL_RELATIONSHIP: &str = "http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel";
 /// The extensions whose required use changes nothing this reader returns:
-/// production (read — it is how multi-part packages reference their
+/// production (read; it is how multi-part packages reference their
 /// objects), materials (read as far as colour), and the slicers' own.
 const UNDERSTOOD: [&str; 2] = [PRODUCTION, MATERIAL];
 
@@ -635,7 +635,7 @@ fn start_part(rels: &str) -> OgeomResult<Option<String>> {
 }
 
 /// A 3MF transform: the three rows the format writes, image of each axis,
-/// then the translation — a point is carried as a row vector.
+/// then the translation; a point is carried as a row vector.
 #[derive(Debug, Clone, Copy)]
 struct Affine {
     axes: [Vector; 3],

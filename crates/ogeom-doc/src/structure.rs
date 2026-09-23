@@ -9,7 +9,7 @@
 //! identical fasteners are ten thousand chains over one node.
 //!
 //! Appearance and naming ride alongside: a colour or a name attaches to a
-//! product or to a topology node — a whole part or one face of it — and
+//! product or to a topology node (a whole part or one face of it), and
 //! resolution walks from the most specific to the least.
 
 use ogeom_core::{OgeomResult, ogeom_bail};
@@ -22,7 +22,7 @@ use std::collections::HashMap;
 pub struct ProductId(u32);
 
 impl ProductId {
-    /// The id's position in the document's own product order — the index a
+    /// The id's position in the document's own product order: the index a
     /// file format writes and rebinds by re-adding in order.
     #[must_use]
     pub const fn index(self) -> u32 {
@@ -59,7 +59,7 @@ pub struct Instance {
     pub product: ProductId,
     /// The placement, as a location over the document's own datum store.
     pub location: Location,
-    /// The occurrence's own name — "bolt-3", not the product's "bolt".
+    /// The occurrence's own name: "bolt-3", not the product's "bolt".
     pub name: Option<String>,
 }
 
@@ -103,8 +103,8 @@ pub struct Occurrence {
 
 /// A model with product structure, appearance and names over it.
 ///
-/// The model stays reachable — construction, booleans and measurement all
-/// operate on it directly — and the document adds what a model alone does
+/// The model stays reachable (construction, booleans and measurement all
+/// operate on it directly), and the document adds what a model alone does
 /// not say: which shapes are products, how they assemble, what they are
 /// called and what colour they are.
 #[derive(Debug, Default)]
@@ -135,8 +135,8 @@ pub struct Document {
 /// can restore.
 ///
 /// The model itself is not in here, and that is the design rather than an
-/// omission. Geometry arenas are append-only — a boolean's result does not
-/// erase its inputs, it stands beside them — so undoing an operation means
+/// omission. Geometry arenas are append-only (a boolean's result does not
+/// erase its inputs, it stands beside them), so undoing an operation means
 /// putting back what the document *said*, not unmaking what the model
 /// holds. The nodes the undone operation built stay where they are,
 /// unreferenced, which is what a garbage-collected arena is for.
@@ -214,8 +214,8 @@ impl Document {
     /// Place `product` inside `assembly` at `at`.
     ///
     /// The transform becomes a datum in the model's own store, so the
-    /// instance's placement is structural — comparable by identity, shared by
-    /// every traversal — rather than a matrix to be compared with an epsilon.
+    /// instance's placement is structural (comparable by identity, shared by
+    /// every traversal) rather than a matrix to be compared with an epsilon.
     ///
     /// # Errors
     ///
@@ -487,7 +487,7 @@ impl Document {
         (self.history.len() - self.undone, self.undone)
     }
 
-    /// The position of a product in write order — how the native format
+    /// The position of a product in write order: how the native format
     /// refers to one across a save.
     #[must_use]
     pub fn product_index(&self, id: ProductId) -> usize {
@@ -556,7 +556,7 @@ impl Document {
         self.notes = state.notes;
     }
 
-    /// Colour a shape — a whole part's shape or one sub-shape of it.
+    /// Colour a shape: a whole part's shape or one sub-shape of it.
     ///
     /// Keyed by the topology node, so every occurrence of an instanced shape
     /// shows the colour: the colour belongs to the entity, not to one
@@ -589,7 +589,7 @@ impl Document {
         product.colour
     }
 
-    /// Name a shape's node — a face someone will want to find again.
+    /// Name a shape's node: a face someone will want to find again.
     pub fn set_name(&mut self, shape: &Shape, name: impl Into<String>) {
         self.names.insert(shape.node(), name.into());
     }
@@ -610,7 +610,7 @@ impl Document {
         self.names.iter().map(|(&node, name)| (node, name.as_str()))
     }
 
-    /// Replace a part's shape — the modification step of an edit.
+    /// Replace a part's shape: the modification step of an edit.
     ///
     /// The old shape's node-attached colours, names and PMI stay where they
     /// are: entities that survived the modification keep their annotations,

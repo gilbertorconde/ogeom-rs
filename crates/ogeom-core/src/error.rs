@@ -2,7 +2,7 @@
 //!
 //! See `docs/DATA_MODEL.md` §12. The variants cover the failure vocabulary a
 //! kernel needs, chosen to line up with the categories applications already
-//! handle — but they are returned, not thrown, and no hardware signal is ever
+//! handle, but they are returned, not thrown, and no hardware signal is ever
 //! converted into one of them.
 //!
 //! The rule this encodes: an algorithm that did not converge says so. It does
@@ -17,7 +17,7 @@ pub type OgeomResult<T> = Result<T, OgeomError>;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum OgeomError {
-    /// Arguments cannot produce the requested entity — three collinear points
+    /// Arguments cannot produce the requested entity: three collinear points
     /// for a circle, a zero-length direction, a self-intersecting wire.
     ///
     #[error("construction failed: {0}")]
@@ -39,7 +39,7 @@ pub enum OgeomError {
     #[error("null object: {0}")]
     NullObject(Cause),
 
-    /// A key did not resolve — most often a stale arena key, or a shape used
+    /// A key did not resolve: most often a stale arena key, or a shape used
     /// with an arena that does not own it.
     #[error("dangling reference: {0}")]
     Dangling(Cause),
@@ -55,7 +55,7 @@ pub enum OgeomError {
     #[error("not done: {0}")]
     NotDone(Cause),
 
-    /// The result exists but violates an invariant from `docs/DATA_MODEL.md` —
+    /// The result exists but violates an invariant from `docs/DATA_MODEL.md`:
     /// tolerance containment, orientation consistency, edge representation
     /// agreement. Never returned silently; producing invalid topology is worse
     /// than failing.
@@ -88,7 +88,7 @@ impl OgeomError {
 /// A short, cheap explanation attached to an [`OgeomError`].
 ///
 /// Static in the common case so that returning an error costs no allocation on
-/// paths that are hit often — failed intersections inside a boolean, for
+/// paths that are hit often: failed intersections inside a boolean, for
 /// instance, are routine control flow rather than exceptional.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cause {
@@ -137,7 +137,7 @@ impl From<fmt::Arguments<'_>> for Cause {
 macro_rules! ogeom_err {
     ($variant:ident, $msg:literal) => {
         // Through `format_args!` rather than straight to `Cause::Static`, so a
-        // literal with inline captures — `"index {i}"` — interpolates instead
+        // literal with inline captures (`"index {i}"`) interpolates instead
         // of being taken verbatim. `Arguments::as_str` returns `Some` for a
         // literal with nothing to interpolate, so the allocation-free path is
         // preserved exactly where it applies.

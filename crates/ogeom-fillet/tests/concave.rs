@@ -128,7 +128,7 @@ fn a_hole_rim_gains_the_mirrored_toroidal_blend() {
 /// section, starting wherever the cut split it. The blend's wedge shares
 /// the wall with the plate, and the shared rim's image on that chart is a
 /// straight pcurve running from a quarter turn round to a quarter turn
-/// past the seam — which the boolean's tear remover, seeing two samples
+/// past the seam, which the boolean's tear remover, seeing two samples
 /// three quarters of a turn apart, read as a wrap and turned back on
 /// itself. The wall then never split, its strip inside the wedge survived,
 /// and the shell would not close.

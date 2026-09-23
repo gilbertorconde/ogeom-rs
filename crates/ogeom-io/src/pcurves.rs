@@ -1,7 +1,7 @@
 //! Pcurves for imported faces, shared by the exchange readers.
 //!
-//! The machinery itself lives in `ogeom_algo::pcurve_fit` — fitting a trim
-//! by projection is geometry, not exchange — and the readers reach it
+//! The machinery itself lives in `ogeom_algo::pcurve_fit` (fitting a trim
+//! by projection is geometry, not exchange), and the readers reach it
 //! through this shim under the names they always used.
 //!
 //! What is written here is the part neither reader can do edge by edge:
@@ -40,7 +40,7 @@ pub(crate) fn shifted_to_meet(
     // Whole turns only, and only where the gap is plainly some number of
     // them. A branch chosen wrongly leaves a gap within rounding of a whole
     // period; anything else is the file saying something this does not
-    // understand — a cone's wire that already stood half a turn open, say —
+    // understand (a cone's wire that already stood half a turn open, say),
     // and half a period rounds to one, which would open it further. Left
     // alone, such a wire is exactly as it was.
     let whole = |gap: f64, period: f64| -> f64 {
@@ -68,7 +68,7 @@ pub(crate) fn shifted_to_meet(
 ///
 /// Which axis to step along is the surface's business, not the curve's. A
 /// seam lies *on* the join, so it runs along the direction the surface does
-/// not close and stands still in the one it does — and closure, not
+/// not close and stands still in the one it does, and closure, not
 /// periodicity, is the test, the same distinction a skinned wall forced
 /// everywhere else in this module. A patch closed in `v` over `(-π, π)`,
 /// whose `u` is a knot range that closes on nothing, had its second column
@@ -76,7 +76,7 @@ pub(crate) fn shifted_to_meet(
 /// drew as one flat triangle across itself, over whatever it was a boss for.
 ///
 /// Where the surface closes on neither axis the edge is a slit rather than
-/// a seam — one curve, walked twice — and the same column serves both ways.
+/// a seam (one curve, walked twice), and the same column serves both ways.
 pub(crate) fn seam_other_side(
     image: &PlanarCurve,
     range: (f64, f64),
@@ -95,7 +95,7 @@ pub(crate) fn seam_other_side(
         (false, false) => return Ok(image.clone()),
         (true, false) => false,
         (false, true) => true,
-        // Closed both ways — a torus. The seam stands still in the axis it
+        // Closed both ways: a torus. The seam stands still in the axis it
         // is a seam of, which is the one it does not run along.
         (true, true) => runs_in_u,
     };
@@ -129,7 +129,7 @@ mod tests {
     /// sideways puts it off the chart, the wire never closes, and the face
     /// collapses to a single triangle laid across whatever it was a boss
     /// for. Closure decides the axis, not periodicity and not `u` by
-    /// default — the same distinction a skinned wall forces everywhere.
+    /// default: the same distinction a skinned wall forces everywhere.
     #[test]
     fn a_seam_steps_across_the_axis_its_surface_closes_on() {
         use ogeom_geom::Surface as _;

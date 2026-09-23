@@ -2,19 +2,19 @@
 //!
 //! An [`Interval`] encloses a real number the program cannot represent: every
 //! operation returns bounds that certainly contain the true result, obtained
-//! by computing with the IEEE operations — which are correctly rounded, so
-//! the true value lies within one ulp of the computed one — and then widening
+//! by computing with the IEEE operations (which are correctly rounded, so
+//! the true value lies within one ulp of the computed one) and then widening
 //! each bound one step outward. The enclosure is conservative, never wrong.
 //!
 //! The point of carrying bounds is [`Interval::certain_sign`]: a sign
 //! decision made through an interval is either *certain*, because zero lies
 //! outside the bounds, or honestly undecided, because it does not. That is
-//! the filter a predicate wants — answer fast when floating point can, and
+//! the filter a predicate wants: answer fast when floating point can, and
 //! say so when it cannot, instead of reading rounding noise as a direction.
 //!
 //! The vocabulary is the arithmetic predicates need: add, subtract, multiply,
 //! negate, square, absolute value, square root, and division away from zero.
-//! Transcendentals are deliberately absent — the standard library does not
+//! Transcendentals are deliberately absent; the standard library does not
 //! state error bounds for them, and an enclosure that might not enclose is
 //! worse than none.
 
@@ -78,7 +78,7 @@ impl Interval {
 
     /// The sign of the true value, where the bounds decide it: `None` means
     /// zero lies inside the enclosure and floating point genuinely cannot
-    /// tell — which is an answer, not a failure.
+    /// tell, which is an answer, not a failure.
     #[must_use]
     pub fn certain_sign(&self) -> Option<Sign> {
         if self.lo > 0.0 {
@@ -92,7 +92,7 @@ impl Interval {
         }
     }
 
-    /// The negation, exact — negation never rounds.
+    /// The negation, exact; negation never rounds.
     #[must_use]
     pub const fn neg(&self) -> Self {
         Self {
@@ -140,7 +140,7 @@ impl Interval {
         }
     }
 
-    /// The square — tighter than `mul` with itself, because a square cannot
+    /// The square, tighter than `mul` with itself, because a square cannot
     /// be negative even when the interval straddles zero.
     #[must_use]
     pub fn square(&self) -> Self {
@@ -174,7 +174,7 @@ impl Interval {
     }
 
     /// The square root, for enclosures of non-negative values. A lower bound
-    /// pushed below zero by widening is clamped — the true value it encloses
+    /// pushed below zero by widening is clamped; the true value it encloses
     /// was non-negative. An interval entirely below zero has no real root
     /// and returns `None`.
     #[must_use]

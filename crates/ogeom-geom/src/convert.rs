@@ -1,6 +1,6 @@
 //! Exact B-spline forms for the analytic curves.
 //!
-//! Every curve here has a *rational* B-spline form that is exact — not a fit, not
+//! Every curve here has a *rational* B-spline form that is exact: not a fit, not
 //! an approximation to a tolerance. A circle is a piecewise rational quadratic
 //! and lands on the circle at every parameter, which is the whole reason
 //! rational weights exist and why `docs/PLAN.md` calls them load-bearing rather
@@ -10,7 +10,7 @@
 //!
 //! Three things need it. Exchange formats describe free-form geometry and
 //! nothing else, so an exact circle has to become a NURBS to be written at all.
-//! A general affine transform — a shear, a non-uniform scale — carries a circle
+//! A general affine transform (a shear, a non-uniform scale) carries a circle
 //! to an ellipse and an ellipse to something with no analytic name, but carries
 //! a NURBS to a NURBS by moving its control points, exactly. And an algorithm
 //! that only knows one representation can be given every shape in it.
@@ -18,7 +18,7 @@
 //! # The parameter does not survive, and cannot
 //!
 //! A circle's parameter is its angle. Its rational quadratic form's is not, and
-//! no reparameterization of a rational quadratic makes it one — the two are
+//! no reparameterization of a rational quadratic makes it one; the two are
 //! related by an arctangent. So conversion preserves the *curve* and not the
 //! parameterization, and every converted curve is handed back on `[0, 1]`.
 //!
@@ -44,8 +44,8 @@ use ogeom_core::ogeom_err;
 /// The widest span one rational quadratic Bézier is allowed to cover.
 ///
 /// A quarter turn. The construction degrades as the span approaches half a
-/// turn — the tangents meet further and further away and the weight falls to
-/// zero — so the arc is split until every span is comfortably inside that.
+/// turn (the tangents meet further and further away and the weight falls to
+/// zero), so the arc is split until every span is comfortably inside that.
 const MAX_SPAN: f64 = core::f64::consts::FRAC_PI_2;
 
 impl Curve {
@@ -53,7 +53,7 @@ impl Curve {
     ///
     /// Exact rather than fitted: the result passes through the same points as
     /// the original at corresponding parameters, to rounding. The
-    /// *correspondence* is not the identity — see the module documentation for
+    /// *correspondence* is not the identity; see the module documentation for
     /// why it cannot be.
     ///
     /// # Errors
@@ -104,7 +104,7 @@ impl Curve {
             }
 
             // A parabola is a quadratic, so one *polynomial* Bézier covers any
-            // span of it exactly — no weights needed. The middle control point
+            // span of it exactly, no weights needed. The middle control point
             // is where the tangents at the ends meet.
             Self::Parabola(_) | Self::Hyperbola(_) => tangent_quadratic(self, lo, hi, tol),
 
@@ -180,8 +180,8 @@ fn segment(from: Point, to: Point) -> OgeomResult<BSplineCurve> {
 
 /// The angular range to build, accounting for a curve that runs backwards.
 ///
-/// A reversed conic evaluates at the *negated* angle — not at a mirrored one
-/// within its range — so converting the span `[lo, hi]` of it means walking the
+/// A reversed conic evaluates at the *negated* angle (not at a mirrored one
+/// within its range), so converting the span `[lo, hi]` of it means walking the
 /// underlying conic from `-lo` to `-hi`, which runs the other way round.
 const fn oriented(lo: f64, hi: f64, reversed: bool) -> (f64, f64) {
     if reversed { (-lo, -hi) } else { (lo, hi) }
@@ -190,7 +190,7 @@ const fn oriented(lo: f64, hi: f64, reversed: bool) -> (f64, f64) {
 /// A circular or elliptical arc as a piecewise rational quadratic.
 ///
 /// One construction serves both, because an ellipse is the affine image of a
-/// circle and the rational quadratic form is preserved by an affine map — the
+/// circle and the rational quadratic form is preserved by an affine map: the
 /// control points move with it and the *weights do not change at all*. Writing
 /// the ellipse case separately would be writing the same thing twice with two
 /// chances to get it wrong.
@@ -249,7 +249,7 @@ fn conic_arc(
         let start = from + step * k as f64;
         let middle = start + half;
         let end = start + step;
-        // Stored homogeneous — the point already multiplied by its weight —
+        // Stored homogeneous (the point already multiplied by its weight)
         // because that is the form evaluation wants and converting on the way
         // in and out again would only add rounding.
         control.push(Weighted {
@@ -278,7 +278,7 @@ fn conic_arc(
 ///
 /// Exact for a parabola, which *is* a quadratic. For a hyperbola the same
 /// construction is exact with a weight on the middle point, and the weight
-/// falls out of requiring the curve to pass through its own midpoint — which is
+/// falls out of requiring the curve to pass through its own midpoint, which is
 /// what is solved for here rather than quoted from a table, so it stays right
 /// for any span.
 fn tangent_quadratic(
@@ -368,7 +368,7 @@ fn meet(
 /// A spline traced the other way.
 ///
 /// The control points reverse and the knots mirror within their own span. No
-/// geometry moves — this is the same curve, walked backwards.
+/// geometry moves; this is the same curve, walked backwards.
 fn reverse(curve: &BSplineCurve) -> OgeomResult<BSplineCurve> {
     let (a, b) = curve.knots().domain();
     let mut knots: Vec<f64> = curve.knots().knots().iter().map(|k| a + b - k).collect();
@@ -384,8 +384,8 @@ impl Curve {
     /// tolerance, at the curve's own parameters.
     ///
     /// The approximation [`Curve::to_bspline`] refuses to make silently:
-    /// a helix, an offset curve, a curve on a surface — anything with no
-    /// exact rational form — is sampled at its own parameters and fitted
+    /// a helix, an offset curve, a curve on a surface (anything with no
+    /// exact rational form) is sampled at its own parameters and fitted
     /// through them, the fit measured against the curve *between* the
     /// samples as well as at them, and the sampling doubled until the
     /// tolerance is met or the budget runs out. The result is
@@ -411,14 +411,14 @@ impl Curve {
 impl BSplineCurve {
     /// This curve at a degree no higher than `max_degree`, to a stated
     /// tolerance: itself where it already is, and otherwise a fit at its
-    /// own parameters — what an exchange format with a degree limit needs
+    /// own parameters: what an exchange format with a degree limit needs
     /// written. Same-parameter with the original, error measured.
     ///
     /// # Errors
     ///
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
-    /// `max_degree` is zero, the curve is periodic — a ring has no ends to
-    /// fit between — or the tolerance is not a distance.
+    /// `max_degree` is zero, the curve is periodic (a ring has no ends to
+    /// fit between), or the tolerance is not a distance.
     pub fn restricted_to_degree(
         &self,
         max_degree: usize,
@@ -457,8 +457,8 @@ impl crate::surface::BSplineSurface {
     /// direction, to a stated tolerance: itself where it already is, and
     /// otherwise a fit through a grid of its own points, the grid doubled
     /// until the fit holds every sample to the tolerance or the budget
-    /// runs out. The fit's parameterization is its own — chord-length
-    /// through the grid, not the patch's — so a pcurve spoken against the
+    /// runs out. The fit's parameterization is its own (chord-length
+    /// through the grid, not the patch's), so a pcurve spoken against the
     /// patch must be re-derived against the result.
     ///
     /// # Errors
@@ -760,7 +760,7 @@ mod tests {
     #[test]
     fn a_full_circle_becomes_an_exact_rational_quadratic() {
         // Exact, not fitted: every sample lands on the circle to rounding. This
-        // is the property that makes rational weights load-bearing — a
+        // is the property that makes rational weights load-bearing: a
         // polynomial spline cannot represent a circle at all, only approach it.
         let circle: Curve = CircleCurve::new(Circle::new(Frame::WORLD, 2.5, T).unwrap()).into();
         let spline = circle.to_bspline(T).unwrap();
@@ -953,7 +953,7 @@ impl crate::surface::SurfaceGeometry {
     /// needing a construction of its own: revolve an exactly-converted profile
     /// and the patch is exact wherever the profile was.
     ///
-    /// As for curves, the *parameterization* does not survive — a cylinder's
+    /// As for curves, the *parameterization* does not survive: a cylinder's
     /// `u` is an angle and the patch's is not. See the module documentation.
     ///
     /// # Errors
@@ -965,8 +965,8 @@ impl crate::surface::SurfaceGeometry {
         use crate::surface::SurfaceGeometry as S;
         let ((ua, ub), (va, vb)) = self.domain();
         match self {
-            // An offset of a free-form basis has no exact spline form —
-            // the unit normal is a quotient — and this function's contract
+            // An offset of a free-form basis has no exact spline form
+            // (the unit normal is a quotient), and this function's contract
             // is exactness.
             S::Offset(_) => ogeom_bail!(
                 Construction,
@@ -1211,8 +1211,8 @@ mod surface_tests {
 
     /// How far the converted patch strays from the surface it came from.
     ///
-    /// Measured *implicitly* — the distance from each sampled point of the
-    /// patch to the analytic surface — rather than by comparing the two at
+    /// Measured *implicitly* (the distance from each sampled point of the
+    /// patch to the analytic surface) rather than by comparing the two at
     /// proportional parameters. Comparing parameters would be measuring the
     /// wrong thing: a rational quadratic's parameter is not proportional to the
     /// angle it sweeps, so even an exact conversion disagrees pointwise, and a
@@ -1270,7 +1270,7 @@ mod surface_tests {
     #[test]
     fn a_cylinder_becomes_an_exact_rational_patch() {
         // Circular in `u` and straight in `v`, so the exact patch is the exact
-        // circle lofted — and it lands on the cylinder everywhere, not near it.
+        // circle lofted, and it lands on the cylinder everywhere, not near it.
         let cylinder: SurfaceGeometry =
             CylinderSurface::new(Cylinder::new(Frame::WORLD, 2.0, T).unwrap(), (0.0, 5.0))
                 .unwrap()
@@ -1349,7 +1349,7 @@ mod surface_tests {
     fn a_revolution_becomes_the_exact_patch_its_own_construction_is() {
         // A line parallel to the axis, revolved three quarters of a turn: the
         // surface is a cylinder wall, so the patch can be measured against
-        // the cylinder's own signed distance — an independent authority, not
+        // the cylinder's own signed distance, an independent authority, not
         // the revolution evaluating itself.
         use crate::curve::LineCurve;
         let line =
@@ -1388,7 +1388,7 @@ impl Curve {
     /// A shear or an uneven scale is not a placement: it carries a circle to an
     /// ellipse, and an ellipse to a conic with no analytic name here. So the
     /// curve is converted to its exact B-spline form first and the *control
-    /// points* are moved, which an affine map does exactly — a B-spline is an
+    /// points* are moved, which an affine map does exactly: a B-spline is an
     /// affine combination of its control points, so transforming them and
     /// transforming every point of the curve are the same thing.
     ///
@@ -1396,7 +1396,7 @@ impl Curve {
     /// the converted one rather than the original. That is the price of a
     /// transform the analytic types cannot express, and it is why
     /// [`transformed`](crate::traits::Transformable::transformed) takes only a
-    /// [`Transform`](ogeom_math::Transform) — a placement keeps the type, and only
+    /// [`Transform`](ogeom_math::Transform): a placement keeps the type, and only
     /// this does not.
     ///
     /// # Errors
@@ -1415,8 +1415,8 @@ impl Curve {
             .iter()
             .map(|c| {
                 // Stored homogeneous, so the point has already been multiplied
-                // by its weight. An affine map is not linear — it has a
-                // translation — so the translation has to be scaled by the
+                // by its weight. An affine map is not linear (it has a
+                // translation), so the translation has to be scaled by the
                 // weight too, or a rational curve's control points drift apart
                 // from its weights and the curve leaves the shape entirely.
                 let position = c.point();
@@ -1504,7 +1504,7 @@ mod affine_tests {
         // weight, so a transform with a translation has to scale the
         // translation by the weight too. Getting that wrong leaves a circle's
         // control points and weights inconsistent, and the curve wanders off
-        // the shape entirely — most visibly under a pure translation, where
+        // the shape entirely, most visibly under a pure translation, where
         // nothing should change but the position.
         let circle: Curve = CircleCurve::new(Circle::new(Frame::WORLD, 2.0, T).unwrap()).into();
         let shift = GeneralTransform::new(Matrix3::IDENTITY, Vector::new(10.0, -4.0, 6.0));

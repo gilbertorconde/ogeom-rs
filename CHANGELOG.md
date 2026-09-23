@@ -11,6 +11,16 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **`solid_from_mesh` rebuilds spheres and tori that close on themselves.**
+  A whole sphere or torus comes back as one face. A sphere cut by one
+  plane comes back as a cap, cut by two parallel planes as a zone, and a
+  torus cut across its tube as a bent tube, each bounded by full circles.
+  Before, these stayed faceted.
+  The thin triangles a mesh often has round a pole, whose normals lean
+  far from the surface's, join the region that surrounds them.
+
 ### Fixed
 
 - **A drill through a finely faceted part spent minutes pairing
@@ -23,8 +33,8 @@ bump may break the API and a patch bump may not.
   same part pairs its sections in eighteen seconds.
 - **A drill through a face of many holes spent seconds on that one
   face.** A section was tried against every boundary edge of its faces,
-  and a flat face bounded by a few thousand edges — a panel with four
-  hundred vents — took them all; and choosing a split piece's nine probe
+  and a flat face bounded by a few thousand edges (a panel with four
+  hundred vents) took them all; and choosing a split piece's nine probe
   points compared each of hundreds of thousands of candidates with every
   column already taken. Each boundary edge carries its own bound, and
   one outside the face the section must also lie in is skipped; the probe
@@ -43,15 +53,15 @@ bump may break the API and a patch bump may not.
   crossing of a tolerant edge is one junction for both: the part that
   refused cuts to a valid solid.
 
-## [0.3.0] — 2026-09-23
+## [0.3.0] - 2026-09-23
 
 A minor release, for one change a caller can see: `FixReport` gains a
-field, and a struct literal that built one no longer compiles — the only
+field, and a struct literal that built one no longer compiles. That is the only
 break `cargo semver-checks` finds against 0.2.1. Meshes come in: 3MF
 packages read, deflated, multi-part and ZIP64 alike, and a triangle mesh
 becomes a solid whose planar regions merge into faces and whose curved
-regions are rebuilt on the cylinders, cones, spheres and tori they lie on
-— a scope addition `docs/SCOPE.md` argues. A boolean on such a solid of
+regions are rebuilt on the cylinders, cones, spheres and tori they lie on,
+a scope addition `docs/SCOPE.md` argues. A boolean on such a solid of
 thousands of faces takes a second where it took minutes. Imports hold the
 tolerance rules they state, IGES round-trips real parts, and a face drawn
 out to its whole plane, or the long way round an ellipse, meshes on
@@ -100,8 +110,8 @@ itself.
   the archive is read through its central directory, so entries streamed
   with their sizes after the data read too. `read_package` reads deflated
   entries as well, checks every entry's checksum, and reads ZIP64
-  archives — which streaming writers emit whatever a package's size, and
-  which half the 3MF files downloaded from model sites are — refusing
+  archives (which streaming writers emit whatever a package's size, and
+  which half the 3MF files downloaded from model sites are), refusing
   encrypted entries and archives spanning several disks by name.
 - **`restore_containment`**, the pass that establishes the tolerance
   containment rule the checker enforces: every edge widened to at least
@@ -111,8 +121,8 @@ itself.
 ### Fixed
 
 - **A sliver face was drawn as its whole plane.** A planar face narrower
-  than a millionth of its length — a strip 163 mm long and 40 nm wide, as
-  one CAD export leaves along a mirrored panel — has its two long sides
+  than a millionth of its length (a strip 163 mm long and 40 nm wide, as
+  one CAD export leaves along a mirrored panel) has its two long sides
   merged into one line by the mesher, and no boundary ring survived; the
   mesher then took it for a face without wires and drew the plane's whole
   window, a hundred metres each way, so an imported printer's skirts
@@ -120,8 +130,8 @@ itself.
   collapse encloses nothing, and meshes to nothing.
 - **A boolean on a solid of many small faces took minutes.** Rebuilding
   the result compared every strand end with every vertex minted so far,
-  and `sew` compared every edge with every other — projecting one's
-  middle onto the other's curve for each pair — and every vertex and
+  and `sew` compared every edge with every other (projecting one's
+  middle onto the other's curve for each pair), and every vertex and
   face likewise, so the cost grew with the square of the face count even
   when the tool touched a handful of faces. A thin drill through a
   converted mesh of 6 000 faces took two minutes. Vertices, junctions
@@ -149,8 +159,8 @@ itself.
   occurrence's children with that occurrence's orientation composed in,
   then oriented the new node as the occurrence again. The occurrence being
   rebuilt came out right, but the new node it stored was inverted, and
-  every other occurrence of it — a wire shared by a face reached reversed
-  — walked its edges tail to head. Children are read through the forward
+  every other occurrence of it (a wire shared by a face reached reversed)
+  walked its edges tail to head. Children are read through the forward
   occurrence and the result oriented once.
 - **Collapsing a degenerate edge opened a gap.** `fix_shape` collapses an
   edge shorter than its vertices' tolerances onto one vertex, and the
@@ -158,14 +168,14 @@ itself.
   curves stopped the collapsed length short of it. The survivor widens to
   reach every vertex it absorbs.
 - **`write_iges` overflowed the eighty-column record, and its own reader
-  refused the file.** A near-zero real went out in positional notation —
+  refused the file.** A near-zero real went out in positional notation:
   a coefficient of 1.5e-51 spelt in sixty-nine characters where a record
   holds sixty-four. Every real takes the shorter of its positional and
   exponent spellings, and a parameter longer than a whole record fills
   every record it crosses, so the reader rejoins it with nothing inserted.
 - **`read_iges` refused a solid whose curves missed their vertices by
   nanometres.** IGES states no tolerances, so every vertex was built at the
-  confusion tolerance, and a writer's last digit — half a nanometre —
+  confusion tolerance, and a writer's last digit (half a nanometre)
   refused the whole solid; a vertex a hair past a bounded curve's end
   also asked for a parameter outside the curve. A vertex's tolerance now
   grows to state its curves' miss, up to the millimetre past which a
@@ -173,14 +183,14 @@ itself.
   curve's domain. Every solid in the exchange corpus survives the
   kernel's own IGES write and read, at the volume it went out with.
 
-## [0.2.1] — 2026-09-23
+## [0.2.1] - 2026-09-23
 
 A patch release: no public signature changed in any crate, checked against
 0.2.0 by `cargo semver-checks`. It adds, and it fixes output that was wrong.
 Fillets reach every host the march can seat on, fitted patches included,
 and the corner tool rounds any convex planar vertex. Edges asked together
 meet: `chamfer_edges` mitres, and `fillet_edges` closes a shared corner
-with the rolling ball's patch rather than leaving the bands' caps — a
+with the rolling ball's patch rather than leaving the bands' caps. This is a
 visible change for any caller that rounds a box corner in one call. A
 viewer meshing face by face can now agree with the whole-shape mesh along
 every edge, and STEP files from plainer writers and mesh converters read.
@@ -188,7 +198,7 @@ every edge, and STEP files from plainer writers and mesh converters read.
 ### Added
 
 - **The marched blend takes fitted hosts as far as the melt.** A
-  B-spline patch — or a swept or revolved surface — is a host the march
+  B-spline patch, or a swept or revolved surface, is a host the march
   had refused by name. It marches now: the chart inverts by projection
   warm-started from the last station, a patch that meets itself at its
   seam wraps as a periodic one does, the patch is continued past its
@@ -214,14 +224,14 @@ every edge, and STEP files from plainer writers and mesh converters read.
   operation it is ten faces and the exact volume. Three bevels at a
   convex vertex meet at one point.
 - **The corner tool rounds a vertex no single ball touches.** A
-  rectangular pyramid's apex, an irregular pentagonal one — any convex
-  planar vertex whose faces share no tangent ball — was refused by name.
+  rectangular pyramid's apex, an irregular pentagonal one, or any convex
+  planar vertex whose faces share no tangent ball was refused by name.
   The ball's centre may sit anywhere a radius in from every host plane,
   and at such a vertex that region's tip is a few points joined by short
   ridges; the rounded corner is the exact envelope of the rolling ball, a
   sphere at each tip vertex and a cylinder along each ridge, each cut
-  with its own compartment — the sphere by the one-ball tool on its three
-  planes, the ridge by the flush fillet of a virtual crease — the
+  with its own compartment (the sphere by the one-ball tool on its three
+  planes, the ridge by the flush fillet of a virtual crease), the
   compartments meeting cap to cap on the planes square to the ridges. A
   ridge seven microns long stays the sliver of cylinder it is. The
   sphere's pole stands along a ridge where there is one, so the ridge
@@ -231,7 +241,7 @@ every edge, and STEP files from plainer writers and mesh converters read.
   sliver of that plane, and the flush fillet meeting the sliver still
   dies in the cut.
 - **IGES reads more of the 1980s.** A conic arc (104) of any axis-aligned
-  kind reads as its own curve — hyperbola and parabola alongside the
+  kind reads as its own curve: hyperbola and parabola alongside the
   ellipse, the arc's ends read off the file's points whichever way round
   they are listed. A ruled surface (118) reads as the degree-one patch
   between the two curves' exact spline forms, raised to one degree and
@@ -263,23 +273,23 @@ every edge, and STEP files from plainer writers and mesh converters read.
   and `BSplineSurface::extended` continue a curve past either end, or a
   patch past any of its four sides, by about a length in space: the
   polynomial continuation of the curve's own end derivatives to the
-  order asked, raised to the degree and joined on — a rational arc
+  order asked, raised to the degree and joined on. A rational arc
   continued at order two stays on its circle, and a cylinder patch
   continued round its circle or along its axis stays on its cylinder.
   `widened_to_hold` continues a patch, side by side, as far as a point
   stands off the side its projection clamped to, which is what the
   neighbour-extension steps need on spline faces.
 - **Marched blends on cone, sphere and torus hosts.** A seat with one
-  host a cone, a sphere or a torus — a bore through a cone's wall, a hole
-  drilled through a ring's tube, a ball drilled off its centre — was
+  host a cone, a sphere or a torus (a bore through a cone's wall, a hole
+  drilled through a ring's tube, a ball drilled off its centre) was
   refused by name; the chart inversions those surfaces have in closed
   form are carried now, and a band whose rings start on different columns
   gets a fitted connector where only a cylinder had an exact one. A full
-  circular rim whose hosts are not a planar cap and its coaxial wall — a
-  bore straight down a ball's axis — takes the march too, where the
+  circular rim whose hosts are not a planar cap and its coaxial wall (a
+  bore straight down a ball's axis) takes the march too, where the
   revolved blend had refused it by name. Under it, two fixes any seat
   could hit: a looping seat whose join is a
-  corner — the two arcs of a boolean's seam joined end to end — steers
+  corner (the two arcs of a boolean's seam joined end to end) steers
   the march by a smooth refit of itself, since a march cannot cross a
   corner in the guide's derivatives; and the band's first station is
   re-solved exactly on the apex column, where a station a fraction of a
@@ -290,8 +300,8 @@ every edge, and STEP files from plainer writers and mesh converters read.
   refused. Both draft now the way a mould-maker drafts: the face becomes
   the ruled surface through its crossing with the neutral plane, each
   ruling the pull direction turned by the draft angle about the
-  crossing's tangent — the construction the planar and revolved drafts
-  are the closed forms of. The crossing is read off the face's own mesh
+  crossing's tangent. The planar and revolved drafts are the closed
+  forms of this construction. The crossing is read off the face's own mesh
   and corrected onto the surface, so it lies inside the face whatever
   the chart does; the support is the ruled surface itself, degree one
   along the ruling, between a cubic fitted through the crossing and one
@@ -347,7 +357,7 @@ every edge, and STEP files from plainer writers and mesh converters read.
   fitted by projection.
 - **An open edge whose vertices stand on its curve short of the ends.**
   A file that writes the whole spline and lets the vertices say where
-  the edge stops — millimetres in — had the edge held to the whole curve,
+  the edge stops, millimetres in, had the edge held to the whole curve,
   overshooting its neighbours, and the faces it bounded drew as nothing.
   The window between the vertices' own feet on the curve is taken, and
   the report tallies it as `vertex-window`.
@@ -357,7 +367,7 @@ every edge, and STEP files from plainer writers and mesh converters read.
   walk that starts on a window's rim halves its step to a micron and
   grows it back only twofold a point, so most of its samples crowd one
   end, and a cubic through them could not be the straight line they lay
-  on — a section came back twelve hundred millimetres off it, and the
+  on: a section came back twelve hundred millimetres off it, and the
   boolean refused the wedge for running beyond a turn. A joint fit that
   misses its target centripetally is fitted again by chord length, and
   the closer of the two stands. A loop
@@ -375,9 +385,9 @@ every edge, and STEP files from plainer writers and mesh converters read.
 - **A fitted pcurve hooked off its curve between the fitter's samples.**
   The reader fits an edge's pcurve by projecting samples spaced evenly in
   the curve's parameter and measuring the fit at those samples alone. A
-  curve is free to run far faster at one end than the other — a fan
+  curve is free to run far faster at one end than the other (a fan
   blade's root meets its hub through most of its bend inside the first
-  sample interval — and there the cubic hooked four tenths of a
+  sample interval), and there the cubic hooked four tenths of a
   millimetre past the curve while every sample sat within a hundredth:
   the ring crossed the face's neighbouring ring in the chart and the hub
   drew with overlapping triangles and open edges at every blade. The fit
@@ -391,8 +401,8 @@ every edge, and STEP files from plainer writers and mesh converters read.
   asked, as does one whose boundary crosses itself at the chord, and
   `triangulate` tells the faces across those edges to draw them the
   same. `triangulate_face` could not be told, so a viewer keeping one
-  mesh per face — and the kernel's own stored tessellation, built the
-  same way — drew the two sides of such an edge to different points: a
+  mesh per face (and the kernel's own stored tessellation, built the
+  same way) drew the two sides of such an edge to different points: a
   seam of cracks round every fillet and along every thin plate.
   `edge_chords_for` answers the agreement once per shape and
   `triangulate_face_with` draws a face to it; `tessellate` stores its
@@ -412,17 +422,17 @@ every edge, and STEP files from plainer writers and mesh converters read.
   written with its source read as they were meant; the source-spelt
   formation's product is taken from its third slot whether it stands
   alone or inside a complex instance, and a product whose name slot is
-  blank — a mesh converter fills the id and leaves the name — reads by
+  blank (a mesh converter fills the id and leaves the name) reads by
   its id rather than its entity number. An edge whose
   vertices stand at descending parameters on its curve whatever its
-  sense flag says — every edge written forward and the line left to run
-  the other way — is reversed to run with the curve, tallied as
+  sense flag says (every edge written forward and the line left to run
+  the other way) is reversed to run with the curve, tallied as
   `edge-against-curve`.
 - **Removing a tangent chain of blends.** A stadium's top rim rounded
   in one call, its four bands named for removal together, failed by
   name: at a tangent junction neither band's crease pierces the other's
-  wall — the straight crease grazes the round wall and the round crease
-  grazes the flat one — so no corner was placed and the straight crease
+  wall (the straight crease grazes the round wall and the round crease
+  grazes the flat one), so no corner was placed and the straight crease
   was taken for a wrapping band. The junction is now where two creases
   touch, placed exactly by the cross-section edge the two bands share:
   the foot of that edge on either crease. And a band standing across a
@@ -432,8 +442,8 @@ every edge, and STEP files from plainer writers and mesh converters read.
 - **A torus band between two parallels drew as two whole tori laid over
   each other.** Each wire of such a face is a single edge winding the
   chart once. Walked one wire at a time, each rim closed on its own
-  translate a tube-period over — which is the whole torus cut along that
-  rim — and two of those cancel where they overlap: the band drew to
+  translate a tube-period over, which is the whole torus cut along that
+  rim, and two of those cancel where they overlap: the band drew to
   more area than its torus has. Wound rims are paired into one ring
   before any rim is closed alone, on either periodic axis, so a ball's
   belt between two latitude wires holds the same way. The parity check
@@ -442,8 +452,8 @@ every edge, and STEP files from plainer writers and mesh converters read.
   that carries two such bands tessellates in a twentieth of the time.
 - **A face narrower than the chord shaded as a saw of fins.** Drawn at
   the caller's chord its boundary sags between points by more than the
-  face is wide — a thread flank a tenth of a millimetre wide at a chord
-  three times that — and every triangle across the width stands off the
+  face is wide (a thread flank a tenth of a millimetre wide at a chord
+  three times that), and every triangle across the width stands off the
   surface by the sag. A face narrower than four chords has its edges
   drawn to a quarter of its width, and the faces across those edges draw
   them the same. The whole-shape pass reads every face's width off its
@@ -455,11 +465,11 @@ every edge, and STEP files from plainer writers and mesh converters read.
   corner had no normal.** The surface has none there, and the mesh carried
   a zero, which shaded the tip black and dragged every normal it was
   welded with towards nothing. The vertex now carries the limit normal
-  along its own column — the apex of a cone seen up a ruling is that
-  ruling's normal — found a step inside the domain. On a real assembly,
+  along its own column, found a step inside the domain: the apex of a
+  cone seen up a ruling has that ruling's normal. On a real assembly,
   1,199 such vertices; none now.
 
-## [0.2.0] — 2026-09-22
+## [0.2.0] - 2026-09-22
 
 A minor bump before 1.0, which is to say it breaks one thing: the default
 angular deflection is half a radian. Everything else is additions and
@@ -477,17 +487,17 @@ time 0.1.0 took.
   compound of loose faces or an open shell; tighten tolerances; diagnose
   again. `Fixed` carries the result, its history, and a `FixReport` of
   what was done and what the checker still sees. Small faces and small
-  solids are not removed — that is defeaturing — and the report says so
+  solids are not removed (that is defeaturing), and the report says so
   by leaving them in `after`.
 
 - **`Surface::curvature_at`**: the principal curvatures and directions at
   a point, signed against the surface's own normal, with the mean and
   Gaussian curvatures they combine to and whether the point is an
-  umbilic — what curvature display and zebra analysis ask, from the two
+  umbilic: what curvature display and zebra analysis ask, from the two
   fundamental forms of the jet the trait already carried.
 - **Ruled lofts take skew walls.** A wall between two segments that are
-  not coplanar — a square lofted to the same square turned an eighth of a
-  turn — is the bilinear patch through its four corners, the ruled
+  not coplanar (a square lofted to the same square turned an eighth of a
+  turn) is the bilinear patch through its four corners, the ruled
   surface between them and exact, where it was refused by name and
   routed to the skinned loft.
 
@@ -498,7 +508,7 @@ time 0.1.0 took.
   fixture cut from the file that showed it:
   - `Triangulation::is_closed` counted an edge's uses and wanted exactly
     two. It now requires every edge to be crossed as often each way, which
-    is what the divergence theorem needs — it catches a face wound inside
+    is what the divergence theorem needs: it catches a face wound inside
     out (which counting passed) and accepts four triangles round one edge
     (which counting refused).
   - A face narrower than the chord error its boundary is drawn with had a
@@ -518,19 +528,19 @@ time 0.1.0 took.
     the test now, folded rings are slid back into the domain, and
     `Surface` evaluation wraps a parameter past a closed join instead of
     refusing it.
-  - An inner loop thinner than a micron — arcs out, fitted splines back —
+  - An inner loop thinner than a micron (arcs out, fitted splines back)
     is a slit, not a hole, and is no longer handed to the triangulator.
 - **A long bore drew square between its cross holes.** A cylinder never
   sags along its axis, so its grid got one interior row, and the Delaunay
   triangulation bridged from each rim to it with triangles a quarter turn
-  wide — under the three chords the repair pass fires at, so they stayed.
+  wide, under the three chords the repair pass fires at, so they stayed.
   Grid cells are held to a bounded aspect: rows close enough, measured
   through the surface, that no triangle reaches across more than a few
   columns. Fewer triangles on the bore than before, not more.
 - **Faces shaded as quilts of creases.** Delaunay in the chart is not
-  Delaunay on the surface when the chart's units differ by axis — a
+  Delaunay on the surface when the chart's units differ by axis (a
   cylinder's `u` in radians against its `v` in millimetres, a fitted
-  strip's `u` over a fiftieth of a unit against a `v` over one — and the
+  strip's `u` over a fiftieth of a unit against a `v` over one), and the
   slivers it makes across the narrow way lift folded, flat across a bend
   the surface takes in between, their normals pointing where none of
   their vertices' do. Three things, measured on a real assembly by the
@@ -543,8 +553,8 @@ time 0.1.0 took.
     where a point hugging a boundary chord makes a sliver that stands off
     the surface as a fin;
   - the angular deflection is not asked of a segment both shorter than
-    the chord tolerance and a sixteenth of its edge — a fitted edge's
-    end hook, a few microns long, which bisection chased down to the
+    the chord tolerance and a sixteenth of its edge, such as a fitted edge's
+    end hook a few microns long, which bisection chased down to the
     resolution of the parameter and handed the face a fan of hairs.
   The same assembly meshes in a third of the time with a fifth fewer
   triangles, the slivers the repair pass used to chase now never made.
@@ -562,7 +572,7 @@ time 0.1.0 took.
 - **At a coarser angular deflection, three more ways a face came apart**,
   each with a fixture cut from the file that showed it:
   - A boundary drawn coarsely enough to cross itself and enclose *nothing*
-    — an annulus narrower than its rims' sag — was refused, where one that
+    (an annulus narrower than its rims' sag) was refused, where one that
     enclosed fragments was drawn again with finer edges. Empty is short
     too; a face is refused only when finer edges still enclose nothing.
   - The sag repair inserted a sliver's centre that was its own apex to the
@@ -571,7 +581,7 @@ time 0.1.0 took.
     a vertex already there is not inserted.
   - A grid point that fell exactly on a boundary segment running
     diagonally across the chart was inserted and split that constraint on
-    one face alone — a T-junction against the face across the edge. Grid
+    one face alone: a T-junction against the face across the edge. Grid
     points on the boundary stay out.
 - **A crossing buried under interior points, a spike, and slop at the
   closing vertex.** Whether a face's boundary crossed itself was read
@@ -582,15 +592,15 @@ time 0.1.0 took.
   exact and told by constraint parity rather than by where a hair's
   centre rounds to. What that exposed: a ring that runs out along an edge
   and straight back is a spike that bounds nothing and comes off; and a
-  ring whose last point is its first a file's slop away — the two edges'
-  own ends of the vertex they share — closed with a fold over its first
+  ring whose last point is its first a file's slop away (the two edges'
+  own ends of the vertex they share) closed with a fold over its first
   segment, a crossing a fraction of a micron deep. Merged, every solid in
   the real assembly meshes watertight at the default deflection, 1,563 of
   1,563; at half a radian, 1,562.
 - **A closed edge's seam is moved to its vertex.** A fitted loop written
   with its start wherever the fit began, the edge's one vertex millimetres
   along it, was held to the curve's own seam, and the vertex's tolerance
-  widened to the miss — 2.18 mm in a real assembly, a reach a solid's
+  widened to the miss: 2.18 mm in a real assembly, a reach a solid's
   border weld then used. The reader moves the seam to the vertex: the same
   curve, begun where the edge does. `BSplineCurve::reseamed_at` and
   `bspline::join` are new.
@@ -601,8 +611,8 @@ time 0.1.0 took.
 ### Changed
 
 - **The default angular deflection is half a radian**, twenty-eight
-  degrees, a circle in thirteen segments — what B-rep kernels have long
-  defaulted to — where it was 0.2, eleven degrees and thirty-two. With
+  degrees, a circle in thirteen segments (what B-rep kernels have long
+  defaulted to), where it was 0.2, eleven degrees and thirty-two. With
   the interior of a face now held to the angular deflection as its
   edges are, the old default cost four times the triangles on every
   cylinder; a real assembly meshes to 4.0M triangles at the new default
@@ -613,15 +623,15 @@ time 0.1.0 took.
 - CI verifies the declared `rust-version` on every push, reading it from
   the manifest so the two cannot drift.
 
-## [0.1.0] — 2026-09-18
+## [0.1.0] - 2026-09-18
 
 First public release.
 
 ### Added
 
-- **Geometry.** Parametric curves and surfaces in two and three dimensions —
-  lines, conics, B-splines rational and not, extrusions, revolutions, offsets
-  and trims — behind adaptor traits, on a B-spline substrate with knot
+- **Geometry.** Parametric curves and surfaces in two and three dimensions
+  (lines, conics, B-splines rational and not, extrusions, revolutions, offsets
+  and trims) behind adaptor traits, on a B-spline substrate with knot
   insertion, splitting, degree elevation and Bézier decomposition.
 - **Topology.** One shared B-rep model: geometry and topology in arenas, a
   shape a cheap handle into them, the same node placed, mirrored or instanced
@@ -631,8 +641,8 @@ First public release.
 - **Construction and measurement.** Primitives, polyhedra, sewing, shape
   validity, mass properties exactly where a closed form exists and from the
   mesh otherwise, bounds, projection and classification.
-- **Booleans.** A general fuse with the filters over it — union, difference,
-  intersection, section — plus defeaturing over the same machinery.
+- **Booleans.** A general fuse with the filters over it (union, difference,
+  intersection, section) plus defeaturing over the same machinery.
 - **Blends.** Constant and variable radius fillets and chamfers on single
   edges, tangent chains and full rims, closed forms where they exist and a
   marched rolling ball where they do not, and the corner where three blends
@@ -647,8 +657,8 @@ First public release.
 - **Drawings.** Hidden line removal, sections and hatching.
 - **Documents.** Assemblies and product structure, appearance, PMI, saved
   views, transactions and persistence.
-- **Exchange.** STEP and IGES in both directions — STEP carrying assemblies,
-  colours, semantic PMI and saved views — plus the native format, `.brep`,
+- **Exchange.** STEP and IGES in both directions (STEP carrying assemblies,
+  colours, semantic PMI and saved views) plus the native format, `.brep`,
   STL, DXF, glTF, OBJ, PLY, VRML and 3MF.
 
 ### Known restrictions

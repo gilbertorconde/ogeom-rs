@@ -80,7 +80,7 @@ impl SurfacePoint {
     /// # Errors
     ///
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) at a
-    /// degeneracy — a sphere's pole or a cone's apex — where no normal is
+    /// degeneracy (a sphere's pole or a cone's apex), where no normal is
     /// determined by the tangents.
     pub fn normal(&self, tol: Tolerances) -> OgeomResult<Direction> {
         if self.is_degenerate(tol) {
@@ -227,7 +227,7 @@ pub fn hyperbola_at(hyperbola: &Hyperbola, t: f64) -> CurvePoint {
         point: hyperbola.centre() + x * (a * cosh) + y * (b * sinh),
         d1: x * (a * sinh) + y * (b * cosh),
         // The second derivative of cosh is cosh, and of sinh is sinh, so this
-        // is the position vector again — a hyperbola's acceleration points
+        // is the position vector again; a hyperbola's acceleration points
         // away from its centre.
         d2: x * (a * cosh) + y * (b * sinh),
     }

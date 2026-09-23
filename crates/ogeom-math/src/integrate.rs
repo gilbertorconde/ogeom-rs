@@ -2,7 +2,7 @@
 //!
 //! Gauss–Legendre quadrature, applied adaptively. A kernel integrates for arc
 //! length, for area and volume over a parametric patch, and for the moments
-//! that follow from those — all integrands that are smooth almost everywhere
+//! that follow from those: all integrands that are smooth almost everywhere
 //! and awkward exactly where a feature is.
 //!
 //! # Why Gauss rather than Simpson
@@ -34,8 +34,8 @@ use ogeom_core::{OgeomResult, ogeom_bail};
 /// Nodes of the ten-point Gauss–Legendre rule on `[-1, 1]`, positive half.
 ///
 /// The rule is symmetric, so the negative nodes are these negated and the
-/// weights are shared. Values are the standard ones — roots of the degree-ten
-/// Legendre polynomial — quoted to full `f64` precision.
+/// weights are shared. Values are the standard ones (roots of the degree-ten
+/// Legendre polynomial), quoted to full `f64` precision.
 const NODES: [f64; 5] = [
     0.148_874_338_981_631_21,
     0.433_395_394_129_247_2,
@@ -101,7 +101,7 @@ const MAX_DEPTH_2D: u32 = 24;
 
 /// Integrate `f` over `[a, b]` with the fixed ten-point rule.
 ///
-/// Exact for polynomials up to degree nineteen. No error estimate — for that,
+/// Exact for polynomials up to degree nineteen. No error estimate; for that,
 /// use [`integrate`], which is this applied adaptively.
 ///
 /// A reversed interval integrates to the negative, as it should: the rule
@@ -148,15 +148,15 @@ pub fn gauss_kronrod<F: FnMut(f64) -> f64>(mut f: F, a: f64, b: f64) -> (f64, f6
 
 /// Integrate `f` over `[a, b]` to an absolute tolerance.
 ///
-/// Subdivides where — and only where — the estimate has not settled, so a
+/// Subdivides where, and only where, the estimate has not settled, so a
 /// mostly-smooth integrand costs about what the smooth part costs.
 ///
 /// # What it will not do
 ///
 /// Each half is given half its parent's budget, so the budgets sum to the one
 /// asked for and the result is bounded by it. The cost is that an integrand
-/// with an *infinite derivative* at an endpoint — `sqrt(1 - x^2)` at `x = 1`,
-/// which is a circle's own equation — has a budget shrinking faster than its
+/// with an *infinite derivative* at an endpoint (`sqrt(1 - x^2)` at `x = 1`,
+/// which is a circle's own equation) has a budget shrinking faster than its
 /// error does, and cannot be squeezed arbitrarily. In practice it manages
 /// about `1e-7` on that shape, and lands within `1e-14` when it does; asked for
 /// `1e-8` it reports that it could not rather than returning the number it
@@ -205,8 +205,8 @@ fn refine<F: FnMut(f64) -> f64>(
         return Ok(value);
     }
     // Nothing left here worth resolving. A Gauss rule does not converge in
-    // *relative* terms against a square-root singularity — the error stays a
-    // roughly fixed fraction of the contribution — so an interval containing
+    // *relative* terms against a square-root singularity (the error stays a
+    // roughly fixed fraction of the contribution), so an interval containing
     // one can fail the comparison above at every depth, while the quantity it
     // is failing about shrinks to nothing. Once the total magnitude on this
     // interval is inside the budget, no amount of refining it can move the
@@ -230,16 +230,16 @@ fn refine<F: FnMut(f64) -> f64>(
 }
 
 /// Integrate `f(u, v)` over the rectangle `[a, b] x [c, d]` to an absolute
-/// tolerance — a patch's area, its moments, anything spread over a chart.
+/// tolerance: a patch's area, its moments, anything spread over a chart.
 ///
 /// The Gauss–Kronrod pair in tensor form: one pass over a cell is fifteen
 /// by fifteen evaluations and yields the Kronrod estimate and, from the
 /// same values, the estimate with the Gauss rule in `u` and the one with
-/// it in `v` — each gap the error owed to that direction. A cell whose
+/// it in `v`, each gap the error owed to that direction. A cell whose
 /// worse gap is inside its budget is done; one whose is not is halved
 /// *along the rougher direction*, each half given half the budget, so the
-/// cells' errors sum to the whole's and a ridge running across the chart —
-/// a crease in an integrand, a seam — costs a line of cells rather than a
+/// cells' errors sum to the whole's and a ridge running across the chart
+/// (a crease in an integrand, a seam) costs a line of cells rather than a
 /// field of them.
 ///
 /// # Errors
@@ -382,7 +382,7 @@ mod tests {
     fn an_infinite_derivative_at_an_endpoint_is_handled_to_a_stated_limit() {
         // The quarter circle. Its integrand's derivative blows up at x = 1, so
         // the halved budget shrinks faster than the error there does and the
-        // method has a floor. Where it converges it is far better than asked —
+        // method has a floor. Where it converges it is far better than asked;
         // and where it does not, it says so instead of returning what it
         // reached, which is the whole difference between a limit and a bug.
         let quarter = |x: f64| (1.0 - x * x).max(0.0).sqrt();

@@ -2,7 +2,7 @@
 //! analytic is measured in closed form, however the arrangement split its
 //! rims on the way.
 //!
-//! The exact path reports a deflection of zero, and that is the pin here —
+//! The exact path reports a deflection of zero, and that is the pin here:
 //! a number that comes out right at one chord and differently at another
 //! was read off a mesh, and a part whose faces are a cylinder and two
 //! planes should not have to be meshed to be weighed.
@@ -18,7 +18,7 @@ const T: Tolerances = Tolerances::millimetres();
 /// Measured twice at chords three orders apart, and held to agreeing.
 ///
 /// `closed_form` asks as well that the measurement was not read off a mesh
-/// at all — which planar faces do not need, since a mesh of a flat thing is
+/// at all, which planar faces do not need, since a mesh of a flat thing is
 /// the flat thing, but a curved one does.
 fn weigh(model: &Model, shape: &Shape, closed_form: bool) -> f64 {
     let coarse = ogeom::algo::volume_properties(model, shape, Deflection::default(), T).unwrap();
@@ -40,7 +40,7 @@ fn weigh(model: &Model, shape: &Shape, closed_form: bool) -> f64 {
 /// A drum cut down to size still weighs what a drum weighs.
 ///
 /// The arrangement splits a closed rim to give its walker somewhere to
-/// start — including the rim at the far end, which the cut never reached —
+/// start (including the rim at the far end, which the cut never reached),
 /// so a drum that arrives with one full-turn circle on each disc leaves
 /// with two arcs on each. The disc those arcs bound is the same disc. And
 /// the wall's seam keeps the column it was born with, so its chart's hull
@@ -98,7 +98,7 @@ fn a_boolean_result_is_still_weighed_in_closed_form() {
 }
 
 /// And a blend's own faces are analytic, so a blended drum is weighed the
-/// same way — the torus included.
+/// same way, the torus included.
 #[test]
 fn a_rim_blend_leaves_a_solid_that_is_still_weighed_exactly() {
     use ogeom::geom::Curve3d as _;
@@ -207,8 +207,8 @@ fn a_face_with_a_hole_is_weighed_in_closed_form() {
 /// tessellator, which repairs such a shell by flipping whichever side of
 /// the disagreement is in the minority.
 ///
-/// `nist_ftc_11_asme1_rb.stp` arrives exactly like this — its bore wall's
-/// flag points into the solid — and taking the flags at their word made it
+/// `nist_ftc_11_asme1_rb.stp` arrives exactly like this (its bore wall's
+/// flag points into the solid), and taking the flags at their word made it
 /// a third heavy, the bore counted as material.
 #[test]
 fn a_shell_whose_faces_disagree_is_left_to_the_mesh() {
@@ -221,7 +221,7 @@ fn a_shell_whose_faces_disagree_is_left_to_the_mesh() {
     assert!((honest.mass - 240.0).abs() < 1e-9);
 
     // Every face in turn, since which one is turned over decides how wrong
-    // believing it would be — and one of them is the plane the moments are
+    // believing it would be, and one of them is the plane the moments are
     // measured from, where believing it costs nothing at all.
     for which in 0..6 {
         let mut faces =

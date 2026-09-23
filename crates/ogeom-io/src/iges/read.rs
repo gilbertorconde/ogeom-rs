@@ -1,8 +1,8 @@
 //! From an IGES deck to a living model.
 //!
 //! Two kinds of file arrive under one extension. A *solid* file carries
-//! manifold solid B-rep objects — entity 186 over shells, faces, loops, edge
-//! lists and vertex lists — and reads bottom-up the way the STEP reader does,
+//! manifold solid B-rep objects (entity 186 over shells, faces, loops, edge
+//! lists and vertex lists) and reads bottom-up the way the STEP reader does,
 //! sharing what the file shares. A *surface* file, the older and far more
 //! common kind, is a loose collection of trimmed surfaces; those become
 //! faces, the faces are sewn, and a shell that closes becomes a solid. Both
@@ -13,7 +13,7 @@
 //! What the reader does not understand it *counts*: every entity never
 //! visited lands in the report's skipped table under its type number, and
 //! every compromise is a warning naming the directory entry. Refusals are by
-//! name — a conic form this reader does not translate says which form and
+//! name: a conic form this reader does not translate says which form and
 //! where, and points at the parity ledger's `io.iges` row for the whole
 //! picture.
 
@@ -35,8 +35,8 @@ use ogeom_topo::{Model, Shape};
 use std::collections::{BTreeMap, HashMap};
 
 /// How far an unbounded plane or quadric extends past anything the file uses
-/// — the same convention the STEP reader states: a face's trim is its wires,
-/// and the surface's domain is only a parameter window.
+/// (the same convention the STEP reader states: a face's trim is its wires,
+/// and the surface's domain is only a parameter window).
 const SURFACE_EXTENT: f64 = 1e5;
 
 /// What an import brought in, and what it left behind.
@@ -76,7 +76,7 @@ type BuiltEdge = (Shape, Curve, (f64, f64));
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
 /// deck does not parse, its units are unreadable, or it contains nothing this
 /// reader translates into shapes. Individual entities that fail to translate
-/// become warnings and skipped counts rather than errors — the report says
+/// become warnings and skipped counts rather than errors; the report says
 /// exactly what was compromised.
 pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
     let file = super::parse::parse(text)?;
@@ -123,7 +123,7 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
 
     // Then the surface file: every *independent* trimmed or bounded surface
     // becomes a face; the faces sew; closed shells become solids. Subordinate
-    // entities belong to something else and are not top-level geometry — the
+    // entities belong to something else and are not top-level geometry; the
     // subordinate switch is the second two-digit field of the status word.
     let mut faces = Vec::new();
     let face_des: Vec<i64> = file
@@ -213,7 +213,7 @@ struct Reader<'a> {
     report: IgesReport,
     /// Every directory entry the reader consumed, for the skipped table.
     visited: BTreeMap<i64, ()>,
-    /// Vertices by (vertex-list DE, 1-based index) — shared, which is what
+    /// Vertices by (vertex-list DE, 1-based index), shared, which is what
     /// lets a closed shell close.
     vertices: HashMap<(i64, i64), Shape>,
     /// Edges by (edge-list DE, 1-based index), for the same reason.
@@ -314,7 +314,7 @@ impl<'a> Reader<'a> {
             ),
             kind => ogeom_bail!(
                 Construction,
-                "D{de}: curve entity type {kind}{} is not translated — \
+                "D{de}: curve entity type {kind}{} is not translated; see \
                  docs/PARITY.md, io.iges",
                 super::entity_name(kind).map_or_else(String::new, |n| format!(" ({n})"))
             ),
@@ -329,9 +329,9 @@ impl<'a> Reader<'a> {
     }
 
     /// Conic arc: `A x² + B xy + C y² + D x + E y + F = 0` in the definition
-    /// plane, axis-aligned. The coefficients say which conic it is — both
+    /// plane, axis-aligned. The coefficients say which conic it is (both
     /// squares one sign an ellipse, opposite signs a hyperbola, one square
-    /// missing a parabola — and each translates to its own curve, the arc's
+    /// missing a parabola), and each translates to its own curve, the arc's
     /// ends read off the start and terminate points. A rotated conic is
     /// refused by name until a file demands it.
     fn conic(&mut self, de: i64, entity: &Entity) -> OgeomResult<(Curve, (f64, f64))> {
@@ -348,7 +348,7 @@ impl<'a> Reader<'a> {
             ogeom_bail!(
                 Construction,
                 "D{de}: conic arc form {} turns its axes; only an axis-aligned \
-                 conic is translated — docs/PARITY.md, io.iges",
+                 conic is translated; see docs/PARITY.md, io.iges",
                 entity.form
             );
         }
@@ -429,7 +429,7 @@ impl<'a> Reader<'a> {
 
     /// The hyperbola arm of [`Reader::conic`]: squares of opposite sign.
     /// The branch is the one the arc's ends stand on, its parameter the
-    /// natural one — `(a cosh t, b sinh t)` — and the arc runs in increasing
+    /// natural one, `(a cosh t, b sinh t)`, and the arc runs in increasing
     /// parameter, the frame turned over where the file's ends run the other
     /// way.
     fn hyperbola_arc(
@@ -556,7 +556,7 @@ impl<'a> Reader<'a> {
     /// perpendicular to a reference direction. The file displaces along
     /// the reference crossed with the tangent; this vocabulary's offset runs
     /// along the tangent crossed with the reference, so the distance flips
-    /// sign. A varying offset — a function of the parameter — is refused by
+    /// sign. A varying offset (a function of the parameter) is refused by
     /// name.
     fn offset_curve(&mut self, de: i64, entity: &Entity) -> OgeomResult<(Curve, (f64, f64))> {
         let scale = self.report.scale_mm;
@@ -565,7 +565,7 @@ impl<'a> Reader<'a> {
         if kind != 1 || (d1 - d2).abs() > 1e-12 {
             ogeom_bail!(
                 Construction,
-                "D{de}: only a constant offset (type 1) is translated — \
+                "D{de}: only a constant offset (type 1) is translated; see \
                  docs/PARITY.md, io.iges"
             );
         }
@@ -742,7 +742,7 @@ impl<'a> Reader<'a> {
             140 => {
                 // Normal, distance, base surface: displaced along the
                 // file's direction, which is the base's own normal or its
-                // opposite — the sign carries the difference.
+                // opposite; the sign carries the difference.
                 let given = Direction::from_coords(
                     entity.at(0).real(),
                     entity.at(1).real(),
@@ -803,7 +803,7 @@ impl<'a> Reader<'a> {
             }
             kind => ogeom_bail!(
                 Construction,
-                "D{de}: surface entity type {kind}{} is not translated — \
+                "D{de}: surface entity type {kind}{} is not translated; see \
                  docs/PARITY.md, io.iges",
                 super::entity_name(kind).map_or_else(String::new, |n| format!(" ({n})"))
             ),
@@ -946,7 +946,7 @@ impl<'a> Reader<'a> {
         Direction::from_coords(e.at(0).real(), e.at(1).real(), e.at(2).real(), self.tol)
     }
 
-    /// The boundary of a trimmed face as model-space curve segments — from a
+    /// The boundary of a trimmed face as model-space curve segments: from a
     /// curve-on-surface (142), a boundary entity (141), or a bare curve,
     /// walking composite curves flat.
     fn boundary_segments(&mut self, de: i64) -> OgeomResult<Vec<(Curve, (f64, f64))>> {
@@ -961,7 +961,7 @@ impl<'a> Reader<'a> {
                     ogeom_bail!(
                         Construction,
                         "D{de}: a curve-on-surface carries no model-space \
-                         curve; pcurve-only trimming is not translated — \
+                         curve; pcurve-only trimming is not translated; see \
                          docs/PARITY.md, io.iges"
                     );
                 }
@@ -1038,8 +1038,8 @@ impl<'a> Reader<'a> {
 
     /// Boundary segments into a closed chain of edges, head to tail.
     ///
-    /// Surface files are loose about sense — a boundary's segments arrive in
-    /// order but each may run either way — so the chain is stitched by
+    /// Surface files are loose about sense (a boundary's segments arrive in
+    /// order but each may run either way), so the chain is stitched by
     /// geometry: each segment joins whichever of its ends sits at the chain's
     /// current head, and the last vertex is the first, which is what closes
     /// the wire.
@@ -1132,7 +1132,7 @@ impl<'a> Reader<'a> {
 
     /// A face from a surface and wires of already-built edges: the exact
     /// pcurve where the pair has a closed form, the fitted one where it does
-    /// not, and both sides of the chart for an edge the wire uses twice —
+    /// not, and both sides of the chart for an edge the wire uses twice,
     /// which is what a seam is.
     fn assemble_face(
         &mut self,
@@ -1142,8 +1142,8 @@ impl<'a> Reader<'a> {
         // A single wire that is one edge used twice on a periodic surface is
         // a seam and nothing else, and a boundary that is nothing but the
         // seam encloses the whole chart: the face is the surface, and the
-        // natural face carries its own degenerate boundary — a sphere's
-        // poles — which the file had no edges for.
+        // natural face carries its own degenerate boundary (a sphere's
+        // poles), which the file had no edges for.
         if let [edges] = wires.as_slice()
             && let [a, b] = edges.as_slice()
             && a.node() == b.node()
@@ -1169,8 +1169,8 @@ impl<'a> Reader<'a> {
 
     /// One wire's pcurves, chained around the face's chart.
     ///
-    /// Each edge's image is computed on its own — the exact projection where
-    /// the pair has a closed form, the fitted one where it does not — and a
+    /// Each edge's image is computed on its own (the exact projection where
+    /// the pair has a closed form, the fitted one where it does not), and a
     /// periodic chart then has a branch to choose. Read one edge at a time
     /// the choice is arbitrary, and the wire comes apart: a bore's wall
     /// arrives with one rim written over `[−π, π]` and the other over
@@ -1182,7 +1182,7 @@ impl<'a> Reader<'a> {
     ///
     /// A seam falls out of the same walk. The wire uses it twice, up one
     /// column of the chart and down the other, and those columns *are* one
-    /// image a period apart — so the chaining produces both, and the use
+    /// image a period apart, so the chaining produces both, and the use
     /// that runs forward is the forward side.
     fn chart_wire(
         &mut self,
@@ -1278,8 +1278,8 @@ impl<'a> Reader<'a> {
                     )?;
                 }
                 // The walk left the seam's two uses in one place: the chart
-                // closes without being periodic — a skinned wall's is such a
-                // chart, clamped and closed — and there is no period to
+                // closes without being periodic (a skinned wall's is such a
+                // chart, clamped and closed), and there is no period to
                 // shift by. The other column goes a chart's width over,
                 // toward the middle, which is where it went before there
                 // was a walk to ask.
@@ -1312,7 +1312,7 @@ impl<'a> Reader<'a> {
     }
 
     /// One edge's image on one surface, exact where the pair has a closed
-    /// form and fitted where it does not — the same policy the STEP reader
+    /// form and fitted where it does not: the same policy the STEP reader
     /// applies, through the shared machinery. Where the wire puts it on a
     /// periodic chart is [`Self::chart_wire`]'s business.
     fn image_of(
@@ -1512,8 +1512,8 @@ impl<'a> Reader<'a> {
             }
         }
         // IGES states no tolerances, so a vertex is built at the confusion
-        // tolerance and a curve end that misses it by rounding — a writer's
-        // last digit, a few tenths of a nanometre — would refuse the whole
+        // tolerance and a curve end that misses it by rounding (a writer's
+        // last digit, a few tenths of a nanometre) would refuse the whole
         // solid. As the STEP reader does, the vertex's tolerance grows to
         // state the miss, up to the millimetre past which a boundary is not
         // this curve's at all; beyond that the edge still refuses by name.
@@ -1546,7 +1546,7 @@ impl<'a> Reader<'a> {
     }
 
     /// Vertex `index` (1-based) of a vertex list (502), built once and
-    /// shared — sharing is what lets a closed shell close.
+    /// shared; sharing is what lets a closed shell close.
     fn list_vertex(&mut self, list_de: i64, index: i64) -> OgeomResult<Shape> {
         let key = (list_de, index);
         if let Some(found) = self.vertices.get(&key) {
@@ -1623,7 +1623,7 @@ impl<'a> Reader<'a> {
             ));
         }
         // 1 black, 2 red, 3 green, 4 blue, 5 yellow, 6 magenta, 7 cyan,
-        // 8 white — the specification's own palette.
+        // 8 white: the specification's own palette.
         let palette = [
             (0.0, 0.0, 0.0),
             (1.0, 0.0, 0.0),
@@ -1641,7 +1641,7 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// A trimmed carrier where the range is a strict part of the domain — a
+/// A trimmed carrier where the range is a strict part of the domain: a
 /// generatrix used by a sweep is exactly its stated span.
 fn trimmed_to(curve: Curve, range: (f64, f64), tol: Tolerances) -> OgeomResult<Curve> {
     let (lo, hi) = curve.domain();
@@ -1848,7 +1848,7 @@ mod tests {
 
     /// An offset surface displaces its base along the file's direction,
     /// and an offset curve along the file's reference crossed with the
-    /// tangent — whichever way round this vocabulary spells either.
+    /// tangent, whichever way round this vocabulary spells either.
     #[test]
     fn offset_entities_displace_the_way_the_file_says() {
         let deck = file(vec![

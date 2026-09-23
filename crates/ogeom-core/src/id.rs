@@ -5,7 +5,7 @@
 //! being added later.
 //!
 //! Conventionally, topology is identified by pointer. Every modeling operation
-//! allocates new nodes, so every reference into a previous result dies — that *is* the
+//! allocates new nodes, so every reference into a previous result dies. That *is* the
 //! topological naming problem, and every downstream fix is an attempt to
 //! reconstruct identity after the fact by walking history maps.
 //!
@@ -14,7 +14,7 @@
 //! therefore produces entities with the same provenance, so a reference like
 //! "the fillet on this edge" survives a change to an unrelated dimension.
 //!
-//! Provenance does not replace operation history — history is what a binding
+//! Provenance does not replace operation history: history is what a binding
 //! layer consumes, and it is the honest answer where provenance cannot resolve
 //! a reference. It is the primary mechanism, not the only one.
 
@@ -41,7 +41,7 @@ impl EntityId {
     /// An identity from a raw value, or `None` if it is zero.
     ///
     /// For reading a document back from a file, which has to reproduce the
-    /// identities it was written with — a reference recorded against
+    /// identities it was written with: a reference recorded against
     /// `EntityId(7)` has to still find entity seven. Nothing else should mint
     /// one of these: within a document,
     /// [`ProvenanceTable::record`](ProvenanceTable::record) is what issues an
@@ -61,7 +61,7 @@ impl EntityId {
 /// `OpId(3)` every time, which is what lets provenance survive a parameter
 /// change.
 ///
-/// The default, `OpId(0)`, is the implicit operation a document starts in —
+/// The default, `OpId(0)`, is the implicit operation a document starts in:
 /// whatever was there before anything was deliberately begun.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct OpId(pub u32);
@@ -76,13 +76,13 @@ pub struct OpId(pub u32);
 pub struct Role(pub u32);
 
 impl Role {
-    /// No distinguishing role — the operation produced exactly one entity of
+    /// No distinguishing role: the operation produced exactly one entity of
     /// this kind, so it needs no further discriminator.
     pub const SOLE: Self = Self(0);
     /// The result's outer boundary: the outer wire of a face, the outer shell of
     /// a solid.
     pub const OUTER: Self = Self(1);
-    /// An inner boundary — a hole.
+    /// An inner boundary: a hole.
     pub const INNER: Self = Self(2);
     /// The start of a swept or extruded result.
     pub const START_CAP: Self = Self(3);
@@ -105,7 +105,7 @@ impl Role {
 /// Where an entity came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Provenance {
-    /// Created outright by an operation, from no prior entity — the `+Z` face of
+    /// Created outright by an operation, from no prior entity: the `+Z` face of
     /// a box, the lateral surface of a cylinder.
     Primitive {
         /// The operation that created it.
@@ -123,8 +123,8 @@ pub enum Provenance {
         /// Which part of that operation's result this is.
         role: Role,
     },
-    /// Read from a file. `external` is the source's own identifier — a STEP
-    /// entity number, say — so that a re-import matches entities up.
+    /// Read from a file. `external` is the source's own identifier (a STEP
+    /// entity number, say) so that a re-import matches entities up.
     Imported {
         /// Which imported document it came from.
         source: SourceId,
@@ -146,7 +146,7 @@ impl Provenance {
     /// Which part of its operation's result this entity is, if the operation
     /// named one.
     ///
-    /// The question provenance exists to answer — "the top face of that box",
+    /// The question provenance exists to answer: "the top face of that box",
     /// asked of a model that has been rebuilt since. An imported entity has no
     /// role, because the file said where it came from and not what it is for.
     #[must_use]
@@ -243,7 +243,7 @@ impl ProvenanceTable {
 
     /// Walk `id`'s derivation back to the entities it ultimately came from.
     ///
-    /// Returns the roots — entities that are `Primitive` or `Imported`. This is
+    /// Returns the roots: entities that are `Primitive` or `Imported`. This is
     /// how a stale reference is resolved after a rebuild: find what the user
     /// originally picked, then find what that became.
     ///

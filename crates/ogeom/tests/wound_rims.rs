@@ -1,6 +1,6 @@
 //! A face bounded by two rims that each wind a periodic direction of its
-//! chart — a torus band between two parallels, a ball's belt between two
-//! latitudes — is the strip between them, and draws as that strip.
+//! chart (a torus band between two parallels, a ball's belt between two
+//! latitudes) is the strip between them, and draws as that strip.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -31,7 +31,7 @@ fn surface_of(model: &Model, face: &Shape) -> SurfaceGeometry {
     model.geometry().surface(data.surface).unwrap().clone()
 }
 
-/// Two torus bands, each bounded by two parallels — one full circle round
+/// Two torus bands, each bounded by two parallels: one full circle round
 /// the axis at each end, every wire a single wound edge. Walked one wire at
 /// a time, each rim used to close on its own translate a tube-period over,
 /// which is the whole torus cut along the rim; two of those laid over each
@@ -114,8 +114,8 @@ fn a_belt_between_two_latitudes_is_the_belt() {
 /// A bore through a block with a cross hole through the bore's wall: the
 /// wall is a cylinder whose two rims wind the chart and whose cross hole
 /// is a loop that does not. The rims pair into one ring joined by runs up
-/// one column. Taken wherever the first rim's chain happened to end — on
-/// this part, where the cross hole's loop lies — the runs cut straight
+/// one column. Taken wherever the first rim's chain happened to end (on
+/// this part, where the cross hole's loop lies), the runs cut straight
 /// through the loop: two constraints refused, the face redrawn finer and
 /// finer, never whole. The runs stand in the widest column no other ring
 /// touches, and the body draws closed.

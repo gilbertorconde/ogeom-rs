@@ -6,8 +6,8 @@
 //! bridge that exists for an application moving onto this kernel, far
 //! cheaper than STEP to produce and far more faithful than a mesh.
 //!
-//! The file is five sections — a header, a table of placements, a table of
-//! geometry, and a table of topology — and the last of those is the
+//! The file is five sections (a header, a table of placements, a table of
+//! geometry, and a table of topology), and the last of those is the
 //! interesting one. Topology records are written leaves first and *numbered
 //! backwards*: the final record is number one, and a record refers to its
 //! children by how far above it they sit. So a parent can only name children
@@ -29,14 +29,14 @@
 //! One thing the reader deliberately does *not* take on faith: whether an
 //! edge's representations agree on parameterization. That is a claim, the
 //! writing kernel's claim about its own data, and everything downstream
-//! relies on it — so it is measured here instead, each representation
+//! relies on it, so it is measured here instead, each representation
 //! evaluated against the others at matched parameters and the claim
 //! re-established only where they actually land together. A file can
 //! therefore come back with the claim *established* where its writer never
 //! made it, which is the right direction to be wrong in.
 //!
 //! Cached triangulations and the polygons that go with them are parsed and
-//! skipped rather than half-honoured — this kernel tessellates on demand and
+//! skipped rather than half-honoured: this kernel tessellates on demand and
 //! keeps its own cache, and a mesh read from a file would be a mesh nobody
 //! could say the deflection of. The bookkeeping flags each record carries
 //! are read and dropped for the same reason: they describe the state of the
@@ -74,9 +74,9 @@ const VERSION: &str = "CASCADE Topology V1, (c) Matra-Datavision";
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-/// shape carries geometry the format has no record for — a helical curve, a
+/// shape carries geometry the format has no record for (a helical curve, a
 /// curve living on a surface, the sinusoidal pcurve an oblique section
-/// leaves on a cylinder — each refused by name rather than approximated into
+/// leaves on a cylinder), each refused by name rather than approximated into
 /// something the file would claim was exact.
 pub fn write(model: &Model, root: &Shape, tol: Tolerances) -> OgeomResult<String> {
     let mut tables = Tables::default();
@@ -164,7 +164,7 @@ pub fn write(model: &Model, root: &Shape, tol: Tolerances) -> OgeomResult<String
 
         // Flags, then the children. Seven flags the format asks for and this
         // kernel does not keep: they record the writing session's own
-        // bookkeeping — whether a shape was visited, modified, checked — and
+        // bookkeeping (whether a shape was visited, modified, checked), and
         // reading them back as geometry would be reading somebody else's
         // scratch paper. Orientable is the one that is always true here.
         let _ = writeln!(out, "\n0001000");
@@ -331,7 +331,7 @@ impl Tables {
     }
 }
 
-/// One topology record's own data — everything before the flag word.
+/// One topology record's own data: everything before the flag word.
 fn write_record(
     out: &mut String,
     model: &Model,
@@ -804,7 +804,7 @@ fn direction2(v: Vector2) -> String {
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-/// text is not this format, or carries a record this does not read — which
+/// text is not this format, or carries a record this does not read, which
 /// it says by number rather than by shrugging.
 pub fn read(text: &str, tol: Tolerances) -> OgeomResult<(Model, Shape)> {
     let mut lines = text.lines();
@@ -941,7 +941,7 @@ pub fn read(text: &str, tol: Tolerances) -> OgeomResult<(Model, Shape)> {
 /// How far an unbounded conic runs when it is read.
 ///
 /// The format's parabola and hyperbola records carry a focus and a frame and
-/// no parameter window — the window is the *edge's* business, and every edge
+/// no parameter window; the window is the *edge's* business, and every edge
 /// states its own range. So the curve is built over a window wide enough for
 /// any edge a file of ordinary size could hold, and the edge trims it.
 const OPEN_EXTENT: f64 = 1e6;
@@ -1609,7 +1609,7 @@ enum Record {
 /// Sampled: nine stations across the edge's own range, each read through
 /// every representation it carries, all held to the edge's stated tolerance.
 /// A file whose pcurve was fitted independently of its curve fails this, and
-/// it should — the claim is what every algorithm downstream relies on.
+/// it should: the claim is what every algorithm downstream relies on.
 fn agree_on_parameter(model: &Model, data: &EdgeData, tol: Tolerances) -> bool {
     use ogeom_geom::Surface as _;
     let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {

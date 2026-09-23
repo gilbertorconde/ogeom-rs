@@ -5,8 +5,8 @@
 //! station by station; this module turns those stations into the same wedge
 //! the closed-form blends build. The blend face is a surface fitted through
 //! the ball's own arcs, its rails are the surface's own border iso-curves,
-//! and the legs are patches of the hosts' *own* surfaces — exact geometry
-//! bounded by fitted rails — so the boolean's same-domain resolution melts
+//! and the legs are patches of the hosts' *own* surfaces (exact geometry
+//! bounded by fitted rails), so the boolean's same-domain resolution melts
 //! them exactly as it melts a closed-form wedge's.
 //!
 //! The chart discipline that makes it sound: the marcher *solves* the
@@ -60,15 +60,15 @@ pub(crate) fn marched_fillet(
             }
         }
     };
-    // A closed seat on a fitted seam — a bore's rim where it leaves a
-    // sphere, the two arcs of a boolean's seam joined end to end — is a
+    // A closed seat on a fitted seam (a bore's rim where it leaves a
+    // sphere, the two arcs of a boolean's seam joined end to end) is a
     // loop whose join is a corner: the ends meet, the tangents do not. The
     // march evaluates the guide's derivatives at every step and cannot
     // cross a corner in them; it crawls onto the join and stalls. So the
     // march steers by a *second* guide, the loop re-fitted smooth through
-    // its join. It guides the section planes only — the ball seats on the
+    // its join. It guides the section planes only: the ball seats on the
     // exact hosts, and every edge the wedge builds rides the seat's own
-    // curve — so its fit error costs the blend nothing it can measure.
+    // curve, so its fit error costs the blend nothing it can measure.
     let closure_of =
         |guide: &Curve, guide_range: (f64, f64)| -> OgeomResult<(bool, Option<Curve>)> {
             let loops = closed || {
@@ -120,9 +120,9 @@ pub(crate) fn marched_fillet(
         // A fitted patch ends where its face ends, and a ball rolling out
         // through a wall needs the host to go on past it: the patch is
         // continued on every open side by a few radii, as itself, and
-        // *written back* as the face's own surface — the same parameters,
+        // *written back* as the face's own surface (the same parameters,
         // a wider window, exactly as a reader widens a window to hold a
-        // face — so the legs built on it and the face they melt with
+        // face), so the legs built on it and the face they melt with
         // stand on one chart, as an analytic host's windowed copy does.
         let stored = match stored {
             SurfaceGeometry::BSpline(patch) => {
@@ -151,16 +151,16 @@ pub(crate) fn marched_fillet(
             other => other,
         };
         // Baked into the world: the face's surface lives wherever its
-        // placement puts it, and everything below — the march, the legs,
-        // the melt — speaks world coordinates.
+        // placement puts it, and everything below (the march, the legs,
+        // the melt) speaks world coordinates.
         let surface = {
             use ogeom_geom::Transformable as _;
             let placement = face.transform(model.datums())?;
             stored.transformed(&placement, tol)?
         };
         // Any host the ball can seat on: the analytics invert their charts
-        // in closed form, and a fitted patch — or a swept or revolved
-        // surface — inverts by projection, warm-started from the last
+        // in closed form, and a fitted patch (or a swept or revolved
+        // surface) inverts by projection, warm-started from the last
         // station. A trimmed or offset host is its basis with a story the
         // march does not read.
         if matches!(
@@ -170,7 +170,7 @@ pub(crate) fn marched_fillet(
             ogeom_bail!(
                 Construction,
                 "a marched fillet's hosts must carry their own chart; a trimmed \
-                 or offset host is refused — docs/PARITY.md, fillet.edge-blends"
+                 or offset host is refused; see docs/PARITY.md, fillet.edge-blends"
             );
         }
         let sign = if face.orientation() == Orientation::Reversed {
@@ -197,8 +197,8 @@ pub(crate) fn marched_fillet(
     let (sign_first, sign_second) = (*sign_first, *sign_second);
 
     // A seat the boolean split into arcs at its hosts' seams, on a solid
-    // whose curves are the arcs themselves — a converted solid, an imported
-    // one — has no stored loop to run the whole turn on. The loop is put
+    // whose curves are the arcs themselves (a converted solid, an imported
+    // one) has no stored loop to run the whole turn on. The loop is put
     // back through the neighbours the two hosts share, each continuing the
     // last tangentially, and the seat becomes the whole turn as it is
     // where the stored curve carries it.
@@ -225,8 +225,8 @@ pub(crate) fn marched_fillet(
         } else {
             (guide, guide_range, edge_range, loops, march_guide)
         };
-    // An open seat on a spline that ends with the edge — a converted
-    // solid's every edge — leaves the ball nowhere to run out: the guide
+    // An open seat on a spline that ends with the edge (a converted
+    // solid's every edge) leaves the ball nowhere to run out: the guide
     // is continued past both ends by a few radii, as itself. It steers
     // the section planes only, so its continuation need only be smooth.
     let (guide, guide_range) = match (&guide, closed) {
@@ -245,8 +245,8 @@ pub(crate) fn marched_fillet(
         _ => (guide, guide_range),
     };
 
-    // A seat running through a point where its hosts are tangent — the
-    // crossing of two equal drums — has no section there: the ball's arc
+    // A seat running through a point where its hosts are tangent (the
+    // crossing of two equal drums) has no section there: the ball's arc
     // collapses at the pole, and the march can only stall on it. Refused by
     // name up front, sampled along the whole reconstructed loop.
     {
@@ -268,7 +268,7 @@ pub(crate) fn marched_fillet(
                     Construction,
                     "the seat passes through a point where its two hosts are \
                      tangent; the ball's section collapses at that pole and \
-                     the pinched seam is refused — docs/PARITY.md, \
+                     the pinched seam is refused; see docs/PARITY.md, \
                      fillet.edge-blends"
                 );
             }
@@ -277,7 +277,7 @@ pub(crate) fn marched_fillet(
 
     // Convexity, read from the solid itself the way the planar seat reads
     // it: which way the first face extends from the edge, leaned against
-    // the second's outward normal. It decides everything downstream — which
+    // the second's outward normal. It decides everything downstream: which
     // of the four ball seatings is the fillet's, and whether the wedge adds
     // or removes.
     //
@@ -407,8 +407,8 @@ pub(crate) fn marched_fillet(
             *t = ogeom_algo::project_on_curve(&guide, p, 256, tol)?.parameter;
         }
     }
-    // An open seat — the ball ran off the end of a support in each
-    // direction — ends in run-out caps instead of closing: the arc-restricted
+    // An open seat (the ball ran off the end of a support in each
+    // direction) ends in run-out caps instead of closing: the arc-restricted
     // wedge of the revolved fillets, generalised to the fitted band.
     let open_stop = matches!(
         blend.stopped,
@@ -421,7 +421,7 @@ pub(crate) fn marched_fillet(
         ogeom_bail!(
             Construction,
             "the blend neither closed on itself nor ran off its supports \
-             ({:?}); this stop has no construction yet — docs/PARITY.md, \
+             ({:?}); this stop has no construction yet; see docs/PARITY.md, \
              fillet.edge-blends",
             blend.stopped
         );
@@ -462,7 +462,7 @@ pub(crate) fn marched_fillet(
     // A march may also overshoot its start before noticing closure, leaving
     // trailing stations that re-trace the loop's opening arc: the sequence
     // folds back on itself and no smooth fit can follow it. The overshoot
-    // reads off the closing step — while it points *against* the march, the
+    // reads off the closing step: while it points *against* the march, the
     // last station is past the start and goes.
     while blend.len() > 8 {
         let last = blend.spine[blend.len() - 1];
@@ -515,7 +515,7 @@ pub(crate) fn marched_fillet(
             ogeom_bail!(
                 Construction,
                 "the seat winds its two hosts in opposite senses; that \
-                 configuration is still owed — docs/PARITY.md, \
+                 configuration is still owed; see docs/PARITY.md, \
                  fillet.edge-blends"
             );
         }
@@ -531,7 +531,7 @@ pub(crate) fn marched_fillet(
         // A winding leg closes as a band, and the band's connector joins the
         // ring *starts*. Anchor the march so station zero stands on the
         // guide's own start column: the connector then runs (nearly) up the
-        // iso between the rings, where it cannot cross either of them — a
+        // iso between the rings, where it cannot cross either of them; a
         // connector thrown diagonally across the band does, and the
         // arrangement downstream cannot hold strands that cross mid-span.
         let anchor_host = if w1.abs() > 0.5 {
@@ -562,8 +562,8 @@ pub(crate) fn marched_fillet(
             blend.on_second.rotate_left(k);
             blend.along.rotate_left(k);
             // The nearest station stands a fraction of a stride off the
-            // column; where the column is the host's own seam — a rim the
-            // boolean opened at the sphere's meridian — that fraction is a
+            // column; where the column is the host's own seam (a rim the
+            // boolean opened at the sphere's meridian) that fraction is a
             // sliver between the rail's start and its seam crossing, which
             // no arrangement holds. Station zero is re-solved exactly on
             // the column, bracketed by its two neighbours.
@@ -694,7 +694,7 @@ pub(crate) fn marched_fillet(
     let fit_target = (tol.confusion() * 2e3).max(2e-4);
 
     // The blend surface: each station's exact ball arc, the loop of stations
-    // fitted *closed* — the join is C1 wherever the seam lands, so anchoring
+    // fitted *closed*: the join is C1 wherever the seam lands, so anchoring
     // the seam column costs nothing.
     let mut rows: Vec<Vec<Point>> = (0..ACROSS).map(|_| Vec::with_capacity(n + 1)).collect();
     for i in 0..=n {
@@ -769,8 +769,8 @@ pub(crate) fn marched_fillet(
     let rail_first = ogeom_algo::make_edge(model, border(0)?, v_dom, tol)?.shape;
     let rail_second = ogeom_algo::make_edge(model, border(k_count - 1)?, v_dom, tol)?.shape;
     // The rails carry the fit's honest slop: every downstream filter that
-    // compares them against exact geometry — the melt's crossing paver above
-    // all — widens by an edge's recorded tolerance, not by wishful thinking.
+    // compares them against exact geometry (the melt's crossing paver above
+    // all) widens by an edge's recorded tolerance, not by wishful thinking.
     for rail in [&rail_first, &rail_second] {
         if let Some(node) = model.node_mut(rail)
             && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
@@ -843,7 +843,7 @@ pub(crate) fn marched_fillet(
         let face =
             ogeom_algo::make_face_on(model, blend_id, std::slice::from_ref(&wire), tol)?.shape;
         // The wedge's outward at the blend: towards the ball's centre when
-        // cutting — the wedge is the corner material the ball displaced —
+        // cutting (the wedge is the corner material the ball displaced)
         // and away from it when fusing.
         let mid_u = f64::midpoint(u_dom.0, u_dom.1);
         let mid_v = f64::midpoint(v_dom.0, v_dom.1);
@@ -898,7 +898,7 @@ pub(crate) fn marched_fillet(
         Err(e) if fitted_host => ogeom_bail!(
             NotDone,
             "the blend marched and its wedge was built, but the melt against a \
-             fitted host is beyond what the boolean resolves ({e}) — \
+             fitted host is beyond what the boolean resolves ({e}); see \
              docs/PARITY.md, fillet.edge-blends"
         ),
         other => other,
@@ -906,12 +906,12 @@ pub(crate) fn marched_fillet(
 }
 
 /// The open seat's wedge: a marched band that ran off its supports, capped
-/// at both ends — the revolved fillets' arc-restricted wedge generalised to
+/// at both ends: the revolved fillets' arc-restricted wedge generalised to
 /// the fitted band.
 ///
 /// Five faces close it: the band fitted *open* through the ball's arcs, one
 /// leg on each host between the crease and the touch rail, and one planar
-/// cap in the section plane of each end station — the plane the march's own
+/// cap in the section plane of each end station: the plane the march's own
 /// fourth equation held every section to, so the end arc, both touch points
 /// and the crease point all stand in it by construction.
 #[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
@@ -937,7 +937,7 @@ fn open_runout_wedge(
     // The walker clamps the guide parameter into its window; a run that
     // crossed the period comes back wrapped. Unwrap it into one monotonic
     // sweep, turn the whole band forward, and drop any station that fails
-    // to advance — the seed join can hand back a duplicate.
+    // to advance: the seed join can hand back a duplicate.
     if guide.is_periodic() {
         let (lo, hi) = guide.domain();
         let period = hi - lo;
@@ -974,8 +974,8 @@ fn open_runout_wedge(
         }
     }
     // The seat the fillet owns is the *edge's* window, not everywhere the
-    // supports happen to extend: the surfaces run on past the solid — a box
-    // face's plane does not end at the box — and the march runs with them
+    // supports happen to extend: the surfaces run on past the solid (a box
+    // face's plane does not end at the box) and the march runs with them
     // into territory the boolean cut away. Trim the band to the edge's own
     // window, and solve the exact section at each end: the caps stand on
     // those, not on wherever the walker's last step landed.
@@ -995,14 +995,14 @@ fn open_runout_wedge(
             w0 += k * period;
         }
         let mut w1 = w0 + span;
-        // Where the crease *terminates* at the solid's own boundary — its end
+        // Where the crease *terminates* at the solid's own boundary (its end
         // vertex belongs to a third face, not to a continuation of the seat
-        // past a seam split — the blend runs out through the wall: the band
+        // past a seam split), the blend runs out through the wall: the band
         // carries on past the window until the ball's contacts have left
         // both host faces, and the cut trims the wedge against whatever the
         // crease ended on. Capped in its own arc plane at the crease's end
         // instead, the wedge stops short of the wall by the plane's slant
-        // and leaves a sliver of sharp crease between cap and wall — the
+        // and leaves a sliver of sharp crease between cap and wall, the
         // remnant a second fillet then has to meet.
         if std::env::var_os("OGEOM_DEBUG_RUNOUT").is_some() {
             eprintln!(
@@ -1088,7 +1088,7 @@ fn open_runout_wedge(
             }
             // Where the ball's contacts stand against the host faces past
             // the window: `Out` of both is clear of the solid, `On` either
-            // is a neighbouring blend's own rail — the seat goes on under
+            // is a neighbouring blend's own rail; the seat goes on under
             // that blend, which a cap in the section's own plane meets.
             let standing = |i: usize| -> OgeomResult<(bool, bool)> {
                 let deflection = ogeom_mesh::Deflection {
@@ -1119,8 +1119,8 @@ fn open_runout_wedge(
             // Stations outside the window, nearest the window first. The
             // first clear one is where the wedge has left the solid; the
             // run-out carries on a radius further so the wall crosses the
-            // band well inside it — a crossing a hair from the band's end
-            // is one the intersector's seeding can miss — and the run's own
+            // band well inside it (a crossing a hair from the band's end
+            // is one the intersector's seeding can miss) and the run's own
             // end is the honest stop where the walker quit first.
             let outside: Vec<usize> = if end {
                 (0..n).rev().filter(|&i| blend.along[i] < w0).collect()
@@ -1151,7 +1151,7 @@ fn open_runout_wedge(
                         // on under the neighbouring blend, which is exactly
                         // where a cap in the section's own plane meets it.
                         // Only a ball that has left the material altogether
-                        // — a convex seat's, past a wall — runs out.
+                        // (a convex seat's, past a wall) runs out.
                         let deflection = ogeom_mesh::Deflection {
                             chord: (radius * 1e-2).max(tol.confusion() * 1e3),
                             ..ogeom_mesh::Deflection::default()
@@ -1185,7 +1185,7 @@ fn open_runout_wedge(
             }
         }
         // Only cap at an end the march actually reached past; where it
-        // stopped short — the true seat ended first — the walker's own last
+        // stopped short (the true seat ended first), the walker's own last
         // station is the honest end.
         let cap0 = blend.along[0] < w0;
         let cap1 = blend.along[blend.len() - 1] > w1;
@@ -1228,7 +1228,7 @@ fn open_runout_wedge(
         blend.along.drain(..keep_from);
         let mut end_station = |w: f64, front: bool| -> OgeomResult<()> {
             // Seeded from the adjacent kept station: the Newton must settle
-            // in *this* seat's basin — a drum's far side holds a ball too.
+            // in *this* seat's basin: a drum's far side holds a ball too.
             let i = if front { 0 } else { blend.len() - 1 };
             let near = [
                 blend.on_first[i].0,
@@ -1326,7 +1326,7 @@ fn open_runout_wedge(
     let fit_target = (tol.confusion() * 2e3).max(2e-4);
 
     // The band: each station's exact ball arc, fitted open along the
-    // stations — same arcs as the closed case, no wrap. Sampled twice as
+    // stations: same arcs as the closed case, no wrap. Sampled twice as
     // finely across: the scoop's widest sections sweep well past a right
     // angle, and the knot refinement can only split spans that still hold
     // data.
@@ -1381,10 +1381,10 @@ fn open_runout_wedge(
     let (u_dom, v_dom) = blend_geo.domain();
     let blend_id = model.geometry_mut().add_surface(blend_geo.clone());
 
-    // Six shared vertices: the four band corners off the control net —
-    // which the clamped borders interpolate exactly — and the crease's two
+    // Six shared vertices: the four band corners off the control net (
+    // which the clamped borders interpolate exactly) and the crease's two
     // ends off the guide itself.
-    // The cap at each end stands in the end section's *own* plane — the
+    // The cap at each end stands in the end section's *own* plane: the
     // plane of the ball's arc, which holds both touch points exactly. The
     // march's guide condition holds only one point of the section to the
     // guide-normal plane, so that plane cannot close a cap. The cap's apex
@@ -1642,7 +1642,7 @@ fn open_runout_wedge(
     )?;
 
     // The caps: the section planes, bounded by connector–arc–connector.
-    // Outward is out of the marched window — against the guide at the
+    // Outward is out of the marched window: against the guide at the
     // start, along it at the end.
     let cap = |model: &mut Model,
                plane: ogeom_math::Plane,
@@ -1694,8 +1694,8 @@ fn open_runout_wedge(
     apply_wedge(model, solid, Some(edge), &faces, additive, tol)
 }
 
-/// Whether the crease ends at `at` because the solid does — its end vertex
-/// there belongs to a third face — rather than continuing as another edge
+/// Whether the crease ends at `at` because the solid does (its end vertex
+/// there belongs to a third face) rather than continuing as another edge
 /// on the same two hosts past a split.
 pub(crate) fn crease_terminates_at(
     model: &Model,
@@ -1744,16 +1744,16 @@ pub(crate) fn crease_terminates_at(
 
 /// Whether a face other than the hosts meets the crease's end at `at`
 /// *tangentially* to a host, and rounds the way a seat of this `convex`
-/// does — a neighbouring blend's band, which is tangent to the host it
+/// does: a neighbouring blend's band, which is tangent to the host it
 /// rides. Material under such a face is the neighbour's rounding, not a
 /// step: a blend meeting it runs on through it and the cut trims the two
 /// bands against each other.
 ///
 /// Only where the two round the same way. A convex blend's cut trims a
 /// convex band against its own, but a fill in a re-entrant corner is
-/// material that cut would eat — an L-bracket's front edge filleted after
+/// material that cut would eat (an L-bracket's front edge filleted after
 /// its re-entrant one ran the whole length of the leg and out the far side
-/// of the wall — and a fill cannot run on through a band either. `radius`
+/// of the wall) and a fill cannot run on through a band either. `radius`
 /// sets the chord the band's own side is read over.
 pub(crate) fn neighbour_blend_at(
     model: &Model,
@@ -1800,8 +1800,8 @@ pub(crate) fn neighbour_blend_at(
 
 /// Which way a face rounds where it comes nearest `at`.
 ///
-/// `Some(true)` for a band whose material bulges out — a chord between two
-/// of its points sinks below the surface, into the solid — and
+/// `Some(true)` for a band whose material bulges out (a chord between two
+/// of its points sinks below the surface, into the solid) and
 /// `Some(false)` for one that fills a re-entrant corner, where the chord
 /// stands proud of it. `None` for a face flat over `step` at `at`, which
 /// has no side to be on, or one whose normal cannot be read there.
@@ -1858,8 +1858,8 @@ fn band_rounds_out_near(
             continue;
         }
         // The chord's own middle, slid inside the domain: at a patch's
-        // corner — which is where a band's rail ends, and so where this is
-        // asked — a chord centred on the projection falls half off the
+        // corner (which is where a band's rail ends, and so where this is
+        // asked), a chord centred on the projection falls half off the
         // surface, and a band read as flat is a band run on through.
         let mut middle = here;
         if lo.is_finite() {
@@ -2083,7 +2083,7 @@ fn host_leg(
     // seam's column is either side of the seam by rounding: a station
     // re-solved onto the column came back a hair under the chart's far
     // edge, the loop unwrapped forward from there ran a whole period past
-    // the window, and the host face never met the rail — its arrangement
+    // the window, and the host face never met the rail: its arrangement
     // drops what lies outside its chart. The whole loop is slid by whole
     // periods so its first station starts inside the window, the hair
     // under the far edge read as the near one.
@@ -2111,9 +2111,9 @@ fn host_leg(
         PlanarCurve::from(fitted.curve)
     };
 
-    // The apex ring: a fresh closed edge on the guide's own curve — turned
+    // The apex ring: a fresh closed edge on the guide's own curve (turned
     // round when its own parameterization winds the chart backward, since
-    // the band runs every period forward — its chart image inverted in
+    // the band runs every period forward), its chart image inverted in
     // closed form and unwrapped for continuity.
     let chart_run = |guide: &Curve| -> OgeomResult<(Vec<f64>, Vec<Point2>)> {
         // Dense enough for a loop round a bore on a cone, whose image bends
@@ -2141,9 +2141,9 @@ fn host_leg(
         (apex_params, apex_chart) = chart_run(&apex_guide)?;
     }
     let apex = ogeom_algo::make_edge(model, apex_guide.clone(), guide_range, tol)?.shape;
-    // Exact wherever the chart has a closed form — coinciding to machine
+    // Exact wherever the chart has a closed form (coinciding to machine
     // precision with the strands the boolean draws from the same curve is
-    // what keeps slivers out of the arrangement — fitted only past that.
+    // what keeps slivers out of the arrangement), fitted only past that.
     // The leg's surface, windowed to its own neighbourhood. A leg carrying
     // the host's whole domain pairs with faces far from the seat, and the
     // duplicate strands it draws there interleave with the faces' own
@@ -2177,7 +2177,7 @@ fn host_leg(
             ogeom_bail!(
                 Construction,
                 "the seat winds against its host's chart; reversing the \
-                 guide is still owed — docs/PARITY.md, fillet.edge-blends"
+                 guide is still owed; see docs/PARITY.md, fillet.edge-blends"
             );
         }
         ogeom_algo::make_band_between(
@@ -2264,8 +2264,8 @@ fn period_of(surface: &SurfaceGeometry) -> Option<f64> {
         | SurfaceGeometry::Cone(_)
         | SurfaceGeometry::Sphere(_)
         | SurfaceGeometry::Torus(_) => Some(core::f64::consts::TAU),
-        // A patch that meets itself at its seam without being periodic — a
-        // converted cylinder's — wraps like one: the march wraps its
+        // A patch that meets itself at its seam without being periodic (a
+        // converted cylinder's) wraps like one: the march wraps its
         // parameter there, and the rail's image must unwrap it back.
         other if other.is_periodic_u() || other.is_closed_u(Tolerances::millimetres()) => {
             let ((ua, ub), _) = other.domain();
@@ -2317,8 +2317,8 @@ fn chart_of(
             Point2::new(u, v)
         }
         // No closed form: the foot by projection, warm-started from the
-        // last station where there is one — consecutive stations are
-        // neighbours on the surface — and seeded from a grid otherwise, or
+        // last station where there is one (consecutive stations are
+        // neighbours on the surface) and seeded from a grid otherwise, or
         // where the warm start wandered off.
         _ => {
             let near = prev.and_then(|q| {
@@ -2406,7 +2406,7 @@ fn ends_apart(guide: &Curve, range: (f64, f64), tol: Tolerances) -> bool {
 }
 
 /// A seat's loop closed back through the edges its two host faces share,
-/// each taken where it continues the last tangentially, as one spline —
+/// each taken where it continues the last tangentially, as one spline:
 /// the pieces in their exact spline forms over unit spans, turned to run
 /// the walk's way, raised to one degree and joined end to end, the seat
 /// itself the first span. `None` where the walk does not come back to the

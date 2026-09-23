@@ -1,9 +1,9 @@
 //! Section views: cut the part, draw what the plane reveals.
 //!
 //! A section view is a boolean wearing drawing clothes. The material on the
-//! plane's positive side is removed — through the general cut, against a
+//! plane's positive side is removed (through the general cut, against a
 //! proxy box sized off the shape's own bounds, so every downstream guarantee
-//! the boolean makes holds here too — and the faces the cut created *on* the
+//! the boolean makes holds here too), and the faces the cut created *on* the
 //! plane become the section outline: the closed loops a draughtsman hatches.
 //! The rest of the drawing is the cut solid through the projection machinery,
 //! viewed straight down the plane's normal.
@@ -111,8 +111,8 @@ fn section_with_window(
     let cut = ogeom_bool::cut(model, solid, &proxy.shape, tol)?;
 
     // The cut faces on the plane are the section outline. Their rings come
-    // from the same boundary machinery the triangulator trusts — walked in
-    // order, seams and orientations resolved — and lift from the face's own
+    // from the same boundary machinery the triangulator trusts (walked in
+    // order, seams and orientations resolved) and lift from the face's own
     // chart into the section plane's coordinates through the surface.
     let mut outline = Vec::new();
     for face in explore(model, &cut.shape, Filter::OfType(ShapeType::Face))? {
@@ -183,7 +183,7 @@ fn face_on_plane(
 /// Cut away one quarter of the part and draw the half-section.
 ///
 /// The plane's frame states the whole convention: material on the `+z`
-/// side is removed, but only over the frame's `+x` half — the split line
+/// side is removed, but only over the frame's `+x` half; the split line
 /// is the frame's own `y` axis. The section outline covers the cut half,
 /// hatched by the draughtsman's convention through [`hatch`]; the drawing
 /// shows the other half in outside view, which is what a half-section is
@@ -215,7 +215,7 @@ pub fn half_section(
 /// clipped to the material by the even-odd rule.
 ///
 /// The outline loops are taken as [`SectionView::outline`] hands them over
-/// — outer loops and holes together — so a hole interrupts the hatching
+/// (outer loops and holes together), so a hole interrupts the hatching
 /// exactly as it interrupts the material. Each returned pair is one hatch
 /// stroke in the plane's `(x, y)`.
 #[must_use]
@@ -248,7 +248,7 @@ pub fn hatch(outline: &[Vec<Point2>], spacing: f64, angle: f64) -> Vec<(Point2, 
     let mut y = lo.1 + spacing * 0.5;
     while y < hi.1 {
         // Every crossing of this scanline with every loop edge; sorted,
-        // then paired even-odd — inside between the first and second,
+        // then paired even-odd: inside between the first and second,
         // outside between the second and third, and so on.
         let mut crossings: Vec<f64> = Vec::new();
         for ring in &turned {
@@ -410,7 +410,7 @@ mod tests {
             .shape;
         let part = ogeom_bool::cut(&mut model, &drum, &bore, T).unwrap().shape;
         // The section plane holds the axis: its frame's z is the cut
-        // normal, its y the split line — the axis itself.
+        // normal, its y the split line, the axis itself.
         let plane = Plane::new(Frame::new(Point::ORIGIN, Direction::X, Direction::Z, T).unwrap());
         let view = half_section(&mut model, &part, &plane, fine(), T).unwrap();
 

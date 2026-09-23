@@ -2,7 +2,7 @@
 //!
 //! [`Transform`] is a similarity: an orthonormal linear part, a uniform scale
 //! and a translation. That covers everything a solid modeller applies to a
-//! shape — placement, rotation, mirroring, uniform scaling — while preserving
+//! shape (placement, rotation, mirroring, uniform scaling) while preserving
 //! the two properties the geometry depends on: angles are unchanged, and an
 //! analytic surface stays the same *kind* of analytic surface. A cylinder
 //! remains a cylinder.
@@ -17,7 +17,7 @@
 //! Every [`Transform`] carries a [`TransformKind`], and applying one dispatches
 //! on it: a translation adds a vector, the identity does nothing at all. That
 //! matters because transforms are applied to every control point of every
-//! curve, every vertex of every tessellation, over an entire model — the
+//! curve, every vertex of every tessellation, over an entire model: the
 //! difference between a branch and nine multiplies, repeated a hundred million
 //! times, is real.
 //!
@@ -45,7 +45,7 @@ pub enum TransformKind {
     Translation,
     /// Rotation about an axis through the origin, possibly with a translation.
     Rotation,
-    /// Reflection through a point — equivalently, a scale of `-1`.
+    /// Reflection through a point (equivalently, a scale of `-1`).
     PointMirror,
     /// Reflection in a plane.
     PlaneMirror,
@@ -131,17 +131,17 @@ impl Transform {
     /// re-derived rather than taken on trust, since it is a function of the
     /// other three.
     ///
-    /// For reading a document back. Going the long way round — multiplying the
+    /// For reading a document back. Going the long way round (multiplying the
     /// scale into the matrix and asking
     /// [`GeneralTransform::to_similarity`](crate::GeneralTransform::to_similarity)
-    /// to factor it out again — recovers a transform that is *close*, not the
+    /// to factor it out again) recovers a transform that is *close*, not the
     /// one that was written, and a round trip that drifts a little each time is
     /// not a round trip.
     ///
     /// # Errors
     ///
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if `linear` is
-    /// not orthonormal within `eps`, or `scale` is not finite and non-zero — a
+    /// not orthonormal within `eps`, or `scale` is not finite and non-zero; a
     /// placement that squashes space is not a placement.
     pub fn from_parts(
         linear: Matrix3,
@@ -250,7 +250,7 @@ impl Transform {
         Self::build(linear, 1.0, p - linear * p)
     }
 
-    /// Reflection in a line — a half turn about it.
+    /// Reflection in a line: a half turn about it.
     #[must_use]
     pub fn axis_mirror(axis: Axis) -> Self {
         Self::rotation(axis, core::f64::consts::PI)
@@ -302,7 +302,7 @@ impl Transform {
     /// Whether this transform preserves handedness.
     ///
     /// A shape transformed by a transform that does not must have its
-    /// orientation flipped to stay consistent — otherwise a mirrored solid ends
+    /// orientation flipped to stay consistent; otherwise a mirrored solid ends
     /// up inside out.
     #[must_use]
     pub fn preserves_handedness(&self) -> bool {
@@ -388,7 +388,7 @@ impl Transform {
         if self.scale == 0.0 {
             ogeom_bail!(Numeric, "transform has a zero scale and no inverse");
         }
-        // The linear part is orthonormal, so its inverse is its transpose — no
+        // The linear part is orthonormal, so its inverse is its transpose; no
         // need to go through a general inversion, and no rounding beyond the
         // transpose itself.
         let inv_linear = self.linear.transposed();
@@ -704,7 +704,7 @@ impl GeneralTransform {
     /// under any shear or non-uniform scale it tilts normals off the surface
     /// they belong to, which then breaks every orientation test downstream.
     ///
-    /// The result is not renormalized — it is a direction, not a length.
+    /// The result is not renormalized; it is a direction, not a length.
     ///
     /// # Errors
     ///
@@ -829,7 +829,7 @@ mod tests {
     #[test]
     fn a_zero_rotation_classifies_as_identity_not_rotation() {
         // The classification is derived from the data, so it cannot claim more
-        // structure than the transform has — or less.
+        // structure than the transform has, or less.
         assert_eq!(
             Transform::rotation(Axis::Z, 0.0).kind(),
             TransformKind::Identity
@@ -1033,7 +1033,7 @@ mod tests {
     fn general_transform_normals_use_the_inverse_transpose() {
         // Non-uniform scaling: the plane z = x has normal (1, 0, -1) up to
         // scale. Scale x by 2 and the plane becomes z = x/2, whose normal is
-        // (1, 0, -2) up to scale — not (2, 0, -1), which is what applying the
+        // (1, 0, -2) up to scale, not (2, 0, -1), which is what applying the
         // linear part directly would give.
         let g = GeneralTransform::scaling_xyz(2.0, 1.0, 1.0);
         let n = Vector::new(1.0, 0.0, -1.0);

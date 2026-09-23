@@ -1,14 +1,14 @@
 //! Hatching in parametric space: parallel lines clipped to a face's trim.
 //!
-//! The rings are the same chart boundary every other consumer walks —
-//! [`face_boundary`] — so the hatch and
+//! The rings are the same chart boundary every other consumer walks
+//! ([`face_boundary`]), so the hatch and
 //! the triangulation cannot disagree about where the face is. The lines run
 //! at an angle in the chart, spaced evenly, and each is cut to the inside
 //! intervals by even-odd crossing counting; holes split segments the same
 //! way they split everything else.
 //!
 //! Scanlines sit at half-spacing offsets, so a boundary lying exactly on a
-//! round coordinate — every axis-aligned face — is not grazed.
+//! round coordinate (every axis-aligned face) is not grazed.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::Point2;
@@ -21,7 +21,7 @@ use crate::triangulate::face_boundary;
 ///
 /// `angle` is the line direction in the chart, radians from the `u` axis;
 /// `spacing` the perpendicular distance between lines. Returns the clipped
-/// segments in chart coordinates, each as its two endpoints — lifting them
+/// segments in chart coordinates, each as its two endpoints; lifting them
 /// to space is the surface's own `point_at`, and which chart step is fine
 /// enough for that lift is the caller's deflection question, not this one.
 ///

@@ -4,14 +4,14 @@
 //! to do about it. The mapping is not clever and should not be: a hole is
 //! drilled, a pocket is milled, a chamfer is cut with a chamfer tool, and a
 //! round is either a tool radius or a shape the cutter leaves behind. What
-//! is worth doing carefully is the *bookkeeping* — the direction each
+//! is worth doing carefully is the *bookkeeping*: the direction each
 //! operation approaches from, the largest tool that fits, and the order
 //! imposed by the feature tree, since a hole through a pocket floor cannot
 //! be drilled before the pocket exists.
 //!
 //! Every number here comes from the recognized geometry. Where a number
-//! cannot be had from it — the depth of a pocket whose floor the recognizer
-//! found but whose opening it did not — the field says so by being absent
+//! cannot be had from it (the depth of a pocket whose floor the recognizer
+//! found but whose opening it did not), the field says so by being absent
 //! rather than by holding a guess.
 
 use ogeom_core::{OgeomResult, Tolerances};
@@ -26,7 +26,7 @@ use crate::recognize::{Feature, FeatureNode, HoleKind};
 pub enum Operation {
     /// A drilled hole.
     Drill {
-        /// The bore diameter — the smallest in the chain, which is what a
+        /// The bore diameter: the smallest in the chain, which is what a
         /// drill has to fit.
         diameter: f64,
         /// The direction the drill enters along.
@@ -36,7 +36,7 @@ pub enum Operation {
         depth: f64,
         /// Whether it breaks through.
         through: bool,
-        /// Whether the chain steps — a counterbore — or opens on a cone,
+        /// Whether the chain steps (a counterbore) or opens on a cone,
         /// which are second operations on the same axis.
         counterbored: bool,
         /// Whether a cone opens the entry.
@@ -54,7 +54,7 @@ pub enum Operation {
         /// `None` where the floor's corners are sharp and no round tool
         /// leaves that shape.
         largest_tool: Option<f64>,
-        /// Whether the floor is an obround — a slot rather than a pocket.
+        /// Whether the floor is an obround: a slot rather than a pocket.
         slot: bool,
     },
     /// A bevel.
@@ -230,7 +230,7 @@ fn face_normal(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Dire
 }
 
 /// The smallest radius the floor's own boundary turns through, which is
-/// what limits the tool. `None` when every corner is sharp — no round tool
+/// what limits the tool. `None` when every corner is sharp; no round tool
 /// leaves that shape, and saying so is more use than a number.
 fn smallest_inside_radius(
     model: &Model,

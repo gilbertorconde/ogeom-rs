@@ -10,7 +10,7 @@
 //! A viewer redraws at sixty frames a second and cannot re-solve a NURBS patch
 //! each time. Data exchange writes the mesh, not the surface. Both want the
 //! same answer every time they ask, which a cache guarantees and recomputation
-//! does not — two calls with the same deflection can differ in their last bits,
+//! does not: two calls with the same deflection can differ in their last bits,
 //! and a display that flickers along a shared edge is the visible result.
 //!
 //! # Why the polyline keeps its parameters
@@ -18,7 +18,7 @@
 //! An edge's cached polyline and the boundary of a face's cached triangulation
 //! have to be the same points, or the stored form has gaps where the exact
 //! geometry has none. They agree because both come from the edge's 3D curve at
-//! one set of parameters — so the parameters are stored, not just the points.
+//! one set of parameters, so the parameters are stored, not just the points.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_topo::{
@@ -69,8 +69,8 @@ pub fn tessellate(
     };
 
     // Every face drawn to the chords the faces agree to draw their shared
-    // edges to — a narrow face's edges finer than asked, and the faces
-    // across them the same — in one pass that yields the meshes and the
+    // edges to (a narrow face's edges finer than asked, and the faces
+    // across them the same) in one pass that yields the meshes and the
     // chords together, the chords then serving the polylines too.
     ogeom_core::progress::stage("tessellate: faces");
     let faces: Vec<Shape> = ogeom_topo::explore(model, shape, Filter::OfType(ShapeType::Face))?
@@ -101,8 +101,8 @@ pub fn tessellate(
         }
     }
 
-    // Faces in two phases: the expensive computation — triangulation and the
-    // edge paths through it — reads the model immutably and runs in parallel,
+    // Faces in two phases: the expensive computation (triangulation and the
+    // edge paths through it) reads the model immutably and runs in parallel,
     // one result slot per face in face order; the attachment then mutates
     // sequentially in that same order. The split is what makes the output
     // bit-identical at any thread count: nothing about scheduling can reach
@@ -111,7 +111,7 @@ pub fn tessellate(
     // Counted with an atomic because the workers finish in their own order:
     // each announcement carries a distinct `done`, all of them reach the
     // sink exactly once, and the consumer's bar may briefly see them out of
-    // sequence — which is what completion order means.
+    // sequence, which is what completion order means.
     let face_total = faces.len() as u64;
     let faces_done = std::sync::atomic::AtomicU64::new(0);
     type FaceWork = (Triangulation, Vec<(Shape, Vec<u32>)>);
@@ -143,7 +143,7 @@ pub fn tessellate(
                 face_total,
             );
 
-            // Each boundary edge's path through this mesh, as node indices —
+            // Each boundary edge's path through this mesh, as node indices:
             // the PolygonOnTriangulation representation. Matched while the
             // mesh is still owned, attached after it is stored.
             let mut paths: Vec<(Shape, Vec<u32>)> = Vec::new();
@@ -214,8 +214,8 @@ fn edge_reach(model: &Model, edge: &Shape, tol: Tolerances) -> f64 {
 /// The polyline's node indices in the mesh, chosen so consecutive indices
 /// are triangle edges.
 ///
-/// A position may name several nodes — a seam's two chart columns lift to
-/// the same points — so matching by position alone can jump between the
+/// A position may name several nodes (a seam's two chart columns lift to
+/// the same points), so matching by position alone can jump between the
 /// copies. Candidates come from position (exact bits, else within `reach`),
 /// and the walk picks, at each step, a candidate adjacent in the mesh to the
 /// one before it; the first point tries each of its candidates as a start.
@@ -292,8 +292,8 @@ pub fn polyline_of(model: &Model, edge: &Shape) -> Option<(Vec<ogeom_math::Point
 
 /// Discretize an edge and store the polyline on it, replacing any earlier one.
 ///
-/// Returns whether a polyline was stored; an edge with no 3D curve — a
-/// degenerate edge at a cone's apex — has nothing to discretize.
+/// Returns whether a polyline was stored; an edge with no 3D curve (a
+/// degenerate edge at a cone's apex) has nothing to discretize.
 fn attach_polyline(
     model: &mut Model,
     edge: &Shape,
@@ -407,7 +407,7 @@ mod tests {
         // chord, so it draws its circles finer than asked. The two flat
         // faces share those circles and must draw them to the same points,
         // or the stored meshes, assembled face by face, crack along the
-        // rim — and the stored polylines would side with one face or the
+        // rim, and the stored polylines would side with one face or the
         // other.
         let mut model = Model::new();
         let coarse = Deflection {

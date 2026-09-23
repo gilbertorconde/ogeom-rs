@@ -1,7 +1,7 @@
 //! The native `.og` format: a whole document, written so it can be read back.
 //!
 //! Topology, geometry, placements, per-entity tolerances, provenance and the
-//! cached tessellation — everything a [`Model`] holds. This is what the
+//! cached tessellation: everything a [`Model`] holds. This is what the
 //! differential harness round-trips through, which sets the bar: a format that
 //! quietly dropped what it did not handle would make every comparison through
 //! it pass, including the ones that should not.
@@ -10,7 +10,7 @@
 //!
 //! The point of a round trip is to *disagree usefully* when it goes wrong, and
 //! a disagreement you can only see through a hex dump is one nobody will read.
-//! So: one record per line, tagged, in dependency order — datums, geometry,
+//! So: one record per line, tagged, in dependency order: datums, geometry,
 //! entities, then topology. A model written, read and written again produces
 //! the same bytes, so `diff` is the whole comparison tool.
 //!
@@ -60,7 +60,7 @@ pub use ogeom_topo::Absorbed;
 /// Bumped when the grammar changes in a way an older reader could not follow.
 /// A file naming a version this does not know is refused rather than guessed
 /// at; every version up to this one still reads, because version 2 only
-/// *added* records — the conical helix and the periodic B-spline — and a
+/// *added* records (the conical helix and the periodic B-spline), and a
 /// version 1 file contains neither.
 pub const VERSION: u32 = 2;
 
@@ -72,8 +72,8 @@ const MAGIC: &str = "ogeom";
 pub struct WriteOptions {
     /// Whether to write the cached triangulations.
     ///
-    /// They are derived data — recomputable from the topology at any deflection
-    /// — and far larger than the topology that produced them, so a file meant
+    /// They are derived data (recomputable from the topology at any deflection)
+    /// and far larger than the topology that produced them, so a file meant
     /// for reading by a human is better without. Left on by default, because
     /// the alternative is a round trip that is not the identity for a model
     /// that has meshes attached, and this is the format the harness compares
@@ -92,7 +92,7 @@ impl Default for WriteOptions {
 /// Write a model, and the shapes it is a document *about*.
 ///
 /// `roots` are recorded so a reader gets back the same handles the writer had.
-/// A model with no roots is legal — it is a document of loose geometry — but a
+/// A model with no roots is legal (it is a document of loose geometry), but a
 /// reader then has nothing to start a traversal from.
 ///
 /// # Errors
@@ -109,7 +109,7 @@ pub fn write(model: &Model, roots: &[Shape], options: WriteOptions) -> OgeomResu
     // The file carries the reachable closure of `roots`, not the model: a
     // snapshot of one body from a 330-solid assembly is that body's records,
     // not 35 MB of everyone else's. Empty roots keep the whole
-    // model — that is `write_document`'s contract, whose products name
+    // model; that is `write_document`'s contract, whose products name
     // shapes the root list does not. When the closure covers everything, the
     // subset would be a copy of the model spelled the long way, so the model
     // itself is written and the handles keep their numbers.
@@ -138,8 +138,8 @@ struct Closure {
     meshes: std::collections::HashSet<u32>,
     /// The highest entity id any retained node carries. Entities are kept as
     /// the table's *prefix* up to here, ids untouched: a derivation only ever
-    /// names entities minted before it, so the prefix is transitively closed
-    /// — and a consumer's recorded `EntityId`s stay valid, which
+    /// names entities minted before it, so the prefix is transitively closed,
+    /// and a consumer's recorded `EntityId`s stay valid, which
     /// `provenance_and_identity_survive` holds the writer to.
     last_entity: u64,
 }
@@ -491,7 +491,7 @@ fn write_full(model: &Model, roots: &[Shape], options: WriteOptions) -> OgeomRes
 
     // The unit scale, first, because everything after it is measured in those
     // units. A document that did not record it would read back correctly and be
-    // *validated* against whatever the reader assumed — so geometry legitimate
+    // *validated* against whatever the reader assumed, so geometry legitimate
     // at one scale could be refused at another, and nothing would say why.
     let mut t = Vec::new();
     w(&mut t, "units");
@@ -594,7 +594,7 @@ pub fn read(text: &str) -> OgeomResult<(Model, Vec<Shape>)> {
 /// Read a document's contents into an existing model.
 ///
 /// Same grammar, same [`VERSION`]: this reads exactly what [`read`] reads, it
-/// just lands the result in a model that already has things in it — which is
+/// just lands the result in a model that already has things in it, which is
 /// what lets a serialized tool body meet a live one in a boolean. The heavy
 /// lifting is [`Model::absorb`]: every handle shifts past what the model
 /// already holds, identities land under new ids, and the returned
@@ -617,7 +617,7 @@ pub fn read_into(model: &mut Model, text: &str) -> OgeomResult<Absorbed> {
 /// The model section, stopping at the first record it does not know.
 ///
 /// Returns the leftover keyword and the cursor standing just past it, so a
-/// layered reader — the document's — can pick up where the model's ends.
+/// layered reader (the document's) can pick up where the model's ends.
 #[allow(clippy::type_complexity)]
 fn read_core(text: &str) -> OgeomResult<(Model, Vec<Shape>, Option<String>, Cursor<'_>)> {
     let (parts, roots, leftover, cursor) = read_parts(text)?;
@@ -635,7 +635,7 @@ fn read_core(text: &str) -> OgeomResult<(Model, Vec<Shape>, Option<String>, Curs
 
 /// The record loop: text to [`ModelParts`] and unbound roots.
 ///
-/// Everything [`read_core`] does short of assembling a model — split out so
+/// Everything [`read_core`] does short of assembling a model, split out so
 /// [`read_into`] can hand the same parts to [`Model::absorb`] instead.
 #[allow(clippy::type_complexity)]
 fn read_parts(text: &str) -> OgeomResult<(ModelParts, Vec<Shape>, Option<String>, Cursor<'_>)> {
@@ -744,8 +744,8 @@ fn read_units(cursor: &mut Cursor<'_>) -> OgeomResult<Tolerances> {
 
 /// Refuse a record written out of arena order.
 ///
-/// The order *is* the numbering — a reader replays inserts to reproduce the
-/// handles — so a gap or a repeat would silently shift every later reference.
+/// The order *is* the numbering (a reader replays inserts to reproduce the
+/// handles), so a gap or a repeat would silently shift every later reference.
 fn expect_index(index: u32, next: usize) -> OgeomResult<()> {
     if index as usize != next {
         ogeom_bail!(
@@ -972,7 +972,7 @@ pub fn write_document(
         emit(&mut out, &t);
     }
 
-    // The attribute layer: properties, materials, layers, validation —
+    // The attribute layer: properties, materials, layers, validation:
     // shape-keyed maps in key order, lists in id order, so writing what
     // was read gives the same bytes.
     let mut with_properties: Vec<_> = document.properties().collect();
@@ -1070,7 +1070,7 @@ pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
     let mut document = ogeom_doc::Document::over(model);
     // Product ids are issued in write order, so index references bind by
     // re-adding in order; instances arrive after every product exists in the
-    // file's own ordering discipline, which parts first would break — so
+    // file's own ordering discipline, which parts first would break, so
     // instances are held back and applied at the end.
     let mut ids: Vec<ogeom_doc::ProductId> = Vec::new();
     let mut instances: Vec<(usize, usize, Location, Option<String>)> = Vec::new();
@@ -2546,7 +2546,7 @@ impl<'a> Cursor<'a> {
         };
 
         // An edge's representations are records of their own, written after the
-        // node line — so its data cannot be finished until the children on that
+        // node line, so its data cannot be finished until the children on that
         // line have been read past.
         let mut pending = None;
         let mut data = match kind {
@@ -3135,7 +3135,7 @@ mod tests {
         );
         // And a revolution, so a surface of revolution and a seam are too. The
         // profile has to lie in a plane the axis runs through and stay clear of
-        // it, or the swept solid would pass through itself — so it is the box's
+        // it, or the swept solid would pass through itself, so it is the box's
         // `-y` face, spanning x and z, turned about a z axis five units away.
         let side = explore_unique(&model, &roots[0], ShapeType::Face)
             .unwrap()
@@ -3170,7 +3170,7 @@ mod tests {
     #[test]
     fn writing_what_was_read_gives_the_same_bytes() {
         // The property the whole format exists for. If a round trip through it
-        // is not the identity, `diff` says exactly where — which is why this is
+        // is not the identity, `diff` says exactly where, which is why this is
         // text and not a binary blob.
         let (model, roots) = everything();
         let first = write(&model, &roots, WriteOptions::default()).unwrap();
@@ -3203,7 +3203,7 @@ mod tests {
 
         for (before, after) in roots.iter().zip(&restored_roots) {
             // The *slot* came back, not merely something like it: same index,
-            // same generation. Not the same handle, though — a restored
+            // same generation. Not the same handle, though: a restored
             // document is a new set of arenas and its handles say so, which is
             // what stops one document's shape from resolving against another.
             assert_eq!(before.node().index(), after.node().index());
@@ -3216,8 +3216,8 @@ mod tests {
             assert!(model.node(after).is_none(), "and not the other way round");
             // A reference kept across a save is re-found by its *identity*,
             // not by its handle. `bind` deliberately refuses a shape from
-            // another document — relabelling one would hand back something that
-            // resolves and answers about a different entity — so the way
+            // another document (relabelling one would hand back something that
+            // resolves and answers about a different entity), so the way
             // through is the thing §8 exists for.
             assert!(
                 restored.bind(before).is_err(),
@@ -3264,7 +3264,7 @@ mod tests {
     fn provenance_and_identity_survive() {
         // The reason reading does not go through the builders. A rebuild
         // through them would mint fresh identities, and every reference
-        // recorded against the old ones — "the top face of that box" — would
+        // recorded against the old ones ("the top face of that box") would
         // resolve to nothing or, worse, to something else.
         let (model, roots) = everything();
         let text = write(&model, &roots, WriteOptions::default()).unwrap();
@@ -3356,7 +3356,7 @@ mod tests {
     #[test]
     fn identities_read_into_a_live_model_survive_under_an_offset() {
         // `provenance_and_identity_survive`'s sibling: the ids are not the
-        // file's own — the target had already issued some — but the remap
+        // file's own (the target had already issued some), but the remap
         // table says exactly where each one landed, and everything found
         // through it answers the same.
         let (model, roots) = everything();
@@ -3449,7 +3449,7 @@ mod tests {
             "the copies share a node"
         );
         // Containers carry no identity; a face of each copy does, and they
-        // must differ — the second read is a second body, not an alias.
+        // must differ: the second read is a second body, not an alias.
         let face_a = explore_unique(&target, a, ShapeType::Face).unwrap()[0].clone();
         let face_b = explore_unique(&target, b, ShapeType::Face).unwrap()[0].clone();
         assert_ne!(
@@ -3466,7 +3466,7 @@ mod tests {
 
     #[test]
     fn read_into_reads_the_same_version_read_does() {
-        // The grammar did not change for read_into, so neither did VERSION —
+        // The grammar did not change for read_into, so neither did VERSION,
         // and both readers refuse the same unknown one.
         let future = format!("{MAGIC} 99\nunits 1.0\n");
         assert!(read(&future).is_err());
@@ -3793,7 +3793,7 @@ mod unit_tests {
                 "and so did what counts as the same point"
             );
             // And writing it again gives the same bytes, scale included. The
-            // roots have to be *this* model's — a second `read` makes a third
+            // roots have to be *this* model's; a second `read` makes a third
             // document, whose handles this one rightly will not accept.
             let again = write(&restored, &restored_roots, WriteOptions::default()).unwrap();
             assert_eq!(text, again);

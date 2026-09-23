@@ -20,7 +20,7 @@ spade.workspace = true
 
 [dev-dependencies]
 # Path only, deliberately: `ogeom-algo` builds on this crate, so a version
-# requirement here would be a cycle no registry can resolve — the tests need
+# requirement here would be a cycle no registry can resolve: the tests need
 # shapes to mesh, and the thing that builds shapes is downstream. Cargo drops
 # a path-only dev-dependency from the published manifest, so the cycle exists
 # in this repository and nowhere else.

@@ -32,7 +32,7 @@ fn the_smallest_nist_part_reads_into_a_closed_solid() {
             .remove(0);
     assert!(ogeom_algo::is_shell_closed(import.document.model(), &shell).unwrap());
 
-    // Four of the six faces triangulate — planes and full cylinder bands,
+    // Four of the six faces triangulate: planes and full cylinder bands,
     // the bands through synthesised seams. The two torus fillets are the
     // honest remainder: their two ring vertices sit at different angles, so
     // no seam can join them without re-anchoring a shared edge, which is
@@ -54,7 +54,7 @@ fn the_smallest_nist_part_reads_into_a_closed_solid() {
         }
     }
     // Four planes and seamed cylinder bands, plus the two torus fillets
-    // whose wound rings now close against their own translates — every face
+    // whose wound rings now close against their own translates; every face
     // of the raw import meshes.
     assert_eq!(meshed, 6, "every face meshes, wound torus rings included");
     assert_eq!(
@@ -116,10 +116,10 @@ fn every_nist_part_reads_and_reports_honestly() {
 /// A cone trimmed to its own apex triangulates.
 ///
 /// The face is bounded the way ST-Developer writes a countersink drilled to
-/// a point: the rim, and one slant line used twice — down to the apex and
+/// a point: the rim, and one slant line used twice, down to the apex and
 /// back. No vertex loop, no degenerate edge; the apex exists only as the
 /// vertex the slant line ends at. In the chart that line is a seam, and its
-/// second traversal must take the other side of the parameter rectangle —
+/// second traversal must take the other side of the parameter rectangle;
 /// continuity cannot say so, because at the apex both sides start at the
 /// same 3D point, and choosing by nearness closes the ring over nothing.
 /// Found as two invisible countersinks in a real frame assembly.
@@ -183,7 +183,7 @@ END-ISO-10303-21;
 /// A determinate progress bar's contract: reading a file with N solids
 /// announces `step: solid` exactly N times, as `(1, N) … (N, N)`.
 ///
-/// The denominator arrives with the *first* event — the host never counts
+/// The denominator arrives with the *first* event; the host never counts
 /// events or guesses the total (issue #9).
 #[test]
 fn a_step_read_announces_each_solid_with_its_total() {
@@ -206,8 +206,8 @@ fn a_step_read_announces_each_solid_with_its_total() {
 
 /// A boundary too far from its surface to trim is *named*, not just lamented.
 ///
-/// The face's edges sit 3 mm above the patch — past the one-millimetre
-/// healing cap, the wrong-pairing regime — so the fit refuses, the face
+/// The face's edges sit 3 mm above the patch (past the one-millimetre
+/// healing cap, the wrong-pairing regime), so the fit refuses, the face
 /// reads without a trim, and `report.untrimmed_faces` carries its STEP id
 /// for the consumer to mark. The warnings still tell the story in prose;
 /// this is the form a UI can act on.
@@ -290,14 +290,14 @@ END-ISO-10303-21;
 }
 
 /// The warning flood, counted: the hovering face's read carries its kinds
-/// as summary entries — count, worst measured value, an exemplar id — so a
+/// as summary entries (count, worst measured value, an exemplar id), so a
 /// consumer shows four lines where the prose runs to hundreds.
 #[test]
 fn warnings_summarise_by_kind_with_counts_and_worsts() {
     let text = corpus("nist_ftc_11_asme1_rb.stp");
     let import = ogeom_io::read_step(&text, T).unwrap();
     // The corpus file is imprecise the way real files are: something
-    // tallies. Every entry is coherent — counted, and its worst finite.
+    // tallies. Every entry is coherent: counted, and its worst finite.
     for entry in &import.report.summary {
         assert!(entry.count > 0);
         assert!(entry.worst.is_finite());
@@ -322,7 +322,7 @@ fn a_slit_sphere_zone_meshes_its_own_region_not_the_complement() {
     // that sits at the chart's own seam. The doubly-used slit edge was
     // bracketed like a period-wrapping seam, which wound the ring, pulled
     // in a pole row the face never touches, and meshed the complement of
-    // the head — a fan the size of the whole sphere. The honest measure is
+    // the head: a fan the size of the whole sphere. The honest measure is
     // chart-consistency: every triangle's centre must sit at sag distance
     // from the surface evaluated at its own chart centre.
     use ogeom_geom::{Surface as _, Transformable as _};
@@ -384,7 +384,7 @@ fn two_oblique_rims_on_a_sphere_bound_a_face_not_a_band() {
     // The assembly-side half: a button head's sphere zone is
     // bounded by two closed circles cut square to the screw, while the
     // sphere's chart runs along z. They lie on the sphere but are not its
-    // parallels, and the reader used to synthesise a band between them —
+    // parallels, and the reader used to synthesise a band between them:
     // a phantom meridian slit and a latitude-line pcurve per rim that the
     // rims never follow, meshing the sphere's complement. Now they bound
     // the face on their own: two wires, no seam, and every triangle at sag
@@ -467,8 +467,8 @@ fn two_oblique_rims_on_a_sphere_bound_a_face_not_a_band() {
     assert_eq!(heads, 1, "one button head on the screw");
 }
 
-/// A part exported as faces — `SHELL_BASED_SURFACE_MODEL` bodies, one open
-/// shell of one face each — reads as shells under its product, every face
+/// A part exported as faces (`SHELL_BASED_SURFACE_MODEL` bodies, one open
+/// shell of one face each) reads as shells under its product, every face
 /// meshing, nothing of it left in the skipped table.
 #[test]
 fn a_surface_model_reads_as_shells_under_its_product() {
@@ -566,7 +566,7 @@ fn a_hole_across_the_chart_seam_is_cut_from_the_face() {
 /// carries still gets a window wide enough to be asked about.
 ///
 /// A plane, a cylinder and a cone are unbounded, so the window a reader
-/// gives them is a convention — generous, and a guess. A real assembly
+/// gives them is a convention: generous, and a guess. A real assembly
 /// falsifies the guess: a community printer assembly places a cylinder's
 /// origin at `z = 500000` and trims the face it carries near the world
 /// origin, so the trim's height parameter runs to −5e5 where the window
@@ -644,7 +644,7 @@ END-ISO-10303-21;
 ///
 /// The fixture is a degree 3×3 patch whose `u` direction is degenerate the
 /// whole way across: `du` is exactly zero along `v = 0` and
-/// four ten-thousandths at the far edge — a sliver four microns wide and a
+/// four ten-thousandths at the far edge, a sliver four microns wide and a
 /// tenth of a millimetre long. The projector answered `u = 0` at the first
 /// sample and `u = 1` at every other, the fit swung across the chart to
 /// join them, and its control points were dragged back into the window by
@@ -684,12 +684,12 @@ fn a_sliver_patch_s_trim_stays_in_its_chart() {
 
 /// A solid with a cavity is read, cavity and all.
 ///
-/// `BREP_WITH_VOIDS` is a subtype of `MANIFOLD_SOLID_BREP` — same name and
+/// `BREP_WITH_VOIDS` is a subtype of `MANIFOLD_SOLID_BREP` (same name and
 /// outer shell in the same two places, plus the shells that bound its
-/// voids — so a file writes it under its own keyword and a reader matching
+/// voids), so a file writes it under its own keyword and a reader matching
 /// on the leading keyword alone never sees it. Three bodies of a community
-/// printer assembly are written that way — a printed housing with six
-/// cavities among them — and all three were simply absent from the import.
+/// printer assembly are written that way (a printed housing with six
+/// cavities among them), and all three were simply absent from the import.
 ///
 /// The cavity arrives as an `ORIENTED_CLOSED_SHELL` pointing the other way
 /// round, which is what makes the volume come out as the difference rather
@@ -726,7 +726,7 @@ fn a_solid_with_a_cavity_keeps_its_cavity() {
 ///
 /// A fitted loop written with its start wherever the fit began, the edge's
 /// one vertex 2.18 mm along it. Held to the curve's own seam, the vertex
-/// missed it by that much and its tolerance was widened to 2.18 mm — a
+/// missed it by that much and its tolerance was widened to 2.18 mm, a
 /// reach a solid's border weld then used. The seam is moved to the vertex:
 /// the same curve, begun where the edge does, and the vertex met exactly.
 #[test]
@@ -765,8 +765,8 @@ fn a_closed_edge_s_seam_is_moved_to_its_vertex() {
 /// A product named the plainer way still reads under its name.
 ///
 /// A modeller writing an assembly, and a mesh converter writing a shell,
-/// spell the formation with its source — `..._WITH_SPECIFIED_SOURCE`, the
-/// product in the same third slot — and the converter leaves the product's
+/// spell the formation with its source (`..._WITH_SPECIFIED_SOURCE`, the
+/// product in the same third slot), and the converter leaves the product's
 /// name blank and fills its id instead. The reader took the first slot of
 /// the source-spelt formation, which is its blank id, and named every such
 /// product after its definition's entity number.

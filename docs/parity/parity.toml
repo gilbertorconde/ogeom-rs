@@ -1,4 +1,4 @@
-# The parity ledger — the one hand-written file of the audit.
+# The parity ledger: the one hand-written file of the audit.
 #
 # One [[capability]] block per thing a caller would ask for. Each claims the
 # reference headers it answers for (exact stems or globs, matched against the
@@ -145,7 +145,7 @@ tests = [
     "crates/ogeom/tests/foundations.rs::a_cancelled_watch_stops_tessellation",
     "crates/ogeom-io/tests/step_corpus.rs::a_step_read_announces_each_solid_with_its_total",
 ]
-restriction = """Flat stages with per-stage (done, total) counts — enough for \
+restriction = """Flat stages with per-stage (done, total) counts, enough for \
 a determinate bar over an import or a tessellation. No nested sub-range \
 scopes: the reference's Message_ProgressScope lets a stage subdivide its \
 own fraction recursively, which nothing here models yet."""
@@ -343,7 +343,7 @@ verdict = "divergent"
 reasoning = """The reference wraps every gp value in a reference-counted \
 handle class so geometry can sit in documents. Here geometry lives in shared \
 arenas keyed by id (docs/DATA_MODEL.md), and points, vectors and placements \
-are plain values — a second, handle-shaped copy of the gp vocabulary would \
+are plain values. A second, handle-shaped copy of the gp vocabulary would \
 exist only to be a different allocation discipline. The capability those \
 wrappers deliver is the arena's."""
 claims = [
@@ -385,21 +385,21 @@ id = "bool.defeaturing"
 title = "Removing a set of faces from a solid by extending and re-intersecting its neighbours"
 crate = "ogeom-bool"
 verdict = "partial"
-restriction = """Inner-loop features — bores, bosses, pockets whose rim is a
-surviving face's inner wire — remove in full generality: wire surgery, no
-re-intersection, the block back to the last bit. Band features — fillets and
-chamfers along an edge — close for any number of bands in one call, each
+restriction = """Inner-loop features (bores, bosses, pockets whose rim is a
+surviving face's inner wire) remove in full generality: wire surgery, no
+re-intersection, the block back to the last bit. Band features (fillets and
+chamfers along an edge) close for any number of bands in one call, each
 running straight through with two end faces or wrapping with none, and
 bands meeting at a corner close together: each recovers its own crease,
 the corner is where one crease pierces the other's side, and a wedge's
 flush cap named with its band folds into the band's crease; a tangent
-chain's bands close together too — a stadium's rim rounded in one call —
+chain's bands close together too (a stadium's rim rounded in one call),
 the junction being the foot on either crease of the cross-section edge the
 two bands share, and a band across a circular crease's seam read as one
 run about its own centre rather than its complement; a rebuilt
 face whose surface has no closed-form pcurves fits them by projection,
-tolerances widened by the measured offset. A rim blend — a drum's top, a
-bore's mouth, a boss's seat — takes a whole ring out of its neighbours and
+tolerances widened by the measured offset. A rim blend (a drum's top, a
+bore's mouth, a boss's seat) takes a whole ring out of its neighbours and
 closes on the circle they meet along: the neighbours' surfaces tell that
 wound from a bore's, whose faces never meet and whose rings are simply
 dropped, and a neighbour's own outer boundary may be the ring, so a drum's
@@ -596,7 +596,7 @@ title = "Upgrading shapes in place: same-domain unification, edge merging, subdi
 crate = "ogeom-heal"
 verdict = "partial"
 restriction = """Unification (`unify_same_domain`) and edge merging are here; \
-the divide family — splitting faces and edges by continuity, angle or area — \
+the divide family (splitting faces and edges by continuity, angle or area) \
 and whole-shape Bézier conversion are not. A downstream consumer that needs \
 C1 pieces gets the C0 shape and must split it itself. The need arrives with \
 exchange writers targeting formats that cap continuity or degree, which is \
@@ -624,9 +624,9 @@ wire's edges end to end where an order exists, collapse edges shorter than \
 their own vertices' tolerances, fit missing pcurves, sew loose faces, \
 tighten tolerances, restore tolerance containment by widening what is \
 bounded (`restore_containment`, which the STEP and IGES readers run on \
-every body they build), diagnose again — and report what it did and \
+every body they build), diagnose again, and report what it did and \
 what remains. Beneath it: reanchoring periodic rings, sewing, validity \
-diagnosis, the reader's inline heal sequence, and the instructed fixes — \
+diagnosis, the reader's inline heal sequence, and the instructed fixes: \
 fix_face_pcurves fits the trims the reader refused at a caller's cap, and \
 reanchor_boundaries moves a boundary onto the surface it bounds with the \
 displacement recorded in widened tolerances, both measured on community \
@@ -678,9 +678,9 @@ verdict = "partial"
 restriction = """Baking a transform into geometry is here (`baked_shape`, \
 which the boolean requires before accepting a scaled placement), and so is \
 whole-shape B-spline conversion (`to_nurbs`). Degree restriction exists at \
-the geometry level — a curve or a patch brought under a degree limit at a \
+the geometry level (a curve or a patch brought under a degree limit at a \
 stated tolerance, the curve same-parameter, the patch on the fit's own \
-parameterization — but not yet as a whole-shape pass that re-derives every \
+parameterization), but not yet as a whole-shape pass that re-derives every \
 pcurve against the restricted patches; swept-to-elementary is not carried."""
 claims = ["ShapeCustom", "ShapeCustom_*"]
 symbols = [
@@ -701,7 +701,7 @@ title = "Statuses, messages and traversal support for the healing pipeline"
 crate = "ogeom-heal"
 verdict = "divergent"
 reasoning = """Healing outcomes here are values: `SameParameterReport`, \
-`StepReport`, counts from `reduce_tolerances` — Rust Results rather than \
+`StepReport`, counts from `reduce_tolerances`. These are Rust Results rather than \
 status bitfields read back through a registrator. A message-registration \
 framework would add a second channel for what the return values already \
 say."""
@@ -716,7 +716,7 @@ id = "heal.scripted-pipeline"
 title = "Resource-file-driven sequences of healing operators"
 crate = "ogeom-heal"
 verdict = "divergent"
-reasoning = """The job — run a heal sequence on import — exists and is done \
+reasoning = """The job (run a heal sequence on import) exists and is done \
 with a fixed inline sequence in the exchange readers, measured by the \
 corpus. A pipeline scripted from resource files is configuration the \
 applications that need it can build from the same functions; the kernel \
@@ -953,7 +953,7 @@ title = "Converting a shape's geometry to NURBS form"
 crate = "ogeom-algo"
 verdict = "partial"
 restriction = """`to_nurbs` converts what has a closed NURBS form and refuses \
-by name what does not — a helix has no exact NURBS representation, and the \
+by name what does not: a helix has no exact NURBS representation, and the \
 refusal is pinned so it cannot reach an exchange writer as a silent \
 approximation (docs/PLAN.md, Decisions). The approximation exists only as an \
 explicit ask: `Curve::fitted_bspline_over` fits a helix, an offset curve or a \
@@ -1066,8 +1066,8 @@ verdict = "divergent"
 reasoning = """Subsumed, and recorded as a settled decision in docs/PLAN.md: \
 the boolean's same-domain unification already skips nothing it needs and \
 unifies what glue would, so a separate glue mode would be a second spelling \
-of the fuse with a faster wrong answer available. MakeConnected's job — \
-conformal multi-body assembly — falls out of the fuse plus history."""
+of the fuse with a faster wrong answer available. MakeConnected's job \
+(conformal multi-body assembly) falls out of the fuse plus history."""
 claims = ["BOPAlgo_MakeConnected"]
 
 # --- ogeom-fillet ---------------------------------------------------------
@@ -1080,21 +1080,21 @@ verdict = "partial"
 restriction = """Single edges, tangent chains and full rims blend, constant \
 and variable radius, and the corner where three blends meet is closed: \
 docs/PLAN.md §B (B2) with §A (A6) behind it. The marched fillet carries the \
-rolling ball to topology on seats no closed form speaks — a fitted seam \
-between two analytic walls, a conic seat re-opened to its full loop — with \
+rolling ball to topology on seats no closed form speaks (a fitted seam \
+between two analytic walls, a conic seat re-opened to its full loop), with \
 the blend fitted through the ball's own arcs and the legs melting on the \
 hosts' exact surfaces. An open seat runs out: where the crease ends at a \
 wall the band runs on until the ball has left the solid and the cut trims \
-it against the wall; where it ends at a split — a seam vertex, or a \
-neighbouring blend's own rail — the band is capped in the end section's \
+it against the wall; where it ends at a split (a seam vertex, or a \
+neighbouring blend's own rail), the band is capped in the end section's \
 own plane, and two such blends meet cap to cap along the shared arc, both \
 caps consumed, in either order. An L-bracket's end rim blends over its \
-re-entrant band as one tangent chain — line, the band's own end arc, line \
-— the ball rolling on the concave cylinder between the lines, to the \
-closed form. A fill and a wedge asked together stop at each other — only \
-blends that round the same way run on through one another's bands, so \
-whichever is asked first takes the corner — and both orders are exact. \
-Cone, sphere and torus hosts march and blend — the chart \
+re-entrant band as one tangent chain (line, the band's own end arc, line), \
+the ball rolling on the concave cylinder between the lines, to the \
+closed form. A fill and a wedge asked together stop at each other, \
+since only blends that round the same way run on through one another's \
+bands; whichever is asked first takes the corner, and both orders are exact. \
+Cone, sphere and torus hosts march and blend: the chart \
 inverted in closed form, a band's connector fitted where no closed form \
 lifts the chart segment, a looping seat with a corner at its join steered \
 by a smooth refit of itself, the band's first station re-solved on the \
@@ -1113,11 +1113,11 @@ closed on it; a melt the boolean still cannot resolve refuses by name. Some sphe
 the wedge. What is owed now: the equal-radius \
 crossing whose seam pinches at tangent poles; and of the corner family, \
 the curved-edged corner. The corner tool rounds any convex planar vertex. \
-Where one ball touches every face — a square or oblique trihedral corner, \
-a square pyramid's four-edged apex — its block is the polyhedron of the N \
+Where one ball touches every face (a square or oblique trihedral corner, \
+a square pyramid's four-edged apex), its block is the polyhedron of the N \
 host planes and the N planes through the ball's centre square to the \
 edges, where each band's rim and the ball's coincide. Where no single \
-ball does — a rectangular pyramid's apex, an irregular pentagonal one — \
+ball does (a rectangular pyramid's apex, an irregular pentagonal one), \
 the region the ball's centre may occupy has a tip of several vertices \
 joined by ridges, and the corner is the exact envelope of the rolling \
 ball: a sphere at each tip vertex, cut with its own compartment, and the \
@@ -1139,9 +1139,9 @@ same way. The \
 curved-seat corner is closed in either order: \
 through `fillet_edges` a marched blend and a straight one meet at their \
 corners, the later's run-out walking on under the earlier band, and the \
-boolean decides once per shared edge piece whether it is dust — a sub-piece \
-of one edge lies in several charts, each with its own snap — so a sliver \
-one chart collapses collapses in every chart. Where three or more edges of \
+boolean decides once per shared edge piece whether it is dust. A sub-piece \
+of one edge lies in several charts, each with its own snap, so deciding once \
+means a sliver that one chart collapses is collapsed in every chart. Where three or more edges of \
 one `fillet_edges` call meet at a vertex, the corner tool closes it with \
 the rolling ball's patch before the bands, which stop flush against it: a \
 box corner's sphere octant, a pyramid apex's sphere or spheres and \
@@ -1215,23 +1215,23 @@ id = "offset.sweeps"
 title = "Sweeping profiles along spines: pipes, pipe shells, evolved shapes, the frame laws"
 crate = "ogeom-offset"
 verdict = "partial"
-restriction = """Pipes run a circular section along a single spine edge — \
-exactly for straight and circular spines, skinned for free-form and helical \
-ones — the evolved sweep runs a profile along a planar spine, exactly, by \
-composition, and the pipe shell sweeps an arbitrary planar profile, holes \
-and all, along an open spine wire under a rotation-minimizing or Frenet \
-frame law — and a profile round a closed spine, smooth or faceted, holes \
+restriction = """Pipes run a circular section along a single spine edge, \
+exactly for straight and circular spines and skinned for free-form and \
+helical ones. The evolved sweep runs a profile along a planar spine, \
+exactly, by composition. The pipe shell sweeps an arbitrary planar profile, \
+holes and all, along an open spine wire under a rotation-minimizing or \
+Frenet frame law, and it also sweeps a profile round a closed spine, smooth or faceted, holes \
 and all: the loop's holonomy paid off, a faceted profile skinned as one \
 C1-closed strip per facet, each hole a void tunnel of its own shell. A \
 sharp-cornered ring mitres exactly when its corners turn in the plane: \
 the wrap is one more mitre, the seam must stand on a corner, and the \
 planar Pappus volumes land to the last digit. The Frenet law rides the \
-loop too — single-valued round it, so it owes no reconciliation — with \
+loop too (single-valued round it, so it owes no reconciliation), with \
 every corner loop one rail shared by the two strips meeting there. A \
 ring seamed mid-leg butts its two half-legs on the seam's own ring, and \
 a skew-cornered ring closes on its mitres: the frame is reflected across \
 each mitre plane, the loop's holonomy spread along the legs as a twist. \
-A corner against a curved leg — on an open spine or a ring — ends both \
+A corner against a curved leg, on an open spine or a ring, ends both \
 walls on the crossing of their generators, exact where the corner turns \
 in the leg's plane; a skew corner against a curved leg is still owed \
 its frame law."""
@@ -1251,12 +1251,12 @@ id = "offset.loft"
 title = "Lofting through sections, ruled or smoothed"
 crate = "ogeom-offset"
 verdict = "partial"
-restriction = """The ruled loft takes two closed wire sections — coaxial \
+restriction = """The ruled loft takes two closed wire sections (coaxial \
 parallel circles, or polygons of the same corner count whose ruled walls \
-come out planar — or a section and a point: a cone on a circle's own axis, \
+come out planar) or a section and a point: a cone on a circle's own axis, \
 an exact pyramid over any straight loop. The skinned loft takes N closed \
-sections, planar or not — a planar end is capped by its plane, a wavy end \
-by a patch skinned from the rim to a point inside it — ends at a point on \
+sections, planar or not (a planar end is capped by its plane, a wavy end \
+by a patch skinned from the rim to a point inside it), ends at a point on \
 request, loops back on itself, and takes per-section alignment hints. A ruled wall between two segments that \
 are not coplanar is the bilinear patch through its four corners, exact, so \
 polygon sections may be turned against each other; mixed edge counts are \
@@ -1287,16 +1287,16 @@ title = "Drafting faces about a neutral plane for mould release"
 crate = "ogeom-offset"
 verdict = "partial"
 restriction = """Planar faces turn about their neutral line, walls of \
-revolution — cylinders and cones — turn about their neutral circle into \
+revolution (cylinders and cones) turn about their neutral circle into \
 exact cones, and extruded walls (a spline profile swept straight) turn \
 ruling by ruling about their neutral crossing's own tangent and re-fit, \
-with the drafted angle held along the height. Every other face — a raw \
-fitted patch, a wall of revolution about an oblique neutral — is drafted \
+with the drafted angle held along the height. Every other face (a raw \
+fitted patch, a wall of revolution about an oblique neutral) is drafted \
 the way a mould-maker drafts: the ruled surface through the face's \
 crossing with the neutral plane, rulings the pull turned by the angle, \
 read off the face's own mesh and corrected onto the surface. A draft \
-whose turned rulings cross inside the drafted window — a profile curled \
-tighter than the draft's reach — is refused by name, as is a face the \
+whose turned rulings cross inside the drafted window (a profile curled \
+tighter than the draft's reach) is refused by name, as is a face the \
 neutral plane crosses twice or not at all."""
 claims = ["BRepOffsetAPI_DraftAngle", "BRepOffsetAPI_MakeDraft", "Draft", "Draft_*"]
 symbols = ["ogeom_offset::apply_draft"]
@@ -1369,7 +1369,7 @@ tests = ["crates/ogeom/tests/document.rs", "crates/ogeom/tests/exchange.rs"]
 
 [[capability]]
 id = "doc.pmi"
-title = "Semantic PMI: dimensions, tolerances, datums, datum targets — and their presentation"
+title = "Semantic PMI: dimensions, tolerances, datums, datum targets, and their presentation"
 crate = "ogeom-doc"
 verdict = "covered"
 claims = [
@@ -1440,8 +1440,8 @@ title = "Generic bounding-volume hierarchies"
 crate = "ogeom-algo"
 verdict = "divergent"
 reasoning = """Acceleration structures here are internal to the algorithms \
-that need them — sewing's cell filter, the classifier's bounds, the distance \
-walk's pruning — rather than a public generic BVH container library. The one \
+that need them (sewing's cell filter, the classifier's bounds, the distance \
+walk's pruning) rather than a public generic BVH container library. The one \
 consumer that wants a standing BVH over triangles is picking, which is \
 outside the kernel (outside/crates/ogeom-select carries it). If a kernel \
 algorithm ever needs a shared BVH, promoting select's is the move."""
@@ -1513,10 +1513,10 @@ a patch past any side by about a length in space: the polynomial \
 continuation of its own end derivatives to the order asked, raised to the \
 degree and joined on, so a rational arc continued at order two stays on its \
 circle; `widened_to_hold` continues a patch side by side as far as a point \
-stands off it. The length is met to first order — the span is the length \
-over the speed at the end — and a continuation *to a named point* is not \
-carried. The rest of GeomLib's grab bag — normal estimation, closure tests, \
-axis mirroring — lives on the Surface and Curve traits."""
+stands off it. The length is met to first order (the span is the length \
+over the speed at the end), and a continuation *to a named point* is not \
+carried. The rest of GeomLib's grab bag (normal estimation, closure tests, \
+axis mirroring) lives on the Surface and Curve traits."""
 claims = ["GeomLib", "GeomLib_*"]
 symbols = [
     "ogeom_algo::widened_to_hold",
@@ -1553,7 +1553,7 @@ verdict = "partial"
 restriction = """Convex polygonal faces, exactly: the shrinking-polygon
 construction, held to the rectangle's roof line and the 3–4–5 triangle's
 incenter and inradius. Holes, reflex corners and curved boundaries are
-refused by name — each changes the mathematics (split events, parabolic
+refused by name: each changes the mathematics (split events, parabolic
 bisectors), and a wrong axis gouges tool paths quietly. The refusals are
 the worklist if a caller ever needs the general region."""
 claims = ["MAT_*", "MAT2d_*", "BRepMAT2d_*"]
@@ -1597,8 +1597,8 @@ id = "io.iges"
 title = "IGES, both directions: solids as manifold B-rep, surface files sewn, units converted"
 crate = "ogeom-io"
 verdict = "partial"
-restriction = """The core entity set reads and writes — 30 entity types, the
-figure `tools/parity.py exchange` regenerates from the module's own table —
+restriction = """The core entity set reads and writes (30 entity types, the
+figure `tools/parity.py exchange` regenerates from the module's own table),
 and eight round-trip cases hold it to measured volumes: planes, a periodic
 cylinder wall with its seam, a doubly periodic torus, a seam-only sphere, a
 boolean result, a spline-walled prism through 126/128, and inch-unit
@@ -1627,12 +1627,12 @@ title = "The exchange session framework: interface models, transfer processes, s
 crate = "ogeom-io"
 verdict = "divergent"
 reasoning = """The reference decouples file model from transfer through a \
-session framework — Interface models, Transfer processes and actors, \
-IFSelect work sessions — largely so many formats and an interactive shell \
+session framework (Interface models, Transfer processes and actors, \
+IFSelect work sessions), largely so many formats and an interactive shell \
 can share one machinery. Readers here parse the file model and build the \
 document directly; what a session would report lives in the returned \
 reports, and there is no interactive shell to serve. The capability the \
-framework delivers to an application — read the file, know what happened — \
+framework delivers to an application (read the file, know what happened) \
 is the readers' contract."""
 claims = [
     "Interface_*", "Transfer_*", "TransferBRep", "TransferBRep_*",
@@ -1646,8 +1646,8 @@ title = "VRML scenes"
 crate = "ogeom-io"
 verdict = "partial"
 restriction = """Writing works and is round-trip-checked by parsing what was \
-written. Reading arbitrary VRML files — the reference's VrmlData, a legacy \
-viewer-format importer — is absent by choice, not by \
+written. Reading arbitrary VRML files (the reference's VrmlData, a legacy \
+viewer-format importer) is absent by choice, not by \
 backlog: a legacy viewer format's importer serves no consumer this kernel \
 has, and the non-coverage is deliberate (issue #28). It would join the \
 queue behind IGES if legacy scene import ever mattered; nothing else \
@@ -1694,8 +1694,8 @@ title = "A symbolic expression interpreter"
 crate = "ogeom-math"
 verdict = "n/a"
 claims = ["Expr", "Expr_*", "ExprIntrp", "ExprIntrp_*"]
-reasoning = """A symbolic algebra layer serves parametric applications — \
-dimension formulas, feature trees — not the geometry kernel; nothing in the \
+reasoning = """A symbolic algebra layer serves parametric applications \
+(dimension formulas, feature trees), not the geometry kernel; nothing in the \
 modelling pipeline evaluates an expression tree. An application wanting \
 formulas brings its own interpreter, as the consumers surveyed do."""
 
@@ -1742,9 +1742,9 @@ verdict = "absent"
 plan = """Reviewed and not built. The reference walks a pipe-like solid from \
 one end face to the other, taking the centroid of each ring of section \
 edges as a spine point and the wire through those as the middle path. \
-Nothing in the pipeline asks for it — a pipe here is built *from* its spine \
+Nothing in the pipeline asks for it: a pipe here is built *from* its spine \
 (`make_pipe`, `make_pipe_skinned`, `make_pipe_shell`) and keeps it in the \
-history, so the spine is never lost — and a section-centroid walk over an \
+history, so the spine is never lost. A section-centroid walk over an \
 imported tube would be the first use. When one arrives: walk the wall's \
 face rings from a named end face, fit a spine through the ring centroids \
 with the same fitting the skinned pipe uses, and pin it against a tube \

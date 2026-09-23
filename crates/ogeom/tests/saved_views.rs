@@ -17,7 +17,7 @@ fn annotated_document() -> ogeom::doc::Document {
     let mut document = ogeom::doc::Document::over(model);
     let part = document.add_part("block", block);
 
-    // Two drawn callouts, no semantics behind them — a note-shaped drawing
+    // Two drawn callouts, no semantics behind them: a note-shaped drawing
     // and a frame-shaped one.
     for (name, y) in [("width", 0.0), ("height", 4.0)] {
         document.pmi_mut().callouts.push(ogeom::doc::Callout {
@@ -50,7 +50,7 @@ fn annotated_document() -> ogeom::doc::Document {
 }
 
 /// The native document format carries views, notes and the callouts the
-/// views index — written, read, and equal field for field.
+/// views index: written, read, and equal field for field.
 #[test]
 fn views_and_notes_survive_the_native_document() {
     let document = annotated_document();

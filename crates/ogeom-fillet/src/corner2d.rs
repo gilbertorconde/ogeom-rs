@@ -5,8 +5,8 @@
 //! straight cut at set distances (the chamfer); the two edges are trimmed
 //! back on their own curves, and the wire is rebuilt with the connector in
 //! the corner's place. The tangent construction for corners with curved
-//! sides — a line meeting an arc, two arcs — is the 2D tangency problem
-//! proper — docs/PARITY.md, fillet.corners-2d — rather than approximated here.
+//! sides (a line meeting an arc, two arcs) is the 2D tangency problem
+//! proper (docs/PARITY.md, fillet.corners-2d) rather than approximated here.
 
 use crate::support::edge_curve;
 use ogeom_algo::{Built, History, edge_vertices, make_edge_between, make_vertex, make_wire};
@@ -42,8 +42,8 @@ pub fn fillet_corner_2d(
     }
     let corner = corner_of(model, wire, vertex, tol)?;
     corner.opening(tol)?;
-    // The tangent circle's centre lies on each side's offset locus — the
-    // parallel line for a straight side, the concentric circle for an arc —
+    // The tangent circle's centre lies on each side's offset locus (the
+    // parallel line for a straight side, the concentric circle for an arc),
     // and where two loci cross is a candidate. GccAna's question, answered
     // the same way: enumerate the loci, intersect in closed form, and keep
     // the qualified candidate nearest the corner: centre on the corner's
@@ -304,7 +304,7 @@ struct Side {
 }
 
 /// A corner of a wire: the shared point and its two sides, in traversal
-/// order — `sides[0]` runs into the corner, `sides[1]` out of it.
+/// order: `sides[0]` runs into the corner, `sides[1]` out of it.
 struct Corner {
     point: Point,
     edges: Vec<Shape>,

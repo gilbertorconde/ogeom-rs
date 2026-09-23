@@ -1,4 +1,4 @@
-//! Draft against a pull direction and least material thickness — the two
+//! Draft against a pull direction and least material thickness: the two
 //! analyses that ride on the pick structure, each answering what it measures
 //! and stating how it sampled.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
@@ -20,7 +20,7 @@ fn a_slab_reads_its_draft_and_its_thickness() {
     let scene = Pickable::build(&model, &slab, Deflection::default(), T).unwrap();
 
     // Draft against +z: the top face reads a quarter turn, the bottom its
-    // negative, and every wall reads zero — straight, undrafted.
+    // negative, and every wall reads zero: straight, undrafted.
     let draft = scene.draft_analysis(Direction::Z);
     assert_eq!(draft.len(), 6);
     let quarter = core::f64::consts::FRAC_PI_2;
@@ -40,7 +40,7 @@ fn a_slab_reads_its_draft_and_its_thickness() {
 
     // Thickness: the big faces see the opposite wall five away; the thin
     // walls see across the slab's own footprint or the five, whichever
-    // their rays strike first — every reading is one of the slab's spans.
+    // their rays strike first; every reading is one of the slab's spans.
     let thickness = scene.thickness_analysis();
     let least = thickness
         .iter()

@@ -25,16 +25,16 @@ pub struct Hole {
     pub radius: f64,
     /// Through or blind.
     pub kind: HoleKind,
-    /// Whether the chain steps between cylinder radii — a counterbore.
+    /// Whether the chain steps between cylinder radii: a counterbore.
     pub counterbored: bool,
-    /// Whether a cone opens the chain at an entry — a countersink.
+    /// Whether a cone opens the chain at an entry: a countersink.
     pub countersunk: bool,
 }
 
 /// A recognized blend: a face tangent to its neighbours on both sides.
 #[derive(Debug, Clone)]
 pub struct Fillet {
-    /// The blend face — a partial cylinder along a straight edge, or a
+    /// The blend face: a partial cylinder along a straight edge, or a
     /// torus band around a circular one.
     pub face: Shape,
     /// The rolling-ball radius.
@@ -58,8 +58,8 @@ pub struct Pocket {
     pub floor: Shape,
     /// The faces rising from its boundary.
     pub walls: Vec<Shape>,
-    /// Whether the floor is an obround — two parallel lines closed by two
-    /// arcs — which is what a slot leaves behind.
+    /// Whether the floor is an obround (two parallel lines closed by two
+    /// arcs), which is what a slot leaves behind.
     pub slot: bool,
 }
 
@@ -73,7 +73,7 @@ pub struct Boss {
     pub walls: Vec<Shape>,
 }
 
-/// A blend tangent on one side only — a bull-nose rim, a partial round —
+/// A blend tangent on one side only (a bull-nose rim, a partial round),
 /// which is a deliberate shape of its own, not a failed fillet.
 #[derive(Debug, Clone)]
 pub struct PartialRound {
@@ -118,8 +118,8 @@ impl Feature {
 /// A feature with the features that sit on it.
 ///
 /// The tree is adjacency read as ancestry: a feature whose faces share an
-/// edge with an earlier-recognized feature's own faces — a hole drilled
-/// through a pocket's floor, a fillet easing a boss's rim — hangs under
+/// edge with an earlier-recognized feature's own faces (a hole drilled
+/// through a pocket's floor, a fillet easing a boss's rim) hangs under
 /// it; features touching nothing but the base are roots. A feature
 /// adjacent to several parents hangs under the first in recognition
 /// order, which is deterministic if not always the one story a person
@@ -132,7 +132,7 @@ pub struct FeatureNode {
     pub children: Vec<FeatureNode>,
 }
 
-/// Tangency threshold between face normals at a shared edge, radians —
+/// Tangency threshold between face normals at a shared edge, radians,
 /// loose enough for a real file's slop (the corpus carries hundredths of a
 /// degree), still fifty times under any deliberate chamfer angle.
 const TANGENT_ANGLE: f64 = 1e-2;
@@ -148,7 +148,7 @@ const TANGENT_ANGLE: f64 = 1e-2;
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if `shape`
-/// is not a solid, or its tessellation — the convexity oracle — cannot be
+/// is not a solid, or its tessellation (the convexity oracle) cannot be
 /// built.
 pub fn recognize(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<Feature>> {
     if model.kind_of(shape)? != ShapeType::Solid {
@@ -169,7 +169,7 @@ pub fn recognize(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<V
 
 /// Recognize features and arrange them by what they sit on.
 ///
-/// As [`recognize`], then adjacency read as ancestry — see [`FeatureNode`].
+/// As [`recognize`], then adjacency read as ancestry; see [`FeatureNode`].
 ///
 /// # Errors
 ///
@@ -270,7 +270,7 @@ struct FaceInfo {
     surface: SurfaceGeometry,
     /// Edge nodes per wire, first wire outer.
     wires: Vec<Vec<Shape>>,
-    /// Whether the stored orientation lies about outwardness — measured
+    /// Whether the stored orientation lies about outwardness, measured
     /// against the solid itself, because rebuilt faces' flags are not a
     /// convention this crate can afford to trust.
     flipped: bool,
@@ -366,7 +366,7 @@ impl<'m> Scene<'m> {
     }
 
     /// Whether a point sits inside the solid: even-odd parity along a
-    /// deliberately generic direction — an axis-aligned ray grazes the
+    /// deliberately generic direction: an axis-aligned ray grazes the
     /// axis-aligned edges these meshes are full of, and a graze counts a
     /// crossing twice.
     fn inside(&self, p: Point) -> bool {
@@ -405,7 +405,7 @@ impl<'m> Scene<'m> {
     }
 
     /// The outward normal near a point, with the on-surface foot it was
-    /// evaluated at — the probe origin a curved face's chord error cannot
+    /// evaluated at: the probe origin a curved face's chord error cannot
     /// contaminate.
     fn normal_and_foot(&self, face: usize, at: Point) -> Option<(Vector, Point)> {
         let info = &self.faces[face];
@@ -491,7 +491,7 @@ impl<'m> Scene<'m> {
         uses.iter().copied().find(|&f| f != face)
     }
 
-    /// Whether an edge appears twice within one face's wires — a seam,
+    /// Whether an edge appears twice within one face's wires: a seam,
     /// which is what a full revolution face carries.
     fn is_seam_in(&self, face: usize, edge: &Shape) -> bool {
         self.faces[face]
@@ -519,7 +519,7 @@ impl<'m> Scene<'m> {
         seam || (info.wires.len() >= 2 && ring_wires)
     }
 
-    /// The outermost wire of a face, judged by spatial reach — rebuilt
+    /// The outermost wire of a face, judged by spatial reach; rebuilt
     /// boolean faces do not reliably keep the outer wire first.
     fn outer_wire(&self, face: usize) -> Option<&Vec<Shape>> {
         let info = &self.faces[face];
@@ -537,7 +537,7 @@ impl<'m> Scene<'m> {
         best.map(|(_, wire)| wire)
     }
 
-    /// The line-curve edges of a face — a cylinder's rulings.
+    /// The line-curve edges of a face: a cylinder's rulings.
     fn straight_edges(&self, face: usize) -> Vec<Shape> {
         self.faces[face]
             .wires
@@ -564,9 +564,9 @@ impl<'m> Scene<'m> {
 enum Fold {
     /// The faces meet tangentially.
     Smooth,
-    /// Material angle under a half turn — an outside edge.
+    /// Material angle under a half turn: an outside edge.
     Convex,
-    /// Material angle over a half turn — an inside edge.
+    /// Material angle over a half turn: an inside edge.
     Concave,
 }
 
@@ -615,7 +615,7 @@ fn coaxial(a: &Axis, b: &Axis, tol: Tolerances) -> bool {
             < tol.confusion() * 1e3
 }
 
-/// How many wires of a planar face are closed rings centred on `axis` —
+/// How many wires of a planar face are closed rings centred on `axis`;
 /// zero when the face is not such a plane at all.
 fn ring_plane_wires(scene: &Scene, face: usize, axis: &Axis) -> usize {
     let info = &scene.faces[face];
@@ -632,7 +632,7 @@ fn ring_plane_wires(scene: &Scene, face: usize, axis: &Axis) -> usize {
     {
         return 0;
     }
-    // Every edge an on-axis circle — whole rings or the arcs a boolean
+    // Every edge an on-axis circle: whole rings or the arcs a boolean
     // may have split them into.
     let all_rings = info.wires.iter().all(|wire| {
         !wire.is_empty()
@@ -683,7 +683,7 @@ fn holes(
         let Some(seed_axis) = revolution_axis(&scene.faces[seed].surface) else {
             continue;
         };
-        // Flood along shared edges over coaxial concave revolution faces —
+        // Flood along shared edges over coaxial concave revolution faces,
         // and across the annular shoulders between them, which is what a
         // counterbore's step is: a plane whose every boundary is a ring on
         // the same axis, with more hole on the far side.
@@ -732,8 +732,8 @@ fn holes(
                 }
                 let outside_info = &scene.faces[outside];
                 if matches!(outside_info.surface, SurfaceGeometry::Plane(_)) {
-                    // Entry if the shared ring is a hole loop of the plane —
-                    // any wire but its first — and a cap if it is the
+                    // Entry if the shared ring is a hole loop of the plane
+                    // (any wire but its first) and a cap if it is the
                     // plane's own outer boundary.
                     let in_outer = outside_info
                         .wires
@@ -836,7 +836,7 @@ fn fillets(
         }
         if smooth == 1 {
             // Tangent on one side only: a bull-nose rim, a deliberate
-            // partial round — its own feature, not a failed fillet.
+            // partial round: its own feature, not a failed fillet.
             claimed.push(scene.faces[f].shape.node());
             features.push(Feature::PartialRound(PartialRound {
                 face: scene.faces[f].shape.clone(),
@@ -848,7 +848,7 @@ fn fillets(
             continue;
         }
         // Concavity of the blend itself: nudge off the blend's own middle
-        // along its outward normal's *reverse* — inside means the blend
+        // along its outward normal's *reverse*; inside means the blend
         // bulges outward (a convex round), outside means it hollows an
         // inside corner (a concave fillet).
         let _ = fold_probe;
@@ -995,7 +995,7 @@ fn pockets(
         if !all_concave || walls.is_empty() {
             continue;
         }
-        // An obround floor — two parallel lines closed by two arcs — is
+        // An obround floor (two parallel lines closed by two arcs) is
         // what a slot leaves behind.
         let slot = {
             let mut lines: Vec<Vector> = Vec::new();
@@ -1075,7 +1075,7 @@ fn bosses(
         // What separates a boss from a box: its walls land on a base,
         // folding inward there. A plain box's sides meet the bottom face
         // convexly and this face is just a top.
-        // Every wall must land on the base concavely — `any` lets a whole
+        // Every wall must land on the base concavely; `any` lets a whole
         // box masquerade as a boss the moment its top face borders one
         // genuine concavity somewhere.
         let base_reached = walls.iter().all(|&wall| {
@@ -1341,8 +1341,8 @@ mod slot_tests {
     use super::*;
     const T: Tolerances = Tolerances::millimetres();
 
-    /// An obround mill — a prism over two parallel lines closed by two
-    /// arcs — leaves a slot: a pocket whose floor keeps that outline.
+    /// An obround mill (a prism over two parallel lines closed by two
+    /// arcs) leaves a slot: a pocket whose floor keeps that outline.
     #[test]
     fn a_slot_mill_leaves_a_slot() {
         use ogeom_geom::{CircleCurve, LineCurve};
@@ -1468,7 +1468,7 @@ mod boss_tests {
 
     /// The corpus's smallest part wears the real thing: two torus rims
     /// tangent to their walls but meeting the top face at a deliberate
-    /// angle. They are partial rounds — their own feature — and not
+    /// angle. They are partial rounds (their own feature) and not
     /// fillets.
     #[test]
     fn a_bull_nose_is_a_partial_round_not_a_fillet() {

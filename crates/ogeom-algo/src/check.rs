@@ -2,7 +2,7 @@
 //!
 //! Everything in `docs/DATA_MODEL.md` that can be checked with geometry in
 //! hand, checked in one place. The builders enforce what they can at the moment
-//! of construction; this catches what only becomes wrong later — an edge whose
+//! of construction; this catches what only becomes wrong later: an edge whose
 //! tolerance was widened past its face's, a shell left open by an operation
 //! that dropped a face, a pcurve that has stopped agreeing with its curve.
 //!
@@ -17,7 +17,7 @@
 //! # Severity is not a comment
 //!
 //! [`Severity::Broken`] means an algorithm reading this shape will get a wrong
-//! answer rather than an error — an open shell has no inside, so every
+//! answer rather than an error: an open shell has no inside, so every
 //! containment test against it is a coin toss. [`Severity::Suspect`] means
 //! something is out of order but every operation will still behave: a tolerance
 //! larger than the feature it describes is alarming and not yet wrong.
@@ -133,7 +133,7 @@ impl fmt::Display for Diagnosis {
 /// # Errors
 ///
 /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if a handle does not
-/// resolve. A dangling handle is not a *finding* — it means the shape and the
+/// resolve. A dangling handle is not a *finding*; it means the shape and the
 /// model do not belong together, and every other answer would be about
 /// something that is not there.
 pub fn check(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Diagnosis> {
@@ -165,7 +165,7 @@ pub fn check(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Diagn
 /// descriptions of itself agree". A shell whose edges are all used twice is
 /// closed as far as the topology knows. If the mesh built from it still has a
 /// boundary, then some face's pcurves do not cover the region its edges claim
-/// to bound — and the topology cannot see that, because the defect is entirely
+/// to bound, and the topology cannot see that, because the defect is entirely
 /// in parameter space.
 ///
 /// That failure is worth its own function because it is *invisible* to every
@@ -250,8 +250,8 @@ fn open_edges(mesh: &ogeom_topo::Triangulation) -> Option<String> {
     Some(format!(
         "the topology says this shell is closed, but its mesh has {} triangle \
          edge(s) not shared by two triangles, so the tessellated solid has a \
-         slit in it. The first are at {}. This is a parameter-space defect — \
-         some face's pcurves do not cover the region its edges bound — and no \
+         slit in it. The first are at {}. This is a parameter-space defect \
+         (some face's pcurves do not cover the region its edges bound), and no \
          topological check can see it",
         loose.len(),
         sample.join(", ")
@@ -317,7 +317,7 @@ fn check_edge(
         let on_curve = placement.apply(geometry.point_at(parameter, tol)?);
         let gap = on_curve.distance(placed);
         // The junction's own stated tolerance is the radius within which
-        // things meeting it may stray — the same acceptance construction
+        // things meeting it may stray; the same acceptance construction
         // applies. A checker stricter than the builder would condemn what
         // the builder rightly admitted and honestly recorded.
         let reach = reach.max(vertex_reach);
@@ -546,7 +546,7 @@ fn check_shell(model: &Model, shell: &Shape, found: &mut Diagnosis) -> OgeomResu
 /// than its vertices.
 ///
 /// The rule is transitive and the check has to be too. Checking one level would
-/// pass a face whose edge is fine and whose *vertex* is tighter than the face —
+/// pass a face whose edge is fine and whose *vertex* is tighter than the face,
 /// and the containment claim is about the face reaching the vertex.
 fn check_containment(model: &Model, shape: &Shape, found: &mut Diagnosis) -> OgeomResult<()> {
     for face in explore_unique(model, shape, ShapeType::Face)? {
@@ -562,13 +562,13 @@ fn check_containment(model: &Model, shape: &Shape, found: &mut Diagnosis) -> Oge
 /// least the faces it bounds, every vertex to at least the edges it bounds.
 ///
 /// The rule [`check`] enforces, established the only way the data model
-/// allows — by raising what is bounded, never lowering what bounds. Each
+/// allows: by raising what is bounded, never lowering what bounds. Each
 /// face and then each edge is widened to its own tolerance through
 /// [`Model::widen`], which cascades to everything below it and leaves
 /// anything already looser as it is. Returns how many entities grew.
 ///
-/// An operation that widens an edge's tolerance by writing it directly — a
-/// reader recording how far a pcurve sits from its curve — leaves the
+/// An operation that widens an edge's tolerance by writing it directly (a
+/// reader recording how far a pcurve sits from its curve) leaves the
 /// edge's vertices behind; this is the pass that brings them along.
 ///
 /// # Errors
@@ -634,7 +634,7 @@ fn compare(
     Ok(())
 }
 
-/// Faces of one shape that reach each other without sharing topology —
+/// Faces of one shape that reach each other without sharing topology:
 /// self-intersection, detected as the interference it is.
 ///
 /// Every unordered pair of distinct faces that share no edge and no vertex
@@ -985,7 +985,7 @@ mod tessellation_tests {
     fn moving_a_vertex_does_not_move_the_mesh() {
         // Worth pinning, because it is unintuitive and it invalidated an
         // earlier attempt at a test here. Tessellation reads curves and
-        // pcurves, never vertex positions — so a vertex moved off its edges is
+        // pcurves, never vertex positions, so a vertex moved off its edges is
         // caught by `check` (the curve no longer reaches it) and is invisible
         // to `check_tessellation`. The two checks genuinely see different
         // things, which is why both exist.

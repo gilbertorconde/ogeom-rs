@@ -149,7 +149,7 @@ fn a_cylinder_rim_chamfers_to_a_cone_with_the_distance_angle_form() {
         "rim chamfer volume {measured} against {exact}"
     );
 
-    // Four faces — both caps and the wall trimmed back, plus the bevel —
+    // Four faces (both caps and the wall trimmed back, plus the bevel)
     // and the bevel is a genuine cone.
     let faces = explore(&model, &result.shape, Filter::OfType(ShapeType::Face)).unwrap();
     assert_eq!(faces.len(), 4);

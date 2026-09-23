@@ -1,45 +1,51 @@
 # Exchange
 
-Everything here is `ogeom::io`. The exact formats carry documents — model
-plus [product structure, PMI, views](documents.md) — because that is what
-the files actually contain; the mesh formats carry tessellations at the
-deflection you chose.
+Everything here is in `ogeom::io`.
+
+- Exact formats (STEP, IGES, native) carry whole documents: the model plus
+  [product structure, PMI and views](documents.md).
+- Mesh formats carry tessellations at the deflection you chose.
 
 ## STEP
 
-Both directions, document-level:
+Read and write, at document level:
 
 ```rust
 {{#include ../../../../crates/ogeom/tests/book.rs:step_roundtrip}}
 ```
 
-Assemblies with instancing, names, colours, semantic and presentation
-PMI, datum systems and saved views all survive the trip. Bodies come
-back as `solids` and, for a part a modeller exported as faces rather
-than as a solid, as `shells` — a surface model stays the shell the file
-made it, under its product like any other body. `read_step`
-returns a `StepImport` whose `report` lists, by name, every entity the
-reader met and did not translate — the file's inventory of what was and
-was not understood, instead of a silent partial import.
+Round trips preserve assemblies with instancing, names, colours, semantic
+and presentation PMI, datum systems and saved views.
 
-Real exports carry slop: boundary curves that sit off the surfaces they
-trim. Under a millimetre the reader heals it — the trim is fitted, the
-edge's tolerance widens to the measured offset, and a warning says so —
-because that is the file's own error, honestly carried. Beyond a
-millimetre the boundary is not describing that surface at all, and a
-fitted trim would be invented geometry drawn with confidence: the face
-reads untrimmed, refuses to mesh, and `report.untrimmed_faces` carries it
-— file id and face shape both — so a consumer can mark the exact gap or
-hand the face straight to the healer. The flood itself is counted:
-`report.summary` digests thousands of per-edge warnings into one entry
-per kind — count, worst measured value, an exemplar id — which is what a
-status bar shows while `warnings` keeps the full prose. `check` reports the
-same faces as broken from the model side.
+Bodies come back as:
 
-A large import is worth watching. A `Watch` scoped around the call hears
-each stage — the readers announce their solids as `(done, total)`, so a
-progress bar can be determinate — and its canceller stops the work at
-the next checkpoint:
+- `solids`;
+- `shells`, for parts exported as faces instead of a solid. A surface model
+  stays a shell, under its product like any other body.
+
+`read_step` returns a `StepImport`. Its `report` lists by name every
+entity the reader met but did not translate, so nothing is dropped
+silently.
+
+### Boundary curves off their surface
+
+Real exports often have boundary curves that sit off the surfaces they
+trim.
+
+| Offset | What the reader does |
+|---|---|
+| Under 1 mm | Heals it: fits the trim, widens the edge's tolerance to the measured offset, and emits a warning. |
+| Over 1 mm | Treats the boundary as not describing that surface. The face is read untrimmed and refuses to mesh. It is listed in `report.untrimmed_faces` with its file id and face shape, so you can highlight it or pass it to the healer. `check` also reports these faces as broken. |
+
+`report.summary` groups the per-edge warnings (often thousands) into one
+entry per kind: count, worst measured value and an example id. Use it for
+a status bar. `warnings` keeps the full text.
+
+### Progress and cancellation
+
+Scope a `Watch` around the call to receive each stage. The readers report
+solids as `(done, total)`, so a progress bar can be determinate. The
+`Watch`'s canceller stops the work at the next checkpoint:
 
 ```rust
 {{#include ../../../../crates/ogeom/tests/book.rs:watching_an_import}}
@@ -47,23 +53,27 @@ the next checkpoint:
 
 ## IGES
 
-`read_iges` / `write_iges`, same document-level shape, covering the core
-entity set a real importer meets: the curve and surface entities —
-conic arcs of every kind, ruled surfaces, offset curves and surfaces
-among them — trimmed surfaces, transforms, colour, and the manifold
-solid B-rep. The
-`IgesReport` names what fell outside that set. The suite holds IGES to
-the same standard as STEP: round trips measured by volume, including the
-periodic cases (spheres, tori) where seam handling is where importers
-usually break.
+`read_iges` and `write_iges` work at document level like STEP. They cover
+the core entity set real files use:
 
-## The native format and `.brep`
+- curve and surface entities, including conic arcs of every kind, ruled
+  surfaces, and offset curves and surfaces;
+- trimmed surfaces;
+- transforms;
+- colour;
+- the manifold solid B-rep.
 
-`native::write_document` / `native::read_document` round-trip the entire
-document — exact geometry, tolerances, structure, PMI, views, notes —
-with no translation loss; it is the format to use between ogeom sessions.
-`brep::write` / `brep::read` carry a single shape in a text form, for
-interchange at the model level.
+`IgesReport` names anything outside that set. IGES round trips are tested
+by volume like STEP, including periodic cases (spheres, tori) where seam
+handling is error-prone.
+
+## Native format and `.brep`
+
+- `native::write_document` and `native::read_document` round-trip the whole
+  document (exact geometry, tolerances, structure, PMI, views, notes) with
+  no loss. Use it between ogeom sessions.
+- `brep::write` and `brep::read` store a single shape as text, for
+  model-level interchange.
 
 ## Mesh and drawing formats
 
@@ -73,24 +83,30 @@ interchange at the model level.
 | glTF / GLB | yes | GLB |
 | OBJ | yes | yes |
 | PLY | yes | yes |
-| VRML | — | yes |
+| VRML | no | yes |
 | 3MF (deflated or stored, multi-part) | yes | yes |
 | DXF (2D drawings) | yes | yes |
 
-`read_3mf` returns one placed mesh per build item — components
-flattened, the production extension's multi-part packages followed, the
-model's unit scaled to millimetres — with a uniform object colour where
-the file gives one, and warnings for what it read with a caveat.
+`read_3mf` returns one placed mesh per build item. It flattens components,
+follows multi-part packages from the production extension, scales the
+model's unit to millimetres, keeps a uniform object colour when the file
+has one, and warns about anything read with a caveat.
 
-A mesh read from any of these can become a solid that takes features:
-`algo::solid_from_mesh` builds its topology from the mesh's own
-connectivity, merges coplanar triangles into planar faces — an STL cube
-comes back as six faces — and rebuilds the regions that lie on a cylinder, a
-cone, a sphere or a torus on that surface, so a meshed bore is a cylinder
-again. Its report says where a mesh that does not close is open, and which
-curved regions could not be built exactly and stayed faceted.
+The mesh writers take the tessellation you built, so the error is the
+deflection you chose. DXF is the output for
+[HLR drawings](meshing.md#drawings): visible and hidden polylines.
 
-The mesh writers take the tessellation you built at your chosen
-deflection — the error budget is yours, stated once. DXF is the outlet
-for [HLR drawings](meshing.md#drawings): visible and hidden polylines,
-ready for a title block.
+### Meshes to solids
+
+`algo::solid_from_mesh` turns a mesh from any of these formats into a solid
+you can model on:
+
+- It builds topology from the mesh's own connectivity.
+- It merges coplanar triangles into planar faces. An STL cube comes back as
+  six faces.
+- It rebuilds regions lying on a cylinder, cone, sphere or torus as that
+  surface. A meshed bore becomes a cylinder again, and a meshed ball one
+  spherical face.
+
+Its report says where an open mesh is open, and which curved regions could
+not be rebuilt exactly and stayed faceted.

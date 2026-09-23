@@ -2,15 +2,15 @@
 //! the only way to mutate them.
 //!
 //! A [`Model`] owns the topology nodes, the placement datums and the geometry.
-//! A [`Shape`] is meaningless without one — its handles index into these arenas
+//! A [`Shape`] is meaningless without one: its handles index into these arenas
 //! and nothing else (`docs/DATA_MODEL.md` §11).
 //!
 //! # One mutation path
 //!
 //! Every structural change goes through [`Model`]'s builder methods. That is
-//! not ceremony: the invariants of `docs/DATA_MODEL.md` — a wire holds edges, a
-//! face's tolerance does not exceed its edges', a node's kind matches its data
-//! — are checkable in one place only if there is one place. Handing out
+//! not ceremony: the invariants of `docs/DATA_MODEL.md` (a wire holds edges, a
+//! face's tolerance does not exceed its edges', a node's kind matches its data)
+//! are checkable in one place only if there is one place. Handing out
 //! `&mut TShape` would scatter them across every caller, and the failures they
 //! guard against are silent ones.
 
@@ -53,9 +53,9 @@ impl Model {
     /// A document has a scale, and it is the document's rather than each
     /// call's: a model authored in metres does not become a model in
     /// millimetres because one caller passed the default. Algorithms still take
-    /// a [`Tolerances`] argument — that is deliberate, since a caller may want
+    /// a [`Tolerances`] argument (that is deliberate, since a caller may want
     /// to work coarser or finer than the document's own setting for one
-    /// operation — but the document now says what it was built at, so a
+    /// operation), but the document now says what it was built at, so a
     /// mismatch is visible rather than assumed away.
     #[must_use]
     pub fn with_tolerances(tolerances: Tolerances) -> Self {
@@ -82,14 +82,14 @@ impl Model {
     /// it exists for one reason: a builder *mints* an identity for every node
     /// it makes (`docs/DATA_MODEL.md` §8). A document rebuilt through the
     /// builders is therefore a different document from the one that was
-    /// written — every [`EntityId`] renumbered, every provenance record
-    /// replaced by a fresh `Primitive` one — and every reference into it,
+    /// written (every [`EntityId`] renumbered, every provenance record
+    /// replaced by a fresh `Primitive` one), and every reference into it,
     /// which is the thing provenance exists to keep alive, is dead. Reading a
     /// file has to reproduce the document it describes, identities and all.
     ///
     /// This is not a hole in "the builder is the sole mutation path". Nothing
     /// here mutates an existing model; it assembles a new one, and it checks
-    /// the structural invariants the builders check before handing it back —
+    /// the structural invariants the builders check before handing it back,
     /// so a corrupt file is an error, not a model that answers wrongly.
     ///
     /// # Errors
@@ -113,7 +113,7 @@ impl Model {
     /// Absorb another document's parts into this model.
     ///
     /// [`Model::from_parts`] lands a document in a *fresh* model; this lands
-    /// one in a model that already has things in it — the operation behind
+    /// one in a model that already has things in it: the operation behind
     /// bringing a serialized tool body into a live document so a boolean can
     /// use it. Everything the parts carry is appended: nodes, datums,
     /// geometry, provenance and identities all keep their relative structure,
@@ -130,7 +130,7 @@ impl Model {
     /// Three deliberate refusals, each an error rather than a guess:
     ///
     /// - **Units.** A document authored at another scale is refused, not
-    ///   rescaled — rescaling is a real feature with real decisions in it,
+    ///   rescaled; rescaling is a real feature with real decisions in it,
     ///   and silently absorbing metres into millimetres is a wrong model.
     /// - **Bound handles.** Parts whose handles already name an arena did not
     ///   come from a reader; absorbing them would alias whatever those
@@ -142,7 +142,7 @@ impl Model {
     ///
     /// The current operation is left alone: absorb mints no identities, it
     /// transplants a table, and the absorbed provenance keeps its source
-    /// [`OpId`]s verbatim — meaningful in the source document's rebuild, kept
+    /// [`OpId`]s verbatim, meaningful in the source document's rebuild, kept
     /// because renumbering them would orphan the source's own references.
     ///
     /// # Errors
@@ -150,14 +150,14 @@ impl Model {
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) for
     /// the three refusals above;
     /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the parts
-    /// do not describe themselves — a handle that does not resolve, a
+    /// do not describe themselves: a handle that does not resolve, a
     /// derivation from an identity no entry issued, a root naming a node that
     /// is not there.
     ///
     /// On an error past the up-front gates, the model's prior contents are
     /// untouched and still fully usable: an absorbed subgraph is
-    /// self-contained — its shifted handles cannot reach below the append
-    /// line — and no identity is committed until every check has passed. What
+    /// self-contained (its shifted handles cannot reach below the append
+    /// line), and no identity is committed until every check has passed. What
     /// a failed absorb can leave behind is unreachable appended entries,
     /// which cost memory and mean nothing.
     pub fn absorb(&mut self, parts: ModelParts, roots: &[Shape]) -> OgeomResult<Absorbed> {
@@ -203,7 +203,7 @@ impl Model {
     /// is already here. The shared engine of [`Model::from_parts`] (offsets
     /// all zero) and [`Model::absorb`].
     ///
-    /// Returns `(node, datum, entity)` offsets — where the parts landed.
+    /// Returns `(node, datum, entity)` offsets: where the parts landed.
     fn absorb_core(&mut self, parts: ModelParts) -> OgeomResult<(u32, u32, u64)> {
         let ModelParts {
             mut nodes,
@@ -302,7 +302,7 @@ impl Model {
     }
 
     /// Refuse parts whose handles are already bound to an arena or carry a
-    /// non-zero generation — the state no reader produces, and the state an
+    /// non-zero generation: the state no reader produces, and the state an
     /// offset shift would silently mangle.
     fn check_parts_unbound(parts: &ModelParts, roots: &[Shape]) -> OgeomResult<()> {
         use crate::entity::key_is_unbound;
@@ -348,7 +348,7 @@ impl Model {
     ///
     /// A handle rebuilt by a reader names no arena, so it resolves nowhere
     /// until it is told which document it belongs to. This is how a reader says
-    /// so — and it verifies the answer, so a file naming a node that is not
+    /// so, and it verifies the answer, so a file naming a node that is not
     /// there is an error rather than a shape that fails mysteriously later.
     ///
     /// It will not re-home a shape that already belongs to *another* model.
@@ -381,7 +381,7 @@ impl Model {
     ///
     /// The persistence path's sibling of [`Model::bind`]: a location read
     /// from a file names datum handles that are unscoped until the store
-    /// that holds them exists. Binding checks them too — a chain naming a
+    /// that holds them exists. Binding checks them too: a chain naming a
     /// datum not in this model is an error here rather than wherever it is
     /// first resolved.
     ///
@@ -434,7 +434,7 @@ impl Model {
     /// of the kinds their parents admit.
     ///
     /// `from` bounds the pass the way [`Model::bind_handles`]' does. Children
-    /// still resolve through the full arena, so nothing is under-checked — an
+    /// still resolve through the full arena, so nothing is under-checked; an
     /// absorbed subgraph is self-contained and can only point at itself.
     fn check_restored(&self, identity: &[(TShapeId, EntityId)], from: u32) -> OgeomResult<()> {
         for (id, node) in self.nodes.iter().filter(|(id, _)| id.index() >= from) {
@@ -541,8 +541,8 @@ impl Model {
     /// Begin a new operation, and return its identifier.
     ///
     /// Every node created from here on is attributed to it until the next call.
-    /// The counter is deterministic — the third operation in a rebuild is
-    /// `OpId(3)` every time — which is what lets provenance survive a parameter
+    /// The counter is deterministic (the third operation in a rebuild is
+    /// `OpId(3)` every time), which is what lets provenance survive a parameter
     /// change (`docs/DATA_MODEL.md` §8).
     pub const fn begin_operation(&mut self) -> OpId {
         self.current_op = OpId(self.current_op.0 + 1);
@@ -592,7 +592,7 @@ impl Model {
     ///
     /// The inverse of [`Model::identity_of`], and the answer to "I kept a
     /// reference and the document has been saved and reloaded since". A raw
-    /// [`Shape`] cannot survive that — the reloaded document is a new set of
+    /// [`Shape`] cannot survive that: the reloaded document is a new set of
     /// arenas and [`Model::bind`] refuses a handle from another one, on
     /// purpose. An [`EntityId`] can, because it names *what the entity is*
     /// rather than where it sits (`docs/DATA_MODEL.md` §8), and that is the
@@ -676,7 +676,7 @@ impl Model {
 
     /// Mutable access to the node behind a shape's handle.
     ///
-    /// For attaching geometry to an entity that already exists — a pcurve
+    /// For attaching geometry to an entity that already exists: a pcurve
     /// joining an edge to a face it has just come to bound. Structural change
     /// still goes through the builders; this reaches the node's *data*, which
     /// no invariant here constrains on its own.
@@ -752,8 +752,8 @@ impl Model {
 
     /// Add an edge bounded by the given vertices.
     ///
-    /// The vertices are the edge's ends, in order. A closed edge — a full
-    /// circle — names the same vertex twice rather than once, so that walking
+    /// The vertices are the edge's ends, in order. A closed edge (a full
+    /// circle) names the same vertex twice rather than once, so that walking
     /// its boundary yields a start and an end as every other edge does.
     ///
     /// # Errors
@@ -772,7 +772,7 @@ impl Model {
         }
         self.check_children(ShapeType::Vertex, bounds)?;
         // A vertex caps an edge, so it must be at least as uncertain as the
-        // edge is — otherwise the cap does not reliably sit on what it caps.
+        // edge is; otherwise the cap does not reliably sit on what it caps.
         for bound in bounds {
             self.widen(bound, data.tolerance)?;
         }
@@ -888,7 +888,7 @@ impl Model {
 
     /// Add a compound of arbitrary shapes.
     ///
-    /// The one container with no type constraint — that is what a compound is
+    /// The one container with no type constraint; that is what a compound is
     /// for. It may be empty, since an empty result is a legitimate answer from
     /// a boolean and needs somewhere to live.
     ///
@@ -915,7 +915,7 @@ impl Model {
     /// is correct by default rather than by discipline: a child's placement in
     /// the world is its parent's composed with its own, and its orientation is
     /// its parent's composed with its own. Returning raw children would leave
-    /// every caller to remember both, and the failure is silent — face normals
+    /// every caller to remember both, and the failure is silent: face normals
     /// that flip inconsistently, sub-shapes drawn at the origin.
     ///
     /// # Errors
@@ -936,8 +936,8 @@ impl Model {
     /// A shape's children in *traversal* order.
     ///
     /// The same shapes as [`Model::children_of`], but with the list reversed
-    /// when the parent is reversed. Order carries meaning for a wire — its
-    /// edges run head to tail — and reversing a wire has to reverse the walk as
+    /// when the parent is reversed. Order carries meaning for a wire (its
+    /// edges run head to tail), and reversing a wire has to reverse the walk as
     /// well as each edge, or consecutive edges stop sharing a vertex and the
     /// boundary comes apart. For a shell or a solid the order means nothing and
     /// the reversal is invisible.
@@ -1026,8 +1026,8 @@ impl Model {
         };
         let own = node.data().tolerance();
         for child in self.children_of(root)? {
-            // A boundary is *contained by* what it bounds, so the child — the
-            // boundary — must be the looser of the two.
+            // A boundary is *contained by* what it bounds, so the child (the
+            // boundary) must be the looser of the two.
             if let (Some(parent), Some(child_tolerance)) = (own, self.tolerance_of(&child)?)
                 && child_tolerance < parent
             {
@@ -1057,7 +1057,7 @@ impl Model {
     /// A shape placed by an additional transform.
     ///
     /// Interns the transform and composes it onto the shape's placement, so the
-    /// underlying node — and all its geometry — is shared rather than copied.
+    /// underlying node (and all its geometry) is shared rather than copied.
     /// Placing ten thousand instances of a part costs ten thousand short chains
     /// and one copy of the geometry.
     pub fn placed(&mut self, shape: &Shape, transform: Transform) -> Shape {
@@ -1081,7 +1081,7 @@ pub struct Absorbed {
 /// A model's contents, laid out the way a file holds them.
 ///
 /// Handed to [`Model::from_parts`]. Every list is in arena order, and a node's
-/// children name other nodes by their position in `nodes` — so the order is
+/// children name other nodes by their position in `nodes`, so the order is
 /// load-bearing rather than incidental, and a reader has to preserve it.
 #[derive(Debug, Default)]
 pub struct ModelParts {
@@ -1114,10 +1114,10 @@ pub enum Filter {
 /// Walk a shape's tree, composing placement and orientation on descent.
 ///
 /// Yields each matching sub-shape with its *effective* placement and
-/// orientation — the composition of everything from the root down. That is the
+/// orientation: the composition of everything from the root down. That is the
 /// only form in which a sub-shape means anything outside the tree it came from.
 ///
-/// Sub-shapes reached by more than one route — an edge shared by two faces —
+/// Sub-shapes reached by more than one route (an edge shared by two faces)
 /// are yielded once per route, since each occurrence has its own orientation
 /// and that is usually the point. Deduplicate with
 /// [`SameKey`](crate::SameKey) when it is not.
@@ -1159,8 +1159,8 @@ pub fn explore(model: &Model, root: &Shape, filter: Filter) -> OgeomResult<Vec<S
 
 /// Walk a shape's tree, yielding every sub-shape of `want` exactly once.
 ///
-/// Deduplicated by [`Shape::is_same`] — node and placement, ignoring
-/// orientation — which is what "the distinct edges of this solid" means.
+/// Deduplicated by [`Shape::is_same`] (node and placement, ignoring
+/// orientation), which is what "the distinct edges of this solid" means.
 ///
 /// # Errors
 ///
@@ -1675,7 +1675,7 @@ mod tests {
     #[test]
     fn building_enforces_the_containment_rule_upward() {
         // A coarse edge must not be capped by a finer vertex. Rather than
-        // refusing, the builder widens the vertex — tolerances only ever grow,
+        // refusing, the builder widens the vertex; tolerances only ever grow,
         // so the repair goes upward.
         let mut model = Model::new();
         let vertex = model.add_point(Point::ORIGIN);
@@ -1727,7 +1727,7 @@ mod tests {
     #[test]
     fn check_tolerances_catches_a_violation_the_builder_would_never_make() {
         // The builder maintains the rule, so a violation has to be assembled
-        // around it — which is exactly what happens when topology arrives from
+        // around it, which is exactly what happens when topology arrives from
         // a file. The check has to stand on its own, or imported geometry sails
         // past it.
         let mut model = Model::new();

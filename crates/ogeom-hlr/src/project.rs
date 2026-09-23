@@ -1,19 +1,19 @@
 //! Polygonal hidden line removal: project, classify, draw.
 //!
 //! The mesh does the occlusion work. The drawing's curves come from two
-//! places — the model's own edges, discretized by the same machinery every
+//! places: the model's own edges, discretized by the same machinery every
 //! face boundary uses, and the tessellation's silhouettes, the mesh edges
 //! where the surface turns away from the eye. Every sampled segment is
 //! classified by casting its midpoint toward the eye against the whole
 //! mesh: a triangle strictly in front hides it. Runs of same-classified
 //! segments merge back into polylines, so a curve that dips behind a boss
-//! comes out as visible, hidden, visible — three curves, which is what a
+//! comes out as visible, hidden, visible: three curves, which is what a
 //! drawing shows.
 //!
 //! Polygonal, not exact: the classification is as fine as the tessellation
-//! and the sampling. That is the honest half of `HLRBRep`; the exact half —
-//! curve/surface interference resolved analytically — is deferred and the
-//! parity ledger says so — docs/PARITY.md, hlr.projection.
+//! and the sampling. That is the honest half of `HLRBRep`; the exact half
+//! (curve/surface interference resolved analytically) is deferred and the
+//! parity ledger says so; see docs/PARITY.md, hlr.projection.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Direction, Frame, Point, Point2, Vector};
@@ -111,8 +111,8 @@ impl View {
 ///
 /// The model's edges and the tessellation's silhouettes, each split into
 /// visible and hidden runs by occlusion against the shape's own mesh.
-/// Segments that project to nothing — an edge running straight along the
-/// view direction — are dropped: a point is not a line in a drawing.
+/// Segments that project to nothing (an edge running straight along the
+/// view direction) are dropped: a point is not a line in a drawing.
 ///
 /// # Errors
 ///

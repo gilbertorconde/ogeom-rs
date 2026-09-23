@@ -1,5 +1,5 @@
 //! The upgrade family: same-domain face unification, collinear edge
-//! merging, and tolerance reduction — undoing the splits an operation left
+//! merging, and tolerance reduction, undoing the splits an operation left
 //! behind without changing the shape they describe.
 
 use std::collections::{HashMap, HashSet};
@@ -18,10 +18,10 @@ use crate::reshape::Reshape;
 /// Merge adjacent faces lying on one carrier into single faces.
 ///
 /// Two faces qualify when they share an edge and their surfaces are the
-/// same plane, in the same parameterization — the split a boolean or an
+/// same plane, in the same parameterization: the split a boolean or an
 /// exchange leaves behind. The merged face keeps the first face's surface;
 /// the shared edges dissolve; the remaining boundary re-chains into wires.
-/// Faces on other carriers pass through untouched — a curved unification
+/// Faces on other carriers pass through untouched; a curved unification
 /// wants parameterization transport this deliberately does not guess at.
 ///
 /// # Errors
@@ -84,7 +84,7 @@ pub fn unify_same_domain(
         if members.len() < 2 {
             continue;
         }
-        // Interior edges — used by two members — dissolve; the rest chain.
+        // Interior edges (used by two members) dissolve; the rest chain.
         let mut counts: HashMap<TShapeId, (usize, Shape)> = HashMap::new();
         for &i in members {
             for edge in explore_unique(model, &faces[i], ShapeType::Edge)? {
@@ -147,7 +147,7 @@ pub fn unify_same_domain(
 /// Where a planar face lies and which chart it was stored in.
 #[derive(Debug, Clone)]
 struct Carrier {
-    /// The plane in world space — what "same carrier" is decided on.
+    /// The plane in world space: what "same carrier" is decided on.
     world: Plane,
     /// The plane as the surface stores it: the chart pcurves speak in.
     stored: Plane,
@@ -175,7 +175,7 @@ fn carrier_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
     }))
 }
 
-/// Attach a pcurve for `surface_id` to `edge` if it does not carry one —
+/// Attach a pcurve for `surface_id` to `edge` if it does not carry one:
 /// direct projection into the stored plane's own frame, exact.
 ///
 /// The chart is the *stored* plane's, so the world point is carried back
@@ -225,7 +225,7 @@ fn ensure_planar_pcurve(
 ///
 /// A [`Line2d`](ogeom_geom::Line2d) reads its parameter from the axis
 /// origin outward, so the origin is where the parameter would have been
-/// zero — not where the range starts.
+/// zero, not where the range starts.
 fn chart_line(
     a: Point2,
     b: Point2,
@@ -243,9 +243,9 @@ fn chart_line(
 
 /// Merge chains of edges lying on one curve into single edges.
 ///
-/// Within each wire, consecutive edges continuing one curve — the same
+/// Within each wire, consecutive edges continuing one curve (the same
 /// stored curve over contiguous ranges, or two collinear lines meeting end
-/// to end — become one edge over the joined range, and the vertex between
+/// to end) become one edge over the joined range, and the vertex between
 /// them dissolves. Every pcurve the pair carried is joined with it and then
 /// *measured* against the joined curve: a pair whose parameterizations do
 /// not join cleanly is left split rather than merged into a face that could
@@ -468,7 +468,7 @@ fn joinable_curve(
 ///
 /// `slots` is what the joined edge will be read on: every one of them has
 /// to come out of the join, or the merge would leave a face that cannot be
-/// triangulated — worse than the split it came to fix.
+/// triangulated, worse than the split it came to fix.
 fn joinable(
     model: &Model,
     a: &Shape,
@@ -569,8 +569,8 @@ fn joinable(
     }))
 }
 
-/// Whether a joined pcurve, read the way a face reads it — the same
-/// fraction along both ranges — lands on the joined curve.
+/// Whether a joined pcurve, read the way a face reads it (the same
+/// fraction along both ranges) lands on the joined curve.
 fn agrees(
     model: &Model,
     curve: &ogeom_geom::Curve,
@@ -602,7 +602,7 @@ fn agrees(
 }
 
 /// Shrink every edge and vertex tolerance to what the geometry measures,
-/// floored at the confusion tolerance — the inverse of the widenings repair
+/// floored at the confusion tolerance: the inverse of the widenings repair
 /// operations apply, safe because it is measured the same way.
 ///
 /// Returns how many claims shrank.
