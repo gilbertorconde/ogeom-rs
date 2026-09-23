@@ -65,6 +65,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A sliver face was drawn as its whole plane.** A planar face narrower
+  than a millionth of its length — a strip 163 mm long and 40 nm wide, as
+  one CAD export leaves along a mirrored panel — has its two long sides
+  merged into one line by the mesher, and no boundary ring survived; the
+  mesher then took it for a face without wires and drew the plane's whole
+  window, a hundred metres each way, so an imported printer's skirts
+  rendered as bars across the scene. A face with wires whose rings all
+  collapse encloses nothing, and meshes to nothing.
 - **A boolean on a solid of many small faces took minutes.** Rebuilding
   the result compared every strand end with every vertex minted so far,
   and `sew` compared every edge with every other — projecting one's

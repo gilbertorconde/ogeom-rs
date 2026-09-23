@@ -196,6 +196,10 @@ fn triangulate_reporting_from(
         None => trimming_rings(model, face, data.surface, surface, deflection, finer, tol)?,
     };
     let rings_ms = phase.elapsed().as_secs_f64() * 1e3;
+    if uv.is_empty() {
+        // Bounded, and bounding nothing: there is no area to draw.
+        return Ok((Triangulation::new(), Verdict::Whole));
+    }
     let phase = std::time::Instant::now();
     let planar = triangulate_region(&uv, surface, deflection, tol)?;
     let region_ms = phase.elapsed().as_secs_f64() * 1e3;
@@ -1008,7 +1012,9 @@ fn trimming_rings(
     let mut ring_folds: Vec<Vec<(usize, f64)>> = Vec::new();
     let mut ring_ties: Vec<Vec<usize>> = Vec::new();
     let mut met = true;
-    for wire in model.ordered_children_of(face)? {
+    let wires = model.ordered_children_of(face)?;
+    let bounded = !wires.is_empty();
+    for wire in wires {
         let (ring, anchors, ring_met, folds, ties) =
             boundary_ring(model, &wire, id, deflection, finer, tol)?;
         met &= ring_met;
@@ -1447,9 +1453,12 @@ fn trimming_rings(
         ring_anchors.retain(|_| *it.next().unwrap_or(&true));
     }
 
-    if rings.is_empty() {
-        // A face with no wires covers its surface's whole domain, so the domain
-        // rectangle is the boundary.
+    // A face with no wires covers its surface's whole domain, so the domain
+    // rectangle is the boundary. A face whose wires all collapse — a sliver
+    // narrower than a millionth of its own length, its two long sides one
+    // line in the chart — encloses nothing, and keeps no ring at all: taken
+    // for a face without wires, it would be drawn as the whole plane.
+    if rings.is_empty() && !bounded {
         let ring = domain_ring(surface, deflection, tol);
         ring_anchors.push(vec![None; ring.len()]);
         rings.push(ring);

@@ -203,3 +203,38 @@ fn a_hand_built_prism_closes_and_measures_its_closed_form() {
         "the prism measures its closed form: {measured} against {exact}"
     );
 }
+
+/// A planar face a sliver narrower than a millionth of its length — a
+/// long strip whose two sides are one line to the mesher — encloses no
+/// area worth a triangle. It meshes to nothing within its own bounds, not
+/// to the plane's whole window, which a face without wires would cover.
+#[test]
+fn a_sliver_face_meshes_within_itself() {
+    let mut model = Model::new();
+    let width = 4e-5;
+    let ring = ogeom::algo::make_polygon(
+        &mut model,
+        &[
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(163.6, 0.0, 0.0),
+            Point::new(163.6, width, 0.0),
+            Point::new(0.0, width, 0.0),
+        ],
+        true,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let edges = model.ordered_children_of(&ring).unwrap();
+    let plane = SurfaceGeometry::Plane(PlaneSurface::new(Plane::new(Frame::WORLD)));
+    let face = ogeom::algo::make_face_with_pcurves(&mut model, plane, &[edges], T)
+        .unwrap()
+        .shape;
+    let mesh = ogeom::mesh::triangulate_face(&model, &face, Deflection::default(), T).unwrap();
+    for p in &mesh.positions {
+        assert!(
+            (-1e-3..=163.601).contains(&p.x) && p.y.abs() <= 1e-3 && p.z.abs() <= 1e-3,
+            "a mesh point off the sliver: {p:?}"
+        );
+    }
+}
