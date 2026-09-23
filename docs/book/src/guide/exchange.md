@@ -82,6 +82,12 @@ flattened, the production extension's multi-part packages followed, the
 model's unit scaled to millimetres — with a uniform object colour where
 the file gives one, and warnings for what it read with a caveat.
 
+A mesh read from any of these can become a solid that takes features:
+`algo::solid_from_mesh` builds its topology from the mesh's own
+connectivity, merges coplanar triangles into planar faces — an STL cube
+comes back as six faces — and says in its report where a mesh that does not
+close is open. Curved regions stay faceted.
+
 The mesh writers take the tessellation you built at your chosen
 deflection — the error budget is yours, stated once. DXF is the outlet
 for [HLR drawings](meshing.md#drawings): visible and hidden polylines,

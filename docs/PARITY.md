@@ -15,13 +15,13 @@ per package.
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 68 |
+| `covered` | 69 |
 | `partial` | 14 |
 | `absent` | 1 |
 | `divergent` | 9 |
 | `n/a` | 5 |
 
-2704 reference headers in the reviewable pool; 2704 claimed by 97 capabilities, 0 awaiting a claim. Ratchet: `unreviewed_max = 0`.
+2704 reference headers in the reviewable pool; 2704 claimed by 98 capabilities, 0 awaiting a claim. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -48,6 +48,7 @@ the worklist if a caller ever needs the general region.
 - **algo.primitives** — The primitive solids: box, wedge, cylinder, cone, sphere, torus, half-space, prism, revolution · `covered` · 23 headers claimed
 - **algo.sewing** — Sewing faces into shells along coincident edges, with spatial acceleration · `covered` · 11 headers claimed
 - **algo.shape-distance** — Distance, proximity and overlap between whole shapes, and self-intersection · `covered` · 18 headers claimed
+- **algo.solid-from-mesh** — A faceted solid from a triangle mesh, coplanar triangles merged into planar faces · `covered` · 1 header claimed
 - **algo.spatial-acceleration** — Generic bounding-volume hierarchies · `divergent` · 33 headers claimed
   - *reasoning:* Acceleration structures here are internal to the algorithms that need them — sewing's cell filter, the classifier's bounds, the distance walk's pruning — rather than a public generic BVH container library. The one consumer that wants a standing BVH over triangles is picking, which is outside the kernel (outside/crates/ogeom-select carries it). If a kernel algorithm ever needs a shared BVH, promoting select's is the move.
 - **algo.validity** — Diagnosing a shape's validity, by entity, with named problems · `covered` · 12 headers claimed
@@ -201,8 +202,8 @@ whose distance varies, pcurve-only trimming, annotation and drafting.
 
 - **mesh.editing** — Editing triangulations: connectivity, welding, decimation, boundary loops · `covered` · 8 headers claimed
 - **mesh.hatching** — Hatching faces: iso and free-direction line families clipped to the trim · `covered` · 20 headers claimed
-- **mesh.shape-wrapping** — Wrapping triangulations and point clouds as shapes · `n/a` · 4 headers claimed
-  - *reasoning:* Faces whose geometry is a triangle set, point-cloud stand-ins and preview boxes exist to feed viewers progressively; a viewer consumes the triangulation directly here, and B-rep recovery from meshes is deliberately out of scope (docs/SCOPE.md; outside/crates/ogeom-reverse).
+- **mesh.shape-wrapping** — Wrapping triangulations and point clouds as shapes · `n/a` · 3 headers claimed
+  - *reasoning:* Faces whose geometry is a triangle set, point-cloud stand-ins and preview boxes exist to feed viewers progressively; a viewer consumes the triangulation directly here. A faceted solid built on a mesh is algo.solid-from-mesh; recovering exact surfaces from one is out of scope (docs/SCOPE.md; outside/crates/ogeom-reverse).
 - **mesh.tessellation** — Triangulating shapes to a stated deflection, deterministically, in parallel · `covered` · 91 headers claimed
 
 ### ogeom-offset

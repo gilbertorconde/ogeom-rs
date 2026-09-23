@@ -1715,11 +1715,24 @@ id = "mesh.shape-wrapping"
 title = "Wrapping triangulations and point clouds as shapes"
 crate = "ogeom-mesh"
 verdict = "n/a"
-claims = ["BRepBuilderAPI_MakeShapeOnMesh", "BRepLib_PointCloudShape", "ShapeConstruct_MakeTriangulation", "BRepPreviewAPI_MakeBox"]
+claims = ["BRepLib_PointCloudShape", "ShapeConstruct_MakeTriangulation", "BRepPreviewAPI_MakeBox"]
 reasoning = """Faces whose geometry is a triangle set, point-cloud stand-ins \
 and preview boxes exist to feed viewers progressively; a viewer consumes the \
-triangulation directly here, and B-rep recovery from meshes is deliberately \
-out of scope (docs/SCOPE.md; outside/crates/ogeom-reverse)."""
+triangulation directly here. A faceted solid built on a mesh is \
+algo.solid-from-mesh; recovering exact surfaces from one is out of scope \
+(docs/SCOPE.md; outside/crates/ogeom-reverse)."""
+
+[[capability]]
+id = "algo.solid-from-mesh"
+title = "A faceted solid from a triangle mesh, coplanar triangles merged into planar faces"
+crate = "ogeom-algo"
+verdict = "covered"
+claims = ["BRepBuilderAPI_MakeShapeOnMesh"]
+symbols = [
+    "ogeom_algo::solid_from_mesh", "ogeom_algo::MeshSolidOptions",
+    "ogeom_algo::MeshSolid", "ogeom_algo::MeshSolidReport",
+]
+tests = ["crates/ogeom/tests/mesh_solid.rs"]
 
 [[capability]]
 id = "offset.middle-path"

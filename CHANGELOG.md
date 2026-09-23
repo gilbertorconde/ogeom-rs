@@ -19,6 +19,17 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`solid_from_mesh`**, a B-rep from a triangle mesh, with
+  `MeshSolidOptions`, `MeshSolid` and `MeshSolidReport`. The topology is
+  built from the mesh's own connectivity once its repeated vertices are
+  welded, with no sewing search, so a 200 000-triangle mesh converts in
+  about a second. Coplanar triangles merge into planar faces bounded by
+  their outer loops and holes, and collinear boundary runs into single
+  edges: an STL cube becomes six faces and twelve edges. Windings are
+  made to agree and face outward, a closed piece inside another becomes a
+  void, and a mesh that does not close comes back as open shells, with
+  holes, non-manifold edges, dropped triangles and flipped windings
+  counted in the report. Curved regions stay faceted.
 - **`read_3mf`**, reading a 3MF package into one placed mesh per build
   item, with `ThreeMfImport`, `ThreeMfObject` and `ObjectType`.
   Components are flattened, the production extension's multi-part

@@ -26,6 +26,13 @@ Anything the reference does not do at all is out of scope by default. Reverse
 engineering from meshes, constraint solving, feature recognition and process
 planning are all real disciplines and none of them is this.
 
+The line through meshes falls where the reference draws it. Its modelling
+algorithms build a shape on a mesh — a planar face per triangle, sharing edges
+— and unify coplanar faces, so a faceted solid from a triangle mesh is in
+scope (`solid_from_mesh`). Deciding that a region of triangles *was* a
+cylinder, a cone or a fillet is recovery of information the mesh no longer
+carries, and that is the reverse engineering that stays out.
+
 Each of those was built here before this rule was written, and each of them
 works. Rather than delete working code to make a point, it lives in `outside/`,
 which is a separate workspace the kernel's `Cargo.toml` excludes by name. The
