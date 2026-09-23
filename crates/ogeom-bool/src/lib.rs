@@ -1823,6 +1823,30 @@ fn fill(
                     continue;
                 }
                 let both = reach.max(tol.confusion().max(other.tolerance * 2.0));
+                // Where two sections share one face, a crossing matters only
+                // inside the faces they do not share, since a section is kept
+                // only where it lies in both its faces: one wall met by a
+                // thousand facets carries a thousand sections, and only those
+                // whose facets' bounds meet can cross where it counts. The
+                // audit's unfiltered pass tries every pair still.
+                if !admit_all {
+                    let apart = |x: &ogeom_math::Aabb, y: &ogeom_math::Aabb| {
+                        !x.expanded(both).intersects(&y.expanded(both))
+                    };
+                    let unshared_a = other.face_a != section.face_a
+                        && apart(
+                            &ga.faces[section.face_a].bound,
+                            &ga.faces[other.face_a].bound,
+                        );
+                    let unshared_b = other.face_b != section.face_b
+                        && apart(
+                            &gb.faces[section.face_b].bound,
+                            &gb.faces[other.face_b].bound,
+                        );
+                    if unshared_a || unshared_b {
+                        continue;
+                    }
+                }
                 let cc2 = CurveCurveOptions {
                     gap: both.max(CurveCurveOptions::default().gap),
                     ..CurveCurveOptions::default()

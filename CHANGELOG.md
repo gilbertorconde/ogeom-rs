@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A drill through a finely faceted part spent minutes pairing
+  sections.** Every section on the drill's wall was tried for crossings
+  against every other section on it, a curve-curve intersection each, and
+  a wall met by a few thousand facets of a converted mesh carries a few
+  thousand sections: seven minutes on one part. A crossing between two
+  sections that share a face counts only inside the faces they do not
+  share, so only sections whose other faces' bounds meet are tried: the
+  same part pairs its sections in eighteen seconds.
+
 ## [0.3.0] — 2026-09-23
 
 A minor release, for one change a caller can see: `FixReport` gains a
