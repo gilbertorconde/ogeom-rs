@@ -820,3 +820,43 @@ fn a_face_narrower_than_the_chord_draws_its_edges_finer() {
         mesh.triangles.len()
     );
 }
+
+/// A plane cutting a drum almost along its axis leaves an ellipse six and
+/// a half metres by 1.8 millimetres, and the eight faces round one corner
+/// of a community part are bounded by short arcs of such ellipses. Their
+/// vertices sit a couple of microns off the curve, and the closed-form
+/// inversion read them nine millimetres along it: the edges ran the long
+/// way round the ellipse, and three faces drew out to 10.8 m from a 1 × 3
+/// mm corner. Every face's mesh stays within its vertices' span, grown by
+/// a millimetre for an arc's own bulge.
+#[test]
+fn faces_bounded_by_arcs_of_an_eccentric_ellipse_mesh_on_themselves() {
+    let text = corpus("eccentric_ellipse_edges.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let faces = explore_unique(model, &import.solids[0], ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 8);
+    for (index, face) in faces.iter().enumerate() {
+        let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+        for vertex in explore_unique(model, face, ShapeType::Vertex).unwrap() {
+            let data = model.node(&vertex).unwrap().data().as_vertex().unwrap();
+            let p = vertex.transform(model.datums()).unwrap().apply(data.point);
+            for (k, c) in [p.x, p.y, p.z].into_iter().enumerate() {
+                lo[k] = lo[k].min(c);
+                hi[k] = hi[k].max(c);
+            }
+        }
+        let mesh =
+            ogeom::mesh::triangulate_face(model, face, ogeom::mesh::Deflection::default(), T)
+                .unwrap();
+        assert!(!mesh.triangles.is_empty(), "face {index} draws");
+        for p in &mesh.positions {
+            for (k, c) in [p.x, p.y, p.z].into_iter().enumerate() {
+                assert!(
+                    c >= lo[k] - 1.0 && c <= hi[k] + 1.0,
+                    "face {index} draws a point off itself: {p:?}"
+                );
+            }
+        }
+    }
+}

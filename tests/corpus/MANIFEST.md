@@ -65,6 +65,17 @@ a hole whose two halves arrive on different branches of a periodic chart
 — a loop that never closes in the chart and a hole the mesher draws but
 cannot cut.
 
+## eccentric_ellipse_edges.step
+
+Eight faces round one corner of a community printer carriage, each face's
+transitive closure extracted standalone and wrapped in a shell and a solid
+of their own: planes and a cylinder bounded by short arcs of ellipses six
+and a half metres by 1.8 millimetres, where a plane cuts a drum almost
+along its axis. Their vertices sit a couple of microns off those curves.
+The reproducer for a vertex inverted onto an eccentric ellipse by the
+closed form alone, which read it nine millimetres along the curve and sent
+the edge the long way round.
+
 ## spline_face_fit_runs_away.step
 
 Sixty entities, one face's transitive closure extracted standalone from a

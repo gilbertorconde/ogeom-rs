@@ -26,6 +26,7 @@
 pub mod brep;
 pub mod dxf;
 pub mod iges;
+pub(crate) mod inversion;
 pub mod json;
 pub mod mesh_formats;
 pub mod native;

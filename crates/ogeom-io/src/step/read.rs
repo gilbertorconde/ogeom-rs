@@ -956,26 +956,7 @@ impl Reader<'_> {
 
     /// The parameter of a point on one of this kernel's curves.
     fn parameter_of(&self, curve: &Curve, p: Point) -> Option<f64> {
-        match curve {
-            Curve::Line(line) => {
-                let axis = line.axis();
-                Some((p - axis.location).dot(axis.direction.vector()))
-            }
-            Curve::Circle(c) => {
-                let local = c.circle().frame().to_local(p);
-                Some(local.y.atan2(local.x).rem_euclid(core::f64::consts::TAU))
-            }
-            Curve::Ellipse(e) => {
-                let local = e.ellipse().frame().to_local(p);
-                Some(
-                    (local.y / e.ellipse().minor_radius())
-                        .atan2(local.x / e.ellipse().major_radius())
-                        .rem_euclid(core::f64::consts::TAU),
-                )
-            }
-            Curve::BSpline(_) => None,
-            _ => None,
-        }
+        crate::inversion::parameter_on(curve, p)
     }
 
     // --- topology ------------------------------------------------------------

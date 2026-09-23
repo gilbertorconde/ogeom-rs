@@ -1653,28 +1653,7 @@ fn trimmed_to(curve: Curve, range: (f64, f64), tol: Tolerances) -> OgeomResult<C
     )?))
 }
 
-/// Closed-form parameter of a point on the curves that have one.
-fn parameter_on(curve: &Curve, p: Point) -> Option<f64> {
-    match curve {
-        Curve::Line(line) => {
-            let axis = line.axis();
-            Some((p - axis.location).dot(axis.direction.vector()))
-        }
-        Curve::Circle(c) => {
-            let local = c.circle().frame().to_local(p);
-            Some(local.y.atan2(local.x).rem_euclid(core::f64::consts::TAU))
-        }
-        Curve::Ellipse(e) => {
-            let local = e.ellipse().frame().to_local(p);
-            Some(
-                (local.y / e.ellipse().minor_radius())
-                    .atan2(local.x / e.ellipse().major_radius())
-                    .rem_euclid(core::f64::consts::TAU),
-            )
-        }
-        _ => None,
-    }
-}
+use crate::inversion::parameter_on;
 
 /// A frame with the given axis direction, reference direction chosen stably.
 fn frame_about(origin: Point, axis: Direction, tol: Tolerances) -> OgeomResult<Frame> {

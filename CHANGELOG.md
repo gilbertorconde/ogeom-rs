@@ -26,6 +26,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **An edge on a very eccentric ellipse could run the long way round.**
+  The STEP and IGES readers placed a vertex on an ellipse by its
+  eccentric anomaly, which is exact only for a point on the curve. A
+  vertex two microns off an ellipse 6.5 m by 1.8 mm read as nine
+  millimetres along it, the end parameter fell before the start, and the
+  edge took almost the whole ellipse: `triangulate_face` drew its faces
+  out to ten metres. The readers refine the closed form to the nearest
+  point on the curve.
 - **A STEP read broke the tolerance containment rule, and `fix_shape`
   did not restore it.** The reader widens an edge to how far its pcurves
   sit from its curve, and left the edge's vertices at the confusion
