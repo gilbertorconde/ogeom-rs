@@ -746,29 +746,107 @@ fn transform_bits(t: &Transform) -> [u64; 3] {
     [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]
 }
 
-/// A real in the file: decimal point kept, so a reader that types by
-/// spelling reads a real.
+/// A real in the file, the shorter of its positional and exponent
+/// spellings, each the shortest that reads back to the same value, with a
+/// decimal point kept so a reader that types by spelling reads a real.
+///
+/// Positional notation alone spells a coefficient of 1.5e-51 in
+/// sixty-nine characters, and a record holds sixty-four.
 fn fmt(v: f64) -> String {
-    let s = format!("{v}");
-    if s.contains('.') || s.contains('e') || s.contains('E') {
-        s
+    let positional = {
+        let s = format!("{v}");
+        if s.contains('.') { s } else { format!("{s}.") }
+    };
+    let exponent = {
+        let s = format!("{v:E}");
+        match s.split_once('E') {
+            Some((mantissa, power)) if !mantissa.contains('.') => {
+                format!("{mantissa}.E{power}")
+            }
+            _ => s,
+        }
+    };
+    if exponent.len() < positional.len() {
+        exponent
     } else {
-        format!("{s}.")
+        positional
     }
 }
 
-/// Parameter text into 64-column lines, split at delimiters.
+/// Parameter text into records of at most 64 data columns, split between
+/// parameters.
+///
+/// The reader joins a parameter record's data columns as they stand,
+/// padding included, so a parameter is never split where padding would
+/// land inside it: one that does not fit starts a new record. One longer
+/// than a whole record — only a long name can be — fills every record it
+/// crosses to exactly 64 columns, so the pieces rejoin with nothing
+/// between them.
 fn wrap_params(text: &str) -> Vec<String> {
+    const COLUMNS: usize = 64;
     let mut lines = Vec::new();
     let mut current = String::new();
     for piece in text.split_inclusive(',') {
-        if current.len() + piece.len() > 64 {
+        if current.len() + piece.len() > COLUMNS && piece.len() <= COLUMNS {
             lines.push(std::mem::take(&mut current));
         }
-        current.push_str(piece);
+        let mut rest = piece;
+        while current.len() + rest.len() > COLUMNS {
+            let mut room = COLUMNS - current.len();
+            while !rest.is_char_boundary(room) {
+                room -= 1;
+            }
+            current.push_str(&rest[..room]);
+            rest = &rest[room..];
+            lines.push(std::mem::take(&mut current));
+        }
+        current.push_str(rest);
     }
     if !current.is_empty() {
         lines.push(current);
     }
     lines
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test code")]
+mod tests {
+    use super::{fmt, wrap_params};
+
+    #[test]
+    fn a_real_takes_its_shorter_spelling_and_reads_back() {
+        for v in [
+            0.0,
+            1.0,
+            -2.5,
+            1e-51,
+            1.48776941870366e-51,
+            2.76e-76,
+            1e20,
+            123_456.789,
+        ] {
+            let s = fmt(v);
+            assert!(s.len() <= 24, "{v} spelt {s}");
+            assert!(s.contains('.'), "{s} reads as a real");
+            let back: f64 = s.replace('D', "E").parse().unwrap();
+            assert_eq!(back, v, "{s}");
+        }
+        assert_eq!(fmt(1.0), "1.");
+        assert_eq!(fmt(1e-51), "1.E-51");
+    }
+
+    #[test]
+    fn a_parameter_longer_than_a_record_fills_the_records_it_crosses() {
+        let name = format!("100H{},", "x".repeat(100));
+        let text = format!("128,{name}1.5,2.;");
+        let lines = wrap_params(&text);
+        assert!(lines.iter().all(|l| l.len() <= 64));
+        // The pieces rejoin as written: every record the long name crosses
+        // is full, so padding never lands inside it.
+        let long: Vec<&String> = lines.iter().filter(|l| l.contains('x')).collect();
+        for l in &long[..long.len() - 1] {
+            assert_eq!(l.len(), 64);
+        }
+        assert_eq!(lines.concat(), text);
+    }
 }
