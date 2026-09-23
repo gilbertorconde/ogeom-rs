@@ -96,6 +96,7 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         visited: BTreeMap::new(),
         vertices: HashMap::new(),
         edges: HashMap::new(),
+        vertex_misses: (0, 0.0),
         tol,
     };
 
@@ -189,6 +190,13 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         }
     }
 
+    if reader.vertex_misses.0 > 0 {
+        let (count, worst) = reader.vertex_misses;
+        reader.report.warnings.push(format!(
+            "{count} vertices sat off the curve ends they bound, by up to {worst:.2e}; \
+             their tolerances grew to say so"
+        ));
+    }
     let document = reader.document(&solids, &sheets);
     let solids = solids.into_iter().map(|(_, s)| s).collect();
     Ok(IgesImport {
@@ -210,6 +218,9 @@ struct Reader<'a> {
     vertices: HashMap<(i64, i64), Shape>,
     /// Edges by (edge-list DE, 1-based index), for the same reason.
     edges: HashMap<(i64, i64), BuiltEdge>,
+    /// Vertices a curve end missed by more than the confusion tolerance
+    /// and that widened to cover it: how many, and the widest miss.
+    vertex_misses: (usize, f64),
     tol: Tolerances,
 }
 
@@ -1366,7 +1377,12 @@ impl<'a> Reader<'a> {
         for i in 0..n_voids {
             shells.push(self.shell(entity.at(3 + 2 * i).int())?);
         }
-        Ok(make_solid(&mut self.model, &shells)?.shape)
+        let solid = make_solid(&mut self.model, &shells)?.shape;
+        // A fitted trim widens its edge to the offset it measured; the
+        // edge's vertices come along, and the solid keeps the containment
+        // rule the checker holds it to.
+        ogeom_algo::restore_containment(&mut self.model, &solid)?;
+        Ok(solid)
     }
 
     fn shell(&mut self, de: i64) -> OgeomResult<Shape> {
@@ -1487,6 +1503,40 @@ impl<'a> Reader<'a> {
             } else {
                 (a, b)
             };
+            // A vertex a few nanometres past a bounded curve's end projects
+            // past it: the range is held to the curve's own domain, and the
+            // vertex widens below to cover the rest of the miss.
+            if period == 0.0 {
+                let (lo, hi) = curve.domain();
+                range = (range.0.clamp(lo, hi), range.1.clamp(lo, hi));
+            }
+        }
+        // IGES states no tolerances, so a vertex is built at the confusion
+        // tolerance and a curve end that misses it by rounding — a writer's
+        // last digit, a few tenths of a nanometre — would refuse the whole
+        // solid. As the STEP reader does, the vertex's tolerance grows to
+        // state the miss, up to the millimetre past which a boundary is not
+        // this curve's at all; beyond that the edge still refuses by name.
+        let cap = self.tol.confusion() * 1e7;
+        for (vertex, t) in [(&vs, range.0), (&ve, range.1)] {
+            let (Ok(end), Some(stated)) = (
+                curve.point_at(t, self.tol),
+                self.model
+                    .node(vertex)
+                    .and_then(|n| n.data().as_vertex())
+                    .map(|d| (d.point, d.tolerance)),
+            ) else {
+                continue;
+            };
+            let gap = end.distance(stated.0);
+            if gap > stated.1.get() && gap <= cap {
+                self.model.widen(
+                    vertex,
+                    ogeom_core::Tolerance::new(gap + self.tol.confusion())?,
+                )?;
+                self.vertex_misses.0 += 1;
+                self.vertex_misses.1 = self.vertex_misses.1.max(gap);
+            }
         }
         let edge =
             make_edge_between(&mut self.model, curve.clone(), range, &vs, &ve, self.tol)?.shape;
@@ -1678,6 +1728,7 @@ mod tests {
             visited: BTreeMap::new(),
             vertices: HashMap::new(),
             edges: HashMap::new(),
+            vertex_misses: (0, 0.0),
             tol: T,
         }
     }
