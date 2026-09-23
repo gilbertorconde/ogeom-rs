@@ -22,19 +22,28 @@ Three are out, permanently:
 | **ApplicationFramework** | The generic label-and-attribute document tree. The *exchange* document is in scope — it is part of DataExchange — but the framework beneath it is an application's concern. |
 | **Draw** | A test harness with its own scripting language. |
 
-Anything the reference does not do at all is out of scope by default. Reverse
-engineering from meshes, constraint solving, feature recognition and process
-planning are all real disciplines and none of them is this.
+Anything the reference does not do at all is out of scope by default. Constraint
+solving, feature recognition and process planning are all real disciplines and
+none of them is this.
 
-The line through meshes falls where the reference draws it. Its modelling
-algorithms build a shape on a mesh — a planar face per triangle, sharing edges
-— and unify coplanar faces, so a faceted solid from a triangle mesh is in
-scope (`solid_from_mesh`). Deciding that a region of triangles *was* a
-cylinder, a cone or a fillet is recovery of information the mesh no longer
-carries, and that is the reverse engineering that stays out.
+One addition is deliberate: **a mesh becomes a solid, with its surfaces
+recognized.** The reference's modelling algorithms build a shape on a mesh — a
+planar face per triangle, sharing edges — and unify coplanar faces; ogeom goes
+on to decide which regions of triangles lie on a cylinder, a cone, a sphere or
+a torus, and rebuilds them on those surfaces (`solid_from_mesh`,
+`recognize_points`). The reason is the exchange module's own: meshes are what
+printers, slicers and model sites exchange, and a kernel that reads STL, OBJ and
+3MF but can only display what it read leaves the application to rebuild the
+geometry itself. Recognition is held to the kernel's standard rather than to a
+heuristic's — every surface is verified against every sample at a stated
+tolerance, every edge between recognized faces is placed on the surfaces
+exactly, and a region that cannot be built that way stays faceted and is
+counted — which is what makes it a construction the kernel can stand behind.
+Fitting free-form surfaces to scans, and reading design intent back out of
+topology, remain outside.
 
-Each of those was built here before this rule was written, and each of them
-works. Rather than delete working code to make a point, it lives in `outside/`,
+The disciplines left out were built here before this rule was written, and
+each of them works. Rather than delete working code to make a point, it lives in `outside/`,
 which is a separate workspace the kernel's `Cargo.toml` excludes by name. The
 exclusion is what makes the rule structural instead of aspirational: nothing
 there can be pulled back in by a path dependency without someone deleting that

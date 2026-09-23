@@ -11,9 +11,17 @@
 //! bounded by the region's outer loop and its holes, and a run of boundary
 //! segments along one straight line between the same two faces becomes
 //! one edge: a cube's twelve triangles become six faces and twelve edges,
-//! and the faces take fillets and chamfers as a modelled box's do. A
-//! curved region stays faceted; recognising cylinders and the like is a
-//! separate step.
+//! and the faces take fillets and chamfers as a modelled box's do.
+//!
+//! Curved regions are recognized: triangles across which the surface
+//! turns smoothly are grown into regions for as long as their vertices lie
+//! on one cylinder, cone, sphere or torus, verified at the stated
+//! tolerance, and the region is rebuilt on that surface. Its boundary with
+//! each neighbour is placed on the surface exactly — a parallel circle or
+//! a ruling of it — so a meshed bore comes back as a cylinder between two
+//! circles, and a band all the way round its axis gets a seam as a
+//! modelled one has. A region whose boundary is no such curve, or that
+//! nothing canonical fits, stays faceted.
 //!
 //! Windings are made consistent across each connected piece and turned
 //! outward. A mesh that does not close — a hole, an edge three triangles
@@ -24,7 +32,9 @@ use std::collections::HashMap;
 
 use ogeom_core::{OgeomResult, Tolerance, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, LineCurve, PlanarCurve, PlaneSurface};
-use ogeom_math::{Direction, Frame, Plane, Point, Point2, Vector};
+use ogeom_math::{Cone, Cylinder, Direction, Frame, Plane, Point, Point2, Sphere, Torus, Vector};
+
+use crate::recognize::{Canonical, recognize_curved, worst_deviation};
 use ogeom_topo::{EdgeData, EdgeRepr, FaceData, Location, Model, Shape, Triangulation, VertexData};
 
 /// How [`solid_from_mesh`] builds.
@@ -48,6 +58,14 @@ pub struct MeshSolidOptions {
     /// STL repeats every vertex once per triangle that uses it. `None` is
     /// the confusion tolerance.
     pub weld: Option<f64>,
+    /// Recognize curved regions as cylinders, cones, spheres and tori, at
+    /// the coplanar distance. Needs `merge_coplanar`.
+    pub recognize: bool,
+    /// The angle, in radians, from which a turn between two triangles is a
+    /// crease — an edge of the model — rather than the surface curving on:
+    /// thirty degrees by default. A mesh drawn coarser than this round a
+    /// curve reads as facets.
+    pub crease: f64,
 }
 
 impl Default for MeshSolidOptions {
@@ -57,6 +75,8 @@ impl Default for MeshSolidOptions {
             coplanar_angle: 1e-3,
             coplanar_distance: None,
             weld: None,
+            recognize: true,
+            crease: core::f64::consts::FRAC_PI_6,
         }
     }
 }
@@ -66,8 +86,14 @@ impl Default for MeshSolidOptions {
 pub struct MeshSolidReport {
     /// Triangles built from, after the dropped ones.
     pub triangles: usize,
-    /// Faces built: the triangles, or their coplanar groups.
+    /// Faces built: the triangles, or their coplanar groups and recognized
+    /// regions.
     pub faces: usize,
+    /// Faces built on a recognized curved surface.
+    pub curved_faces: usize,
+    /// Regions recognized as curved whose boundary could not be placed on
+    /// the surface exactly, and which were faceted instead.
+    pub curved_faceted: usize,
     /// Mesh vertices that welded onto another.
     pub vertices_welded: usize,
     /// Triangles dropped for having no area.
@@ -200,44 +226,80 @@ pub fn solid_from_mesh(
         .coplanar_distance
         .unwrap_or(1e-6 * diagonal)
         .max(weld);
-    let groups = if options.merge_coplanar {
-        coplanar_groups(
-            &points,
-            &triangles,
-            &adjacency,
-            options.coplanar_angle,
+    let mut groups = segment(&points, &triangles, &adjacency, options, flat, tol)?;
+    // Plan until every curved face's boundary is exact, faceting the ones
+    // whose boundary is not.
+    let mut pinned: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let plan = loop {
+        let planner = Planner {
+            points: &points,
+            triangles: &triangles,
+            adjacency: &adjacency,
+            groups: &groups,
+            merge: options.merge_coplanar,
+            pinned: &pinned,
             flat,
             tol,
-        )?
-    } else {
-        Groups::one_each(&points, &triangles, tol)?
+        };
+        let planned = planner.plan()?;
+
+        match planned {
+            Ok(plan) => break plan,
+            Err(Replan::Pin(vertices)) => pinned.extend(vertices),
+            Err(Replan::Facet(failed)) => {
+                for g in failed {
+                    groups.carriers[g] = Carrier::Gone;
+                    report.curved_faceted += 1;
+                    for of in &mut groups.of {
+                        if *of == g {
+                            *of = usize::MAX;
+                        }
+                    }
+                }
+                coplanar_groups(
+                    &points,
+                    &triangles,
+                    &adjacency,
+                    options.coplanar_angle,
+                    flat,
+                    &mut groups,
+                    tol,
+                )?;
+            }
+        }
     };
-    report.faces = groups.planes.len();
 
     model.begin_operation();
     let built = Builder {
         model,
         points: &points,
         triangles: &triangles,
-        adjacency: &adjacency,
         groups: &groups,
-        merge: options.merge_coplanar,
-        flat,
+        plan: &plan,
         tol,
     }
     .build()?;
+    report.faces = built.iter().flatten().count();
+    report.curved_faces = groups
+        .carriers
+        .iter()
+        .zip(&built)
+        .filter(|(c, b)| matches!(c, Carrier::Curved(_)) && b.is_some())
+        .count();
 
     // Faces into one shell per piece; closed pieces into solids, a piece
     // nested an odd number of times deep being a void of the one around it.
     let mut shells = Vec::with_capacity(pieces.len());
     for piece in &pieces {
         let mut faces: Vec<Shape> = Vec::new();
-        let mut taken = vec![false; groups.planes.len()];
+        let mut taken = vec![false; groups.carriers.len()];
         for &t in &piece.triangles {
             let g = groups.of[t as usize];
             if !taken[g] {
                 taken[g] = true;
-                faces.push(built[g].clone());
+                if let Some(face) = &built[g] {
+                    faces.push(face.clone());
+                }
             }
         }
         shells.push(model.add_shell(&faces)?);
@@ -529,23 +591,37 @@ fn inside(points: &[Point], triangles: &[[u32; 3]], outer: &Piece, inner: &Piece
     crossings % 2 == 1
 }
 
-/// Triangles gathered into faces: which face each triangle is in, and each
-/// face's plane.
-struct Groups {
-    of: Vec<usize>,
-    planes: Vec<Plane>,
+/// What a face is built on.
+#[derive(Debug, Clone)]
+enum Carrier {
+    /// A plane, its normal outward.
+    Plane(Plane),
+    /// A surface recognition decided the region is.
+    Curved(Curved),
+    /// A region demoted to faceted, whose triangles went to other faces.
+    Gone,
 }
 
-impl Groups {
-    fn one_each(points: &[Point], triangles: &[[u32; 3]], tol: Tolerances) -> OgeomResult<Self> {
-        Ok(Self {
-            of: (0..triangles.len()).collect(),
-            planes: triangles
-                .iter()
-                .map(|t| plane_of(points, *t, tol))
-                .collect::<OgeomResult<_>>()?,
-        })
-    }
+#[derive(Debug, Clone)]
+struct Curved {
+    shape: Canonical,
+    /// How far the region's vertices stand off it.
+    deviation: f64,
+    /// The chart point every pcurve on it is unwrapped around, so they all
+    /// read on one branch.
+    centre: (f64, f64),
+    /// Whether the region runs all the way round its axis, and so needs a
+    /// seam.
+    wraps: bool,
+    /// The region's mesh vertices.
+    vertices: Vec<u32>,
+}
+
+/// Triangles gathered into faces: which face each triangle is in, and what
+/// each face is built on.
+struct Groups {
+    of: Vec<usize>,
+    carriers: Vec<Carrier>,
 }
 
 /// The plane of a triangle, its normal by the winding, its `x` axis along
@@ -561,38 +637,46 @@ fn plane_of(points: &[Point], [a, b, c]: [u32; 3], tol: Tolerances) -> OgeomResu
     Ok(Plane::new(Frame::new(a, z, x, tol)?))
 }
 
-/// Grow faces across shared edges from the largest triangles down, taking
-/// a neighbour whose normal is within the angle of the face's and whose
-/// corners all lie within the distance of its plane. Measured against the
-/// face's own plane, not the last triangle's, so a gently curved surface
-/// does not drift into one face.
+fn unit_normal(points: &[Point], [a, b, c]: [u32; 3]) -> Vector {
+    let [a, b, c] = [a, b, c].map(|i| points[i as usize]);
+    let n = (b - a).cross(c - a);
+    n / n.magnitude()
+}
+
+/// Grow planar faces across shared edges from the largest triangles down,
+/// among the triangles no face holds yet, taking a neighbour whose normal
+/// is within the angle of the face's and whose corners all lie within the
+/// distance of its plane. Measured against the face's own plane, not the
+/// last triangle's, so a gently curved surface does not drift into one
+/// face.
 fn coplanar_groups(
     points: &[Point],
     triangles: &[[u32; 3]],
     adjacency: &Adjacency,
     angle: f64,
     flat: f64,
+    groups: &mut Groups,
     tol: Tolerances,
-) -> OgeomResult<Groups> {
+) -> OgeomResult<()> {
     let area = |t: usize| {
         let [a, b, c] = triangles[t].map(|i| points[i as usize]);
         (b - a).cross(c - a).magnitude()
     };
-    let mut order: Vec<usize> = (0..triangles.len()).collect();
+    let mut order: Vec<usize> = (0..triangles.len())
+        .filter(|&t| groups.of[t] == usize::MAX)
+        .collect();
     order.sort_by(|&x, &y| area(y).total_cmp(&area(x)));
     let cos = angle.cos();
-    let mut of = vec![usize::MAX; triangles.len()];
-    let mut planes = Vec::new();
     let mut stack = Vec::new();
     for seed in order {
-        if of[seed] != usize::MAX {
+        if groups.of[seed] != usize::MAX {
             continue;
         }
-        let g = planes.len();
+        let g = groups.carriers.len();
         let plane = plane_of(points, triangles[seed], tol)?;
         let (origin, normal) = (plane.frame().origin(), plane.frame().z().vector());
-        planes.push(plane);
-        of[seed] = g;
+        groups.carriers.push(Carrier::Plane(plane));
+        groups.of[seed] = g;
         stack.push(seed);
         while let Some(t) = stack.pop() {
             for h in 3 * t..3 * t + 3 {
@@ -600,11 +684,10 @@ fn coplanar_groups(
                     continue;
                 };
                 let other = twin / 3;
-                if of[other] != usize::MAX {
+                if groups.of[other] != usize::MAX {
                     continue;
                 }
-                let tri = triangles[other];
-                let [a, b, c] = tri.map(|i| points[i as usize]);
+                let [a, b, c] = triangles[other].map(|i| points[i as usize]);
                 let n = (b - a).cross(c - a);
                 if n.dot(normal) < cos * n.magnitude() {
                     continue;
@@ -613,41 +696,799 @@ fn coplanar_groups(
                     .iter()
                     .all(|p| (*p - origin).dot(normal).abs() <= flat)
                 {
-                    of[other] = g;
+                    groups.of[other] = g;
                     stack.push(other);
                 }
             }
         }
     }
-    Ok(Groups { of, planes })
+    Ok(())
 }
 
-/// Builds the vertices, edges and faces.
-struct Builder<'a> {
-    model: &'a mut Model,
+/// One face per triangle, for the triangles no face holds yet.
+fn one_each(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    groups: &mut Groups,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    for (t, triangle) in triangles.iter().enumerate() {
+        if groups.of[t] == usize::MAX {
+            groups.of[t] = groups.carriers.len();
+            groups
+                .carriers
+                .push(Carrier::Plane(plane_of(points, *triangle, tol)?));
+        }
+    }
+    Ok(())
+}
+
+/// The direction of a canonical surface's own normal at a point near it,
+/// not normalized: the gradient of its distance.
+fn gradient(shape: &Canonical, p: Point) -> Vector {
+    let radial = |o: Point, z: Vector| {
+        let w = p - o;
+        let r = w - z * w.dot(z);
+        let m = r.magnitude();
+        (if m > 0.0 { r / m } else { Vector::ZERO }, w.dot(z))
+    };
+    match shape {
+        Canonical::Plane(plane) => plane.frame().z().vector(),
+        Canonical::Cylinder(c) => radial(c.frame().origin(), c.frame().z().vector()).0,
+        Canonical::Cone(c) => {
+            let z = c.frame().z().vector();
+            let (out, _) = radial(c.frame().origin(), z);
+            out - z * c.half_angle().tan()
+        }
+        Canonical::Sphere(s) => p - s.centre(),
+        Canonical::Torus(t) => {
+            let z = t.frame().z().vector();
+            let (out, _) = radial(t.frame().origin(), z);
+            p - (t.frame().origin() + out * t.major_radius())
+        }
+    }
+}
+
+/// The axis of a surface of revolution: its frame.
+fn axis_frame(shape: &Canonical) -> Option<Frame> {
+    match shape {
+        Canonical::Cylinder(c) => Some(c.frame()),
+        Canonical::Cone(c) => Some(c.frame()),
+        Canonical::Torus(t) => Some(t.frame()),
+        Canonical::Sphere(s) => Some(s.frame()),
+        Canonical::Plane(_) => None,
+    }
+}
+
+/// The same surface on another frame whose axis is the same line: its
+/// radii kept, a cone's reference radius carried to the new origin.
+fn on_frame(shape: &Canonical, frame: Frame, tol: Tolerances) -> Option<Canonical> {
+    Some(match shape {
+        Canonical::Cylinder(c) => Canonical::Cylinder(Cylinder::new(frame, c.radius(), tol).ok()?),
+        Canonical::Cone(c) => {
+            // The new origin's height on the old axis, and which way the
+            // new axis runs against the old.
+            let old = c.frame();
+            let shift = (frame.origin() - old.origin()).dot(old.z().vector());
+            let same = frame.z().vector().dot(old.z().vector()) > 0.0;
+            if !same {
+                return None;
+            }
+            let r0 = c.radius_at(shift);
+            Canonical::Cone(Cone::new(frame, r0.max(tol.confusion()), c.half_angle(), tol).ok()?)
+        }
+        Canonical::Torus(t) => {
+            Canonical::Torus(Torus::new(frame, t.major_radius(), t.minor_radius(), tol).ok()?)
+        }
+        Canonical::Sphere(s) => Canonical::Sphere(Sphere::new(frame, s.radius(), tol).ok()?),
+        Canonical::Plane(_) => return None,
+    })
+}
+
+/// A point's raw chart coordinates on a canonical surface.
+fn chart(shape: &Canonical, p: Point, tol: Tolerances) -> Option<(f64, f64)> {
+    use ogeom_math::elementary as e;
+    match shape {
+        Canonical::Plane(plane) => Some(e::plane_parameters(plane, p)),
+        Canonical::Cylinder(c) => e::cylinder_parameters(c, p, tol).ok(),
+        Canonical::Cone(c) => e::cone_parameters(c, p, tol).ok(),
+        Canonical::Sphere(s) => e::sphere_parameters(s, p, tol).ok(),
+        Canonical::Torus(t) => e::torus_parameters(t, p, tol).ok(),
+    }
+}
+
+fn evaluate(shape: &Canonical, (u, v): (f64, f64)) -> Point {
+    use ogeom_math::elementary as e;
+    match shape {
+        Canonical::Plane(plane) => e::plane_at(plane, u, v).point,
+        Canonical::Cylinder(c) => e::cylinder_at(c, u, v).point,
+        Canonical::Cone(c) => e::cone_at(c, u, v).point,
+        Canonical::Sphere(s) => e::sphere_at(s, u, v).point,
+        Canonical::Torus(t) => e::torus_at(t, u, v).point,
+    }
+}
+
+/// Which chart directions are angles, and so wrap.
+fn periodic(shape: &Canonical) -> (bool, bool) {
+    match shape {
+        Canonical::Plane(_) => (false, false),
+        Canonical::Cylinder(_) | Canonical::Cone(_) | Canonical::Sphere(_) => (true, false),
+        Canonical::Torus(_) => (true, true),
+    }
+}
+
+/// Chart coordinates on the branch around `centre`.
+fn unwrapped(curved: &Curved, p: Point, tol: Tolerances) -> Option<(f64, f64)> {
+    let (u, v) = chart(&curved.shape, p, tol)?;
+    let (pu, pv) = periodic(&curved.shape);
+    let near = |x: f64, c: f64, wraps: bool| {
+        if wraps {
+            c + ogeom_math::elementary::wrap_signed_angle(x - c)
+        } else {
+            x
+        }
+    };
+    Some((near(u, curved.centre.0, pu), near(v, curved.centre.1, pv)))
+}
+
+/// The circular mean of angles, and the widest gap between them.
+fn angular_spread(angles: &mut [f64]) -> (f64, f64) {
+    let (s, c) = angles
+        .iter()
+        .fold((0.0, 0.0), |(s, c), a| (s + a.sin(), c + a.cos()));
+    angles.sort_by(f64::total_cmp);
+    let mut gap: f64 = 0.0;
+    for w in angles.windows(2) {
+        gap = gap.max(w[1] - w[0]);
+    }
+    if let (Some(first), Some(last)) = (angles.first(), angles.last()) {
+        gap = gap.max(first + core::f64::consts::TAU - last);
+    }
+    (s.atan2(c), gap)
+}
+
+/// Grow regions of triangles that recognition says lie on one curved
+/// canonical surface, then planar faces over the rest.
+///
+/// A region starts at a triangle with a curved edge — one across which the
+/// surface turns by less than the crease angle but more than the coplanar
+/// angle — and first grows across such edges only, which keeps a flat face
+/// tangent to a fillet out of the fillet's first samples. Once it holds
+/// enough vertices it is recognized, and from then on grows across any
+/// smooth edge to a triangle whose corners lie on the surface and whose
+/// normal agrees with it, the surface refitted to everything held as the
+/// region doubles. A region whose samples are free-form, or also flat,
+/// returns its triangles to the planar pass.
+#[allow(clippy::too_many_arguments, reason = "the segmentation's inputs")]
+fn segment(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    options: &MeshSolidOptions,
+    flat: f64,
+    tol: Tolerances,
+) -> OgeomResult<Groups> {
+    let n = triangles.len();
+    let mut groups = Groups {
+        of: vec![usize::MAX; n],
+        carriers: Vec::new(),
+    };
+    if !options.merge_coplanar {
+        one_each(points, triangles, &mut groups, tol)?;
+        return Ok(groups);
+    }
+    if options.recognize {
+        recognized_regions(
+            points,
+            triangles,
+            adjacency,
+            options,
+            flat,
+            &mut groups,
+            tol,
+        );
+        align_axes(points, &mut groups, flat, tol);
+    }
+    coplanar_groups(
+        points,
+        triangles,
+        adjacency,
+        options.coplanar_angle,
+        flat,
+        &mut groups,
+        tol,
+    )?;
+    Ok(groups)
+}
+
+/// What a seed's first samples came to: the triangles and vertices
+/// gathered, those fitted, how many triangles the smallest sample held, the
+/// fit if one held, with which of the fitted vertices it kept.
+struct FirstFit {
+    region: Vec<usize>,
+    vertices: Vec<u32>,
+    shared: Vec<u32>,
+    first_sample: usize,
+    found: Option<(crate::recognize::Recognized, Vec<bool>)>,
+}
+
+/// The mesh as recognition reads it.
+struct Surfaces<'a> {
+    points: &'a [Point],
+    triangles: &'a [[u32; 3]],
+    adjacency: &'a Adjacency,
+    normals: Vec<Vector>,
+    cos_crease: f64,
+    cos_flat: f64,
+    flat: f64,
+    tol: Tolerances,
+}
+
+impl Surfaces<'_> {
+    fn turn(&self, h: Half) -> Option<f64> {
+        self.adjacency.twin[h].map(|g| self.normals[h / 3].dot(self.normals[g / 3]))
+    }
+
+    fn curved(&self, h: Half) -> bool {
+        self.turn(h)
+            .is_some_and(|c| c >= self.cos_crease && c < self.cos_flat)
+    }
+
+    fn smooth(&self, h: Half) -> bool {
+        self.turn(h).is_some_and(|c| c >= self.cos_crease)
+    }
+
+    fn bends(&self, t: usize) -> bool {
+        (3 * t..3 * t + 3).any(|h| self.curved(h))
+    }
+
+    /// Sample points with normals averaged over the region's triangles.
+    fn samples(&self, vertices: &[u32], region: &[usize]) -> (Vec<Point>, Vec<Vector>) {
+        let mut sum: HashMap<u32, Vector> = HashMap::with_capacity(vertices.len());
+        for &t in region {
+            for &v in &self.triangles[t] {
+                *sum.entry(v).or_insert(Vector::ZERO) += self.normals[t];
+            }
+        }
+        let pts = vertices.iter().map(|&v| self.points[v as usize]).collect();
+        let nrm = vertices
+            .iter()
+            .map(|v| {
+                let s = sum.get(v).copied().unwrap_or(Vector::Z);
+                let m = s.magnitude();
+                if m > 0.0 { s / m } else { Vector::Z }
+            })
+            .collect();
+        (pts, nrm)
+    }
+
+    /// The region's edges as segments, a few hundred at most, evenly
+    /// through the region.
+    fn chords(&self, region: &[usize]) -> Vec<(Point, Point)> {
+        let stride = region.len().div_ceil(100).max(1);
+        region
+            .iter()
+            .step_by(stride)
+            .flat_map(|&t| {
+                let [a, b, c] = self.triangles[t].map(|v| self.points[v as usize]);
+                [(a, b), (b, c), (c, a)]
+            })
+            .collect()
+    }
+
+    /// A seed's first samples and their fit, read from where the faces and
+    /// the retired seeds stand; it changes nothing.
+    ///
+    /// Samples grow across smooth edges into triangles where the surface
+    /// is seen to bend — each with an edge across which it turns. Within a
+    /// strip of a cylinder or a torus the two triangles of a cell meet
+    /// flat, and each still bends across its other side; a flat face met
+    /// tangentially — a fillet's run-out — lends only its triangles along
+    /// the tangent line, whose far corners the trimmed fit drops. The fit
+    /// is tried as the sample grows: a narrow fillet fits from a few dozen
+    /// vertices and would take in its neighbours' by a hundred; a patch of a
+    /// thick torus needs the hundred to show its tube.
+    fn first_fit(&self, seed: usize, of: &[usize], tried: &[bool]) -> FirstFit {
+        const STAGES: [usize; 3] = [24, 60, 150];
+        let mut held: std::collections::HashSet<usize> = std::collections::HashSet::from([seed]);
+        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut region = vec![seed];
+        let mut vertices: Vec<u32> = Vec::new();
+        let take =
+            |t: usize, vertices: &mut Vec<u32>, seen: &mut std::collections::HashSet<u32>| {
+                for &v in &self.triangles[t] {
+                    if seen.insert(v) {
+                        vertices.push(v);
+                    }
+                }
+            };
+        take(seed, &mut vertices, &mut seen);
+        let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::from([seed]);
+        let mut found = None;
+        let mut shared = Vec::new();
+        let mut first_sample = usize::MAX;
+        for target in STAGES {
+            while vertices.len() < target {
+                let Some(next) = queue.pop_front() else {
+                    break;
+                };
+                for h in 3 * next..3 * next + 3 {
+                    let Some(g) = self.adjacency.twin[h] else {
+                        continue;
+                    };
+                    let other = g / 3;
+                    if !self.smooth(h) || held.contains(&other) {
+                        continue;
+                    }
+                    if of[other] != usize::MAX
+                        || tried[other]
+                        || !(self.curved(h) || self.bends(other))
+                    {
+                        continue;
+                    }
+                    held.insert(other);
+                    region.push(other);
+                    take(other, &mut vertices, &mut seen);
+                    queue.push_back(other);
+                }
+            }
+            // Fitted on the vertices two or more of the sampled triangles
+            // share: a corner of a flat face across a tangent line is
+            // touched by the one triangle that reached it, and a single
+            // such corner far off the surface decides a least-squares axis.
+            shared = {
+                let mut count: HashMap<u32, u32> = HashMap::with_capacity(vertices.len());
+                for &t in &region {
+                    for &v in &self.triangles[t] {
+                        *count.entry(v).or_insert(0) += 1;
+                    }
+                }
+                vertices
+                    .iter()
+                    .copied()
+                    .filter(|v| count[v] >= 2)
+                    .collect::<Vec<u32>>()
+            };
+            first_sample = first_sample.min(region.len());
+            if shared.len() < 8 {
+                if queue.is_empty() {
+                    break;
+                }
+                continue;
+            }
+            let (pts, nrm) = self.samples(&shared, &region);
+            let chords = self.chords(&region);
+            match crate::recognize::recognize_trimmed(&pts, &nrm, &chords, self.flat, self.tol) {
+                Ok(fit) => {
+                    found = Some(fit);
+                    break;
+                }
+                // A larger sample is worth fitting only where this one came
+                // near for its size — within a hundredth of its own span —
+                // as a small patch of a thick torus does, its tube not yet
+                // seen; a free-form patch misses by more, and is left.
+                Err(closest) if closest > span(&pts) * 1e-2 || queue.is_empty() => break,
+                Err(_) => {}
+            }
+        }
+        FirstFit {
+            region,
+            vertices,
+            shared,
+            first_sample,
+            found,
+        }
+    }
+}
+
+/// Grow the recognized regions, seed by seed in triangle order.
+///
+/// A seed's first fit is the costly part, and it only reads: so seeds are
+/// fitted a batch at a time in parallel against where things stand, then
+/// taken in order, and a seed whose gathering took a triangle an earlier
+/// seed of the same batch has since claimed or retired is fitted again.
+/// The answer is the one seed-by-seed order gives, at any thread count.
+#[allow(clippy::too_many_lines, reason = "one growth, read in one place")]
+fn recognized_regions(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    options: &MeshSolidOptions,
+    flat: f64,
+    groups: &mut Groups,
+    tol: Tolerances,
+) {
+    let n = triangles.len();
+    let mesh = Surfaces {
+        points,
+        triangles,
+        adjacency,
+        normals: triangles.iter().map(|t| unit_normal(points, *t)).collect(),
+        cos_crease: options.crease.cos(),
+        cos_flat: options.coplanar_angle.cos(),
+        flat,
+        tol,
+    };
+    // A facet of a coarse mesh leans from the surface at its centre by up
+    // to half the turn between facets, which the crease bounds.
+    let agree = options.crease.cos();
+    let mut tried = vec![false; n];
+    // The batch in which each triangle's standing last changed.
+    let mut changed = vec![0_u32; n];
+    let batch_size = ogeom_core::parallel::threads().max(1) * 4;
+    let mut batch = 0_u32;
+    let eligible =
+        |t: usize, of: &[usize], tried: &[bool]| of[t] == usize::MAX && !tried[t] && mesh.bends(t);
+    // Seeds are taken in a fixed stride through the triangles rather than
+    // one after another: a mesh lists neighbours together, and a batch of
+    // neighbouring seeds would mostly gather what the first of them took.
+    // The stride is a prime not dividing the count, so every triangle comes
+    // up once.
+    let stride = [7919_usize, 7907, 7901]
+        .into_iter()
+        .find(|p| !n.is_multiple_of(*p))
+        .unwrap_or(1);
+    let order: Vec<usize> = (0..n).map(|i| (i * stride) % n).collect();
+    let mut next = 0;
+    while next < n {
+        batch += 1;
+        let mut seeds = Vec::with_capacity(batch_size);
+        while next < n && seeds.len() < batch_size {
+            if eligible(order[next], &groups.of, &tried) {
+                seeds.push(order[next]);
+            }
+            next += 1;
+        }
+        let fits = {
+            let (of, tried) = (&groups.of, &tried);
+            ogeom_core::parallel::map_ordered(&seeds, |_, &seed| mesh.first_fit(seed, of, tried))
+        };
+        for (seed, fit) in seeds.into_iter().zip(fits) {
+            if !eligible(seed, &groups.of, &tried) {
+                continue;
+            }
+            // A triangle's standing only moves one way — free to taken — so
+            // a triangle the gathering passed over stays passed over, and
+            // only one it took can have changed what it gathers.
+            let fit = if fit.region.iter().any(|&t| changed[t] == batch) {
+                mesh.first_fit(seed, &groups.of, &tried)
+            } else {
+                fit
+            };
+            let FirstFit {
+                mut region,
+                mut vertices,
+                shared,
+                first_sample,
+                found,
+                ..
+            } = fit;
+            let Some((found, keep)) = found else {
+                for &t in &region[..first_sample.min(region.len())] {
+                    tried[t] = true;
+                    changed[t] = batch;
+                }
+                continue;
+            };
+            // What the fit dropped, and what it never saw but misses the
+            // fit: those vertices go, and the triangles that brought them.
+            let kept: HashMap<u32, bool> = shared.iter().copied().zip(keep).collect();
+            let dropped: std::collections::HashSet<u32> = vertices
+                .iter()
+                .copied()
+                .filter(|v| {
+                    !kept
+                        .get(v)
+                        .copied()
+                        .unwrap_or_else(|| found.surface.distance_to(points[*v as usize]) <= flat)
+                })
+                .collect();
+            if !dropped.is_empty() {
+                let gathered = region.clone();
+                region.retain(|&t| triangles[t].iter().all(|v| !dropped.contains(v)));
+                if region.is_empty() {
+                    for &t in &gathered[..first_sample.min(gathered.len())] {
+                        tried[t] = true;
+                        changed[t] = batch;
+                    }
+                    continue;
+                }
+                let mut seen = std::collections::HashSet::new();
+                vertices.clear();
+                for &t in &region {
+                    for &v in &triangles[t] {
+                        if seen.insert(v) {
+                            vertices.push(v);
+                        }
+                    }
+                }
+            }
+            let mut shape = found.surface;
+            let mut mine: std::collections::HashSet<usize> = region.iter().copied().collect();
+            let mut seen: std::collections::HashSet<u32> = vertices.iter().copied().collect();
+
+            // Then across any smooth edge, while the surface holds. A fit
+            // from a small patch extrapolates only so far; when the growth
+            // stalls with vertices gained since the last fit, the surface is
+            // refitted to everything held and the rim tried again.
+            let mut fitted_at = vertices.len();
+            loop {
+                let mut i = 0;
+                while i < region.len() {
+                    let t = region[i];
+                    i += 1;
+                    for h in 3 * t..3 * t + 3 {
+                        let Some(g) = adjacency.twin[h] else {
+                            continue;
+                        };
+                        let other = g / 3;
+                        if !mesh.smooth(h)
+                            || mine.contains(&other)
+                            || groups.of[other] != usize::MAX
+                        {
+                            continue;
+                        }
+                        let corners = triangles[other].map(|v| points[v as usize]);
+                        if corners.iter().any(|p| shape.distance_to(*p) > flat) {
+                            continue;
+                        }
+                        let centroid = Point::from_vector(
+                            (corners[0].to_vector()
+                                + corners[1].to_vector()
+                                + corners[2].to_vector())
+                                / 3.0,
+                        );
+                        let direction = gradient(&shape, centroid);
+                        let m = direction.magnitude();
+                        if m == 0.0 || (direction.dot(mesh.normals[other]) / m).abs() < agree {
+                            continue;
+                        }
+                        mine.insert(other);
+                        region.push(other);
+                        for &v in &triangles[other] {
+                            if seen.insert(v) {
+                                vertices.push(v);
+                            }
+                        }
+                    }
+                }
+                if vertices.len() <= fitted_at {
+                    break;
+                }
+                fitted_at = vertices.len();
+                let (pts, nrm) = mesh.samples(&vertices, &region);
+                match recognize_curved(&pts, &nrm, &mesh.chords(&region), flat, tol) {
+                    Some(better) => shape = better.surface,
+                    None => break,
+                }
+            }
+            let pts: Vec<Point> = vertices.iter().map(|&v| points[v as usize]).collect();
+            let deviation = worst_deviation(&shape, &pts);
+            let flat_too = crate::recognize::is_flat(&pts, flat, tol);
+            if deviation > flat || flat_too || region.len() < 2 {
+                for &t in &region {
+                    tried[t] = true;
+                    changed[t] = batch;
+                }
+                continue;
+            }
+            let g = groups.carriers.len();
+            for &t in &region {
+                groups.of[t] = g;
+                changed[t] = batch;
+            }
+            groups.carriers.push(Carrier::Curved(Curved {
+                shape,
+                deviation,
+                centre: (0.0, 0.0),
+                wraps: false,
+                vertices,
+            }));
+        }
+    }
+}
+
+/// The largest distance between two of the points, from the first.
+fn span(points: &[Point]) -> f64 {
+    points.first().map_or(0.0, |a| {
+        points.iter().map(|p| p.distance(*a)).fold(0.0, f64::max)
+    })
+}
+
+/// Put coaxial surfaces on one axis and one angular origin, so bands that
+/// meet along a circle meet at their seams too; then fix each curved
+/// region's chart branch and whether it wraps.
+fn align_axes(points: &[Point], groups: &mut Groups, flat: f64, tol: Tolerances) {
+    let mut leaders: Vec<Frame> = Vec::new();
+    for carrier in &mut groups.carriers {
+        let Carrier::Curved(curved) = carrier else {
+            continue;
+        };
+        let Some(frame) = axis_frame(&curved.shape) else {
+            continue;
+        };
+        let sphere = matches!(curved.shape, Canonical::Sphere(_));
+        let lead = leaders.iter().find(|l| {
+            let parallel = l.z().vector().cross(frame.z().vector()).magnitude() <= 1e-3;
+            let w = frame.origin() - l.origin();
+            let off = (w - l.z().vector() * w.dot(l.z().vector())).magnitude();
+            !sphere && parallel && off <= flat * 10.0
+        });
+        if let Some(lead) = lead {
+            let z = lead.z().vector();
+            let w = frame.origin() - lead.origin();
+            let origin = lead.origin() + z * w.dot(z);
+            let axis = if frame.z().vector().dot(z) >= 0.0 {
+                lead.z()
+            } else {
+                -lead.z()
+            };
+            if let Ok(snapped) = Frame::new(origin, axis, lead.x(), tol)
+                && let Some(shape) = on_frame(&curved.shape, snapped, tol)
+            {
+                let pts: Vec<Point> = curved
+                    .vertices
+                    .iter()
+                    .map(|&v| points[v as usize])
+                    .collect();
+                let deviation = worst_deviation(&shape, &pts);
+                if deviation <= flat {
+                    curved.shape = shape;
+                    curved.deviation = deviation;
+                }
+            }
+        } else if !sphere {
+            leaders.push(frame);
+        }
+        // The branch: the region's mean angle, and whether it wraps.
+        let charts: Vec<(f64, f64)> = curved
+            .vertices
+            .iter()
+            .filter_map(|&v| chart(&curved.shape, points[v as usize], tol))
+            .collect();
+        let mut us: Vec<f64> = charts.iter().map(|c| c.0).collect();
+        let (_, gap_u) = angular_spread(&mut us);
+        let (_, pv) = periodic(&curved.shape);
+        if pv {
+            let mut vs: Vec<f64> = charts.iter().map(|c| c.1).collect();
+            if angular_spread(&mut vs).1 < core::f64::consts::FRAC_PI_2 {
+                // Round the tube too: no seam layout for that here, and
+                // the planning demotes it.
+                curved.wraps = true;
+            }
+        }
+        let wraps_u = gap_u < core::f64::consts::FRAC_PI_2;
+        curved.wraps = curved.wraps || wraps_u;
+        if !curved.wraps
+            && let Some(reframed) = away_from(curved, points, tol)
+        {
+            curved.shape = reframed;
+        }
+        // The branch every pcurve is read on: the region's own mean chart
+        // point, which after the re-framing sits half a turn from the cut.
+        let charts: Vec<(f64, f64)> = curved
+            .vertices
+            .iter()
+            .filter_map(|&v| chart(&curved.shape, points[v as usize], tol))
+            .collect();
+        let mut us: Vec<f64> = charts.iter().map(|c| c.0).collect();
+        let (mean_u, _) = angular_spread(&mut us);
+        let mean_v = if pv {
+            let mut vs: Vec<f64> = charts.iter().map(|c| c.1).collect();
+            angular_spread(&mut vs).0
+        } else {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "vertex counts are far below 2^52"
+            )]
+            let count = charts.len().max(1) as f64;
+            charts.iter().map(|c| c.1).sum::<f64>() / count
+        };
+        let centre_u = if wraps_u {
+            core::f64::consts::PI
+        } else {
+            ogeom_math::elementary::wrap_angle(mean_u)
+        };
+        curved.centre = (centre_u, mean_v);
+    }
+}
+
+/// The surface on a frame that puts the region half a turn from its
+/// chart's cut — and a sphere's poles a quarter turn to either side of it —
+/// so every image of its boundary reads in one piece.
+fn away_from(curved: &Curved, points: &[Point], tol: Tolerances) -> Option<Canonical> {
+    let mut mean = Vector::ZERO;
+    match curved.shape {
+        Canonical::Sphere(s) => {
+            for &v in &curved.vertices {
+                let d = points[v as usize] - s.centre();
+                let m = d.magnitude();
+                if m > 0.0 {
+                    mean += d / m;
+                }
+            }
+            let facing = Direction::new(mean, tol).ok()?;
+            let frame = Frame::new(s.centre(), facing.any_perpendicular(), -facing, tol).ok()?;
+            Some(Canonical::Sphere(Sphere::new(frame, s.radius(), tol).ok()?))
+        }
+        _ => {
+            let frame = axis_frame(&curved.shape)?;
+            let z = frame.z().vector();
+            for &v in &curved.vertices {
+                let w = points[v as usize] - frame.origin();
+                let r = w - z * w.dot(z);
+                let m = r.magnitude();
+                if m > 0.0 {
+                    mean += r / m;
+                }
+            }
+            let facing = Direction::new(mean, tol).ok()?;
+            on_frame(
+                &curved.shape,
+                Frame::new(frame.origin(), frame.z(), -facing, tol).ok()?,
+                tol,
+            )
+        }
+    }
+}
+
+/// A vertex as built: a mesh vertex, or a point the construction placed
+/// — where a closed circle is bounded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Corner {
+    Mesh(u32),
+    Placed(usize),
+}
+
+/// An edge as planned.
+struct EdgeSpec {
+    curve: Curve,
+    range: (f64, f64),
+    ends: [Corner; 2],
+    tolerance: f64,
+    closed_circle: bool,
+}
+
+/// Everything the build needs, decided before anything is built.
+struct Plan {
+    edges: Vec<EdgeSpec>,
+    /// Each boundary mesh edge, by its lower vertex first: its planned
+    /// edge, and whether walking it from the lower vertex runs the edge
+    /// forward.
+    edge_of: HashMap<(u32, u32), (usize, bool)>,
+    /// Each face's loops as half-edges, walked with the face on the left.
+    loops: Vec<Vec<Vec<Half>>>,
+    placed: Vec<Point>,
+    /// Each curved face's surface, windowed to its boundary.
+    surfaces: Vec<Option<ogeom_geom::SurfaceGeometry>>,
+    /// Each edge's image on each curved face it bounds, by (edge, face),
+    /// with how far the image strays from the edge.
+    pcurves: HashMap<(usize, usize), (PlanarCurve, f64)>,
+}
+
+/// Plans the edges and loops.
+struct Planner<'a> {
     points: &'a [Point],
     triangles: &'a [[u32; 3]],
     adjacency: &'a Adjacency,
     groups: &'a Groups,
     merge: bool,
+    /// Vertices kept as edge ends whatever lies either side of them.
+    pinned: &'a std::collections::HashSet<u32>,
     flat: f64,
     tol: Tolerances,
 }
 
-/// A boundary edge as built: from one kept vertex to another along a run
-/// of mesh edges.
-struct Run {
-    from: u32,
-    to: u32,
-    /// The points in between, for the tolerance.
-    through: Vec<u32>,
-    /// The faces either side.
-    faces: Vec<usize>,
+/// Why a plan was refused: curved faces to facet, or vertices to keep.
+enum Replan {
+    Facet(Vec<usize>),
+    Pin(Vec<u32>),
 }
 
-impl Builder<'_> {
-    /// Whether a half-edge bounds its face: nothing across it, or another
-    /// face.
+/// How far a snapped curve may stand off its chain or its faces.
+const REACH: f64 = 20.0;
+
+impl Planner<'_> {
     fn border(&self, h: Half) -> bool {
         match self.adjacency.twin[h] {
             None => true,
@@ -655,11 +1496,18 @@ impl Builder<'_> {
         }
     }
 
-    /// The faces, one per group, in group order.
-    fn build(mut self) -> OgeomResult<Vec<Shape>> {
+    fn curved(&self, g: usize) -> Option<&Curved> {
+        match &self.groups.carriers[g] {
+            Carrier::Curved(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// The plan, or the curved faces whose boundary could not be built
+    /// exactly and are to be faceted instead.
+    #[allow(clippy::too_many_lines, reason = "one pass over the boundary")]
+    fn plan(&self) -> OgeomResult<Result<Plan, Replan>> {
         let halves = self.triangles.len() * 3;
-        // The boundary's mesh edges, each once, by its lower vertex first,
-        // with the faces on either side.
         let mut edge_faces: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
         for h in 0..halves {
             if self.border(h) {
@@ -678,10 +1526,12 @@ impl Builder<'_> {
             incident.entry(a).or_default().push((a, b));
             incident.entry(b).or_default().push((a, b));
         }
-        // A vertex between two boundary edges on one line, with the same
-        // faces either side, is dropped: the two become one edge.
+        let any_curved = |faces: &[usize]| faces.iter().any(|&g| self.curved(g).is_some());
+        // A vertex between two boundary edges with the same faces either
+        // side is inside one edge — between planes only where the two are
+        // on one line; along a curved face always, the curve deciding.
         let removable = |v: u32| -> bool {
-            if !self.merge {
+            if !self.merge || self.pinned.contains(&v) {
                 return false;
             }
             let Some(list) = incident.get(&v) else {
@@ -690,29 +1540,37 @@ impl Builder<'_> {
             let [e1, e2] = list[..] else {
                 return false;
             };
-            if edge_faces[&e1] != edge_faces[&e2] {
+            let faces = &edge_faces[&e1];
+            if *faces != edge_faces[&e2] {
                 return false;
+            }
+            if any_curved(faces) {
+                return true;
             }
             let far = |(a, b): (u32, u32)| if a == v { b } else { a };
             let (p, q) = (self.points[far(e1) as usize], self.points[far(e2) as usize]);
             let at = self.points[v as usize];
             (at - p).dot(q - at) > 0.0 && distance_to_line(at, p, q) <= self.flat
         };
+        let is_kept: HashMap<u32, bool> = incident.keys().map(|&v| (v, !removable(v))).collect();
 
-        // Runs between kept vertices.
-        let mut run_of: HashMap<(u32, u32), (usize, bool)> = HashMap::new();
-        let mut runs: Vec<Run> = Vec::new();
+        let mut plan = Plan {
+            edges: Vec::new(),
+            edge_of: HashMap::new(),
+            loops: vec![Vec::new(); self.groups.carriers.len()],
+            placed: Vec::new(),
+            surfaces: vec![None; self.groups.carriers.len()],
+            pcurves: HashMap::new(),
+        };
+        let mut failed: Vec<usize> = Vec::new();
         let mut keys: Vec<(u32, u32)> = edge_faces.keys().copied().collect();
         keys.sort_unstable();
-        let is_kept: HashMap<u32, bool> = incident.keys().map(|&v| (v, !removable(v))).collect();
         for pass in 0..2 {
             for &key in &keys {
-                if run_of.contains_key(&key) {
+                if plan.edge_of.contains_key(&key) {
                     continue;
                 }
                 let (a, b) = key;
-                // Runs start at a kept vertex; a loop of removable ones —
-                // which a straight line cannot close — is cut at its first.
                 let start = if is_kept[&a] {
                     a
                 } else if is_kept[&b] {
@@ -738,82 +1596,108 @@ impl Builder<'_> {
                     };
                     chain.push(at);
                 }
+                let faces = edge_faces[&key].clone();
+                if any_curved(&faces) {
+                    match self.snapped(&chain, &faces) {
+                        Some(spec) => {
+                            let index = plan.edges.len();
+                            let (spec, forward) = spec;
+                            let spec = match spec {
+                                Snapped::Open(curve, range, tolerance) => EdgeSpec {
+                                    curve,
+                                    range,
+                                    ends: if forward {
+                                        [
+                                            Corner::Mesh(chain[0]),
+                                            Corner::Mesh(*chain.last().unwrap_or(&chain[0])),
+                                        ]
+                                    } else {
+                                        [
+                                            Corner::Mesh(*chain.last().unwrap_or(&chain[0])),
+                                            Corner::Mesh(chain[0]),
+                                        ]
+                                    },
+                                    tolerance,
+                                    closed_circle: false,
+                                },
+                                Snapped::Closed(curve, tolerance) => {
+                                    use ogeom_geom::Curve3d as _;
+                                    let at = curve.point_at(0.0, self.tol)?;
+                                    plan.placed.push(at);
+                                    let corner = Corner::Placed(plan.placed.len() - 1);
+                                    EdgeSpec {
+                                        curve,
+                                        range: (0.0, core::f64::consts::TAU),
+                                        ends: [corner, corner],
+                                        tolerance,
+                                        closed_circle: true,
+                                    }
+                                }
+                            };
+                            plan.edges.push(spec);
+                            for (i, e) in edges.iter().enumerate() {
+                                plan.edge_of
+                                    .insert(*e, (index, (chain[i] == e.0) == forward));
+                            }
+                        }
+                        None => {
+                            for g in faces {
+                                if self.curved(g).is_some() && !failed.contains(&g) {
+                                    failed.push(g);
+                                }
+                            }
+                            for e in edges {
+                                plan.edge_of.insert(e, (usize::MAX, true));
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let end = at;
-                // Held to the straight line from end to end as a whole,
-                // not only vertex by vertex, or a slow curve would pass.
                 let (p, q) = (self.points[start as usize], self.points[end as usize]);
                 let straight = start != end
                     && chain[1..chain.len() - 1]
                         .iter()
                         .all(|&v| distance_to_line(self.points[v as usize], p, q) <= self.flat);
-                if straight {
-                    let index = runs.len();
-                    for (i, e) in edges.iter().enumerate() {
-                        run_of.insert(*e, (index, chain[i] == e.0));
-                    }
-                    runs.push(Run {
-                        from: start,
-                        to: end,
-                        through: chain[1..chain.len() - 1].to_vec(),
-                        faces: edge_faces[&key].clone(),
-                    });
+                // Each piece: its vertices in order, and its mesh edges.
+                type Piece = (Vec<u32>, Vec<(u32, u32)>);
+                let pieces: Vec<Piece> = if straight {
+                    vec![(chain.clone(), edges.clone())]
                 } else {
-                    for e in edges {
-                        run_of.insert(e, (runs.len(), true));
-                        runs.push(Run {
-                            from: e.0,
-                            to: e.1,
-                            through: Vec::new(),
-                            faces: edge_faces[&e].clone(),
-                        });
+                    edges.iter().map(|&e| (vec![e.0, e.1], vec![e])).collect()
+                };
+                for (piece, piece_edges) in pieces {
+                    let (from, to) = (piece[0], piece[piece.len() - 1]);
+                    let (p, q) = (self.points[from as usize], self.points[to as usize]);
+                    let mut reach = self.tol.confusion();
+                    for &v in &piece {
+                        let at = self.points[v as usize];
+                        reach = reach.max(distance_to_line(at, p, q));
+                        for &g in &faces {
+                            if let Carrier::Plane(plane) = &self.groups.carriers[g] {
+                                reach = reach.max(plane.signed_distance_to(at).abs());
+                            }
+                        }
+                    }
+                    let index = plan.edges.len();
+                    plan.edges.push(EdgeSpec {
+                        curve: LineCurve::segment(p, q, self.tol)?.into(),
+                        range: (0.0, p.distance(q)),
+                        ends: [Corner::Mesh(from), Corner::Mesh(to)],
+                        tolerance: reach,
+                        closed_circle: false,
+                    });
+                    for (i, e) in piece_edges.iter().enumerate() {
+                        plan.edge_of.insert(*e, (index, piece[i] == e.0));
                     }
                 }
             }
-        }
-
-        // Each vertex that ends a run stands off the planes of the faces
-        // around it by as much as it does; each edge takes the most any of
-        // its points stands off its faces' planes or its line.
-        let off_plane = |p: Point, g: usize| {
-            let frame = self.groups.planes[g].frame();
-            (p - frame.origin()).dot(frame.z().vector()).abs()
-        };
-        let confusion = self.tol.confusion();
-        let mut vertices: HashMap<u32, Shape> = HashMap::new();
-        let mut edges: Vec<Shape> = Vec::with_capacity(runs.len());
-        for run in &runs {
-            let (p, q) = (self.points[run.from as usize], self.points[run.to as usize]);
-            let mut reach = confusion;
-            for &v in [run.from, run.to].iter().chain(&run.through) {
-                let at = self.points[v as usize];
-                reach = reach.max(distance_to_line(at, p, q));
-                for &g in &run.faces {
-                    reach = reach.max(off_plane(at, g));
-                }
-            }
-            for v in [run.from, run.to] {
-                vertices.entry(v).or_insert_with(|| {
-                    self.model
-                        .add_vertex(VertexData::new(self.points[v as usize]))
-                });
-            }
-            let curve: Curve = LineCurve::segment(p, q, self.tol)?.into();
-            let id = self.model.geometry_mut().add_curve(curve);
-            let mut data = EdgeData::on_curve(id, Location::identity(), (0.0, p.distance(q)));
-            data.tolerance = Tolerance::new(reach)?;
-            let edge = self.model.add_edge(
-                data,
-                &[vertices[&run.from].clone(), vertices[&run.to].clone()],
-            )?;
-            edges.push(edge);
         }
 
         // Each face's loops, walked with the face on the left: from a
         // boundary half-edge to the next one at its end, turning through the
         // face's own triangles around the vertex, which keeps a loop that
         // touches itself at a vertex on its own side.
-        let group_count = self.groups.planes.len();
-        let mut loops: Vec<Vec<Vec<Half>>> = vec![Vec::new(); group_count];
         let mut walked = vec![false; halves];
         for h in 0..halves {
             if walked[h] || !self.border(h) {
@@ -844,103 +1728,896 @@ impl Builder<'_> {
                 }
                 at = step;
             }
-            loops[self.groups.of[h / 3]].push(ring);
+            plan.loops[self.groups.of[h / 3]].push(ring);
         }
 
-        let mut faces = Vec::with_capacity(group_count);
-        for (g, rings) in loops.iter().enumerate() {
-            let plane = self.groups.planes[g];
-            let surface = self
-                .model
-                .geometry_mut()
-                .add_surface(PlaneSurface::new(plane).into());
-            let local = |p: Point| {
-                let l = plane.frame().to_local(p);
-                Point2::new(l.x, l.y)
-            };
-            // Outer loop first: the one enclosing positive area about the
-            // face's normal.
-            let mut wires: Vec<(f64, Shape)> = Vec::with_capacity(rings.len());
+        // A face whose boundary would run out and back along one line — a
+        // strip of slivers merged into two straight edges between the same
+        // two vertices — encloses nothing; its runs keep their vertices.
+        let mut pin: Vec<u32> = Vec::new();
+        for (g, rings) in plan.loops.iter().enumerate() {
+            if !matches!(self.groups.carriers[g], Carrier::Plane(_)) {
+                continue;
+            }
             for ring in rings {
-                let mut entries: Vec<(usize, bool)> = Vec::new();
+                let mut entries: Vec<usize> = Vec::new();
                 for &h in ring {
-                    let (a, b) = from_to(self.triangles, h);
-                    let (run, along) = run_of[&(a.min(b), a.max(b))];
-                    // Along the run if the mesh edge's own direction
-                    // agrees with the run's and this half-edge runs that way.
-                    let forward = along == (a < b);
-                    if entries.last() != Some(&(run, forward)) {
-                        entries.push((run, forward));
+                    let (edge, _) = self.entry(&plan, h);
+                    if entries.last() != Some(&edge) {
+                        entries.push(edge);
                     }
                 }
                 if entries.len() > 1 && entries.first() == entries.last() {
                     entries.pop();
                 }
-                let mut area = 0.0;
-                let mut ring_edges = Vec::with_capacity(entries.len());
-                for &(run, forward) in &entries {
-                    let r = &runs[run];
-                    let (from, to) = if forward {
-                        (r.from, r.to)
-                    } else {
-                        (r.to, r.from)
-                    };
-                    let (a, b) = (
-                        local(self.points[from as usize]),
-                        local(self.points[to as usize]),
-                    );
-                    area += a.x * b.y - b.x * a.y;
-                    self.attach(&edges[run], r, surface, local)?;
-                    ring_edges.push(if forward {
-                        edges[run].clone()
-                    } else {
-                        edges[run].reversed()
-                    });
+                if entries.len() < 3
+                    && entries
+                        .iter()
+                        .all(|&e| e != usize::MAX && !plan.edges[e].closed_circle)
+                {
+                    for &h in ring {
+                        let (a, b) = from_to(self.triangles, h);
+                        for v in [a, b] {
+                            if !pin.contains(&v) && !self.pinned.contains(&v) {
+                                pin.push(v);
+                            }
+                        }
+                    }
                 }
-                wires.push((area, self.model.add_wire(&ring_edges)?));
             }
-            wires.sort_by(|a, b| b.0.total_cmp(&a.0));
-            let wires: Vec<Shape> = wires.into_iter().map(|(_, w)| w).collect();
-            faces.push(
-                self.model
-                    .add_face(FaceData::new(surface, Location::identity()), &wires)?,
+        }
+        if !pin.is_empty() && failed.is_empty() {
+            return Ok(Err(Replan::Pin(pin)));
+        }
+
+        // A face round its axis is built as a band between two full
+        // circles joined by a seam; anything else round an axis is not.
+        for (g, carrier) in self.groups.carriers.iter().enumerate() {
+            let Carrier::Curved(curved) = carrier else {
+                continue;
+            };
+            if failed.contains(&g) || !curved.wraps {
+                continue;
+            }
+            let band = !matches!(curved.shape, Canonical::Sphere(_))
+                && !self.wraps_in_v(curved)
+                && plan.loops[g].len() == 2
+                && plan.loops[g].iter().all(|ring| {
+                    let first = self.entry(&plan, ring[0]);
+                    ring.iter().all(|&h| self.entry(&plan, h).0 == first.0)
+                        && first.0 != usize::MAX
+                        && plan.edges[first.0].closed_circle
+                });
+            if !band {
+                failed.push(g);
+            }
+        }
+
+        // Every curved face's images of its edges, held to the reach: the
+        // straight image in the chart where a parallel or a ruling has one,
+        // a fit by projection where it has not.
+        let reach = self.flat * REACH;
+        for (g, carrier) in self.groups.carriers.iter().enumerate() {
+            let Carrier::Curved(curved) = carrier else {
+                continue;
+            };
+            if failed.contains(&g) || plan.loops[g].is_empty() {
+                continue;
+            }
+            let surface = surface_of(curved, self.points, self.tol)?;
+            if !curved.wraps {
+                let mut held = true;
+                'rings: for ring in &plan.loops[g] {
+                    for &h in ring {
+                        let (edge, _) = self.entry(&plan, h);
+                        if edge == usize::MAX {
+                            held = false;
+                            break 'rings;
+                        }
+                        if plan.pcurves.contains_key(&(edge, g)) {
+                            continue;
+                        }
+                        let spec = &plan.edges[edge];
+                        let image =
+                            image_on(curved, &surface, &spec.curve, spec.range, reach, self.tol);
+                        match image {
+                            Some(found) => {
+                                plan.pcurves.insert((edge, g), found);
+                            }
+                            None => {
+                                held = false;
+                                break 'rings;
+                            }
+                        }
+                    }
+                }
+                if !held {
+                    failed.push(g);
+                    continue;
+                }
+            }
+            plan.surfaces[g] = Some(surface);
+        }
+        if failed.is_empty() {
+            Ok(Ok(plan))
+        } else {
+            Ok(Err(Replan::Facet(failed)))
+        }
+    }
+
+    fn wraps_in_v(&self, curved: &Curved) -> bool {
+        if !periodic(&curved.shape).1 {
+            return false;
+        }
+        let mut vs: Vec<f64> = curved
+            .vertices
+            .iter()
+            .filter_map(|&v| chart(&curved.shape, self.points[v as usize], self.tol))
+            .map(|c| c.1)
+            .collect();
+        angular_spread(&mut vs).1 < core::f64::consts::FRAC_PI_2
+    }
+
+    /// A half-edge's planned edge, and whether the half-edge runs it
+    /// forward.
+    fn entry(&self, plan: &Plan, h: Half) -> (usize, bool) {
+        let (a, b) = from_to(self.triangles, h);
+        let (edge, along) = plan.edge_of[&(a.min(b), a.max(b))];
+        (edge, along == (a < b))
+    }
+
+    /// The exact curve a chain between two faces, one of them curved,
+    /// lies on: a parallel circle or a ruling of a curved face, placed on
+    /// that face itself so its pcurve there is exact. `None` when no such
+    /// curve holds the chain and the faces both.
+    fn snapped(&self, chain: &[u32], faces: &[usize]) -> Option<(Snapped, bool)> {
+        if faces.len() > 2 {
+            return None;
+        }
+        let closed = chain.len() > 2 && chain[0] == chain[chain.len() - 1];
+        let pts: Vec<Point> = chain[..chain.len() - usize::from(closed)]
+            .iter()
+            .map(|&v| self.points[v as usize])
+            .collect();
+        let reach = self.flat * REACH;
+        // A band round its axis bounds itself with its own rims, so its
+        // seam meets their vertices; its candidates go first.
+        let mut order: Vec<usize> = faces.to_vec();
+        order.sort_by_key(|&g| !self.curved(g).is_some_and(|c| c.wraps));
+        for &g in &order {
+            let Some(curved) = self.curved(g) else {
+                continue;
+            };
+            for candidate in candidates(&curved.shape, &pts, reach, self.tol) {
+                if let Some(found) = self.fitted(candidate, &pts, closed, faces, reach) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
+    /// A candidate curve held against the chain and the faces: its range,
+    /// which way it runs along the chain, and its tolerance.
+    fn fitted(
+        &self,
+        curve: Curve,
+        pts: &[Point],
+        closed: bool,
+        faces: &[usize],
+        reach: f64,
+    ) -> Option<(Snapped, bool)> {
+        use ogeom_geom::Curve3d as _;
+        let tau = core::f64::consts::TAU;
+        let parameter = |p: Point| -> Option<f64> {
+            match &curve {
+                Curve::Line(l) => {
+                    let axis = l.axis();
+                    Some((p - axis.location).dot(axis.direction.vector()))
+                }
+                Curve::Circle(c) => {
+                    ogeom_math::elementary::circle_parameter(&c.circle(), p, self.tol).ok()
+                }
+                _ => None,
+            }
+        };
+        let mut tolerance = self.tol.confusion();
+        let mut ts = Vec::with_capacity(pts.len());
+        for p in pts {
+            let t = parameter(*p)?;
+            let on = curve.point_at(t, self.tol).ok()?;
+            tolerance = tolerance.max(on.distance(*p));
+            ts.push(t);
+        }
+        // The sweep along the chain, unwrapped for a circle.
+        let mut sweep = 0.0;
+        let steps = if closed { ts.len() } else { ts.len() - 1 };
+        for i in 0..steps {
+            let (a, b) = (ts[i], ts[(i + 1) % ts.len()]);
+            let d = b - a;
+            sweep += if matches!(curve, Curve::Circle(_)) {
+                ogeom_math::elementary::wrap_signed_angle(d)
+            } else {
+                d
+            };
+        }
+        let (snapped, forward) = if closed {
+            if !matches!(curve, Curve::Circle(_)) || (sweep.abs() - tau).abs() > 1e-3 {
+                return None;
+            }
+            (None, sweep > 0.0)
+        } else if sweep > 0.0 {
+            (Some((ts[0], ts[0] + sweep)), true)
+        } else {
+            let last = ts[ts.len() - 1];
+            (Some((last, last - sweep)), false)
+        };
+        let range = snapped.unwrap_or((0.0, tau));
+        if range.1 - range.0 <= self.tol.parametric() {
+            return None;
+        }
+        // Drawn in every plane it bounds: a circle is imaged in a plane by
+        // projection, which a circle standing across the plane has not.
+        for &g in faces {
+            if let Carrier::Plane(plane) = &self.groups.carriers[g] {
+                let surface: ogeom_geom::SurfaceGeometry = PlaneSurface::new(*plane).into();
+                ogeom_intersect::exact_pcurve_of(&curve, &surface, self.tol)?;
+            }
+        }
+        // Standing on every face it bounds.
+        for k in 0..=16 {
+            let t = range.0 + (range.1 - range.0) * f64::from(k) / 16.0;
+            let p = curve.point_at(t, self.tol).ok()?;
+            for &g in faces {
+                let off = match &self.groups.carriers[g] {
+                    Carrier::Plane(plane) => plane.signed_distance_to(p).abs(),
+                    Carrier::Curved(c) => c.shape.distance_to(p),
+                    Carrier::Gone => return None,
+                };
+                tolerance = tolerance.max(off);
+            }
+        }
+        if tolerance > reach {
+            return None;
+        }
+        Some((
+            match snapped {
+                Some(range) => Snapped::Open(curve, range, tolerance),
+                None => Snapped::Closed(curve, tolerance),
+            },
+            forward,
+        ))
+    }
+}
+
+enum Snapped {
+    Open(Curve, (f64, f64), f64),
+    Closed(Curve, f64),
+}
+
+/// The curves a chain on a curved surface may be: the parallel circle
+/// through its mean height, when every point sits at one height and one
+/// distance from the axis; and, on a cylinder or a cone, the ruling
+/// through its mean angle, when the chain is straight along it. Each is
+/// placed on the surface exactly, its angle measured from the surface's
+/// own origin.
+fn candidates(shape: &Canonical, pts: &[Point], reach: f64, tol: Tolerances) -> Vec<Curve> {
+    let mut out = Vec::new();
+    if let Canonical::Sphere(sphere) = shape {
+        // The section of the sphere by the chain's plane.
+        if pts.len() >= 3
+            && let Some((centre, normal)) = plane_through(pts, tol)
+        {
+            let n = normal.vector();
+            let d = (centre - sphere.centre()).dot(n);
+            let r2 = sphere.radius().powi(2) - d * d;
+            if r2 > 0.0
+                && let Ok(frame) = Frame::new(
+                    sphere.centre() + n * d,
+                    normal,
+                    normal.any_perpendicular(),
+                    tol,
+                )
+                && let Ok(circle) = ogeom_math::Circle::new(frame, r2.sqrt(), tol)
+            {
+                out.push(ogeom_geom::CircleCurve::new(circle).into());
+            }
+        }
+        return out;
+    }
+    let Some(frame) = axis_frame(shape) else {
+        return out;
+    };
+    let (o, z) = (frame.origin(), frame.z().vector());
+    let heights: Vec<f64> = pts.iter().map(|p| (*p - o).dot(z)).collect();
+    let radii: Vec<f64> = pts
+        .iter()
+        .zip(&heights)
+        .map(|(p, h)| ((*p - o) - z * *h).magnitude())
+        .collect();
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "chain lengths are far below 2^52"
+    )]
+    let count = pts.len() as f64;
+    let mean_h = heights.iter().sum::<f64>() / count;
+    let mean_r = radii.iter().sum::<f64>() / count;
+    let level = heights.iter().all(|h| (h - mean_h).abs() <= reach)
+        && radii.iter().all(|r| (r - mean_r).abs() <= reach);
+    if level {
+        let radius = match shape {
+            Canonical::Cylinder(c) => c.radius(),
+            Canonical::Cone(c) => c.radius_at(mean_h),
+            Canonical::Torus(t) => {
+                let (big, small) = (t.major_radius(), t.minor_radius());
+                let off = (small * small - mean_h * mean_h).max(0.0).sqrt();
+                if (big + off - mean_r).abs() <= (big - off - mean_r).abs() {
+                    big + off
+                } else {
+                    big - off
+                }
+            }
+            _ => mean_r,
+        };
+        if let Ok(at) = Frame::new(o + z * mean_h, frame.z(), frame.x(), tol)
+            && let Ok(circle) = ogeom_math::Circle::new(at, radius, tol)
+        {
+            out.push(ogeom_geom::CircleCurve::new(circle).into());
+        }
+    }
+    if matches!(shape, Canonical::Cylinder(_) | Canonical::Cone(_)) && pts.len() >= 2 {
+        let (p, q) = (pts[0], pts[pts.len() - 1]);
+        let straight = pts.iter().all(|x| distance_to_line(*x, p, q) <= reach);
+        let mut angles: Vec<f64> = pts
+            .iter()
+            .filter_map(|x| chart(shape, *x, tol).map(|c| c.0))
+            .collect();
+        if straight && !angles.is_empty() {
+            let (u, _) = angular_spread(&mut angles);
+            let (lo, hi) = (
+                heights.iter().copied().fold(f64::INFINITY, f64::min),
+                heights.iter().copied().fold(f64::NEG_INFINITY, f64::max),
             );
+            let (a, b) = (evaluate(shape, (u, lo)), evaluate(shape, (u, hi)));
+            if let Ok(line) = LineCurve::segment(a, b, tol) {
+                // Measured from the chain's first end, so its parameter is
+                // the chain's distance along it.
+                let _ = line;
+                let (a, b) = if (pts[0] - a).magnitude() <= (pts[0] - b).magnitude() {
+                    (a, b)
+                } else {
+                    (b, a)
+                };
+                if let Ok(line) = LineCurve::segment(a, b, tol) {
+                    out.push(line.into());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The plane nearest a set of points: their centroid and the covariance's
+/// smallest direction.
+fn plane_through(points: &[Point], tol: Tolerances) -> Option<(Point, Direction)> {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "chain lengths are far below 2^52"
+    )]
+    let count = points.len() as f64;
+    let c = points.iter().fold(Vector::ZERO, |s, p| s + p.to_vector()) / count;
+    let mut m = nalgebra::Matrix3::<f64>::zeros();
+    for p in points {
+        let d = p.to_vector() - c;
+        let v = nalgebra::Vector3::new(d.x, d.y, d.z);
+        m += v * v.transpose();
+    }
+    let eigen = nalgebra::SymmetricEigen::new(m);
+    let mut best = 0;
+    for i in 1..3 {
+        if eigen.eigenvalues[i] < eigen.eigenvalues[best] {
+            best = i;
+        }
+    }
+    let v = eigen.eigenvectors.column(best);
+    Some((
+        Point::from_vector(c),
+        Direction::new(Vector::new(v[0], v[1], v[2]), tol).ok()?,
+    ))
+}
+
+/// The surface a curved face is built on, windowed along its axis to hold
+/// every point its boundary reaches.
+fn surface_of(
+    curved: &Curved,
+    points: &[Point],
+    tol: Tolerances,
+) -> OgeomResult<ogeom_geom::SurfaceGeometry> {
+    use ogeom_geom::{ConeSurface, CylinderSurface, SphereSurface, TorusSurface};
+    let heights = || {
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for &v in &curved.vertices {
+            if let Some((_, h)) = chart(&curved.shape, points[v as usize], tol) {
+                lo = lo.min(h);
+                hi = hi.max(h);
+            }
+        }
+        let margin = (hi - lo).mul_add(0.25, tol.confusion() * 10.0);
+        (lo - margin, hi + margin)
+    };
+    Ok(match curved.shape {
+        Canonical::Cylinder(c) => CylinderSurface::new(c, heights())?.into(),
+        Canonical::Cone(c) => {
+            // Short of the apex, where the cone's radius runs out.
+            let (lo, hi) = heights();
+            let apex = -c.reference_radius() / c.half_angle().tan();
+            let lo = lo.max(apex + (hi - apex) * 1e-6);
+            ConeSurface::new(c, (lo, hi))?.into()
+        }
+        Canonical::Sphere(s) => SphereSurface::new(s).into(),
+        Canonical::Torus(t) => TorusSurface::new(t).into(),
+        Canonical::Plane(p) => PlaneSurface::new(p).into(),
+    })
+}
+
+/// An edge's image on a curved face, and how far it strays from the edge:
+/// the straight chart segment where the edge is a parallel or a ruling of
+/// the face, otherwise a fit by projection; `None` past the reach.
+fn image_on(
+    curved: &Curved,
+    surface: &ogeom_geom::SurfaceGeometry,
+    curve: &Curve,
+    range: (f64, f64),
+    reach: f64,
+    tol: Tolerances,
+) -> Option<(PlanarCurve, f64)> {
+    if let Some((pcurve, deviation)) = straight_image(curved, curve, range, tol)
+        && deviation <= reach
+    {
+        return Some((pcurve, deviation));
+    }
+    let (pcurve, error, _, off, _) =
+        crate::pcurve_fit::fit_projected_pcurve_capped(curve, range, surface, reach, tol).ok()?;
+    let deviation = error.max(off);
+    (deviation <= reach).then_some((pcurve, deviation))
+}
+
+/// A degree-one pcurve over the edge's range, from the chart points of its
+/// ends on the face's branch, and how far it strays along its length.
+fn straight_image(
+    curved: &Curved,
+    curve: &Curve,
+    range: (f64, f64),
+    tol: Tolerances,
+) -> Option<(PlanarCurve, f64)> {
+    use ogeom_geom::Curve3d as _;
+    let at =
+        |t: f64| -> Option<(f64, f64)> { unwrapped(curved, curve.point_at(t, tol).ok()?, tol) };
+    let start = at(range.0)?;
+    // Carried along the edge a quarter at a time, so a full turn ends a
+    // whole period from where it began.
+    let (pu, pv) = periodic(&curved.shape);
+    let step = |a: f64, b: f64, wraps: bool| {
+        if wraps {
+            a + ogeom_math::elementary::wrap_signed_angle(b - a)
+        } else {
+            b
+        }
+    };
+    let mut end = start;
+    for k in 1..=4 {
+        let next = at(range.0 + (range.1 - range.0) * f64::from(k) / 4.0)?;
+        end = (step(end.0, next.0, pu), step(end.1, next.1, pv));
+    }
+    let pcurve = linear(start, end, range, tol).ok()?;
+    let mut deviation: f64 = 0.0;
+    for k in 0..=16 {
+        let f = f64::from(k) / 16.0;
+        let t = range.0 + (range.1 - range.0) * f;
+        let uv = (
+            (end.0 - start.0).mul_add(f, start.0),
+            (end.1 - start.1).mul_add(f, start.1),
+        );
+        deviation =
+            deviation.max(evaluate(&curved.shape, uv).distance(curve.point_at(t, tol).ok()?));
+    }
+    Some((pcurve, deviation))
+}
+
+/// Builds the planned vertices, edges and faces.
+struct Builder<'a> {
+    model: &'a mut Model,
+    points: &'a [Point],
+    triangles: &'a [[u32; 3]],
+    groups: &'a Groups,
+    plan: &'a Plan,
+    tol: Tolerances,
+}
+
+impl Builder<'_> {
+    fn entry(&self, h: Half) -> (usize, bool) {
+        let (a, b) = from_to(self.triangles, h);
+        let (edge, along) = self.plan.edge_of[&(a.min(b), a.max(b))];
+        (edge, along == (a < b))
+    }
+
+    /// The faces, one per live group, by group index.
+    fn build(mut self) -> OgeomResult<Vec<Option<Shape>>> {
+        let mut corners: HashMap<Corner, Shape> = HashMap::new();
+        let mut edges: Vec<Shape> = Vec::with_capacity(self.plan.edges.len());
+        for spec in &self.plan.edges {
+            for corner in spec.ends {
+                corners.entry(corner).or_insert_with(|| {
+                    let at = match corner {
+                        Corner::Mesh(v) => self.points[v as usize],
+                        Corner::Placed(i) => self.plan.placed[i],
+                    };
+                    self.model.add_vertex(VertexData::new(at))
+                });
+            }
+            let id = self.model.geometry_mut().add_curve(spec.curve.clone());
+            let mut data = EdgeData::on_curve(id, Location::identity(), spec.range);
+            data.tolerance = Tolerance::new(spec.tolerance)?;
+            let bounds = if spec.ends[0] == spec.ends[1] {
+                vec![
+                    corners[&spec.ends[0]].clone(),
+                    corners[&spec.ends[0]].clone(),
+                ]
+            } else {
+                vec![
+                    corners[&spec.ends[0]].clone(),
+                    corners[&spec.ends[1]].clone(),
+                ]
+            };
+            edges.push(self.model.add_edge(data, &bounds)?);
+        }
+
+        let mut faces = Vec::with_capacity(self.groups.carriers.len());
+        for (g, carrier) in self.groups.carriers.iter().enumerate() {
+            let rings = &self.plan.loops[g];
+            let face = match carrier {
+                Carrier::Gone => None,
+                _ if rings.is_empty() => None,
+                Carrier::Plane(plane) => Some(self.plane_face(*plane, rings, &edges)?),
+                Carrier::Curved(curved) if curved.wraps => {
+                    Some(self.band_face(curved, rings, &edges)?)
+                }
+                Carrier::Curved(curved) => Some(self.curved_face(curved, g, rings, &edges)?),
+            };
+            faces.push(face);
         }
         Ok(faces)
     }
 
-    /// The edge's line in the face's plane, once per face.
-    fn attach(
-        &mut self,
-        edge: &Shape,
-        run: &Run,
-        surface: ogeom_topo::SurfaceId,
-        local: impl Fn(Point) -> Point2,
-    ) -> OgeomResult<()> {
-        let Some(node) = self.model.node(edge) else {
-            ogeom_bail!(Dangling, "an edge just built is not in this model");
-        };
-        if node.data().as_edge().is_some_and(|d| {
-            d.representations
-                .iter()
-                .any(|rep| matches!(rep, EdgeRepr::PCurve { surface: s, .. } if *s == surface))
-        }) {
-            return Ok(());
+    /// A ring's planned edges in walking order, repeats run together.
+    fn entries(&self, ring: &[Half]) -> Vec<(usize, bool)> {
+        let mut entries: Vec<(usize, bool)> = Vec::new();
+        for &h in ring {
+            let entry = self.entry(h);
+            if entries.last() != Some(&entry) {
+                entries.push(entry);
+            }
         }
-        let (a, b) = (
-            local(self.points[run.from as usize]),
-            local(self.points[run.to as usize]),
-        );
-        let pcurve: PlanarCurve = ogeom_geom::Line2d::segment(a, b, self.tol)?.into();
-        crate::build::attach_pcurve(
+        if entries.len() > 1 && entries.first() == entries.last() {
+            entries.pop();
+        }
+        entries
+    }
+
+    fn has_pcurve(&self, edge: &Shape, surface: ogeom_topo::SurfaceId) -> bool {
+        self.model.node(edge).and_then(|n| n.data().as_edge()).is_some_and(|d| {
+            d.representations.iter().any(|rep| {
+                matches!(rep, EdgeRepr::PCurve { surface: s, .. } | EdgeRepr::Seam { surface: s, .. } if *s == surface)
+            })
+        })
+    }
+
+    fn plane_face(
+        &mut self,
+        plane: Plane,
+        rings: &[Vec<Half>],
+        edges: &[Shape],
+    ) -> OgeomResult<Shape> {
+        let geometry: ogeom_geom::SurfaceGeometry = PlaneSurface::new(plane).into();
+        let surface = self.model.geometry_mut().add_surface(geometry.clone());
+        let local = |p: Point| {
+            let l = plane.frame().to_local(p);
+            Point2::new(l.x, l.y)
+        };
+        let mut wires: Vec<(f64, Shape)> = Vec::with_capacity(rings.len());
+        for ring in rings {
+            let area = ring_area(ring, self.triangles, |p| Some(local(p)), self.points);
+            let mut ring_edges = Vec::new();
+            for (edge, forward) in self.entries(ring) {
+                let spec = &self.plan.edges[edge];
+                if !self.has_pcurve(&edges[edge], surface) {
+                    let Some(pcurve) =
+                        ogeom_intersect::exact_pcurve_of(&spec.curve, &geometry, self.tol)
+                    else {
+                        ogeom_bail!(Construction, "an edge has no image in its face's plane");
+                    };
+                    crate::build::attach_pcurve(
+                        self.model,
+                        &edges[edge],
+                        pcurve,
+                        surface,
+                        Location::identity(),
+                        spec.range,
+                    )?;
+                }
+                ring_edges.push(oriented(&edges[edge], forward));
+            }
+            wires.push((area, self.model.add_wire(&ring_edges)?));
+        }
+        wires.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let wires: Vec<Shape> = wires.into_iter().map(|(_, w)| w).collect();
+        self.model
+            .add_face(FaceData::new(surface, Location::identity()), &wires)
+    }
+
+    /// Whether the region's outward side is the surface's own normal side.
+    fn outward(&self, curved: &Curved, g: usize) -> bool {
+        let mut vote = 0.0;
+        for (t, tri) in self.triangles.iter().enumerate() {
+            if self.groups.of[t] != g {
+                continue;
+            }
+            let corners = tri.map(|v| self.points[v as usize]);
+            let centroid = Point::from_vector(
+                (corners[0].to_vector() + corners[1].to_vector() + corners[2].to_vector()) / 3.0,
+            );
+            let n = unit_normal(self.points, *tri);
+            vote += n.dot(self.surface_normal(curved, centroid));
+        }
+        vote >= 0.0
+    }
+
+    /// The surface's own normal — the chart's `du × dv` — near a point.
+    fn surface_normal(&self, curved: &Curved, p: Point) -> Vector {
+        let Some(at) = chart(&curved.shape, p, self.tol) else {
+            return Vector::ZERO;
+        };
+        let e = 1e-6;
+        let o = evaluate(&curved.shape, at);
+        let du = evaluate(&curved.shape, (at.0 + e, at.1)) - o;
+        let dv = evaluate(&curved.shape, (at.0, at.1 + e)) - o;
+        let n = du.cross(dv);
+        let m = n.magnitude();
+        if m > 0.0 { n / m } else { Vector::ZERO }
+    }
+
+    fn curved_face(
+        &mut self,
+        curved: &Curved,
+        g: usize,
+        rings: &[Vec<Half>],
+        edges: &[Shape],
+    ) -> OgeomResult<Shape> {
+        let Some(geometry) = self.plan.surfaces[g].clone() else {
+            ogeom_bail!(
+                Construction,
+                "a curved face was planned without its surface"
+            );
+        };
+        let surface = self.model.geometry_mut().add_surface(geometry);
+        let outward = self.outward(curved, g);
+        let mut wires: Vec<(f64, Shape)> = Vec::with_capacity(rings.len());
+        for ring in rings {
+            let area = ring_area(
+                ring,
+                self.triangles,
+                |p| unwrapped(curved, p, self.tol).map(|(u, v)| Point2::new(u, v)),
+                self.points,
+            );
+            let mut ring_edges = Vec::new();
+            for (edge, forward) in self.entries(ring) {
+                let spec = &self.plan.edges[edge];
+                if !self.has_pcurve(&edges[edge], surface) {
+                    let Some((pcurve, deviation)) = self.plan.pcurves.get(&(edge, g)).cloned()
+                    else {
+                        ogeom_bail!(
+                            Construction,
+                            "an edge was planned without its image on a face"
+                        );
+                    };
+                    self.model.widen(
+                        &edges[edge],
+                        Tolerance::new(deviation.max(self.tol.confusion()))?,
+                    )?;
+                    crate::build::attach_pcurve(
+                        self.model,
+                        &edges[edge],
+                        pcurve,
+                        surface,
+                        Location::identity(),
+                        spec.range,
+                    )?;
+                }
+                ring_edges.push(oriented(&edges[edge], forward));
+            }
+            let sign = if outward { 1.0 } else { -1.0 };
+            wires.push((area * sign, self.model.add_wire(&ring_edges)?));
+        }
+        wires.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let wires: Vec<Shape> = wires.into_iter().map(|(_, w)| w).collect();
+        // Fitted images answer on whichever branch their projection chose.
+        crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
+        let mut data = FaceData::new(surface, Location::identity());
+        data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
+        let face = self.model.add_face(data, &wires)?;
+        Ok(if outward { face } else { face.reversed() })
+    }
+
+    /// A band round the axis: the two rim circles, and a seam at the
+    /// surface's angle zero joining their vertices.
+    fn band_face(
+        &mut self,
+        curved: &Curved,
+        rings: &[Vec<Half>],
+        edges: &[Shape],
+    ) -> OgeomResult<Shape> {
+        use ogeom_geom::Curve3d as _;
+        let tau = core::f64::consts::TAU;
+        let g = self.groups.of[rings[0][0] / 3];
+        let Some(geometry) = self.plan.surfaces[g].clone() else {
+            ogeom_bail!(Construction, "a band was planned without its surface");
+        };
+        let surface = self.model.geometry_mut().add_surface(geometry);
+        let outward = self.outward(curved, g);
+        let Some(frame) = axis_frame(&curved.shape) else {
+            ogeom_bail!(Construction, "a band has no axis");
+        };
+        // Each rim: its edge, its chart height, and whether its parameter
+        // runs with the surface's angle.
+        let mut rims = Vec::with_capacity(2);
+        for ring in rings {
+            let (edge, _) = self.entry(ring[0]);
+            let spec = &self.plan.edges[edge];
+            let Curve::Circle(c) = &spec.curve else {
+                ogeom_bail!(Construction, "a band's rim is not a circle");
+            };
+            let circle = c.circle();
+            let with = circle.frame().z().vector().dot(frame.z().vector()) > 0.0;
+            let start = spec.curve.point_at(0.0, self.tol)?;
+            let Some((_, v)) = unwrapped(curved, start, self.tol) else {
+                ogeom_bail!(Construction, "a band's rim has no chart position");
+            };
+            rims.push((edge, v, with, start));
+        }
+        rims.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let [
+            (low, v_low, low_with, low_at),
+            (high, v_high, high_with, high_at),
+        ] = rims[..]
+        else {
+            ogeom_bail!(Construction, "a band has two rims");
+        };
+        for (edge, v, with) in [(low, v_low, low_with), (high, v_high, high_with)] {
+            let (a, b) = if with { (0.0, tau) } else { (tau, 0.0) };
+            let pcurve = linear((a, v), (b, v), (0.0, tau), self.tol)?;
+            crate::build::attach_pcurve(
+                self.model,
+                &edges[edge],
+                pcurve,
+                surface,
+                Location::identity(),
+                (0.0, tau),
+            )?;
+        }
+        // The seam, low rim to high, on the surface along angle zero.
+        let seam_curve: Curve = match curved.shape {
+            Canonical::Torus(t) => {
+                let spine = frame.origin() + frame.x().vector() * t.major_radius();
+                let normal =
+                    Direction::new(frame.x().vector().cross(frame.z().vector()), self.tol)?;
+                ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(
+                    Frame::new(spine, normal, frame.x(), self.tol)?,
+                    t.minor_radius(),
+                    self.tol,
+                )?)
+                .into()
+            }
+            _ => LineCurve::segment(low_at, high_at, self.tol)?.into(),
+        };
+        let seam_range = match curved.shape {
+            Canonical::Torus(_) => (v_low, v_high),
+            _ => (0.0, low_at.distance(high_at)),
+        };
+        // The seam runs between the rims' own vertices, placed where each
+        // circle's parameter starts — the surface's angle zero.
+        let placed = |at: Point| {
+            self.plan
+                .placed
+                .iter()
+                .any(|p| p.distance(at) <= self.tol.confusion())
+        };
+        if !placed(low_at) || !placed(high_at) {
+            ogeom_bail!(
+                Construction,
+                "a band's rim vertex is not where its seam starts"
+            );
+        }
+        let vertex = |edge: usize| -> OgeomResult<Shape> {
+            match self.model.children_of(&edges[edge])?.first() {
+                Some(v) => Ok(v.clone()),
+                None => ogeom_bail!(Construction, "a rim has no vertex"),
+            }
+        };
+        let (from_vertex, to_vertex) = (vertex(low)?, vertex(high)?);
+        let id = self.model.geometry_mut().add_curve(seam_curve);
+        let data = EdgeData::on_curve(id, Location::identity(), seam_range);
+        let seam = self.model.add_edge(data, &[from_vertex, to_vertex])?;
+        crate::build::attach_seam(
             self.model,
-            edge,
-            pcurve,
+            &seam,
+            linear((tau, v_low), (tau, v_high), seam_range, self.tol)?,
+            linear((0.0, v_low), (0.0, v_high), seam_range, self.tol)?,
             surface,
             Location::identity(),
-            (0.0, a.distance(b)),
-        )
+            seam_range,
+        )?;
+        // Counter-clockwise in the chart: along the low rim, up the seam's
+        // far side, back along the high rim, down its near side — then the
+        // whole ring the other way for a face that faces against the
+        // surface.
+        let mut ring = vec![
+            oriented(&edges[low], low_with),
+            seam.clone(),
+            oriented(&edges[high], !high_with),
+            seam.reversed(),
+        ];
+        if !outward {
+            ring.reverse();
+            ring = ring.iter().map(Shape::reversed).collect();
+        }
+        let wire = self.model.add_wire(&ring)?;
+        let mut data = FaceData::new(surface, Location::identity());
+        data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
+        let face = self.model.add_face(data, std::slice::from_ref(&wire))?;
+        Ok(if outward { face } else { face.reversed() })
     }
+}
+
+fn oriented(edge: &Shape, forward: bool) -> Shape {
+    if forward {
+        edge.clone()
+    } else {
+        edge.reversed()
+    }
+}
+
+/// A straight chart segment from `a` to `b`, linear in the edge's own
+/// parameter over `range`.
+fn linear(
+    a: (f64, f64),
+    b: (f64, f64),
+    range: (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<PlanarCurve> {
+    let knots = ogeom_math::KnotVector::new(vec![range.0, range.0, range.1, range.1], 1)?;
+    Ok(ogeom_geom::BSpline2d::new(
+        knots,
+        vec![Point2::new(a.0, a.1), Point2::new(b.0, b.1)],
+        tol,
+    )?
+    .into())
+}
+
+/// Twice the area a ring of half-edges encloses in a chart, signed.
+fn ring_area(
+    ring: &[Half],
+    triangles: &[[u32; 3]],
+    chart: impl Fn(Point) -> Option<Point2>,
+    points: &[Point],
+) -> f64 {
+    let mut area = 0.0;
+    for &h in ring {
+        let (a, b) = from_to(triangles, h);
+        if let (Some(a), Some(b)) = (chart(points[a as usize]), chart(points[b as usize])) {
+            area += a.x * b.y - b.x * a.y;
+        }
+    }
+    area
 }
 
 fn distance_to_line(p: Point, a: Point, b: Point) -> f64 {

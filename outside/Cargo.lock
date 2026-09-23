@@ -413,21 +413,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ogeom-reverse"
-version = "0.0.0"
-dependencies = [
- "approx",
- "nalgebra",
- "ogeom-algo",
- "ogeom-core",
- "ogeom-geom",
- "ogeom-math",
- "ogeom-mesh",
- "ogeom-topo",
- "proptest",
-]
-
-[[package]]
 name = "ogeom-select"
 version = "0.0.0"
 dependencies = [

@@ -26,6 +26,7 @@ pub mod pcurve_fit;
 pub mod place;
 pub mod primitive;
 pub mod proximity;
+pub mod recognize;
 pub mod sew;
 pub mod sweep;
 pub mod text;
@@ -63,6 +64,7 @@ pub use primitive::{
     make_polyhedron, make_sphere, make_torus, make_wedge,
 };
 pub use proximity::{ClosestPair, ShapeDistance, distance_between_shapes};
+pub use recognize::{Canonical, Recognized, recognize_points};
 pub use sew::{Sewn, make_wire_unordered, order_edges, sew};
 pub use sweep::{make_prism, make_prism_tapered, make_revolution};
 pub use text::make_text;

@@ -91,7 +91,6 @@ workspace the kernel excludes. `docs/SCOPE.md` says what the boundary is and
 
 ```
 • outside/crates/ogeom-recognize   feature recognition and process planning
-• outside/crates/ogeom-reverse     mesh → B-rep, canonical surface recognition
 • outside/crates/ogeom-select      BVH picking, selection, draft and thickness
 • outside/crates/ogeom-sketch      2D geometric constraint solver
 ```

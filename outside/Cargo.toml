@@ -3,7 +3,6 @@ resolver = "3"
 members = [
     "crates/ogeom-recognize",
     "crates/ogeom-select",
-    "crates/ogeom-reverse",
     "crates/ogeom-sketch",
 ]
 

@@ -29,7 +29,21 @@ bump may break the API and a patch bump may not.
   made to agree and face outward, a closed piece inside another becomes a
   void, and a mesh that does not close comes back as open shells, with
   holes, non-manifold edges, dropped triangles and flipped windings
-  counted in the report. Curved regions stay faceted.
+  counted in the report.
+- **`solid_from_mesh` recognizes curved regions.** Triangles across which
+  the surface turns smoothly grow into regions for as long as their
+  vertices lie on one cylinder, cone, sphere or torus, verified at the
+  coplanar distance, and each is rebuilt on that surface; its boundary
+  with each neighbour is placed on the surface exactly, as a parallel
+  circle or a ruling, and a band all the way round its axis gets a seam.
+  A meshed bore comes back as a cylinder between two circles, and a
+  rounded box as six planes, twelve cylinders and eight spheres. A region
+  whose boundary is no such curve, or whose surface is round both ways,
+  stays faceted and is counted (`curved_faces`, `curved_faceted`);
+  `MeshSolidOptions::recognize` turns it off and `crease` sets the angle
+  that counts as an edge. `recognize_points` exposes the recognition
+  itself, with its measured deviation as the certificate. The mesh
+  conversion is in scope by `docs/SCOPE.md`, which says why.
 - **`read_3mf`**, reading a 3MF package into one placed mesh per build
   item, with `ThreeMfImport`, `ThreeMfObject` and `ObjectType`.
   Components are flattened, the production extension's multi-part

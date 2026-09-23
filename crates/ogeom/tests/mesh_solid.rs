@@ -173,26 +173,70 @@ fn a_converted_solid_takes_a_boolean() {
     );
 }
 
-/// A drilled block meshed and converted back: its flat faces come back
-/// whole — the drilled ones with the bore's polygon as a hole — and the
-/// bore stays faceted.
-#[test]
-fn planar_faces_with_holes_come_back_whole() {
-    let mut model = Model::new();
-    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+fn drilled_block(model: &mut Model) -> Shape {
+    let block = ogeom::algo::make_box(model, Frame::WORLD, (20.0, 20.0, 10.0), T)
         .unwrap()
         .shape;
     let frame = Frame::new(Point::new(10.0, 10.0, -1.0), Direction::Z, Direction::X, T).unwrap();
-    let drill = ogeom::algo::make_cylinder(&mut model, frame, 4.0, 12.0, T)
+    let drill = ogeom::algo::make_cylinder(model, frame, 4.0, 12.0, T)
         .unwrap()
         .shape;
-    let drilled = ogeom::boolean::cut(&mut model, &block, &drill, T)
-        .unwrap()
-        .shape;
+    ogeom::boolean::cut(model, &block, &drill, T).unwrap().shape
+}
+
+fn meshed(model: &Model, shape: &Shape) -> Triangulation {
+    ogeom::mesh::triangulate(model, shape, Deflection::with_chord(0.01).unwrap(), T).unwrap()
+}
+
+/// The kinds of surface a shape's faces are built on, counted.
+fn kinds(model: &Model, shape: &Shape) -> [usize; 5] {
+    use ogeom::geom::SurfaceGeometry as S;
+    let mut out = [0; 5];
+    for face in explore_unique(model, shape, ShapeType::Face).unwrap() {
+        let data = model.node(&face).unwrap().data().as_face().unwrap();
+        out[match model.geometry().surface(data.surface).unwrap() {
+            S::Plane(_) => 0,
+            S::Cylinder(_) => 1,
+            S::Cone(_) => 2,
+            S::Sphere(_) => 3,
+            S::Torus(_) => 4,
+            _ => panic!("a surface recognition does not build"),
+        }] += 1;
+    }
+    out
+}
+
+/// A converted shape is valid and holds the volume the original does, to
+/// within what the measurement's own meshing leaves.
+fn holds(original: (&Model, &Shape), converted: (&Model, &Shape)) {
+    let diagnosis = check(converted.0, converted.1, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let fine = Deflection::with_chord(1e-3).unwrap();
+    let (a, b) = (
+        volume_properties(original.0, original.1, fine, T)
+            .unwrap()
+            .mass,
+        volume_properties(converted.0, converted.1, fine, T)
+            .unwrap()
+            .mass,
+    );
+    assert!((a - b).abs() / a < 2e-4, "{a} went in, {b} came out");
+}
+
+/// Without recognition, a drilled block's flat faces come back whole — the
+/// drilled ones with the bore's polygon as a hole — and the bore faceted.
+#[test]
+fn planar_faces_with_holes_come_back_whole() {
+    let mut model = Model::new();
+    let drilled = drilled_block(&mut model);
     let mesh = ogeom::mesh::triangulate(&model, &drilled, Deflection::with_chord(0.05).unwrap(), T)
         .unwrap();
     let mut back = Model::new();
-    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    let options = MeshSolidOptions {
+        recognize: false,
+        ..MeshSolidOptions::default()
+    };
+    let out = solid_from_mesh(&mut back, &mesh, &options, T).unwrap();
     assert!(out.closed, "{:?}", out.report);
     let faces = explore_unique(&back, &out.shape, ShapeType::Face).unwrap();
     let with_holes = faces
@@ -200,9 +244,7 @@ fn planar_faces_with_holes_come_back_whole() {
         .filter(|f| back.children_of(f).unwrap().len() == 2)
         .count();
     assert_eq!(with_holes, 2, "top and bottom keep the bore as a hole");
-    // Six flat faces, and the bore's facets.
-    let bore_facets = faces.len() - 6;
-    assert!(bore_facets >= 8, "{bore_facets}");
+    assert!(faces.len() - 6 >= 8, "the bore's facets");
     let diagnosis = check(&back, &out.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{diagnosis}");
     let (meshed, rebuilt) = (volume(&model, &drilled), volume(&back, &out.shape));
@@ -212,9 +254,127 @@ fn planar_faces_with_holes_come_back_whole() {
     );
 }
 
-/// A torus tessellated into 200 000 triangles converts in seconds. Each
-/// grid cell's two triangles are coplanar, so the faces are its cells —
-/// fewer where the tube's crown and keel run flat round the ring.
+/// With it, the bore is a cylinder again: seven faces, the bore one band
+/// between the two circles it cuts from the top and bottom, and a seam.
+#[test]
+fn a_meshed_bore_comes_back_a_cylinder() {
+    let mut model = Model::new();
+    let drilled = drilled_block(&mut model);
+    let mut back = Model::new();
+    let out = solid_from_mesh(
+        &mut back,
+        &meshed(&model, &drilled),
+        &MeshSolidOptions::default(),
+        T,
+    )
+    .unwrap();
+    assert!(out.closed);
+    assert_eq!(kinds(&back, &out.shape), [6, 1, 0, 0, 0]);
+    assert_eq!(out.report.curved_faces, 1);
+    holds((&model, &drilled), (&back, &out.shape));
+    let bore = explore_unique(&back, &out.shape, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let data = back.node(f).unwrap().data().as_face().unwrap();
+            matches!(
+                back.geometry().surface(data.surface).unwrap(),
+                ogeom::geom::SurfaceGeometry::Cylinder(_)
+            )
+        })
+        .unwrap();
+    let data = back.node(&bore).unwrap().data().as_face().unwrap();
+    let ogeom::geom::SurfaceGeometry::Cylinder(c) = back.geometry().surface(data.surface).unwrap()
+    else {
+        unreachable!()
+    };
+    assert!((c.cylinder().radius() - 4.0).abs() < 1e-9);
+
+    // And takes a boolean as the original does.
+    let frame = Frame::new(Point::new(0.0, 10.0, 5.0), Direction::X, Direction::Y, T).unwrap();
+    let cross = ogeom::algo::make_cylinder(&mut back, frame, 2.0, 20.0, T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(&mut back, &out.shape, &cross, T)
+        .unwrap()
+        .shape;
+    assert!(check(&back, &cut, T).unwrap().is_valid());
+}
+
+/// Cylinders, cones, and the fillets and corner blends of a rounded box —
+/// cylinders along the edges, spheres at the corners — come back on the
+/// surfaces they were meshed from.
+#[test]
+fn primitives_and_fillets_come_back_on_their_surfaces() {
+    let mut model = Model::new();
+    let cylinder = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 12.0, T)
+        .unwrap()
+        .shape;
+    let cone = ogeom::algo::make_cone(&mut model, Frame::WORLD, 6.0, 3.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let one = ogeom::fillet::fillet_edges(&mut model, &block, &edges[..1], 3.0, T)
+        .unwrap()
+        .shape;
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    for (shape, expected) in [
+        (&cylinder, [2, 1, 0, 0, 0]),
+        (&cone, [2, 0, 1, 0, 0]),
+        (&one, [6, 1, 0, 0, 0]),
+        (&rounded, [6, 12, 0, 8, 0]),
+    ] {
+        let mut back = Model::new();
+        let out = solid_from_mesh(
+            &mut back,
+            &meshed(&model, shape),
+            &MeshSolidOptions::default(),
+            T,
+        )
+        .unwrap();
+        assert!(out.closed);
+        assert_eq!(kinds(&back, &out.shape), expected);
+        holds((&model, shape), (&back, &out.shape));
+    }
+}
+
+/// A whole sphere has no seam and no pole edges to build a face with here:
+/// it is recognized, said to be faceted, and still converts to a valid
+/// solid.
+#[test]
+fn what_cannot_be_built_exactly_stays_faceted() {
+    let mut model = Model::new();
+    let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 7.0, T)
+        .unwrap()
+        .shape;
+    let mut back = Model::new();
+    let out = solid_from_mesh(
+        &mut back,
+        &meshed(&model, &ball),
+        &MeshSolidOptions::default(),
+        T,
+    )
+    .unwrap();
+    assert!(out.closed);
+    assert_eq!(out.report.curved_faces, 0);
+    assert_eq!(out.report.curved_faceted, 1);
+    assert!(check(&back, &out.shape, T).unwrap().is_valid());
+}
+
+/// A torus tessellated into 200 000 triangles converts in seconds. It is
+/// recognized as the torus it is, which runs round both ways and so stays
+/// faceted; each grid cell's two triangles are coplanar, so the faces are
+/// its cells — fewer where the tube's crown and keel run flat round the
+/// ring.
 #[test]
 fn a_large_mesh_converts_in_seconds() {
     let (rings, sides) = (500_u32, 200_u32);

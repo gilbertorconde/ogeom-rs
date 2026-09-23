@@ -1718,19 +1718,19 @@ verdict = "n/a"
 claims = ["BRepLib_PointCloudShape", "ShapeConstruct_MakeTriangulation", "BRepPreviewAPI_MakeBox"]
 reasoning = """Faces whose geometry is a triangle set, point-cloud stand-ins \
 and preview boxes exist to feed viewers progressively; a viewer consumes the \
-triangulation directly here. A faceted solid built on a mesh is \
-algo.solid-from-mesh; recovering exact surfaces from one is out of scope \
-(docs/SCOPE.md; outside/crates/ogeom-reverse)."""
+triangulation directly here. A solid built on a mesh, its surfaces \
+recognized, is algo.solid-from-mesh."""
 
 [[capability]]
 id = "algo.solid-from-mesh"
-title = "A faceted solid from a triangle mesh, coplanar triangles merged into planar faces"
+title = "A solid from a triangle mesh: coplanar triangles merged into planar faces, curved regions recognized as cylinders, cones, spheres and tori"
 crate = "ogeom-algo"
 verdict = "covered"
 claims = ["BRepBuilderAPI_MakeShapeOnMesh"]
 symbols = [
     "ogeom_algo::solid_from_mesh", "ogeom_algo::MeshSolidOptions",
     "ogeom_algo::MeshSolid", "ogeom_algo::MeshSolidReport",
+    "ogeom_algo::recognize_points", "ogeom_algo::Canonical", "ogeom_algo::Recognized",
 ]
 tests = ["crates/ogeom/tests/mesh_solid.rs"]
 

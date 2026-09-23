@@ -85,8 +85,10 @@ the file gives one, and warnings for what it read with a caveat.
 A mesh read from any of these can become a solid that takes features:
 `algo::solid_from_mesh` builds its topology from the mesh's own
 connectivity, merges coplanar triangles into planar faces — an STL cube
-comes back as six faces — and says in its report where a mesh that does not
-close is open. Curved regions stay faceted.
+comes back as six faces — and rebuilds the regions that lie on a cylinder, a
+cone, a sphere or a torus on that surface, so a meshed bore is a cylinder
+again. Its report says where a mesh that does not close is open, and which
+curved regions could not be built exactly and stayed faceted.
 
 The mesh writers take the tessellation you built at your chosen
 deflection — the error budget is yours, stated once. DXF is the outlet
