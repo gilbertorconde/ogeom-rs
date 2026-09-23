@@ -197,6 +197,13 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
             shells.push(shell);
         }
     }
+    // Every widening the reader made — an edge's tolerance recording how far
+    // its pcurves sit from its curve — reaches the vertices that bound it,
+    // and a face's reaches its edges: the containment rule the checker holds
+    // a solid to, kept by the reader that built it.
+    for body in solids.iter().chain(shells.iter()) {
+        ogeom_algo::restore_containment(&mut reader.model, body)?;
+    }
     // The tallies fold into the summary, largest first, ties by kind so the
     // order is the file's and not the map's.
     {

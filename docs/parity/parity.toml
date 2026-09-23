@@ -622,8 +622,10 @@ verdict = "partial"
 restriction = """`fix_shape` is the standalone entry point: diagnose, put a \
 wire's edges end to end where an order exists, collapse edges shorter than \
 their own vertices' tolerances, fit missing pcurves, sew loose faces, \
-tighten tolerances, diagnose again — and report what it did and what \
-remains. Beneath it: reanchoring periodic rings, sewing, validity \
+tighten tolerances, restore tolerance containment by widening what is \
+bounded (`restore_containment`, which the STEP and IGES readers run on \
+every body they build), diagnose again — and report what it did and \
+what remains. Beneath it: reanchoring periodic rings, sewing, validity \
 diagnosis, the reader's inline heal sequence, and the instructed fixes — \
 fix_face_pcurves fits the trims the reader refused at a caller's cap, and \
 reanchor_boundaries moves a boundary onto the surface it bounds with the \
@@ -649,10 +651,12 @@ claims = [
 ]
 symbols = [
     "ogeom_heal::fix_shape", "ogeom_heal::reanchor_periodic_rings", "ogeom_algo::sew",
+    "ogeom_algo::restore_containment",
     "ogeom_algo::check",
 ]
 tests = [
     "crates/ogeom/tests/fix_shape.rs",
+    "crates/ogeom/tests/exchange_tolerances.rs",
     "crates/ogeom-heal/src/reanchor.rs",
     "crates/ogeom/tests/imported_corpus.rs",
 ]

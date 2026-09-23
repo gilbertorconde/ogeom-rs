@@ -32,7 +32,9 @@ what it did.
 - **`fix_shape`** is the one-call pass over a shape nobody promised was
   well-formed: it diagnoses, puts a wire's edges end to end, collapses
   edges shorter than their own vertices' tolerances, fits missing
-  pcurves, sews loose faces, tightens tolerances, and diagnoses again.
+  pcurves, sews loose faces, tightens tolerances, widens any vertex left
+  tighter than its edges (and any edge than its faces) to restore the
+  containment rule, and diagnoses again.
   Its `FixReport` says what it did and what the checker still sees;
   small faces and solids are left in place, since removing them is
   defeaturing.

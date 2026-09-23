@@ -11,6 +11,58 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Changed
+
+- **`FixReport` gains `tolerances_widened`.** A public field on a struct
+  callers can build, so under this changelog's policy the next release is
+  a minor one.
+
+### Added
+
+- **`restore_containment`**, the pass that establishes the tolerance
+  containment rule the checker enforces: every edge widened to at least
+  the faces it bounds, every vertex to at least the edges it bounds,
+  only ever growing, returning how many entities grew.
+
+### Fixed
+
+- **A STEP read broke the tolerance containment rule, and `fix_shape`
+  did not restore it.** The reader widens an edge to how far its pcurves
+  sit from its curve, and left the edge's vertices at the confusion
+  tolerance: `check` called every such vertex broken, hundreds on an
+  ordinary part and thousands on an assembly, and `fix_shape` only ever
+  tightened, so it never cleared them. The STEP and IGES readers run the
+  containment pass on every body they build, and `fix_shape` runs it
+  last, after the reduction.
+- **A reshape reversed a wire's walk once too often.** A substitution
+  rebuilds everything above the substituted entity, and read each
+  occurrence's children with that occurrence's orientation composed in,
+  then oriented the new node as the occurrence again. The occurrence being
+  rebuilt came out right, but the new node it stored was inverted, and
+  every other occurrence of it — a wire shared by a face reached reversed
+  — walked its edges tail to head. Children are read through the forward
+  occurrence and the result oriented once.
+- **Collapsing a degenerate edge opened a gap.** `fix_shape` collapses an
+  edge shorter than its vertices' tolerances onto one vertex, and the
+  surviving vertex kept its own tolerance, so the neighbouring edges'
+  curves stopped the collapsed length short of it. The survivor widens to
+  reach every vertex it absorbs.
+- **`write_iges` overflowed the eighty-column record, and its own reader
+  refused the file.** A near-zero real went out in positional notation —
+  a coefficient of 1.5e-51 spelt in sixty-nine characters where a record
+  holds sixty-four. Every real takes the shorter of its positional and
+  exponent spellings, and a parameter longer than a whole record fills
+  every record it crosses, so the reader rejoins it with nothing inserted.
+- **`read_iges` refused a solid whose curves missed their vertices by
+  nanometres.** IGES states no tolerances, so every vertex was built at the
+  confusion tolerance, and a writer's last digit — half a nanometre —
+  refused the whole solid; a vertex a hair past a bounded curve's end
+  also asked for a parameter outside the curve. A vertex's tolerance now
+  grows to state its curves' miss, up to the millimetre past which a
+  boundary is not that curve's at all, and the range is held to the
+  curve's domain. Every solid in the exchange corpus survives the
+  kernel's own IGES write and read, at the volume it went out with.
+
 ## [0.2.1] — 2026-09-23
 
 A patch release: no public signature changed in any crate, checked against

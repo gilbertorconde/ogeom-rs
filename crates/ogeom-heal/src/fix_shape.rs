@@ -55,6 +55,9 @@ pub struct FixReport {
     pub sewn: Option<(usize, usize)>,
     /// Tolerances tightened.
     pub tolerances_reduced: usize,
+    /// Tolerances widened so that every vertex is at least as loose as the
+    /// edges it bounds and every edge as the faces it bounds.
+    pub tolerances_widened: usize,
 }
 
 /// A fixed shape: the result, its history, and the report.
@@ -128,6 +131,11 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
     }
 
     let tolerances_reduced = reduce_tolerances(model, &current, tol)?;
+    // Last, because every step above may leave a vertex tighter than an
+    // edge it bounds — a reduction tightens edges and faces, never below
+    // what they bound, but a shape can arrive broken — and containment is
+    // established only by widening what is bounded.
+    let tolerances_widened = ogeom_algo::restore_containment(model, &current)?;
     let after = check(model, &current, tol)?;
     Ok(Fixed {
         shape: current,
@@ -140,6 +148,7 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
             edges_trimmed,
             sewn,
             tolerances_reduced,
+            tolerances_widened,
         },
     })
 }
@@ -239,9 +248,27 @@ fn collapse_small_edges(
         reshape.remove(&edge);
         count += 1;
     }
+    // The survivor stands where it stood, and the curves that ended at each
+    // vertex it absorbs still end there: it widens to reach every one, as
+    // far as the absorbed vertex stood plus that vertex's own tolerance.
+    // Merged without it, the neighbours of a collapsed edge stop the
+    // collapsed length short of their vertex and the wire gapes.
+    let placed = |model: &Model, v: &Shape| -> OgeomResult<Option<(ogeom_math::Point, f64)>> {
+        let Some(data) = model.node(v).and_then(|n| n.data().as_vertex()) else {
+            return Ok(None);
+        };
+        let (point, own) = (data.point, data.tolerance.get());
+        Ok(Some((v.transform(model.datums())?.apply(point), own)))
+    };
     for vertex in explore_unique(model, shape, ShapeType::Vertex)? {
         let to = root(&survivor, &vertex);
         if !to.is_same(&vertex) {
+            if let (Some((from, reach)), Some((at, _))) =
+                (placed(model, &vertex)?, placed(model, &to)?)
+            {
+                let need = from.distance(at) + reach;
+                model.widen(&to, ogeom_core::Tolerance::new(need.max(tol.confusion()))?)?;
+            }
             reshape.replace(&vertex, to);
         }
     }

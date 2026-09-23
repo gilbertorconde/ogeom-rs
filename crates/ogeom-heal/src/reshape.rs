@@ -104,7 +104,18 @@ impl Reshape {
         }
 
         // Rebuild children; if none changed, the node itself is shared.
-        let children = model.children_of(shape)?;
+        // Read through the forward occurrence: `children_of` composes the
+        // occurrence's orientation into every child, and the rebuilt node is
+        // oriented as the occurrence once, below. Read through a reversed
+        // occurrence, a reversed edge rebuilt around a substituted vertex
+        // came out with its start and end swapped and was then reversed
+        // again, and the wire it sat in walked it against its neighbours.
+        let forward = if shape.orientation() == Orientation::Reversed {
+            shape.reversed()
+        } else {
+            shape.clone()
+        };
+        let children = model.children_of(&forward)?;
         let mut rebuilt_children = Vec::with_capacity(children.len());
         let mut changed = false;
         for child in &children {
@@ -119,7 +130,7 @@ impl Reshape {
             }
         }
         if !changed {
-            memo.insert(shape.node(), Some(shape.clone()));
+            memo.insert(shape.node(), Some(forward));
             return Ok(Some(shape.clone()));
         }
 

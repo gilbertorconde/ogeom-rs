@@ -8,7 +8,7 @@ use ogeom::core::Tolerances;
 use ogeom::geom::{PlaneSurface, SurfaceGeometry};
 use ogeom::math::{Direction, Frame, Plane, Point};
 use ogeom::mesh::Deflection;
-use ogeom::topo::{FaceData, Location, Model, NodeData, ShapeType, explore_unique};
+use ogeom::topo::{FaceData, Location, Model, NodeData, Shape, ShapeType, explore_unique};
 
 const T: Tolerances = Tolerances::millimetres();
 
@@ -169,4 +169,85 @@ fn a_sound_shape_is_left_alone() {
     assert!(fixed.report.sewn.is_none(), "a solid is not sewn");
     assert!(fixed.report.after.is_valid());
     let _ = make_vertex(&mut model, Point::ORIGIN);
+}
+
+/// A substitution rebuilds every edge, wire and face above the substituted
+/// vertex, and a rebuilt node is shared by every occurrence of the old one.
+/// Rebuilt through an occurrence that reverses it, a wire came back with
+/// its walk reversed once too often — and the collapse of a degenerate
+/// edge, which substitutes a vertex, left the neighbouring wire gaping.
+/// Every vertex of a prism, whose near cap is its profile reversed, and of
+/// a fused pair, whose faces come back in either sense, is substituted in
+/// turn, and the result must stay valid.
+#[test]
+fn a_substituted_vertex_rebuilds_reversed_occurrences_head_to_tail() {
+    use ogeom::math::Vector;
+    let solids: [fn(&mut Model) -> Shape; 2] = [
+        |model| {
+            let square = [
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(2.0, 0.0, 0.0),
+                Point::new(2.0, 1.0, 0.0),
+                Point::new(0.0, 1.0, 0.0),
+            ];
+            let wire = ogeom::algo::make_polygon(model, &square, true, T)
+                .unwrap()
+                .shape;
+            let surface = ogeom::geom::PlaneSurface::over(
+                Plane::through(Point::ORIGIN, Direction::Z),
+                (-1.0, 3.0),
+                (-1.0, 2.0),
+            )
+            .unwrap();
+            let face = ogeom::algo::make_face(model, surface.into(), &[wire], T)
+                .unwrap()
+                .shape;
+            let prism = ogeom::algo::make_prism(model, &face, Vector::new(0.0, 0.0, 1.0), T)
+                .unwrap()
+                .shape;
+            // Baked, so the far cap's vertices are nodes of their own rather
+            // than the near cap's placed: a substitution replaces a node
+            // everywhere it occurs.
+            ogeom::algo::baked_shape(model, &prism, T).unwrap().shape
+        },
+        |model| {
+            let a = ogeom::algo::make_box(model, Frame::WORLD, (2.0, 2.0, 2.0), T)
+                .unwrap()
+                .shape;
+            let at = Frame::new(Point::new(1.0, 1.0, 1.0), Direction::Z, Direction::X, T).unwrap();
+            let b = ogeom::algo::make_box(model, at, (2.0, 2.0, 2.0), T)
+                .unwrap()
+                .shape;
+            ogeom::boolean::fuse(model, &a, &b, T).unwrap().shape
+        },
+    ];
+    for (which, build) in solids.iter().enumerate() {
+        let mut probe = Model::new();
+        let built = build(&mut probe);
+        let count = explore_unique(&probe, &built, ShapeType::Vertex)
+            .unwrap()
+            .len();
+        for index in 0..count {
+            let mut model = Model::new();
+            let solid = build(&mut model);
+            let vertex = explore_unique(&model, &solid, ShapeType::Vertex).unwrap()[index].clone();
+            let point = model
+                .node(&vertex)
+                .unwrap()
+                .data()
+                .as_vertex()
+                .unwrap()
+                .point;
+            let point = vertex.transform(model.datums()).unwrap().apply(point);
+            let twin = ogeom::algo::make_vertex(&mut model, point).shape;
+            let mut reshape = ogeom::heal::Reshape::new();
+            reshape.replace(&vertex, twin);
+            let rebuilt = reshape.apply(&mut model, &solid).unwrap().shape;
+            let diagnosis = ogeom::algo::check(&model, &rebuilt, T).unwrap();
+            assert!(
+                diagnosis.is_valid(),
+                "solid {which} vertex {index}: {diagnosis}"
+            );
+        }
+    }
 }

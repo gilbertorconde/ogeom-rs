@@ -36,7 +36,10 @@ pub use build::{
     make_polygon, make_revolution_band, make_shell, make_solid, make_vertex, make_wire,
     rings_are_parallels, surface_iso_u_curve,
 };
-pub use check::{Diagnosis, Problem, Severity, check, check_self_intersection, check_tessellation};
+pub use check::{
+    Diagnosis, Problem, Severity, check, check_self_intersection, check_tessellation,
+    restore_containment,
+};
 pub use classify::{
     Containment, SolidBoundary, classify_in_solid, classify_in_solid_exact,
     classify_in_solid_exact_banded, classify_on_face,

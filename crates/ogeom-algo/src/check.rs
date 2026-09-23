@@ -558,6 +558,48 @@ fn check_containment(model: &Model, shape: &Shape, found: &mut Diagnosis) -> Oge
     Ok(())
 }
 
+/// Restore tolerance containment below `shape`: every edge widened to at
+/// least the faces it bounds, every vertex to at least the edges it bounds.
+///
+/// The rule [`check`] enforces, established the only way the data model
+/// allows — by raising what is bounded, never lowering what bounds. Each
+/// face and then each edge is widened to its own tolerance through
+/// [`Model::widen`], which cascades to everything below it and leaves
+/// anything already looser as it is. Returns how many entities grew.
+///
+/// An operation that widens an edge's tolerance by writing it directly — a
+/// reader recording how far a pcurve sits from its curve — leaves the
+/// edge's vertices behind; this is the pass that brings them along.
+///
+/// # Errors
+///
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the shape,
+/// or anything below it, does not resolve in this model.
+pub fn restore_containment(model: &mut Model, shape: &Shape) -> OgeomResult<usize> {
+    let bounded: Vec<Shape> = explore_unique(model, shape, ShapeType::Edge)?
+        .into_iter()
+        .chain(explore_unique(model, shape, ShapeType::Vertex)?)
+        .collect();
+    let before: Vec<f64> = bounded
+        .iter()
+        .map(|s| model.tolerance_of(s).map(|t| t.map_or(0.0, |t| t.get())))
+        .collect::<OgeomResult<_>>()?;
+    for kind in [ShapeType::Face, ShapeType::Edge] {
+        for bounding in explore_unique(model, shape, kind)? {
+            if let Some(own) = model.tolerance_of(&bounding)? {
+                model.widen(&bounding, own)?;
+            }
+        }
+    }
+    let mut grown = 0;
+    for (s, was) in bounded.iter().zip(before) {
+        if model.tolerance_of(s)?.is_some_and(|t| t.get() > was) {
+            grown += 1;
+        }
+    }
+    Ok(grown)
+}
+
 /// Compare one shape's tolerance against everything below it.
 fn compare(
     model: &Model,
