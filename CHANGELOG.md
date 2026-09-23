@@ -11,6 +11,18 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-09-23
+
+A patch release: no public signature changed in any crate, checked against
+0.2.0 by `cargo semver-checks`. It adds, and it fixes output that was wrong.
+Fillets reach every host the march can seat on, fitted patches included,
+and the corner tool rounds any convex planar vertex. Edges asked together
+meet: `chamfer_edges` mitres, and `fillet_edges` closes a shared corner
+with the rolling ball's patch rather than leaving the bands' caps — a
+visible change for any caller that rounds a box corner in one call. A
+viewer meshing face by face can now agree with the whole-shape mesh along
+every edge, and STEP files from plainer writers and mesh converters read.
+
 ### Added
 
 - **The marched blend takes fitted hosts as far as the melt.** A
@@ -56,16 +68,6 @@ bump may break the API and a patch bump may not.
   fourth plane by a few hundredths of a millimetre the envelope keeps a
   sliver of that plane, and the flush fillet meeting the sliver still
   dies in the cut.
-- **A band meeting two bands at an apex welds its triple point.** Three
-  descriptions of one point arrived a tenth of a micron apart in turn,
-  each within the last's reach and none within the first's, and the
-  junctions the arrangement adds after the first merge were never merged
-  with each other; they are, an end welds into a vertex within the
-  vertex's own tolerance and the weld, and a crossing at an edge's end is
-  the end on the edge as well as on the section. What is still owed is
-  named in the ledger: a band's section touching an edge describes the
-  touch point twice, a tenth of a micron apart, and the third flush fillet
-  at a sharp apex still dies on it.
 - **IGES reads more of the 1980s.** A conic arc (104) of any axis-aligned
   kind reads as its own curve — hyperbola and parabola alongside the
   ellipse, the arc's ends read off the file's points whichever way round
@@ -163,7 +165,16 @@ bump may break the API and a patch bump may not.
   not speak keeps the caps. Under it, the corner tool read a vertex's
   point where its node was built rather than where it stands, and at a
   prism's far end it rounded the near corner instead.
-
+- **A band meeting two bands at an apex left its triple point as two vertices.** Three
+  descriptions of one point arrived a tenth of a micron apart in turn,
+  each within the last's reach and none within the first's, and the
+  junctions the arrangement adds after the first merge were never merged
+  with each other; they are, an end welds into a vertex within the
+  vertex's own tolerance and the weld, and a crossing at an edge's end is
+  the end on the edge as well as on the section. What is still owed is
+  named in the ledger: a band's section touching an edge describes the
+  touch point twice, a tenth of a micron apart, and the third flush fillet
+  at a sharp apex still dies on it.
 - **STEP faces on a surface of linear extrusion were skipped, and the
   body drew open.** A curve swept along a vector is how some writers
   spell a drum's wall, and the reader skipped every such face by name,
@@ -278,7 +289,6 @@ bump may break the API and a patch bump may not.
   fillets are drawn once; on a real assembly the area standing more than
   45° off the surface falls from 540 to 80 mm², for 7% more triangles
   and a quarter more time.
-
 - **A vertex at a cone's apex, a sphere's pole or a patch's collapsed
   corner had no normal.** The surface has none there, and the mesh carried
   a zero, which shaded the tip black and dragged every normal it was
@@ -493,6 +503,7 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/gilbertorconde/ogeom-rs/releases/tag/v0.1.0
