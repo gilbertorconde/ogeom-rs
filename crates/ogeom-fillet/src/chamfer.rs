@@ -49,16 +49,8 @@ pub fn chamfer_edge(
     distance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    match seat_kind(model, edge, tol)? {
-        SeatKind::Straight => {
-            let seat = planar_seat(model, solid, edge, tol)?;
-            bevel(model, solid, edge, &seat, [distance, distance], tol)
-        }
-        SeatKind::Rim(rim) => {
-            let seat = revolved_seat(model, solid, edge, &rim, tol)?;
-            revolved_bevel(model, solid, edge, &seat, distance, distance, tol)
-        }
-    }
+    wedge_for(model, solid, edge, &Chamfer::Symmetric(distance), tol)?
+        .apply(model, solid, edge, tol)
 }
 
 /// Bevel a straight edge, cutting `on_face` back along `face` and `on_other`
@@ -80,21 +72,12 @@ pub fn chamfer_edge_distances(
     on_other: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    match seat_kind(model, edge, tol)? {
-        SeatKind::Straight => {
-            let seat = planar_seat(model, solid, edge, tol)?;
-            let i = seat_side(&seat, face)?;
-            let mut distances = [0.0; 2];
-            distances[i] = on_face;
-            distances[1 - i] = on_other;
-            bevel(model, solid, edge, &seat, distances, tol)
-        }
-        SeatKind::Rim(rim) => {
-            let seat = revolved_seat(model, solid, edge, &rim, tol)?;
-            let (on_wall, on_cap) = revolved_side(&seat, face, on_face, on_other)?;
-            revolved_bevel(model, solid, edge, &seat, on_wall, on_cap, tol)
-        }
-    }
+    let spec = Chamfer::Distances {
+        face: face.clone(),
+        on_face,
+        on_other,
+    };
+    wedge_for(model, solid, edge, &spec, tol)?.apply(model, solid, edge, tol)
 }
 
 /// Bevel a straight edge, cutting `distance` back along `face` and leaving it
@@ -117,54 +100,218 @@ pub fn chamfer_edge_angle(
     angle: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    if !angle.is_finite() || angle <= tol.angular() {
-        ogeom_bail!(
-            Construction,
-            "a chamfer at an angle of {angle} cuts nothing"
-        );
+    let spec = Chamfer::Angle {
+        face: face.clone(),
+        distance,
+        angle,
+    };
+    wedge_for(model, solid, edge, &spec, tol)?.apply(model, solid, edge, tol)
+}
+
+/// One edge's chamfer, in any of the three spellings.
+#[derive(Debug, Clone)]
+pub enum Chamfer {
+    /// The same distance back along both faces, as [`chamfer_edge`].
+    Symmetric(f64),
+    /// `on_face` along `face` and `on_other` along the other face, as
+    /// [`chamfer_edge_distances`].
+    Distances {
+        /// The face the first distance runs along.
+        face: Shape,
+        /// The distance along `face`.
+        on_face: f64,
+        /// The distance along the edge's other face.
+        on_other: f64,
+    },
+    /// `distance` along `face`, leaving it at `angle` radians, as
+    /// [`chamfer_edge_angle`].
+    Angle {
+        /// The face the distance runs along.
+        face: Shape,
+        /// The distance along `face`.
+        distance: f64,
+        /// The bevel's angle from `face`, in radians.
+        angle: f64,
+    },
+}
+
+/// Bevel several edges of a solid as one operation, each by `distance`.
+///
+/// As [`chamfer_edges_with`] with the symmetric chamfer on every edge.
+///
+/// # Errors
+///
+/// As [`chamfer_edges_with`].
+pub fn chamfer_edges(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    distance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let specs: Vec<(Shape, Chamfer)> = edges
+        .iter()
+        .map(|e| (e.clone(), Chamfer::Symmetric(distance)))
+        .collect();
+    chamfer_edges_with(model, solid, &specs, tol)
+}
+
+/// Bevel several edges of a solid as one operation, each with its own
+/// chamfer.
+///
+/// Every wedge is built on the solid as it stands before the call, and then
+/// every wedge is applied. That is what makes the bevels mitre: where two
+/// meet at a vertex, each wedge still reaches the corner, the two cut the
+/// region above either bevel plane, and the planes meet along their own
+/// line with neither a step nor a cap. One edge at a time
+/// ([`chamfer_edge`] in a loop) builds the second wedge on an edge the
+/// first bevel has already shortened, and each corner keeps a small
+/// tetrahedron and two extra faces. Where three bevels meet at a convex
+/// vertex the three planes meet at one point, the mitre of three planes.
+///
+/// # Errors
+///
+/// As [`chamfer_edge`], [`chamfer_edge_distances`] and
+/// [`chamfer_edge_angle`] per edge, judged on the solid as it stands before
+/// the call; and [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+/// if no edges are given.
+pub fn chamfer_edges_with(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if specs.is_empty() {
+        ogeom_bail!(Construction, "a chain of no edges bevels nothing");
     }
-    match seat_kind(model, edge, tol)? {
-        SeatKind::Straight => {
-            let seat = planar_seat(model, solid, edge, tol)?;
-            let i = seat_side(&seat, face)?;
-            // In the cross-section: from the contact on the named face, the
-            // bevel leaves at `angle` into the wedge's own side — the material
-            // on a convex edge, the open dihedral on a concave one. Where it
-            // crosses the other leg's ray is the derived distance — no
-            // crossing, no chamfer.
-            let sign = if seat.convex { 1.0 } else { -1.0 };
-            let a = seat.leg(i, tol)? * sign;
-            let b = seat.leg(1 - i, tol)? * sign;
-            let inward = -seat.normals[i] * sign;
-            let denominator = angle.sin().mul_add(b.dot(a), angle.cos() * b.dot(inward));
-            if denominator <= tol.angular() {
+    let wedges: Vec<Wedge> = specs
+        .iter()
+        .map(|(edge, spec)| wedge_for(model, solid, edge, spec, tol))
+        .collect::<OgeomResult<_>>()?;
+    let mut built = Built::from_nothing(solid.clone());
+    for ((edge, _), wedge) in specs.iter().zip(wedges) {
+        let step = wedge.apply(model, &built.shape, edge, tol)?;
+        built = Built {
+            shape: step.shape.clone(),
+            history: built.history.then(&step.history),
+        };
+    }
+    Ok(built)
+}
+
+/// The wedge one chamfer cuts, built on `solid` as it stands.
+fn wedge_for(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    spec: &Chamfer,
+    tol: Tolerances,
+) -> OgeomResult<Wedge> {
+    match spec {
+        Chamfer::Symmetric(distance) => match seat_kind(model, edge, tol)? {
+            SeatKind::Straight => {
+                let seat = planar_seat(model, solid, edge, tol)?;
+                bevel(model, &seat, [*distance, *distance], tol)
+            }
+            SeatKind::Rim(rim) => {
+                let seat = revolved_seat(model, solid, edge, &rim, tol)?;
+                revolved_bevel(model, &seat, *distance, *distance, tol)
+            }
+        },
+        Chamfer::Distances {
+            face,
+            on_face,
+            on_other,
+        } => match seat_kind(model, edge, tol)? {
+            SeatKind::Straight => {
+                let seat = planar_seat(model, solid, edge, tol)?;
+                let i = seat_side(&seat, face)?;
+                let mut distances = [0.0; 2];
+                distances[i] = *on_face;
+                distances[1 - i] = *on_other;
+                bevel(model, &seat, distances, tol)
+            }
+            SeatKind::Rim(rim) => {
+                let seat = revolved_seat(model, solid, edge, &rim, tol)?;
+                let (on_wall, on_cap) = revolved_side(&seat, face, *on_face, *on_other)?;
+                revolved_bevel(model, &seat, on_wall, on_cap, tol)
+            }
+        },
+        Chamfer::Angle {
+            face,
+            distance,
+            angle,
+        } => {
+            let (distance, angle) = (*distance, *angle);
+            if !angle.is_finite() || angle <= tol.angular() {
                 ogeom_bail!(
                     Construction,
-                    "the bevel at that angle never meets the edge's other face"
+                    "a chamfer at an angle of {angle} cuts nothing"
                 );
             }
-            let derived = distance * angle.sin() / denominator;
-            let mut distances = [0.0; 2];
-            distances[i] = distance;
-            distances[1 - i] = derived;
-            bevel(model, solid, edge, &seat, distances, tol)
-        }
-        SeatKind::Rim(rim) => {
-            // The rim's seat is square by construction — the cap is
-            // perpendicular to the wall — so the derived distance is the
-            // plain tangent, and past a right angle the bevel walks away
-            // from the other face instead of toward it.
-            if angle >= core::f64::consts::FRAC_PI_2 - tol.angular() {
-                ogeom_bail!(
-                    Construction,
-                    "the bevel at that angle never meets the edge's other face"
-                );
+            match seat_kind(model, edge, tol)? {
+                SeatKind::Straight => {
+                    let seat = planar_seat(model, solid, edge, tol)?;
+                    let i = seat_side(&seat, face)?;
+                    // In the cross-section: from the contact on the named
+                    // face, the bevel leaves at `angle` into the wedge's own
+                    // side — the material on a convex edge, the open dihedral
+                    // on a concave one. Where it crosses the other leg's ray
+                    // is the derived distance — no crossing, no chamfer.
+                    let sign = if seat.convex { 1.0 } else { -1.0 };
+                    let a = seat.leg(i, tol)? * sign;
+                    let b = seat.leg(1 - i, tol)? * sign;
+                    let inward = -seat.normals[i] * sign;
+                    let denominator = angle.sin().mul_add(b.dot(a), angle.cos() * b.dot(inward));
+                    if denominator <= tol.angular() {
+                        ogeom_bail!(
+                            Construction,
+                            "the bevel at that angle never meets the edge's other face"
+                        );
+                    }
+                    let derived = distance * angle.sin() / denominator;
+                    let mut distances = [0.0; 2];
+                    distances[i] = distance;
+                    distances[1 - i] = derived;
+                    bevel(model, &seat, distances, tol)
+                }
+                SeatKind::Rim(rim) => {
+                    // The rim's seat is square by construction — the cap is
+                    // perpendicular to the wall — so the derived distance is
+                    // the plain tangent, and past a right angle the bevel
+                    // walks away from the other face instead of toward it.
+                    if angle >= core::f64::consts::FRAC_PI_2 - tol.angular() {
+                        ogeom_bail!(
+                            Construction,
+                            "the bevel at that angle never meets the edge's other face"
+                        );
+                    }
+                    let seat = revolved_seat(model, solid, edge, &rim, tol)?;
+                    let derived = distance * angle.tan();
+                    let (on_wall, on_cap) = revolved_side(&seat, face, distance, derived)?;
+                    revolved_bevel(model, &seat, on_wall, on_cap, tol)
+                }
             }
-            let seat = revolved_seat(model, solid, edge, &rim, tol)?;
-            let derived = distance * angle.tan();
-            let (on_wall, on_cap) = revolved_side(&seat, face, distance, derived)?;
-            revolved_bevel(model, solid, edge, &seat, on_wall, on_cap, tol)
         }
+    }
+}
+
+/// A chamfer's wedge, built and not yet applied: its faces, and whether it
+/// fuses (a concave edge) or cuts (a convex one).
+struct Wedge {
+    faces: Vec<Shape>,
+    additive: bool,
+}
+
+impl Wedge {
+    fn apply(
+        self,
+        model: &mut Model,
+        solid: &Shape,
+        edge: &Shape,
+        tol: Tolerances,
+    ) -> OgeomResult<Built> {
+        apply_wedge(model, solid, Some(edge), &self.faces, self.additive, tol)
     }
 }
 
@@ -216,13 +363,11 @@ fn revolved_side(
 /// the cone between the two tangency rings as the bevel.
 fn revolved_bevel(
     model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
     seat: &RevolvedSeat,
     on_wall: f64,
     on_cap: f64,
     tol: Tolerances,
-) -> OgeomResult<Built> {
+) -> OgeomResult<Wedge> {
     for distance in [on_wall, on_cap] {
         if !distance.is_finite() || distance <= tol.confusion() {
             ogeom_bail!(Construction, "a chamfer of {distance} cuts nothing");
@@ -265,8 +410,10 @@ fn revolved_bevel(
         }
     };
 
-    let faces = [flanks.wall_band, flanks.annulus, bevel_band];
-    apply_wedge(model, solid, Some(edge), &faces, seat.additive(), tol)
+    Ok(Wedge {
+        faces: vec![flanks.wall_band, flanks.annulus, bevel_band],
+        additive: seat.additive(),
+    })
 }
 
 /// Which side of the seat a named face is, by identity.
@@ -287,12 +434,10 @@ fn seat_side(seat: &Seat, face: &Shape) -> OgeomResult<usize> {
 /// `distances[i]` along face `i`, subtracted.
 fn bevel(
     model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
     seat: &Seat,
     distances: [f64; 2],
     tol: Tolerances,
-) -> OgeomResult<Built> {
+) -> OgeomResult<Wedge> {
     for distance in distances {
         if !distance.is_finite() || distance <= tol.confusion() {
             ogeom_bail!(Construction, "a chamfer of {distance} cuts nothing");
@@ -344,5 +489,8 @@ fn bevel(
         planar_face(model, &[apex0, b0, b1, apex1], seat.normals[1] * sign, tol)?,
         planar_face(model, &[a0, b0, b1, a1], bevel_out, tol)?,
     ];
-    apply_wedge(model, solid, Some(edge), &faces, !seat.convex, tol)
+    Ok(Wedge {
+        faces: faces.to_vec(),
+        additive: !seat.convex,
+    })
 }

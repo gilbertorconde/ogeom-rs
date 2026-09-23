@@ -18,7 +18,10 @@ mod marched;
 mod support;
 
 pub use analyse::{BlendContact, analyse_blend};
-pub use chamfer::{chamfer_edge, chamfer_edge_angle, chamfer_edge_distances};
+pub use chamfer::{
+    Chamfer, chamfer_edge, chamfer_edge_angle, chamfer_edge_distances, chamfer_edges,
+    chamfer_edges_with,
+};
 pub use corner::round_vertex;
 pub use corner2d::{chamfer_corner_2d, fillet_corner_2d};
 pub use facepair::blend_faces;
