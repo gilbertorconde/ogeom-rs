@@ -30,6 +30,22 @@ bump may break the API and a patch bump may not.
   old vertices' and edges' recorded tolerances into the converted solid,
   which it had dropped, and the boolean inverts a probe on a patch by
   projection and treats two identical patches as one chart.
+- **The corner tool rounds a vertex no single ball touches.** A
+  rectangular pyramid's apex, an irregular pentagonal one — any convex
+  planar vertex whose faces share no tangent ball — was refused by name.
+  The ball's centre may sit anywhere a radius in from every host plane,
+  and at such a vertex that region's tip is a few points joined by short
+  ridges; the rounded corner is the exact envelope of the rolling ball, a
+  sphere at each tip vertex and a cylinder along each ridge, each cut
+  with its own compartment — the sphere by the one-ball tool on its three
+  planes, the ridge by the flush fillet of a virtual crease — the
+  compartments meeting cap to cap on the planes square to the ridges. A
+  ridge seven microns long stays the sliver of cylinder it is. The
+  sphere's pole stands along a ridge where there is one, so the ridge
+  fillet's cap meets it on a circle the chart images exactly. The flush
+  fillets follow at a sharp apex; at an oblique or irregular one the
+  third still dies in the cut, as it does without the corner, and is
+  owed.
 - **IGES reads more of the 1980s.** A conic arc (104) of any axis-aligned
   kind reads as its own curve — hyperbola and parabola alongside the
   ellipse, the arc's ends read off the file's points whichever way round

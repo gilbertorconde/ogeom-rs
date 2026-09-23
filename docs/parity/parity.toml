@@ -1108,18 +1108,26 @@ fitted again by chord length, and a loop cut at a closed patch's seam is \
 closed on it; a melt the boolean still cannot resolve refuses by name. Some sphere placements still fail in the boolean's classification of \
 the wedge. What is owed now: the equal-radius \
 crossing whose seam pinches at tangent poles; and of the corner family, \
-the N-edged vertex whose faces no single ball touches and the curved-edged \
-corner. The corner tool rounds any planar vertex whose faces one ball \
-touches — a square or oblique trihedral corner, a square pyramid's \
-four-edged apex — its block the polyhedron of the N host planes and the N \
-planes through the ball's centre square to the edges, where each band's \
-rim and the ball's coincide; at more than three edges the corner goes \
-first and the flush fillets follow, since bands built before the corner \
-crash into each other at the apex. The tool is offered on each of the \
-corner's 2N labellings in turn, the first that closes standing: the \
-boolean's indifference to that labelling is owed, two of the six still \
-dying in the cut at an oblique corner, and which labellings close there \
-turning on the last bit of the ball's centre. The \
+the curved-edged corner. The corner tool rounds any convex planar vertex. \
+Where one ball touches every face — a square or oblique trihedral corner, \
+a square pyramid's four-edged apex — its block is the polyhedron of the N \
+host planes and the N planes through the ball's centre square to the \
+edges, where each band's rim and the ball's coincide. Where no single \
+ball does — a rectangular pyramid's apex, an irregular pentagonal one — \
+the region the ball's centre may occupy has a tip of several vertices \
+joined by ridges, and the corner is the exact envelope of the rolling \
+ball: a sphere at each tip vertex, cut with its own compartment, and the \
+flush fillet of a virtual crease along each ridge, the compartments \
+meeting cap to cap on the planes square to the ridges; a ridge seven \
+microns long is kept as the sliver of cylinder it is. At more than three \
+edges the corner goes first and the flush fillets follow, since bands \
+built before the corner crash into each other at the apex. The ball's \
+pole stands along a ridge where there is one, its seam turned from the \
+corner, and otherwise the tool is offered on each of the corner's 2N \
+labellings in turn, the first that closes standing: the boolean's \
+indifference to that labelling is owed, and so is the third flush fillet \
+after an oblique or irregular apex, which dies in the cut as it does on \
+the sharp pyramid. The \
 curved-seat corner is closed in either order: \
 through `fillet_edges` a marched blend and a straight one meet at their \
 corners, the later's run-out walking on under the earlier band, and the \

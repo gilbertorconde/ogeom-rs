@@ -609,32 +609,260 @@ fn round_vertex_sets_back_a_four_edge_apex() {
     assert_eq!(blends, 5, "the patch and four bands");
 }
 
+/// A pyramid over a polygon: its lateral planes' inward normals, for the
+/// closed-form checks below.
+fn inward_normals(base: &[Point], apex: Point) -> Vec<Vector> {
+    let centre = base
+        .iter()
+        .fold(Vector::ZERO, |acc, p| acc + (*p - Point::ORIGIN))
+        * (1.0 / f64::from(u32::try_from(base.len()).unwrap_or(u32::MAX)));
+    let inside = Point::ORIGIN + centre;
+    (0..base.len())
+        .map(|k| {
+            let n = (base[(k + 1) % base.len()] - base[k])
+                .cross(apex - base[k])
+                .normalized(T)
+                .unwrap();
+            if n.dot(inside - base[k]) > 0.0 { n } else { -n }
+        })
+        .collect()
+}
+
+/// A pyramid's apex rounded: the solid, the vertex, and the volume before.
+fn pyramid_apex(model: &mut Model, base: &[Point], apex: Point) -> (Shape, Shape) {
+    let polygon = ogeom::algo::make_polygon(model, base, true, T)
+        .unwrap()
+        .shape;
+    let tip = ogeom::algo::make_vertex(model, apex).shape;
+    let pyramid = ogeom::offset::make_loft(model, &polygon, &tip, T)
+        .unwrap()
+        .shape;
+    let vertex = vertex_near(model, &pyramid, apex);
+    (pyramid, vertex)
+}
+
+/// A sphere among a shape's faces: its centre and radius.
+type Ball = (Point, f64);
+/// A cylinder among a shape's faces: its axis point, direction and radius.
+type Drum = (Point, Vector, f64);
+
+/// The spheres and cylinders among a shape's faces.
+fn balls_and_drums(model: &Model, shape: &Shape) -> (Vec<Ball>, Vec<Drum>) {
+    let mut balls = Vec::new();
+    let mut drums = Vec::new();
+    for face in explore_unique(model, shape, ShapeType::Face).unwrap() {
+        let ogeom::topo::NodeData::Face(data) = model.node(&face).unwrap().data() else {
+            continue;
+        };
+        match model.geometry().surface(data.surface) {
+            Some(ogeom::geom::SurfaceGeometry::Sphere(s)) => {
+                balls.push((s.sphere().frame().origin(), s.sphere().radius()));
+            }
+            Some(ogeom::geom::SurfaceGeometry::Cylinder(c)) => {
+                drums.push((
+                    c.cylinder().frame().origin(),
+                    c.cylinder().frame().z().vector(),
+                    c.cylinder().radius(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    (balls, drums)
+}
+
 /// A rectangular pyramid's apex: four planes, two slopes, and no ball a
-/// radius in from all four at once. The tool refuses by name rather than
-/// seating a ball that touches two of the faces and cuts the other two.
+/// radius in from all four at once. The region the ball's centre may
+/// occupy has two tip vertices, each a radius in from three of the planes,
+/// joined along the two long slopes; the rounded corner is a sphere at
+/// each and a cylinder between them, the exact envelope of the rolling
+/// ball. The four edges then take their flush fillets, each band ending on
+/// its sphere's rim.
 #[test]
-fn round_vertex_refuses_an_apex_no_ball_touches() {
+fn round_vertex_rounds_an_apex_no_ball_touches() {
     let mut model = Model::new();
-    let base_corners = [
+    let r = 1.5;
+    let base = [
         Point::new(-10.0, -5.0, 0.0),
         Point::new(10.0, -5.0, 0.0),
         Point::new(10.0, 5.0, 0.0),
         Point::new(-10.0, 5.0, 0.0),
     ];
     let apex = Point::new(0.0, 0.0, 15.0);
-    let base = ogeom::algo::make_polygon(&mut model, &base_corners, true, T)
+    let (pyramid, vertex) = pyramid_apex(&mut model, &base, apex);
+    let fine = ogeom::mesh::Deflection::with_chord(2e-3).unwrap();
+    let volume = |model: &Model, shape: &Shape| {
+        ogeom::algo::volume_properties(model, shape, fine, T)
+            .unwrap()
+            .mass
+    };
+    let before = volume(&model, &pyramid);
+
+    let rounded = ogeom::fillet::round_vertex(&mut model, &pyramid, &vertex, r, T)
         .unwrap()
         .shape;
-    let tip = ogeom::algo::make_vertex(&mut model, apex).shape;
-    let pyramid = ogeom::offset::make_loft(&mut model, &base, &tip, T)
+    let diagnosis = ogeom::algo::check(&model, &rounded, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    assert_eq!(
+        explore_unique(&model, &rounded, ShapeType::Face)
+            .unwrap()
+            .len(),
+        12,
+        "five walls, two spheres, the ridge's cylinder and four flush ends"
+    );
+    // Each sphere sits a radius in from three of the four planes and
+    // farther from the fourth; the cylinder runs between the two centres
+    // along the two long slopes, at the same radius.
+    let inward = inward_normals(&base, apex);
+    let (balls, drums) = balls_and_drums(&model, &rounded);
+    assert_eq!(balls.len(), 2);
+    assert_eq!(drums.len(), 1);
+    for (centre, radius) in &balls {
+        assert!((radius - r).abs() < 1e-9);
+        let distances: Vec<f64> = inward.iter().map(|m| m.dot(*centre - apex)).collect();
+        let touching = distances.iter().filter(|d| (*d - r).abs() < 1e-7).count();
+        assert_eq!(
+            touching, 3,
+            "a tip vertex touches three planes: {distances:?}"
+        );
+        assert!(distances.iter().all(|d| *d >= r - 1e-7));
+    }
+    let (origin, axis, radius) = drums[0];
+    assert!((radius - r).abs() < 1e-9);
+    for (centre, _) in &balls {
+        let off = (*centre - origin) - axis * (*centre - origin).dot(axis);
+        assert!(
+            off.magnitude() < 1e-7,
+            "the ridge runs through both centres"
+        );
+    }
+    let after_corner = volume(&model, &rounded);
+    assert!(after_corner < before && before - after_corner < 20.0 * r * r * r);
+
+    // The flush fillets follow, each consuming its flush end.
+    let mut solid = rounded;
+    let mut last = after_corner;
+    for corner in &base {
+        let edge = edge_near(
+            &model,
+            &solid,
+            Point::new(corner.x, corner.y, 0.0)
+                + (apex - Point::new(corner.x, corner.y, 0.0)) * 0.5,
+        );
+        solid = ogeom::fillet::fillet_edge(&mut model, &solid, &edge, r, T)
+            .unwrap()
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &solid, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let now = volume(&model, &solid);
+        assert!(now < last, "each band sheds material: {last} -> {now}");
+        last = now;
+    }
+    let (balls, drums) = balls_and_drums(&model, &solid);
+    assert_eq!(
+        (balls.len(), drums.len()),
+        (2, 5),
+        "two spheres, the ridge and four bands"
+    );
+    assert_eq!(
+        explore_unique(&model, &solid, ShapeType::Face)
+            .unwrap()
+            .len(),
+        12
+    );
+}
+
+/// A flat rectangular pyramid's apex, and an oblique one: the same two
+/// spheres and a ridge, the flat one's edges taking their flush fillets
+/// after. At the oblique apex the corner rounds; the third flush fillet
+/// after it still dies in the cut, as it does on the sharp pyramid — the
+/// labelling the boolean is not yet indifferent to — and is owed.
+#[test]
+fn round_vertex_rounds_flat_and_oblique_apexes_no_ball_touches() {
+    let r = 1.5;
+    let base = [
+        Point::new(-10.0, -4.0, 0.0),
+        Point::new(10.0, -4.0, 0.0),
+        Point::new(10.0, 4.0, 0.0),
+        Point::new(-10.0, 4.0, 0.0),
+    ];
+    for (apex, fillets) in [
+        (Point::new(0.0, 0.0, 8.0), true),
+        (Point::new(3.0, 1.0, 15.0), false),
+    ] {
+        let mut model = Model::new();
+        let (pyramid, vertex) = pyramid_apex(&mut model, &base, apex);
+        let rounded = ogeom::fillet::round_vertex(&mut model, &pyramid, &vertex, r, T)
+            .unwrap()
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &rounded, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let inward = inward_normals(&base, apex);
+        let (balls, drums) = balls_and_drums(&model, &rounded);
+        assert_eq!((balls.len(), drums.len()), (2, 1));
+        for (centre, _) in &balls {
+            let touching = inward
+                .iter()
+                .filter(|m| (m.dot(*centre - apex) - r).abs() < 1e-7)
+                .count();
+            assert_eq!(touching, 3);
+        }
+        if !fillets {
+            continue;
+        }
+        let mut solid = rounded;
+        for corner in &base {
+            let edge = edge_near(&model, &solid, *corner + (apex - *corner) * 0.5);
+            solid = ogeom::fillet::fillet_edge(&mut model, &solid, &edge, r, T)
+                .unwrap()
+                .shape;
+            assert!(ogeom::algo::check(&model, &solid, T).unwrap().is_valid());
+        }
+    }
+}
+
+/// An irregular pentagonal pyramid's apex: five planes, three tip vertices
+/// and two ridges, one of them seven microns long — a sliver of cylinder
+/// the tool keeps rather than merging into a sphere that touches none of
+/// its planes exactly.
+#[test]
+fn round_vertex_rounds_a_five_edged_apex_with_a_sliver_ridge() {
+    let mut model = Model::new();
+    let base: Vec<Point> = (0..5)
+        .map(|k| {
+            let a = core::f64::consts::TAU * f64::from(k) / 5.0 + 0.3;
+            let radius = if k % 2 == 0 { 10.0 } else { 7.0 };
+            Point::new(radius * a.cos(), radius * a.sin(), 0.0)
+        })
+        .collect();
+    let apex = Point::new(1.0, 0.5, 14.0);
+    let (pyramid, vertex) = pyramid_apex(&mut model, &base, apex);
+    let rounded = ogeom::fillet::round_vertex(&mut model, &pyramid, &vertex, 1.5, T)
         .unwrap()
         .shape;
-    let vertex = vertex_near(&model, &pyramid, apex);
-    let err = ogeom::fillet::round_vertex(&mut model, &pyramid, &vertex, 1.5, T)
-        .expect_err("no ball touches all four faces");
-    assert!(
-        err.to_string().contains("share no tangent ball"),
-        "the refusal names the missing ball: {err}"
+    let diagnosis = ogeom::algo::check(&model, &rounded, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let inward = inward_normals(&base, apex);
+    let (balls, drums) = balls_and_drums(&model, &rounded);
+    assert_eq!(
+        (balls.len(), drums.len()),
+        (3, 2),
+        "three spheres and two ridges"
+    );
+    for (centre, _) in &balls {
+        let touching = inward
+            .iter()
+            .filter(|m| (m.dot(*centre - apex) - 1.5).abs() < 1e-7)
+            .count();
+        assert_eq!(touching, 3);
+        assert!(inward.iter().all(|m| m.dot(*centre - apex) >= 1.5 - 1e-7));
+    }
+    assert_eq!(
+        explore_unique(&model, &rounded, ShapeType::Face)
+            .unwrap()
+            .len(),
+        16,
+        "six walls, three spheres, two ridges and five flush ends"
     );
 }
 

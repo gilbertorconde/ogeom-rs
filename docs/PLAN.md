@@ -670,8 +670,11 @@ These are settled. They are here so nobody reopens them by accident.
    points came back as one confident loop lying on neither. So a condition
    declares whether its tangent's sign is its own, and that declaration is
    load-bearing.
-4. ~~**B1** — the marching blend.~~ **Done.** **B2**'s corner family is owed
-   still, and on **A6** — tangency at a face's own corner — rather than on A5.
+4. ~~**B1** — the marching blend.~~ **Done.** **B2**'s corner family is
+   down to the curved-edged corner: any convex planar vertex rounds, as
+   the exact envelope of the rolling ball where no single ball touches its
+   faces. What is left sits on **A6** — tangency at a face's own corner —
+   rather than on A5.
 5. ~~**D1** — marched silhouettes.~~ **Done**, and they were indeed a second
    condition for a walker that already existed.
 6. **F2** — IGES.

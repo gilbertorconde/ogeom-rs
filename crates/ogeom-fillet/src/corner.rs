@@ -1,5 +1,12 @@
-//! Rounding a vertex: the ball-and-block tool at a corner whose faces one
-//! ball touches.
+//! Rounding a vertex: the ball-and-block tool at a planar corner.
+//!
+//! The ball's centre may sit anywhere a radius in from every host plane.
+//! At a corner one ball touches, that region's tip is a point and the
+//! rounded corner is one spherical patch; at a corner no single ball
+//! touches, the tip is a few points joined by short ridges, and the
+//! rounded corner is a sphere at each and a cylinder along each ridge —
+//! the exact envelope of the rolling ball, where the setback family fits
+//! a plate through the bands' ends instead.
 //!
 //! *Elsewhere:* the vertex blend of `ChFi3d`'s setback family.
 
@@ -23,15 +30,24 @@ use ogeom_topo::{Model, Shape, ShapeType};
 /// crash into each other at a pyramid's apex — and the block is the
 /// polyhedron of the N host planes and the N planes square to the edges.
 ///
+/// A vertex whose planes share no tangent ball — a rectangular pyramid's
+/// apex, any general N-edged vertex — is rounded by the envelope of every
+/// ball a radius in from all of them: a sphere at each vertex of the
+/// region the ball's centre may occupy and a cylinder along each ridge
+/// between two of them, each cut with its own compartment, the spheres
+/// by the one-ball tool on their three planes and the ridges by the flush
+/// fillet of a virtual crease. The compartments meet on the planes
+/// square to the ridges, cap to cap.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
 /// vertex is not a vertex of the solid; if fewer than three planes pass
-/// through it (a curved-edged corner is the N-support setback's, still
-/// owed — docs/PARITY.md, fillet.edge-blends); if the planes share no
-/// tangent ball — three that span always do, a square pyramid's four do,
-/// a general N-edged vertex does not, and that vertex is owed the general
-/// setback patch; or if the corner turns out concave, where a ball adds
+/// through it (a curved-edged corner is the setback family's, still
+/// owed — docs/PARITY.md, fillet.edge-blends); if the region the ball's
+/// centre may occupy has a tip vertex touching more than three planes
+/// without one ball touching all of the corner's, or with other than three
+/// edges leaving it; or if the corner turns out concave, where a ball adds
 /// material instead of shedding it and a tool built from a cut cannot say
 /// so. The corner may be oblique: the block is then the hexahedron bounded
 /// by the host planes and the three planes through the ball's centre
@@ -163,14 +179,11 @@ pub fn round_vertex(
         );
     };
     if residual > tol.confusion() * 10.0 {
-        ogeom_bail!(
-            Construction,
-            "the {n} planes through this vertex share no tangent ball — the \
-             nearest fit misses one by {residual}; the corner tool rounds \
-             the vertex whose faces one ball touches, and the general \
-             N-support setback is still owed — docs/PARITY.md, \
-             fillet.edge-blends"
-        );
+        // No one ball touches every face: the rounded corner is the
+        // envelope of every ball a radius in from all of them, which is
+        // more than one sphere. Its pieces are read off the region the
+        // ball's centre may occupy.
+        return setback_corner(model, solid, vertex, corner, &m, radius, tol);
     }
     // A concave vertex puts the ball's centre outside the material: a ball
     // there adds material instead of shedding it, and a tool built from a
@@ -403,4 +416,566 @@ pub fn round_vertex(
     let mut built = rounded;
     built.history.modify(vertex, built.shape.clone());
     Ok(built)
+}
+
+/// A vertex of the region the ball's centre may occupy: a point a radius
+/// in from three or more of the host planes and at least a radius from the
+/// rest, with the planes it touches.
+struct TipVertex {
+    centre: Point,
+    planes: Vec<usize>,
+}
+
+/// An edge of that region's tip between two of its vertices: the ball
+/// rolling from one to the other touches two planes all the way, and
+/// sweeps a cylinder.
+struct Ridge {
+    from: usize,
+    to: usize,
+    planes: [usize; 2],
+}
+
+/// Round a convex planar vertex whose faces no single ball touches.
+///
+/// The ball's centre may sit anywhere a radius in from every host plane:
+/// a convex region whose tip, at a vertex one ball touches, is a single
+/// point, and otherwise a few points joined by short edges — a rectangular
+/// pyramid's apex has two, joined along the two long slopes. The rounded
+/// corner is the envelope of every ball centred in that region: a sphere
+/// at each tip vertex, a cylinder along each edge between them, and the
+/// host planes themselves elsewhere. Exact, constant-radius, and what the
+/// rolling ball leaves — where a plate would be fitted through the bands'
+/// ends instead.
+///
+/// Each piece is cut with its own block: at a tip vertex, the corner
+/// bounded by its three planes and the three planes through the centre
+/// square to its edges, less the ball — the one-ball tool exactly — and
+/// along an edge between two centres, the prism over the kite of the
+/// virtual crease, the two touch points and the centre, between the two
+/// planes square to the edge, less the cylinder. The compartments tile
+/// the corner and meet on the planes square to the edges, where each
+/// sphere's rim and the cylinder's end coincide, so the cuts consume one
+/// another's flush faces cap to cap. An original edge leaves its tip
+/// vertex along a ray, and the plane square to it there is where the
+/// edge's band ends when the flush fillets follow.
+fn setback_corner(
+    model: &mut Model,
+    solid: &Shape,
+    vertex: &Shape,
+    corner: Point,
+    m: &[Vector],
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let n = m.len();
+    let slack = tol.confusion() * 10.0;
+    // The tip's vertices: every triple that meets at a point a radius in
+    // from all the planes, merged where several triples name one point.
+    let mut tips: Vec<TipVertex> = Vec::new();
+    for i in 0..n {
+        for j in i + 1..n {
+            for k in j + 1..n {
+                let Some(centre) = ball_centre(corner, &[m[i], m[j], m[k]], radius) else {
+                    continue;
+                };
+                let feasible = m.iter().all(|mk| mk.dot(centre - corner) >= radius - slack);
+                if !feasible {
+                    continue;
+                }
+                if tips.iter().any(|t| t.centre.distance(centre) <= slack) {
+                    continue;
+                }
+                let planes: Vec<usize> = (0..n)
+                    .filter(|&l| (m[l].dot(centre - corner) - radius).abs() <= slack)
+                    .collect();
+                tips.push(TipVertex { centre, planes });
+            }
+        }
+    }
+    if std::env::var_os("OGEOM_DEBUG_CORNER").is_some() {
+        for tip in &tips {
+            eprintln!("TIP {:?} planes {:?}", tip.centre, tip.planes);
+        }
+    }
+    if tips.is_empty() {
+        ogeom_bail!(
+            Construction,
+            "the {n} planes through this vertex hold no ball a radius in from \
+             all of them"
+        );
+    }
+    // Each tip vertex's edges: along every pair of its planes, the way the
+    // rest of its planes allow; bounded where another plane becomes
+    // tangent — a ridge to the tip vertex there — and a ray otherwise, the
+    // way an original edge's band runs. A ray that lies along no original
+    // edge, or a vertex with other than three edges, is a corner this tool
+    // does not speak.
+    let mut ridges: Vec<Ridge> = Vec::new();
+    let mut rays: Vec<Vec<(Vector, [usize; 2])>> = vec![Vec::new(); tips.len()];
+    for (index, tip) in tips.iter().enumerate() {
+        for (a, b) in tip
+            .planes
+            .iter()
+            .flat_map(|&a| tip.planes.iter().map(move |&b| (a, b)))
+        {
+            if a >= b {
+                continue;
+            }
+            let cross = m[a].cross(m[b]);
+            let length = cross.magnitude();
+            if length <= tol.angular() * 10.0 {
+                continue;
+            }
+            let Some(direction) = [1.0, -1.0]
+                .into_iter()
+                .map(|sign| cross * (sign / length))
+                .find(|d| {
+                    tip.planes
+                        .iter()
+                        .filter(|&&l| l != a && l != b)
+                        .all(|&l| m[l].dot(*d) >= -tol.angular() * 10.0)
+                })
+            else {
+                continue;
+            };
+            // The first other plane the ball meets rolling this way.
+            let mut nearest: Option<(f64, usize)> = None;
+            for (l, ml) in m.iter().enumerate() {
+                if tip.planes.contains(&l) {
+                    continue;
+                }
+                let rate = ml.dot(direction);
+                if rate >= -tol.angular() {
+                    continue;
+                }
+                let t = (radius - ml.dot(tip.centre - corner)) / rate;
+                if t > slack && nearest.is_none_or(|(held, _)| t < held) {
+                    nearest = Some((t, l));
+                }
+            }
+            match nearest {
+                Some((t, _)) => {
+                    let end = tip.centre + direction * t;
+                    let Some(to) = tips.iter().position(|o| o.centre.distance(end) <= slack) else {
+                        ogeom_bail!(
+                            Construction,
+                            "the ball rolling between two of this vertex's faces meets a \
+                             third where no tip vertex stands"
+                        );
+                    };
+                    if index < to {
+                        ridges.push(Ridge {
+                            from: index,
+                            to,
+                            planes: [a, b],
+                        });
+                    }
+                }
+                None => rays[index].push((direction, [a, b])),
+            }
+        }
+    }
+    let concave = {
+        let boundary = ogeom_algo::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol)?;
+        let mut concave = false;
+        for tip in &tips {
+            if boundary.holds(model, tip.centre, tol)? != ogeom_algo::Containment::In {
+                concave = true;
+            }
+        }
+        concave
+    };
+    if concave {
+        ogeom_bail!(
+            Construction,
+            "no material a radius in from every face at this vertex; a \
+             concave vertex gains a ball instead of shedding one, and this \
+             tool cannot round it"
+        );
+    }
+
+    model.begin_operation();
+    let mut rounded = solid.clone();
+    let mut history = ogeom_algo::History::new();
+    // The sphere at each tip vertex, with its own compartment: the wedge of
+    // its planes, cut by the plane square to each of its edges through the
+    // centre. A ridge's plane faces the corner, and the corner itself lies
+    // in the ridge's compartment, not this one.
+    for (index, tip) in tips.iter().enumerate() {
+        // The vertex's edges, each on two of its planes: its rays and the
+        // ridges that start or end here.
+        let mut edges: Vec<(Vector, [usize; 2])> = rays[index].clone();
+        for ridge in &ridges {
+            let other = if ridge.from == index {
+                ridge.to
+            } else if ridge.to == index {
+                ridge.from
+            } else {
+                continue;
+            };
+            let direction = (tips[other].centre - tip.centre).normalized(tol)?;
+            edges.push((direction, ridge.planes));
+        }
+        let k = tip.planes.len();
+        if edges.len() != k {
+            ogeom_bail!(
+                Construction,
+                "a tip vertex of this corner touches {k} planes along {} edges, not \
+                 {k}; the corner is not the simple convex one this tool speaks",
+                edges.len()
+            );
+        }
+        // In ring order, consecutive edges sharing a plane, so that host t
+        // holds edges t and t+1 — the labelling the ball's frame is read
+        // off, its pole along a host and its seam out through an edge.
+        let shared = |x: &[usize; 2], y: &[usize; 2]| -> Option<usize> {
+            x.iter().copied().find(|p| y.contains(p))
+        };
+        let mut ring: Vec<(Vector, [usize; 2])> = vec![edges[0]];
+        let mut used = vec![false; k];
+        used[0] = true;
+        while ring.len() < k {
+            let last = ring[ring.len() - 1];
+            let Some(next) = (0..k).find(|&i| {
+                !used[i]
+                    && shared(&edges[i].1, &last.1).is_some_and(|p| {
+                        // The plane shared with the previous edge is not
+                        // the one shared with the edge before that.
+                        ring.len() < 2 || shared(&ring[ring.len() - 2].1, &last.1) != Some(p)
+                    })
+            }) else {
+                ogeom_bail!(Construction, "the tip vertex's edges do not chain")
+            };
+            used[next] = true;
+            ring.push(edges[next]);
+        }
+        let hosts: Vec<Vector> = (0..k)
+            .map(|t| {
+                shared(&ring[t].1, &ring[(t + 1) % k].1)
+                    .map(|p| m[p])
+                    .ok_or_else(|| {
+                        ogeom_core::ogeom_err!(Construction, "the tip vertex's edges do not chain")
+                    })
+            })
+            .collect::<OgeomResult<_>>()?;
+        let directions: Vec<Vector> = ring.iter().map(|(d, _)| *d).collect();
+        // Whether edge t is a ridge, whose rim plane a later cut's cap
+        // stands in: a pole along a plane holding a ridge would put both
+        // poles in that cap, and the cap's circle would have no chart
+        // image. Labellings whose pole host holds no ridge go first.
+        let is_ridge: Vec<bool> = ring
+            .iter()
+            .map(|(d, _)| !rays[index].iter().any(|(r, _)| r.dot(*d) > 1.0 - 1e-9))
+            .collect();
+        let mut walls: Vec<(Vector, Point)> = tip.planes.iter().map(|&p| (m[p], corner)).collect();
+        for direction in &directions {
+            walls.push((-*direction, tip.centre));
+        }
+        let tool = ball_block(
+            model,
+            &walls,
+            corner,
+            tip.centre,
+            &hosts,
+            &directions,
+            &is_ridge,
+            radius,
+            tol,
+        )?;
+        let cut = ogeom_bool::cut(model, &rounded, &tool.shape, tol).map_err(|e| {
+            ogeom_core::ogeom_err!(
+                NotDone,
+                "the cut by the ball's block at tip vertex {index} failed: {e}"
+            )
+        })?;
+        history = history.then(&tool.history).then(&cut.history);
+        rounded = cut.shape;
+    }
+    // The cylinder along each ridge: the flush fillet of a virtual crease —
+    // the line the two planes it touches would meet along — between the
+    // planes square to the ridge through its two centres, which are the
+    // caps' own planes. The planar fillet builds that wedge face by face,
+    // band, legs and caps, and melts it; the caps meet the spheres' rims
+    // on the planes the vertex compartments already cut.
+    for ridge in &ridges {
+        let (v1, v2) = (tips[ridge.from].centre, tips[ridge.to].centre);
+        let along = (v2 - v1).normalized(tol)?;
+        let [a, c] = ridge.planes;
+        let on_crease = |v: Point| corner + along * (v - corner).dot(along);
+        let face_on = |model: &Model, inward: Vector| -> OgeomResult<Shape> {
+            for face in ogeom_topo::explore_unique(model, &rounded, ShapeType::Face)? {
+                let Some(data) = model.node(&face).and_then(|n| n.data().as_face()) else {
+                    continue;
+                };
+                if !matches!(
+                    model.geometry().surface(data.surface),
+                    Some(ogeom_geom::SurfaceGeometry::Plane(_))
+                ) {
+                    continue;
+                }
+                let (origin, outward) = ogeom_algo::face_normal(model, &face, tol)?;
+                if (corner - origin).dot(outward).abs() <= tol.confusion() * 100.0
+                    && outward.cross(inward).magnitude() < tol.angular() * 10.0
+                    && outward.dot(inward) < 0.0
+                {
+                    return Ok(face);
+                }
+            }
+            ogeom_bail!(
+                Construction,
+                "the ridge's host plane is no longer a face of the solid"
+            )
+        };
+        let faces = [face_on(model, m[a])?, face_on(model, m[c])?];
+        let seat = crate::support::Seat {
+            start: on_crease(v1),
+            end: on_crease(v2),
+            along,
+            normals: [-m[a], -m[c]],
+            faces,
+            convex: true,
+        };
+        let cut = crate::fillet::seated_fillet(model, &rounded, &seat, radius, None, tol)
+            .map_err(|e| ogeom_core::ogeom_err!(NotDone, "the ridge's flush fillet failed: {e}"))?;
+        history = history.then(&cut.history);
+        rounded = cut.shape;
+    }
+    history.modify(vertex, rounded.clone());
+    Ok(Built {
+        shape: rounded,
+        history,
+    })
+}
+
+/// A convex polytope from the half-spaces that bound it, each given by
+/// its inward normal and a point on its plane.
+///
+/// Its corners are the feasible meetings of three planes; each plane's
+/// face is those of its corners that lie on it, walked round the face's
+/// centroid. The polyhedron builder checks what this hands it — planarity,
+/// every edge shared by two faces — so a set of half-spaces that bounds
+/// nothing, or bounds a sliver, is refused rather than built.
+fn convex_block(
+    model: &mut Model,
+    walls: &[(Vector, Point)],
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let slack = tol.confusion() * 100.0;
+    let n = walls.len();
+    let mut points: Vec<Point> = Vec::new();
+    for i in 0..n {
+        for j in i + 1..n {
+            for k in j + 1..n {
+                let Some(p) = planes_meet(&walls[i], &walls[j], &walls[k]) else {
+                    continue;
+                };
+                if walls
+                    .iter()
+                    .any(|(normal, on)| normal.dot(p - *on) < -slack)
+                {
+                    continue;
+                }
+                if points.iter().any(|q| q.distance(p) <= slack) {
+                    continue;
+                }
+                points.push(p);
+            }
+        }
+    }
+    let mut rings: Vec<Vec<usize>> = Vec::new();
+    for (normal, on) in walls {
+        let mine: Vec<usize> = (0..points.len())
+            .filter(|&i| normal.dot(points[i] - *on).abs() <= slack)
+            .collect();
+        if mine.len() < 3 {
+            continue;
+        }
+        let centroid = mine
+            .iter()
+            .fold(Vector::ZERO, |acc, &i| acc + (points[i] - Point::ORIGIN))
+            * (1.0 / f64::from(u32::try_from(mine.len()).unwrap_or(u32::MAX)));
+        let centroid = Point::ORIGIN + centroid;
+        let axis = normal.normalized(tol)?;
+        let first = (points[mine[0]] - centroid).normalized(tol)?;
+        let second = axis.cross(first);
+        let mut ordered: Vec<(f64, usize)> = mine
+            .iter()
+            .map(|&i| {
+                let v = points[i] - centroid;
+                (v.dot(second).atan2(v.dot(first)), i)
+            })
+            .collect();
+        ordered.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
+        rings.push(ordered.into_iter().map(|(_, i)| i).collect());
+    }
+    Ok(ogeom_algo::make_polyhedron(model, &points, &rings, tol)?.shape)
+}
+
+/// Where three planes meet, or `None` where they do not span.
+fn planes_meet(a: &(Vector, Point), b: &(Vector, Point), c: &(Vector, Point)) -> Option<Point> {
+    let m = [a.0, b.0, c.0];
+    let rhs = [
+        a.0.dot(a.1 - Point::ORIGIN),
+        b.0.dot(b.1 - Point::ORIGIN),
+        c.0.dot(c.1 - Point::ORIGIN),
+    ];
+    let x = solve3(&m, rhs)?;
+    Some(Point::ORIGIN + x)
+}
+
+/// `m_k · x = rhs_k` for three rows, or `None` where they do not span.
+fn solve3(m: &[Vector; 3], rhs: [f64; 3]) -> Option<Vector> {
+    let a: [[f64; 3]; 3] = std::array::from_fn(|i| [m[i].x, m[i].y, m[i].z]);
+    let det3 = |a: &[[f64; 3]; 3]| -> f64 {
+        a[0][0].mul_add(
+            a[1][1].mul_add(a[2][2], -(a[1][2] * a[2][1])),
+            -a[0][1].mul_add(
+                a[1][0].mul_add(a[2][2], -(a[1][2] * a[2][0])),
+                -(a[0][2] * a[1][0].mul_add(a[2][1], -(a[1][1] * a[2][0]))),
+            ),
+        )
+    };
+    let det = det3(&a);
+    if !det.is_finite() || det.abs() <= 1e-12 {
+        return None;
+    }
+    let mut x = [0.0_f64; 3];
+    for (k, xk) in x.iter_mut().enumerate() {
+        let mut ak = a;
+        for (row, r) in ak.iter_mut().zip(rhs) {
+            row[k] = r;
+        }
+        *xk = det3(&ak) / det;
+    }
+    Some(Vector::new(x[0], x[1], x[2]))
+}
+
+/// The point a radius in from three planes through `corner`, or `None`
+/// where they do not span.
+fn ball_centre(corner: Point, m: &[Vector; 3], radius: f64) -> Option<Point> {
+    solve3(m, [radius; 3]).map(|x| corner + x)
+}
+
+/// A compartment less the ball centred in it: the block from its walls,
+/// cut by the sphere at `far`.
+///
+/// Host `t` holds edges `t` and `t + 1`. The ball's pole stands along a
+/// host's normal and its seam meridian runs out through the first of that
+/// host's edges — in a rim plane, so the seam doubles as a trim rather
+/// than crossing a patch — and every labelling is offered in turn, the
+/// first that closes standing. A cut that closes on a tool reaching past
+/// its own block is a wrong tool, not a closed one, and is passed over
+/// too.
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
+fn ball_block(
+    model: &mut Model,
+    walls: &[(Vector, Point)],
+    corner: Point,
+    far: Point,
+    hosts: &[Vector],
+    directions: &[Vector],
+    is_ridge: &[bool],
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let n = directions.len();
+    let mut last: Option<ogeom_core::OgeomError> = None;
+    // The ball's frames, best first. Along a ridge, the ridge's rim plane
+    // is the sphere's equator, both poles stand outside the patch — the
+    // patch lies on the corner's side of every rim plane, the poles on
+    // the ridge's own axis either side of it — and a seam meridian turned
+    // away from the corner never crosses it; the ridge fillet's cap, in
+    // that same rim plane, then meets the sphere on a circle the chart
+    // images exactly. Then the classic labellings: the pole along host t,
+    // the seam out through edge t, hosts holding no ridge first.
+    let mut frames: Vec<(Vector, Vector)> = Vec::new();
+    for t in 0..n {
+        if is_ridge[t] {
+            let axis = directions[t];
+            let away = far - corner;
+            let seam = away - axis * away.dot(axis);
+            if seam.magnitude() > tol.angular() * 10.0 {
+                frames.push((axis, seam));
+            }
+        }
+    }
+    // Host t holds edges t and t+1; a labelling's pole host is `start`
+    // forward and `start − 1` reversed.
+    let pole_host = |index: usize| -> usize {
+        let (start, reverse) = (index % n, index >= n);
+        if reverse {
+            (start + 2 * n - 1) % n
+        } else {
+            start
+        }
+    };
+    let clean = |index: usize| -> bool {
+        let h = pole_host(index);
+        !is_ridge[h] && !is_ridge[(h + 1) % n]
+    };
+    let mut order: Vec<usize> = (0..2 * n).collect();
+    order.sort_by_key(|&index| !clean(index));
+    frames.extend(
+        order
+            .iter()
+            .map(|&index| (hosts[pole_host(index)], directions[index % n])),
+    );
+    for (index, (pole, seam)) in frames.into_iter().enumerate() {
+        model.begin_operation();
+        let attempt = (|| -> OgeomResult<Built> {
+            let block = convex_block(model, walls, tol)?;
+            let block_bound = ogeom_algo::shape_bounds(model, &block, tol)?;
+            let ball_frame = Frame::new(
+                far,
+                Direction::new(pole, tol)?,
+                Direction::new(seam, tol)?,
+                tol,
+            )?;
+            let ball = ogeom_algo::make_sphere(model, ball_frame, radius, tol)?.shape;
+            let tool = ogeom_bool::cut(model, &block, &ball, tol)?;
+            let tool_bound = ogeom_algo::shape_bounds(model, &tool.shape, tol)?;
+            let reach = tol.confusion() * 1e3;
+            let (Some(block_lo), Some(block_hi), Some(tool_lo), Some(tool_hi)) = (
+                block_bound.low(),
+                block_bound.high(),
+                tool_bound.low(),
+                tool_bound.high(),
+            ) else {
+                ogeom_bail!(NotDone, "the ball's cut left no tool");
+            };
+            if tool_lo.x < block_lo.x - reach
+                || tool_lo.y < block_lo.y - reach
+                || tool_lo.z < block_lo.z - reach
+                || tool_hi.x > block_hi.x + reach
+                || tool_hi.y > block_hi.y + reach
+                || tool_hi.z > block_hi.z + reach
+            {
+                ogeom_bail!(
+                    NotDone,
+                    "the ball's cut left a tool reaching past its own block"
+                );
+            }
+            Ok(tool)
+        })();
+        match attempt {
+            Ok(tool) => {
+                if std::env::var_os("OGEOM_DEBUG_CORNER").is_some() {
+                    eprintln!("BALL frame {index} closed");
+                }
+                return Ok(tool);
+            }
+            Err(err) => {
+                if std::env::var_os("OGEOM_DEBUG_CORNER").is_some() {
+                    eprintln!("BALL frame {index} pole {pole:?} seam {seam:?}: {err}");
+                }
+                last = Some(err);
+            }
+        }
+    }
+    ogeom_bail!(
+        NotDone,
+        "the corner tool's block closed on none of its {} frames; the last said: {}",
+        2 * n,
+        last.map_or_else(String::new, |e| e.to_string())
+    )
 }

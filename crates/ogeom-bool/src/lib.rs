@@ -1447,6 +1447,13 @@ fn fill(
                                 }
                                 // No image fits: march the pair instead, so
                                 // curve and pcurves are fitted *together*.
+                                if *DEBUG_WIRE {
+                                    eprintln!(
+                                        "MARCH PAIR faces {ia}/{ib} a {:?} b {:?} admitted {admitted}",
+                                        core::mem::discriminant(&fa.surface),
+                                        core::mem::discriminant(&fb.surface)
+                                    );
+                                }
                                 let shared = if admitted {
                                     fa.bound.intersection(&fb.bound)
                                 } else {
