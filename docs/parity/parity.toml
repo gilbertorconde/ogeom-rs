@@ -586,9 +586,9 @@ claims = [
 ]
 symbols = [
     "ogeom_heal::repair_same_parameter", "ogeom_heal::SameParameterReport",
-    "ogeom_intersect::exact_pcurve_of",
+    "ogeom_intersect::exact_pcurve_of", "ogeom_algo::project_edge_onto_plane",
 ]
-tests = ["crates/ogeom-heal/src/same_parameter.rs"]
+tests = ["crates/ogeom-heal/src/same_parameter.rs", "crates/ogeom/tests/project_plane.rs"]
 
 [[capability]]
 id = "heal.upgrade"

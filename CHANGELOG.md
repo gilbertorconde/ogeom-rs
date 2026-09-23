@@ -11,6 +11,27 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **`project_edge_onto_plane`** projects an edge orthogonally onto a plane
+  as an exact curve in the plane's coordinates, for a sketch to constrain
+  against. A line comes back a line or a point; a circle or ellipse a
+  circle, an ellipse or a segment, its arc range counter-clockwise; a
+  B-spline the spline on its projected control points. Any other curve
+  is fitted and the fit's error returned.
+
+### Fixed
+
+- **Mass properties were a part in a hundred off on elliptic walls at the
+  default deflection.** Only faces bounded by a chart rectangle or a full
+  circle on an analytic surface were integrated exactly; anything else
+  sent the shape to its mesh. A face on an analytic surface, or on a line
+  or conic swept or revolved, is now integrated round its own trim, so an
+  elliptic pad measures to rounding whatever deflection is asked for.
+  Shapes with spline faces are still measured on their mesh, and say so
+  in `deflection`. The default deflection no longer claims a part in a
+  thousand.
+
 ## [0.3.1] - 2026-09-23
 
 A patch release with no API change; `cargo semver-checks` finds nothing

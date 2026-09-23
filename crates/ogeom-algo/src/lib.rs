@@ -27,6 +27,7 @@ pub mod mesh_solid;
 pub mod pcurve_fit;
 pub mod place;
 pub mod primitive;
+pub mod project_plane;
 pub mod proximity;
 pub mod recognize;
 pub mod sew;
@@ -65,6 +66,7 @@ pub use primitive::{
     make_box, make_cone, make_cylinder, make_half_space, make_hexahedron, make_parallelepiped,
     make_polyhedron, make_sphere, make_torus, make_wedge,
 };
+pub use project_plane::{ProjectedCurve, project_edge_onto_plane};
 pub use proximity::{ClosestPair, ShapeDistance, distance_between_shapes};
 pub use recognize::{Canonical, Recognized, recognize_points};
 pub use sew::{Sewn, make_wire_unordered, order_edges, sew};

@@ -23,6 +23,7 @@ tensor about the centroid.
 |---|---|
 | `distance_between_shapes` | Minimum distance and the `ClosestPair` that realises it. |
 | `project_on_curve`, `project_on_surface`, `project_on_planar_curve` | Parameter and distance of a point's projection onto the geometry. |
+| `project_edge_onto_plane` | An edge projected onto a plane as an exact 2D curve: point, line, circle, ellipse or B-spline. |
 | `curve_length` | Length along a curve. |
 | `parameter_at_length` | Parameter at a given arc length. |
 | `points_by_count`, `points_by_spacing` | Points spread along a curve. |
