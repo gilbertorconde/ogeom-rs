@@ -21,6 +21,15 @@ bump may break the API and a patch bump may not.
   sections that share a face counts only inside the faces they do not
   share, so only sections whose other faces' bounds meet are tried: the
   same part pairs its sections in eighteen seconds.
+- **A drill through a face of many holes spent seconds on that one
+  face.** A section was tried against every boundary edge of its faces,
+  and a flat face bounded by a few thousand edges — a panel with four
+  hundred vents — took them all; and choosing a split piece's nine probe
+  points compared each of hundreds of thousands of candidates with every
+  column already taken. Each boundary edge carries its own bound, and
+  one outside the face the section must also lie in is skipped; the probe
+  search stops at nine columns. A drill through such a part takes under a
+  second where it took twenty.
 
 ## [0.3.0] — 2026-09-23
 

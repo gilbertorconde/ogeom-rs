@@ -558,20 +558,31 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
     // each distinct column first, then the rest in width order — which leaves
     // the other columns at the front for a touch running down one, and the
     // other heights right behind them for a touch running across.
+    //
+    // Nine are returned, so nine columns end the search, and nine of the
+    // rest are all that can follow them: a face with hundreds of holes
+    // offers hundreds of thousands of candidates, and comparing each with
+    // every column already chosen cost seconds for nine points.
+    const PROBES: usize = 9;
     let mut chosen: Vec<(f64, Point2)> = Vec::new();
     let mut rest: Vec<(f64, Point2)> = Vec::new();
     for candidate in candidates {
+        if chosen.len() == PROBES {
+            break;
+        }
         if chosen
             .iter()
             .any(|(_, p)| (p.x - candidate.1.x).abs() <= snap)
         {
-            rest.push(candidate);
+            if rest.len() < PROBES {
+                rest.push(candidate);
+            }
         } else {
             chosen.push(candidate);
         }
     }
     chosen.extend(rest);
-    chosen.truncate(9);
+    chosen.truncate(PROBES);
     chosen.into_iter().map(|(_, p)| p).collect()
 }
 

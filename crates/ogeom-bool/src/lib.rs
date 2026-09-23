@@ -95,6 +95,9 @@ struct BoundaryEdge {
     /// owns a span is a junction of this boolean too, and every strand end
     /// inside it names it.
     ends: [(Point, f64); 2],
+    /// A conservative box round the edge: its samples, grown by twice the
+    /// sag measured between them and by its own radius.
+    bound: ogeom_math::Aabb,
 }
 
 /// A pole: an edge that bounds a face in parameter space and collapses to
@@ -270,6 +273,7 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
                 tolerance: edge_data.tolerance.get(),
                 ends_tolerance,
                 ends,
+                bound: ogeom_math::Aabb::EMPTY,
             });
         }
         if edges.is_empty() {
@@ -356,21 +360,29 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
             SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_)
         );
         let mut slack = 0.0_f64;
-        for e in &edges {
+        for e in &mut edges {
             let mut previous: Option<Point> = None;
+            let (mut own, mut sag) = (ogeom_math::Aabb::EMPTY, 0.0_f64);
             for i in 0..=16 {
                 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
                 let t = e.crange.0 + (e.crange.1 - e.crange.0) * f64::from(i) / 16.0;
                 let p = e.curve.point_at(t, tol)?;
-                if ruled && let Some(q) = previous {
+                if let Some(q) = previous {
                     let step = (e.crange.1 - e.crange.0) / 32.0;
                     let mid = e.curve.point_at(t - step, tol)?;
-                    slack = slack.max(mid.distance(Point::midpoint(q, p)) * 2.0);
-                    bound = bound.with_point(mid);
+                    let off = mid.distance(Point::midpoint(q, p)) * 2.0;
+                    sag = sag.max(off);
+                    own = own.with_point(mid);
+                    if ruled {
+                        slack = slack.max(off);
+                        bound = bound.with_point(mid);
+                    }
                 }
+                own = own.with_point(p);
                 bound = bound.with_point(p);
                 previous = Some(p);
             }
+            e.bound = own.expanded(sag + e.tolerance + tol.confusion() * 1e2);
         }
         // A plane never bulges past its boundary. A ruled surface — cylinder,
         // cone — cannot either: every surface point lies on a straight ruling
@@ -1633,7 +1645,18 @@ fn fill(
                 (0_usize, &ga.faces[section.face_a]),
                 (1, &gb.faces[section.face_b]),
             ] {
+                // The other face the section must also lie in: a crossing
+                // with this edge outside it stops nothing that is kept, and a
+                // face bounded by thousands of edges would try every one.
+                let across = if side == 0 {
+                    &gb.faces[section.face_b]
+                } else {
+                    &ga.faces[section.face_a]
+                };
                 for (ei, e) in own.edges.iter().enumerate() {
+                    if !admit_all && !e.bound.expanded(reach).intersects(&across.bound) {
+                        continue;
+                    }
                     let found = intersect_curves(&section.curve, &e.curve, cc, tol)?;
                     for crossing in &found.crossings {
                         if crossing.gap > reach {
