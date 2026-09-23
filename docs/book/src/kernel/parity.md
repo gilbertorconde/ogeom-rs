@@ -11,7 +11,7 @@ The reference target is fixed by [Scope](scope.md): four modelling
 modules, 276 packages, 6,267 public headers, committed as
 `docs/parity/reference-index.tsv` so the question is answerable without a
 reference checkout. Against that index, **capabilities are the primary
-key, not headers**: each of the 97 capabilities in
+key, not headers**: each of the 98 capabilities in
 `docs/parity/parity.toml` *claims* the reference headers it accounts for,
 and the gate requires the claims to be **total and disjoint** — every
 kept header claimed exactly once, or the build fails. That is what makes

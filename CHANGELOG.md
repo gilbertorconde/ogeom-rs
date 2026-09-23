@@ -11,11 +11,24 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-23
+
+A minor release, for one change a caller can see: `FixReport` gains a
+field, and a struct literal that built one no longer compiles — the only
+break `cargo semver-checks` finds against 0.2.1. Meshes come in: 3MF
+packages read, deflated, multi-part and ZIP64 alike, and a triangle mesh
+becomes a solid whose planar regions merge into faces and whose curved
+regions are rebuilt on the cylinders, cones, spheres and tori they lie on
+— a scope addition `docs/SCOPE.md` argues. A boolean on such a solid of
+thousands of faces takes a second where it took minutes. Imports hold the
+tolerance rules they state, IGES round-trips real parts, and a face drawn
+out to its whole plane, or the long way round an ellipse, meshes on
+itself.
+
 ### Changed
 
 - **`FixReport` gains `tolerances_widened`.** A public field on a struct
-  callers can build, so under this changelog's policy the next release is
-  a minor one.
+  callers can build: a literal that built one names the new field too.
 
 ### Added
 
@@ -620,7 +633,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/gilbertorconde/ogeom-rs/releases/tag/v0.1.0

@@ -5,7 +5,7 @@ What belongs in this kernel, what does not, and how to tell without arguing.
 ## The rule
 
 **ogeom targets parity with the reference kernel's modelling modules, and nothing
-else.** Four modules are in scope:
+else** — save one addition, meshes into solids, argued below. Four modules are in scope:
 
 | Module | What it is |
 |---|---|

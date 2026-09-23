@@ -9,7 +9,8 @@ per-entity tolerances and operation history, booleans, blends and chamfers,
 offsets and shells, sweeps and lofts, healing, tessellation, product
 structure, 2D drawings with hidden line removal, and data exchange — STEP in
 both directions with assemblies, colours, semantic PMI and saved views, IGES
-in both directions, the native document format, and the mesh formats.
+in both directions, the native document format, and the mesh formats — with
+meshes turned back into solids, their curved regions recognized.
 
 Two things distinguish how this kernel is built, and both show up in how
 this book is written:
@@ -23,7 +24,7 @@ fails the build instead of lying in the documentation.
 
 **Completeness is audited, not felt.** The kernel's target is written down
 in [Scope](kernel/scope.md): parity with the reference kernel's four
-modelling modules, and nothing else. Where it stands against that target is
+modelling modules, with one deliberate addition — meshes into solids. Where it stands against that target is
 [a committed, machine-checked ledger](kernel/parity-ledger.md) — every
 public header of those modules accounted for by a named capability, every
 verdict citing symbols and tests the build verifies.

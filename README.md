@@ -7,12 +7,15 @@ booleans, blends and chamfers, offsets, shells, sweeps and lofts, healing,
 product structure, 2D drawings with hidden line removal and sections, and
 exchange — STEP and IGES in both directions, STEP carrying assemblies,
 colours, semantic PMI and saved views, plus the native format, STL, DXF,
-glTF, OBJ, PLY, VRML and 3MF — are built and tested.
+glTF, OBJ, PLY, VRML and 3MF — are built and tested, and a triangle mesh
+becomes a solid whose curved regions are rebuilt on the cylinders, cones,
+spheres and tori they lie on.
 
 **How complete that is against a real kernel is measured, and gated.** The
 target is `docs/SCOPE.md`: parity with the reference kernel's modelling
-modules, and nothing else. `docs/PARITY.md` audits every public header of
-those modules against 97 named capabilities — every verdict citing symbols
+modules, with one deliberate addition — meshes into solids — argued there.
+`docs/PARITY.md` audits every public header of those modules against 98
+named capabilities — every verdict citing symbols
 and tests the build verifies — and `tools/check.sh` fails if the audit and
 the code drift apart. No capability is absent; the `partial` rows say exactly
 what restriction each one carries.

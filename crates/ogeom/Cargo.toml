@@ -18,10 +18,13 @@ categories.workspace = true
 # The repository still runs them, and `tools/check.sh` still gates on them.
 exclude = [
     "tests/assembly_corpus.rs",
+    "tests/exchange.rs",
+    "tests/exchange_tolerances.rs",
     "tests/foundations.rs",
     "tests/imported_corpus.rs",
     "tests/m5_close.rs",
     "tests/pmi_corpus.rs",
+    "tests/wound_rims.rs",
 ]
 
 [dependencies]
