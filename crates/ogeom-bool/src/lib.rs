@@ -1657,9 +1657,25 @@ fn fill(
                     if !admit_all && !e.bound.expanded(reach).intersects(&across.bound) {
                         continue;
                     }
+                    // On a plane, an edge within its own radius of the face —
+                    // the boundary of a merged group of near-coplanar facets —
+                    // stands off the plane the section lies in by as much, and
+                    // meets the section only that near; it departs from the
+                    // face no other way, so a near miss there is the crossing.
+                    // A curved face's fitted rail can pass that near a section
+                    // without crossing it, and keeps the section's reach.
+                    let edge_reach = if matches!(own.surface, SurfaceGeometry::Plane(_)) {
+                        reach + e.tolerance
+                    } else {
+                        reach
+                    };
+                    let cc = CurveCurveOptions {
+                        gap: cc.gap.max(edge_reach),
+                        ..cc
+                    };
                     let found = intersect_curves(&section.curve, &e.curve, cc, tol)?;
                     for crossing in &found.crossings {
-                        if crossing.gap > reach {
+                        if crossing.gap > edge_reach {
                             continue;
                         }
                         let mut on_b = onto_range(crossing.on_b, &e.curve, e.crange, tol);
@@ -3207,7 +3223,8 @@ fn pave_junctions(
     paves: &std::collections::HashMap<ogeom_topo::TShapeId, Vec<Pave>>,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Junction>> {
-    let mut seen: Vec<ogeom_topo::TShapeId> = Vec::new();
+    let mut seen: std::collections::HashSet<ogeom_topo::TShapeId> =
+        std::collections::HashSet::new();
     let mut junctions = Vec::new();
     for e in ga
         .faces
@@ -3215,16 +3232,25 @@ fn pave_junctions(
         .chain(gb.faces.iter())
         .flat_map(|f| f.edges.iter())
     {
-        if seen.contains(&e.node) {
+        if !seen.insert(e.node) {
             continue;
         }
-        seen.push(e.node);
         let Some(ts) = paves.get(&e.node) else {
             continue;
         };
-        let floor = e.tolerance.max(tol.confusion() * 10.0);
+        // A tolerant edge — a merged facet group's boundary, a fitted rail —
+        // is met by a section up to its own radius off it, so the section's
+        // end and the edge's split point are one junction that far apart,
+        // on either side of the edge.
+        let tolerant = e.tolerance > tol.confusion() * 1e2;
+        let floor = if tolerant {
+            e.tolerance * 2.0
+        } else {
+            e.tolerance
+        }
+        .max(tol.confusion() * 10.0);
         for cluster in cluster_paves(&e.curve, e.crange, e.tolerance, ts, tol)? {
-            if cluster.members > 1 || cluster.honesty > tol.confusion() * 1e2 {
+            if cluster.members > 1 || cluster.honesty > tol.confusion() * 1e2 || tolerant {
                 junctions.push(Junction {
                     at: cluster.at,
                     reach: cluster.span + cluster.honesty.max(floor),
@@ -4208,6 +4234,35 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 } else {
                     0.0
                 },
+            )
+            // A section ends where it crosses the other face's boundary,
+            // and lands there within that boundary's own doubt: two
+            // sections through neighbouring facets of a converted mesh
+            // stop on the edge they share a few microns apart, each on its
+            // own facet's plane, and meet on this face only if the weld
+            // reaches that far.
+            .max(
+                sections
+                    .iter()
+                    .filter(|s| {
+                        if from_a {
+                            s.face_a == fi
+                        } else {
+                            s.face_b == fi
+                        }
+                    })
+                    .map(|s| {
+                        let other = if from_a {
+                            &gb.faces[s.face_b]
+                        } else {
+                            &ga.faces[s.face_a]
+                        };
+                        other.edges.iter().fold(0.0_f64, |acc, e| {
+                            acc.max(e.tolerance * 2.0)
+                                .max(e.ends_tolerance + e.tolerance)
+                        })
+                    })
+                    .fold(0.0_f64, f64::max),
             );
         if *DEBUG_STRANDS {
             eprintln!(

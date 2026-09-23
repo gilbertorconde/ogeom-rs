@@ -30,6 +30,18 @@ bump may break the API and a patch bump may not.
   one outside the face the section must also lie in is skipped; the probe
   search stops at nine columns. A drill through such a part takes under a
   second where it took twenty.
+- **A drill through near-coplanar facets refused to close.** A converted
+  mesh merges facets that lie within its coplanar distance of one plane
+  into one planar face, whose boundary then stands off that plane by up
+  to that distance. A drill's section, lying in the plane, met such a
+  boundary only within its own reach and missed it, so a whole face's
+  section was dropped; neighbouring sections ended on their shared edge
+  microns apart, farther than the drill wall's weld reached; and a
+  section's end and the edge's split point were built as two vertices.
+  On a plane a section meets an edge within the edge's radius, the weld
+  on a face reaches as far as the edges its sections end on, and every
+  crossing of a tolerant edge is one junction for both: the part that
+  refused cuts to a valid solid.
 
 ## [0.3.0] — 2026-09-23
 

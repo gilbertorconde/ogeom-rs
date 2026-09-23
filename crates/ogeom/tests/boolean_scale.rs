@@ -126,3 +126,84 @@ fn a_thin_drill_through_a_many_faced_solid_is_quick() {
         "{faces} faces took {took:?}"
     );
 }
+
+/// A converted mesh whose flat top is facets a few hundredths of a micron
+/// out of one plane: the converter merges each near-coplanar group into one
+/// planar face whose boundary stands off that plane by as much, and a drill
+/// through the top crosses dozens of such faces. Each face's section with
+/// the drill meets the face's boundary only as near as the boundary lies,
+/// and neighbouring faces' sections end on their shared edge that far
+/// apart; both are within the edges' recorded radii, and the cut closes.
+#[test]
+fn a_drill_through_a_jittered_facet_top_closes() {
+    let (n, size, height) = (24_u32, 20.0_f64, 10.0_f64);
+    let at = |i: u32, j: u32| i * (n + 1) + j;
+    let mut mesh = ogeom::topo::Triangulation::new();
+    // The top grid, each vertex lifted by a deterministic jitter under the
+    // converter's merge distance.
+    for i in 0..=n {
+        for j in 0..=n {
+            let step = size / f64::from(n);
+            let jitter = f64::from((i * 7 + j * 13) % 5) * 6e-6;
+            mesh.positions.push(ogeom::math::Point::new(
+                f64::from(i) * step,
+                f64::from(j) * step,
+                height + jitter,
+            ));
+        }
+    }
+    for i in 0..n {
+        for j in 0..n {
+            let (a, b, c, d) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+            mesh.triangles.push([a, b, c]);
+            mesh.triangles.push([a, c, d]);
+        }
+    }
+    // The bottom and the four walls, fanned from the grid's rim.
+    let base = u32::try_from(mesh.positions.len()).unwrap();
+    for (x, y) in [(0.0, 0.0), (size, 0.0), (size, size), (0.0, size)] {
+        mesh.positions.push(ogeom::math::Point::new(x, y, 0.0));
+    }
+    let (b00, b10, b11, b01) = (base, base + 1, base + 2, base + 3);
+    mesh.triangles.push([b00, b11, b10]);
+    mesh.triangles.push([b00, b01, b11]);
+    for k in 0..n {
+        // y = 0 wall, x = size wall, y = size wall, x = 0 wall.
+        mesh.triangles.push([at(k, 0), b00, at(k + 1, 0)]);
+        mesh.triangles.push([at(n, k), b10, at(n, k + 1)]);
+        mesh.triangles.push([at(k + 1, n), b11, at(k, n)]);
+        mesh.triangles.push([at(0, k + 1), b01, at(0, k)]);
+    }
+    mesh.triangles.push([at(n, 0), b00, b10]);
+    mesh.triangles.push([at(n, n), b10, b11]);
+    mesh.triangles.push([at(0, n), b11, b01]);
+    mesh.triangles.push([at(0, 0), b01, b00]);
+
+    let mut model = ogeom::topo::Model::new();
+    let options = ogeom::algo::MeshSolidOptions {
+        recognize: false,
+        ..Default::default()
+    };
+    let solid = ogeom::algo::solid_from_mesh(&mut model, &mesh, &options, T).unwrap();
+    assert!(solid.closed, "{:?}", solid.report);
+    let before = ogeom::algo::volume_properties(&model, &solid.shape, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    let frame = Frame::new(Point::new(10.3, 9.7, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let drill = ogeom::algo::make_cylinder(&mut model, frame, 2.5, 20.0, T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(&mut model, &solid.shape, &drill, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &cut, T).unwrap().is_valid());
+    let after =
+        ogeom::algo::volume_properties(&model, &cut, Deflection::with_chord(1e-3).unwrap(), T)
+            .unwrap()
+            .mass;
+    let hole = core::f64::consts::PI * 2.5 * 2.5 * height;
+    assert!(
+        ((before - after) - hole).abs() < hole * 1e-3,
+        "{before} less {after} against {hole}"
+    );
+}
