@@ -43,9 +43,20 @@ bump may break the API and a patch bump may not.
   ridge seven microns long stays the sliver of cylinder it is. The
   sphere's pole stands along a ridge where there is one, so the ridge
   fillet's cap meets it on a circle the chart images exactly. The flush
-  fillets follow at a sharp apex; at an oblique or irregular one the
-  third still dies in the cut, as it does without the corner, and is
-  owed.
+  fillets follow at a sharp rectangular apex; where a sphere clears a
+  fourth plane by a few hundredths of a millimetre the envelope keeps a
+  sliver of that plane, and the flush fillet meeting the sliver still
+  dies in the cut.
+- **A band meeting two bands at an apex welds its triple point.** Three
+  descriptions of one point arrived a tenth of a micron apart in turn,
+  each within the last's reach and none within the first's, and the
+  junctions the arrangement adds after the first merge were never merged
+  with each other; they are, an end welds into a vertex within the
+  vertex's own tolerance and the weld, and a crossing at an edge's end is
+  the end on the edge as well as on the section. What is still owed is
+  named in the ledger: a band's section touching an edge describes the
+  touch point twice, a tenth of a micron apart, and the third flush fillet
+  at a sharp apex still dies on it.
 - **IGES reads more of the 1980s.** A conic arc (104) of any axis-aligned
   kind reads as its own curve — hyperbola and parabola alongside the
   ellipse, the arc's ends read off the file's points whichever way round

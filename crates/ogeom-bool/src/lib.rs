@@ -1355,7 +1355,11 @@ fn fill(
                             let mut length = 0.0_f64;
                             let mut last: Option<Point> = None;
                             for k in 0..=64 {
-                                let t = lo + (hi - lo) * f64::from(k) / 64.0;
+                                let t = if k == 64 {
+                                    hi
+                                } else {
+                                    lo + (hi - lo) * f64::from(k) / 64.0
+                                };
                                 let p = sc.curve.point_at(t, tol)?;
                                 if let Some(q) = last {
                                     length += q.distance(p);
@@ -1498,7 +1502,11 @@ fn fill(
                                         let mut length = 0.0_f64;
                                         let mut last: Option<Point> = None;
                                         for k in 0..=64 {
-                                            let t = lo + (hi - lo) * f64::from(k) / 64.0;
+                                            let t = if k == 64 {
+                                                hi
+                                            } else {
+                                                lo + (hi - lo) * f64::from(k) / 64.0
+                                            };
                                             let p = curve.point_at(t, tol)?;
                                             if let Some(q) = last {
                                                 length += q.distance(p);
@@ -1656,6 +1664,14 @@ fn fill(
                                     ogeom_algo::project_on_curve(&section.curve, vertex, 64, tol)?;
                                 if snapped.distance <= weld + crossing.reach {
                                     on_a = snapped.parameter;
+                                    // And the edge's own parameter is the
+                                    // end's: two rim circles through one
+                                    // block corner meet at a shallow angle
+                                    // there, the crossing lands a few
+                                    // hundredths of a millimetre along the
+                                    // rim from the corner, and paved there
+                                    // it split the rim into a sliver.
+                                    on_b = end;
                                 }
                                 break;
                             }
@@ -3820,7 +3836,11 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             let mut len = 0.0;
             let mut prev: Option<Point> = None;
             for i in 0..=32 {
-                let t = d.0 + (d.1 - d.0) * f64::from(i) / 32.0;
+                let t = if i == 32 {
+                    d.1
+                } else {
+                    d.0 + (d.1 - d.0) * f64::from(i) / 32.0
+                };
                 let at = sec.curve.point_at(t, tol)?;
                 if let Some(p) = prev {
                     len += p.distance(at);
@@ -4554,6 +4574,12 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         }
     }
     ogeom_core::progress::stage("boolean: classified");
+    // Merged again: the arrangement adds junctions of its own — a strand
+    // that collapsed with its partners becomes one — after the first
+    // merge, and two of those at one triple point, each within the other's
+    // reach, welded the ends of one band to two vertices with a hairline
+    // between them.
+    let junctions = merge_junctions(junctions);
     Ok(GeneralFused {
         a: ga,
         b: gb,
@@ -4635,21 +4661,49 @@ impl Rebuild<'_> {
         // confusions at millimetre tolerances is ten microns — below any
         // feature this pipeline can resolve, and every weld wider than
         // confusion is recorded on the vertex, not papered over.
+        // And as far again as the vertex already owns: a vertex widened by
+        // the descriptions it has taken in claims its point within that
+        // tolerance, an end arriving within that and the weld of it may be
+        // the same point, and a boolean cannot show it is not. Three
+        // descriptions of one triple point, where a third band met two
+        // bands at an apex, arrived a tenth of a micron apart in turn, each
+        // within the last's reach and none within the first's, and the
+        // wire round the band's end had two vertices where it needed one.
+        // Every end taken in is remembered where it arrived, so the next
+        // end is measured from the description nearest it.
+        let floor = self.weld.max(tol.confusion() * 1e2);
         let found = self
             .vertices
             .iter()
-            .find(|(q, _)| q.distance(p) <= self.weld.max(tol.confusion() * 1e2))
-            .map(|(q, shape)| (q.distance(p), shape.clone()));
+            .filter_map(|(q, shape)| {
+                let own = self
+                    .model
+                    .node(shape)
+                    .and_then(|n| n.data().as_vertex())
+                    .map_or(0.0, |d| d.tolerance.get());
+                let gap = q.distance(p);
+                (gap <= floor.max(own + floor)).then_some((gap, shape.clone()))
+            })
+            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
         if let Some((gap, shape)) = found {
             // Two descriptions of one junction may disagree by a general
             // crossing's residual; the vertex's tolerance is where that
             // disagreement is recorded, so the sub-edges built against
             // either description still reach it honestly.
-            if gap > tol.confusion()
+            let at = self
+                .model
+                .node(&shape)
+                .and_then(|n| n.data().as_vertex())
+                .map_or(p, |d| d.point);
+            let off = at.distance(p);
+            if off > tol.confusion()
                 && let Some(node) = self.model.node_mut(&shape)
                 && let ogeom_topo::NodeData::Vertex(data) = node.data_mut()
             {
-                data.tolerance = data.tolerance.widen_to(gap + tol.confusion());
+                data.tolerance = data.tolerance.widen_to(off + tol.confusion());
+            }
+            if gap > tol.confusion() {
+                self.vertices.push((p, shape.clone()));
             }
             return shape;
         }

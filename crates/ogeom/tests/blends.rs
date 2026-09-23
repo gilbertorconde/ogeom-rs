@@ -774,9 +774,10 @@ fn round_vertex_rounds_an_apex_no_ball_touches() {
 
 /// A flat rectangular pyramid's apex, and an oblique one: the same two
 /// spheres and a ridge, the flat one's edges taking their flush fillets
-/// after. At the oblique apex the corner rounds; the third flush fillet
-/// after it still dies in the cut, as it does on the sharp pyramid — the
-/// labelling the boolean is not yet indifferent to — and is owed.
+/// after. At the oblique apex the corner rounds exactly, and its sphere
+/// clears the fourth plane by a few hundredths of a millimetre, so the
+/// envelope keeps a sliver of that plane beside the patch; the flush
+/// fillet that meets the sliver still dies in the cut, and is owed.
 #[test]
 fn round_vertex_rounds_flat_and_oblique_apexes_no_ball_touches() {
     let r = 1.5;

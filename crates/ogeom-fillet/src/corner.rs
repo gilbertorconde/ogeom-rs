@@ -888,17 +888,51 @@ fn ball_block(
     // that same rim plane, then meets the sphere on a circle the chart
     // images exactly. Then the classic labellings: the pole along host t,
     // the seam out through edge t, hosts holding no ridge first.
-    let mut frames: Vec<(Vector, Vector)> = Vec::new();
+    // The patch's corners are the touch points, a radius from the centre
+    // against each host; a frame is judged by how far its seam meridian
+    // keeps from every corner in longitude about the pole, and a pole the
+    // patch itself contains — inside every rim plane's kept side — is no
+    // frame at all, since a chart's degenerate point cannot stand inside
+    // a face. Either sense of every ridge is offered, with the seam turned
+    // from the corner or from the corners' mean, the clearest first.
+    let touches: Vec<Vector> = hosts.iter().map(|m| -*m).collect();
+    let inside_patch = |direction: Vector| -> bool {
+        directions
+            .iter()
+            .all(|e| e.dot(direction) <= tol.angular() * 10.0)
+    };
+    let mut scored: Vec<(f64, Vector, Vector)> = Vec::new();
     for t in 0..n {
-        if is_ridge[t] {
-            let axis = directions[t];
-            let away = far - corner;
-            let seam = away - axis * away.dot(axis);
-            if seam.magnitude() > tol.angular() * 10.0 {
-                frames.push((axis, seam));
+        if !is_ridge[t] {
+            continue;
+        }
+        for pole in [directions[t], -directions[t]] {
+            if inside_patch(pole) || inside_patch(-pole) {
+                continue;
+            }
+            let flat = |v: Vector| v - pole * v.dot(pole);
+            let mean = touches.iter().fold(Vector::ZERO, |acc, t| acc + *t);
+            for seam in [flat(-mean), flat(far - corner)] {
+                if seam.magnitude() <= tol.angular() * 10.0 {
+                    continue;
+                }
+                let x = seam / seam.magnitude();
+                let y = pole.cross(x);
+                let clearance = touches
+                    .iter()
+                    .map(|t| t.dot(y).atan2(t.dot(x)).abs())
+                    .fold(f64::INFINITY, f64::min);
+                scored.push((clearance, pole, seam));
             }
         }
     }
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
+    if std::env::var_os("OGEOM_DEBUG_CORNER").is_some() {
+        for (clearance, pole, seam) in &scored {
+            eprintln!("FRAME clearance {clearance:.3} pole {pole:?} seam {seam:?}");
+        }
+    }
+    let mut frames: Vec<(Vector, Vector)> = scored.into_iter().map(|(_, p, s)| (p, s)).collect();
     // Host t holds edges t and t+1; a labelling's pole host is `start`
     // forward and `start − 1` reversed.
     let pole_host = |index: usize| -> usize {
