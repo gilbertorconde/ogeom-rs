@@ -37,6 +37,7 @@
 //! error naming the deferred entry, never silently mishandled.
 
 mod arrange;
+mod bins;
 mod defeature;
 
 pub use defeature::remove_faces;
@@ -4602,6 +4603,12 @@ struct Rebuild<'m> {
     /// identity, so two sub-edges meeting at a point must *name* the same
     /// vertex, not merely coincide there.
     vertices: Vec<(Point, Shape)>,
+    /// `vertices` binned by position.
+    vertex_bins: bins::Bins,
+    /// The widest tolerance any vertex in `vertices` holds: every widening
+    /// of one goes through [`Rebuild::vertex`] or [`Rebuild::widen`], so an
+    /// end is compared only with the vertices this far and a weld from it.
+    widest: f64,
     /// How far two honest descriptions of one junction may sit apart: a
     /// hundred confusions as the floor, widened to three times the loosest
     /// contact edge's or fitted section's own tolerance when one took part
@@ -4610,6 +4617,10 @@ struct Rebuild<'m> {
     /// The paving's junctions, each minted as a vertex the first time a
     /// strand end lands inside it.
     junctions: Vec<(Junction, Option<Shape>)>,
+    /// `junctions` binned by position.
+    junction_bins: bins::Bins,
+    /// The widest reach of any junction.
+    junction_reach: f64,
 }
 
 impl Rebuild<'_> {
@@ -4623,18 +4634,23 @@ impl Rebuild<'_> {
         if *DEBUG_WIRE {
             eprintln!("VERTEX ask {p:?}");
         }
-        if let Some(slot) = self
-            .junctions
-            .iter()
-            .position(|(j, _)| j.at.distance(p) <= j.reach + slack)
-        {
+        let reach = self.junction_reach;
+        let inside = |slot: &usize| {
+            let j = &self.junctions[*slot].0;
+            j.at.distance(p) <= j.reach + slack
+        };
+        let first = match self.junction_bins.near(p, reach + slack) {
+            Some(near) => near.into_iter().find(inside),
+            None => (0..self.junctions.len()).find(inside),
+        };
+        if let Some(slot) = first {
             let junction = self.junctions[slot].0;
             let shape = match &self.junctions[slot].1 {
                 Some(shape) => shape.clone(),
                 None => {
                     let shape = make_vertex(self.model, junction.at).shape;
                     self.junctions[slot].1 = Some(shape.clone());
-                    self.vertices.push((junction.at, shape.clone()));
+                    self.remember(junction.at, &shape);
                     shape
                 }
             };
@@ -4651,6 +4667,7 @@ impl Rebuild<'_> {
                     .tolerance
                     .widen_to(junction.reach.max(gap) + tol.confusion());
             }
+            self.note_tolerance(&shape);
             return shape;
         }
         // The weld reach covers what the inputs may honestly disagree by: a
@@ -4671,9 +4688,13 @@ impl Rebuild<'_> {
         // Every end taken in is remembered where it arrived, so the next
         // end is measured from the description nearest it.
         let floor = self.weld.max(tol.confusion() * 1e2);
-        let found = self
-            .vertices
-            .iter()
+        let near = self
+            .vertex_bins
+            .near(p, floor + self.widest)
+            .unwrap_or_else(|| (0..self.vertices.len()).collect());
+        let found = near
+            .into_iter()
+            .map(|index| &self.vertices[index])
             .filter_map(|(q, shape)| {
                 let own = self
                     .model
@@ -4701,14 +4722,36 @@ impl Rebuild<'_> {
             {
                 data.tolerance = data.tolerance.widen_to(off + tol.confusion());
             }
+            self.note_tolerance(&shape);
             if gap > tol.confusion() {
-                self.vertices.push((p, shape.clone()));
+                self.remember(p, &shape);
             }
             return shape;
         }
         let shape = make_vertex(self.model, p).shape;
-        self.vertices.push((p, shape.clone()));
+        self.remember(p, &shape);
         shape
+    }
+
+    /// Take in `shape` as described at `p`.
+    fn remember(&mut self, p: Point, shape: &Shape) {
+        self.vertex_bins.insert(p, self.vertices.len());
+        self.vertices.push((p, shape.clone()));
+        self.note_tolerance(shape);
+    }
+
+    /// Keep `widest` covering `shape`'s tolerance.
+    fn note_tolerance(&mut self, shape: &Shape) {
+        if let Some(data) = self.model.node(shape).and_then(|n| n.data().as_vertex()) {
+            self.widest = self.widest.max(data.tolerance.get());
+        }
+    }
+
+    /// Widen a vertex this rebuild handed out.
+    fn widen(&mut self, vertex: &Shape, to: f64) -> OgeomResult<()> {
+        self.model.widen(vertex, ogeom_core::Tolerance::new(to)?)?;
+        self.note_tolerance(vertex);
+        Ok(())
     }
 
     fn surface_id(
@@ -4983,9 +5026,10 @@ fn build_sub_edge(
                     data.tolerance = data.tolerance.widen_to(e.tolerance);
                 }
                 for v in [&v0, &v1] {
-                    model.widen(v, ogeom_core::Tolerance::new(e.tolerance)?)?;
+                    rebuild.widen(v, e.tolerance)?;
                 }
             }
+            let model = &mut *rebuild.model;
             let sub_p = (
                 rescale(range.0, e.crange, e.prange),
                 rescale(range.1, e.crange, e.prange),
@@ -5038,9 +5082,10 @@ fn build_sub_edge(
                     data.tolerance = data.tolerance.widen_to(c.tolerance);
                 }
                 for v in [&v0, &v1] {
-                    model.widen(v, ogeom_core::Tolerance::new(c.tolerance)?)?;
+                    rebuild.widen(v, c.tolerance)?;
                 }
             }
+            let model = &mut *rebuild.model;
             // The stored image keeps its own window; the attached copy names
             // the sub-window this piece covers under the proportional map.
             let sub_p = (
@@ -5083,9 +5128,10 @@ fn build_sub_edge(
                     data.tolerance = data.tolerance.widen_to(s.tolerance);
                 }
                 for v in [&v0, &v1] {
-                    model.widen(v, ogeom_core::Tolerance::new(s.tolerance)?)?;
+                    rebuild.widen(v, s.tolerance)?;
                 }
             }
+            let model = &mut *rebuild.model;
             // The section's pcurve is unwrapped across any seam; the face's
             // triangulator lives in one chart, so the attached copy is folded
             // home by the same period shift the arrangement gave this
@@ -5140,18 +5186,44 @@ fn assemble_result(
         return Ok(Built::new(empty, history));
     }
 
+    let weld = fused
+        .contacts
+        .iter()
+        .map(|c| c.tolerance)
+        .chain(fused.sections.iter().map(|s| s.tolerance))
+        .fold(0.0_f64, |acc, t| acc.max(honest(t, tol) * 3.0));
+    let floor = weld.max(tol.confusion() * 1e2);
+    let junction_reach = fused
+        .junctions
+        .iter()
+        .fold(0.0_f64, |acc, j| acc.max(j.reach));
+    let mut junction_bins = bins::Bins::new(junction_reach + floor);
+    for (index, j) in fused.junctions.iter().enumerate() {
+        junction_bins.insert(j.at, index);
+    }
+    // The vertices' cells are as wide as the loosest tolerance a strand
+    // brings to its ends, so an end is compared across a few cells, not
+    // every vertex.
+    let loosest = fused
+        .a
+        .faces
+        .iter()
+        .chain(fused.b.faces.iter())
+        .flat_map(|f| f.edges.iter().map(|e| e.tolerance))
+        .chain(fused.contacts.iter().map(|c| c.tolerance))
+        .chain(fused.sections.iter().map(|s| s.tolerance))
+        .fold(junction_reach, f64::max);
     let mut rebuild = Rebuild {
         model,
         surfaces_a: vec![None; fused.a.faces.len()],
         surfaces_b: vec![None; fused.b.faces.len()],
         vertices: Vec::new(),
-        weld: fused
-            .contacts
-            .iter()
-            .map(|c| c.tolerance)
-            .chain(fused.sections.iter().map(|s| s.tolerance))
-            .fold(0.0_f64, |acc, t| acc.max(honest(t, tol) * 3.0)),
+        vertex_bins: bins::Bins::new(floor + loosest),
+        widest: 0.0,
+        weld,
         junctions: fused.junctions.iter().map(|j| (*j, None)).collect(),
+        junction_bins,
+        junction_reach,
     };
     let mut faces = Vec::new();
     let mut kept_sources: Vec<Shape> = Vec::new();

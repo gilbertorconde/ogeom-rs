@@ -21,7 +21,7 @@
 //! meet within tolerance stay in separate shells, and the result says how many
 //! there are.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d;
@@ -30,6 +30,7 @@ use ogeom_topo::{
     EdgeRepr, Model, NodeData, Orientation, Shape, ShapeType, TShapeId, explore_unique,
 };
 
+use crate::bins::Bins;
 use crate::build::{edge_vertices, make_face_on, make_shell, make_wire};
 use crate::history::{Built, History};
 
@@ -227,13 +228,14 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
     // Every distinct edge node used by the faces, with the geometry that
     // decides whether two of them are the same edge.
     let mut catalogue: Vec<(TShapeId, Fingerprint)> = Vec::new();
+    let mut catalogued: HashSet<TShapeId> = HashSet::new();
     for face in faces {
         for edge in explore_unique(model, face, ShapeType::Edge)? {
             let id = rebuilt_edges
                 .get(&edge.node())
                 .copied()
                 .unwrap_or(edge.node());
-            if catalogue.iter().any(|(seen, _)| *seen == id) {
+            if !catalogued.insert(id) {
                 continue;
             }
             if let Some(print) = fingerprint(model, &Shape::of(id), tol)? {
@@ -246,11 +248,19 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
     // way from the one it replaced.
     let mut merged: HashMap<TShapeId, (TShapeId, bool)> = HashMap::new();
     let mut joined = 0;
+    // The widest reach any pair compares its ends at.
+    let reach = catalogue
+        .iter()
+        .fold(tol.confusion(), |acc, (_, print)| acc.max(print.width));
+    let mut starts = Bins::new(reach);
+    for (index, (_, print)) in catalogue.iter().enumerate() {
+        starts.insert(print.start, index);
+    }
     for i in 0..catalogue.len() {
         if merged.contains_key(&catalogue[i].0) {
             continue;
         }
-        for j in (i + 1)..catalogue.len() {
+        for j in twin_candidates(&catalogue, &starts, reach, i) {
             if merged.contains_key(&catalogue[j].0) {
                 continue;
             }
@@ -405,27 +415,46 @@ fn merge_vertices(
     faces: &[Shape],
     tol: Tolerances,
 ) -> OgeomResult<HashMap<TShapeId, TShapeId>> {
+    let tolerance_of = |model: &Model, vertex: &Shape| {
+        model
+            .node(vertex)
+            .and_then(|n| n.data().as_vertex())
+            .map_or(0.0, |d| d.tolerance.get())
+    };
+    // The survivors, binned by position on cells as wide as the loosest
+    // vertex; a vertex is compared with the survivors within the widest
+    // reach any comparison can have, in the order they were kept.
+    let mut loosest = tol.confusion();
+    for face in faces {
+        for vertex in explore_unique(model, face, ShapeType::Vertex)? {
+            loosest = loosest.max(tolerance_of(model, &vertex));
+        }
+    }
+    let mut bins = Bins::new(loosest);
     let mut seen: Vec<(TShapeId, Point, f64)> = Vec::new();
+    let mut index_of: HashMap<TShapeId, usize> = HashMap::new();
+    let mut widest = tol.confusion();
     let mut out = HashMap::new();
     for face in faces {
         for vertex in explore_unique(model, face, ShapeType::Vertex)? {
-            if seen.iter().any(|(id, ..)| *id == vertex.node()) {
+            if index_of.contains_key(&vertex.node()) {
                 continue;
             }
             let at = placed(model, &vertex)?;
-            let own = model
-                .node(&vertex)
-                .and_then(|n| n.data().as_vertex())
-                .map_or(0.0, |d| d.tolerance.get());
+            let own = tolerance_of(model, &vertex);
             // Two vertices are one junction within what their *stated*
             // tolerances allow, not within a fresh vertex's default: a
             // vertex that recorded a welded gap reaches that far, and
             // merging by raw confusion would leave its twin standing a
             // recorded-but-ignored distance away.
-            let hit = seen
-                .iter()
-                .find(|(_, p, w)| p.distance(at) <= tol.confusion().max(*w).max(own))
-                .map(|(kept, p, w)| (*kept, *p, *w));
+            let meets = |(_, p, w): &&(TShapeId, Point, f64)| {
+                p.distance(at) <= tol.confusion().max(*w).max(own)
+            };
+            let hit = match bins.near(at, widest.max(own)) {
+                Some(near) => near.into_iter().map(|i| &seen[i]).find(meets),
+                None => seen.iter().find(meets),
+            }
+            .map(|(kept, p, w)| (*kept, *p, *w));
             match hit {
                 Some((kept, p, w)) => {
                     // The survivor answers for the absorbed vertex: its
@@ -438,12 +467,18 @@ fn merge_vertices(
                     {
                         v.tolerance = v.tolerance.widen_to(need);
                     }
-                    if let Some(entry) = seen.iter_mut().find(|(id, ..)| *id == kept) {
+                    if let Some(entry) = index_of.get(&kept).map(|&i| &mut seen[i]) {
                         entry.2 = entry.2.max(need);
+                        widest = widest.max(entry.2);
                     }
                     out.insert(vertex.node(), kept);
                 }
-                None => seen.push((vertex.node(), at, own)),
+                None => {
+                    bins.insert(at, seen.len());
+                    index_of.insert(vertex.node(), seen.len());
+                    seen.push((vertex.node(), at, own));
+                    widest = widest.max(own);
+                }
             }
         }
     }
@@ -671,13 +706,12 @@ fn rebuild_edges(
     if vertices.is_empty() {
         return Ok(out);
     }
-    let mut done: Vec<TShapeId> = Vec::new();
+    let mut done: HashSet<TShapeId> = HashSet::new();
     for face in faces {
         for edge in explore_unique(model, face, ShapeType::Edge)? {
-            if done.contains(&edge.node()) {
+            if !done.insert(edge.node()) {
                 continue;
             }
-            done.push(edge.node());
 
             let Some(node) = model.node(&edge) else {
                 ogeom_bail!(Dangling, "edge is not in this model");
@@ -786,6 +820,37 @@ impl Fingerprint {
         }
         Ok(None)
     }
+}
+
+/// The edges after `i` in the catalogue that could be the same edge as
+/// edge `i`, in catalogue order.
+///
+/// Two edges are one only when each end of one meets an end of the other,
+/// so an edge's twin starts within reach of one of its ends: the edges
+/// binned by where they start, near either end of edge `i`, are every edge
+/// that could match, and an edge is asked about those alone rather than
+/// about the whole catalogue.
+fn twin_candidates(
+    catalogue: &[(TShapeId, Fingerprint)],
+    starts: &Bins,
+    reach: f64,
+    i: usize,
+) -> Vec<usize> {
+    let print = &catalogue[i].1;
+    let (Some(from_start), Some(from_end)) = (
+        starts.near(print.start, reach),
+        starts.near(print.end, reach),
+    ) else {
+        return ((i + 1)..catalogue.len()).collect();
+    };
+    let mut out: Vec<usize> = from_start
+        .into_iter()
+        .chain(from_end)
+        .filter(|&j| j > i)
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// An edge's ends and midpoint, in space.
@@ -963,15 +1028,15 @@ fn connected_groups(model: &Model, faces: &[Shape]) -> OgeomResult<Vec<Vec<Shape
         );
     }
 
-    // Union-find, flattened by hand: the counts here are face counts, so the
-    // simple version is not the slow one.
-    for i in 0..faces.len() {
-        for j in (i + 1)..faces.len() {
-            if edges_of[i].iter().any(|e| edges_of[j].contains(e)) {
-                let (a, b) = (find(&group_of, i), find(&group_of, j));
-                if a != b {
-                    group_of[b] = a;
-                }
+    // Union-find: each face joins the first face seen with each of its
+    // edges, which joins it to every face sharing that edge transitively.
+    let mut first_user: HashMap<TShapeId, usize> = HashMap::new();
+    for (i, edges) in edges_of.iter().enumerate() {
+        for edge in edges {
+            let j = *first_user.entry(*edge).or_insert(i);
+            let (a, b) = (find(&mut group_of, j), find(&mut group_of, i));
+            if a != b {
+                group_of[b] = a;
             }
         }
     }
@@ -979,7 +1044,7 @@ fn connected_groups(model: &Model, faces: &[Shape]) -> OgeomResult<Vec<Vec<Shape
     let mut groups: HashMap<usize, Vec<Shape>> = HashMap::new();
     for (i, face) in faces.iter().enumerate() {
         groups
-            .entry(find(&group_of, i))
+            .entry(find(&mut group_of, i))
             .or_default()
             .push(face.clone());
     }
@@ -991,8 +1056,10 @@ fn connected_groups(model: &Model, faces: &[Shape]) -> OgeomResult<Vec<Vec<Shape
 }
 
 /// Follow a union-find chain to its root.
-fn find(parent: &[usize], mut i: usize) -> usize {
+fn find(parent: &mut [usize], mut i: usize) -> usize {
+    // Halving the path on the way up keeps every chain short.
     while parent[i] != i {
+        parent[i] = parent[parent[i]];
         i = parent[i];
     }
     i

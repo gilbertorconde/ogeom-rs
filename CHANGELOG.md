@@ -63,6 +63,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean on a solid of many small faces took minutes.** Rebuilding
+  the result compared every strand end with every vertex minted so far,
+  and `sew` compared every edge with every other — projecting one's
+  middle onto the other's curve for each pair — and every vertex and
+  face likewise, so the cost grew with the square of the face count even
+  when the tool touched a handful of faces. A thin drill through a
+  converted mesh of 6 000 faces took two minutes. Vertices, junctions
+  and edge ends are binned by position and compared only with those
+  near them, in the order the full scan visited them, so the results are
+  the same: the same drill takes under a second, and 12 000 faces two.
 - **An edge on a very eccentric ellipse could run the long way round.**
   The STEP and IGES readers placed a vertex on an ellipse by its
   eccentric anomaly, which is exact only for a point on the curve. A

@@ -11,6 +11,7 @@
 //! `is_deleted`) from the start. That is not optional and cannot be retrofitted:
 //! downstream stable naming is built directly on it.
 
+mod bins;
 pub mod build;
 pub mod check;
 pub mod classify;
