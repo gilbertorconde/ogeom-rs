@@ -24,6 +24,9 @@ confidence-threshold = 0.93
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# A path-only dev-dependency is dropped from the published manifest, so it is
+# no wildcard anyone resolves; ogeom-mesh's tests need ogeom-algo that way.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

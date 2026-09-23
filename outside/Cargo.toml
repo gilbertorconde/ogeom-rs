@@ -30,25 +30,26 @@ expect_used = "warn"
 
 [workspace.dependencies]
 # --- the kernel, from outside it ---
-ogeom-core = { path = "../crates/ogeom-core", version = "0.2.1" }
-ogeom-math = { path = "../crates/ogeom-math", version = "0.2.1" }
-ogeom-geom = { path = "../crates/ogeom-geom", version = "0.2.1" }
-ogeom-topo = { path = "../crates/ogeom-topo", version = "0.2.1" }
-ogeom-algo = { path = "../crates/ogeom-algo", version = "0.2.1" }
-ogeom-mesh = { path = "../crates/ogeom-mesh", version = "0.2.1" }
-ogeom-intersect = { path = "../crates/ogeom-intersect", version = "0.2.1" }
-ogeom-bool = { path = "../crates/ogeom-bool", version = "0.2.1" }
-ogeom-heal = { path = "../crates/ogeom-heal", version = "0.2.1" }
-ogeom-fillet = { path = "../crates/ogeom-fillet", version = "0.2.1" }
-ogeom-offset = { path = "../crates/ogeom-offset", version = "0.2.1" }
-ogeom-io = { path = "../crates/ogeom-io", version = "0.2.1" }
-ogeom-hlr = { path = "../crates/ogeom-hlr", version = "0.2.1" }
-ogeom-doc = { path = "../crates/ogeom-doc", version = "0.2.1" }
-ogeom = { path = "../crates/ogeom", version = "0.2.1" }
+# Path only: nothing here is published, so a version requirement would only
+# have to be bumped by hand at every kernel release.
+ogeom-core = { path = "../crates/ogeom-core" }
+ogeom-math = { path = "../crates/ogeom-math" }
+ogeom-geom = { path = "../crates/ogeom-geom" }
+ogeom-topo = { path = "../crates/ogeom-topo" }
+ogeom-algo = { path = "../crates/ogeom-algo" }
+ogeom-mesh = { path = "../crates/ogeom-mesh" }
+ogeom-intersect = { path = "../crates/ogeom-intersect" }
+ogeom-bool = { path = "../crates/ogeom-bool" }
+ogeom-heal = { path = "../crates/ogeom-heal" }
+ogeom-fillet = { path = "../crates/ogeom-fillet" }
+ogeom-offset = { path = "../crates/ogeom-offset" }
+ogeom-io = { path = "../crates/ogeom-io" }
+ogeom-hlr = { path = "../crates/ogeom-hlr" }
+ogeom-doc = { path = "../crates/ogeom-doc" }
+ogeom = { path = "../crates/ogeom" }
 
 # --- what lives here ---
 ogeom-recognize = { path = "crates/ogeom-recognize", version = "0.0.0" }
-ogeom-reverse = { path = "crates/ogeom-reverse", version = "0.0.0" }
 ogeom-select = { path = "crates/ogeom-select", version = "0.0.0" }
 ogeom-sketch = { path = "crates/ogeom-sketch", version = "0.0.0" }
 
