@@ -11,6 +11,14 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-23
+
+A patch release with no API change; `cargo semver-checks` finds nothing
+against 0.3.0. Converted meshes rebuild whole spheres and tori, sphere caps
+and zones, and bent tubes exactly, and drills through converted parts are
+faster and close where they refused. The docs are rewritten shorter and
+plainer.
+
 ### Added
 
 - **`solid_from_mesh` rebuilds spheres and tori that close on themselves.**
@@ -675,7 +683,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.1.0...v0.2.0
