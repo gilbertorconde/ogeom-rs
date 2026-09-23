@@ -48,8 +48,10 @@ the next checkpoint:
 ## IGES
 
 `read_iges` / `write_iges`, same document-level shape, covering the core
-entity set a real importer meets: the curve and surface entities, trimmed
-surfaces, transforms, colour, and the manifold solid B-rep. The
+entity set a real importer meets: the curve and surface entities —
+conic arcs of every kind, ruled surfaces, offset curves and surfaces
+among them — trimmed surfaces, transforms, colour, and the manifold
+solid B-rep. The
 `IgesReport` names what fell outside that set. The suite holds IGES to
 the same standard as STEP: round trips measured by volume, including the
 periodic cases (spheres, tori) where seam handling is where importers

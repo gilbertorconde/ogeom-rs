@@ -90,6 +90,57 @@ fn fillet_an_edge() {
 }
 
 #[test]
+fn edges_asked_together() {
+    let mut model = Model::new();
+    // ANCHOR: edges_asked_together
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let top = [
+        Point::new(10.0, 0.0, 10.0),
+        Point::new(20.0, 10.0, 10.0),
+        Point::new(10.0, 20.0, 10.0),
+        Point::new(0.0, 10.0, 10.0),
+    ]
+    .map(|at| edge_near(&model, &block, at));
+
+    // Four bevels as one operation mitre where they meet: each corner loses
+    // the overlap of two prisms, a third of the cube of the distance.
+    let bevelled = ogeom::fillet::chamfer_edges(&mut model, &block, &top, 1.0, T)
+        .unwrap()
+        .shape;
+    let volume = ogeom::algo::volume_properties(&model, &bevelled, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((volume - (4000.0 - 4.0 * 10.0 + 4.0 / 3.0)).abs() < 1e-2);
+
+    // Three fillets meeting at a corner close it with the ball's own patch,
+    // an octant of a sphere, instead of leaving the bands' caps standing.
+    let corner = [
+        Point::new(10.0, 20.0, 10.0),
+        Point::new(20.0, 10.0, 10.0),
+        Point::new(20.0, 20.0, 5.0),
+    ]
+    .map(|at| edge_near(&model, &block, at));
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &corner, 2.0, T)
+        .unwrap()
+        .shape;
+    let spheres = ogeom::topo::explore_unique(&model, &rounded, ogeom::topo::ShapeType::Face)
+        .unwrap()
+        .iter()
+        .filter(|face| {
+            let data = model.node(face).unwrap().data().as_face().unwrap();
+            matches!(
+                model.geometry().surface(data.surface),
+                Some(ogeom::geom::SurfaceGeometry::Sphere(_))
+            )
+        })
+        .count();
+    assert_eq!(spheres, 1);
+    // ANCHOR_END: edges_asked_together
+}
+
+#[test]
 fn a_part_survives_step() {
     let mut model = Model::new();
     // ANCHOR: step_roundtrip

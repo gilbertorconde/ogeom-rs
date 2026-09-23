@@ -13,9 +13,29 @@ radius law along the edge. `chamfer_edge` cuts a symmetric flat,
 `chamfer_edge_distances` an asymmetric one, and `chamfer_edge_angle` a
 distance-and-angle one.
 
-Where blends meet, the kernel handles the meeting: filleting the three
-edges at a box corner produces the closed corner patch where they collide,
-and the suite measures that solid against its closed-form volume.
+A fillet is not limited to planes. Between cylinders, cones, spheres, tori
+and fitted patches the ball is marched rather than solved in closed form,
+the blend is fitted through its own arcs, and the result melts into the
+solid the same way.
+
+## Edges asked together
+
+Edges rounded or bevelled one call at a time each stop flush against
+whatever they end on. Asked together, they meet:
+
+```rust
+{{#include ../../../../crates/ogeom/tests/book.rs:edges_asked_together}}
+```
+
+`fillet_edges` trims neighbouring bands against each other, joins a
+tangent chain without a seam, and closes any vertex where three or more of
+its edges meet with the rolling ball's own patch. `round_vertex` is that
+corner tool on its own: at a vertex one ball touches it leaves a sphere
+patch, and at one no single ball touches — a rectangular pyramid's apex —
+the exact envelope of the rolling ball, spheres joined by cylinders.
+`chamfer_edges` and `chamfer_edges_with` bevel a set of edges as one
+operation, every wedge built on the solid as it stands before the call, so
+the bevels mitre where they meet.
 
 ## Blends without a shared edge
 
