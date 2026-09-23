@@ -65,12 +65,16 @@ pub fn round_vertex(
     if radius <= tol.confusion() {
         ogeom_bail!(Construction, "a blend radius must be a positive distance");
     }
-    let Some(corner) = model
+    let Some(raw) = model
         .node(vertex)
         .and_then(|n| n.data().as_vertex().map(|d| d.point))
     else {
         ogeom_bail!(Construction, "the vertex holds no point");
     };
+    // Where the vertex stands, not where its node was built: a prism's far
+    // end is its near end moved, and read unplaced the far corner is the
+    // near one — the tool rounded the wrong corner of the solid.
+    let corner = vertex.transform(model.datums())?.apply(raw);
 
     // The corner's frame comes from the planes that pass through the
     // vertex's point — not from the vertex's own adjacency, which the very

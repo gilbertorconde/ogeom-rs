@@ -1137,7 +1137,11 @@ through `fillet_edges` a marched blend and a straight one meet at their \
 corners, the later's run-out walking on under the earlier band, and the \
 boolean decides once per shared edge piece whether it is dust — a sub-piece \
 of one edge lies in several charts, each with its own snap — so a sliver \
-one chart collapses collapses in every chart."""
+one chart collapses collapses in every chart. Where three or more edges of \
+one `fillet_edges` call meet at a vertex, the corner tool closes it with \
+the rolling ball's patch before the bands, which stop flush against it: a \
+box corner's sphere octant, a pyramid apex's sphere or spheres and \
+cylinders; a corner the tool does not speak keeps the bands' caps."""
 claims = [
     "BRepFilletAPI_MakeFillet", "BRepFilletAPI_LocalOperation",
     "ChFi3d", "ChFi3d_*", "ChFiDS_*", "ChFiKPart_*",
@@ -1168,9 +1172,10 @@ verdict = "covered"
 claims = ["BRepFilletAPI_MakeChamfer"]
 symbols = [
     "ogeom_fillet::chamfer_edge", "ogeom_fillet::chamfer_edge_distances",
-    "ogeom_fillet::chamfer_edge_angle",
+    "ogeom_fillet::chamfer_edge_angle", "ogeom_fillet::chamfer_edges",
+    "ogeom_fillet::chamfer_edges_with", "ogeom_fillet::Chamfer",
 ]
-tests = ["crates/ogeom/tests/blends.rs"]
+tests = ["crates/ogeom/tests/blends.rs", "crates/ogeom/tests/edge_chains.rs"]
 
 [[capability]]
 id = "fillet.corners-2d"

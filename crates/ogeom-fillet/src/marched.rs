@@ -1081,7 +1081,9 @@ fn open_runout_wedge(
                     (chain, corner && !chain)
                 }
             };
-            if chain_mate {
+            let settled =
+                mates.is_some_and(|(_, mates)| crate::fillet::Mate::settled_at(mates, at, tol));
+            if chain_mate || settled {
                 continue;
             }
             // Where the ball's contacts stand against the host faces past

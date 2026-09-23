@@ -56,6 +56,22 @@ pub fn fillet_edge(
 pub(crate) struct Mate {
     /// `(point, unit tangent leaving the point along the edge)` per end.
     pub ends: [(Point, Vector); 2],
+    /// Per end, whether the corner tool has already closed the vertex there:
+    /// the band stops flush against the corner's patch rather than running
+    /// out through it.
+    pub settled: [bool; 2],
+}
+
+impl Mate {
+    /// Whether any mate's end at `at` is a vertex the corner tool closed.
+    pub(crate) fn settled_at(mates: &[Self], at: Point, tol: Tolerances) -> bool {
+        mates.iter().any(|mate| {
+            mate.ends
+                .iter()
+                .zip(mate.settled)
+                .any(|((p, _), settled)| settled && p.distance(at) <= tol.confusion() * 1e3)
+        })
+    }
 }
 
 /// [`fillet_edge`], with the straight seat told what else was asked for.
@@ -146,9 +162,16 @@ fn fillet_edge_meeting(
 /// against each other along their own intersection: two fillets meeting
 /// at a corner, the way one edge at a time ([`fillet_edge`]) deliberately
 /// does not, since the flush-ended state is what the corner tool
-/// ([`round_vertex`](crate::round_vertex)) is built for. Other junctions
-/// leave the wedges' caps standing, which is the honest picture of a
-/// corner no single ball rolls around.
+/// ([`round_vertex`](crate::round_vertex)) is built for. Where three or
+/// more edges of the chain meet at one vertex, the corner tool closes it
+/// with the rolling ball's own patch — the octant of a sphere at a box
+/// corner, the envelope of spheres and cylinders at a vertex no single
+/// ball touches — rather than leaving the bands' caps standing. The corner
+/// goes first and the bands stop flush against its patch: bands built
+/// first crash into each other at an apex. A corner the tool does not
+/// speak — a curved face through it, a concave vertex — keeps its caps,
+/// which is the honest picture of a corner no ball rolls around. Other
+/// junctions leave the wedges' caps standing likewise.
 ///
 /// Only two blends that round the same way trim each other. A wedge's cut
 /// would eat a fill, and a fill cannot run on through a wedge's band, so
@@ -174,6 +197,55 @@ pub fn fillet_edges(
         ogeom_bail!(Construction, "a chain of no edges rounds nothing");
     }
     use ogeom_geom::Curve3d as _;
+    // The vertices three or more of the chain's edges meet at: the corners
+    // the ball rolls round, closed by the corner tool.
+    let mut corners: Vec<(Shape, usize)> = Vec::new();
+    for edge in edges {
+        let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+            continue;
+        };
+        for v in [a, b] {
+            if let Some(slot) = corners.iter_mut().find(|(held, _)| held.is_same(&v)) {
+                slot.1 += 1;
+            } else {
+                corners.push((v, 1));
+            }
+        }
+    }
+    corners.retain(|(_, count)| *count >= 3);
+    // A corner the tool rounds, or the solid unchanged where it does not
+    // speak the corner — which keeps the bands' caps, as before.
+    let round = |model: &mut Model, built: Built, vertex: &Shape| -> OgeomResult<Built> {
+        match crate::corner::round_vertex(model, &built.shape, vertex, radius, tol) {
+            Ok(rounded) => Ok(Built {
+                shape: rounded.shape,
+                history: built.history.then(&rounded.history),
+            }),
+            Err(OgeomError::Construction(_)) => Ok(built),
+            Err(other) => Err(other),
+        }
+    };
+    // The corner first, the bands after it: bands built first crash into
+    // each other at an apex, and the corner tool wants the sharp vertex's
+    // planes, not the bands' mitre.
+    let mut built: Option<Built> = None;
+    let mut rounded: Vec<Point> = Vec::new();
+    for (vertex, _) in &corners {
+        let start = built
+            .take()
+            .unwrap_or_else(|| Built::from_nothing(solid.clone()));
+        let before = start.shape.clone();
+        let after = round(model, start, vertex)?;
+        if !after.shape.is_same(&before)
+            && let Some(point) = model
+                .node(vertex)
+                .and_then(|n| n.data().as_vertex())
+                .map(|d| d.point)
+        {
+            rounded.push(vertex.transform(model.datums())?.apply(point));
+        }
+        built = Some(after);
+    }
     let mates: Vec<Mate> = edges
         .iter()
         .map(|e| -> OgeomResult<Mate> {
@@ -188,12 +260,15 @@ pub fn fillet_edges(
                 };
                 Ok((curve.point_at(t, tol)?, unit * leaving))
             };
-            Ok(Mate {
-                ends: [end_of(range.0, 1.0)?, end_of(range.1, -1.0)?],
-            })
+            let ends = [end_of(range.0, 1.0)?, end_of(range.1, -1.0)?];
+            let settled = ends.map(|(p, _)| {
+                rounded
+                    .iter()
+                    .any(|q| q.distance(p) <= tol.confusion() * 1e3)
+            });
+            Ok(Mate { ends, settled })
         })
         .collect::<OgeomResult<_>>()?;
-    let mut built: Option<Built> = None;
     for (index, edge) in edges.iter().enumerate() {
         // The edge as it stands on the current solid: itself on the first
         // step, and afterwards whatever the earlier blends left of it — one
@@ -535,6 +610,9 @@ fn planar_fillet(
                 })
         });
         if chain {
+            continue;
+        }
+        if Mate::settled_at(mates, at, tol) {
             continue;
         }
         let hosts = [&seat.faces[0], &seat.faces[1]];

@@ -30,6 +30,15 @@ bump may break the API and a patch bump may not.
   old vertices' and edges' recorded tolerances into the converted solid,
   which it had dropped, and the boolean inverts a probe on a patch by
   projection and treats two identical patches as one chart.
+- **Chamfers bevel a chain of edges as one operation, mitred.**
+  `chamfer_edges` and `chamfer_edges_with` (a `Chamfer` per edge, in any
+  of the three spellings) build every wedge on the solid as it stands
+  before the call and then apply them all, so where two bevels meet at a
+  vertex each still reaches the corner and the bevel planes meet along
+  their own line. Beveling a box's four top edges one call at a time left
+  a small tetrahedron and two extra faces at every corner; as one
+  operation it is ten faces and the exact volume. Three bevels at a
+  convex vertex meet at one point.
 - **The corner tool rounds a vertex no single ball touches.** A
   rectangular pyramid's apex, an irregular pentagonal one — any convex
   planar vertex whose faces share no tangent ball — was refused by name.
@@ -135,6 +144,25 @@ bump may break the API and a patch bump may not.
   it. A planar end keeps its plane.
 
 ### Fixed
+
+- **A prism swept from a clockwise profile was inside out.** A closed
+  wire on a plane bounds one region however it is walked, but the prism
+  read each wall's side off its edge's direction, so a square walked
+  clockwise about the travel swept its walls facing into the material
+  while the caps faced out, and the volume was refused as wound inward.
+  Each ring's walls now follow the ring's winding about the travel, the
+  outer ring turning positively and every hole the other way, whichever
+  way the caller walked them.
+- **Fillets asked together at a corner close it with the ball's patch.**
+  Three fillets at a box corner through `fillet_edges` left the bands'
+  flat caps standing where a ball rolls round the corner. Where three or
+  more edges of one call meet at a vertex, the corner tool now rounds
+  the vertex first and the bands stop flush against its patch: an
+  octant of a sphere at a box corner, the envelope of spheres and
+  cylinders at an apex no single ball touches. A corner the tool does
+  not speak keeps the caps. Under it, the corner tool read a vertex's
+  point where its node was built rather than where it stands, and at a
+  prism's far end it rounded the near corner instead.
 
 - **STEP faces on a surface of linear extrusion were skipped, and the
   body drew open.** A curve swept along a vector is how some writers
