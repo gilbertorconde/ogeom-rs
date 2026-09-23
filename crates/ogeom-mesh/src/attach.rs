@@ -26,7 +26,6 @@ use ogeom_topo::{
 };
 
 use crate::discretize::{Deflection, discretize};
-use crate::triangulate::{edge_chords_for, triangulate_face_with};
 
 /// What a tessellation pass produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,10 +68,15 @@ pub fn tessellate(
         deflection_met: true,
     };
 
-    // The chords the faces agree to draw their shared edges to: a narrow
-    // face's edges finer than asked, and the faces across them the same.
-    // Agreed once here, for the polylines and the faces both.
-    let chords = edge_chords_for(model, shape, deflection, tol)?;
+    // Every face drawn to the chords the faces agree to draw their shared
+    // edges to — a narrow face's edges finer than asked, and the faces
+    // across them the same — in one pass that yields the meshes and the
+    // chords together, the chords then serving the polylines too.
+    ogeom_core::progress::stage("tessellate: faces");
+    let faces: Vec<Shape> = ogeom_topo::explore(model, shape, Filter::OfType(ShapeType::Face))?
+        .into_iter()
+        .collect();
+    let (meshes, chords) = crate::triangulate::face_meshes(model, &faces, deflection, tol)?;
     let along = |edge: &Shape| -> Deflection {
         match chords.get(&edge.node().index()) {
             Some(chord) => Deflection {
@@ -103,10 +107,6 @@ pub fn tessellate(
     // sequentially in that same order. The split is what makes the output
     // bit-identical at any thread count: nothing about scheduling can reach
     // the model.
-    ogeom_core::progress::stage("tessellate: faces");
-    let faces: Vec<Shape> = ogeom_topo::explore(model, shape, Filter::OfType(ShapeType::Face))?
-        .into_iter()
-        .collect();
     let read_model: &Model = model;
     // Counted with an atomic because the workers finish in their own order:
     // each announcement carries a distinct `done`, all of them reach the
@@ -115,10 +115,28 @@ pub fn tessellate(
     let face_total = faces.len() as u64;
     let faces_done = std::sync::atomic::AtomicU64::new(0);
     type FaceWork = (Triangulation, Vec<(Shape, Vec<u32>)>);
+    // The meshes are handed over by the job that matches their edges; a
+    // shared slice cannot give them away, so each sits behind a lock it is
+    // taken from once.
+    let jobs: Vec<(&Shape, std::sync::Mutex<Option<OgeomResult<Triangulation>>>)> = faces
+        .iter()
+        .zip(meshes)
+        .map(|(face, mesh)| (face, std::sync::Mutex::new(Some(mesh))))
+        .collect();
     let computed: Vec<OgeomResult<FaceWork>> =
-        ogeom_core::parallel::map_ordered(&faces, |_, face| {
+        ogeom_core::parallel::map_ordered(&jobs, |_, (face, slot)| {
             ogeom_core::progress::checkpoint()?;
-            let mesh = triangulate_face_with(read_model, face, deflection, &chords, tol)?;
+            let face: &Shape = face;
+            let mesh = slot
+                .lock()
+                .ok()
+                .and_then(|mut held| held.take())
+                .unwrap_or_else(|| {
+                    Err(ogeom_core::ogeom_err!(
+                        Construction,
+                        "a face's mesh was taken twice"
+                    ))
+                })?;
             ogeom_core::progress::stage_at(
                 "tessellate: faces",
                 faces_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,

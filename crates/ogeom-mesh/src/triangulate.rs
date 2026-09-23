@@ -330,31 +330,7 @@ pub fn triangulate(
         ogeom_topo::explore(model, shape, ogeom_topo::Filter::OfType(ShapeType::Face))?;
     let read_model: &Model = model;
 
-    let FirstPass {
-        finer,
-        mut computed,
-        changed,
-    } = first_pass(read_model, &faces, deflection, tol)?;
-    if !changed.is_empty() {
-        let again: Vec<usize> = (0..faces.len())
-            .filter(|&i| {
-                ogeom_topo::explore(
-                    model,
-                    &faces[i],
-                    ogeom_topo::Filter::OfType(ShapeType::Edge),
-                )
-                .is_ok_and(|es| es.iter().any(|e| changed.contains(&e.node().index())))
-            })
-            .collect();
-        let redone: Vec<OgeomResult<Triangulation>> =
-            ogeom_core::parallel::map_ordered(&again, |_, &index| {
-                ogeom_core::progress::checkpoint()?;
-                triangulate_with(read_model, &faces[index], deflection, Some(&finer), tol)
-            });
-        for (index, one) in again.into_iter().zip(redone) {
-            computed[index] = one;
-        }
-    }
+    let (computed, _) = face_meshes(read_model, &faces, deflection, tol)?;
 
     let mut mesh = Triangulation::new();
     let mut pieces: Vec<(usize, usize)> = Vec::with_capacity(faces.len());
@@ -392,6 +368,49 @@ pub fn triangulate(
     } else {
         Ok(mesh)
     }
+}
+
+/// Every face below a shape drawn to the chords the faces agree on, in face
+/// order, and those chords.
+///
+/// The first pass draws each face at the caller's chord on top of the
+/// narrow faces' asks; a face whose boundary crossed itself folds finer
+/// chords into the agreement, and only the faces touching an edge whose
+/// chord changed are drawn again. The whole-shape mesh welds these, and the
+/// stored tessellation keeps them face by face — the same meshes, drawn
+/// once.
+pub(crate) fn face_meshes(
+    read_model: &Model,
+    faces: &[Shape],
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<(Vec<OgeomResult<Triangulation>>, EdgeChords)> {
+    let FirstPass {
+        finer,
+        mut computed,
+        changed,
+    } = first_pass(read_model, faces, deflection, tol)?;
+    if !changed.is_empty() {
+        let again: Vec<usize> = (0..faces.len())
+            .filter(|&i| {
+                ogeom_topo::explore(
+                    read_model,
+                    &faces[i],
+                    ogeom_topo::Filter::OfType(ShapeType::Edge),
+                )
+                .is_ok_and(|es| es.iter().any(|e| changed.contains(&e.node().index())))
+            })
+            .collect();
+        let redone: Vec<OgeomResult<Triangulation>> =
+            ogeom_core::parallel::map_ordered(&again, |_, &index| {
+                ogeom_core::progress::checkpoint()?;
+                triangulate_with(read_model, &faces[index], deflection, Some(&finer), tol)
+            });
+        for (index, one) in again.into_iter().zip(redone) {
+            computed[index] = one;
+        }
+    }
+    Ok((computed, finer))
 }
 
 /// What the first pass over a shape's faces produced: the chords its faces
