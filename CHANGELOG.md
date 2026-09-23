@@ -54,8 +54,10 @@ bump may break the API and a patch bump may not.
   warnings. Deflated entries are inflated by a decoder in the crate, and
   the archive is read through its central directory, so entries streamed
   with their sizes after the data read too. `read_package` reads deflated
-  entries as well, checks every entry's checksum, and refuses ZIP64 and
-  encrypted entries by name.
+  entries as well, checks every entry's checksum, and reads ZIP64
+  archives — which streaming writers emit whatever a package's size, and
+  which half the 3MF files downloaded from model sites are — refusing
+  encrypted entries and archives spanning several disks by name.
 - **`restore_containment`**, the pass that establishes the tolerance
   containment rule the checker enforces: every edge widened to at least
   the faces it bounds, every vertex to at least the edges it bounds,

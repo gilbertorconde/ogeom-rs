@@ -245,3 +245,25 @@ fn per_triangle_colours_and_supports_are_read_with_a_warning() {
     );
     assert!(import.warnings.iter().any(|w| w.contains("support")));
 }
+
+/// A package as a streaming writer lays it out whatever its size — ZIP64
+/// end record and locator, every size and offset saturated in the headers
+/// and carried in ZIP64 extra fields — reads to the same cube as the
+/// classic form of the same package, whose entries stream their sizes in
+/// data descriptors instead.
+#[test]
+fn zip64_and_classic_forms_of_one_package_read_the_same() {
+    let classic = ogeom::io::read_3mf(&corpus_bytes("threemf_cube_deflated.3mf"), T).unwrap();
+    let zip64 = ogeom::io::read_3mf(&corpus_bytes("threemf_cube_zip64.3mf"), T).unwrap();
+    assert_eq!(zip64.objects.len(), 1);
+    assert_eq!(zip64.objects[0].mesh.triangles.len(), 12);
+    assert_eq!(
+        classic.objects[0].mesh.triangles,
+        zip64.objects[0].mesh.triangles
+    );
+    assert_eq!(
+        classic.objects[0].mesh.positions,
+        zip64.objects[0].mesh.positions
+    );
+    assert_eq!(classic.objects[0].colour, zip64.objects[0].colour);
+}

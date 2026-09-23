@@ -244,6 +244,8 @@ fn u32_at(bytes: &[u8], at: usize) -> OgeomResult<u32> {
 /// header leaves as zero.
 fn directory(bytes: &[u8]) -> OgeomResult<Vec<Entry>> {
     const END: u32 = 0x0605_4b50;
+    const LOCATOR: u32 = 0x0706_4b50;
+    const END64: u32 = 0x0606_4b50;
     // The end record is the last thing in the file but for a comment of up
     // to 65 535 bytes.
     let floor = bytes.len().saturating_sub(22 + 0xFFFF);
@@ -262,18 +264,39 @@ fn directory(bytes: &[u8]) -> OgeomResult<Vec<Entry>> {
     let Some(end) = end else {
         ogeom_bail!(Construction, "these bytes are not a ZIP archive");
     };
-    let count = u16_at(bytes, end + 10)?;
-    let size = u32_at(bytes, end + 12)?;
-    let offset = u32_at(bytes, end + 16)?;
-    let zip64_locator = end >= 20 && u32_at(bytes, end - 20)? == 0x0706_4b50;
-    if zip64_locator || count == 0xFFFF || size == 0xFFFF_FFFF || offset == 0xFFFF_FFFF {
+    let zip64 = end >= 20 && u32_at(bytes, end - 20)? == LOCATOR;
+    // In a ZIP64 archive the classic record's disk numbers may be
+    // saturated like the rest of it; the ZIP64 record's are the ones read.
+    if !zip64 && (u16_at(bytes, end + 4)? != 0 || u16_at(bytes, end + 6)? != 0) {
+        ogeom_bail!(Construction, "the archive spans several disks");
+    }
+    let mut count = u64::from(u16_at(bytes, end + 10)?);
+    let mut offset = u64::from(u32_at(bytes, end + 16)?);
+    // A ZIP64 archive keeps the classic end record with its fields
+    // saturated, and the true ones in a ZIP64 end record its locator, just
+    // before the classic one, points to. Streaming writers emit it whatever
+    // the archive's size.
+    if zip64 {
+        let at = to_usize(u64_at(bytes, end - 20 + 8)?)?;
+        if u32_at(bytes, at)? != END64 {
+            ogeom_bail!(
+                Construction,
+                "the archive's ZIP64 locator points at no ZIP64 end record"
+            );
+        }
+        if u32_at(bytes, at + 16)? != 0 || u32_at(bytes, at + 20)? != 0 {
+            ogeom_bail!(Construction, "the archive spans several disks");
+        }
+        count = u64_at(bytes, at + 32)?;
+        offset = u64_at(bytes, at + 48)?;
+    } else if count == 0xFFFF || offset == 0xFFFF_FFFF {
         ogeom_bail!(
             Construction,
-            "the archive is ZIP64, which this reader does not read"
+            "the archive's end record is saturated and no ZIP64 record follows it"
         );
     }
-    let mut entries = Vec::with_capacity(usize::from(count));
-    let mut at = offset as usize;
+    let mut entries = Vec::new();
+    let mut at = to_usize(offset)?;
     for _ in 0..count {
         if u32_at(bytes, at)? != 0x0201_4b50 {
             ogeom_bail!(Construction, "the archive's central directory is damaged");
@@ -284,27 +307,76 @@ fn directory(bytes: &[u8]) -> OgeomResult<Vec<Entry>> {
         let Some(name) = bytes.get(at + 46..at + 46 + name_len) else {
             ogeom_bail!(Construction, "the archive is cut short");
         };
-        let compressed = u32_at(bytes, at + 20)?;
-        let size = u32_at(bytes, at + 24)?;
-        let header = u32_at(bytes, at + 42)?;
-        if compressed == 0xFFFF_FFFF || size == 0xFFFF_FFFF || header == 0xFFFF_FFFF {
-            ogeom_bail!(
-                Construction,
-                "the archive is ZIP64, which this reader does not read"
-            );
+        let name = String::from_utf8_lossy(name).into_owned();
+        let mut size = u64::from(u32_at(bytes, at + 24)?);
+        let mut compressed = u64::from(u32_at(bytes, at + 20)?);
+        let mut header = u64::from(u32_at(bytes, at + 42)?);
+        // A saturated size or offset is carried in the ZIP64 extra field,
+        // in the order uncompressed size, compressed size, header offset,
+        // each present only where its fixed field is saturated.
+        if [size, compressed, header].contains(&0xFFFF_FFFF) {
+            let Some(extra) = extra_field(bytes, at + 46 + name_len, extra_len, 0x0001) else {
+                ogeom_bail!(
+                    Construction,
+                    "the entry {name} has a saturated field and no ZIP64 extra"
+                );
+            };
+            let mut read = 0;
+            for field in [&mut size, &mut compressed, &mut header] {
+                if *field == 0xFFFF_FFFF {
+                    *field = u64_at(extra, read)?;
+                    read += 8;
+                }
+            }
         }
         entries.push(Entry {
-            name: String::from_utf8_lossy(name).into_owned(),
+            name,
             flags: u16_at(bytes, at + 8)?,
             method: u16_at(bytes, at + 10)?,
             crc: u32_at(bytes, at + 16)?,
-            compressed: compressed as usize,
-            size: size as usize,
-            header: header as usize,
+            compressed: to_usize(compressed)?,
+            size: to_usize(size)?,
+            header: to_usize(header)?,
         });
         at += 46 + name_len + extra_len + comment_len;
     }
     Ok(entries)
+}
+
+fn u64_at(bytes: &[u8], at: usize) -> OgeomResult<u64> {
+    match bytes.get(at..at + 8) {
+        Some(b) => Ok(u64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ])),
+        None => ogeom_bail!(Construction, "the archive is cut short"),
+    }
+}
+
+fn to_usize(value: u64) -> OgeomResult<usize> {
+    match usize::try_from(value) {
+        Ok(v) => Ok(v),
+        Err(_) => ogeom_bail!(
+            Construction,
+            "the archive names an offset past this machine's reach"
+        ),
+    }
+}
+
+/// The data of the extra field with header `id` among the `len` bytes of
+/// extra fields starting at `at`.
+fn extra_field(bytes: &[u8], at: usize, len: usize, id: u16) -> Option<&[u8]> {
+    let fields = bytes.get(at..at + len)?;
+    let mut i = 0;
+    while i + 4 <= fields.len() {
+        let tag = u16::from_le_bytes([fields[i], fields[i + 1]]);
+        let size = usize::from(u16::from_le_bytes([fields[i + 2], fields[i + 3]]));
+        let data = fields.get(i + 4..i + 4 + size)?;
+        if tag == id {
+            return Some(data);
+        }
+        i += 4 + size;
+    }
+    None
 }
 
 /// An entry's bytes: stored ones as they are, deflated ones inflated, and
@@ -346,8 +418,11 @@ fn contents(bytes: &[u8], entry: &Entry) -> OgeomResult<Vec<u8>> {
 /// Read every part of a package: the entry names and their bytes.
 ///
 /// Stored and deflated entries are read, each checked against its
-/// checksum; any other compression method, an encrypted entry, or a ZIP64
-/// archive is refused by name rather than half-read.
+/// checksum, from classic and ZIP64 archives alike; the central directory's
+/// sizes are the ones trusted, since a streamed entry's local header leaves
+/// them zero or saturated. Any other compression method, an encrypted
+/// entry, or an archive spanning several disks is refused by name rather
+/// than half-read.
 ///
 /// # Errors
 ///
