@@ -1481,6 +1481,7 @@ mod boss_tests {
         let solid = import.solids[0].clone();
         let healed = ogeom_heal::reanchor_periodic_rings(import.document.model_mut(), &solid, T)
             .unwrap()
+            .0
             .shape;
         let features = recognize(import.document.model(), &healed, T).unwrap();
         let rounds: Vec<&PartialRound> = features

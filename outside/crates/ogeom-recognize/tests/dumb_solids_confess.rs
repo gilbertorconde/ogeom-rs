@@ -122,6 +122,7 @@ fn an_imported_part_confesses_its_pocket_and_nothing_false() {
     let solid = import.solids[0].clone();
     let healed = ogeom_heal::reanchor_periodic_rings(import.document.model_mut(), &solid, T)
         .unwrap()
+        .0
         .shape;
     let features = recognize(import.document.model(), &healed, T).unwrap();
     assert!(
