@@ -62,6 +62,11 @@ bump may break the API and a patch bump may not.
   and holes were attached a period away from the face they cut. Points
   are now placed on the side of the seam the face's trim is on, and a
   section is kept wherever it may pass through the surfaces' extents.
+- **A hole's rim passing close to a loose edge was dropped.** Splitting a
+  face, a loop was taken for part of the face's boundary, not a hole in
+  it, whenever any point of it came within the face's weld of the
+  boundary, and the weld on a face with loose edges is a few hundredths.
+  A loop is part of the boundary only when it meets it at a node.
 
 ## [0.3.2] - 2026-09-24
 

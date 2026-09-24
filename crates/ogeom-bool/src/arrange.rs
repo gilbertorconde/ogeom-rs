@@ -290,6 +290,18 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
         .map(|s| s.polyline.as_slice())
         .collect();
 
+    // The nodes each cycle passes through: a hole that shares one with a
+    // positive cycle is the same component, not a hole in it. Asked of the
+    // nodes, not of the polylines' nearness: a hole can pass within the weld
+    // of a loose boundary without meeting it, and read by distance it was
+    // taken for part of the boundary and dropped.
+    let nodes_of = |cycle: &[usize]| -> std::collections::BTreeSet<usize> {
+        cycle.iter().map(|&d| tail(d)).collect()
+    };
+    let meet = |x: &[usize], y: &[usize]| -> bool {
+        let ys = nodes_of(y);
+        nodes_of(x).iter().any(|n| ys.contains(n))
+    };
     let mut pieces = Vec::new();
     for (cycle, line) in &positives {
         let mut rings = vec![traversals(cycle, &live)];
@@ -297,23 +309,18 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
         for (hole_cycle, hole) in &negatives {
             // A hole belongs to the smallest positive cycle strictly
             // containing it; sharing a node means same component, not a hole.
-            if hole
-                .iter()
-                .any(|p| line.iter().any(|q| q.distance(*p) <= snap))
-            {
+            if meet(hole_cycle, cycle) {
                 continue;
             }
             if !inside(line, hole[0]) {
                 continue;
             }
-            let direct = !positives.iter().any(|(_, other)| {
+            let direct = !positives.iter().any(|(other_cycle, other)| {
                 !core::ptr::eq(other, line)
                     && inside(line, other[0])
                     && area(other).abs() < area(line).abs()
                     && inside(other, hole[0])
-                    && !hole
-                        .iter()
-                        .any(|p| other.iter().any(|q| q.distance(*p) <= snap))
+                    && !meet(hole_cycle, other_cycle)
             });
             if direct {
                 rings.push(traversals(hole_cycle, &live));

@@ -687,7 +687,9 @@ fn a_chamfer_with_a_stray_vertex_is_still_a_cone() {
 /// from one side of a slit to the other, its chart window starting at the
 /// slit rather than at the cylinder's zero. Holes drilled across the plate
 /// through the bore cut and fill valid and share the plate's volume, their
-/// sections on the bore placed on the patch's side of the slit.
+/// sections on the bore placed on the patch's side of the slit; the last
+/// passes within the slit's loose tolerance of it without meeting it, and
+/// its rim is still a hole in the bore.
 #[test]
 fn holes_across_a_bore_opened_along_a_slit_cut_and_fill_valid() {
     let mut model = Model::new();
@@ -735,7 +737,12 @@ fn holes_across_a_bore_opened_along_a_slit_cut_and_fill_valid() {
     );
     let fine = Deflection::with_chord(0.01).unwrap();
     let whole = volume_properties(&back, &out.shape, fine, T).unwrap().mass;
-    for (y, z, r) in [(8.7, 2.5, 0.8), (10.0, 1.2, 0.4), (10.6, 3.7, 0.8)] {
+    for (y, z, r) in [
+        (8.7, 2.5, 0.8),
+        (10.0, 1.2, 0.4),
+        (10.6, 3.7, 0.8),
+        (11.2, 2.5, 0.4),
+    ] {
         let across = Frame::new(Point::new(-5.0, y, z), Direction::X, Direction::Y, T).unwrap();
         let drill = ogeom::algo::make_cylinder(&mut back, across, r, 30.0, T)
             .unwrap()

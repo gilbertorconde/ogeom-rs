@@ -5006,8 +5006,13 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 _ => "other",
             };
             eprintln!(
-                "PIECE {i} from_a={} face={} {kind} state={:?} covered={} probe={:?}",
-                p.from_a, p.face, p.state, p.covered, p.probe
+                "PIECE {i} from_a={} face={} {kind} state={:?} covered={} probe={:?} rings {:?}",
+                p.from_a,
+                p.face,
+                p.state,
+                p.covered,
+                p.probe,
+                p.rings.iter().map(Vec::len).collect::<Vec<_>>()
             );
         }
     }
