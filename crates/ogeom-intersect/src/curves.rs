@@ -217,6 +217,15 @@ fn analytic_3d(
         (Curve::Circle(_), Curve::Ellipse(_)) | (Curve::Ellipse(_), Curve::Circle(_)) => {
             skew_conics_3d(a, b, options, tol)
         }
+        (Curve::Line(x), Curve::Circle(_) | Curve::Ellipse(_)) => line_conic_3d(x, b, options, tol)
+            .map(|mut found| {
+                for c in &mut found.crossings {
+                    core::mem::swap(&mut c.on_a, &mut c.on_b);
+                }
+                found.crossings.sort_by(|x, y| x.on_a.total_cmp(&y.on_a));
+                found
+            }),
+        (Curve::Circle(_) | Curve::Ellipse(_), Curve::Line(y)) => line_conic_3d(y, a, options, tol),
         _ => None,
     }
 }
@@ -335,6 +344,109 @@ fn skew_conics_3d(
         crossings,
         overlaps: Vec::new(),
     })
+}
+
+/// A circle or ellipse against a line, in closed form, the conic first.
+///
+/// A line in the conic's plane meets it where a quadratic along the line
+/// vanishes, at most twice; a line through the plane meets it at most where
+/// it pierces the plane. Kept where the two pass within the gap. A line
+/// running nearly along the plane without lying in it, or a crossing nearly
+/// tangent, is left to the sampling path, which measures how far such a
+/// touch reaches.
+fn line_conic_3d(
+    line: &ogeom_geom::LineCurve,
+    conic: &Curve,
+    options: CurveCurveOptions,
+    tol: Tolerances,
+) -> Option<CurveIntersection<Point>> {
+    let (centre, u, v, normal) = conic_of(conic)?;
+    let (origin, along) = (line.axis().location, line.axis().direction.vector());
+    let (a_len, b_len) = (u.magnitude(), v.magnitude());
+    if a_len <= tol.confusion() || b_len <= tol.confusion() {
+        return None;
+    }
+    let (ux, vy) = (u / a_len, v / b_len);
+    let lean = along.dot(normal);
+    let height = (origin - centre).dot(normal);
+    let mut ts: Vec<f64> = Vec::new();
+    if lean.abs() <= tol.angular() {
+        if height.abs() > options.gap.max(tol.confusion()) {
+            return Some(CurveIntersection::empty());
+        }
+        // (x0 + t dx)^2 / a^2 + (y0 + t dy)^2 / b^2 = 1, in the plane.
+        let (x0, y0) = ((origin - centre).dot(ux), (origin - centre).dot(vy));
+        let (dx, dy) = (along.dot(ux), along.dot(vy));
+        let qa = dx * dx / (a_len * a_len) + dy * dy / (b_len * b_len);
+        let qb = 2.0 * (x0 * dx / (a_len * a_len) + y0 * dy / (b_len * b_len));
+        let qc = x0 * x0 / (a_len * a_len) + y0 * y0 / (b_len * b_len) - 1.0;
+        let disc = qb.mul_add(qb, -4.0 * qa * qc);
+        if qa <= 0.0 {
+            return None;
+        }
+        if disc < 0.0 {
+            let t = -qb / (2.0 * qa);
+            let p = origin + along * t;
+            let foot = conic_parameter(conic, p, tol)?;
+            let gap = conic.point_at(foot, tol).ok()?.distance(p);
+            return (gap > options.gap).then(CurveIntersection::empty);
+        }
+        let root = disc.sqrt();
+        ts.push((-qb - root) / (2.0 * qa));
+        ts.push((-qb + root) / (2.0 * qa));
+    } else if lean.abs() >= 0.1 {
+        ts.push(-height / lean);
+    } else {
+        return None;
+    }
+    let (lo, hi) = line.domain();
+    let (c_lo, c_hi) = conic.domain();
+    let tau = core::f64::consts::TAU;
+    let mut crossings: Vec<Crossing<Point>> = Vec::new();
+    for t in ts {
+        if t < lo - tol.parametric() || t > hi + tol.parametric() {
+            continue;
+        }
+        let point = origin + along * t;
+        let s = conic_parameter(conic, point, tol)?;
+        let s = c_lo + (s - c_lo).rem_euclid(tau);
+        if s > c_hi + tol.parametric() {
+            continue;
+        }
+        let on_conic = conic.point_at(s, tol).ok()?;
+        let gap = on_conic.distance(point);
+        if gap > options.gap {
+            continue;
+        }
+        let tangent = conic.d1_at(s, tol).ok()?;
+        if tangent.cross(along).magnitude() <= 1e-3 * tangent.magnitude() {
+            return None;
+        }
+        crossings.push(Crossing {
+            on_a: s,
+            on_b: t,
+            point: on_conic,
+            gap,
+            reach: 0.0,
+        });
+    }
+    crossings.sort_by(|x, y| x.on_a.total_cmp(&y.on_a));
+    crossings.dedup_by(|x, y| (x.on_a - y.on_a).abs() <= tol.parametric());
+    Some(CurveIntersection {
+        crossings,
+        overlaps: Vec::new(),
+    })
+}
+
+/// Where a point lies along a circle or ellipse, by projection.
+fn conic_parameter(conic: &Curve, point: Point, tol: Tolerances) -> Option<f64> {
+    match conic {
+        Curve::Circle(c) => ogeom_math::elementary::circle_parameter(&c.circle(), point, tol).ok(),
+        Curve::Ellipse(e) => {
+            ogeom_math::elementary::ellipse_parameter(&e.ellipse(), point, tol).ok()
+        }
+        _ => None,
+    }
 }
 
 /// Restrict an answer about two whole curves to the windows their trims
@@ -1977,6 +2089,51 @@ mod tests {
         let above: Curve = CircleCurve::new(Circle::new(lifted, radius, T).unwrap()).into();
         assert!(
             intersect_curves(&circle, &above, CurveCurveOptions::default(), T)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A line across an ellipse in its plane meets it twice, a line through
+    /// a circle's plane meets it once where it pierces the circle, and a
+    /// line through the plane inside the circle misses it. Either order of
+    /// the pair answers the same, parameters swapped.
+    #[test]
+    fn lines_meet_circles_and_ellipses_in_closed_form() {
+        use ogeom_geom::EllipseCurve;
+        use ogeom_math::Ellipse;
+        let ellipse: Curve =
+            EllipseCurve::new(Ellipse::new(Frame::WORLD, 3.0, 2.0, T).unwrap()).into();
+        let across: Curve =
+            LineCurve::segment(Point::new(-5.0, 1.0, 0.0), Point::new(5.0, 1.0, 0.0), T)
+                .unwrap()
+                .into();
+        for (a, b, line_first) in [(&ellipse, &across, false), (&across, &ellipse, true)] {
+            let found = intersect_curves(a, b, CurveCurveOptions::default(), T).unwrap();
+            assert_eq!(found.crossings.len(), 2, "{found:?}");
+            for hit in &found.crossings {
+                let p = a.point_at(hit.on_a, T).unwrap();
+                let q = b.point_at(hit.on_b, T).unwrap();
+                assert!(p.distance(q) < 1e-9, "{p:?} against {q:?}");
+                let on_line = if line_first { p } else { q };
+                assert!((on_line.y - 1.0).abs() < 1e-12);
+            }
+        }
+        let circle: Curve = CircleCurve::new(Circle::new(Frame::WORLD, 2.0, T).unwrap()).into();
+        let through: Curve =
+            LineCurve::segment(Point::new(2.0, 0.0, -1.0), Point::new(2.0, 0.0, 1.0), T)
+                .unwrap()
+                .into();
+        let found = intersect_curves(&circle, &through, CurveCurveOptions::default(), T).unwrap();
+        assert_eq!(found.crossings.len(), 1);
+        assert!(found.crossings[0].on_a.abs() < 1e-9);
+        assert!((found.crossings[0].on_b - 1.0).abs() < 1e-9);
+        let inside: Curve =
+            LineCurve::segment(Point::new(1.0, 0.0, -1.0), Point::new(1.0, 0.0, 1.0), T)
+                .unwrap()
+                .into();
+        assert!(
+            intersect_curves(&circle, &inside, CurveCurveOptions::default(), T)
                 .unwrap()
                 .is_empty()
         );

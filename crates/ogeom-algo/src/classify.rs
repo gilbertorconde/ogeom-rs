@@ -20,7 +20,7 @@
 //! where the uncertain band shrinks from the deflection to the tolerance.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
-use ogeom_math::{Direction, Point, Point2, Vector};
+use ogeom_math::{Aabb, Direction, Point, Point2, Vector};
 use ogeom_mesh::{Deflection, face_boundary, inside_boundary, triangulate};
 use ogeom_topo::{Model, NodeData, Shape, ShapeType};
 
@@ -256,6 +256,9 @@ struct PreparedFace {
     inverse: ogeom_math::Transform,
     /// The trimming rings, polylined at the boundary's stated chord.
     rings: Vec<Vec<Point2>>,
+    /// Where the face can be, padded past anything its bound could miss: a
+    /// point outside is not on it, and a ray missing it does not cross it.
+    bound: Aabb,
 }
 
 /// A solid's boundary, prepared once and asked about many points.
@@ -349,11 +352,16 @@ impl SolidBoundary {
             };
             let inverse = face.transform(model.datums())?.inverse()?;
             let rings = face_boundary(model, face, ring_deflection, tol)?;
+            let own = crate::measure::shape_bounds(model, face, tol)?;
+            let bound = own.expanded(
+                ring_chord + data.tolerance.get() + tol.confusion() * 1e2 + own.diagonal() * 0.02,
+            );
             Ok(PreparedFace {
                 face: face.clone(),
                 surface: surface.clone(),
                 inverse,
                 rings,
+                bound,
             })
         })
         .into_iter()
@@ -389,6 +397,9 @@ impl SolidBoundary {
         // projection distance against the true surface, trimming in parameter
         // space.
         for prepared in &self.faces {
+            if !prepared.bound.contains(point) {
+                continue;
+            }
             if classify_on_face(model, &prepared.face, point, ring_deflection, tol)?
                 != Containment::Out
             {
@@ -404,9 +415,13 @@ impl SolidBoundary {
                 surface,
                 inverse,
                 rings,
+                bound,
                 ..
             } in &self.faces
             {
+                if !segment_meets(bound, point, far) {
+                    continue;
+                }
                 // Into the face's frame, as two points rather than a direction, so
                 // a placement that scales still carries the ray faithfully.
                 let from = inverse.apply(point);
@@ -752,6 +767,35 @@ pub(crate) fn parametric_band(
         return f64::INFINITY;
     }
     reach / scale
+}
+
+/// Whether the segment from `a` to `b` passes through the box, by slabs.
+fn segment_meets(bound: &Aabb, a: Point, b: Point) -> bool {
+    let (Some(low), Some(high)) = (bound.low(), bound.high()) else {
+        return false;
+    };
+    let (mut enter, mut leave) = (0.0_f64, 1.0_f64);
+    for (from, to, lo, hi) in [
+        (a.x, b.x, low.x, high.x),
+        (a.y, b.y, low.y, high.y),
+        (a.z, b.z, low.z, high.z),
+    ] {
+        let d = to - from;
+        if d.abs() <= f64::EPSILON * (from.abs() + to.abs() + 1.0) {
+            if from < lo || from > hi {
+                return false;
+            }
+            continue;
+        }
+        let (t0, t1) = ((lo - from) / d, (hi - from) / d);
+        let (t0, t1) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+        enter = enter.max(t0);
+        leave = leave.min(t1);
+        if enter > leave {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]

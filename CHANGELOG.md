@@ -38,6 +38,14 @@ bump may break the API and a patch bump may not.
   drawn mesh stays open the volume is summed face by face from each
   face's own mesh. Cracks in a drawn mesh narrower than its chord are
   sealed, and triangles laid twice facing opposite ways are cancelled.
+- **Booleans on parts of tens of thousands of faces spent seconds on
+  bookkeeping.** Junctions were merged by comparing every pair, deleted
+  faces were found by scanning every kept one, sewing projected edge
+  middles before checking the ends matched, and a point classified
+  against a solid asked every face. Each now looks only at what is near
+  it. A line crossing a circle or ellipse is solved in closed form rather
+  than by sampling. A drill through a converted part of 25 000 faces
+  cuts in 2 s.
 
 ## [0.3.2] - 2026-09-24
 

@@ -3325,8 +3325,20 @@ fn merge_junctions(junctions: Vec<Junction>) -> Vec<Junction> {
         }
         i
     }
-    for i in 0..n {
-        for j in (i + 1)..n {
+    // Swept along x: two balls overlap only if their centres are within
+    // both reaches along every axis, so each junction is asked only of those
+    // ahead of it by no more than its reach and the widest. The groups are
+    // the same as asking every pair; a converted part carries tens of
+    // thousands of junctions, and every pair was seconds.
+    let widest = junctions.iter().map(|j| j.reach).fold(0.0_f64, f64::max);
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&x, &y| junctions[x].at.x.total_cmp(&junctions[y].at.x));
+    for (k, &i) in order.iter().enumerate() {
+        let limit = junctions[i].at.x + junctions[i].reach + widest;
+        for &j in &order[k + 1..] {
+            if junctions[j].at.x > limit {
+                break;
+            }
             if junctions[i].at.distance(junctions[j].at) <= junctions[i].reach + junctions[j].reach
             {
                 let (ri, rj) = (root(&mut parent, i), root(&mut parent, j));
@@ -5565,7 +5577,7 @@ fn assemble_result(
         junction_reach,
     };
     let mut faces = Vec::new();
-    let mut kept_sources: Vec<Shape> = Vec::new();
+    let mut kept_sources: std::collections::HashSet<Shape> = std::collections::HashSet::new();
     for &(index, flip) in kept {
         let piece = &fused.pieces[index];
         let mut built = build_piece(&mut rebuild, fused, piece, tol)?;
@@ -5573,12 +5585,12 @@ fn assemble_result(
             built = built.reversed();
         }
         history.modify(&source_face(piece), built.clone());
-        kept_sources.push(source_face(piece));
+        kept_sources.insert(source_face(piece));
         faces.push(built);
     }
     for piece in &fused.pieces {
         let source = source_face(piece);
-        if !kept_sources.iter().any(|s| s == &source) {
+        if !kept_sources.contains(&source) {
             history.delete(&source);
         }
     }

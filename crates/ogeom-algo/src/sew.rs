@@ -780,6 +780,14 @@ impl Fingerprint {
     fn same_as(&self, other: &Self, tol: Tolerances) -> OgeomResult<Option<bool>> {
         let reach = tol.confusion().max(self.width).max(other.width);
         let near = |a: Point, b: Point| a.distance(b) <= reach;
+        // Ends first: they cost a distance each, and most candidates that
+        // start near this edge end somewhere else. The middle is asked only
+        // of a pair whose ends already agree.
+        let along = near(self.start, other.start) && near(self.end, other.end);
+        let against = near(self.start, other.end) && near(self.end, other.start);
+        if !along && !against {
+            return Ok(None);
+        }
         // The midpoint is not a nicety. Two arcs between the same pair of
         // vertices (the two halves of a circle) agree at both ends and are
         // not the same edge, and merging them would fuse a shape to itself.
@@ -791,10 +799,7 @@ impl Fingerprint {
         if !near(self.middle, other.middle)
             && !(other.off(self.middle, tol)? <= reach && self.off(other.middle, tol)? <= reach)
         {
-            if std::env::var_os("OGEOM_DEBUG_SEW").is_some()
-                && ((near(self.start, other.start) && near(self.end, other.end))
-                    || (near(self.start, other.end) && near(self.end, other.start)))
-            {
+            if std::env::var_os("OGEOM_DEBUG_SEW").is_some() {
                 let foot = crate::project_on_curve(&other.curve, self.middle, 64, tol)?;
                 eprintln!(
                     "SEW near miss: ends agree within {reach:.2e}, middles off {:.2e} / {:.2e} (widths {:.2e}, {:.2e}) at {:?}; foot on other at {:.6} (range {:?}, domain {:?}, periodic {}) distance {:.2e}",
@@ -812,13 +817,7 @@ impl Fingerprint {
             }
             return Ok(None);
         }
-        if near(self.start, other.start) && near(self.end, other.end) {
-            return Ok(Some(false));
-        }
-        if near(self.start, other.end) && near(self.end, other.start) {
-            return Ok(Some(true));
-        }
-        Ok(None)
+        Ok(Some(!along))
     }
 }
 
