@@ -22,6 +22,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A cut along a cylinder's or torus's seam refused to close.** A box
+  face lying on the seam split the plane along the seam edge in pieces
+  the curved face did not share. An open section is no longer mistaken
+  for a closed loop and split at its middle, and a plane through a
+  torus's axis meets it in its two exact tube circles instead of fitted
+  ones.
+- **Concave faces sent volumes to the mesh.** The check that faces agree
+  about which way is out misread faces such as a three-quarter disc, and
+  faces cut along their seam. It now reads each face's side from its
+  walked boundary, so these shapes are integrated exactly.
+
 - **Mass properties were a part in a hundred off on elliptic walls at the
   default deflection.** Only faces bounded by a chart rectangle or a full
   circle on an analytic surface were integrated exactly; anything else
