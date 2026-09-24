@@ -208,10 +208,133 @@ fn analytic_3d(
 ) -> Option<CurveIntersection<Point>> {
     match (a, b) {
         (Curve::Line(x), Curve::Line(y)) => Some(line_line_3d(x, y, options, tol)),
-        (Curve::Circle(x), Curve::Circle(y)) => same_circle_3d(x, y, tol),
-        (Curve::Ellipse(x), Curve::Ellipse(y)) => same_ellipse_3d(x, y, tol),
+        (Curve::Circle(x), Curve::Circle(y)) => {
+            same_circle_3d(x, y, tol).or_else(|| skew_conics_3d(a, b, options, tol))
+        }
+        (Curve::Ellipse(x), Curve::Ellipse(y)) => {
+            same_ellipse_3d(x, y, tol).or_else(|| skew_conics_3d(a, b, options, tol))
+        }
+        (Curve::Circle(_), Curve::Ellipse(_)) | (Curve::Ellipse(_), Curve::Circle(_)) => {
+            skew_conics_3d(a, b, options, tol)
+        }
         _ => None,
     }
+}
+
+/// A circle or ellipse, as its centre, the two semi-axis vectors its
+/// parameter turns between, and its plane's normal; `None` for any other
+/// curve, or one whose parameter runs backwards.
+fn conic_of(
+    curve: &Curve,
+) -> Option<(
+    Point,
+    ogeom_math::Vector,
+    ogeom_math::Vector,
+    ogeom_math::Vector,
+)> {
+    match curve {
+        Curve::Circle(c) if !c.is_reversed() => {
+            let circle = c.circle();
+            let f = circle.frame();
+            Some((
+                f.origin(),
+                f.x().vector() * circle.radius(),
+                f.y().vector() * circle.radius(),
+                f.z().vector(),
+            ))
+        }
+        Curve::Ellipse(e) if !e.is_reversed() => {
+            let ellipse = e.ellipse();
+            let f = ellipse.frame();
+            Some((
+                f.origin(),
+                f.x().vector() * ellipse.major_radius(),
+                f.y().vector() * ellipse.minor_radius(),
+                f.z().vector(),
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Two circles or ellipses in planes that are not one plane, in closed
+/// form: where the first meets the second's plane (`alpha cos t + beta sin
+/// t + gamma = 0`, at most twice), kept where the second curve passes
+/// within the gap. Parallel planes apart share no point. `None` for a
+/// coplanar pair, which the sampling path answers.
+fn skew_conics_3d(
+    a: &Curve,
+    b: &Curve,
+    options: CurveCurveOptions,
+    tol: Tolerances,
+) -> Option<CurveIntersection<Point>> {
+    let (ca, ua, va, na) = conic_of(a)?;
+    let (cb, _, _, nb) = conic_of(b)?;
+    if na.cross(nb).magnitude() <= tol.angular() {
+        return ((ca - cb).dot(nb).abs() > options.gap.max(tol.confusion()))
+            .then(CurveIntersection::empty);
+    }
+    let (alpha, beta, gamma) = (nb.dot(ua), nb.dot(va), nb.dot(ca - cb));
+    let size = alpha.hypot(beta);
+    let mut crossings: Vec<Crossing<Point>> = Vec::new();
+    if size > 0.0 && gamma.abs() <= size * (1.0 + 1e-12) {
+        let phase = beta.atan2(alpha);
+        let turn = (-gamma / size).clamp(-1.0, 1.0).acos();
+        let (a_lo, a_hi) = a.domain();
+        let (b_lo, b_hi) = b.domain();
+        let tau = core::f64::consts::TAU;
+        let into = |t: f64, lo: f64| lo + (t - lo).rem_euclid(tau);
+        let roots = if turn <= 1e-12 {
+            vec![phase]
+        } else {
+            vec![phase - turn, phase + turn]
+        };
+        for root in roots {
+            let t = into(root, a_lo);
+            if t > a_hi + tol.parametric() {
+                continue;
+            }
+            let point = a.point_at(t, tol).ok()?;
+            // The closed form reads the curve as its centre and semi-axes;
+            // a point that does not land on the other plane means it read
+            // it wrong, and the sampling path answers instead.
+            if (point - cb).dot(nb).abs() > tol.confusion() * 10.0 {
+                return None;
+            }
+            let s = match b {
+                Curve::Circle(c) => {
+                    ogeom_math::elementary::circle_parameter(&c.circle(), point, tol)
+                }
+                Curve::Ellipse(e) => {
+                    ogeom_math::elementary::ellipse_parameter(&e.ellipse(), point, tol)
+                }
+                _ => return None,
+            };
+            let Ok(s) = s else {
+                continue;
+            };
+            let s = into(s, b_lo);
+            if s > b_hi + tol.parametric() {
+                continue;
+            }
+            let gap = b.point_at(s, tol).ok()?.distance(point);
+            if gap > options.gap {
+                continue;
+            }
+            crossings.push(Crossing {
+                on_a: t,
+                on_b: s,
+                point,
+                gap,
+                reach: 0.0,
+            });
+        }
+    }
+    crossings.sort_by(|x, y| x.on_a.total_cmp(&y.on_a));
+    Some(CurveIntersection {
+        crossings,
+        overlaps: Vec::new(),
+    })
 }
 
 /// Restrict an answer about two whole curves to the windows their trims
@@ -1802,5 +1925,60 @@ mod tests {
         ] {
             assert!(intersect_curves_2d(&a, &a.clone(), options, T).is_err());
         }
+    }
+
+    /// Plane sections of one cylinder: a circle and two ellipses tilted
+    /// different ways. Any two meet where their planes' common line pierces
+    /// the cylinder, twice, and a circle lifted parallel to another meets
+    /// it nowhere.
+    #[test]
+    fn circles_and_ellipses_in_different_planes_meet_where_the_planes_do() {
+        use ogeom_geom::EllipseCurve;
+        use ogeom_math::{Direction, Ellipse, Vector};
+        let radius = 2.0;
+        let tilted = |normal: Vector, major: Vector, lean: f64| -> Curve {
+            let frame = Frame::new(
+                Point::ORIGIN,
+                Direction::new(normal, T).unwrap(),
+                Direction::new(major, T).unwrap(),
+                T,
+            )
+            .unwrap();
+            EllipseCurve::new(Ellipse::new(frame, radius / lean.cos(), radius, T).unwrap()).into()
+        };
+        let (p, q) = (0.4_f64, 0.7_f64);
+        let about_x = tilted(
+            Vector::new(0.0, -p.sin(), p.cos()),
+            Vector::new(0.0, p.cos(), p.sin()),
+            p,
+        );
+        let about_y = tilted(
+            Vector::new(-q.sin(), 0.0, q.cos()),
+            Vector::new(q.cos(), 0.0, q.sin()),
+            q,
+        );
+        let circle: Curve = CircleCurve::new(Circle::new(Frame::WORLD, radius, T).unwrap()).into();
+        for (a, b) in [
+            (&about_x, &about_y),
+            (&about_y, &about_x),
+            (&circle, &about_x),
+            (&about_y, &circle),
+        ] {
+            let found = intersect_curves(a, b, CurveCurveOptions::default(), T).unwrap();
+            assert_eq!(found.crossings.len(), 2, "{found:?}");
+            for hit in &found.crossings {
+                let on_a = a.point_at(hit.on_a, T).unwrap();
+                let on_b = b.point_at(hit.on_b, T).unwrap();
+                assert!(on_a.distance(on_b) < 1e-9, "{on_a:?} against {on_b:?}");
+                assert!((on_a.x.hypot(on_a.y) - radius).abs() < 1e-9);
+            }
+        }
+        let lifted = Frame::new(Point::new(0.0, 0.0, 1.0), Direction::Z, Direction::X, T).unwrap();
+        let above: Curve = CircleCurve::new(Circle::new(lifted, radius, T).unwrap()).into();
+        assert!(
+            intersect_curves(&circle, &above, CurveCurveOptions::default(), T)
+                .unwrap()
+                .is_empty()
+        );
     }
 }
