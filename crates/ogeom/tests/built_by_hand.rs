@@ -205,9 +205,10 @@ fn a_hand_built_prism_closes_and_measures_its_closed_form() {
 }
 
 /// A planar face a sliver narrower than a millionth of its length (a
-/// long strip whose two sides are one line to the mesher) encloses no
-/// area worth a triangle. It meshes to nothing within its own bounds, not
-/// to the plane's whole window, which a face without wires would cover.
+/// long strip whose two sides are one line to the mesher) meshes as a fan
+/// across its own boundary: within its bounds, not the plane's whole
+/// window, which a face without wires would cover, and not nothing, which
+/// would leave a hole where its neighbours meet it.
 #[test]
 fn a_sliver_face_meshes_within_itself() {
     let mut model = Model::new();
@@ -237,4 +238,18 @@ fn a_sliver_face_meshes_within_itself() {
             "a mesh point off the sliver: {p:?}"
         );
     }
+    assert!(!mesh.triangles.is_empty(), "the sliver is drawn");
+    let area: f64 = mesh
+        .triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+            (b - a).cross(c - a).magnitude() / 2.0
+        })
+        .sum();
+    let sliver = 163.6 * width;
+    assert!(
+        (area - sliver).abs() <= sliver * 1e-6,
+        "{area} against {sliver}"
+    );
 }

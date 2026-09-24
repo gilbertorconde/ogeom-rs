@@ -191,14 +191,18 @@ fn triangulate_reporting_from(
         rings: uv,
         anchors,
         met,
+        walked,
     } = match prepared {
         Some(trim) => trim,
         None => trimming_rings(model, face, data.surface, surface, deflection, finer, tol)?,
     };
     let rings_ms = phase.elapsed().as_secs_f64() * 1e3;
     if uv.is_empty() {
-        // Bounded, and bounding nothing: there is no area to draw.
-        return Ok((Triangulation::new(), Verdict::Whole));
+        // Bounded, and bounding next to nothing: a sliver whose sides are
+        // one line in the chart. It is drawn as a fan across each ring its
+        // edges walked, at the points its neighbours share along those
+        // edges, so the whole mesh still closes over it.
+        return Ok((sliver_fan(&walked, surface, tol), Verdict::Whole));
     }
     let phase = std::time::Instant::now();
     let planar = triangulate_region(&uv, surface, deflection, tol)?;
@@ -986,6 +990,9 @@ struct Trimming {
     anchors: Vec<Vec<Option<Point>>>,
     /// Whether every edge's polyline honoured the deflection.
     met: bool,
+    /// Each ring as its edges first walked it, chart and space together:
+    /// what a face whose rings all collapse is drawn from.
+    walked: Vec<Vec<(Point2, Point)>>,
 }
 
 /// One walked ring: chart points, anchors, deflection honesty, the ambiguous
@@ -1014,11 +1021,21 @@ fn trimming_rings(
     let mut met = true;
     let wires = model.ordered_children_of(face)?;
     let bounded = !wires.is_empty();
+    let mut walked = Vec::new();
     for wire in wires {
         let (ring, anchors, ring_met, folds, ties) =
             boundary_ring(model, &wire, id, deflection, finer, tol)?;
         met &= ring_met;
         if ring.len() >= 3 {
+            let mut here = Vec::with_capacity(ring.len());
+            for (uv, anchor) in ring.iter().zip(&anchors) {
+                let at = match anchor {
+                    Some(p) => *p,
+                    None => surface.point_at(uv.x, uv.y, tol)?,
+                };
+                here.push((*uv, at));
+            }
+            walked.push(here);
             rings.push(ring);
             ring_anchors.push(anchors);
             ring_folds.push(folds);
@@ -1467,7 +1484,35 @@ fn trimming_rings(
         rings,
         anchors: ring_anchors,
         met,
+        walked,
     })
+}
+
+/// A face with no area as a fan of triangles across each of its walked
+/// rings, every point where its edges put it.
+fn sliver_fan(
+    walked: &[Vec<(Point2, Point)>],
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> Triangulation {
+    let mut mesh = Triangulation::new();
+    for ring in walked {
+        let base = u32::try_from(mesh.positions.len()).unwrap_or(u32::MAX);
+        for (uv, at) in ring {
+            mesh.positions.push(*at);
+            mesh.parameters.push((uv.x, uv.y));
+            mesh.normals.push(
+                surface
+                    .normal_at(uv.x, uv.y, tol)
+                    .map_or(ogeom_math::Vector::Z, |n| n.vector()),
+            );
+        }
+        let count = u32::try_from(ring.len()).unwrap_or(0);
+        for k in 1..count.saturating_sub(1) {
+            mesh.triangles.push([base, base + k, base + k + 1]);
+        }
+    }
+    mesh
 }
 
 /// Within this of each other, two chart points of a ring are one point: a
