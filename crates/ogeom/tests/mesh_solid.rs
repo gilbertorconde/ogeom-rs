@@ -722,17 +722,20 @@ fn rough_rounded_box() -> Triangulation {
 #[test]
 fn fillets_ending_on_rough_corners_are_still_cylinders() {
     let mut back = Model::new();
-    let out = solid_from_mesh(
-        &mut back,
-        &rough_rounded_box(),
-        &MeshSolidOptions::default(),
-        T,
-    )
-    .unwrap();
+    let mesh = rough_rounded_box();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
     assert!(out.closed);
     assert_eq!(kinds(&back, &out.shape)[1], 12, "every fillet a cylinder");
     assert_eq!(out.report.curved_faceted, 0);
     assert!(check(&back, &out.shape, T).unwrap().is_valid());
+    // Its faces meet on curves too loose for the drawn mesh to weld shut,
+    // and its volume is still the mesh's, face by face.
+    let got = volume(&back, &out.shape);
+    assert!(
+        (got - mesh.volume()).abs() < mesh.volume() * 2e-3,
+        "{got} against {}",
+        mesh.volume()
+    );
 }
 
 /// Holes drilled through the rough box beside a corner cross planes,
@@ -750,11 +753,13 @@ fn holes_beside_a_rough_corner_cut_and_fill_valid() {
         T,
     )
     .unwrap();
+    let whole = volume(&model, &out.shape);
     for (x, y, r) in [(1.1, 0.6, 1.4), (2.05, 0.35, 1.0), (1.35, 1.9, 1.4)] {
         let at = Frame::new(Point::new(x, y, -5.0), Direction::Z, Direction::X, T).unwrap();
         let drill = ogeom::algo::make_cylinder(&mut model, at, r, 20.0, T)
             .unwrap()
             .shape;
+        let mut shares = 0.0;
         for (name, made) in [
             (
                 "cut",
@@ -768,7 +773,12 @@ fn holes_beside_a_rough_corner_cut_and_fill_valid() {
             let made = made.unwrap_or_else(|e| panic!("{name} at ({x}, {y}): {e}"));
             let diagnosis = check(&model, &made.shape, T).unwrap();
             assert!(diagnosis.is_valid(), "{name} at ({x}, {y}): {diagnosis}");
+            shares += volume(&model, &made.shape);
         }
+        assert!(
+            (shares - whole).abs() < whole * 2e-3,
+            "at ({x}, {y}): {shares} against {whole}"
+        );
     }
 }
 

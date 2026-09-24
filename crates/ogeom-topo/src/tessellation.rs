@@ -337,6 +337,123 @@ impl Triangulation {
         out
     }
 
+    /// This mesh with its folds cancelled and its cracks sealed: the last
+    /// pass over a mesh welded from faces that each met their edges.
+    ///
+    /// A fold is two triangles on the same three vertices facing opposite
+    /// ways, left where a sliver face collapses in the weld; they enclose
+    /// nothing, and both go. A crack is a loop of border edges whose mean
+    /// width (twice its area over its perimeter) is within `width`: two
+    /// faces sampling a shared corner differently leave one, narrower than
+    /// the chord they were drawn to. It is fanned shut from one of its
+    /// corners, each new triangle crossing a border edge the other way from
+    /// the triangle already on it. A loop wider than that, or a border
+    /// vertex with more than one way on, is a real opening and stays.
+    #[must_use]
+    pub fn sealed(&self, width: f64) -> Self {
+        use std::collections::HashMap;
+        let mut out = self.clone();
+        // Folds.
+        let mut seen: HashMap<[u32; 3], Vec<usize>> = HashMap::new();
+        for (i, t) in out.triangles.iter().enumerate() {
+            let mut key = *t;
+            key.sort_unstable();
+            seen.entry(key).or_default().push(i);
+        }
+        let mut drop = vec![false; out.triangles.len()];
+        for list in seen.values() {
+            let mut open: Vec<usize> = Vec::new();
+            for &i in list {
+                let t = out.triangles[i];
+                let reverse = open.iter().position(|&j| {
+                    let u = out.triangles[j];
+                    (0..3).any(|k| [u[k], u[(k + 2) % 3], u[(k + 1) % 3]] == t)
+                });
+                match reverse {
+                    Some(at) => {
+                        drop[open.remove(at)] = true;
+                        drop[i] = true;
+                    }
+                    None => open.push(i),
+                }
+            }
+        }
+        let mut index = 0;
+        out.triangles.retain(|_| {
+            let keep = !drop[index];
+            index += 1;
+            keep
+        });
+        if !width.is_finite() || width <= 0.0 {
+            return out;
+        }
+        // Cracks: each border edge walked the other way from its triangle.
+        let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+        for t in &out.triangles {
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        let mut onward: HashMap<u32, Vec<u32>> = HashMap::new();
+        for t in &out.triangles {
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                if uses[&(a.min(b), a.max(b))] == 1 {
+                    onward.entry(b).or_default().push(a);
+                }
+            }
+        }
+        let mut done: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut starts: Vec<u32> = onward.keys().copied().collect();
+        starts.sort_unstable();
+        for start in starts {
+            if done.contains(&start) {
+                continue;
+            }
+            let mut ring = vec![start];
+            let mut at = start;
+            let closed = loop {
+                let Some(next) = onward.get(&at) else {
+                    break false;
+                };
+                let [next] = next[..] else {
+                    break false;
+                };
+                if next == start {
+                    break true;
+                }
+                if ring.contains(&next) || ring.len() > onward.len() {
+                    break false;
+                }
+                ring.push(next);
+                at = next;
+            };
+            for &v in &ring {
+                done.insert(v);
+            }
+            if !closed || ring.len() < 3 {
+                continue;
+            }
+            let points: Vec<Point> = ring.iter().map(|&v| out.positions[v as usize]).collect();
+            let mut normal = Vector::ZERO;
+            let mut perimeter = 0.0;
+            for (i, p) in points.iter().enumerate() {
+                let q = points[(i + 1) % points.len()];
+                normal += p.to_vector().cross(q.to_vector());
+                perimeter += p.distance(q);
+            }
+            let area = normal.magnitude() / 2.0;
+            if perimeter <= 0.0 || 2.0 * area / perimeter > width {
+                continue;
+            }
+            for i in 1..ring.len() - 1 {
+                out.triangles.push([ring[0], ring[i], ring[i + 1]]);
+            }
+        }
+        out
+    }
+
     /// Append another mesh, shifting its indices.
     pub fn append(&mut self, other: &Self) {
         #[allow(clippy::cast_possible_truncation)]
@@ -561,5 +678,42 @@ mod tests {
         b.deflection_met = false;
         a.append(&b);
         assert!(!a.deflection_met);
+    }
+
+    /// A tetrahedron whose one face is a sliver a hundredth wide, dropped:
+    /// sealing at a width past the sliver's closes it again, and at a width
+    /// under it leaves it open. A triangle laid twice facing opposite ways
+    /// encloses nothing and is cancelled.
+    #[test]
+    fn sealing_closes_cracks_narrower_than_asked_and_cancels_folds() {
+        let corners = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(0.5, 0.01, 0.0),
+            Point::new(0.5, 0.5, 1.0),
+        ];
+        let solid = over(&corners, &[[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]]);
+        assert!(solid.is_closed());
+        assert!(solid.volume() > 0.0);
+        let mut cracked = solid.clone();
+        cracked.triangles.remove(0);
+        assert!(!cracked.is_closed());
+        let sealed = cracked.sealed(0.05);
+        assert!(sealed.is_closed(), "a crack under the width is sealed");
+        assert_relative_eq!(sealed.volume(), solid.volume(), epsilon = 1e-12);
+        assert!(
+            !cracked.sealed(1e-3).is_closed(),
+            "a crack wider than asked stays open"
+        );
+        let mut folded = solid.clone();
+        folded.triangles.push([0, 1, 3]);
+        folded.triangles.push([0, 3, 1]);
+        let unfolded = folded.sealed(0.0);
+        assert_eq!(
+            unfolded.triangle_count(),
+            solid.triangle_count(),
+            "the fold is cancelled"
+        );
+        assert!(unfolded.is_closed());
     }
 }

@@ -370,12 +370,16 @@ pub fn triangulate(
     // smaller than that is below the resolution of the mesh they accepted,
     // whether or not the model recorded the slop that caused it.
     let reach = reach.max(deflection.chord * 0.1);
-    if reach > tol.confusion() {
+    let mesh = if reach > tol.confusion() {
         let reach = reach + tol.confusion();
-        Ok(mesh.border_welded(reach).border_stitched(reach))
+        mesh.border_welded(reach).border_stitched(reach)
     } else {
-        Ok(mesh)
-    }
+        mesh
+    };
+    // What is left open narrower than the chord asked for is two faces
+    // sampling a shared corner differently, below the mesh's own
+    // resolution, and is sealed; a wider opening is the shape's.
+    Ok(mesh.sealed(deflection.chord))
 }
 
 /// Every face below a shape drawn to the chords the faces agree on, in face

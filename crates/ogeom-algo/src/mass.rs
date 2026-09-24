@@ -236,15 +236,35 @@ pub fn volume_properties(
     if let Some(exact) = exact_volume_properties(model, shape, tol)? {
         return Ok(exact);
     }
-    let mesh = ogeom_mesh::triangulate(model, shape, deflection, tol)?;
+    let mut mesh = ogeom_mesh::triangulate(model, shape, deflection, tol)?;
     if mesh.is_empty() {
         return Ok(MassProperties::none(deflection.chord));
     }
     if !mesh.is_closed() {
-        ogeom_bail!(
-            Construction,
-            "the boundary is not closed, so it encloses no volume to measure"
-        );
+        // The flux through a boundary is the sum of the flux through each
+        // face, and a face's share needs only that face's own mesh. The
+        // welded mesh can stay open where faces meet on edges looser than
+        // the weld dares reach, a mesh converted back holding threaded
+        // curves a few hundredths off; closure is then asked of the
+        // topology, which is what the divergence theorem is about.
+        let shells = explore_unique(model, shape, ShapeType::Shell)?;
+        let mut closed = !shells.is_empty();
+        for shell in &shells {
+            closed &= crate::build::is_shell_closed(model, shell)?;
+        }
+        if !closed {
+            ogeom_bail!(
+                Construction,
+                "the boundary is not closed, so it encloses no volume to measure"
+            );
+        }
+        let chords = ogeom_mesh::edge_chords_for(model, shape, deflection, tol)?;
+        mesh = ogeom_topo::Triangulation::new();
+        for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
+            mesh.append(&ogeom_mesh::triangulate_face_with(
+                model, &face, deflection, &chords, tol,
+            )?);
+        }
     }
 
     // The apex every tetrahedron is built on. Any point serves (the signs

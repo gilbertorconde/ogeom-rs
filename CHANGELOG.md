@@ -31,6 +31,13 @@ bump may break the API and a patch bump may not.
   ends as far apart as the stops on its edges were found. A seeded scan of
   a hundred holes beside the corner of a rounded box went from a third
   failing to none.
+- **A converted part's volume could not be measured.** Its faces meet on
+  curves threaded through the mesh a few hundredths off, and the drawn
+  mesh did not weld shut there, so the volume was refused as having no
+  closed boundary. Closure is now asked of the topology, and where the
+  drawn mesh stays open the volume is summed face by face from each
+  face's own mesh. Cracks in a drawn mesh narrower than its chord are
+  sealed, and triangles laid twice facing opposite ways are cancelled.
 
 ## [0.3.2] - 2026-09-24
 
