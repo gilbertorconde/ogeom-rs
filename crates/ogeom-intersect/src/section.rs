@@ -133,6 +133,17 @@ pub fn intersect_surfaces(
         );
     }
 
+    // A plane all but along a drum's axis meets it in an ellipse
+    // kilometres long, whose parameter is too coarse a ruler for the few
+    // millimetres of it the drum's height holds: a crossing solved on it
+    // lands tens of microns off. Over that height it is two lines.
+    if let Some(sections) = near_parallel_plane_drum(a, b, tol) {
+        return Ok(if sections.is_empty() {
+            SurfaceIntersection::Apart
+        } else {
+            SurfaceIntersection::Along(sections)
+        });
+    }
     match surface_surface(a, b, tol) {
         Ok(Meeting::Apart) => Ok(SurfaceIntersection::Apart),
         Ok(Meeting::Same) => Ok(SurfaceIntersection::Same),
@@ -150,9 +161,217 @@ pub fn intersect_surfaces(
                 SurfaceIntersection::Along(sections)
             })
         }
-        // No closed form for this pair: the statement that sends us marching.
-        Err(_) => marched(a, b, options, tol),
+        // No closed form for this pair: the statement that sends us marching,
+        // unless the pair is two drums all but parallel.
+        Err(_) => match near_parallel_drums(a, b, tol) {
+            Some(sections) if sections.is_empty() => Ok(SurfaceIntersection::Apart),
+            Some(sections) => Ok(SurfaceIntersection::Along(sections)),
+            None => marched(a, b, options, tol),
+        },
     }
+}
+
+/// Two drums whose axes are all but parallel, over the height they share.
+///
+/// Parallel drums meet in straight lines along their axes, and drums whose
+/// axes lean a ten-thousandth apart (a drilled hole beside a fillet of a
+/// converted mesh, each axis fitted to its own facets) meet in a quartic
+/// that departs from those lines by less than a micron over any height a
+/// part has. Marched, it comes back as fitted curves that cost seconds to
+/// cross and wander where the drums nearly touch. Here each is solved in
+/// the cross-sections along the shared height and kept as the line through
+/// its ends where every station lies near it, that departure stated as the
+/// section's tolerance.
+///
+/// `None` where the axes lean further, where the drums do not cross
+/// cleanly at every station (a crossing starting part way up, or a near
+/// touch), or where a station strays: the marcher answers those. An empty
+/// answer is drums that share no height.
+fn near_parallel_drums(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    tol: Tolerances,
+) -> Option<Vec<SectionCurve>> {
+    const LEAN: f64 = 1e-3;
+    let (SurfaceGeometry::Cylinder(sa), SurfaceGeometry::Cylinder(sb)) = (a, b) else {
+        return None;
+    };
+    let (ca, cb) = (sa.cylinder(), sb.cylinder());
+    let (axis_a, axis_b) = (ca.axis(), cb.axis());
+    let (da, db) = (axis_a.direction.vector(), axis_b.direction.vector());
+    let (ra, rb) = (ca.radius(), cb.radius());
+    let cos = da.dot(db);
+    if da.cross(db).magnitude() > LEAN || cos.abs() < 0.5 {
+        return None;
+    }
+    let (pa, pb) = (axis_a.location, axis_b.location);
+    // The shared height, measured along the first axis.
+    let (_, (a0, a1)) = a.domain();
+    let (_, (b0, b1)) = b.domain();
+    let along = |v: f64| (pb - pa).dot(da) + v * cos;
+    let (lo, hi) = (
+        a0.min(a1).max(along(b0).min(along(b1))),
+        a0.max(a1).min(along(b0).max(along(b1))),
+    );
+    if !(lo.is_finite() && hi.is_finite()) {
+        return None;
+    }
+    if hi - lo <= tol.confusion() {
+        return Some(Vec::new());
+    }
+    // Where the two cross-sections at a station meet, left and right of
+    // the line of centres: the second drum's section is an ellipse only a
+    // square of its lean away from a circle, a stated part of the stray.
+    let meet = |z: f64| -> Option<[Point; 2]> {
+        let centre_a = pa + da * z;
+        let s = (centre_a - pb).dot(da) / cos;
+        let centre_b = pb + db * s;
+        let mut between = centre_b - centre_a;
+        between = between - da * between.dot(da);
+        let d = between.magnitude();
+        let margin = tol.confusion() * 1e3;
+        if d <= margin || d >= ra + rb - margin || d <= (ra - rb).abs() + margin {
+            return None;
+        }
+        let x = (d * d + ra * ra - rb * rb) / (2.0 * d);
+        let h = (ra * ra - x * x).max(0.0).sqrt();
+        let ex = between / d;
+        let ey = da.cross(ex);
+        Some([centre_a + ex * x + ey * h, centre_a + ex * x - ey * h])
+    };
+    lines_through_stations(lo, hi, meet, rb * (1.0 / cos.abs() - 1.0), tol)
+}
+
+/// How far a near-parallel pair's sections may stray from the true
+/// crossing: what a fitted section typically carries.
+const NEAR_PARALLEL_STRAY: f64 = 1e-5;
+
+/// The two curves a near-parallel pair meets in over the height `lo..hi`,
+/// from where `meet` puts the crossing at each height: the line through the
+/// ends where every station lies within a micron of it, else a cubic
+/// through the stations at their heights, checked midway between them.
+/// Either is kept within [`NEAR_PARALLEL_STRAY`], the departure stated as
+/// its tolerance. `None` where a station has no clean crossing or the
+/// curve strays.
+fn lines_through_stations(
+    lo: f64,
+    hi: f64,
+    meet: impl Fn(f64) -> Option<[Point; 2]>,
+    stated: f64,
+    tol: Tolerances,
+) -> Option<Vec<SectionCurve>> {
+    const STATIONS: u32 = 32;
+    const STRAIGHT: f64 = 1e-6;
+    let at = |k: f64| (hi - lo).mul_add(k / f64::from(STATIONS), lo);
+    let heights: Vec<f64> = (0..=STATIONS).map(|k| at(f64::from(k))).collect();
+    let met: Vec<[Point; 2]> = heights.iter().map(|&z| meet(z)).collect::<Option<_>>()?;
+    let between: Vec<[Point; 2]> = (0..STATIONS)
+        .map(|k| meet(at(f64::from(k) + 0.5)))
+        .collect::<Option<_>>()?;
+    let mut out = Vec::with_capacity(2);
+    for side in 0..2 {
+        let (from, to) = (met[0][side], met[met.len() - 1][side]);
+        let span = to - from;
+        let length = span.magnitude();
+        if length <= tol.confusion() {
+            return None;
+        }
+        let off_line = |p: Point| {
+            let t = (p - from).dot(span) / (length * length);
+            p.distance(from + span * t)
+        };
+        let stray = met
+            .iter()
+            .chain(&between)
+            .map(|pair| off_line(pair[side]))
+            .fold(0.0_f64, f64::max);
+        let (curve, stray): (Curve, f64) = if stray <= STRAIGHT {
+            (
+                ogeom_geom::LineCurve::segment(from, to, tol).ok()?.into(),
+                stray,
+            )
+        } else {
+            let points: Vec<Point> = met.iter().map(|pair| pair[side]).collect();
+            let fitted =
+                ogeom_geom::fit::fit_points_at(&heights, &points, 3, tol.confusion(), tol).ok()?;
+            let curve: Curve = fitted.curve.into();
+            let mut worst = fitted.error;
+            for (k, pair) in (0..STATIONS).zip(&between) {
+                let p = curve.point_at(at(f64::from(k) + 0.5), tol).ok()?;
+                worst = worst.max(p.distance(pair[side]));
+            }
+            (curve, worst)
+        };
+        let tolerance = stray + stated + tol.confusion();
+        if tolerance > NEAR_PARALLEL_STRAY {
+            return None;
+        }
+        out.push(SectionCurve {
+            curve,
+            on_a: None,
+            on_b: None,
+            tolerance,
+            exact: false,
+            closed: false,
+            tangential: false,
+        });
+    }
+    Some(out)
+}
+
+/// A plane leaning all but along a drum's axis, over the drum's height.
+///
+/// The closed form is an ellipse whose long axis is the drum's radius over
+/// the lean, kilometres for a facet group fitted a hundred-thousandth off
+/// a hole's axis. Its parameter spans the few millimetres the drum holds in
+/// a millionth of a turn, and crossings solved on it are only as good as
+/// that ruler. The crossing is solved instead in the drum's cross-sections
+/// along its height and kept as two lines where they hold, as
+/// [`near_parallel_drums`] does. `None` where the lean is exactly nothing
+/// (the closed form's lines are exact) or more than a thousandth, or where
+/// the plane does not cross the drum cleanly all the way up.
+fn near_parallel_plane_drum(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    tol: Tolerances,
+) -> Option<Vec<SectionCurve>> {
+    const LEAN: f64 = 1e-3;
+    const SPAN: f64 = 3e4;
+    let (plane, drum, surface) = match (a, b) {
+        (SurfaceGeometry::Plane(p), SurfaceGeometry::Cylinder(c)) => (p.plane(), c.cylinder(), b),
+        (SurfaceGeometry::Cylinder(c), SurfaceGeometry::Plane(p)) => (p.plane(), c.cylinder(), a),
+        _ => return None,
+    };
+    let axis = drum.axis();
+    let (d, r) = (axis.direction.vector(), drum.radius());
+    let n = plane.normal().vector();
+    let lean = n.dot(d).abs();
+    // Only where the ellipse is thirty metres or more across: there a
+    // parameter solved to its last billionth lands tens of nanometres off in
+    // space, past the weld of a face with tight edges. A shorter one is
+    // ruler enough, and its closed form crosses faster than a fitted curve.
+    if lean <= tol.angular() || lean > LEAN || r / lean < SPAN {
+        return None;
+    }
+    let across = n - d * n.dot(d);
+    let k = across.magnitude();
+    let e1 = across / k;
+    let e2 = d.cross(e1);
+    let (_, (lo, hi)) = surface.domain();
+    if !(lo.is_finite() && hi.is_finite()) || hi - lo <= tol.confusion() {
+        return None;
+    }
+    let meet = |z: f64| -> Option<[Point; 2]> {
+        let centre = axis.location + d * z;
+        let u = -plane.signed_distance_to(centre) / k;
+        let margin = tol.confusion() * 1e3;
+        if u.abs() >= r - margin {
+            return None;
+        }
+        let w = r.mul_add(r, -(u * u)).sqrt();
+        Some([centre + e1 * u + e2 * w, centre + e1 * u - e2 * w])
+    };
+    lines_through_stations(lo, hi, meet, 0.0, tol)
 }
 
 /// An exact curve dressed as a section, clipped to the surfaces it lies on.
@@ -1540,16 +1759,16 @@ mod tests {
         }
     }
 
-    /// A plane all but parallel to a drum's axis meets it in an ellipse
-    /// kilometres long, which crosses the drum's few units of height only in
-    /// a sliver of its turn. It is still a section of the two.
+    /// A plane all but parallel to a drum's axis meets it in an ellipse ten
+    /// metres long, which crosses the drum's few units of height only in a
+    /// sliver of its turn. It is still a section of the two.
     #[test]
     fn a_plane_all_but_along_the_axis_still_meets_a_short_drum() {
         let drum = cylinder(Vector::Z, 1.0);
         let wall: SurfaceGeometry = PlaneSurface::over(
             Plane::through(
                 Point::new(0.0, 0.6, 0.0),
-                Direction::new(Vector::new(0.0, 1.0, 2e-5), T).unwrap(),
+                Direction::new(Vector::new(0.0, 1.0, 1e-4), T).unwrap(),
             ),
             (-1e9, 1e9),
             (-1e9, 1e9),
@@ -1570,6 +1789,101 @@ mod tests {
             p.z.abs() <= 4.0
         });
         assert!(inside, "and the section runs through the drum's height");
+    }
+
+    /// Every point of a section within its stated tolerance of both
+    /// surfaces, sampled along it.
+    fn on_both(section: &SectionCurve, a: &SurfaceGeometry, b: &SurfaceGeometry) {
+        let (lo, hi) = section.curve.domain();
+        for k in 0..=64 {
+            let p = section
+                .curve
+                .point_at(lo + (hi - lo) * f64::from(k) / 64.0, T)
+                .unwrap();
+            for surface in [a, b] {
+                let off = match surface {
+                    SurfaceGeometry::Plane(plane) => plane.plane().signed_distance_to(p).abs(),
+                    SurfaceGeometry::Cylinder(drum) => {
+                        let axis = drum.cylinder().axis();
+                        let rel = p - axis.location;
+                        let d = axis.direction.vector();
+                        ((rel - d * rel.dot(d)).magnitude() - drum.cylinder().radius()).abs()
+                    }
+                    _ => unreachable!("planes and drums only"),
+                };
+                assert!(
+                    off <= section.tolerance + 1e-9,
+                    "{p:?} is {off:e} off, stated {:e}",
+                    section.tolerance
+                );
+            }
+        }
+    }
+
+    /// A plane leaning two hundred-thousandths off a drum's axis, grazing
+    /// it: the closed form's ellipse is fifty metres long, its parameter
+    /// too coarse for the drum's eight units of height. The two sections
+    /// come back as curves along that height, within their stated
+    /// tolerance of both surfaces.
+    #[test]
+    fn a_plane_all_but_along_a_drums_axis_meets_it_in_two_near_lines() {
+        let drum = cylinder(Vector::Z, 1.0);
+        let wall: SurfaceGeometry = PlaneSurface::over(
+            Plane::through(
+                Point::new(0.0, 0.99, 0.0),
+                Direction::new(Vector::new(0.0, 1.0, 2e-5), T).unwrap(),
+            ),
+            (-1e9, 1e9),
+            (-1e9, 1e9),
+        )
+        .unwrap()
+        .into();
+        let met = intersect_surfaces(&wall, &drum, IntersectOptions::default(), T).unwrap();
+        let SurfaceIntersection::Along(sections) = met else {
+            panic!("the wall crosses the drum: {met:?}");
+        };
+        assert_eq!(sections.len(), 2);
+        for section in &sections {
+            assert!(section.tolerance > 0.0 && section.tolerance <= 1e-5);
+            on_both(section, &wall, &drum);
+        }
+    }
+
+    /// Two drums whose axes lean five hundred-thousandths apart meet in two
+    /// curves all but straight, returned as such over the height they share
+    /// rather than marched.
+    #[test]
+    fn drums_all_but_parallel_meet_in_two_near_lines() {
+        let drill = cylinder(Vector::Z, 1.0);
+        let frame = Frame::new(
+            Point::new(1.5, 0.0, 0.0),
+            Direction::new(Vector::new(5e-5, 0.0, 1.0), T).unwrap(),
+            Direction::X,
+            T,
+        )
+        .unwrap();
+        let bore: SurfaceGeometry =
+            CylinderSurface::new(Cylinder::new(frame, 1.0, T).unwrap(), (-3.0, 3.0))
+                .unwrap()
+                .into();
+        let met = intersect_surfaces(&drill, &bore, IntersectOptions::default(), T).unwrap();
+        let SurfaceIntersection::Along(sections) = met else {
+            panic!("the drums cross: {met:?}");
+        };
+        assert_eq!(sections.len(), 2);
+        for section in &sections {
+            assert!(!section.exact && section.tolerance <= 1e-5);
+            let (lo, hi) = section.curve.domain();
+            let (p, q) = (
+                section.curve.point_at(lo, T).unwrap(),
+                section.curve.point_at(hi, T).unwrap(),
+            );
+            assert!(
+                (p.z - q.z).abs() > 5.9,
+                "over the shared height: {p:?} {q:?}"
+            );
+            on_both(section, &drill, &bore);
+        }
     }
 
     #[test]

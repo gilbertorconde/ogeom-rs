@@ -79,6 +79,16 @@ bump may break the API and a patch bump may not.
   in the chart of a face with loose edges. It did not collapse in space,
   so the rest of the rim ended on two vertices. A strand a face's weld
   collapses now makes its ends one junction.
+- **Holes all but parallel to a bore or wall of a converted part failed,
+  and slowly.** Two drums whose axes lean a ten-thousandth apart were
+  marched, and their fitted crossings cost seconds each to intersect; a
+  plane leaning a hundred-thousandth off a drum's axis met it in an
+  ellipse tens of metres long, too coarse a ruler for the drum's height.
+  Both are now solved in the drum's cross-sections along its height and
+  kept as a line, or a cubic through the stations, with their departure
+  stated as the section's tolerance. A hole that took 17 s and failed
+  cuts in under a second, and a scan of a hundred random holes through a
+  converted printer's part fails in one, from four.
 
 ## [0.3.2] - 2026-09-24
 

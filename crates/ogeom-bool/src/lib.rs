@@ -1536,7 +1536,7 @@ fn fill(
                                         face_a: ia,
                                         face_b: ib,
                                         closed: sc.closed,
-                                        tolerance: ea.max(eb),
+                                        tolerance: sc.tolerance.max(ea).max(eb),
                                     });
                                     continue;
                                 }
