@@ -285,6 +285,15 @@ fn skew_conics_3d(
     }
     let (alpha, beta, gamma) = (nb.dot(ua), nb.dot(va), nb.dot(ca - cb));
     let size = alpha.hypot(beta);
+    // The first conic stands within the gap of the other's plane over a
+    // stretch as wide as the gap is against how far it rises from that
+    // plane. Planes all but parallel (a rim fitted to one facet group, a
+    // section through another) make that stretch wide, and the curves can
+    // pass within the gap anywhere along it, not only where one crosses the
+    // other's plane; the sampling path measures such a pass.
+    if options.gap.max(tol.confusion()) > size * 1e-3 {
+        return None;
+    }
     let mut crossings: Vec<Crossing<Point>> = Vec::new();
     if size > 0.0 && gamma.abs() <= size * (1.0 + 1e-12) {
         let phase = beta.atan2(alpha);
@@ -2092,6 +2101,34 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// Two circles in planes a millionth of a radian apart, passing within
+    /// the gap of each other where their shadows cross: the first crosses
+    /// the second's plane a twentieth of a unit away from there, where the
+    /// two are far apart. The near pass is found all the same.
+    #[test]
+    fn circles_in_all_but_one_plane_meet_where_they_pass() {
+        use ogeom_math::{Direction, Vector};
+        let flat: Curve = CircleCurve::new(Circle::new(Frame::WORLD, 2.0, T).unwrap()).into();
+        let lean = 1e-6;
+        let normal = Direction::new(Vector::new(lean, 0.0, 1.0), T).unwrap();
+        let centre = Point::new(1.0, 0.0, lean.mul_add(-0.5, 5e-8));
+        let tilted_frame = Frame::new(
+            centre,
+            normal,
+            Direction::new(Vector::new(1.0, 0.0, -lean), T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let tilted: Curve = CircleCurve::new(Circle::new(tilted_frame, 2.0, T).unwrap()).into();
+        let found = intersect_curves(&flat, &tilted, CurveCurveOptions::default(), T).unwrap();
+        assert_eq!(found.crossings.len(), 2, "{found:?}");
+        for hit in &found.crossings {
+            assert!(hit.gap < 1e-7, "{hit:?}");
+            let p = flat.point_at(hit.on_a, T).unwrap();
+            assert!((p.x - 0.5).abs() < 1e-4, "{p:?}");
+        }
     }
 
     /// A line across an ellipse in its plane meets it twice, a line through

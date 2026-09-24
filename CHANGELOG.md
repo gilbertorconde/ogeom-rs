@@ -67,6 +67,12 @@ bump may break the API and a patch bump may not.
   it, whenever any point of it came within the face's weld of the
   boundary, and the weld on a face with loose edges is a few hundredths.
   A loop is part of the boundary only when it meets it at a node.
+- **Circles and ellipses in all but one plane missed their crossing.**
+  The closed form for conics in different planes looked for crossings
+  only where one crosses the other's plane. Planes a hair apart, a hole's
+  rim fitted to one facet group and a section through another, let the
+  curves pass within the gap elsewhere, and the crossing was missed. Such
+  pairs are measured by sampling.
 
 ## [0.3.2] - 2026-09-24
 
