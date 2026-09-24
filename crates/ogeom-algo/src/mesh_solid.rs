@@ -748,6 +748,54 @@ fn one_each(
 
 /// The direction of a canonical surface's own normal at a point near it,
 /// not normalized: the gradient of its distance.
+/// How far a sample's normals must turn before the smallest sample stage
+/// is fitted: twenty degrees.
+const SMALL_STAGE_TURN: f64 = 0.35;
+
+/// The widest angle between any two of a sample's normals.
+fn turn_of(normals: &[Vector]) -> f64 {
+    let mut widest: f64 = 0.0;
+    for (i, a) in normals.iter().enumerate() {
+        for b in &normals[i + 1..] {
+            widest = widest.max(a.dot(*b).clamp(-1.0, 1.0).acos());
+        }
+    }
+    widest
+}
+
+/// Whether a facet whose corners lie on `shape` leans only as the surface
+/// turns under it: its normal within half the spread of the surface's
+/// normals at its corners (and a few degrees) of their mean, the surface
+/// turning no more than sixty degrees under it. A facet of a coarse mesh
+/// over a tight bend passes however far it turns from its neighbours; a
+/// flat cap's triangle with its corners on a cylinder's rim does not.
+fn leans_as_the_surface(shape: &Canonical, corners: [Point; 3], normal: Vector) -> bool {
+    let mut at = [Vector::ZERO; 3];
+    for (n, p) in at.iter_mut().zip(corners) {
+        let g = gradient(shape, p);
+        let m = g.magnitude();
+        if m == 0.0 {
+            return false;
+        }
+        *n = if g.dot(normal) < 0.0 { -g / m } else { g / m };
+    }
+    let angle = |a: Vector, b: Vector| a.dot(b).clamp(-1.0, 1.0).acos();
+    let spread = angle(at[0], at[1])
+        .max(angle(at[1], at[2]))
+        .max(angle(at[0], at[2]));
+    // A facet of any mesh turns far less than this across itself; one that
+    // spans more is a chord across the surface, not a piece of it.
+    if spread > FACET_TURN {
+        return false;
+    }
+    let mean = at[0] + at[1] + at[2];
+    let m = mean.magnitude();
+    m > 0.0 && angle(mean / m, normal) <= spread / 2.0 + 0.05
+}
+
+/// The most a surface may turn under one facet: sixty degrees.
+const FACET_TURN: f64 = core::f64::consts::FRAC_PI_3;
+
 fn gradient(shape: &Canonical, p: Point) -> Vector {
     let radial = |o: Point, z: Vector| {
         let w = p - o;
@@ -933,6 +981,10 @@ struct FirstFit {
     vertices: Vec<u32>,
     shared: Vec<u32>,
     first_sample: usize,
+    /// Whether the first sample already turned through a tight bend: on a
+    /// coarse mesh it can span several surfaces, and a failed fit says
+    /// nothing about the triangles in it but the seed.
+    wide: bool,
     found: Option<(crate::recognize::Recognized, Vec<bool>)>,
 }
 
@@ -1013,7 +1065,7 @@ impl Surfaces<'_> {
     /// vertices and would take in its neighbours' by a hundred; a patch of a
     /// thick torus needs the hundred to show its tube.
     fn first_fit(&self, seed: usize, of: &[usize], tried: &[bool]) -> FirstFit {
-        const STAGES: [usize; 3] = [24, 60, 150];
+        const STAGES: [usize; 4] = [12, 24, 60, 150];
         let mut held: std::collections::HashSet<usize> = std::collections::HashSet::from([seed]);
         let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
         let mut region = vec![seed];
@@ -1031,6 +1083,7 @@ impl Surfaces<'_> {
         let mut found = None;
         let mut shared = Vec::new();
         let mut first_sample = usize::MAX;
+        let mut wide = false;
         for target in STAGES {
             while vertices.len() < target {
                 let Some(next) = queue.pop_front() else {
@@ -1074,6 +1127,10 @@ impl Surfaces<'_> {
                     .collect::<Vec<u32>>()
             };
             first_sample = first_sample.min(region.len());
+            if target == STAGES[0] {
+                let normals: Vec<Vector> = region.iter().map(|&t| self.normals[t]).collect();
+                wide = turn_of(&normals) >= SMALL_STAGE_TURN;
+            }
             if shared.len() < 8 {
                 if queue.is_empty() {
                     break;
@@ -1081,6 +1138,12 @@ impl Surfaces<'_> {
                 continue;
             }
             let (pts, nrm) = self.samples(&shared, &region);
+            // The first, smallest stage is for a coarse mesh, where a dozen
+            // vertices already span a tight bend; on a fine one they lie
+            // nearly flat and say little about the surface they are on.
+            if target == STAGES[0] && !wide {
+                continue;
+            }
             let chords = self.chords(&region);
             match crate::recognize::recognize_trimmed(&pts, &nrm, &chords, self.flat, self.tol) {
                 Ok(fit) => {
@@ -1100,6 +1163,7 @@ impl Surfaces<'_> {
             vertices,
             shared,
             first_sample,
+            wide,
             found,
         }
     }
@@ -1184,11 +1248,17 @@ fn recognized_regions(
                 mut vertices,
                 shared,
                 first_sample,
+                wide,
                 found,
                 ..
             } = fit;
             let Some((found, keep)) = found else {
-                for &t in &region[..first_sample.min(region.len())] {
+                // A fine sample that fits nothing lies on nothing canonical,
+                // and its triangles are not seeded again; a wide one may
+                // have straddled a fillet and its neighbours, and only the
+                // seed is retired.
+                let retired = if wide { 1 } else { first_sample };
+                for &t in &region[..retired.min(region.len())] {
                     tried[t] = true;
                     changed[t] = batch;
                 }
@@ -1246,25 +1316,31 @@ fn recognized_regions(
                             continue;
                         };
                         let other = g / 3;
-                        if !mesh.smooth(h)
-                            || mine.contains(&other)
-                            || groups.of[other] != usize::MAX
-                        {
+                        if mine.contains(&other) || groups.of[other] != usize::MAX {
                             continue;
                         }
                         let corners = triangles[other].map(|v| points[v as usize]);
                         if corners.iter().any(|p| shape.distance_to(*p) > flat) {
                             continue;
                         }
-                        let centroid = Point::from_vector(
-                            (corners[0].to_vector()
-                                + corners[1].to_vector()
-                                + corners[2].to_vector())
-                                / 3.0,
-                        );
-                        let direction = gradient(&shape, centroid);
-                        let m = direction.magnitude();
-                        if m == 0.0 || (direction.dot(mesh.normals[other]) / m).abs() < agree {
+                        // Across a smooth edge, the facet's normal agrees
+                        // with the surface's. Across a sharper one (a coarse
+                        // mesh spanning two rows of a small fillet in one
+                        // triangle), the surface must account for the whole
+                        // lean.
+                        if mesh.smooth(h) {
+                            let centroid = Point::from_vector(
+                                (corners[0].to_vector()
+                                    + corners[1].to_vector()
+                                    + corners[2].to_vector())
+                                    / 3.0,
+                            );
+                            let direction = gradient(&shape, centroid);
+                            let m = direction.magnitude();
+                            if m == 0.0 || (direction.dot(mesh.normals[other]) / m).abs() < agree {
+                                continue;
+                            }
+                        } else if !leans_as_the_surface(&shape, corners, mesh.normals[other]) {
                             continue;
                         }
                         mine.insert(other);

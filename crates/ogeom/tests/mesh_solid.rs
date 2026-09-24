@@ -352,14 +352,12 @@ fn primitives_and_fillets_come_back_on_their_surfaces() {
 /// built on a sphere or torus from boundary edges alone meshes a little
 /// coarser at the measuring chord than the face it was meshed from.
 fn comes_back_as(model: &Model, shape: &Shape, expected: [usize; 5]) {
+    comes_back_from(model, shape, &meshed(model, shape), expected);
+}
+
+fn comes_back_from(model: &Model, shape: &Shape, mesh: &Triangulation, expected: [usize; 5]) {
     let mut back = Model::new();
-    let out = solid_from_mesh(
-        &mut back,
-        &meshed(model, shape),
-        &MeshSolidOptions::default(),
-        T,
-    )
-    .unwrap();
+    let out = solid_from_mesh(&mut back, mesh, &MeshSolidOptions::default(), T).unwrap();
     assert!(out.closed, "{:?}", out.report);
     assert_eq!(kinds(&back, &out.shape), expected);
     assert_eq!(out.report.curved_faceted, 0);
@@ -437,6 +435,54 @@ fn caps_zones_and_bent_tubes_come_back_exact() {
     comes_back_as(&model, &pin, [1, 1, 0, 1, 0]);
     comes_back_as(&model, &zone, [2, 0, 0, 1, 0]);
     comes_back_as(&model, &elbow, [2, 0, 0, 0, 1]);
+}
+
+/// A mesh as coarse as a printer's STL export (the default deflection, a
+/// tenth of a millimetre and half a radian, and a chord five times that)
+/// spans a two millimetre fillet in three or four facets, some of them
+/// across two of the tessellator's rows at once. The fillets, the corner
+/// balls and a torus round a hole's edge still come back on their
+/// surfaces.
+#[test]
+fn a_coarse_mesh_keeps_its_fillets() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    let drilled = drilled_block(&mut model);
+    let rim = explore_unique(&model, &drilled, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|edge| {
+            let data = model.node(edge).unwrap().data().as_edge().unwrap();
+            let Some(ogeom::topo::EdgeRepr::Curve3d { curve, .. }) = data.curve3d() else {
+                return false;
+            };
+            matches!(
+                model.geometry().curve(*curve),
+                Some(ogeom::geom::Curve::Circle(_))
+            )
+        })
+        .unwrap();
+    let eased = ogeom::fillet::fillet_edges(&mut model, &drilled, &[rim], 1.0, T)
+        .unwrap()
+        .shape;
+    for deflection in [
+        Deflection::default(),
+        Deflection {
+            chord: 0.5,
+            ..Deflection::default()
+        },
+    ] {
+        for (shape, expected) in [(&rounded, [6, 12, 0, 8, 0]), (&eased, [6, 1, 0, 0, 1])] {
+            let mesh = ogeom::mesh::triangulate(&model, shape, deflection, T).unwrap();
+            comes_back_from(&model, shape, &mesh, expected);
+        }
+    }
 }
 
 /// A sphere bored through twice, across, meets its bores in four circles

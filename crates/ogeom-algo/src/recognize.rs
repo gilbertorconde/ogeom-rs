@@ -150,11 +150,14 @@ fn curved_fits(
         .unzip();
     let n = points.len();
     type Fit = fn(&[Point], &[Vector], Tolerances) -> Option<Canonical>;
+    // Each kind is fitted only to more samples than it has parameters, by
+    // half as many again: a torus's seven fit eight points on a sphere and
+    // a cylinder's end together exactly, and says nothing by it.
     let attempts: [(usize, Fit); 4] = [
-        (5, |p, _, tol| fit_sphere(p, tol)),
-        (6, fit_cylinder),
-        (7, fit_cone),
-        (8, fit_torus),
+        (6, |p, _, tol| fit_sphere(p, tol)),
+        (8, fit_cylinder),
+        (9, fit_cone),
+        (11, fit_torus),
     ];
     let mut fits = Vec::with_capacity(4);
     for (floor, fit) in attempts {

@@ -22,6 +22,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Coarse meshes lost their fillets.** At a printer's usual export
+  settings a small fillet is three or four facets across, and it came
+  back as flat faces. The first fit now tries a dozen vertices when they
+  already turn through a bend, a fit needs half as many samples again as
+  its surface has parameters, a failed sample that spanned a bend retires
+  only its seed, and a facet spanning two rows of a tight fillet joins it
+  when the surface accounts for its lean. A fully filleted box meshed at
+  the default deflection comes back as its 26 faces.
+
 - **A cut along a cylinder's or torus's seam refused to close.** A box
   face lying on the seam split the plane along the seam edge in pieces
   the curved face did not share. An open section is no longer mistaken
