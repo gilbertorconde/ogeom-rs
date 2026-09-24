@@ -640,6 +640,90 @@ fn balls_and_rings_with_holes_come_back_whole_but_for_them() {
     }
 }
 
+/// A chamfered hole whose mesh has one vertex of the chamfer's rim a
+/// little off the cone (pushed outward along the plate, which still holds
+/// it): the triangles on it cannot join the cone, and the chamfer's band is
+/// cut open along a slit. It comes back a cone all the same, a patch
+/// running round from one side of the slit to the other.
+#[test]
+fn a_chamfer_with_a_stray_vertex_is_still_a_cone() {
+    let mut model = Model::new();
+    let at = |z: f64| Frame::new(Point::new(10.0, 10.0, z), Direction::Z, Direction::X, T).unwrap();
+    let plate = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let sink = ogeom::algo::make_cone(&mut model, at(4.0), 2.0, 3.0, 1.0, T)
+        .unwrap()
+        .shape;
+    let bore = ogeom::algo::make_cylinder(&mut model, at(-1.0), 2.0, 7.0, T)
+        .unwrap()
+        .shape;
+    let part = ogeom::boolean::cut(&mut model, &plate, &sink, T)
+        .unwrap()
+        .shape;
+    let part = ogeom::boolean::cut(&mut model, &part, &bore, T)
+        .unwrap()
+        .shape;
+    let mut mesh = meshed(&model, &part);
+    let k = mesh
+        .positions
+        .iter()
+        .position(|p| {
+            (p.z - 5.0).abs() < 1e-9 && ((p.x - 10.0).hypot(p.y - 10.0) - 3.0).abs() < 1e-9
+        })
+        .unwrap();
+    let p = mesh.positions[k];
+    mesh.positions[k] = p + Vector::new(p.x - 10.0, p.y - 10.0, 0.0) * (1e-4 / 3.0);
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(out.closed);
+    assert_eq!(kinds(&back, &out.shape)[2], 1, "the chamfer is a cone");
+    assert_eq!(out.report.curved_faceted, 0);
+    assert!(check(&back, &out.shape, T).unwrap().is_valid());
+}
+
+/// A rounded box whose corner balls are roughened into free-form facets:
+/// each fillet meets its corner all but tangentially, along a chain no
+/// curve both surfaces share can be solved for. The fillets are still
+/// cylinders, bounded there by curves threaded through the chain's own
+/// vertices, good to how far they stray.
+#[test]
+fn fillets_ending_on_rough_corners_are_still_cylinders() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    let mut mesh = meshed(&model, &rounded);
+    for (i, p) in mesh.positions.iter_mut().enumerate() {
+        let near = |v: f64, low: f64, high: f64| if v < (low + high) / 2.0 { low } else { high };
+        let centre = Point::new(
+            near(p.x, 2.0, 18.0),
+            near(p.y, 2.0, 18.0),
+            near(p.z, 2.0, 8.0),
+        );
+        let inside = |v: f64, c: f64, mid: f64| {
+            if c < mid { v < c - 1e-3 } else { v > c + 1e-3 }
+        };
+        if inside(p.x, centre.x, 10.0) && inside(p.y, centre.y, 10.0) && inside(p.z, centre.z, 5.0)
+        {
+            let d = *p - centre;
+            #[allow(clippy::cast_precision_loss, reason = "a vertex index")]
+            let bump = 0.02 * (i as f64 * 1.7).sin();
+            *p += d / d.magnitude() * bump;
+        }
+    }
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(out.closed);
+    assert_eq!(kinds(&back, &out.shape)[1], 12, "every fillet a cylinder");
+    assert_eq!(out.report.curved_faceted, 0);
+    assert!(check(&back, &out.shape, T).unwrap().is_valid());
+}
+
 /// A torus tessellated into 200 000 triangles converts in seconds, to the
 /// one face of the torus it is.
 #[test]

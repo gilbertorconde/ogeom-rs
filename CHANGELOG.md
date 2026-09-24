@@ -22,6 +22,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A converted printer's part came out invalid, a chamfer and fillet
+  corners faceted.** Edge tolerances were recorded equal to the gaps they
+  were measured from, and the checker, measuring again, found them a
+  rounding over; they are recorded a millionth wider. A band round its
+  axis cut open along a slit (a few triangles off its surface, left by
+  the exporter) is built as a patch running round to the slit instead of
+  falling to facets. And where two faces meet all but tangentially, a
+  fillet running into a corner the mesh leaves free-form, the boundary is
+  a curve threaded through the chain's own vertices, its tolerance how
+  far it strays, instead of faceting the fillet whole.
+
 - **Balls cut by two planes, and bores crossing at a coarse mesh, came
   back wrong or faceted.** A ball's axis could put both poles inside the
   cut-away part, where no loop goes round them, and the face covered the

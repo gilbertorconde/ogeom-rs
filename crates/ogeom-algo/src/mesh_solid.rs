@@ -975,6 +975,7 @@ fn segment(
         sphere_axes(points, triangles, adjacency, &mut groups, flat, tol);
         align_axes(points, &mut groups, flat, tol);
         hole_frames(points, triangles, adjacency, &mut groups, tol);
+        slit_bands(points, triangles, adjacency, &mut groups, tol);
     }
     coplanar_groups(
         points,
@@ -1750,6 +1751,84 @@ fn turns_about(ring: &[Vector], z: Vector) -> i32 {
     turns
 }
 
+/// A region round its axis whose boundary is one loop going round it no
+/// times is a band cut open along a slit (a few triangles its growth left
+/// across it): no seam can join rims it does not have. It is built as a
+/// patch instead, its chart cut placed in the slit, the widest gap in the
+/// angles its vertices stand at.
+fn slit_bands(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    groups: &mut Groups,
+    tol: Tolerances,
+) {
+    for g in 0..groups.carriers.len() {
+        let Carrier::Curved(curved) = &groups.carriers[g] else {
+            continue;
+        };
+        if !curved.wraps
+            || curved.wraps_v
+            || !matches!(curved.shape, Canonical::Cylinder(_) | Canonical::Cone(_))
+        {
+            continue;
+        }
+        let Some(loops) = border_loops(triangles, adjacency, &groups.of, g) else {
+            continue;
+        };
+        let [ring] = &loops[..] else {
+            continue;
+        };
+        let Some(frame) = axis_frame(&curved.shape) else {
+            continue;
+        };
+        let directions: Vec<Vector> = ring
+            .iter()
+            .map(|&v| points[v as usize] - frame.origin())
+            .collect();
+        if turns_about(&directions, frame.z().vector()) != 0 {
+            continue;
+        }
+        let mut angles: Vec<f64> = curved
+            .vertices
+            .iter()
+            .filter_map(|&v| chart(&curved.shape, points[v as usize], tol).map(|c| c.0))
+            .collect();
+        let Some(gap) = widest_gap(&mut angles) else {
+            continue;
+        };
+        if let Carrier::Curved(curved) = &mut groups.carriers[g] {
+            curved.wraps = false;
+            curved.centre = (
+                ogeom_math::elementary::wrap_angle(gap + core::f64::consts::PI),
+                curved.centre.1,
+            );
+        }
+    }
+}
+
+/// The middle of the widest gap between angles.
+fn widest_gap(angles: &mut [f64]) -> Option<f64> {
+    let tau = core::f64::consts::TAU;
+    if angles.is_empty() {
+        return None;
+    }
+    for a in angles.iter_mut() {
+        *a = a.rem_euclid(tau);
+    }
+    angles.sort_by(f64::total_cmp);
+    let mut best = (
+        angles[0] + tau - angles[angles.len() - 1],
+        angles[angles.len() - 1],
+    );
+    for pair in angles.windows(2) {
+        if pair[1] - pair[0] > best.0 {
+            best = (pair[1] - pair[0], pair[0]);
+        }
+    }
+    Some(best.1 + best.0 / 2.0)
+}
+
 /// How many axes a sphere's poles are tried along.
 const POLE_CANDIDATES: usize = 400;
 
@@ -2001,6 +2080,14 @@ fn is_sliver(corners: [Point; 3]) -> bool {
     let base = p.distance(q);
     base > 0.0 && distance_to_line(r, p, q) <= base * 0.1
 }
+
+/// How far a chord taken for an edge may stand off the curved face it
+/// bounds, against its length: a twentieth.
+const CHORD_SAG: f64 = 0.05;
+
+/// How much wider than the gap it was measured from an edge's tolerance is
+/// recorded: a millionth.
+const TOLERANCE_MARGIN: f64 = 1e-6;
 
 /// The most triangles a cluster the region surrounds may hold and still
 /// be taken into it whatever its normals.
@@ -2438,6 +2525,9 @@ impl Planner<'_> {
                             continue;
                         }
                         let spec = &plan.edges[edge];
+                        // A chord taken for an edge is imaged as loosely as
+                        // it stands off the face.
+                        let reach = reach.max(spec.tolerance * 2.0);
                         let image =
                             image_on(curved, &surface, &spec.curve, spec.range, reach, self.tol);
                         match image {
@@ -2603,6 +2693,103 @@ impl Planner<'_> {
             }
         }
         self.section(&pts, closed, faces, reach)
+            .or_else(|| self.chord(&pts, closed, faces, reach))
+    }
+
+    /// The last resort between two faces that meet all but tangentially (a
+    /// fillet running on into a corner ball, or into a patch the mesh
+    /// leaves faceted): no curve the two surfaces share can be solved for
+    /// along the chain. The chain's own vertices lie on both, and a curve
+    /// is threaded through them, a line for a single span; its tolerance is
+    /// how far it strays from either surface between them, up to a
+    /// twentieth of its longest span. A face bounded by such a curve is
+    /// good to its tolerance, where it would otherwise fall to facets
+    /// whole.
+    fn chord(
+        &self,
+        pts: &[Point],
+        closed: bool,
+        faces: &[usize],
+        reach: f64,
+    ) -> Option<(Snapped, bool, Images)> {
+        use ogeom_geom::Curve3d as _;
+        let [a, b] = faces[..] else {
+            return None;
+        };
+        let (fa, fb) = (self.signed(a)?, self.signed(b)?);
+        let mut on: Vec<Point> = pts.to_vec();
+        if closed {
+            on.push(pts[0]);
+        }
+        let longest = on
+            .windows(2)
+            .map(|w| w[0].distance(w[1]))
+            .fold(0.0_f64, f64::max);
+        if longest <= self.tol.confusion() {
+            return None;
+        }
+        let (curve, samples): (Curve, Vec<f64>) = if on.len() == 2 {
+            let length = on[0].distance(on[1]);
+            let line: Curve = LineCurve::segment(on[0], on[1], self.tol).ok()?.into();
+            (
+                line,
+                (0..=16).map(|k| length * f64::from(k) / 16.0).collect(),
+            )
+        } else {
+            // A loop is carried on past its ends and cut back, as a fitted
+            // section is.
+            let n = on.len();
+            let pad = if closed { 3.min(n / 3) } else { 0 };
+            let padded: Vec<Point> = if pad > 0 {
+                on[n - 1 - pad..n - 1]
+                    .iter()
+                    .chain(&on)
+                    .chain(&on[1..=pad])
+                    .copied()
+                    .collect()
+            } else {
+                on.clone()
+            };
+            let parameters =
+                crate::fit::spaced(&padded, crate::fit::Spacing::Centripetal, self.tol).ok()?;
+            let mut spline = crate::fit::interpolate_at(&padded, &parameters, 3, self.tol).ok()?;
+            if pad > 0 {
+                spline = spline.split_at(parameters[pad], self.tol).ok()?.1;
+                spline = spline.split_at(parameters[pad + n - 1], self.tol).ok()?.0;
+            }
+            let own = &parameters[pad..pad + n];
+            let samples = own
+                .windows(2)
+                .flat_map(|w| {
+                    [
+                        w[0],
+                        w[0] + (w[1] - w[0]) * 0.25,
+                        w[0] + (w[1] - w[0]) * 0.5,
+                        w[0] + (w[1] - w[0]) * 0.75,
+                    ]
+                })
+                .chain(std::iter::once(own[n - 1]))
+                .collect();
+            (spline.into(), samples)
+        };
+        let range = curve.domain();
+        let mut tolerance = self.tol.confusion();
+        for t in samples {
+            let p = curve.point_at(t.clamp(range.0, range.1), self.tol).ok()?;
+            tolerance = tolerance.max(fa(p).abs()).max(fb(p).abs());
+        }
+        if tolerance > reach.max(longest * CHORD_SAG) {
+            return None;
+        }
+        Some((
+            if closed {
+                Snapped::Loop(curve, range, tolerance)
+            } else {
+                Snapped::Open(curve, range, tolerance)
+            },
+            true,
+            Vec::new(),
+        ))
     }
 
     /// The curve two faces meet along, where it is no parallel or ruling of
@@ -3367,7 +3554,9 @@ impl Builder<'_> {
             }
             let id = self.model.geometry_mut().add_curve(spec.curve.clone());
             let mut data = EdgeData::on_curve(id, Location::identity(), spec.range);
-            data.tolerance = Tolerance::new(spec.tolerance)?;
+            // A tolerance measured as a gap is held a millionth wider: the
+            // checker measures the same gap again, a rounding apart.
+            data.tolerance = Tolerance::new(spec.tolerance * (1.0 + TOLERANCE_MARGIN))?;
             let bounds = if spec.ends[0] == spec.ends[1] {
                 vec![
                     corners[&spec.ends[0]].clone(),
