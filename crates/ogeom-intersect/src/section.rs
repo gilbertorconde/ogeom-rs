@@ -163,7 +163,7 @@ pub fn intersect_surfaces(
         }
         // No closed form for this pair: the statement that sends us marching,
         // unless the pair is two drums all but parallel.
-        Err(_) => match near_parallel_drums(a, b, tol) {
+        Err(_) => match near_parallel_drums(a, b, tol).or_else(|| ball_through_drum(a, b, tol)) {
             Some(sections) if sections.is_empty() => Ok(SurfaceIntersection::Apart),
             Some(sections) => Ok(SurfaceIntersection::Along(sections)),
             None => marched(a, b, options, tol),
@@ -313,6 +313,145 @@ fn lines_through_stations(
             tolerance,
             exact: false,
             closed: false,
+            tangential: false,
+        });
+    }
+    Some(out)
+}
+
+/// A drum passing clean through a ball: every line along the drum meets
+/// the ball twice, within the drum's height.
+///
+/// Then each of the two loops the drum and ball meet in is a function of
+/// the angle round the drum: at each angle, where the line along the drum
+/// enters and leaves the ball is a quadratic's two roots. The loops are
+/// sampled so, exactly, and fitted closed, the fit's error stated as the
+/// section's tolerance. Marched instead, a drum that all but grazes the
+/// ball's far side leaves loops long and thin, and the trace wanders along
+/// them past any bound. `None` where some line misses or grazes the ball,
+/// or leaves the drum's height: the marcher answers those.
+fn ball_through_drum(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    tol: Tolerances,
+) -> Option<Vec<SectionCurve>> {
+    const SAMPLES: u32 = 256;
+    const STRAY: f64 = 1e-5;
+    let (ball, drum, ball_first) = match (a, b) {
+        (SurfaceGeometry::Sphere(s), SurfaceGeometry::Cylinder(c)) => (s, c, true),
+        (SurfaceGeometry::Cylinder(c), SurfaceGeometry::Sphere(s)) => (s, c, false),
+        _ => return None,
+    };
+    let (sphere, cylinder) = (ball.sphere(), drum.cylinder());
+    let frame = cylinder.frame();
+    let (x, y, d) = (frame.x().vector(), frame.y().vector(), frame.z().vector());
+    let (origin, r) = (frame.origin(), cylinder.radius());
+    let (centre, big) = (sphere.centre(), sphere.radius());
+    let ball_frame = sphere.frame();
+    let (_, (h0, h1)) = drum.domain();
+    // A line that only just meets the ball leaves the loop turning sharply
+    // there; a tenth of the drum's radius of chord inside the ball keeps
+    // the loops smooth enough to fit.
+    let margin = r * 0.1;
+    // Where the line along the drum at `angle` enters and leaves the ball.
+    let heights = |angle: f64| -> Option<[f64; 2]> {
+        let foot = origin + (x * angle.cos() + y * angle.sin()) * r;
+        let w = foot - centre;
+        let half = d.dot(w);
+        let disc = half.mul_add(half, -(w.dot(w) - big * big));
+        if disc <= margin * margin {
+            return None;
+        }
+        let root = disc.sqrt();
+        let pair = [-half - root, -half + root];
+        pair.iter().all(|v| *v >= h0 && *v <= h1).then_some(pair)
+    };
+    let at = |angle: f64, v: f64| origin + (x * angle.cos() + y * angle.sin()) * r + d * v;
+    // The ball's longitude and latitude of a point, as its chart reads them.
+    let on_ball = |p: Point, before: Option<Point2>| -> Point2 {
+        let local = ball_frame.to_local(p);
+        let lat = local.z.atan2(local.x.hypot(local.y));
+        let mut lon = local.y.atan2(local.x).rem_euclid(core::f64::consts::TAU);
+        if let Some(prev) = before {
+            while lon - prev.x > core::f64::consts::PI {
+                lon -= core::f64::consts::TAU;
+            }
+            while prev.x - lon > core::f64::consts::PI {
+                lon += core::f64::consts::TAU;
+            }
+        }
+        Point2::new(lon, lat)
+    };
+    let angle_of = |k: f64| core::f64::consts::TAU * k / f64::from(SAMPLES);
+    let params: Vec<f64> = (0..=SAMPLES).map(|k| angle_of(f64::from(k))).collect();
+    let mut sampled: Vec<[f64; 2]> = Vec::with_capacity(params.len());
+    for &angle in &params {
+        sampled.push(heights(angle)?);
+    }
+    let mut out = Vec::with_capacity(2);
+    for side in 0..2 {
+        let points: Vec<Point> = params
+            .iter()
+            .zip(&sampled)
+            .map(|(&angle, pair)| at(angle, pair[side]))
+            .collect();
+        let on_drum: Vec<Point2> = params
+            .iter()
+            .zip(&sampled)
+            .map(|(&angle, pair)| Point2::new(angle, pair[side]))
+            .collect();
+        let mut on_sphere: Vec<Point2> = Vec::with_capacity(points.len());
+        for p in &points {
+            let q = on_ball(*p, on_sphere.last().copied());
+            on_sphere.push(q);
+        }
+        let target = tol.confusion() * 10.0;
+        let curve: Curve = ogeom_geom::fit::fit_points_at(&params, &points, 3, target, tol)
+            .ok()?
+            .curve
+            .into();
+        let drum_image: PlanarCurve =
+            ogeom_geom::fit::fit_points_2d_at(&params, &on_drum, 3, target, tol)
+                .ok()?
+                .curve
+                .into();
+        let ball_image: PlanarCurve =
+            ogeom_geom::fit::fit_points_2d_at(&params, &on_sphere, 3, target, tol)
+                .ok()?
+                .curve
+                .into();
+        // Checked at the samples and midway between them: the curve, and
+        // each surface read through its image, against the true meeting.
+        let mut stray = 0.0_f64;
+        for k in 0..(2 * SAMPLES) {
+            let angle = angle_of(f64::from(k) / 2.0);
+            let truth = at(angle, heights(angle)?[side]);
+            let on_curve = curve.point_at(angle, tol).ok()?;
+            let uv = drum_image.point_at(angle, tol).ok()?;
+            let through_drum = drum.point_at(uv.x, uv.y, tol).ok()?;
+            let uv = ball_image.point_at(angle, tol).ok()?;
+            let through_ball = ball.point_at(uv.x, uv.y, tol).ok()?;
+            stray = stray
+                .max(truth.distance(on_curve))
+                .max(truth.distance(through_drum))
+                .max(truth.distance(through_ball));
+        }
+        let tolerance = stray.max(tol.confusion());
+        if tolerance > STRAY {
+            return None;
+        }
+        let (on_a, on_b) = if ball_first {
+            (ball_image, drum_image)
+        } else {
+            (drum_image, ball_image)
+        };
+        out.push(SectionCurve {
+            curve,
+            on_a: Some(on_a),
+            on_b: Some(on_b),
+            tolerance,
+            exact: false,
+            closed: true,
             tangential: false,
         });
     }

@@ -94,6 +94,12 @@ bump may break the API and a patch bump may not.
   long side it sealed and its two short sides were each left used once.
   The triangle across the long side is now split at the sliver's middle
   corner, and the solid closes.
+- **A hole near a ball's rim failed.** A drum passing through a ball
+  close to its rim, all but grazing its far side, was marched, and the
+  trace wandered along the long thin loops into a curve kilometres long.
+  Where every line along the drum meets the ball twice, each loop is a
+  function of the angle round the drum; the loops are now sampled exactly
+  so, fitted with their images on both surfaces, and checked midway.
 
 ## [0.3.2] - 2026-09-24
 
