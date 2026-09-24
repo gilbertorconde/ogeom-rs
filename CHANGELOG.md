@@ -11,15 +11,6 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
-### Fixed
-
-- **The rim of a bore cut with a prism would not fillet or chamfer.** A
-  circle face pushed down through a block, against its own axis, swept a
-  general extrusion rather than the cylinder it is, and the blend refused
-  its rim. It now sweeps a cylinder whichever way along its axis it
-  travels, and the rim rounds with one torus, or bevels with one cone,
-  exactly.
-
 ## [0.3.2] - 2026-09-24
 
 A patch release with no API change; `cargo semver-checks` finds nothing
@@ -40,6 +31,13 @@ countersink whose bore is its narrow end.
   is fitted and the fit's error returned.
 
 ### Fixed
+
+- **The rim of a bore cut with a prism would not fillet or chamfer.** A
+  circle face pushed down through a block, against its own axis, swept a
+  general extrusion rather than the cylinder it is, and the blend refused
+  its rim. It now sweeps a cylinder whichever way along its axis it
+  travels, and the rim rounds with one torus, or bevels with one cone,
+  exactly.
 
 - **A converted printer's part came out invalid, a chamfer and fillet
   corners faceted.** Edge tolerances were recorded equal to the gaps they
