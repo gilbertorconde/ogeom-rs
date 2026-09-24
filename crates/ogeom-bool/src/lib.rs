@@ -1925,6 +1925,54 @@ fn fill(
                             break;
                         }
                     }
+                    // Two sections through one face that lie on two different
+                    // faces of the other solid cross only on the edge those
+                    // two share, where each already stops. Meeting there
+                    // tangentially (a wall through a plane and the fillet
+                    // tangent to it), their own crossing is ill-conditioned
+                    // and lands off the edge, as far off as the two stay
+                    // within their doubt of each other; the edge's stop is
+                    // the one where they cannot be told apart up to it.
+                    let shared = |edges: &[BoundaryEdge], node: ogeom_topo::TShapeId| {
+                        edges.iter().any(|e| e.node == node)
+                    };
+                    let apart_on = if other.face_a == section.face_a {
+                        Some(&gb.faces[other.face_b].edges)
+                    } else if other.face_b == section.face_b {
+                        Some(&ga.faces[other.face_a].edges)
+                    } else {
+                        None
+                    };
+                    if let Some(edges) = apart_on {
+                        let close = both.max(tol.confusion() * 1e2);
+                        let mut best: Option<(f64, f64)> = None;
+                        for (node, _, on_a, _) in &edge_hits {
+                            if !shared(edges, *node)
+                                || best.is_some_and(|(bd, _)| (on_a - at).abs() >= bd)
+                            {
+                                continue;
+                            }
+                            let mut together = true;
+                            for k in 1..8 {
+                                let t = (on_a - at).mul_add(f64::from(k) / 8.0, at);
+                                let p = section
+                                    .curve
+                                    .point_at(at_param(t, domain, section.closed), tol)?;
+                                if ogeom_algo::project_on_curve(&other.curve, p, 16, tol)?.distance
+                                    > close
+                                {
+                                    together = false;
+                                    break;
+                                }
+                            }
+                            if together {
+                                best = Some(((on_a - at).abs(), *on_a));
+                            }
+                        }
+                        if let Some((_, on_a)) = best {
+                            at = on_a;
+                        }
+                    }
                     if *DEBUG_WIRE {
                         eprintln!(
                             "PAVE s{si}: cross s{sj} at {at:.6} gap {:.2e}",
@@ -4092,16 +4140,23 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                       face: &GFace|
      -> OgeomResult<(Vec<Strand<Tag>>, f64)> {
         let mut strands: Vec<Strand<Tag>> = Vec::new();
+        // How far apart the paves one junction stands for lie. A section
+        // meeting the edge all but tangentially (its fitted end sliding
+        // along it) paves it a few microns from where an exact section
+        // crosses; the first pave speaks for both, and the other's strand
+        // must still reach it.
+        let mut spread = 0.0_f64;
         for (ei, e) in face.edges.iter().enumerate() {
             let mut stops = vec![e.crange.0];
             if let Some(ts) = paves.get(&e.node) {
                 // Paves the edge itself cannot tell apart are one
                 // junction, and the cluster's first pave speaks for it.
-                stops.extend(
-                    cluster_paves(&e.curve, e.crange, e.tolerance, ts, tol)?
-                        .iter()
-                        .map(|c| c.t),
-                );
+                for c in cluster_paves(&e.curve, e.crange, e.tolerance, ts, tol)? {
+                    if c.members > 1 {
+                        spread = spread.max(c.span + c.honesty);
+                    }
+                    stops.push(c.t);
+                }
             }
             stops.push(e.crange.1);
             // A closed boundary edge (a cap's full circle) needs two
@@ -4343,6 +4398,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             // honest to the edge's tolerance, and the vertex it ends at
             // was welded to some earlier gap.
             .max(doubt_of(&face.edges))
+            .max(spread)
             .max(
                 if sections.iter().any(|s| {
                     s.tolerance > 0.0

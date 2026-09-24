@@ -22,6 +22,15 @@ bump may break the API and a patch bump may not.
   plane, the crossing is solved in closed form rather than by sampling.
   On a converted part of 25 000 faces a drill cuts in 6 s where it
   failed after 18 s.
+- **A hole drilled beside a rounded corner often failed.** Where a hole
+  crosses a fillet's tangent line, the section on the flat and the section
+  on the fillet meet tangentially, and their crossing with each other or
+  with the line landed up to a couple of microns off. The flat was left
+  unsplit or a wire had two vertices where it needed one. Such a crossing
+  now stops where the sections cross the shared edge, and a face welds its
+  ends as far apart as the stops on its edges were found. A seeded scan of
+  a hundred holes beside the corner of a rounded box went from a third
+  failing to none.
 
 ## [0.3.2] - 2026-09-24
 
