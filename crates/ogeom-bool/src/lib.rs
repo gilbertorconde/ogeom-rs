@@ -4688,6 +4688,53 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             // its ends become one node, every neighbour meeting them moves
             // onto it, and one junction owns the span in space so the
             // rebuilt vertices agree on every face.
+            // A strand's ends in space, or none for a pole.
+            let space_ends = |face: &GFace, tag: &Tag| -> OgeomResult<Option<(Point, Point)>> {
+                Ok(Some(match tag {
+                    Tag::Boundary { edge, range } => {
+                        let e = &face.edges[*edge];
+                        (
+                            e.curve.point_at(range.0, tol)?,
+                            e.curve.point_at(range.1, tol)?,
+                        )
+                    }
+                    Tag::Contact { contact, range } => {
+                        let c = &contacts[*contact];
+                        (
+                            c.curve.point_at(range.0, tol)?,
+                            c.curve.point_at(range.1, tol)?,
+                        )
+                    }
+                    Tag::Section { section, range } => {
+                        let sec = &sections[*section];
+                        let domain = sec.curve.domain();
+                        (
+                            sec.curve
+                                .point_at(at_param(range.0, domain, sec.closed), tol)?,
+                            sec.curve
+                                .point_at(at_param(range.1, domain, sec.closed), tol)?,
+                        )
+                    }
+                    Tag::Pole { .. } => return Ok(None),
+                }))
+            };
+            // A strand this face's own weld collapses is one point in space
+            // as well: its ends become one junction, or the pieces either
+            // side of it end on two vertices the chart says are one, and a
+            // loop cut at a seam a few microns from its own start closes in
+            // the chart and stays open in space.
+            for st in &strands {
+                if st.polyline.len() >= 2
+                    && chart_length(&st.polyline) <= face_snap
+                    && let Some((from, to)) = space_ends(face, &st.tag)?
+                    && from.distance(to) > tol.confusion() * 1e2
+                {
+                    junctions.push(Junction {
+                        at: from.midpoint(to),
+                        reach: from.distance(to) / 2.0 + tol.confusion() * 1e2,
+                    });
+                }
+            }
             let forced: Vec<usize> = strands
                 .iter()
                 .enumerate()
@@ -4725,32 +4772,8 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     if ra != rb {
                         reps[rb].1 = ra;
                     }
-                    let (from, to) = match &st.tag {
-                        Tag::Boundary { edge, range } => {
-                            let e = &face.edges[*edge];
-                            (
-                                e.curve.point_at(range.0, tol)?,
-                                e.curve.point_at(range.1, tol)?,
-                            )
-                        }
-                        Tag::Contact { contact, range } => {
-                            let c = &contacts[*contact];
-                            (
-                                c.curve.point_at(range.0, tol)?,
-                                c.curve.point_at(range.1, tol)?,
-                            )
-                        }
-                        Tag::Section { section, range } => {
-                            let sec = &sections[*section];
-                            let domain = sec.curve.domain();
-                            (
-                                sec.curve
-                                    .point_at(at_param(range.0, domain, sec.closed), tol)?,
-                                sec.curve
-                                    .point_at(at_param(range.1, domain, sec.closed), tol)?,
-                            )
-                        }
-                        Tag::Pole { .. } => continue,
+                    let Some((from, to)) = space_ends(face, &st.tag)? else {
+                        continue;
                     };
                     if *DEBUG_STRANDS {
                         eprintln!(

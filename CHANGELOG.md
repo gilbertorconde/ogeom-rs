@@ -73,6 +73,12 @@ bump may break the API and a patch bump may not.
   rim fitted to one facet group and a section through another, let the
   curves pass within the gap elsewhere, and the crossing was missed. Such
   pairs are measured by sampling.
+- **A hole's rim cut a few microns from its own start stayed open.** A
+  rim is cut where it crosses the hole's seam, and when that falls a few
+  microns from where the rim's curve starts, the sliver between collapses
+  in the chart of a face with loose edges. It did not collapse in space,
+  so the rest of the rim ended on two vertices. A strand a face's weld
+  collapses now makes its ends one junction.
 
 ## [0.3.2] - 2026-09-24
 

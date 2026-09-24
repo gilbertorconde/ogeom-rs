@@ -867,6 +867,66 @@ fn holes_beside_a_rough_corner_cut_and_fill_valid() {
     }
 }
 
+/// Holes drilled sideways past the rough box's corner, across faces whose
+/// threaded edges set a weld of a few hundredths. A hole's rim is cut where
+/// it crosses the hole's own seam, a few microns from where the rim starts,
+/// and the sliver between collapses in both faces' charts; it collapses in
+/// space as well, or the rest of the rim ends on two vertices and its ring
+/// stays open.
+#[test]
+fn holes_sideways_past_a_rough_corner_cut_and_fill_valid() {
+    let mut model = Model::new();
+    let out = solid_from_mesh(
+        &mut model,
+        &rough_rounded_box(),
+        &MeshSolidOptions::default(),
+        T,
+    )
+    .unwrap();
+    let fine = Deflection::with_chord(0.01).unwrap();
+    let whole = volume_properties(&model, &out.shape, fine, T).unwrap().mass;
+    let along_x =
+        |y: f64, z: f64| Frame::new(Point::new(-5.0, y, z), Direction::X, Direction::Y, T).unwrap();
+    let along_y =
+        |x: f64, z: f64| Frame::new(Point::new(x, -5.0, z), Direction::Y, Direction::Z, T).unwrap();
+    for (at, r) in [
+        (along_x(0.65, 2.66), 0.64),
+        (along_y(3.59, 2.32), 0.61),
+        (along_y(2.19, 2.82), 0.27),
+    ] {
+        let drill = ogeom::algo::make_cylinder(&mut model, at, r, 30.0, T)
+            .unwrap()
+            .shape;
+        let mut shares = 0.0;
+        for (name, made) in [
+            (
+                "cut",
+                ogeom::boolean::cut(&mut model, &out.shape, &drill, T),
+            ),
+            (
+                "common",
+                ogeom::boolean::common(&mut model, &out.shape, &drill, T),
+            ),
+        ] {
+            let made = made.unwrap_or_else(|e| panic!("{name} at {:?}: {e}", at.origin()));
+            let diagnosis = check(&model, &made.shape, T).unwrap();
+            assert!(
+                diagnosis.is_valid(),
+                "{name} at {:?}: {diagnosis}",
+                at.origin()
+            );
+            shares += volume_properties(&model, &made.shape, fine, T)
+                .unwrap()
+                .mass;
+        }
+        assert!(
+            (shares - whole).abs() < whole * 5e-4,
+            "at {:?}: {shares} against {whole}",
+            at.origin()
+        );
+    }
+}
+
 /// A torus tessellated into 200 000 triangles converts in seconds, to the
 /// one face of the torus it is.
 #[test]
