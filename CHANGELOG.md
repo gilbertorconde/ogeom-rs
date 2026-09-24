@@ -22,6 +22,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A ball or a ring with holes in it stayed faceted.** Only a ball cut
+  by parallel planes, or a ring cut square to its tube, was rebuilt. A
+  ball or ring whose boundary only makes holes in it (a boss fused on a
+  ball, a ball bored across twice, a ring pierced through its tube) now
+  comes back as the whole surface with the holes as inner wires: its axis
+  is turned so its poles stand farthest from every hole, and its seam into
+  the widest angle the holes leave free.
+
 - **Curved faces meeting along a curve that is no circle stayed
   faceted.** A bar drilled across, or a pipe with a branch, came back as
   hundreds of facets. Where two recognized surfaces meet along any curve,

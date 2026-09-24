@@ -533,39 +533,83 @@ fn crossing_cylinders_meet_along_a_fitted_curve() {
     }
 }
 
-/// A sphere bored through twice, across, meets its bores in four circles
-/// that no single frame makes parallels: it is recognized, said to be
-/// faceted, and still converts to a valid solid.
+/// A ball or a ring whose boundary only makes holes in it: a boss fused
+/// on a ball, a ball bored twice across, a ring pierced through its tube
+/// and through its outer equator. Each comes back as the whole surface
+/// with the holes as inner wires, its seams and poles turned clear of
+/// them.
 #[test]
-fn what_cannot_be_built_exactly_stays_faceted() {
+fn balls_and_rings_with_holes_come_back_whole_but_for_them() {
     let mut model = Model::new();
-    let mut shape = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 7.0, T)
+    let at = |p: (f64, f64, f64), z: Direction, x: Direction| {
+        Frame::new(Point::new(p.0, p.1, p.2), z, x, T).unwrap()
+    };
+    let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 6.0, T)
         .unwrap()
         .shape;
-    for (at, along, across, radius) in [
-        (Point::new(0.0, 0.0, -10.0), Direction::Z, Direction::X, 2.0),
-        (Point::new(-10.0, 0.0, 0.0), Direction::X, Direction::Y, 1.5),
+    let boss = ogeom::algo::make_cylinder(
+        &mut model,
+        at((2.0, 1.0, 0.0), Direction::Z, Direction::X),
+        1.5,
+        9.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let knob = ogeom::boolean::fuse(&mut model, &ball, &boss, T)
+        .unwrap()
+        .shape;
+    let mut bored = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 7.0, T)
+        .unwrap()
+        .shape;
+    for (from, along, across, radius) in [
+        ((0.0, 0.0, -10.0), Direction::Z, Direction::X, 2.0),
+        ((-10.0, 0.0, 0.0), Direction::X, Direction::Y, 1.5),
     ] {
-        let frame = Frame::new(at, along, across, T).unwrap();
-        let bore = ogeom::algo::make_cylinder(&mut model, frame, radius, 20.0, T)
+        let bore = ogeom::algo::make_cylinder(&mut model, at(from, along, across), radius, 20.0, T)
             .unwrap()
             .shape;
-        shape = ogeom::boolean::cut(&mut model, &shape, &bore, T)
+        bored = ogeom::boolean::cut(&mut model, &bored, &bore, T)
             .unwrap()
             .shape;
     }
-    let mut back = Model::new();
-    let out = solid_from_mesh(
-        &mut back,
-        &meshed(&model, &shape),
-        &MeshSolidOptions::default(),
+    let ring = ogeom::algo::make_torus(&mut model, Frame::WORLD, 10.0, 3.0, T)
+        .unwrap()
+        .shape;
+    let pin = ogeom::algo::make_cylinder(
+        &mut model,
+        at((10.0, 0.0, -10.0), Direction::Z, Direction::X),
+        1.0,
+        20.0,
         T,
     )
-    .unwrap();
-    assert!(out.closed);
-    assert!(out.report.curved_faceted >= 1);
-    assert_eq!(kinds(&back, &out.shape)[3], 0, "the sphere is not built");
-    assert!(check(&back, &out.shape, T).unwrap().is_valid());
+    .unwrap()
+    .shape;
+    let pierced = ogeom::boolean::cut(&mut model, &ring, &pin, T)
+        .unwrap()
+        .shape;
+    let radial = ogeom::algo::make_cylinder(
+        &mut model,
+        at((5.0, 0.0, 0.0), Direction::X, Direction::Y),
+        1.0,
+        10.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let through = ogeom::boolean::cut(&mut model, &ring, &radial, T)
+        .unwrap()
+        .shape;
+    for (shape, expected) in [
+        (&knob, [1, 1, 0, 1, 0]),
+        (&bored, [0, 3, 0, 1, 0]),
+        (&pierced, [0, 1, 0, 0, 1]),
+        (&through, [0, 1, 0, 0, 1]),
+    ] {
+        comes_back_as(&model, shape, expected);
+    }
+    let mesh = ogeom::mesh::triangulate(&model, &knob, Deflection::default(), T).unwrap();
+    comes_back_from(&model, &knob, &mesh, [1, 1, 0, 1, 0]);
 }
 
 /// A torus tessellated into 200 000 triangles converts in seconds, to the

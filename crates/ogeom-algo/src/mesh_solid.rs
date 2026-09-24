@@ -642,6 +642,9 @@ enum Layout {
     /// joins a vertex of each rim, straight in the chart and clear of the
     /// holes.
     Wrapped,
+    /// A sphere or a torus whole but for holes, its seams and poles clear
+    /// of them: the whole surface's face, the holes its inner wires.
+    Holed,
 }
 
 /// Triangles gathered into faces: which face each triangle is in, and what
@@ -964,6 +967,7 @@ fn segment(
         );
         sphere_axes(points, triangles, adjacency, &mut groups, flat, tol);
         align_axes(points, &mut groups, flat, tol);
+        hole_frames(points, triangles, adjacency, &mut groups, tol);
     }
     coplanar_groups(
         points,
@@ -1447,40 +1451,9 @@ fn sphere_axes(
         let Canonical::Sphere(sphere) = curved.shape else {
             continue;
         };
-        // The region's boundary, walked into loops: each border half-edge
-        // leads to the one leaving its end.
-        let mut leaving: HashMap<u32, Vec<u32>> = HashMap::new();
-        for (t, tri) in triangles.iter().enumerate() {
-            if groups.of[t] != g {
-                continue;
-            }
-            for k in 0..3 {
-                let inside = adjacency.twin[3 * t + k].is_some_and(|o| groups.of[o / 3] == g);
-                if !inside {
-                    leaving.entry(tri[k]).or_default().push(tri[(k + 1) % 3]);
-                }
-            }
-        }
-        if leaving.is_empty() || leaving.values().any(|to| to.len() != 1) {
+        let Some(loops) = border_loops(triangles, adjacency, &groups.of, g) else {
             continue;
-        }
-        let mut loops: Vec<Vec<u32>> = Vec::new();
-        let mut done: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let mut starts: Vec<u32> = leaving.keys().copied().collect();
-        starts.sort_unstable();
-        for start in starts {
-            if !done.insert(start) {
-                continue;
-            }
-            let mut ring = vec![start];
-            let mut at = leaving[&start][0];
-            while at != start && ring.len() <= leaving.len() {
-                done.insert(at);
-                ring.push(at);
-                at = leaving.get(&at).map_or(start, |to| to[0]);
-            }
-            loops.push(ring);
-        }
+        };
         let mut axis: Option<Vector> = None;
         let mut planar = true;
         for ring in &loops {
@@ -1531,6 +1504,176 @@ fn sphere_axes(
             curved.fixed = true;
         }
     }
+}
+
+/// A region's boundary, walked into loops of mesh vertices: each border
+/// half-edge leads to the one leaving its end. `None` where a vertex has
+/// more than one way on.
+fn border_loops(
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    of: &[usize],
+    g: usize,
+) -> Option<Vec<Vec<u32>>> {
+    let mut leaving: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (t, tri) in triangles.iter().enumerate() {
+        if of[t] != g {
+            continue;
+        }
+        for k in 0..3 {
+            let inside = adjacency.twin[3 * t + k].is_some_and(|o| of[o / 3] == g);
+            if !inside {
+                leaving.entry(tri[k]).or_default().push(tri[(k + 1) % 3]);
+            }
+        }
+    }
+    if leaving.is_empty() || leaving.values().any(|to| to.len() != 1) {
+        return None;
+    }
+    let mut loops: Vec<Vec<u32>> = Vec::new();
+    let mut done: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut starts: Vec<u32> = leaving.keys().copied().collect();
+    starts.sort_unstable();
+    for start in starts {
+        if !done.insert(start) {
+            continue;
+        }
+        let mut ring = vec![start];
+        let mut at = leaving[&start][0];
+        while at != start && ring.len() <= leaving.len() {
+            done.insert(at);
+            ring.push(at);
+            at = leaving.get(&at).map_or(start, |to| to[0]);
+        }
+        loops.push(ring);
+    }
+    Some(loops)
+}
+
+/// A frame for each closed surface its boundary only makes holes in: a
+/// sphere round its axis whose rings are not the parallels of one axis, or
+/// a torus round both ways. Its seams are placed clear of every ring, the
+/// sphere's poles as far from them as any axis puts them, so the whole
+/// surface's face can carry the rings as holes.
+fn hole_frames(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    groups: &mut Groups,
+    tol: Tolerances,
+) {
+    for g in 0..groups.carriers.len() {
+        let Carrier::Curved(curved) = &groups.carriers[g] else {
+            continue;
+        };
+        let wanted = match curved.shape {
+            Canonical::Sphere(_) => curved.wraps && !curved.fixed,
+            Canonical::Torus(_) => curved.wraps && curved.wraps_v,
+            _ => false,
+        };
+        if !wanted {
+            continue;
+        }
+        let Some(loops) = border_loops(triangles, adjacency, &groups.of, g) else {
+            continue;
+        };
+        let ring_points: Vec<Point> = loops
+            .iter()
+            .flatten()
+            .map(|&v| points[v as usize])
+            .collect();
+        let shape = match curved.shape {
+            Canonical::Sphere(sphere) => {
+                // The axis whose poles stand farthest from every ring point.
+                let directions: Vec<Vector> = ring_points
+                    .iter()
+                    .filter_map(|p| {
+                        let d = *p - sphere.centre();
+                        let m = d.magnitude();
+                        (m > 0.0).then(|| d / m)
+                    })
+                    .collect();
+                let mut best: Option<(f64, Vector)> = None;
+                for z in spread_directions(POLE_CANDIDATES) {
+                    let nearest = directions
+                        .iter()
+                        .map(|d| d.dot(z).abs())
+                        .fold(0.0_f64, f64::max);
+                    if best.is_none_or(|(held, _)| nearest < held) {
+                        best = Some((nearest, z));
+                    }
+                }
+                let Some((nearest, z)) = best else {
+                    continue;
+                };
+                // A pole within a few degrees of a ring has no room round it.
+                if nearest > POLE_CLEARANCE.cos() {
+                    continue;
+                }
+                let Ok(z) = Direction::new(z, tol) else {
+                    continue;
+                };
+                let Ok(frame) = Frame::new(sphere.centre(), z, z.any_perpendicular(), tol) else {
+                    continue;
+                };
+                let Ok(turned) = Sphere::new(frame, sphere.radius(), tol) else {
+                    continue;
+                };
+                Canonical::Sphere(turned)
+            }
+            other => other,
+        };
+        // Then the seam, turned about the axis into the widest angle the
+        // rings leave free.
+        let angles: Vec<Vec<(f64, f64)>> = vec![
+            ring_points
+                .iter()
+                .filter_map(|p| chart(&shape, *p, tol))
+                .collect(),
+        ];
+        let Some(free) = free_angle(&angles) else {
+            continue;
+        };
+        let Some(frame) = axis_frame(&shape) else {
+            continue;
+        };
+        let (x, y) = (frame.x().vector(), frame.y().vector());
+        let Ok(x) = Direction::new(x * free.cos() + y * free.sin(), tol) else {
+            continue;
+        };
+        let Ok(turned) = Frame::new(frame.origin(), frame.z(), x, tol) else {
+            continue;
+        };
+        let Some(shape) = on_frame(&shape, turned, tol) else {
+            continue;
+        };
+        if let Carrier::Curved(curved) = &mut groups.carriers[g] {
+            curved.shape = shape;
+            curved.fixed = true;
+            curved.centre = (core::f64::consts::PI, curved.centre.1);
+        }
+    }
+}
+
+/// How many axes a sphere's poles are tried along.
+const POLE_CANDIDATES: usize = 400;
+
+/// How near a ring a sphere's pole may stand: five degrees.
+const POLE_CLEARANCE: f64 = 0.087;
+
+/// Directions spread evenly over the sphere: a Fibonacci lattice.
+fn spread_directions(count: usize) -> Vec<Vector> {
+    let golden = core::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
+    (0..count)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss, reason = "a few hundred directions")]
+            let (i, n) = (i as f64, count as f64);
+            let z = 1.0 - 2.0 * (i + 0.5) / n;
+            let r = (1.0 - z * z).max(0.0).sqrt();
+            let a = golden * i;
+            Vector::new(r * a.cos(), r * a.sin(), z)
+        })
+        .collect()
 }
 
 /// Put coaxial surfaces on one axis and one angular origin, so bands that
@@ -2058,8 +2201,48 @@ impl Planner<'_> {
                 let holes = windings.iter().filter(|w| **w == 0).count();
                 (rims == 2 && rims + holes == windings.len()).then_some(Layout::Wrapped)
             };
+            let holed = || {
+                let closed_round = sphere || (torus && curved.wraps && curved.wraps_v);
+                let resolved = rings
+                    .iter()
+                    .all(|ring| ring.iter().all(|&h| self.entry(&plan, h).0 != usize::MAX));
+                if !closed_round || !resolved {
+                    return false;
+                }
+                let tau = core::f64::consts::TAU;
+                let (_, wraps_v) = periodic(&curved.shape);
+                rings.iter().all(|ring| {
+                    let turns =
+                        windings(&curved.shape, ring, self.triangles, self.points, self.tol);
+                    // Round neither way, and clear of the seams.
+                    let Some((0, 0)) = turns else {
+                        return false;
+                    };
+                    let Some(polygon) = hole_polygons(
+                        &curved.shape,
+                        &[ring.as_slice()],
+                        self.triangles,
+                        self.points,
+                        self.tol,
+                    )
+                    .pop() else {
+                        return false;
+                    };
+                    let clear = |values: &mut dyn Iterator<Item = f64>| {
+                        let (lo, hi) = values
+                            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| {
+                                (a.min(x), b.max(x))
+                            });
+                        (lo / tau).floor() == (hi / tau).floor()
+                    };
+                    clear(&mut polygon.iter().map(|p| p.0))
+                        && (!wraps_v || clear(&mut polygon.iter().map(|p| p.1)))
+                })
+            };
             let layout = if rings.is_empty() {
                 (sphere || torus).then_some(Layout::Whole)
+            } else if holed() {
+                Some(Layout::Holed)
             } else if (curved.wraps && curved.wraps_v) || !circles {
                 wrapped()
             } else if sphere && rings.len() == 1 && curved.fixed {
@@ -2097,7 +2280,10 @@ impl Planner<'_> {
                 continue;
             }
             let surface = surface_of(curved, self.points, self.tol)?;
-            if matches!(plan.layouts[g], Layout::Open | Layout::Wrapped) {
+            if matches!(
+                plan.layouts[g],
+                Layout::Open | Layout::Wrapped | Layout::Holed
+            ) {
                 let mut held = true;
                 'rings: for ring in &plan.loops[g] {
                     for &h in ring {
@@ -2979,6 +3165,7 @@ impl Builder<'_> {
                     }
                     Layout::Cap => Some(self.cap_face(curved, rings, &edges)?),
                     Layout::Wrapped => Some(self.wrapped_face(curved, g, rings, &edges)?),
+                    Layout::Holed => Some(self.holed_face(curved, g, rings, &edges)?),
                     Layout::Open | Layout::Whole => {
                         Some(self.curved_face(curved, g, rings, &edges)?)
                     }
@@ -3619,6 +3806,66 @@ impl Builder<'_> {
 
     /// A whole sphere or torus, a piece with no boundary: the face the
     /// primitive builds on the recognized surface.
+    /// A sphere or torus whole but for holes: the whole surface's face, as
+    /// the primitive builds it, with each ring an inner wire. The rings
+    /// are turned to run as the primitive's own wires do, so the face
+    /// flips as one where the region faces against its surface.
+    fn holed_face(
+        &mut self,
+        curved: &Curved,
+        g: usize,
+        rings: &[Vec<Half>],
+        edges: &[Shape],
+    ) -> OgeomResult<Shape> {
+        let outward = self.outward(curved, g);
+        let whole = self.whole_face(curved, g)?;
+        let whole = if outward { whole } else { whole.reversed() };
+        let Some(ogeom_topo::NodeData::Face(data)) =
+            self.model.node(&whole).map(|n| n.data().clone())
+        else {
+            ogeom_bail!(Construction, "a whole surface's face has no data");
+        };
+        let surface = data.surface;
+        let mut wires = self.model.ordered_children_of(&whole)?;
+        for ring in rings {
+            let mut ring_edges = Vec::new();
+            for (edge, forward) in self.entries(ring) {
+                if !self.has_pcurve(&edges[edge], surface) {
+                    let Some((pcurve, deviation)) = self.plan.pcurves.get(&(edge, g)).cloned()
+                    else {
+                        ogeom_bail!(
+                            Construction,
+                            "an edge was planned without its image on a face"
+                        );
+                    };
+                    self.model.widen(
+                        &edges[edge],
+                        Tolerance::new(deviation.max(self.tol.confusion()))?,
+                    )?;
+                    crate::build::attach_pcurve(
+                        self.model,
+                        &edges[edge],
+                        pcurve,
+                        surface,
+                        Location::identity(),
+                        self.plan.edges[edge].range,
+                    )?;
+                }
+                ring_edges.push(oriented(&edges[edge], forward));
+            }
+            if !outward {
+                ring_edges.reverse();
+                ring_edges = ring_edges.iter().map(Shape::reversed).collect();
+            }
+            wires.push(self.model.add_wire(&ring_edges)?);
+        }
+        crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
+        let mut face_data = FaceData::new(surface, Location::identity());
+        face_data.tolerance = data.tolerance;
+        let face = self.model.add_face(face_data, &wires)?;
+        Ok(if outward { face } else { face.reversed() })
+    }
+
     fn whole_face(&mut self, curved: &Curved, g: usize) -> OgeomResult<Shape> {
         let outward = self.outward(curved, g);
         let built = match curved.shape {
@@ -3807,6 +4054,34 @@ fn winding(
     }
     #[allow(clippy::cast_possible_truncation, reason = "a handful of turns")]
     Some((turned / core::f64::consts::TAU).round() as i32)
+}
+
+/// How many times a ring goes round each of a surface's chart directions,
+/// as [`winding`] counts the first.
+fn windings(
+    shape: &Canonical,
+    ring: &[Half],
+    triangles: &[[u32; 3]],
+    points: &[Point],
+    tol: Tolerances,
+) -> Option<(i32, i32)> {
+    let (_, wraps_v) = periodic(shape);
+    let mut turned = (0.0, 0.0);
+    for &h in ring {
+        let (a, b) = from_to(triangles, h);
+        let (ua, va) = chart(shape, points[a as usize], tol)?;
+        let (ub, vb) = chart(shape, points[b as usize], tol)?;
+        turned.0 += ogeom_math::elementary::wrap_signed_angle(ub - ua);
+        if wraps_v {
+            turned.1 += ogeom_math::elementary::wrap_signed_angle(vb - va);
+        }
+    }
+    let tau = core::f64::consts::TAU;
+    #[allow(clippy::cast_possible_truncation, reason = "a handful of turns")]
+    Some((
+        (turned.0 / tau).round() as i32,
+        (turned.1 / tau).round() as i32,
+    ))
 }
 
 /// Twice the area a ring of half-edges encloses in a chart, signed.
