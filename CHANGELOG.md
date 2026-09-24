@@ -51,6 +51,17 @@ bump may break the API and a patch bump may not.
   vertices farther apart than either vertex's tolerance, the faces
   around the dropped edge kept ending on its vertex, and their wires
   broke. Merged edges now end on one vertex, widened to reach both.
+- **Holes through a converted part failed or took the wrong volume.**
+  Two causes, together half of a scan of random holes through a real
+  printer's part. A plane all but parallel to a hole's axis meets it in
+  an ellipse kilometres long, whose short stretch inside the hole was
+  missed by sampling, so the face was never cut. And a bore the converter
+  opens along a slit, its chart starting at the slit rather than at the
+  cylinder's zero, had points just short of the slit read as outside it:
+  sections were cut short, a ray missed a wall and read material as air,
+  and holes were attached a period away from the face they cut. Points
+  are now placed on the side of the seam the face's trim is on, and a
+  section is kept wherever it may pass through the surfaces' extents.
 
 ## [0.3.2] - 2026-09-24
 

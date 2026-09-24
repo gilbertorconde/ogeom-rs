@@ -682,6 +682,84 @@ fn a_chamfer_with_a_stray_vertex_is_still_a_cone() {
     assert!(check(&back, &out.shape, T).unwrap().is_valid());
 }
 
+/// A plate bored through whose mesh has one vertex of the bore's rim a
+/// little off the cylinder: the bore comes back as one patch running round
+/// from one side of a slit to the other, its chart window starting at the
+/// slit rather than at the cylinder's zero. Holes drilled across the plate
+/// through the bore cut and fill valid and share the plate's volume, their
+/// sections on the bore placed on the patch's side of the slit.
+#[test]
+fn holes_across_a_bore_opened_along_a_slit_cut_and_fill_valid() {
+    let mut model = Model::new();
+    let at = |z: f64| Frame::new(Point::new(10.0, 10.0, z), Direction::Z, Direction::X, T).unwrap();
+    let plate = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let bore = ogeom::algo::make_cylinder(&mut model, at(-1.0), 2.0, 7.0, T)
+        .unwrap()
+        .shape;
+    let part = ogeom::boolean::cut(&mut model, &plate, &bore, T)
+        .unwrap()
+        .shape;
+    let mut mesh = meshed(&model, &part);
+    let k = mesh
+        .positions
+        .iter()
+        .position(|p| {
+            (p.z - 5.0).abs() < 1e-9
+                && ((p.x - 10.0).hypot(p.y - 10.0) - 2.0).abs() < 1e-9
+                && p.x > 11.0
+                && p.y > 10.5
+        })
+        .unwrap();
+    let p = mesh.positions[k];
+    mesh.positions[k] = p + Vector::new(p.x - 10.0, p.y - 10.0, 0.0) * (1e-4 / 2.0);
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    let bores: Vec<Shape> = explore_unique(&back, &out.shape, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter(|f| {
+            let data = back.node(f).unwrap().data().as_face().unwrap();
+            matches!(
+                back.geometry().surface(data.surface).unwrap(),
+                ogeom::geom::SurfaceGeometry::Cylinder(_)
+            )
+        })
+        .collect();
+    assert_eq!(bores.len(), 1);
+    assert_eq!(
+        back.children_of(&bores[0]).unwrap().len(),
+        1,
+        "a patch, not a band"
+    );
+    let fine = Deflection::with_chord(0.01).unwrap();
+    let whole = volume_properties(&back, &out.shape, fine, T).unwrap().mass;
+    for (y, z, r) in [(8.7, 2.5, 0.8), (10.0, 1.2, 0.4), (10.6, 3.7, 0.8)] {
+        let across = Frame::new(Point::new(-5.0, y, z), Direction::X, Direction::Y, T).unwrap();
+        let drill = ogeom::algo::make_cylinder(&mut back, across, r, 30.0, T)
+            .unwrap()
+            .shape;
+        let mut shares = 0.0;
+        for (name, made) in [
+            ("cut", ogeom::boolean::cut(&mut back, &out.shape, &drill, T)),
+            (
+                "common",
+                ogeom::boolean::common(&mut back, &out.shape, &drill, T),
+            ),
+        ] {
+            let made = made.unwrap_or_else(|e| panic!("{name} at ({y}, {z}): {e}"));
+            let diagnosis = check(&back, &made.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{name} at ({y}, {z}): {diagnosis}");
+            shares += volume_properties(&back, &made.shape, fine, T).unwrap().mass;
+        }
+        assert!(
+            (shares - whole).abs() < whole * 5e-4,
+            "at ({y}, {z}): {shares} against {whole}"
+        );
+    }
+}
+
 /// A rounded box whose corner balls are roughened into free-form facets,
 /// as a mesh.
 fn rough_rounded_box() -> Triangulation {

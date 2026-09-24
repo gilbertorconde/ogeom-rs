@@ -1107,6 +1107,84 @@ fn fold_into_chart(line: &mut [Point2], surface: &SurfaceGeometry) {
     }
 }
 
+/// The shifts by whole periods worth trying on a chart point after its fold,
+/// nearest first: none, then one period along each periodic direction.
+fn period_shifts(surface: &SurfaceGeometry) -> Vec<(f64, f64)> {
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let mut out = vec![(0.0, 0.0)];
+    if surface.is_periodic_u() && ub > ua {
+        out.push((ub - ua, 0.0));
+        out.push((ua - ub, 0.0));
+    }
+    if surface.is_periodic_v() && vb > va {
+        out.push((0.0, vb - va));
+        out.push((0.0, va - vb));
+    }
+    out
+}
+
+/// A chart point folded to the side of the face's seam its trim is on.
+///
+/// The surface's fold puts a point in the period starting at the surface's
+/// own zero, which is where a face's trim is only when its seam runs there.
+/// A patch whose seam was cut elsewhere (a band opened along the widest gap
+/// its mesh left, running diagonally round) covers a period starting at the
+/// seam, and a point just short of it belongs a period on. The fold is kept
+/// where it lands inside the trim, or where no shift does.
+fn fold_inside(p: Point2, surface: &SurfaceGeometry, trim: &[&[Point2]]) -> Point2 {
+    let folded = fold_point_into_chart(p, surface);
+    if trim.is_empty() {
+        return folded;
+    }
+    period_shifts(surface)
+        .into_iter()
+        .map(|(du, dv)| Point2::new(folded.x + du, folded.y + dv))
+        .find(|q| inside_many(trim, *q))
+        .unwrap_or(folded)
+}
+
+/// A strand folded into the chart as a whole, to the side of the face's
+/// seam its interior lies inside the trim on, as [`fold_inside`] does for
+/// a point.
+fn fold_line_inside(line: &mut [Point2], surface: &SurfaceGeometry, trim: &[&[Point2]]) {
+    fold_into_chart(line, surface);
+    if line.is_empty() || trim.is_empty() {
+        return;
+    }
+    let mid = interior_of(line);
+    if let Some((du, dv)) = period_shifts(surface)
+        .into_iter()
+        .find(|(du, dv)| inside_many(trim, Point2::new(mid.x + du, mid.y + dv)))
+    {
+        for p in line.iter_mut() {
+            p.x += du;
+            p.y += dv;
+        }
+    }
+}
+
+/// A face's boundary in its chart, each edge's image sampled, both sides of
+/// a seam: enough to tell which side of the seam a point is on.
+fn face_trim_lines(face: &GFace, tol: Tolerances) -> Vec<Vec<Point2>> {
+    let sample = |pcurve: &PlanarCurve, range: (f64, f64)| -> Vec<Point2> {
+        (0..=16)
+            .filter_map(|k| {
+                pcurve
+                    .point_at(range.0 + (range.1 - range.0) * f64::from(k) / 16.0, tol)
+                    .ok()
+            })
+            .collect()
+    };
+    let mut out = Vec::new();
+    for e in &face.edges {
+        out.push(sample(&e.pcurve, e.prange));
+        if let Some((other, range)) = &e.other_side {
+            out.push(sample(other, *range));
+        }
+    }
+    out
+}
+
 /// Remove period tears from a sampled polyline, axis by axis.
 fn unwrap_polyline(line: &mut [Point2], surface: &SurfaceGeometry) {
     let ((ua, ub), (va, vb)) = surface.domain();
@@ -2038,14 +2116,6 @@ fn fill(
             // Whether the section at `t` lies inside each face's trim.
             let inside_each = |t: f64| -> OgeomResult<[bool; 2]> {
                 let tf = if section.closed { fold(t, domain) } else { t };
-                let ua = fold_point_into_chart(
-                    section.pc_a.point_at(tf, tol)?,
-                    &ga.faces[section.face_a].surface,
-                );
-                let ub = fold_point_into_chart(
-                    section.pc_b.point_at(tf, tol)?,
-                    &gb.faces[section.face_b].surface,
-                );
                 let la: Vec<&[Point2]> = outlines_a[section.face_a]
                     .iter()
                     .map(Vec::as_slice)
@@ -2054,6 +2124,16 @@ fn fill(
                     .iter()
                     .map(Vec::as_slice)
                     .collect();
+                let ua = fold_inside(
+                    section.pc_a.point_at(tf, tol)?,
+                    &ga.faces[section.face_a].surface,
+                    &la,
+                );
+                let ub = fold_inside(
+                    section.pc_b.point_at(tf, tol)?,
+                    &gb.faces[section.face_b].surface,
+                    &lb,
+                );
                 Ok([inside_many(&la, ua), inside_many(&lb, ub)])
             };
 
@@ -4253,7 +4333,14 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             // period; unwrap it pointwise, then bring the whole strand
             // into the chart with one shift.
             unwrap_polyline(&mut line, &face.surface);
-            fold_into_chart(&mut line, &face.surface);
+            {
+                let trim: Vec<&[Point2]> = strands
+                    .iter()
+                    .filter(|st| st.boundary)
+                    .map(|st| st.polyline.as_slice())
+                    .collect();
+                fold_line_inside(&mut line, &face.surface, &trim);
+            }
             strands.push(Strand {
                 polyline: line,
                 tag: Tag::Section {
@@ -4362,13 +4449,13 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     tol,
                 )?;
                 unwrap_polyline(&mut line, &face.surface);
-                fold_into_chart(&mut line, &face.surface);
-                let mid = interior_of(&line);
                 let boundary_lines: Vec<&[Point2]> = strands
                     .iter()
                     .filter(|st| st.boundary)
                     .map(|st| st.polyline.as_slice())
                     .collect();
+                fold_line_inside(&mut line, &face.surface, &boundary_lines);
+                let mid = interior_of(&line);
                 if !inside_many_slanted(&boundary_lines, mid) {
                     if *DEBUG_STRANDS {
                         eprintln!(
@@ -5444,7 +5531,9 @@ fn build_sub_edge(
                 rescale(range.1, c.crange, c.prange),
             );
             let mid = c.pcurve.point_at(f64::midpoint(sub_p.0, sub_p.1), tol)?;
-            let folded = fold_point_into_chart(mid, &face.surface);
+            let trim = face_trim_lines(face, tol);
+            let trim: Vec<&[Point2]> = trim.iter().map(Vec::as_slice).collect();
+            let folded = fold_inside(mid, &face.surface, &trim);
             let shifted = c
                 .pcurve
                 .transformed(&ogeom_math::Transform2::translation(folded - mid), tol)?;
@@ -5486,12 +5575,15 @@ fn build_sub_edge(
             // The section's pcurve is unwrapped across any seam; the face's
             // triangulator lives in one chart, so the attached copy is folded
             // home by the same period shift the arrangement gave this
-            // strand's polyline, decided by the sub-range's midpoint, so an
+            // strand's polyline (to the side of the face's seam its trim is
+            // on), decided by the sub-range's midpoint, so an
             // endpoint sitting exactly on the chart's edge stays on the side
             // the arc's body is.
             let pcurve = if from_a { &s.pc_a } else { &s.pc_b };
             let mid = pcurve.point_at(f64::midpoint(f0, f1), tol)?;
-            let folded = fold_point_into_chart(mid, &face.surface);
+            let trim = face_trim_lines(face, tol);
+            let trim: Vec<&[Point2]> = trim.iter().map(Vec::as_slice).collect();
+            let folded = fold_inside(mid, &face.surface, &trim);
             let shifted =
                 pcurve.transformed(&ogeom_math::Transform2::translation(folded - mid), tol)?;
             ogeom_algo::attach_pcurve(

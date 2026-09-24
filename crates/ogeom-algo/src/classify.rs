@@ -749,6 +749,26 @@ pub(crate) fn fold_toward_rings(
             at.y = fold(at.y, lo, hi, period);
         }
     }
+    // The window alone cannot say which side of a seam a point is on when
+    // the seam runs diagonally round (a band opened along the widest gap
+    // its mesh left): both a point and its copy a period over lie within
+    // the rings' extent, only one inside them. The one inside is the face's.
+    if !inside_boundary(rings, at) {
+        let shifts = [
+            u_period.map(|p| (p, 0.0)),
+            u_period.map(|p| (-p, 0.0)),
+            v_period.map(|p| (0.0, p)),
+            v_period.map(|p| (0.0, -p)),
+        ];
+        if let Some(inside) = shifts
+            .into_iter()
+            .flatten()
+            .map(|(du, dv)| Point2::new(at.x + du, at.y + dv))
+            .find(|q| inside_boundary(rings, *q))
+        {
+            return inside;
+        }
+    }
     at
 }
 

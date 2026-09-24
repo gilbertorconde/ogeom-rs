@@ -347,19 +347,38 @@ fn inside_box(pcurve: &PlanarCurve, surface: &SurfaceGeometry) -> Option<(f64, f
     Some((lo, hi))
 }
 
-/// Whether any of a closed pcurve's samples lies inside the surface's box.
+/// Whether a closed pcurve may pass through the surface's box.
 fn touches_box(pcurve: &PlanarCurve, surface: &SurfaceGeometry, tol: Tolerances) -> bool {
     use ogeom_geom::Curve2d;
     let ((ua, ub), (va, vb)) = surface.domain();
     let (lo, hi) = pcurve.domain();
-    (0..=16).any(|i| {
-        let t = lo + (hi - lo) * f64::from(i) / 16.0;
-        pcurve.point_at(t, tol).is_ok_and(|p| {
-            // Periodic directions always contain; only a bounded one excludes.
-            let u_ok = surface.is_periodic_u() || (p.x >= ua && p.x <= ub);
-            let v_ok = surface.is_periodic_v() || (p.y >= va && p.y <= vb);
-            u_ok && v_ok
+    // Asked of the spans between samples, not the samples alone: a plane all
+    // but parallel to a cylinder's axis meets it in an ellipse kilometres
+    // long, whose image on the cylinder's chart sweeps through a window a few
+    // millimetres tall in a sliver of its turn, between any two samples.
+    // Each span is taken as its chord's box widened by the chord's length,
+    // which holds the curve between them wherever it bends no tighter than
+    // the samples are apart. Kept wrongly, a curve costs a section the trim
+    // then cuts to nothing; dropped wrongly, the faces never split.
+    const SPANS: u32 = 64;
+    let points: Vec<Option<ogeom_math::Point2>> = (0..=SPANS)
+        .map(|i| {
+            pcurve
+                .point_at(lo + (hi - lo) * f64::from(i) / f64::from(SPANS), tol)
+                .ok()
         })
+        .collect();
+    points.windows(2).any(|pair| {
+        let (Some(p), Some(q)) = (pair[0], pair[1]) else {
+            return false;
+        };
+        let pad = p.distance(q);
+        // Periodic directions always contain; only a bounded one excludes.
+        let u_ok =
+            surface.is_periodic_u() || (p.x.max(q.x) + pad >= ua && p.x.min(q.x) - pad <= ub);
+        let v_ok =
+            surface.is_periodic_v() || (p.y.max(q.y) + pad >= va && p.y.min(q.y) - pad <= vb);
+        u_ok && v_ok
     })
 }
 
@@ -1519,6 +1538,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A plane all but parallel to a drum's axis meets it in an ellipse
+    /// kilometres long, which crosses the drum's few units of height only in
+    /// a sliver of its turn. It is still a section of the two.
+    #[test]
+    fn a_plane_all_but_along_the_axis_still_meets_a_short_drum() {
+        let drum = cylinder(Vector::Z, 1.0);
+        let wall: SurfaceGeometry = PlaneSurface::over(
+            Plane::through(
+                Point::new(0.0, 0.6, 0.0),
+                Direction::new(Vector::new(0.0, 1.0, 2e-5), T).unwrap(),
+            ),
+            (-1e9, 1e9),
+            (-1e9, 1e9),
+        )
+        .unwrap()
+        .into();
+        let met = intersect_surfaces(&wall, &drum, IntersectOptions::default(), T).unwrap();
+        let SurfaceIntersection::Along(sections) = met else {
+            panic!("the wall crosses the drum: {met:?}");
+        };
+        assert_eq!(sections.len(), 1);
+        let curve = &sections[0].curve;
+        let (lo, hi) = curve.domain();
+        let inside = (0..=100_000).any(|k| {
+            let p = curve
+                .point_at(lo + (hi - lo) * f64::from(k) / 100_000.0, T)
+                .unwrap();
+            p.z.abs() <= 4.0
+        });
+        assert!(inside, "and the section runs through the drum's height");
     }
 
     #[test]
