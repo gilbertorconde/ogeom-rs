@@ -682,13 +682,9 @@ fn a_chamfer_with_a_stray_vertex_is_still_a_cone() {
     assert!(check(&back, &out.shape, T).unwrap().is_valid());
 }
 
-/// A rounded box whose corner balls are roughened into free-form facets:
-/// each fillet meets its corner all but tangentially, along a chain no
-/// curve both surfaces share can be solved for. The fillets are still
-/// cylinders, bounded there by curves threaded through the chain's own
-/// vertices, good to how far they stray.
-#[test]
-fn fillets_ending_on_rough_corners_are_still_cylinders() {
+/// A rounded box whose corner balls are roughened into free-form facets,
+/// as a mesh.
+fn rough_rounded_box() -> Triangulation {
     let mut model = Model::new();
     let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
         .unwrap()
@@ -716,12 +712,64 @@ fn fillets_ending_on_rough_corners_are_still_cylinders() {
             *p += d / d.magnitude() * bump;
         }
     }
+    mesh
+}
+
+/// Each fillet of the rough box meets its corner all but tangentially,
+/// along a chain no curve both surfaces share can be solved for. The
+/// fillets are still cylinders, bounded there by curves threaded through
+/// the chain's own vertices, good to how far they stray.
+#[test]
+fn fillets_ending_on_rough_corners_are_still_cylinders() {
     let mut back = Model::new();
-    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    let out = solid_from_mesh(
+        &mut back,
+        &rough_rounded_box(),
+        &MeshSolidOptions::default(),
+        T,
+    )
+    .unwrap();
     assert!(out.closed);
     assert_eq!(kinds(&back, &out.shape)[1], 12, "every fillet a cylinder");
     assert_eq!(out.report.curved_faceted, 0);
     assert!(check(&back, &out.shape, T).unwrap().is_valid());
+}
+
+/// Holes drilled through the rough box beside a corner cross planes,
+/// fillets and facets bounded by threaded curves a few hundredths loose.
+/// That looseness is a length in space: it welds a section's ends in each
+/// chart only as far as it reaches there, and it collapses no section or
+/// edge that is longer than its own doubt. Each hole cuts and fills valid.
+#[test]
+fn holes_beside_a_rough_corner_cut_and_fill_valid() {
+    let mut model = Model::new();
+    let out = solid_from_mesh(
+        &mut model,
+        &rough_rounded_box(),
+        &MeshSolidOptions::default(),
+        T,
+    )
+    .unwrap();
+    for (x, y, r) in [(1.1, 0.6, 1.4), (2.05, 0.35, 1.0), (1.35, 1.9, 1.4)] {
+        let at = Frame::new(Point::new(x, y, -5.0), Direction::Z, Direction::X, T).unwrap();
+        let drill = ogeom::algo::make_cylinder(&mut model, at, r, 20.0, T)
+            .unwrap()
+            .shape;
+        for (name, made) in [
+            (
+                "cut",
+                ogeom::boolean::cut(&mut model, &out.shape, &drill, T),
+            ),
+            (
+                "common",
+                ogeom::boolean::common(&mut model, &out.shape, &drill, T),
+            ),
+        ] {
+            let made = made.unwrap_or_else(|e| panic!("{name} at ({x}, {y}): {e}"));
+            let diagnosis = check(&model, &made.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{name} at ({x}, {y}): {diagnosis}");
+        }
+    }
 }
 
 /// A torus tessellated into 200 000 triangles converts in seconds, to the

@@ -4328,7 +4328,13 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         // A fitted section that hugs one of this face's edges leaves it
         // at the hug's far end by up to the hug's own width; its strand
         // must still find the edge's node there.
-        let face_snap = contacts
+        let doubt_of = |edges: &[BoundaryEdge]| -> f64 {
+            edges.iter().fold(0.0_f64, |acc, e| {
+                acc.max(e.tolerance * 2.0)
+                    .max(e.ends_tolerance + e.tolerance)
+            })
+        };
+        let near = contacts
             .iter()
             .filter(|c| c.target_from_a == from_a && c.target_face == fi)
             .fold(PARAM_SNAP, |acc, c| acc.max(c.tolerance * 2.0))
@@ -4336,10 +4342,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             // recorded doubt plus its own image's: a projected pcurve is
             // honest to the edge's tolerance, and the vertex it ends at
             // was welded to some earlier gap.
-            .max(face.edges.iter().fold(0.0_f64, |acc, e| {
-                acc.max(e.tolerance * 2.0)
-                    .max(e.ends_tolerance + e.tolerance)
-            }))
+            .max(doubt_of(&face.edges))
             .max(
                 if sections.iter().any(|s| {
                     s.tolerance > 0.0
@@ -4353,36 +4356,94 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 } else {
                     0.0
                 },
-            )
-            // A section ends where it crosses the other face's boundary,
-            // and lands there within that boundary's own doubt: two
-            // sections through neighbouring facets of a converted mesh
-            // stop on the edge they share a few microns apart, each on its
-            // own facet's plane, and meet on this face only if the weld
-            // reaches that far.
-            .max(
-                sections
-                    .iter()
-                    .filter(|s| {
-                        if from_a {
-                            s.face_a == fi
-                        } else {
-                            s.face_b == fi
-                        }
-                    })
-                    .map(|s| {
-                        let other = if from_a {
-                            &gb.faces[s.face_b]
-                        } else {
-                            &ga.faces[s.face_a]
-                        };
-                        other.edges.iter().fold(0.0_f64, |acc, e| {
-                            acc.max(e.tolerance * 2.0)
-                                .max(e.ends_tolerance + e.tolerance)
-                        })
-                    })
-                    .fold(0.0_f64, f64::max),
             );
+        // A section ends where it crosses the other face's boundary,
+        // and lands there within that boundary's own doubt: two
+        // sections through neighbouring facets of a converted mesh
+        // stop on the edge they share a few microns apart, each on its
+        // own facet's plane, and meet on this face only if the weld
+        // reaches that far.
+        let far = |section: usize| -> f64 {
+            let s = &sections[section];
+            doubt_of(if from_a {
+                &gb.faces[s.face_b].edges
+            } else {
+                &ga.faces[s.face_a].edges
+            })
+        };
+        let face_snap = near.max(
+            (0..sections.len())
+                .filter(|&k| {
+                    if from_a {
+                        sections[k].face_a == fi
+                    } else {
+                        sections[k].face_b == fi
+                    }
+                })
+                .map(far)
+                .fold(0.0_f64, f64::max),
+        );
+        // The doubts above are lengths in space, and the weld runs in the
+        // chart. Where the chart stretches every direction (a sphere of a
+        // few millimetres runs a radian over its whole radius), a gap in
+        // space is that many times narrower in the chart, and a weld taken
+        // at the space length would swallow whole edges of a small patch.
+        // Where some direction shrinks instead (a pole, a thin cylinder's
+        // turn), the length stands.
+        let stretch = strands
+            .iter()
+            .flat_map(|st| st.polyline.iter())
+            .step_by(8)
+            .filter_map(|p| face.surface.d1_at(p.x, p.y, tol).ok())
+            .map(|(du, dv)| du.magnitude().min(dv.magnitude()))
+            .fold(f64::INFINITY, f64::min);
+        let face_snap = if stretch.is_finite() && stretch > 1.0 {
+            (face_snap / stretch).max(PARAM_SNAP)
+        } else {
+            face_snap
+        };
+        // Where only one direction stretches (a cylinder's turn against its
+        // straight length) no single scale holds, and a strand can be short
+        // in the chart yet long in space. And the weld is the loosest doubt
+        // of anything on the face: one sloppy edge a section crosses sets it
+        // for every other section there. A strand longer in space than its
+        // own doubt is no dust, so the weld stays below its chart length,
+        // or it collapses and takes its neighbours' ends with it.
+        let own_doubt = |tag: &Tag| -> f64 {
+            match tag {
+                Tag::Section { section, .. } => near.max(far(*section)),
+                Tag::Pole { .. } => f64::INFINITY,
+                Tag::Boundary { .. } | Tag::Contact { .. } => near,
+            }
+        };
+        let face_snap = strands
+            .iter()
+            .filter(|st| {
+                st.polyline.len() >= 2
+                    && st
+                        .polyline
+                        .windows(2)
+                        .map(|w| w[0].distance(w[1]))
+                        .sum::<f64>()
+                        <= face_snap
+            })
+            .filter_map(|st| {
+                let points: Vec<Point> = st
+                    .polyline
+                    .iter()
+                    .filter_map(|p| face.surface.point_at(p.x, p.y, tol).ok())
+                    .collect();
+                let space: f64 = points.windows(2).map(|w| w[0].distance(w[1])).sum();
+                (space > own_doubt(&st.tag)).then(|| {
+                    st.polyline
+                        .windows(2)
+                        .map(|w| w[0].distance(w[1]))
+                        .sum::<f64>()
+                        / 2.0
+                })
+            })
+            .fold(face_snap, f64::min)
+            .max(PARAM_SNAP);
         if *DEBUG_STRANDS {
             eprintln!(
                 "FACE-SNAP from_a={from_a} fi={fi}: snap {face_snap:.3e} edges {:?}",
@@ -4449,6 +4510,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             prepared[side].push(Some((strands, snap)));
         }
     }
+    ogeom_core::progress::stage("boolean: split arrange");
     let same_key = |a: &(usize, usize, (f64, f64)), b: &(usize, usize, (f64, f64))| {
         a.0 == b.0
             && a.1 == b.1

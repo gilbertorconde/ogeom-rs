@@ -11,6 +11,18 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A hole drilled through a large converted part failed, and slowly.**
+  One loose edge on a face set how far every end on that face was welded,
+  so short edges and short sections collapsed whole. On a small sphere the
+  weld was also taken in radians as if they were millimetres. The weld
+  now reaches only as far as each piece's own doubt, scaled into the
+  face's chart. Where a circle or ellipse crosses another in a different
+  plane, the crossing is solved in closed form rather than by sampling.
+  On a converted part of 25 000 faces a drill cuts in 6 s where it
+  failed after 18 s.
+
 ## [0.3.2] - 2026-09-24
 
 A patch release with no API change; `cargo semver-checks` finds nothing
