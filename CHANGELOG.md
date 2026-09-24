@@ -89,6 +89,11 @@ bump may break the API and a patch bump may not.
   stated as the section's tolerance. A hole that took 17 s and failed
   cuts in under a second, and a scan of a hundred random holes through a
   converted printer's part fails in one, from four.
+- **A mesh with a flat sliver at a T-junction converted open.** A
+  triangle with three distinct corners and no area was dropped, and the
+  long side it sealed and its two short sides were each left used once.
+  The triangle across the long side is now split at the sliver's middle
+  corner, and the solid closes.
 
 ## [0.3.2] - 2026-09-24
 

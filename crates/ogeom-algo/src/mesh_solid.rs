@@ -129,6 +129,67 @@ pub struct MeshSolid {
     pub report: MeshSolidReport,
 }
 
+/// Seal the cracks flat slivers leave when they are dropped.
+///
+/// A triangle with three distinct corners and no area has one corner on the
+/// segment between the other two. In a closed mesh the triangle across that
+/// long side fills the other side of it, and the two short sides are shared
+/// with the neighbours beyond: dropped alone, the sliver leaves all three
+/// used once. The triangle across the long side is split at the middle
+/// corner instead, so each short side is shared again. Slivers against
+/// slivers resolve as their neighbours are split, round by round.
+fn split_across_slivers(points: &[Point], triangles: &mut Vec<[u32; 3]>, slivers: &[[u32; 3]]) {
+    let mut pending: Vec<[u32; 3]> = slivers
+        .iter()
+        .map(|&[a, b, c]| {
+            // The middle corner is the one opposite the longest side.
+            let long = |x: u32, y: u32| points[x as usize].distance(points[y as usize]);
+            let sides = [
+                (long(b, c), a, [b, c]),
+                (long(c, a), b, [c, a]),
+                (long(a, b), c, [a, b]),
+            ];
+            let (_, middle, [p, q]) =
+                sides.into_iter().fold(
+                    sides[0],
+                    |best, side| if side.0 > best.0 { side } else { best },
+                );
+            [p, middle, q]
+        })
+        .collect();
+    loop {
+        let mut progress = false;
+        let mut left = Vec::new();
+        for [p, middle, q] in pending {
+            let across = triangles.iter().position(|t| {
+                (0..3).any(|k| {
+                    let (x, y) = (t[k], t[(k + 1) % 3]);
+                    (x == p && y == q) || (x == q && y == p)
+                }) && !t.contains(&middle)
+            });
+            let Some(index) = across else {
+                left.push([p, middle, q]);
+                continue;
+            };
+            let t = triangles[index];
+            let Some(k) = (0..3).find(|&k| {
+                let (x, y) = (t[k], t[(k + 1) % 3]);
+                (x == p && y == q) || (x == q && y == p)
+            }) else {
+                continue;
+            };
+            let (x, y, z) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+            triangles[index] = [x, middle, z];
+            triangles.push([middle, y, z]);
+            progress = true;
+        }
+        pending = left;
+        if pending.is_empty() || !progress {
+            break;
+        }
+    }
+}
+
 /// Build a B-rep from a triangle mesh.
 ///
 /// See the module documentation for the construction. A closed piece
@@ -173,10 +234,14 @@ pub fn solid_from_mesh(
     report.vertices_welded = count - points.len();
     let mut triangles = Vec::with_capacity(mesh.triangles.len());
     let mut seen: HashMap<[u32; 3], ()> = HashMap::with_capacity(mesh.triangles.len());
+    let mut flat_slivers: Vec<[u32; 3]> = Vec::new();
     for t in &mesh.triangles {
         let [a, b, c] = t.map(|v| remap[v as usize]);
         if a == b || b == c || c == a || !has_area(&points, [a, b, c], weld) {
             report.degenerate_dropped += 1;
+            if a != b && b != c && c != a {
+                flat_slivers.push([a, b, c]);
+            }
             continue;
         }
         let mut key = [a, b, c];
@@ -190,6 +255,7 @@ pub fn solid_from_mesh(
     if triangles.is_empty() {
         ogeom_bail!(Construction, "the mesh has no triangle with area");
     }
+    split_across_slivers(&points, &mut triangles, &flat_slivers);
     report.triangles = triangles.len();
 
     // Orient each piece consistently, then outward where it closes.

@@ -59,6 +59,55 @@ fn volume(model: &Model, shape: &Shape) -> f64 {
         .mass
 }
 
+/// A cube whose bottom square is split two ways across its diagonal: one
+/// triangle along the whole diagonal, two meeting at its middle, and a flat
+/// sliver along the diagonal sealing the difference, as exporters leave at a
+/// T-junction. The sliver has no area and is dropped; the triangle across
+/// the diagonal is split at its middle instead, so the solid stays closed.
+#[test]
+fn a_flat_sliver_sealing_a_t_junction_leaves_the_cube_closed() {
+    let size = 10.0;
+    let corner = |i: u32| {
+        Point::new(
+            f64::from(i & 1) * size,
+            f64::from((i >> 1) & 1) * size,
+            f64::from((i >> 2) & 1) * size,
+        )
+    };
+    let middle = Point::new(size / 2.0, size / 2.0, 0.0);
+    let mut triangles: Vec<[Point; 3]> = [
+        [0, 2, 1],
+        [4, 5, 6],
+        [5, 7, 6],
+        [0, 1, 4],
+        [1, 5, 4],
+        [2, 6, 3],
+        [3, 6, 7],
+        [0, 4, 2],
+        [2, 4, 6],
+        [1, 3, 5],
+        [3, 7, 5],
+    ]
+    .iter()
+    .map(|t: &[u32; 3]| t.map(corner))
+    .collect();
+    triangles.push([corner(1), middle, corner(3)]);
+    triangles.push([middle, corner(2), corner(3)]);
+    triangles.push([corner(1), corner(2), middle]);
+    let mut model = Model::new();
+    let out = solid_from_mesh(
+        &mut model,
+        &soup(triangles.into_iter()),
+        &MeshSolidOptions::default(),
+        T,
+    )
+    .unwrap();
+    assert_eq!(out.report.degenerate_dropped, 1);
+    assert!(out.closed, "{:?}", out.report);
+    assert!(check(&model, &out.shape, T).unwrap().is_valid());
+    assert!((volume(&model, &out.shape) - 1000.0).abs() < 1e-6);
+}
+
 #[test]
 fn an_stl_cube_becomes_a_six_faced_solid() {
     let mut model = Model::new();
