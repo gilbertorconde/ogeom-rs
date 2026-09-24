@@ -600,16 +600,44 @@ fn balls_and_rings_with_holes_come_back_whole_but_for_them() {
     let through = ogeom::boolean::cut(&mut model, &ring, &radial, T)
         .unwrap()
         .shape;
+    // A ball less the corner two square planes cut off: one loop of two
+    // arcs, which leaves the ball's larger side.
+    let cornered = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 7.0, T)
+        .unwrap()
+        .shape;
+    let above = ogeom::algo::make_box(
+        &mut model,
+        at((-20.0, -20.0, 2.0), Direction::Z, Direction::X),
+        (40.0, 40.0, 40.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let beside = ogeom::algo::make_box(
+        &mut model,
+        at((3.0, -20.0, -20.0), Direction::X, Direction::Y),
+        (40.0, 40.0, 40.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let cornered = ogeom::boolean::cut(&mut model, &cornered, &above, T)
+        .unwrap()
+        .shape;
+    let cornered = ogeom::boolean::cut(&mut model, &cornered, &beside, T)
+        .unwrap()
+        .shape;
     for (shape, expected) in [
         (&knob, [1, 1, 0, 1, 0]),
         (&bored, [0, 3, 0, 1, 0]),
         (&pierced, [0, 1, 0, 0, 1]),
         (&through, [0, 1, 0, 0, 1]),
+        (&cornered, [2, 0, 0, 1, 0]),
     ] {
         comes_back_as(&model, shape, expected);
+        let mesh = ogeom::mesh::triangulate(&model, shape, Deflection::default(), T).unwrap();
+        comes_back_from(&model, shape, &mesh, expected);
     }
-    let mesh = ogeom::mesh::triangulate(&model, &knob, Deflection::default(), T).unwrap();
-    comes_back_from(&model, &knob, &mesh, [1, 1, 0, 1, 0]);
 }
 
 /// A torus tessellated into 200 000 triangles converts in seconds, to the

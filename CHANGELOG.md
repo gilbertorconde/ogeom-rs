@@ -22,6 +22,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Balls cut by two planes, and bores crossing at a coarse mesh, came
+  back wrong or faceted.** A ball's axis could put both poles inside the
+  cut-away part, where no loop goes round them, and the face covered the
+  wrong side; both poles now stand on the ball's own surface. A flat face
+  with two edges was taken for a sliver strip whenever it had two, and is
+  now only when both are straight. An edge with an exact curve gets its
+  image on a curved face interpolated at the edge's own parameters, close
+  enough for its volume to be integrated exactly. Where a coarse mesh
+  leaves skewed triangles on a surface next to a hole, or a few slivers
+  together round a pole, they are taken into the surface when their
+  middles sag no more than its curvature explains.
+
 - **A countersink whose bore was exactly its narrow end refused to cut.**
   The cone's rim lay in the bore's wall, and the rim edge and the section
   along it were split at different points: the section at its middle, the

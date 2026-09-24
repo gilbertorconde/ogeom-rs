@@ -771,11 +771,12 @@ fn turn_of(normals: &[Vector]) -> f64 {
 }
 
 /// Whether a facet whose corners lie on `shape` leans only as the surface
-/// turns under it: its normal within half the spread of the surface's
-/// normals at its corners (and a few degrees) of their mean, the surface
-/// turning no more than sixty degrees under it. A facet of a coarse mesh
-/// over a tight bend passes however far it turns from its neighbours; a
-/// flat cap's triangle with its corners on a cylinder's rim does not.
+/// turns under it: its normal within the spread of the surface's normals
+/// at its corners (and [`FACET_LEAN`]) of their mean, the surface turning
+/// no more than sixty degrees under it. A facet of a coarse mesh over a
+/// tight bend passes however far it turns from its neighbours; a flat
+/// cap's triangle with its corners on a cylinder's rim, square to every
+/// one of those normals, does not.
 fn leans_as_the_surface(shape: &Canonical, corners: [Point; 3], normal: Vector) -> bool {
     let mut at = [Vector::ZERO; 3];
     for (n, p) in at.iter_mut().zip(corners) {
@@ -797,8 +798,14 @@ fn leans_as_the_surface(shape: &Canonical, corners: [Point; 3], normal: Vector) 
     }
     let mean = at[0] + at[1] + at[2];
     let m = mean.magnitude();
-    m > 0.0 && angle(mean / m, normal) <= spread / 2.0 + 0.05
+    m > 0.0 && angle(mean / m, normal) <= spread + FACET_LEAN
 }
+
+/// How far a facet's normal may lean past the spread of the surface's
+/// normals at its corners: a skewed triangle across a cylinder, joining
+/// points at different heights and angles, tilts along the axis out of the
+/// plane its corners' normals span. About eleven degrees.
+const FACET_LEAN: f64 = 0.2;
 
 /// The most a surface may turn under one facet: sixty degrees.
 const FACET_TURN: f64 = core::f64::consts::FRAC_PI_3;
@@ -1348,7 +1355,9 @@ fn recognized_regions(
                             if m == 0.0 || (direction.dot(mesh.normals[other]) / m).abs() < agree {
                                 continue;
                             }
-                        } else if !leans_as_the_surface(&shape, corners, mesh.normals[other]) {
+                        } else if !leans_as_the_surface(&shape, corners, mesh.normals[other])
+                            || !sags_as_the_surface(&shape, corners, flat)
+                        {
                             continue;
                         }
                         mine.insert(other);
@@ -1370,28 +1379,61 @@ fn recognized_regions(
                     None => break,
                 }
             }
-            // A triangle the region surrounds on all three sides, with its
-            // corners on the surface, belongs to it whatever its normal: a
-            // sliver's plane through three nearly collinear points on the
+            // A few triangles the region surrounds on every side, with their
+            // corners on the surface, belong to it whatever their normals:
+            // a sliver's plane through three nearly collinear points on the
             // surface tilts far from the surface's normal, as in the fans
-            // round a sphere's pole.
-            let enclosed: Vec<usize> = region
+            // round a sphere's pole, where several such slivers touch.
+            let mut claimed: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            let rim: Vec<usize> = region
                 .iter()
                 .flat_map(|&t| (3 * t..3 * t + 3).filter_map(|h| adjacency.twin[h]))
                 .map(|g| g / 3)
-                .filter(|&other| {
-                    !mine.contains(&other)
-                        && groups.of[other] == usize::MAX
-                        && (3 * other..3 * other + 3)
-                            .all(|h| adjacency.twin[h].is_some_and(|g| mine.contains(&(g / 3))))
-                        && triangles[other]
-                            .iter()
-                            .all(|&v| shape.distance_to(points[v as usize]) <= flat)
-                })
+                .filter(|&other| !mine.contains(&other) && groups.of[other] == usize::MAX)
                 .collect();
-            for other in enclosed {
-                if mine.insert(other) {
-                    region.push(other);
+            for start in rim {
+                if claimed.contains(&start) {
+                    continue;
+                }
+                let mut cluster = vec![start];
+                let mut inside: std::collections::HashSet<usize> =
+                    std::collections::HashSet::from([start]);
+                let mut surrounded = true;
+                let mut i = 0;
+                while i < cluster.len() && surrounded {
+                    let t = cluster[i];
+                    i += 1;
+                    for h in 3 * t..3 * t + 3 {
+                        let Some(g) = adjacency.twin[h] else {
+                            surrounded = false;
+                            break;
+                        };
+                        let next = g / 3;
+                        if mine.contains(&next) || inside.contains(&next) {
+                            continue;
+                        }
+                        if groups.of[next] != usize::MAX || cluster.len() >= ENCLOSED_CLUSTER {
+                            surrounded = false;
+                            break;
+                        }
+                        inside.insert(next);
+                        cluster.push(next);
+                    }
+                }
+                let on_surface = cluster.iter().all(|&t| {
+                    let corners = triangles[t].map(|v| points[v as usize]);
+                    corners.iter().all(|p| shape.distance_to(*p) <= flat)
+                        && sags_as_the_surface(&shape, corners, flat)
+                        && (is_sliver(corners)
+                            || leans_as_the_surface(&shape, corners, mesh.normals[t]))
+                });
+                if surrounded && on_surface {
+                    for t in cluster {
+                        claimed.insert(t);
+                        if mine.insert(t) {
+                            region.push(t);
+                        }
+                    }
                 }
             }
             let pts: Vec<Point> = vertices.iter().map(|&v| points[v as usize]).collect();
@@ -1584,25 +1626,58 @@ fn hole_frames(
             .collect();
         let shape = match curved.shape {
             Canonical::Sphere(sphere) => {
-                // The axis whose poles stand farthest from every ring point.
-                let directions: Vec<Vector> = ring_points
+                // The axis whose poles stand farthest from every ring point,
+                // of those no ring goes round: a pole inside a hole is off
+                // the face, however far it stands from the hole's edge.
+                let unit = |p: Point| {
+                    let d = p - sphere.centre();
+                    let m = d.magnitude();
+                    (m > 0.0).then(|| d / m)
+                };
+                let directions: Vec<Vector> = ring_points.iter().filter_map(|p| unit(*p)).collect();
+                let rings: Vec<Vec<Vector>> = loops
                     .iter()
-                    .filter_map(|p| {
-                        let d = *p - sphere.centre();
-                        let m = d.magnitude();
-                        (m > 0.0).then(|| d / m)
+                    .map(|ring| {
+                        ring.iter()
+                            .filter_map(|&v| unit(points[v as usize]))
+                            .collect()
                     })
                     .collect();
-                let mut best: Option<(f64, Vector)> = None;
-                for z in spread_directions(POLE_CANDIDATES) {
-                    let nearest = directions
+                let mut ranked: Vec<(f64, Vector)> = spread_directions(POLE_CANDIDATES)
+                    .into_iter()
+                    .map(|z| {
+                        let nearest = directions
+                            .iter()
+                            .map(|d| d.dot(z).abs())
+                            .fold(0.0_f64, f64::max);
+                        (nearest, z)
+                    })
+                    .collect();
+                ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
+                // And both poles on the region itself: a loop no axis goes
+                // round has both poles to one side of it, which may be the
+                // hole's.
+                let on_region = |p: Point| {
+                    triangles
                         .iter()
-                        .map(|d| d.dot(z).abs())
-                        .fold(0.0_f64, f64::max);
-                    if best.is_none_or(|(held, _)| nearest < held) {
-                        best = Some((nearest, z));
-                    }
-                }
+                        .enumerate()
+                        .map(|(t, tri)| {
+                            let c = Point::from_vector(
+                                (points[tri[0] as usize].to_vector()
+                                    + points[tri[1] as usize].to_vector()
+                                    + points[tri[2] as usize].to_vector())
+                                    / 3.0,
+                            );
+                            (c.distance(p), t)
+                        })
+                        .min_by(|a, b| a.0.total_cmp(&b.0))
+                        .is_some_and(|(_, t)| groups.of[t] == g)
+                };
+                let best = ranked.into_iter().find(|(_, z)| {
+                    rings.iter().all(|ring| turns_about(ring, *z) == 0)
+                        && on_region(sphere.centre() + *z * sphere.radius())
+                        && on_region(sphere.centre() - *z * sphere.radius())
+                });
                 let Some((nearest, z)) = best else {
                     continue;
                 };
@@ -1653,6 +1728,26 @@ fn hole_frames(
             curved.centre = (core::f64::consts::PI, curved.centre.1);
         }
     }
+}
+
+/// How many times a loop of directions goes round an axis.
+fn turns_about(ring: &[Vector], z: Vector) -> i32 {
+    let x = if z.x.abs() < 0.9 {
+        Vector::X
+    } else {
+        Vector::Y
+    };
+    let x = x - z * x.dot(z);
+    let y = z.cross(x);
+    let angle = |d: &Vector| d.dot(y).atan2(d.dot(x));
+    let mut turned = 0.0;
+    for (i, d) in ring.iter().enumerate() {
+        let next = &ring[(i + 1) % ring.len()];
+        turned += ogeom_math::elementary::wrap_signed_angle(angle(next) - angle(d));
+    }
+    #[allow(clippy::cast_possible_truncation, reason = "a handful of turns")]
+    let turns = (turned / core::f64::consts::TAU).round() as i32;
+    turns
 }
 
 /// How many axes a sphere's poles are tried along.
@@ -1867,6 +1962,49 @@ enum Replan {
     Facet(Vec<usize>),
     Pin(Vec<u32>),
 }
+
+/// Whether a triangle with its corners on `shape` stands off it at its
+/// centroid no farther than a facet of its size over that much turn of the
+/// surface would: its longest side times the turn of the surface's normals
+/// across its corners, over six. A triangle spanning a recess, its
+/// corners on the rim and its middle over the hollow, stands off more.
+fn sags_as_the_surface(shape: &Canonical, corners: [Point; 3], flat: f64) -> bool {
+    let unit = |p: Point| {
+        let g = gradient(shape, p);
+        let m = g.magnitude();
+        (m > 0.0).then(|| g / m)
+    };
+    let (Some(a), Some(b), Some(c)) = (unit(corners[0]), unit(corners[1]), unit(corners[2])) else {
+        return false;
+    };
+    let angle = |x: Vector, y: Vector| x.dot(y).clamp(-1.0, 1.0).acos();
+    let turn = angle(a, b).max(angle(b, c)).max(angle(a, c));
+    let longest = corners[0]
+        .distance(corners[1])
+        .max(corners[1].distance(corners[2]))
+        .max(corners[0].distance(corners[2]));
+    let centroid = Point::from_vector(
+        (corners[0].to_vector() + corners[1].to_vector() + corners[2].to_vector()) / 3.0,
+    );
+    shape.distance_to(centroid) <= longest * turn / 6.0 + flat
+}
+
+/// Whether a triangle is a sliver: no taller across its longest side than
+/// a tenth of that side, so its normal says little.
+fn is_sliver(corners: [Point; 3]) -> bool {
+    let [a, b, c] = corners;
+    let sides = [(a, b, c), (b, c, a), (c, a, b)];
+    let (p, q, r) = sides
+        .into_iter()
+        .max_by(|x, y| x.0.distance(x.1).total_cmp(&y.0.distance(y.1)))
+        .unwrap_or((a, b, c));
+    let base = p.distance(q);
+    base > 0.0 && distance_to_line(r, p, q) <= base * 0.1
+}
+
+/// The most triangles a cluster the region surrounds may hold and still
+/// be taken into it whatever its normals.
+const ENCLOSED_CLUSTER: usize = 16;
 
 /// How far a snapped curve may stand off its chain or its faces.
 const REACH: f64 = 20.0;
@@ -2127,7 +2265,9 @@ impl Planner<'_> {
 
         // A face whose boundary would run out and back along one line (a
         // strip of slivers merged into two straight edges between the same
-        // two vertices) encloses nothing; its runs keep their vertices.
+        // two vertices) encloses nothing; its runs keep their vertices. Two
+        // edges of which one is curved (a flat face cut from a ball by a
+        // second plane: an arc and a line) enclose a face like any other.
         let mut pin: Vec<u32> = Vec::new();
         for (g, rings) in plan.loops.iter().enumerate() {
             if !matches!(self.groups.carriers[g], Carrier::Plane(_)) {
@@ -2145,9 +2285,11 @@ impl Planner<'_> {
                     entries.pop();
                 }
                 if entries.len() < 3
-                    && entries
-                        .iter()
-                        .all(|&e| e != usize::MAX && !plan.edges[e].closed_circle)
+                    && entries.iter().all(|&e| {
+                        e != usize::MAX
+                            && !plan.edges[e].closed_circle
+                            && matches!(plan.edges[e].curve, Curve::Line(_))
+                    })
                 {
                     for &h in ring {
                         let (a, b) = from_to(self.triangles, h);
@@ -2443,11 +2585,17 @@ impl Planner<'_> {
         // seam meets their vertices; its candidates go first.
         let mut order: Vec<usize> = faces.to_vec();
         order.sort_by_key(|&g| !self.curved(g).is_some_and(|c| c.wraps || c.wraps_v));
+        // A recognized plane across the chain is where the chain lies,
+        // exactly: better than a plane fitted to the chain's own points.
+        let across = faces.iter().find_map(|&g| match &self.groups.carriers[g] {
+            Carrier::Plane(plane) => Some(*plane),
+            _ => None,
+        });
         for &g in &order {
             let Some(curved) = self.curved(g) else {
                 continue;
             };
-            for candidate in candidates(&curved.shape, &pts, reach, self.tol) {
+            for candidate in candidates(&curved.shape, &pts, across, reach, self.tol) {
                 if let Some((snapped, forward)) = self.fitted(candidate, &pts, closed, faces, reach)
                 {
                     return Some((snapped, forward, Vec::new()));
@@ -2829,8 +2977,18 @@ fn onto_both(
 /// through its mean angle, when the chain is straight along it. Each is
 /// placed on the surface exactly, its angle measured from the surface's
 /// own origin.
-fn candidates(shape: &Canonical, pts: &[Point], reach: f64, tol: Tolerances) -> Vec<Curve> {
+fn candidates(
+    shape: &Canonical,
+    pts: &[Point],
+    across: Option<Plane>,
+    reach: f64,
+    tol: Tolerances,
+) -> Vec<Curve> {
     let mut out = Vec::new();
+    let plane_of = |pts: &[Point]| match across {
+        Some(plane) => Some((plane.project(pts[0]), plane.normal())),
+        None => plane_through(pts, tol),
+    };
     if let Canonical::Sphere(sphere) = shape {
         // The section of the sphere by the chain's plane. Where that plane
         // is square to the sphere's axis the section is a latitude, and is
@@ -2838,8 +2996,9 @@ fn candidates(shape: &Canonical, pts: &[Point], reach: f64, tol: Tolerances) -> 
         // angle and it starts where the sphere's seam does.
         let axis = sphere.frame().z();
         if pts.len() >= 3
-            && let Some((centre, normal)) = plane_through(pts, tol)
-            && normal.vector().cross(axis.vector()).magnitude() <= 1e-3
+            && let Some((centre, normal)) = plane_of(pts)
+            && normal.vector().cross(axis.vector()).magnitude()
+                <= if across.is_some() { 1e-12 } else { 1e-3 }
         {
             let h = (centre - sphere.centre()).dot(axis.vector());
             let r2 = sphere.radius().powi(2) - h * h;
@@ -2857,7 +3016,7 @@ fn candidates(shape: &Canonical, pts: &[Point], reach: f64, tol: Tolerances) -> 
             }
         }
         if pts.len() >= 3
-            && let Some((centre, normal)) = plane_through(pts, tol)
+            && let Some((centre, normal)) = plane_of(pts)
         {
             let n = normal.vector();
             let d = (centre - sphere.centre()).dot(n);
@@ -3053,10 +3212,84 @@ fn image_on(
     {
         return Some((pcurve, deviation));
     }
+    if let Some((pcurve, deviation)) = interpolated_image(curved, curve, range, tol)
+        && deviation <= reach
+    {
+        return Some((pcurve, deviation));
+    }
     let (pcurve, error, _, off, _) =
         crate::pcurve_fit::fit_projected_pcurve_capped(curve, range, surface, reach, tol).ok()?;
     let deviation = error.max(off);
     (deviation <= reach).then_some((pcurve, deviation))
+}
+
+/// An edge's image interpolated through the chart positions of points
+/// along it, at the edge's own parameters: the curve and its image agree
+/// at every sample by construction, and between them to the fourth power
+/// of the spacing, which is doubled until the image keeps to the curve
+/// within a hundredth of the confusion distance. `None` where a sample
+/// has no chart position (a pole).
+fn interpolated_image(
+    curved: &Curved,
+    curve: &Curve,
+    range: (f64, f64),
+    tol: Tolerances,
+) -> Option<(PlanarCurve, f64)> {
+    use ogeom_geom::{Curve2d as _, Curve3d as _};
+    let (pu, pv) = periodic(&curved.shape);
+    let near = |x: f64, c: f64, wraps: bool| {
+        if wraps {
+            c + ogeom_math::elementary::wrap_signed_angle(x - c)
+        } else {
+            x
+        }
+    };
+    let mut best: Option<(PlanarCurve, f64)> = None;
+    let mut count: u32 = 32;
+    while count <= 1024 {
+        let parameters: Vec<f64> = (0..=count)
+            .map(|k| range.0 + (range.1 - range.0) * f64::from(k) / f64::from(count))
+            .collect();
+        let mut uv: Vec<Point> = Vec::with_capacity(parameters.len());
+        for &t in &parameters {
+            let p = curve.point_at(t, tol).ok()?;
+            let (u, v) = match uv.last() {
+                None => unwrapped(curved, p, tol)?,
+                Some(last) => {
+                    let (u, v) = chart(&curved.shape, p, tol)?;
+                    (near(u, last.x, pu), near(v, last.y, pv))
+                }
+            };
+            uv.push(Point::new(u, v, 0.0));
+        }
+        let flat = crate::fit::interpolate_at(&uv, &parameters, 3, tol).ok()?;
+        let control: Vec<Point2> = flat
+            .control_points()
+            .iter()
+            .map(|c| Point2::new(c.scaled.x, c.scaled.y))
+            .collect();
+        let pcurve: PlanarCurve = ogeom_geom::BSpline2d::new(flat.knots().clone(), control, tol)
+            .ok()?
+            .into();
+        let mut deviation = tol.confusion() * 1e-2;
+        for pair in parameters.windows(2) {
+            for f in [0.25, 0.5, 0.75] {
+                let t = pair[0] + (pair[1] - pair[0]) * f;
+                let at = pcurve.point_at(t, tol).ok()?;
+                let lifted = evaluate(&curved.shape, (at.x, at.y));
+                deviation = deviation.max(lifted.distance(curve.point_at(t, tol).ok()?));
+            }
+        }
+        let done = deviation <= tol.confusion() * 1e-2;
+        if best.as_ref().is_none_or(|(_, held)| deviation < *held) {
+            best = Some((pcurve, deviation));
+        }
+        if done {
+            break;
+        }
+        count *= 2;
+    }
+    best
 }
 
 /// A degree-one pcurve over the edge's range, from the chart points of its
