@@ -485,6 +485,54 @@ fn a_coarse_mesh_keeps_its_fillets() {
     }
 }
 
+/// Two cylinders meeting along a curve that is no circle and no line: a
+/// bar drilled across, and a pipe with a branch. Each meeting is fitted
+/// once on both surfaces, and each wall is built round its axis with a seam
+/// of its own clear of the holes in it, at a fine mesh and a printer's.
+#[test]
+fn crossing_cylinders_meet_along_a_fitted_curve() {
+    let mut model = Model::new();
+    let across = |p: (f64, f64, f64), z: Direction, x: Direction| {
+        Frame::new(Point::new(p.0, p.1, p.2), z, x, T).unwrap()
+    };
+    let bar = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 20.0, T)
+        .unwrap()
+        .shape;
+    let drill = ogeom::algo::make_cylinder(
+        &mut model,
+        across((0.0, -10.0, 10.0), Direction::Y, Direction::X),
+        1.5,
+        20.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let drilled = ogeom::boolean::cut(&mut model, &bar, &drill, T)
+        .unwrap()
+        .shape;
+    let main = ogeom::algo::make_cylinder(
+        &mut model,
+        across((-15.0, 0.0, 0.0), Direction::X, Direction::Y),
+        4.0,
+        30.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let branch = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 2.5, 12.0, T)
+        .unwrap()
+        .shape;
+    let tee = ogeom::boolean::fuse(&mut model, &main, &branch, T)
+        .unwrap()
+        .shape;
+    for deflection in [Deflection::with_chord(0.01).unwrap(), Deflection::default()] {
+        for (shape, expected) in [(&drilled, [2, 2, 0, 0, 0]), (&tee, [3, 2, 0, 0, 0])] {
+            let mesh = ogeom::mesh::triangulate(&model, shape, deflection, T).unwrap();
+            comes_back_from(&model, shape, &mesh, expected);
+        }
+    }
+}
+
 /// A sphere bored through twice, across, meets its bores in four circles
 /// that no single frame makes parallels: it is recognized, said to be
 /// faceted, and still converts to a valid solid.

@@ -52,6 +52,36 @@ impl Canonical {
             Self::Torus(t) => t.distance_to(p),
         }
     }
+
+    /// The distance from `p` to the surface, positive on the side its
+    /// radius grows toward (outside a cylinder, sphere or torus, off the
+    /// axis of a cone) and along a plane's normal. Near the surface it
+    /// grows as the distance does, which is what a solve onto the surface
+    /// asks of it; a cone's is taken to its nearer nappe.
+    #[must_use]
+    pub fn signed_distance_to(&self, p: Point) -> f64 {
+        let radial = |frame: ogeom_math::Frame| {
+            let w = p - frame.origin();
+            let h = w.dot(frame.z().vector());
+            ((w - frame.z().vector() * h).magnitude(), h)
+        };
+        match self {
+            Self::Plane(plane) => plane.signed_distance_to(p),
+            Self::Cylinder(c) => radial(c.frame()).0 - c.radius(),
+            Self::Cone(c) => {
+                let (r, h) = radial(c.frame());
+                let (sin, cos) = c.half_angle().sin_cos();
+                // In the half-plane through the axis the nappe is the line
+                // through (reference radius, 0) at the half angle.
+                (r - c.reference_radius()).mul_add(cos, -(h * sin))
+            }
+            Self::Sphere(s) => p.distance(s.centre()) - s.radius(),
+            Self::Torus(t) => {
+                let (r, h) = radial(t.frame());
+                (r - t.major_radius()).hypot(h) - t.minor_radius()
+            }
+        }
+    }
 }
 
 /// A recognition with its certificate.

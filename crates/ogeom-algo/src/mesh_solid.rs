@@ -638,6 +638,10 @@ enum Layout {
     Cap,
     /// The whole surface, with no boundary of its own.
     Whole,
+    /// Round the axis between two rims of any shape, with holes: a seam
+    /// joins a vertex of each rim, straight in the chart and clear of the
+    /// holes.
+    Wrapped,
 }
 
 /// Triangles gathered into faces: which face each triangle is in, and what
@@ -1838,7 +1842,10 @@ impl Planner<'_> {
                     match self.snapped(&chain, &faces) {
                         Some(spec) => {
                             let index = plan.edges.len();
-                            let (spec, forward) = spec;
+                            let (spec, forward, images) = spec;
+                            for (g, pcurve, deviation) in images {
+                                plan.pcurves.insert((index, g), (pcurve, deviation));
+                            }
                             let spec = match spec {
                                 Snapped::Open(curve, range, tolerance) => EdgeSpec {
                                     curve,
@@ -1854,6 +1861,13 @@ impl Planner<'_> {
                                             Corner::Mesh(chain[0]),
                                         ]
                                     },
+                                    tolerance,
+                                    closed_circle: false,
+                                },
+                                Snapped::Loop(curve, range, tolerance) => EdgeSpec {
+                                    curve,
+                                    range,
+                                    ends: [Corner::Mesh(chain[0]), Corner::Mesh(chain[0])],
                                     tolerance,
                                     closed_circle: false,
                                 },
@@ -2010,7 +2024,8 @@ impl Planner<'_> {
         // A face round its axis, or round a torus's tube, is built as a band
         // between two full circles joined by a seam; a sphere's cap as one
         // circle, a seam and the pole; a sphere or torus with no boundary
-        // whole. Anything else round a period is not built exactly.
+        // whole. A face round its axis between two rims of any other shape,
+        // holed or not, gets a seam of its own between them.
         for (g, carrier) in self.groups.carriers.iter().enumerate() {
             let Carrier::Curved(curved) = carrier else {
                 continue;
@@ -2027,10 +2042,26 @@ impl Planner<'_> {
                     && plan.edges[first.0].closed_circle
                     && ring.iter().all(|&h| self.entry(&plan, h).0 == first.0)
             });
+            let wrapped = || {
+                let resolved = rings
+                    .iter()
+                    .all(|ring| ring.iter().all(|&h| self.entry(&plan, h).0 != usize::MAX));
+                if sphere || !curved.wraps || curved.wraps_v || !resolved {
+                    return None;
+                }
+                let windings: Option<Vec<i32>> = rings
+                    .iter()
+                    .map(|ring| winding(&curved.shape, ring, self.triangles, self.points, self.tol))
+                    .collect();
+                let windings = windings?;
+                let rims = windings.iter().filter(|w| w.abs() == 1).count();
+                let holes = windings.iter().filter(|w| **w == 0).count();
+                (rims == 2 && rims + holes == windings.len()).then_some(Layout::Wrapped)
+            };
             let layout = if rings.is_empty() {
                 (sphere || torus).then_some(Layout::Whole)
             } else if (curved.wraps && curved.wraps_v) || !circles {
-                None
+                wrapped()
             } else if sphere && rings.len() == 1 && curved.fixed {
                 Some(Layout::Cap)
             } else if rings.len() == 2 && (!sphere || curved.fixed) {
@@ -2038,7 +2069,15 @@ impl Planner<'_> {
                     round_tube: curved.wraps_v,
                 })
             } else {
-                None
+                wrapped()
+            };
+            let layout = match layout {
+                Some(Layout::Wrapped) => {
+                    let rings = plan.loops[g].clone();
+                    self.seat_seam(&mut plan, curved, &rings)
+                        .then_some(Layout::Wrapped)
+                }
+                other => other,
             };
             match layout {
                 Some(layout) => plan.layouts[g] = layout,
@@ -2058,7 +2097,7 @@ impl Planner<'_> {
                 continue;
             }
             let surface = surface_of(curved, self.points, self.tol)?;
-            if plan.layouts[g] == Layout::Open {
+            if matches!(plan.layouts[g], Layout::Open | Layout::Wrapped) {
                 let mut held = true;
                 'rings: for ring in &plan.loops[g] {
                     for &h in ring {
@@ -2098,6 +2137,100 @@ impl Planner<'_> {
         }
     }
 
+    /// Whether a face round its axis has a seam clear of its holes, turning
+    /// a rim that is one full circle so its vertex stands in the widest
+    /// stretch the holes leave free where the rims' own vertices offer none.
+    fn seat_seam(&self, plan: &mut Plan, curved: &Curved, rings: &[Vec<Half>]) -> bool {
+        use ogeom_geom::Curve3d as _;
+        let shape = &curved.shape;
+        let windings: Vec<i32> = rings
+            .iter()
+            .map(|ring| winding(shape, ring, self.triangles, self.points, self.tol).unwrap_or(0))
+            .collect();
+        let rims: Vec<usize> = (0..rings.len())
+            .filter(|&k| windings[k].abs() == 1)
+            .collect();
+        let [low, high] = rims[..] else {
+            return false;
+        };
+        let holes: Vec<&[Half]> = (0..rings.len())
+            .filter(|&k| windings[k] == 0)
+            .map(|k| rings[k].as_slice())
+            .collect();
+        let hole_rings = hole_polygons(shape, &holes, self.triangles, self.points, self.tol);
+        let entries = |plan: &Plan, ring: &[Half]| -> Vec<(usize, bool)> {
+            let mut out: Vec<(usize, bool)> = Vec::new();
+            for &h in ring {
+                let entry = self.entry(plan, h);
+                if out.last() != Some(&entry) {
+                    out.push(entry);
+                }
+            }
+            if out.len() > 1 && out.first() == out.last() {
+                out.pop();
+            }
+            out
+        };
+        let starts = |plan: &Plan, ring: &[Half]| -> Vec<Point> {
+            entries(plan, ring)
+                .into_iter()
+                .map(
+                    |(edge, forward)| match plan.edges[edge].ends[usize::from(!forward)] {
+                        Corner::Mesh(v) => self.points[v as usize],
+                        Corner::Placed(k) => plan.placed[k],
+                    },
+                )
+                .collect()
+        };
+        let clear = |plan: &Plan| {
+            choose_seam(
+                shape,
+                &starts(plan, &rings[low]),
+                &starts(plan, &rings[high]),
+                &hole_rings,
+                self.tol,
+            )
+            .is_some()
+        };
+        if clear(plan) {
+            return true;
+        }
+        let Some(angle) = free_angle(&hole_rings) else {
+            return false;
+        };
+        for rim in [low, high] {
+            let list = entries(plan, &rings[rim]);
+            let [(edge, _)] = list[..] else {
+                continue;
+            };
+            let spec = &plan.edges[edge];
+            let (Curve::Circle(c), Corner::Placed(k)) = (&spec.curve, spec.ends[0]) else {
+                continue;
+            };
+            let circle = c.circle();
+            let Some((_, v)) = chart(shape, plan.placed[k], self.tol) else {
+                continue;
+            };
+            let target = evaluate(shape, (angle, v));
+            let Ok(x) = Direction::new(target - circle.centre(), self.tol) else {
+                continue;
+            };
+            let Ok(frame) = Frame::new(circle.centre(), circle.frame().z(), x, self.tol) else {
+                continue;
+            };
+            let Ok(turned) = ogeom_math::Circle::new(frame, circle.radius(), self.tol) else {
+                continue;
+            };
+            let curve: Curve = ogeom_geom::CircleCurve::new(turned).into();
+            let Ok(at) = curve.point_at(0.0, self.tol) else {
+                continue;
+            };
+            plan.edges[edge].curve = curve;
+            plan.placed[k] = at;
+        }
+        clear(plan)
+    }
+
     /// A half-edge's planned edge, and whether the half-edge runs it
     /// forward.
     fn entry(&self, plan: &Plan, h: Half) -> (usize, bool) {
@@ -2110,7 +2243,7 @@ impl Planner<'_> {
     /// lies on: a parallel circle or a ruling of a curved face, placed on
     /// that face itself so its pcurve there is exact. `None` when no such
     /// curve holds the chain and the faces both.
-    fn snapped(&self, chain: &[u32], faces: &[usize]) -> Option<(Snapped, bool)> {
+    fn snapped(&self, chain: &[u32], faces: &[usize]) -> Option<(Snapped, bool, Images)> {
         if faces.len() > 2 {
             return None;
         }
@@ -2129,12 +2262,222 @@ impl Planner<'_> {
                 continue;
             };
             for candidate in candidates(&curved.shape, &pts, reach, self.tol) {
-                if let Some(found) = self.fitted(candidate, &pts, closed, faces, reach) {
-                    return Some(found);
+                if let Some((snapped, forward)) = self.fitted(candidate, &pts, closed, faces, reach)
+                {
+                    return Some((snapped, forward, Vec::new()));
                 }
             }
         }
-        None
+        self.section(&pts, closed, faces, reach)
+    }
+
+    /// The curve two faces meet along, where it is no parallel or ruling of
+    /// either: vertices of the chain, and points between them, solved onto
+    /// both surfaces, and the curve interpolated through them. Its image on
+    /// each curved face is interpolated through the same points' chart
+    /// positions at the same parameters, so the two run together. `None`
+    /// where the surfaces meet tangentially, the solve does not settle, or
+    /// the curve strays from either face past the reach.
+    fn section(
+        &self,
+        pts: &[Point],
+        closed: bool,
+        faces: &[usize],
+        reach: f64,
+    ) -> Option<(Snapped, bool, Images)> {
+        // Made through more points until it keeps to the surfaces to a
+        // fiftieth of a micron's worth of confusion distances, as close as
+        // an exact edge's image would, or the points run out.
+        let close = self.tol.confusion() * 50.0;
+        let mut best: Option<(f64, (Snapped, bool, Images))> = None;
+        let mut count = SECTION_POINTS;
+        while count <= SECTION_POINTS * 8 {
+            let Some((worst, found)) = self.section_through(pts, closed, faces, reach, count)
+            else {
+                break;
+            };
+            let done = worst <= close;
+            if best.as_ref().is_none_or(|(held, _)| worst < *held) {
+                best = Some((worst, found));
+            }
+            if done {
+                break;
+            }
+            count *= 2;
+        }
+        best.map(|(_, found)| found)
+    }
+
+    /// One fitted section through at least `count` points, with the worst
+    /// of its own stray and its images'.
+    fn section_through(
+        &self,
+        pts: &[Point],
+        closed: bool,
+        faces: &[usize],
+        reach: f64,
+        count: usize,
+    ) -> Option<(f64, (Snapped, bool, Images))> {
+        use ogeom_geom::Curve3d as _;
+        let [a, b] = faces[..] else {
+            return None;
+        };
+        let (fa, fb) = (self.signed(a)?, self.signed(b)?);
+        let steps = if closed { pts.len() } else { pts.len() - 1 };
+        // A long chain is taken a few vertices at a time: the curve needs
+        // its shape, not every vertex.
+        let stride = steps.div_ceil(SECTION_SPANS).max(1);
+        let split = count.div_ceil(steps.div_ceil(stride)).max(SECTION_SPLIT);
+        let mut on = Vec::new();
+        let mut i = 0;
+        while i < steps {
+            let next = (i + stride).min(steps);
+            let (p, q) = (pts[i], pts[next % pts.len()]);
+            for k in 0..split {
+                #[allow(clippy::cast_precision_loss, reason = "a handful of splits")]
+                let f = k as f64 / split as f64;
+                let limit = if k == 0 { reach } else { p.distance(q) + reach };
+                on.push(onto_both(&fa, &fb, p + (q - p) * f, reach, limit)?);
+            }
+            i = next;
+        }
+        on.push(if closed {
+            on[0]
+        } else {
+            onto_both(&fa, &fb, pts[pts.len() - 1], reach, reach)?
+        });
+        // A loop is interpolated with a few of its points carried on past
+        // each end, then cut back to its own: an open interpolation left
+        // free at its ends wanders where the loop meets itself.
+        let pad = if closed {
+            SECTION_PAD.min(on.len() / 4)
+        } else {
+            0
+        };
+        let n = on.len();
+        let padded: Vec<Point> = if pad > 0 {
+            on[n - 1 - pad..n - 1]
+                .iter()
+                .chain(&on)
+                .chain(&on[1..=pad])
+                .copied()
+                .collect()
+        } else {
+            on.clone()
+        };
+        let parameters =
+            crate::fit::spaced(&padded, crate::fit::Spacing::Centripetal, self.tol).ok()?;
+        let cut = (parameters[pad], parameters[pad + n - 1]);
+        let trimmed = |spline: ogeom_geom::BSplineCurve| -> Option<ogeom_geom::BSplineCurve> {
+            if pad == 0 {
+                return Some(spline);
+            }
+            let (_, after) = spline.split_at(cut.0, self.tol).ok()?;
+            Some(after.split_at(cut.1, self.tol).ok()?.0)
+        };
+        let curve: Curve =
+            trimmed(crate::fit::interpolate_at(&padded, &parameters, 3, self.tol).ok()?)?.into();
+        let range = curve.domain();
+        let parameters = parameters[pad..pad + n].to_vec();
+        // Between the points it was made through, how far it strays from
+        // either surface.
+        let between = |k: usize, f: f64| parameters[k] + (parameters[k + 1] - parameters[k]) * f;
+        // Its ends are the chain's ends solved onto both surfaces, a hair
+        // from the vertices they meet.
+        let last = if closed { pts[0] } else { pts[pts.len() - 1] };
+        let mut tolerance = self
+            .tol
+            .confusion()
+            .max(on[0].distance(pts[0]))
+            .max(on[on.len() - 1].distance(last));
+        for k in 0..on.len() - 1 {
+            for f in [0.25, 0.5, 0.75] {
+                let p = curve.point_at(between(k, f), self.tol).ok()?;
+                tolerance = tolerance.max(fa(p).abs()).max(fb(p).abs());
+            }
+        }
+        if tolerance > reach {
+            return None;
+        }
+        let mut images = Vec::new();
+        for &g in faces {
+            let Some(curved) = self.curved(g) else {
+                continue;
+            };
+            let (pu, pv) = periodic(&curved.shape);
+            let mut uv: Vec<Point> = Vec::with_capacity(padded.len());
+            for p in &padded {
+                let (u, v) = match uv.last() {
+                    None => unwrapped(curved, *p, self.tol)?,
+                    Some(last) => {
+                        let (u, v) = chart(&curved.shape, *p, self.tol)?;
+                        let near = |x: f64, c: f64, wraps: bool| {
+                            if wraps {
+                                c + ogeom_math::elementary::wrap_signed_angle(x - c)
+                            } else {
+                                x
+                            }
+                        };
+                        (near(u, last.x, pu), near(v, last.y, pv))
+                    }
+                };
+                uv.push(Point::new(u, v, 0.0));
+            }
+            let all =
+                crate::fit::spaced(&padded, crate::fit::Spacing::Centripetal, self.tol).ok()?;
+            let flat = trimmed(crate::fit::interpolate_at(&uv, &all, 3, self.tol).ok()?)?;
+            let control: Vec<Point2> = flat
+                .control_points()
+                .iter()
+                .map(|c| Point2::new(c.scaled.x, c.scaled.y))
+                .collect();
+            let pcurve: PlanarCurve =
+                ogeom_geom::BSpline2d::new(flat.knots().clone(), control, self.tol)
+                    .ok()?
+                    .into();
+            let mut deviation = self.tol.confusion();
+            for k in 0..on.len() - 1 {
+                for f in [0.0, 0.25, 0.5, 0.75] {
+                    use ogeom_geom::Curve2d as _;
+                    let t = between(k, f);
+                    let at = pcurve.point_at(t, self.tol).ok()?;
+                    let lifted = evaluate(&curved.shape, (at.x, at.y));
+                    deviation = deviation.max(lifted.distance(curve.point_at(t, self.tol).ok()?));
+                }
+            }
+            if deviation > reach {
+                return None;
+            }
+            images.push((g, pcurve, deviation));
+        }
+        let worst = images.iter().map(|(_, _, d)| *d).fold(tolerance, f64::max);
+        Some((
+            worst,
+            (
+                if closed {
+                    Snapped::Loop(curve, range, tolerance)
+                } else {
+                    Snapped::Open(curve, range, tolerance)
+                },
+                true,
+                images,
+            ),
+        ))
+    }
+
+    /// A face's surface as a signed distance, where it has one.
+    fn signed(&self, g: usize) -> Option<Box<dyn Fn(Point) -> f64>> {
+        match &self.groups.carriers[g] {
+            Carrier::Plane(plane) => {
+                let plane = *plane;
+                Some(Box::new(move |p: Point| plane.signed_distance_to(p)))
+            }
+            Carrier::Curved(c) => {
+                let shape = c.shape;
+                Some(Box::new(move |p: Point| shape.signed_distance_to(p)))
+            }
+            Carrier::Gone => None,
+        }
     }
 
     /// A candidate curve held against the chain and the faces: its range,
@@ -2233,6 +2576,65 @@ impl Planner<'_> {
 enum Snapped {
     Open(Curve, (f64, f64), f64),
     Closed(Curve, f64),
+    /// A closed curve that is no circle, starting and ending at the
+    /// chain's first vertex.
+    Loop(Curve, (f64, f64), f64),
+}
+
+/// How many pieces each span of a chain is cut into for a fitted section:
+/// its vertices alone leave a coarse chain's curve unconstrained between
+/// them.
+const SECTION_SPLIT: usize = 4;
+
+/// The most spans a chain is taken in for a fitted section.
+const SECTION_SPANS: usize = 40;
+
+/// How many points a closed section is carried on past each end while it
+/// is interpolated.
+const SECTION_PAD: usize = 8;
+
+/// How many points a fitted section is interpolated through, at least:
+/// a short chain's spans are cut finer to reach it.
+const SECTION_POINTS: usize = 160;
+
+/// A fitted section's images on the curved faces it bounds: the face, the
+/// image, and how far the image strays from the curve.
+type Images = Vec<(usize, PlanarCurve, f64)>;
+
+/// A point solved onto where two surfaces meet, from a start near both:
+/// Newton's step, the least one that zeroes both signed distances to first
+/// order. `None` where the surfaces meet tangentially there, where the
+/// solve does not settle within a thousandth of `reach` of both, or where
+/// it lands farther than `limit` from its start.
+fn onto_both(
+    fa: &dyn Fn(Point) -> f64,
+    fb: &dyn Fn(Point) -> f64,
+    start: Point,
+    reach: f64,
+    limit: f64,
+) -> Option<Point> {
+    let mut p = start;
+    let h = 1e-7 * (1.0 + p.to_vector().magnitude());
+    let gradient = |f: &dyn Fn(Point) -> f64, p: Point| {
+        let d = |v: Vector| (f(p + v * h) - f(p - v * h)) / (2.0 * h);
+        Vector::new(d(Vector::X), d(Vector::Y), d(Vector::Z))
+    };
+    for _ in 0..40 {
+        let (va, vb) = (fa(p), fb(p));
+        if va.abs().max(vb.abs()) <= 1e-13 * (1.0 + p.to_vector().magnitude()) {
+            break;
+        }
+        let (ga, gb) = (gradient(fa, p), gradient(fb, p));
+        let (aa, ab, bb) = (ga.dot(ga), ga.dot(gb), gb.dot(gb));
+        let det = aa.mul_add(bb, -(ab * ab));
+        if det <= 1e-12 * aa * bb {
+            return None;
+        }
+        let la = (va * bb - vb * ab) / det;
+        let lb = (vb * aa - va * ab) / det;
+        p = p - ga * la - gb * lb;
+    }
+    (fa(p).abs().max(fb(p).abs()) <= reach * 1e-3 && p.distance(start) <= limit).then_some(p)
 }
 
 /// The curves a chain on a curved surface may be: the parallel circle
@@ -2576,6 +2978,7 @@ impl Builder<'_> {
                         Some(self.band_face(curved, rings, &edges, round_tube)?)
                     }
                     Layout::Cap => Some(self.cap_face(curved, rings, &edges)?),
+                    Layout::Wrapped => Some(self.wrapped_face(curved, g, rings, &edges)?),
                     Layout::Open | Layout::Whole => {
                         Some(self.curved_face(curved, g, rings, &edges)?)
                     }
@@ -2738,6 +3141,192 @@ impl Builder<'_> {
         wires.sort_by(|a, b| b.0.total_cmp(&a.0));
         let wires: Vec<Shape> = wires.into_iter().map(|(_, w)| w).collect();
         // Fitted images answer on whichever branch their projection chose.
+        crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
+        let mut data = FaceData::new(surface, Location::identity());
+        data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
+        let face = self.model.add_face(data, &wires)?;
+        Ok(if outward { face } else { face.reversed() })
+    }
+
+    /// A face round its axis between two rims of any shape, with holes.
+    ///
+    /// The seam joins a vertex of one rim to a vertex of the other along a
+    /// straight line in the chart: the pair turning least between them
+    /// whose line crosses no hole. It is a ruling where the pair stand at
+    /// one angle on a cylinder or a cone, and otherwise the curve that line
+    /// traces on the surface, interpolated. The outer wire walks the seam
+    /// down, one rim round, the seam up a whole turn over, and the other rim
+    /// back; each hole is its own wire.
+    fn wrapped_face(
+        &mut self,
+        curved: &Curved,
+        g: usize,
+        rings: &[Vec<Half>],
+        edges: &[Shape],
+    ) -> OgeomResult<Shape> {
+        use ogeom_geom::Curve3d as _;
+        let tau = core::f64::consts::TAU;
+        let Some(geometry) = self.plan.surfaces[g].clone() else {
+            ogeom_bail!(
+                Construction,
+                "a face round its axis was planned without its surface"
+            );
+        };
+        let surface = self.model.geometry_mut().add_surface(geometry);
+        let outward = self.outward(curved, g);
+        // Every edge's image, as the plan made it.
+        for ring in rings {
+            for (edge, _) in self.entries(ring) {
+                if self.has_pcurve(&edges[edge], surface) {
+                    continue;
+                }
+                let Some((pcurve, deviation)) = self.plan.pcurves.get(&(edge, g)).cloned() else {
+                    ogeom_bail!(
+                        Construction,
+                        "an edge was planned without its image on a face"
+                    );
+                };
+                self.model.widen(
+                    &edges[edge],
+                    Tolerance::new(deviation.max(self.tol.confusion()))?,
+                )?;
+                crate::build::attach_pcurve(
+                    self.model,
+                    &edges[edge],
+                    pcurve,
+                    surface,
+                    Location::identity(),
+                    self.plan.edges[edge].range,
+                )?;
+            }
+        }
+        let windings: Vec<i32> = rings
+            .iter()
+            .map(|ring| {
+                winding(&curved.shape, ring, self.triangles, self.points, self.tol).unwrap_or(0)
+            })
+            .collect();
+        let rims: Vec<usize> = (0..rings.len())
+            .filter(|&k| windings[k].abs() == 1)
+            .collect();
+        let [low, high] = rims[..] else {
+            ogeom_bail!(Construction, "a face round its axis has two rims");
+        };
+        if windings[low] != -windings[high] {
+            ogeom_bail!(
+                Construction,
+                "a face round its axis has its rims turning one way"
+            );
+        }
+        let holes: Vec<usize> = (0..rings.len()).filter(|&k| windings[k] == 0).collect();
+
+        // Each rim's entries, and the vertex each one starts from.
+        let starts = |this: &Self, ring: &[Half]| -> OgeomResult<Vec<RimStart>> {
+            let mut out = Vec::new();
+            for (edge, forward) in this.entries(ring) {
+                let ends = this.model.children_of(&edges[edge])?;
+                let vertex = if forward { ends.first() } else { ends.last() };
+                let Some(vertex) = vertex.cloned() else {
+                    ogeom_bail!(Construction, "a rim edge has no vertex");
+                };
+                let Some(ogeom_topo::NodeData::Vertex(data)) =
+                    this.model.node(&vertex).map(|n| n.data())
+                else {
+                    ogeom_bail!(Construction, "a rim vertex has no position");
+                };
+                out.push(((edge, forward), vertex, data.point));
+            }
+            Ok(out)
+        };
+        let from = starts(self, &rings[low])?;
+        let to = starts(self, &rings[high])?;
+        let hole_rings = hole_polygons(
+            &curved.shape,
+            &holes
+                .iter()
+                .map(|&k| rings[k].as_slice())
+                .collect::<Vec<_>>(),
+            self.triangles,
+            self.points,
+            self.tol,
+        );
+        let from_at: Vec<Point> = from.iter().map(|x| x.2).collect();
+        let to_at: Vec<Point> = to.iter().map(|x| x.2).collect();
+        let Some((i, j, a, b)) =
+            choose_seam(&curved.shape, &from_at, &to_at, &hole_rings, self.tol)
+        else {
+            ogeom_bail!(Construction, "no seam joins the rims clear of the holes");
+        };
+        let (pa, pb) = (from[i].2, to[j].2);
+        let straight = (b.0 - a.0).abs() <= 1e-12
+            && matches!(curved.shape, Canonical::Cylinder(_) | Canonical::Cone(_));
+        let (seam_curve, range, deviation): (Curve, (f64, f64), f64) = if straight {
+            let line = LineCurve::segment(pa, pb, self.tol)?;
+            (line.into(), (0.0, pa.distance(pb)), self.tol.confusion())
+        } else {
+            const SAMPLES: u32 = 96;
+            let along = |f: f64| (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f);
+            let mut pts: Vec<Point> = (0..=SAMPLES)
+                .map(|k| evaluate(&curved.shape, along(f64::from(k) / f64::from(SAMPLES))))
+                .collect();
+            pts[0] = pa;
+            pts[SAMPLES as usize] = pb;
+            let curve: Curve =
+                crate::fit::interpolate(&pts, 3, crate::fit::Spacing::Uniform, self.tol)?.into();
+            let range = curve.domain();
+            let mut deviation = self.tol.confusion();
+            for k in 0..=(SAMPLES * 4) {
+                let f = f64::from(k) / f64::from(SAMPLES * 4);
+                let t = range.0 + (range.1 - range.0) * f;
+                deviation = deviation.max(
+                    curve
+                        .point_at(t, self.tol)?
+                        .distance(evaluate(&curved.shape, along(f))),
+                );
+            }
+            (curve, range, deviation)
+        };
+        let id = self.model.geometry_mut().add_curve(seam_curve);
+        let mut data = EdgeData::on_curve(id, Location::identity(), range);
+        data.tolerance = Tolerance::new(deviation)?;
+        let seam = self
+            .model
+            .add_edge(data, &[from[i].1.clone(), to[j].1.clone()])?;
+        // Down its near side where the wire leaves the high rim, up its far
+        // side a whole turn over, where the low rim's walk comes round to.
+        let over = tau * f64::from(windings[low]);
+        let back = linear(a, b, range, self.tol)?;
+        let forward = linear((a.0 + over, a.1), (b.0 + over, b.1), range, self.tol)?;
+        crate::build::attach_seam(
+            self.model,
+            &seam,
+            forward,
+            back,
+            surface,
+            Location::identity(),
+            range,
+        )?;
+        let rotated = |list: &[RimStart], at: usize| -> Vec<Shape> {
+            (0..list.len())
+                .map(|k| {
+                    let ((edge, forward), _, _) = list[(at + k) % list.len()];
+                    oriented(&edges[edge], forward)
+                })
+                .collect()
+        };
+        let mut outer = vec![seam.reversed()];
+        outer.extend(rotated(&from, i));
+        outer.push(seam.clone());
+        outer.extend(rotated(&to, j));
+        let mut wires = vec![self.model.add_wire(&outer)?];
+        for &k in &holes {
+            let ring_edges: Vec<Shape> = self
+                .entries(&rings[k])
+                .into_iter()
+                .map(|(edge, forward)| oriented(&edges[edge], forward))
+                .collect();
+            wires.push(self.model.add_wire(&ring_edges)?);
+        }
         crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
         let mut data = FaceData::new(surface, Location::identity());
         data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
@@ -3084,6 +3673,140 @@ fn linear(
         tol,
     )?
     .into())
+}
+
+/// Where a rim's entry starts: the entry, its vertex, and where that
+/// stands.
+type RimStart = ((usize, bool), Shape, Point);
+
+/// A seam's two rim vertices, by their places in each rim, and the ends of
+/// its line in the chart.
+type SeamChoice = (usize, usize, (f64, f64), (f64, f64));
+
+/// A face's holes in its chart: each a polygon of its mesh vertices,
+/// carried round continuously.
+fn hole_polygons(
+    shape: &Canonical,
+    holes: &[&[Half]],
+    triangles: &[[u32; 3]],
+    points: &[Point],
+    tol: Tolerances,
+) -> Vec<Vec<(f64, f64)>> {
+    holes
+        .iter()
+        .filter_map(|ring| {
+            let mut out: Vec<(f64, f64)> = Vec::new();
+            for &h in *ring {
+                let (a, _) = from_to(triangles, h);
+                let (u, v) = chart(shape, points[a as usize], tol)?;
+                let u = match out.last() {
+                    Some(&(last, _)) => last + ogeom_math::elementary::wrap_signed_angle(u - last),
+                    None => u,
+                };
+                out.push((u, v));
+            }
+            Some(out)
+        })
+        .collect()
+}
+
+/// The seam for a face round its axis: of the pairs of a vertex on one
+/// rim and a vertex on the other, the one turning least between them whose
+/// straight chart line crosses no hole, a whole turn either way included.
+/// Its indices and the line's ends in the chart.
+fn choose_seam(
+    shape: &Canonical,
+    from: &[Point],
+    to: &[Point],
+    holes: &[Vec<(f64, f64)>],
+    tol: Tolerances,
+) -> Option<SeamChoice> {
+    let tau = core::f64::consts::TAU;
+    let crosses = |a: (f64, f64), b: (f64, f64)| {
+        holes.iter().any(|ring| {
+            [-tau, 0.0, tau].iter().any(|shift| {
+                (0..ring.len()).any(|i| {
+                    let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
+                    segments_cross(a, b, (p.0 + shift, p.1), (q.0 + shift, q.1))
+                })
+            })
+        })
+    };
+    let mut best: Option<(f64, SeamChoice)> = None;
+    for (i, pa) in from.iter().enumerate() {
+        let Some((ua, va)) = chart(shape, *pa, tol) else {
+            continue;
+        };
+        for (j, pb) in to.iter().enumerate() {
+            let Some((ub, vb)) = chart(shape, *pb, tol) else {
+                continue;
+            };
+            let turn = ogeom_math::elementary::wrap_signed_angle(ub - ua);
+            let (a, b) = ((ua, va), (ua + turn, vb));
+            if crosses(a, b) {
+                continue;
+            }
+            let score = turn.abs() * 1e3 + pa.distance(*pb);
+            if best.is_none_or(|held| score < held.0) {
+                best = Some((score, (i, j, a, b)));
+            }
+        }
+    }
+    best.map(|(_, choice)| choice)
+}
+
+/// The middle of the widest stretch of angle no hole covers.
+fn free_angle(holes: &[Vec<(f64, f64)>]) -> Option<f64> {
+    let tau = core::f64::consts::TAU;
+    let mut angles: Vec<f64> = holes
+        .iter()
+        .flatten()
+        .map(|(u, _)| u.rem_euclid(tau))
+        .collect();
+    if angles.is_empty() {
+        return None;
+    }
+    angles.sort_by(f64::total_cmp);
+    let mut best = (
+        angles[0] + tau - angles[angles.len() - 1],
+        angles[angles.len() - 1],
+    );
+    for pair in angles.windows(2) {
+        if pair[1] - pair[0] > best.0 {
+            best = (pair[1] - pair[0], pair[0]);
+        }
+    }
+    Some(best.1 + best.0 / 2.0)
+}
+
+/// Whether two chart segments cross, each at a point strictly inside both.
+fn segments_cross(a: (f64, f64), b: (f64, f64), p: (f64, f64), q: (f64, f64)) -> bool {
+    let side = |o: (f64, f64), x: (f64, f64), y: (f64, f64)| {
+        (x.0 - o.0).mul_add(y.1 - o.1, -((x.1 - o.1) * (y.0 - o.0)))
+    };
+    let (d1, d2) = (side(p, q, a), side(p, q, b));
+    let (d3, d4) = (side(a, b, p), side(a, b, q));
+    d1 * d2 < 0.0 && d3 * d4 < 0.0
+}
+
+/// How many times a ring of half-edges goes round a surface's angle, with
+/// the sign of its sense; `None` where a vertex has no chart position.
+fn winding(
+    shape: &Canonical,
+    ring: &[Half],
+    triangles: &[[u32; 3]],
+    points: &[Point],
+    tol: Tolerances,
+) -> Option<i32> {
+    let mut turned = 0.0;
+    for &h in ring {
+        let (a, b) = from_to(triangles, h);
+        let (ua, _) = chart(shape, points[a as usize], tol)?;
+        let (ub, _) = chart(shape, points[b as usize], tol)?;
+        turned += ogeom_math::elementary::wrap_signed_angle(ub - ua);
+    }
+    #[allow(clippy::cast_possible_truncation, reason = "a handful of turns")]
+    Some((turned / core::f64::consts::TAU).round() as i32)
 }
 
 /// Twice the area a ring of half-edges encloses in a chart, signed.

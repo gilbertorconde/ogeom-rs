@@ -109,22 +109,105 @@ pub fn interpolate(
     }
 
     let parameters = parameterize(points, spacing, tol)?;
-    let knots = KnotVector::averaged(degree, &parameters)?;
+    interpolate_at(points, &parameters, degree, tol)
+}
+
+/// The parameters [`interpolate`] would give points under a spacing.
+pub(crate) fn spaced(points: &[Point], spacing: Spacing, tol: Tolerances) -> OgeomResult<Vec<f64>> {
+    parameterize(points, spacing, tol)
+}
+
+/// Interpolate points at parameters of the caller's own, the knots
+/// averaged from them: curves interpolated at one set of parameters share
+/// their knots, and so run together parameter for parameter.
+pub(crate) fn interpolate_at(
+    points: &[Point],
+    parameters: &[f64],
+    degree: usize,
+    tol: Tolerances,
+) -> OgeomResult<BSplineCurve> {
+    if points.len() <= degree || parameters.len() != points.len() {
+        ogeom_bail!(
+            Construction,
+            "interpolating a degree-{degree} curve needs more than {degree} points, one parameter each"
+        );
+    }
+    let knots = KnotVector::averaged(degree, parameters)?;
 
     // The collocation system: row k says "the curve at parameter t_k is point
     // k", which in the basis is a weighted sum of the control points.
     let n = points.len();
-    let mut matrix = nalgebra::DMatrix::<f64>::zeros(n, n);
-    for (row, &t) in parameters.iter().enumerate() {
+    let mut rows: Vec<(usize, Vec<f64>)> = Vec::with_capacity(n);
+    for &t in parameters {
         let span = knots.span(t, tol)?;
-        let basis = knots.basis(span, t);
+        rows.push((span - degree, knots.basis(span, t).to_vec()));
+    }
+    let control = match solve_banded(&rows, points, degree) {
+        Some(control) => control,
+        None => {
+            let mut matrix = nalgebra::DMatrix::<f64>::zeros(n, n);
+            for (row, (first, basis)) in rows.iter().enumerate() {
+                for (j, value) in basis.iter().enumerate() {
+                    matrix[(row, first + j)] = *value;
+                }
+            }
+            solve(&matrix, points)?
+        }
+    };
+    BSplineCurve::new(knots, control, tol)
+}
+
+/// The collocation system solved in its band: with the knots averaged from
+/// the parameters every row's entries stand within `degree` of the
+/// diagonal, and the matrix is totally positive, so elimination needs no
+/// pivoting and costs the band's width per row rather than the size
+/// cubed. `None` where a row leaves the band or a pivot vanishes, for the
+/// dense solve to answer.
+fn solve_banded(rows: &[(usize, Vec<f64>)], rhs: &[Point], degree: usize) -> Option<Vec<Point>> {
+    let n = rows.len();
+    let width = 2 * degree + 1;
+    let mut band = vec![vec![0.0; width]; n];
+    for (i, (first, basis)) in rows.iter().enumerate() {
         for (j, value) in basis.iter().enumerate() {
-            matrix[(row, span - degree + j)] = *value;
+            let column = first + j;
+            let offset = (column + degree).checked_sub(i)?;
+            if offset >= width {
+                return None;
+            }
+            band[i][offset] = *value;
         }
     }
-
-    let control = solve(&matrix, points)?;
-    BSplineCurve::new(knots, control, tol)
+    let mut b: Vec<[f64; 3]> = rhs.iter().map(|p| [p.x, p.y, p.z]).collect();
+    for k in 0..n {
+        let pivot = band[k][degree];
+        if pivot.abs() <= f64::EPSILON {
+            return None;
+        }
+        for i in (k + 1)..n.min(k + degree + 1) {
+            let factor = band[i][k + degree - i] / pivot;
+            if factor == 0.0 {
+                continue;
+            }
+            for j in k..n.min(k + degree + 1) {
+                band[i][j + degree - i] -= factor * band[k][j + degree - k];
+            }
+            let row = b[k];
+            for (x, r) in b[i].iter_mut().zip(row) {
+                *x -= factor * r;
+            }
+        }
+    }
+    let mut x = vec![[0.0; 3]; n];
+    for k in (0..n).rev() {
+        let mut sum = b[k];
+        for j in (k + 1)..n.min(k + degree + 1) {
+            for (s, v) in sum.iter_mut().zip(x[j]) {
+                *s -= band[k][j + degree - k] * v;
+            }
+        }
+        x[k] = sum.map(|s| s / band[k][degree]);
+    }
+    Some(x.into_iter().map(|[a, b, c]| Point::new(a, b, c)).collect())
 }
 
 /// Fit a B-spline that passes *near* the points, with `control_count` control

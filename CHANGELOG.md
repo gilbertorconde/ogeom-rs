@@ -22,6 +22,19 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Curved faces meeting along a curve that is no circle stayed
+  faceted.** A bar drilled across, or a pipe with a branch, came back as
+  hundreds of facets. Where two recognized surfaces meet along any curve,
+  the meeting is solved onto both and interpolated once, its image on
+  each surface made at the same parameters. A face round its axis between
+  two rims of any shape, holed or not, is built with a seam of its own
+  placed clear of its holes. Both parts convert exactly at a fine mesh and
+  a coarse one.
+- **A sliver face left a hole in the mesh of its solid.** A face narrower
+  than a millionth of its length was drawn as nothing, and its
+  neighbours' meshes did not meet across it. It is drawn as a fan across
+  its own boundary points, which its neighbours share.
+
 - **Coarse meshes lost their fillets.** At a printer's usual export
   settings a small fillet is three or four facets across, and it came
   back as flat faces. The first fit now tries a dozen vertices when they
