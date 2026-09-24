@@ -33,6 +33,7 @@ use ogeom_topo::{EdgeRepr, Model, NodeData, Orientation, Shape};
 /// by `shift` in the chart: a whole number of periods where the walk
 /// crossed a periodic surface's join.
 struct Segment {
+    edge: Shape,
     curve: PlanarCurve,
     t0: f64,
     t1: f64,
@@ -106,6 +107,79 @@ fn loops_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<
     if !integrable(surface) {
         return Ok(None);
     }
+    let Some(walked) = walked(model, face, true, tol)? else {
+        return Ok(None);
+    };
+    let ((u0, u1), _) = surface.domain();
+    let u_ref = if surface.is_periodic_u() {
+        walked.lo.x
+    } else {
+        walked.lo.x.clamp(u0, u1)
+    };
+    Ok(Some(ChartFace {
+        surface: walked.placed,
+        loops: walked.loops,
+        sign: if face.orientation() == Orientation::Reversed {
+            -1.0
+        } else {
+            1.0
+        },
+        u_ref,
+        scale: walked.scale,
+    }))
+}
+
+/// A face's boundary walked into closed chart loops.
+struct Walked {
+    /// The surface, placed as the face is.
+    placed: SurfaceGeometry,
+    /// Each loop, with the sign that turns it round its region: `1` where
+    /// the face lies to the left of the walk, `-1` where to the right.
+    loops: Vec<(Vec<Segment>, f64)>,
+    /// The chart's lower corner and its size.
+    lo: Point2,
+    scale: f64,
+}
+
+/// Points along a face's boundary, each with its edge and the chart
+/// direction the face lies in from there, read off the walked loops'
+/// windings. `None` where the boundary cannot be walked into closed loops.
+pub(crate) fn material_sides(
+    model: &Model,
+    face: &Shape,
+    tol: Tolerances,
+) -> Option<Vec<(Shape, Point2, Vector2)>> {
+    let walked = walked(model, face, false, tol).ok()??;
+    let mut out = Vec::new();
+    for (segments, region) in &walked.loops {
+        for segment in segments {
+            for k in 1..=4 {
+                let t = segment.t0 + (segment.t1 - segment.t0) * f64::from(k) / 5.0;
+                let (at, d) = segment.at(t, tol).ok()?;
+                let heading = if segment.t1 < segment.t0 { -d } else { d };
+                out.push((segment.edge.clone(), at, heading.perpendicular() * *region));
+            }
+        }
+    }
+    Some(out)
+}
+
+/// A face's loops in its chart, or `None` where they cannot be had: an
+/// edge without a pcurve on the face, a placement that scales, or a loop
+/// whose pieces do not meet; and where `strict`, a pcurve straying from
+/// its edge.
+fn walked(
+    model: &Model,
+    face: &Shape,
+    strict: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<Walked>> {
+    let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
+        return Ok(None);
+    };
+    let Some(surface) = model.geometry().surface(data.surface) else {
+        return Ok(None);
+    };
     // The pcurves are the unplaced surface's; a rigid placement keeps its
     // chart, a scaling one would change the metric under them.
     let placement = face.transform(model.datums())?;
@@ -134,7 +208,7 @@ fn loops_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<
 
     let mut loops = Vec::new();
     for wire in model.ordered_children_of(face)? {
-        let Some(segments) = walk(model, data.surface, &placed, &wire, period, tol)? else {
+        let Some(segments) = walk(model, data.surface, &placed, &wire, period, strict, tol)? else {
             return Ok(None);
         };
         loops.push(segments);
@@ -202,20 +276,10 @@ fn loops_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<
             (segments, region * area.signum())
         })
         .collect();
-    let u_ref = if surface.is_periodic_u() {
-        lo.x
-    } else {
-        lo.x.clamp(u0, u1)
-    };
-    Ok(Some(ChartFace {
-        surface: placed,
+    Ok(Some(Walked {
+        placed,
         loops,
-        sign: if face.orientation() == Orientation::Reversed {
-            -1.0
-        } else {
-            1.0
-        },
-        u_ref,
+        lo,
         scale,
     }))
 }
@@ -232,6 +296,7 @@ fn walk(
     placed: &SurfaceGeometry,
     wire: &Shape,
     period: Vector2,
+    strict: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Vec<Segment>>> {
     let mut edges = model.ordered_children_of(wire)?;
@@ -291,6 +356,7 @@ fn walk(
                 best = Some((
                     miss,
                     Segment {
+                        edge: edge.clone(),
                         curve: curve.clone(),
                         t0,
                         t1,
@@ -302,7 +368,7 @@ fn walk(
         let Some((_, segment)) = best else {
             return Ok(None);
         };
-        if !lies_on_edge(model, edge, placed, &segment, tol)? {
+        if strict && !lies_on_edge(model, edge, placed, &segment, tol)? {
             return Ok(None);
         }
         last = Some(segment.at(segment.t1, tol)?.0);

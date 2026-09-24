@@ -105,3 +105,28 @@ fn half_an_elliptic_prism_measures_half() {
         "{centre:?}"
     );
 }
+
+/// A drum with a quarter cut away, along its seam and across its axis:
+/// its caps are concave, three quarters of a disc, and its wall keeps the
+/// seam down one column only. It measures exactly, which needs every face
+/// read the right way out.
+#[test]
+fn a_three_quarter_drum_measures_exactly() {
+    use ogeom::math::Direction;
+    let mut model = Model::new();
+    let below = Frame::new(Point::new(0.0, 0.0, -3.0), Direction::Z, Direction::X, T).unwrap();
+    let drum = ogeom::algo::make_cylinder(&mut model, below, 5.0, 6.0, T)
+        .unwrap()
+        .shape;
+    let corner = Frame::new(Point::new(0.0, 0.0, -20.0), Direction::Z, Direction::X, T).unwrap();
+    let quarter = ogeom::algo::make_box(&mut model, corner, (20.0, 20.0, 40.0), T)
+        .unwrap()
+        .shape;
+    let rest = ogeom::boolean::cut(&mut model, &drum, &quarter, T)
+        .unwrap()
+        .shape;
+    let v = volume_properties(&model, &rest, Deflection::default(), T).unwrap();
+    let exact = 0.75 * PI * 25.0 * 6.0;
+    assert_eq!(v.deflection, 0.0, "integrated, not meshed");
+    assert!((v.mass - exact).abs() < 1e-9 * exact, "{}", v.mass);
+}

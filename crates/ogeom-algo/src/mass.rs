@@ -794,13 +794,46 @@ fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<boo
         } else {
             1.0
         };
-        // Each wire's middle in the chart, and which wire is the boundary:
+        // Where the boundary walks into closed chart loops, their windings
+        // say which side the face lies on at every point, concave or not.
+        if let Some(stations) = crate::mass_chart::material_sides(model, &face, tol) {
+            for (edge, at, toward) in stations {
+                let (du, dv) = placed.d1_at(at.x, at.y, tol)?;
+                let raw = du.cross(dv);
+                let inward = du * toward.x + dv * toward.y;
+                if raw.magnitude() <= tol.angular() || inward.magnitude() <= tol.angular() {
+                    return Ok(true);
+                }
+                let out = raw / raw.magnitude() * flag;
+                let walk = out.cross(inward / inward.magnitude());
+                let station = placed.point_at(at.x, at.y, tol)?;
+                let Some(along) = edge_heading(model, &edge, station, tol)? else {
+                    return Ok(true);
+                };
+                walks.entry(edge.node()).or_default().push((
+                    walk.dot(along) > 0.0,
+                    face.node(),
+                    true,
+                ));
+            }
+            continue;
+        }
+        // Otherwise each wire's middle in the chart stands in for the side
+        // the face lies on, and which wire is the boundary:
         // the one covering the most of it, since a hole is inside what it
         // is a hole in.
         let wires = model.ordered_children_of(&face)?;
         let mut middles: Vec<(ogeom_math::Point2, f64)> = Vec::with_capacity(wires.len());
-        let mut stations: Vec<Vec<(Shape, ogeom_math::Point2, f64)>> =
-            Vec::with_capacity(wires.len());
+        let mut stations: Vec<Vec<(Shape, ogeom_math::Point2)>> = Vec::with_capacity(wires.len());
+        // How often each edge bounds this face: a seam the face uses once
+        // (a half band, cut along its seam) bounds it down one column only.
+        let mut uses: std::collections::HashMap<ogeom_topo::TShapeId, usize> =
+            std::collections::HashMap::new();
+        for wire in &wires {
+            for edge in model.ordered_children_of(wire)? {
+                *uses.entry(edge.node()).or_default() += 1;
+            }
+        }
         for wire in &wires {
             let mut here = Vec::new();
             let mut sum = ogeom_math::Vector2::new(0.0, 0.0);
@@ -808,6 +841,11 @@ fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<boo
                 ogeom_math::Point2::new(f64::INFINITY, f64::INFINITY),
                 ogeom_math::Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
             );
+            // Seams used once, their column chosen once the rest of the
+            // wire says where the face lies: by the ends of the other
+            // pieces, which meet the used column and not the other.
+            let mut once: Vec<(Shape, [ogeom_topo::PCurveId; 2], (f64, f64))> = Vec::new();
+            let mut ends: Vec<ogeom_math::Point2> = Vec::new();
             for edge in model.ordered_children_of(wire)? {
                 if edge.location() != &placed_at {
                     return Ok(true);
@@ -827,6 +865,15 @@ fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<boo
                         reversed,
                         range,
                         ..
+                    } if uses.get(&edge.node()) == Some(&1) => {
+                        once.push((edge.clone(), [*forward, *reversed], *range));
+                        continue;
+                    }
+                    EdgeRepr::Seam {
+                        forward,
+                        reversed,
+                        range,
+                        ..
                     } => vec![(*forward, *range), (*reversed, *range)],
                     _ => return Ok(true),
                 };
@@ -834,6 +881,8 @@ fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<boo
                     let Some(pcurve) = model.geometry().pcurve(id) else {
                         return Ok(true);
                     };
+                    ends.push(pcurve.point_at(range.0, tol)?);
+                    ends.push(pcurve.point_at(range.1, tol)?);
                     // Several stations along each edge, not one: a wire of
                     // a single closed edge has its own midpoint for a
                     // middle, and nothing lies from a point toward itself.
@@ -846,12 +895,47 @@ fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<boo
                         sum += at.to_vector();
                         lo = ogeom_math::Point2::new(lo.x.min(at.x), lo.y.min(at.y));
                         hi = ogeom_math::Point2::new(hi.x.max(at.x), hi.y.max(at.y));
-                        here.push((edge.clone(), at, t));
+                        here.push((edge.clone(), at));
                     }
                 }
             }
-            if here.is_empty() {
+            if here.is_empty() && once.is_empty() {
                 return Ok(true);
+            }
+            // A seam used once runs down the column its neighbours meet.
+            for (edge, sides, range) in once {
+                let mut best: Option<(f64, ogeom_topo::PCurveId)> = None;
+                for id in sides {
+                    let Some(pcurve) = model.geometry().pcurve(id) else {
+                        return Ok(true);
+                    };
+                    let mut d = f64::INFINITY;
+                    for t in [range.0, range.1] {
+                        let at = pcurve.point_at(t, tol)?;
+                        for end in &ends {
+                            d = d.min(at.distance(*end));
+                        }
+                    }
+                    if best.is_none_or(|(held, _)| d < held) {
+                        best = Some((d, id));
+                    }
+                }
+                let Some((_, id)) = best else {
+                    return Ok(true);
+                };
+                let Some(pcurve) = model.geometry().pcurve(id) else {
+                    return Ok(true);
+                };
+                const STATIONS: usize = 4;
+                for step in 1..=STATIONS {
+                    #[allow(clippy::cast_precision_loss)]
+                    let t = range.0 + (range.1 - range.0) * (step as f64 / (STATIONS + 1) as f64);
+                    let at = pcurve.point_at(t, tol)?;
+                    sum += at.to_vector();
+                    lo = ogeom_math::Point2::new(lo.x.min(at.x), lo.y.min(at.y));
+                    hi = ogeom_math::Point2::new(hi.x.max(at.x), hi.y.max(at.y));
+                    here.push((edge.clone(), at));
+                }
             }
             #[allow(clippy::cast_precision_loss)]
             let middle = ogeom_math::Point2::ORIGIN + sum / here.len() as f64;
@@ -864,7 +948,7 @@ fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<boo
         };
         for (index, here) in stations.into_iter().enumerate() {
             let (middle, _) = middles[index];
-            for (edge, at, t) in here {
+            for (edge, at) in here {
                 let (du, dv) = placed.d1_at(at.x, at.y, tol)?;
                 let raw = du.cross(dv);
                 if raw.magnitude() <= tol.angular() {
@@ -882,8 +966,12 @@ fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<boo
                 }
                 let walk = out.cross(inward / inward.magnitude());
                 // Against the edge's own direction, so the two faces'
-                // answers can be compared without comparing vectors.
-                let Some(along) = edge_direction(model, &edge, t, tol)? else {
+                // answers can be compared without comparing vectors. The
+                // direction is read where the edge's curve passes the
+                // station, since neither a pcurve's parameter nor its sense
+                // need be its curve's.
+                let station = placed.point_at(at.x, at.y, tol)?;
+                let Some(along) = edge_heading(model, &edge, station, tol)? else {
                     return Ok(true);
                 };
                 walks.entry(edge.node()).or_default().push((
@@ -916,28 +1004,53 @@ fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<boo
     Ok(true)
 }
 
-/// An edge's own direction in space at the parameter `t` of its curve.
-fn edge_direction(
+/// An edge's own direction in space where its curve passes nearest `at`:
+/// the best of a sampling over the edge's range, narrowed by golden
+/// sections, and the curve's tangent there.
+fn edge_heading(
     model: &Model,
     edge: &Shape,
-    t: f64,
+    at: Point,
     tol: Tolerances,
 ) -> OgeomResult<Option<Vector>> {
     use ogeom_geom::Curve3d as _;
-    use ogeom_geom::Transformable as _;
-    let Some(curve) = model
+    let Some((curve, range)) = model
         .node(edge)
         .and_then(|n| n.data().as_edge())
         .and_then(|d| match d.curve3d()? {
-            EdgeRepr::Curve3d { curve, .. } => Some(*curve),
+            EdgeRepr::Curve3d { curve, range, .. } => Some((*curve, *range)),
             _ => None,
         })
-        .and_then(|id| model.geometry().curve(id).cloned())
+        .and_then(|(id, range)| Some((model.geometry().curve(id)?.clone(), range)))
     else {
         return Ok(None);
     };
     let curve = curve.transformed(&edge.transform(model.datums())?, tol)?;
-    let along = curve.d1_at(t, tol)?;
+    let gap = |t: f64| -> OgeomResult<f64> { Ok(curve.point_at(t, tol)?.distance(at)) };
+    const SAMPLES: u32 = 32;
+    let step = (range.1 - range.0) / f64::from(SAMPLES);
+    let mut best = (range.0, gap(range.0)?);
+    for k in 1..=SAMPLES {
+        let t = range.0 + step * f64::from(k);
+        let d = gap(t)?;
+        if d < best.1 {
+            best = (t, d);
+        }
+    }
+    let (mut a, mut b) = (
+        (best.0 - step.abs()).max(range.0.min(range.1)),
+        (best.0 + step.abs()).min(range.0.max(range.1)),
+    );
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..60 {
+        let (c, d) = (b - (b - a) * ratio, a + (b - a) * ratio);
+        if gap(c)? < gap(d)? {
+            b = d;
+        } else {
+            a = c;
+        }
+    }
+    let along = curve.d1_at(f64::midpoint(a, b), tol)?;
     Ok((along.magnitude() > tol.angular()).then(|| along / along.magnitude()))
 }
 
