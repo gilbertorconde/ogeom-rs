@@ -2408,6 +2408,117 @@ fn fill(
         }
         pieces.extend(made);
     }
+    // A piece running along a face's own edge and that edge are one curve,
+    // split twice: the piece where its section's cuts fell, the edge where
+    // every section that met it paved it, each worked out apart. A loop
+    // hugging a rim is split at its middle, the rim wherever another
+    // section crossed it; the two faces then walk different pieces of one
+    // circle and never sew. Now that every pave is in, each such piece is
+    // cut wherever its edge is split, and the edge split wherever the piece
+    // ends, twice over so a split one piece adds reaches the others.
+    for _ in 0..2 {
+        let mut settled: Vec<SectionPiece> = Vec::with_capacity(pieces.len());
+        for piece in pieces.drain(..) {
+            if !(piece.hugs[0] || piece.hugs[1]) {
+                settled.push(piece);
+                continue;
+            }
+            let section = &sections[piece.section];
+            let domain = section.curve.domain();
+            let period = domain.1 - domain.0;
+            let (lo, hi) = piece.range;
+            let at = |t: f64| {
+                section
+                    .curve
+                    .point_at(at_param(t, domain, section.closed), tol)
+            };
+            let width = (tol.confusion() * 1e3).max(section.tolerance * 3.0);
+            let mid = at(f64::midpoint(lo, hi))?;
+            let mut hugged: Vec<&BoundaryEdge> = Vec::new();
+            for side in 0..2 {
+                if !piece.hugs[side] {
+                    continue;
+                }
+                let face = if side == 0 {
+                    &ga.faces[section.face_a]
+                } else {
+                    &gb.faces[section.face_b]
+                };
+                for e in &face.edges {
+                    if distance_to_edge_curve(&e.curve, e.crange, mid, tol)?
+                        <= width.max(e.tolerance * 2.0)
+                    {
+                        hugged.push(e);
+                    }
+                }
+            }
+            let mut cuts: Vec<f64> = Vec::new();
+            for e in &hugged {
+                let mut on_edge: Vec<f64> = vec![e.crange.0, e.crange.1];
+                if let Some(list) = paves.get(&e.node) {
+                    on_edge.extend(list.iter().map(|pave| pave.t));
+                }
+                for t in on_edge {
+                    let q = e.curve.point_at(t, tol)?;
+                    let foot = ogeom_algo::project_on_curve(&section.curve, q, 64, tol)?;
+                    if foot.distance > width.max(e.tolerance * 2.0) {
+                        continue;
+                    }
+                    let mut f = foot.parameter;
+                    if section.closed && period > 0.0 {
+                        while f < lo {
+                            f += period;
+                        }
+                        while f - period >= lo {
+                            f -= period;
+                        }
+                    }
+                    if f > lo + tol.parametric() && f < hi - tol.parametric() {
+                        cuts.push(f);
+                    }
+                }
+            }
+            cuts.push(lo);
+            cuts.push(hi);
+            cuts.sort_by(f64::total_cmp);
+            cuts.dedup_by(|a, b| (*a - *b).abs() <= tol.parametric());
+            // The edge split wherever the piece now ends.
+            for e in &hugged {
+                for &c in &cuts {
+                    let q = at(c)?;
+                    let foot = ogeom_algo::project_on_curve(&e.curve, q, 64, tol)?;
+                    if foot.distance > width.max(e.tolerance * 2.0) {
+                        continue;
+                    }
+                    let on_e = onto_range(foot.parameter, &e.curve, e.crange, tol);
+                    if on_e <= e.crange.0.min(e.crange.1) + tol.parametric()
+                        || on_e >= e.crange.0.max(e.crange.1) - tol.parametric()
+                    {
+                        continue;
+                    }
+                    let list = paves.entry(e.node).or_default();
+                    if list
+                        .iter()
+                        .all(|pave| (pave.t - on_e).abs() > tol.parametric())
+                    {
+                        list.push(Pave {
+                            t: on_e,
+                            honesty: honest(section.tolerance, tol).max(foot.distance),
+                        });
+                    }
+                }
+            }
+            for pair in cuts.windows(2) {
+                settled.push(SectionPiece {
+                    section: piece.section,
+                    range: (pair[0], pair[1]),
+                    hugs: piece.hugs,
+                    hug_key: piece.hug_key,
+                });
+            }
+        }
+        pieces = settled;
+    }
     // Two sections hugging onto one face along one line lay the same split
     // down twice (a top face's trace and its band's, both along the rail
     // they share, which need not be one edge node once a shell has been

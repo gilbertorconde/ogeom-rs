@@ -635,3 +635,50 @@ fn a_box_cut_flush_with_a_bracket_s_wall_paves_the_end_face() {
         assert!((got - want).abs() < 1e-3, "{label}: {got} against {want}");
     }
 }
+
+/// A countersink whose bore is exactly its cone's narrow end: the cone's
+/// rim lies in the bore's wall, so the one circle is both an edge the cone
+/// keeps and a section the bore's wall is split along. Cut in either order
+/// or as one tool, the plate comes out valid and short by exactly the
+/// frustum and the bore below it.
+#[test]
+fn a_countersink_whose_bore_is_its_narrow_end_cuts_clean() {
+    let mut model = Model::new();
+    let at = |z: f64| Frame::new(Point::new(0.0, 0.0, z), Direction::Z, Direction::X, T).unwrap();
+    let corner = Frame::new(Point::new(-10.0, -10.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let plate = ogeom::algo::make_box(&mut model, corner, (20.0, 20.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let sink = ogeom::algo::make_cone(&mut model, at(1.0), 1.0, 5.0, 4.0, T)
+        .unwrap()
+        .shape;
+    let bore = ogeom::algo::make_cylinder(&mut model, at(-1.0), 1.0, 7.0, T)
+        .unwrap()
+        .shape;
+    let pi = core::f64::consts::PI;
+    let want = 2000.0 - pi * 4.0 / 3.0 * (1.0 + 5.0 + 25.0) - pi;
+
+    let sunk = ogeom::boolean::cut(&mut model, &plate, &sink, T)
+        .unwrap()
+        .shape;
+    let one = ogeom::boolean::cut(&mut model, &sunk, &bore, T)
+        .unwrap()
+        .shape;
+    let bored = ogeom::boolean::cut(&mut model, &plate, &bore, T)
+        .unwrap()
+        .shape;
+    let other = ogeom::boolean::cut(&mut model, &bored, &sink, T)
+        .unwrap()
+        .shape;
+    let tool = ogeom::boolean::fuse(&mut model, &sink, &bore, T)
+        .unwrap()
+        .shape;
+    let whole = ogeom::boolean::cut(&mut model, &plate, &tool, T)
+        .unwrap()
+        .shape;
+    for result in [&one, &other, &whole] {
+        assert!(ogeom::algo::check(&model, result, T).unwrap().is_valid());
+        let got = volume(&model, result);
+        assert!((got - want).abs() < want * 1e-9, "{got} against {want}");
+    }
+}

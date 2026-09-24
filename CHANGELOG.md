@@ -22,6 +22,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A countersink whose bore was exactly its narrow end refused to cut.**
+  The cone's rim lay in the bore's wall, and the rim edge and the section
+  along it were split at different points: the section at its middle, the
+  rim where another section crossed it. Once every section is paved, a
+  piece running along an edge is cut wherever the edge is split, and the
+  edge wherever the piece ends.
+
 - **A ball or a ring with holes in it stayed faceted.** Only a ball cut
   by parallel planes, or a ring cut square to its tube, was rebuilt. A
   ball or ring whose boundary only makes holes in it (a boss fused on a
