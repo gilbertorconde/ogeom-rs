@@ -46,6 +46,11 @@ bump may break the API and a patch bump may not.
   it. A line crossing a circle or ellipse is solved in closed form rather
   than by sampling. A drill through a converted part of 25 000 faces
   cuts in 2 s.
+- **Sewing could open a face's wire.** Two edges within their own
+  tolerance of each other were merged, but when their ends were two
+  vertices farther apart than either vertex's tolerance, the faces
+  around the dropped edge kept ending on its vertex, and their wires
+  broke. Merged edges now end on one vertex, widened to reach both.
 
 ## [0.3.2] - 2026-09-24
 

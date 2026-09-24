@@ -222,91 +222,108 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
     // mixture is reported to have a gap, because it has one: `is_same_position`
     // asks whether one node appears at two placements, which is the right
     // question and not this one.
-    let vertices = merge_vertices(model, faces, tol)?;
-    let rebuilt_edges = rebuild_edges(model, faces, &vertices)?;
+    let mut vertices = merge_vertices(model, faces, tol)?;
+    // Two edges decided to be one must end on the same vertices, or the
+    // faces that bounded the dropped one keep its neighbours ending where
+    // the dropped one did, and their wires open. Twins whose ends are still
+    // two vertices (each within its own span of the other edge's end, not
+    // of the other vertex) have those vertices joined, and the edges are
+    // rebuilt on them and matched again.
+    let mut rounds = 0;
+    let (rebuilt_edges, merged, joined) = loop {
+        let rebuilt_edges = rebuild_edges(model, faces, &vertices)?;
 
-    // Every distinct edge node used by the faces, with the geometry that
-    // decides whether two of them are the same edge.
-    let mut catalogue: Vec<(TShapeId, Fingerprint)> = Vec::new();
-    let mut catalogued: HashSet<TShapeId> = HashSet::new();
-    for face in faces {
-        for edge in explore_unique(model, face, ShapeType::Edge)? {
-            let id = rebuilt_edges
-                .get(&edge.node())
-                .copied()
-                .unwrap_or(edge.node());
-            if !catalogued.insert(id) {
-                continue;
-            }
-            if let Some(print) = fingerprint(model, &Shape::of(id), tol)? {
-                catalogue.push((id, print));
-            }
-        }
-    }
-
-    // Which node each edge is decided to *be*, and whether it runs the other
-    // way from the one it replaced.
-    let mut merged: HashMap<TShapeId, (TShapeId, bool)> = HashMap::new();
-    let mut joined = 0;
-    // The widest reach any pair compares its ends at.
-    let reach = catalogue
-        .iter()
-        .fold(tol.confusion(), |acc, (_, print)| acc.max(print.width));
-    let mut starts = Bins::new(reach);
-    for (index, (_, print)) in catalogue.iter().enumerate() {
-        starts.insert(print.start, index);
-    }
-    for i in 0..catalogue.len() {
-        if merged.contains_key(&catalogue[i].0) {
-            continue;
-        }
-        for j in twin_candidates(&catalogue, &starts, reach, i) {
-            if merged.contains_key(&catalogue[j].0) {
-                continue;
-            }
-            let Some(flipped) = catalogue[i].1.same_as(&catalogue[j].1, tol)? else {
-                continue;
-            };
-            // The survivor now answers for both descriptions of the edge,
-            // and its vertices must reach the twin's ends: two fingerprints
-            // that matched within their stated widths may still disagree by
-            // more than a fresh vertex's tolerance, and the disagreement is
-            // recorded where the data model records it.
-            let (kept_fp, dropped_fp) = (catalogue[i].1.clone(), catalogue[j].1.clone());
-            let survivor = Shape::of(catalogue[i].0);
-            let ends = if flipped {
-                [
-                    (kept_fp.start, dropped_fp.end),
-                    (kept_fp.end, dropped_fp.start),
-                ]
-            } else {
-                [
-                    (kept_fp.start, dropped_fp.start),
-                    (kept_fp.end, dropped_fp.end),
-                ]
-            };
-            let bounds = model.children_of(&survivor)?;
-            for vertex in &bounds {
-                if let Some(data) = model.node(vertex).and_then(|n| n.data().as_vertex()) {
-                    let at = data.point;
-                    let mut need = data.tolerance.get();
-                    for (a, b) in &ends {
-                        if at.distance(*a) <= need.max(tol.confusion() * 1e2) {
-                            need = need.max(a.distance(*b) + tol.confusion());
-                        }
-                    }
-                    if need > data.tolerance.get()
-                        && let Some(node) = model.node_mut(vertex)
-                        && let NodeData::Vertex(v) = node.data_mut()
-                    {
-                        v.tolerance = v.tolerance.widen_to(need);
-                    }
+        // Every distinct edge node used by the faces, with the geometry that
+        // decides whether two of them are the same edge.
+        let mut catalogue: Vec<(TShapeId, Fingerprint)> = Vec::new();
+        let mut catalogued: HashSet<TShapeId> = HashSet::new();
+        for face in faces {
+            for edge in explore_unique(model, face, ShapeType::Edge)? {
+                let id = rebuilt_edges
+                    .get(&edge.node())
+                    .copied()
+                    .unwrap_or(edge.node());
+                if !catalogued.insert(id) {
+                    continue;
+                }
+                if let Some(print) = fingerprint(model, &Shape::of(id), tol)? {
+                    catalogue.push((id, print));
                 }
             }
-            merged.insert(catalogue[j].0, (catalogue[i].0, flipped));
-            joined += 1;
         }
-    }
+
+        // Which node each edge is decided to *be*, and whether it runs the other
+        // way from the one it replaced.
+        let mut merged: HashMap<TShapeId, (TShapeId, bool)> = HashMap::new();
+        let mut joined = 0;
+        // The widest reach any pair compares its ends at.
+        let reach = catalogue
+            .iter()
+            .fold(tol.confusion(), |acc, (_, print)| acc.max(print.width));
+        let mut starts = Bins::new(reach);
+        for (index, (_, print)) in catalogue.iter().enumerate() {
+            starts.insert(print.start, index);
+        }
+        for i in 0..catalogue.len() {
+            if merged.contains_key(&catalogue[i].0) {
+                continue;
+            }
+            for j in twin_candidates(&catalogue, &starts, reach, i) {
+                if merged.contains_key(&catalogue[j].0) {
+                    continue;
+                }
+                let Some(flipped) = catalogue[i].1.same_as(&catalogue[j].1, tol)? else {
+                    continue;
+                };
+                // The survivor now answers for both descriptions of the edge,
+                // and its vertices must reach the twin's ends: two fingerprints
+                // that matched within their stated widths may still disagree by
+                // more than a fresh vertex's tolerance, and the disagreement is
+                // recorded where the data model records it.
+                let (kept_fp, dropped_fp) = (catalogue[i].1.clone(), catalogue[j].1.clone());
+                let survivor = Shape::of(catalogue[i].0);
+                let ends = if flipped {
+                    [
+                        (kept_fp.start, dropped_fp.end),
+                        (kept_fp.end, dropped_fp.start),
+                    ]
+                } else {
+                    [
+                        (kept_fp.start, dropped_fp.start),
+                        (kept_fp.end, dropped_fp.end),
+                    ]
+                };
+                let bounds = model.children_of(&survivor)?;
+                for vertex in &bounds {
+                    if let Some(data) = model.node(vertex).and_then(|n| n.data().as_vertex()) {
+                        let at = data.point;
+                        let mut need = data.tolerance.get();
+                        for (a, b) in &ends {
+                            if at.distance(*a) <= need.max(tol.confusion() * 1e2) {
+                                need = need.max(a.distance(*b) + tol.confusion());
+                            }
+                        }
+                        if need > data.tolerance.get()
+                            && let Some(node) = model.node_mut(vertex)
+                            && let NodeData::Vertex(v) = node.data_mut()
+                        {
+                            v.tolerance = v.tolerance.widen_to(need);
+                        }
+                    }
+                }
+                merged.insert(catalogue[j].0, (catalogue[i].0, flipped));
+                joined += 1;
+            }
+        }
+        let apart = twin_ends_apart(model, &merged)?;
+        if apart.is_empty() || rounds == 3 {
+            break (rebuilt_edges, merged, joined);
+        }
+        rounds += 1;
+        for (gone, keep) in apart {
+            join_vertex(model, &mut vertices, gone, keep, tol)?;
+        }
+    };
 
     // The survivor has to carry the pcurves of the edge it replaced, or the
     // face that used the replaced one loses its description in parameter space
@@ -483,6 +500,86 @@ fn merge_vertices(
         }
     }
     Ok(out)
+}
+
+/// The vertex pairs twin edges end on that are not yet one vertex: the
+/// dropped edge's end first, the survivor's second.
+fn twin_ends_apart(
+    model: &Model,
+    merged: &HashMap<TShapeId, (TShapeId, bool)>,
+) -> OgeomResult<Vec<(TShapeId, TShapeId)>> {
+    let ends = |id: TShapeId| -> Option<(TShapeId, TShapeId)> {
+        let children = model.node_by_id(id)?.children();
+        Some((children.first()?.node(), children.last()?.node()))
+    };
+    let mut out = Vec::new();
+    let mut pairs: Vec<(&TShapeId, &(TShapeId, bool))> = merged.iter().collect();
+    pairs.sort_by_key(|(dropped, _)| dropped.index());
+    for (dropped, (kept, flipped)) in pairs {
+        let (Some((d0, d1)), Some((k0, k1))) = (ends(*dropped), ends(*kept)) else {
+            continue;
+        };
+        let matched = if *flipped {
+            [(d0, k1), (d1, k0)]
+        } else {
+            [(d0, k0), (d1, k1)]
+        };
+        for (d, k) in matched {
+            if d != k && !out.contains(&(d, k)) {
+                out.push((d, k));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Make `gone` one vertex with `keep`: every vertex mapped to either now
+/// maps to `keep`'s survivor, whose tolerance reaches `gone`'s span.
+fn join_vertex(
+    model: &mut Model,
+    vertices: &mut HashMap<TShapeId, TShapeId>,
+    gone: TShapeId,
+    keep: TShapeId,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let resolve = |vertices: &HashMap<TShapeId, TShapeId>, mut v: TShapeId| {
+        while let Some(&next) = vertices.get(&v) {
+            if next == v {
+                break;
+            }
+            v = next;
+        }
+        v
+    };
+    let (gone, keep) = (resolve(vertices, gone), resolve(vertices, keep));
+    if gone == keep {
+        return Ok(());
+    }
+    let (Some(g), Some(k)) = (
+        model
+            .node_by_id(gone)
+            .and_then(|n| n.data().as_vertex())
+            .map(|d| (d.point, d.tolerance.get())),
+        model
+            .node_by_id(keep)
+            .and_then(|n| n.data().as_vertex())
+            .map(|d| d.point),
+    ) else {
+        return Ok(());
+    };
+    let need = g.0.distance(k) + g.1 + tol.confusion();
+    if let Some(node) = model.node_mut(&Shape::of(keep))
+        && let NodeData::Vertex(v) = node.data_mut()
+    {
+        v.tolerance = v.tolerance.widen_to(need);
+    }
+    for target in vertices.values_mut() {
+        if *target == gone {
+            *target = keep;
+        }
+    }
+    vertices.insert(gone, keep);
+    Ok(())
 }
 
 /// The dropped edge's parametric representations as the survivor carries
@@ -1274,6 +1371,57 @@ mod tests {
         assert_eq!(sewn.free_edges.len(), 6);
         assert!(!is_shell_closed(&model, &sewn.shells[0]).unwrap());
         assert!(sewn.history.is_affected(&left));
+    }
+
+    /// Twin edges whose ends are two vertices apart by more than either
+    /// vertex's own tolerance, though within the edges': the right square's
+    /// corner sits a hundredth below the left's, and its shared edge is loose
+    /// enough to be the left's. Merged, the edges must end on one vertex, or
+    /// the right square's bottom edge still ends at its own corner and its
+    /// wire opens.
+    #[test]
+    fn twin_edges_join_the_vertices_they_end_on() {
+        let mut model = Model::new();
+        let left = loose_square(
+            &mut model,
+            [
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(1.0, 0.0, 0.0),
+                Point::new(1.0, 1.0, 0.0),
+                Point::new(0.0, 1.0, 0.0),
+            ],
+        );
+        let right = loose_square(
+            &mut model,
+            [
+                Point::new(1.0, -0.01, 0.0),
+                Point::new(2.0, 0.0, 0.0),
+                Point::new(2.0, 1.0, 0.0),
+                Point::new(1.0, 1.0, 0.0),
+            ],
+        );
+        for edge in explore_unique(&model, &right, ShapeType::Edge).unwrap() {
+            let (a, b) = crate::edge_vertices(&model, &edge).unwrap().unwrap();
+            let (pa, pb) = (placed(&model, &a).unwrap(), placed(&model, &b).unwrap());
+            if (pa.x - 1.0).abs() < 1e-9
+                && (pb.x - 1.0).abs() < 1e-9
+                && let Some(node) = model.node_mut(&edge)
+                && let NodeData::Edge(data) = node.data_mut()
+            {
+                data.tolerance = data.tolerance.widen_to(0.012);
+            }
+        }
+        let sewn = sew(&mut model, &[left, right], T).unwrap();
+        assert_eq!(sewn.joined, 1, "the loose edge is the left square's");
+        assert_eq!(sewn.shells.len(), 1);
+        assert_eq!(
+            explore_unique(&model, &sewn.shells[0], ShapeType::Vertex)
+                .unwrap()
+                .len(),
+            6,
+            "the two corners at the bottom of the shared edge are one"
+        );
+        assert_eq!(sewn.free_edges.len(), 6);
     }
 
     #[test]
