@@ -2298,7 +2298,9 @@ fn fill(
                     let mut kept: Vec<f64> = Vec::with_capacity(cuts.len());
                     let mut held: Option<Point> = None;
                     for (index, c) in cuts.iter().enumerate() {
-                        let at = section.curve.point_at(fold(*c, domain), tol)?;
+                        let at = section
+                            .curve
+                            .point_at(at_param(*c, domain, section.closed), tol)?;
                         let last = index + 1 == cuts.len();
                         if index == 0 || last || held.is_none_or(|h: Point| h.distance(at) > floor)
                         {
@@ -2328,7 +2330,9 @@ fn fill(
                         // hugged edge too, or the section's neighbour walks two
                         // strands where the hugged edge's face walks one.
                         for c in &cuts {
-                            let at = section.curve.point_at(fold(*c, domain), tol)?;
+                            let at = section
+                                .curve
+                                .point_at(at_param(*c, domain, section.closed), tol)?;
                             let foot = ogeom_algo::project_on_curve(&e.curve, at, 64, tol)?;
                             // A cut off the edge (past the stretch the
                             // section hugs, on a neighbouring edge) is no
@@ -2361,8 +2365,12 @@ fn fill(
                 }
                 for pair in cuts.windows(2) {
                     let (lo2, hi2) = (pair[0], pair[1]);
-                    let from = section.curve.point_at(fold(lo2, domain), tol)?;
-                    let to = section.curve.point_at(fold(hi2, domain), tol)?;
+                    let from = section
+                        .curve
+                        .point_at(at_param(lo2, domain, section.closed), tol)?;
+                    let to = section
+                        .curve
+                        .point_at(at_param(hi2, domain, section.closed), tol)?;
                     if from.distance(to) <= tol.confusion() {
                         // A full loop: two arcs, so every strand has two
                         // distinct endpoints.

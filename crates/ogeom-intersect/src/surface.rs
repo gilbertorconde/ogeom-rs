@@ -370,12 +370,14 @@ fn coaxial_cylinder_sphere(
 }
 
 /// A plane perpendicular to a torus's axis: apart, one tangent circle, or two
-/// parallels.
+/// parallels. A plane through the axis: two meridians.
 ///
-/// The perpendicular slice is the only plane/torus configuration with a
-/// closed form worth the name: an oblique plane meets a torus in a quartic
-/// (with Villarceau's circles at exactly one magic tilt), and that is the
-/// marching intersector's business. The blend machinery lives on this case:
+/// Those are the plane/torus configurations with a closed form worth the
+/// name: an oblique plane, or one parallel to the axis and off it, meets a
+/// torus in a quartic (with Villarceau's circles at exactly one magic
+/// tilt), and that is the marching intersector's business. A plane through
+/// the axis often holds the torus's seam, and a fitted section there never
+/// meets the seam's own vertices. The blend machinery lives on this case:
 /// a rolling ball's toroidal envelope is tangent to the plane it rolls on
 /// along a circle, and that tangency must be *reported as the circle it is*,
 /// the way a tangent plane reports its line on a cylinder; a tangential
@@ -387,11 +389,17 @@ fn axial_plane_torus(
 ) -> OgeomResult<Meeting> {
     let axis = torus.axis();
     let along = plane.normal().dot(axis.direction);
+    if along.abs() <= tol.angular()
+        && plane.signed_distance_to(axis.location).abs() <= tol.confusion()
+    {
+        return Ok(meridians(plane, torus, tol));
+    }
     if (along.abs() - 1.0).abs() > tol.angular() {
         ogeom_bail!(
             NotDone,
-            "a plane oblique or parallel to a torus's axis meets it in a \
-             quartic, which needs the general marching intersector"
+            "a plane oblique to a torus's axis, or parallel to it and off it, \
+             meets it in a quartic, which needs the general marching \
+             intersector"
         );
     }
     // The plane's height above the tube's centre plane.
@@ -422,6 +430,28 @@ fn axial_plane_torus(
     } else {
         Meeting::Along(circles)
     })
+}
+
+/// A plane through a torus's axis: the two tube circles either side of the
+/// axis, each starting on the outer equator as the torus's own meridians
+/// do, so a section lying on the torus's seam starts where the seam does.
+fn meridians(plane: ogeom_math::Plane, torus: ogeom_math::Torus, tol: Tolerances) -> Meeting {
+    let axis = torus.axis();
+    let normal = plane.normal();
+    let Ok(out) = Direction::from_cross(axis.direction.vector(), normal.vector(), tol) else {
+        return Meeting::Apart;
+    };
+    let circles: Vec<Curve> = [out.vector(), -out.vector()]
+        .into_iter()
+        .filter_map(|radial| {
+            let centre = axis.location + radial * torus.major_radius();
+            let x = Direction::new(radial, tol).ok()?;
+            let frame = Frame::new(centre, normal, x, tol).ok()?;
+            let circle = Circle::new(frame, torus.minor_radius(), tol).ok()?;
+            Some(ogeom_geom::CircleCurve::new(circle).into())
+        })
+        .collect();
+    Meeting::Along(circles)
 }
 
 /// A cylinder sharing a torus's axis: apart, one tangent circle, or two

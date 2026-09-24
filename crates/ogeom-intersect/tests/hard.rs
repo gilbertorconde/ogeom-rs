@@ -326,6 +326,43 @@ fn a_plane_through_a_torus_tube_cuts_two_loops() {
     assert!(radii[0] < 3.0 && radii[1] > 3.0, "radii {radii:?}");
 }
 
+/// A plane through a torus's axis meets it in two whole tube circles, in
+/// closed form, each starting on the outer equator where the torus's own
+/// meridians do; a plane holding the torus's seam traces the seam itself.
+#[test]
+fn a_plane_through_a_torus_axis_cuts_two_meridians_exactly() {
+    let torus: SurfaceGeometry =
+        TorusSurface::new(Torus::new(Frame::WORLD, 3.0, 1.0, T).unwrap()).into();
+    let seam_plane = pln(Point::ORIGIN, Vector::Y);
+    let Meeting::Along(circles) = surface_surface(&torus, &seam_plane, T).unwrap() else {
+        panic!("two circles");
+    };
+    assert_eq!(circles.len(), 2);
+    let mut starts = Vec::new();
+    for circle in &circles {
+        let (a, b) = circle.domain();
+        for k in 0..=16 {
+            let p = circle
+                .point_at(a + (b - a) * f64::from(k) / 16.0, T)
+                .unwrap();
+            let tube = (p.x.hypot(p.y) - 3.0).hypot(p.z);
+            assert!((tube - 1.0).abs() < 1e-12 && p.y.abs() < 1e-12, "{p:?}");
+        }
+        starts.push(circle.point_at(a, T).unwrap());
+    }
+    // Each starts on the outer equator: four and minus four along x.
+    assert!(
+        starts
+            .iter()
+            .any(|p| p.distance(Point::new(4.0, 0.0, 0.0)) < 1e-12)
+    );
+    assert!(
+        starts
+            .iter()
+            .any(|p| p.distance(Point::new(-4.0, 0.0, 0.0)) < 1e-12)
+    );
+}
+
 #[test]
 fn a_sphere_strictly_inside_another_is_apart_however_close() {
     let outer = sph(Point::ORIGIN, 2.0);
