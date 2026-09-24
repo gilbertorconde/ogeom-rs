@@ -697,6 +697,9 @@ fn prism_over_edge(
     // pcurve below is a straight line between chart points, which a shear
     // keeps straight.
     let mut chart: ChartMap = Box::new(|p| p);
+    // Whether the canonical surface's own normal points the other way from
+    // the extrusion's (the curve's tangent crossed with the travel).
+    let mut turned = false;
     let canonical: Option<ogeom_geom::SurfaceGeometry> = if let ogeom_geom::Curve::Line(line) =
         &geometry
         && let Ok(normal) =
@@ -731,18 +734,36 @@ fn prism_over_edge(
         )
     } else if let ogeom_geom::Curve::Circle(c) = &geometry
         && !c.is_reversed()
-        && c.circle().frame().z().vector().dot(direction.vector()) >= 1.0 - tol.angular()
+        && c.circle()
+            .frame()
+            .z()
+            .vector()
+            .dot(direction.vector())
+            .abs()
+            >= 1.0 - tol.angular()
     {
         // A circular profile edge swept along its own axis is a cylinder,
         // and on the circle's own frame the chart *is* the extrusion's
         // (u the circle's angle, v the travel), so the pcurves below serve
         // either surface unchanged, and the boolean's same-domain
-        // resolution meets a prism wall as the cylinder it is.
+        // resolution meets a prism wall as the cylinder it is. Swept
+        // against its axis (a tool pushed down through a block) it is the
+        // cylinder on the frame turned to the travel, whose angle runs the
+        // other way round: the chart maps `u` to a turn less `u`.
         let circle = c.circle();
+        let frame = if circle.frame().z().vector().dot(direction.vector()) > 0.0 {
+            circle.frame()
+        } else {
+            chart = Box::new(|(u, v): (f64, f64)| (core::f64::consts::TAU - u, v));
+            // The extrusion's normal, the tangent crossed with a travel
+            // against the axis, points in; the cylinder's points out.
+            turned = true;
+            ogeom_math::Frame::new(circle.centre(), direction, circle.frame().x(), tol)?
+        };
         let margin = travel * 0.1 + 1.0;
         Some(
             ogeom_geom::CylinderSurface::new(
-                ogeom_math::Cylinder::new(circle.frame(), circle.radius(), tol)?,
+                ogeom_math::Cylinder::new(frame, circle.radius(), tol)?,
                 (-margin, travel + margin),
             )?
             .into(),
@@ -844,7 +865,11 @@ fn prism_over_edge(
     // solid, and the occurrence has to be reversed to present the other one.
     // Every profile with a mixed wire (four of a box's six faces) has some of
     // each, so this cannot be decided once for the profile.
-    let face = if reversed { built.reversed() } else { built };
+    let face = if reversed != turned {
+        built.reversed()
+    } else {
+        built
+    };
     model.set_derived(&face, std::slice::from_ref(edge), roles::SWEEP_SIDE)?;
 
     let mut history = History::new();
