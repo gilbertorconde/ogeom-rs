@@ -11,6 +11,16 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-24
+
+A patch release with no API change; `cargo semver-checks` finds nothing
+against 0.3.1. `project_edge_onto_plane` is new. Meshes convert far more
+completely: coarse fillets, curved faces meeting along any curve, balls
+and rings with holes, and a real printer's part all come back exact and
+valid. Mass properties integrate most faces exactly whatever their trim,
+and booleans cut cleanly along a closed surface's seam and through a
+countersink whose bore is its narrow end.
+
 ### Added
 
 - **`project_edge_onto_plane`** projects an edge orthogonally onto a plane
@@ -775,7 +785,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.2.0...v0.2.1
