@@ -11,6 +11,16 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-25
+
+A patch release with no API change; `cargo semver-checks` finds nothing
+against 0.3.2. `make_half_space` accepts any face, so a cut or common can
+stop on a drum, ball, cone, ring or spline patch. A thread groove cuts
+from a plain or bored block. Holes drilled through large converted parts,
+beside rounded corners, near a ball's rim and all but parallel to a bore
+cut valid, and booleans on parts of tens of thousands of faces spend far
+less time on bookkeeping.
+
 ### Added
 
 - **Half spaces bounded by curved faces.** `cut`, `common` and `section`
@@ -922,7 +932,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.2.1...v0.3.0

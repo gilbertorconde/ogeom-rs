@@ -16,11 +16,11 @@ name = "ogeom-cli"
 path = "src/main.rs"
 
 [dependencies]
-ogeom = { path = "../../crates/ogeom", version = "0.3.2" }
+ogeom = { path = "../../crates/ogeom", version = "0.3.3" }
 # A direct path dependency, not a workspace one. A rasteriser in
 # `[workspace.dependencies]` reads as something the kernel depends on;
 # it is an instrument this front end happens to use.
-ogeom-view = { path = "../ogeom-view", version = "0.3.2" }
+ogeom-view = { path = "../ogeom-view", version = "0.3.3" }
 
 [lints]
 workspace = true
