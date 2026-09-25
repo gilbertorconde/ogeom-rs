@@ -217,6 +217,32 @@ pub fn fillet_edges(
     if edges.is_empty() {
         ogeom_bail!(Construction, "a chain of no edges rounds nothing");
     }
+    // The ball touches each face a setback back from the edge: the radius
+    // times the tangent of half the turn between the faces' normals. Set
+    // back past a face's far side, the band would cut through the face.
+    for edge in edges {
+        let Ok(seat) = planar_seat(model, solid, edge, tol) else {
+            continue;
+        };
+        if !seat.convex {
+            continue;
+        }
+        let turn = seat.normals[0].dot(seat.normals[1]).clamp(-1.0, 1.0).acos();
+        let setback = radius * (turn * 0.5).tan();
+        for i in 0..2 {
+            let leg = seat.leg(i, tol)?;
+            let reach = crate::support::face_reach(model, &seat.faces[i], seat.start, leg, tol)?;
+            if setback > reach + tol.confusion() {
+                ogeom_bail!(
+                    Construction,
+                    "a fillet of radius {radius} on the edge from {:?} to {:?} runs {setback} \
+                     back across a face that reaches {reach} from the edge",
+                    seat.start,
+                    seat.end
+                );
+            }
+        }
+    }
     use ogeom_geom::Curve3d as _;
     // The vertices three or more of the chain's edges meet at: the corners
     // the ball rolls round, closed by the corner tool.

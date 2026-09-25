@@ -25,8 +25,8 @@ use crate::support::{
 use ogeom_algo::{Built, make_revolution_band};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{ConeSurface, Curve, SurfaceGeometry};
-use ogeom_math::{Cone, Point, Vector};
-use ogeom_topo::{Model, Shape, ShapeType};
+use ogeom_math::Cone;
+use ogeom_topo::{Model, Shape};
 
 /// Bevel a straight edge of a solid, cutting `distance` back along each of
 /// its two faces.
@@ -432,37 +432,6 @@ fn seat_side(seat: &Seat, face: &Shape) -> OgeomResult<usize> {
 
 /// The one construction under all three spellings: the wedge with legs
 /// `distances[i]` along face `i`, subtracted.
-/// How far `face` reaches from the line through `from` along `leg`: the
-/// greatest distance any of its edges stands back in that direction.
-fn face_reach(
-    model: &Model,
-    face: &Shape,
-    from: Point,
-    leg: Vector,
-    tol: Tolerances,
-) -> OgeomResult<f64> {
-    use ogeom_geom::Curve3d as _;
-    let mut reach = 0.0_f64;
-    for edge in ogeom_topo::explore_unique(model, face, ShapeType::Edge)? {
-        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
-            continue;
-        };
-        let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
-            continue;
-        };
-        let Some(geometry) = model.geometry().curve(*curve) else {
-            continue;
-        };
-        let placement = edge.transform(model.datums())?;
-        for k in 0..=16 {
-            let t = range.0 + (range.1 - range.0) * f64::from(k) / 16.0;
-            let p = placement.apply(geometry.point_at(t, tol)?);
-            reach = reach.max((p - from).dot(leg));
-        }
-    }
-    Ok(reach)
-}
-
 fn bevel(
     model: &mut Model,
     seat: &Seat,
@@ -485,7 +454,7 @@ fn bevel(
     // would cut through the face and on into whatever lies beyond it.
     if seat.convex {
         for (i, leg) in [a, b].into_iter().enumerate() {
-            let reach = face_reach(model, &seat.faces[i], seat.start, leg, tol)?;
+            let reach = crate::support::face_reach(model, &seat.faces[i], seat.start, leg, tol)?;
             if distances[i] > reach + tol.confusion() {
                 ogeom_bail!(
                     Construction,

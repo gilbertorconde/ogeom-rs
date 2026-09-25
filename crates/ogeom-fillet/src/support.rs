@@ -665,3 +665,34 @@ pub(crate) fn planar_face(
     }
     face_from_edges(model, surface.into(), &edges, tol)
 }
+
+/// How far `face` reaches from the line through `from` along `leg`: the
+/// greatest distance any of its edges stands back in that direction.
+pub(crate) fn face_reach(
+    model: &Model,
+    face: &Shape,
+    from: ogeom_math::Point,
+    leg: ogeom_math::Vector,
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    use ogeom_geom::Curve3d as _;
+    let mut reach = 0.0_f64;
+    for edge in ogeom_topo::explore_unique(model, face, ogeom_topo::ShapeType::Edge)? {
+        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            continue;
+        };
+        let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            continue;
+        };
+        let Some(geometry) = model.geometry().curve(*curve) else {
+            continue;
+        };
+        let placement = edge.transform(model.datums())?;
+        for k in 0..=16 {
+            let t = range.0 + (range.1 - range.0) * f64::from(k) / 16.0;
+            let p = placement.apply(geometry.point_at(t, tol)?);
+            reach = reach.max((p - from).dot(leg));
+        }
+    }
+    Ok(reach)
+}

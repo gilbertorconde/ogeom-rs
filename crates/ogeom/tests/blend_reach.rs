@@ -1,5 +1,5 @@
-//! A chamfer is refused where its setback runs past a face: a 12 mm bevel
-//! on a 10 mm face would cut through it into the solid beyond.
+//! A chamfer or fillet is refused where its setback runs past a face: 12 mm
+//! back on a 10 mm face would cut through it into the solid beyond.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{make_face, make_polygon, make_prism, volume_properties};
@@ -59,6 +59,33 @@ fn a_chamfer_wider_than_its_face_is_refused() {
                 assert!((got - v).abs() < 1e-6, "{d}: {got}");
             }
             None => assert!(result.is_err(), "{d} mm cuts through its 10 mm face"),
+        }
+    }
+}
+
+/// A fillet likewise: on a square edge the ball touches each face its
+/// radius back, and 12 mm of it will not sit on a 10 mm face.
+#[test]
+fn a_fillet_wider_than_its_face_is_refused() {
+    for (r, fits) in [(9.0, true), (10.0, true), (12.0, false)] {
+        let mut model = Model::new();
+        let (block, edge) = block_and_edge(&mut model);
+        let result = ogeom::fillet::fillet_edges(&mut model, &block, &[edge], r, T);
+        if fits {
+            let shape = result.unwrap_or_else(|e| panic!("{r}: {e}")).shape;
+            let got = volume_properties(&model, &shape, Deflection::default(), T)
+                .unwrap()
+                .mass;
+            let want = 4000.0 - (1.0 - core::f64::consts::FRAC_PI_4) * r * r * 20.0;
+            assert!(
+                (got - want).abs() < want * 1e-4,
+                "{r}: {got} against {want}"
+            );
+        } else {
+            assert!(
+                result.is_err(),
+                "a {r} mm fillet cuts through its 10 mm face"
+            );
         }
     }
 }
