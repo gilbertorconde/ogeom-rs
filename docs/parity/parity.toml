@@ -1530,28 +1530,21 @@ tests = ["crates/ogeom-math/tests/bspline_properties.rs"]
 id = "geom.extension"
 title = "Extending curves and surfaces beyond their domains"
 crate = "ogeom-geom"
-verdict = "partial"
-restriction = """An analytic surface's window widens without changing the \
-carrier (`widened_to_hold`). A B-spline curve continues past either end and \
-a patch past any side by about a length in space: the polynomial \
-continuation of its own end derivatives to the order asked, raised to the \
-degree and joined on, so a rational arc continued at order two stays on its \
-circle; `widened_to_hold` continues a patch side by side as far as a point \
-stands off it. The length is met to first order (the span is the length \
-over the speed at the end), and a continuation *to a named point* is not \
-carried. The rest of GeomLib's grab bag (normal estimation, closure tests, \
-axis mirroring) lives on the Surface and Curve traits."""
+verdict = "covered"
 claims = ["GeomLib", "GeomLib_*"]
 symbols = [
     "ogeom_algo::widened_to_hold",
     "ogeom_math::extend",
+    "ogeom_math::extend_to",
     "ogeom_geom::BSplineCurve::extended",
+    "ogeom_geom::BSplineCurve::extended_to",
     "ogeom_geom::BSplineSurface::extended",
 ]
 tests = [
     "crates/ogeom-algo/src/measure.rs::a_window_widened_to_hold_a_point_holds_it_with_room_to_spare",
     "crates/ogeom-algo/src/measure.rs::a_patch_widened_to_hold_a_point_is_continued_to_it",
     "crates/ogeom-geom/src/curve.rs::a_rational_arc_extended_stays_on_its_circle",
+    "crates/ogeom-geom/src/curve.rs::a_curve_extended_to_a_point_ends_there_smoothly",
     "crates/ogeom-geom/src/surface.rs::a_patch_extended_stays_itself_and_continues",
     "crates/ogeom-math/src/bspline.rs::an_extension_continues_the_curve_to_its_order",
 ]

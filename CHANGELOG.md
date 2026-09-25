@@ -89,6 +89,10 @@ bump may break the API and a patch bump may not.
   surfaces, helices, offset curves) within the tolerance given, where
   `to_nurbs` refuses. `SurfaceGeometry::fitted_bspline` fits any bounded
   surface.
+- **A curve continues to a named point.** `BSplineCurve::extended_to`
+  joins on a piece that carries the curve's end derivatives to the order
+  asked and ends at the point. `BSplineCurve::extended` now meets the
+  length asked exactly rather than to first order.
 
 ### Fixed
 

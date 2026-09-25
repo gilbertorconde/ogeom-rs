@@ -15,8 +15,8 @@ per package.
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 73 |
-| `partial` | 11 |
+| `covered` | 74 |
+| `partial` | 10 |
 | `divergent` | 9 |
 | `n/a` | 5 |
 
@@ -115,8 +115,7 @@ to grow to, and a gap the recovered edges do not bridge.
 - **geom.conversion**: Converting between curve and surface forms: to B-spline, to Bézier segments, degree elevation · `covered` · 40 headers claimed
 - **geom.curves-2d**: Parametric plane curves, the pcurve vocabulary · `covered` · 18 headers claimed
 - **geom.curves-3d**: Parametric space curves: lines, conics, Bézier, B-spline, trimmed, offset · `covered` · 21 headers claimed
-- **geom.extension**: Extending curves and surfaces beyond their domains · `partial` · 13 headers claimed
-  - *restriction:* An analytic surface's window widens without changing the carrier (`widened_to_hold`). A B-spline curve continues past either end and a patch past any side by about a length in space: the polynomial continuation of its own end derivatives to the order asked, raised to the degree and joined on, so a rational arc continued at order two stays on its circle; `widened_to_hold` continues a patch side by side as far as a point stands off it. The length is met to first order (the span is the length over the speed at the end), and a continuation *to a named point* is not carried. The rest of GeomLib's grab bag (normal estimation, closure tests, axis mirroring) lives on the Surface and Curve traits.
+- **geom.extension**: Extending curves and surfaces beyond their domains · `covered` · 13 headers claimed
 - **geom.handle-wrappers**: Geometry-layer wrappers for points, vectors, placements and transforms · `divergent` · 16 headers claimed
   - *reasoning:* The reference wraps every gp value in a reference-counted handle class so geometry can sit in documents. Here geometry lives in shared arenas keyed by id (docs/DATA_MODEL.md), and points, vectors and placements are plain values. A second, handle-shaped copy of the gp vocabulary would exist only to be a different allocation discipline. The capability those wrappers deliver is the arena's.
 - **geom.local-properties**: Local properties along curves and across surfaces: tangent, normal, curvature · `covered` · 30 headers claimed

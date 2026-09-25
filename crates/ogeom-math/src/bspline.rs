@@ -453,6 +453,80 @@ pub fn extend<P: Blend>(
     join(&(knots.clone(), control.to_vec()), &piece)
 }
 
+/// Continue a clamped B-spline past one end to `target`, over `span` in
+/// parameter: a Bézier piece whose first `continuity + 1` controls carry
+/// the curve's own end derivatives (as [`extend`] does) and whose last is
+/// `target`, joined on. The curve is raised a degree first where the piece
+/// needs one more than it has.
+///
+/// # Errors
+///
+/// As [`extend`].
+pub fn extend_to<P: Blend>(
+    knots: &KnotVector,
+    control: &[P],
+    at_end: bool,
+    target: P,
+    span: f64,
+    continuity: usize,
+    tol: Tolerances,
+) -> OgeomResult<Spline<P>> {
+    check_shape(knots, control)?;
+    if !knots.is_clamped() {
+        ogeom_bail!(Construction, "only clamped B-splines extend");
+    }
+    if !(span > 0.0 && span.is_finite()) {
+        ogeom_bail!(
+            Construction,
+            "an extension needs a positive, finite span; got {span}"
+        );
+    }
+    if !at_end {
+        let (rk, rc) = reverse(knots, control);
+        let (ek, ec) = extend_to(&rk, &rc, true, target, span, continuity, tol)?;
+        let (bk, bc) = reverse(&ek, &ec);
+        let (lo, hi) = knots.domain();
+        return Ok((bk.reparameterized(lo - span, hi)?, bc));
+    }
+    let mut base: Spline<P> = (knots.clone(), control.to_vec());
+    let k = continuity.min(base.0.degree());
+    let n = k + 1;
+    while base.0.degree() < n {
+        base = elevate_degree(&base.0, &base.1, tol)?;
+    }
+    let end = base.0.domain_end();
+    let jet = derivatives(&base.0, &base.1, end, k, tol)?;
+    // Bernstein controls of degree `n` for the Taylor data through order
+    // `k`, then the target in the last place.
+    let mut bezier: Vec<P> = Vec::with_capacity(n + 1);
+    for j in 0..=k {
+        let mut b = P::zero();
+        let (mut factorial, mut power) = (1.0_f64, 1.0_f64);
+        for (i, derivative) in jet.iter().enumerate().take(j + 1) {
+            if i > 0 {
+                #[allow(clippy::cast_precision_loss)]
+                {
+                    factorial *= i as f64;
+                }
+                power *= span;
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let ratio = binomial_coefficient(j, i) as f64 / binomial_coefficient(n, i) as f64;
+            b = b.add(derivative.scale(ratio * power / factorial));
+        }
+        bezier.push(b);
+    }
+    bezier.push(target);
+    let mut piece_knots: Vec<f64> = Vec::with_capacity(2 * (n + 1));
+    piece_knots.extend(core::iter::repeat_n(end, n + 1));
+    piece_knots.extend(core::iter::repeat_n(end + span, n + 1));
+    let mut piece: Spline<P> = (KnotVector::new(piece_knots, n)?, bezier);
+    for _ in n..base.0.degree() {
+        piece = elevate_degree(&piece.0, &piece.1, tol)?;
+    }
+    join(&base, &piece)
+}
+
 /// Split a B-spline at `u` into two, each with its own clamped knot vector.
 ///
 /// Works by raising the multiplicity at `u` to the degree, at which point the
