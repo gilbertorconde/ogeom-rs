@@ -203,14 +203,9 @@ tests = ["crates/ogeom-math/tests/primitive_properties.rs"]
 
 [[capability]]
 id = "math.equation-solving"
-title = "Roots and minima of functions and systems: Newton, Brent, bisection, polynomial roots"
+title = "Roots and minima of functions and systems: Newton, Brent, bisection, polynomial roots, global minima"
 crate = "ogeom-math"
-verdict = "partial"
-restriction = """Local methods only. The reference also ships global \
-optimisers (math_GlobOptMin, math_PSO); consumers here seed local solves \
-from coarse parameter scans instead, which the extrema and projection \
-pipelines do explicitly. A case needing a true global optimum with no \
-seedable structure has not arisen; if one does, this is the row to reopen."""
+verdict = "covered"
 claims = [
     "math", "math_BFGS", "math_BissecNewton", "math_BracketMinimum",
     "math_BracketedRoot", "math_BrentMinimum", "math_BullardGenerator",
@@ -228,8 +223,12 @@ claims = [
 symbols = [
     "ogeom_math::newton", "ogeom_math::newton_system", "ogeom_math::brent",
     "ogeom_math::roots", "ogeom_math::quadratic_roots", "ogeom_math::cubic_roots",
+    "ogeom_math::minimize_local", "ogeom_math::global_minimum", "ogeom_math::swarm_minimum",
 ]
-tests = ["crates/ogeom-math/tests/algebra_properties.rs"]
+tests = [
+    "crates/ogeom-math/tests/algebra_properties.rs",
+    "crates/ogeom-math/tests/global_minimum.rs",
+]
 
 [[capability]]
 id = "math.linear-algebra"

@@ -93,6 +93,10 @@ bump may break the API and a patch bump may not.
   joins on a piece that carries the curve's end derivatives to the order
   asked and ends at the point. `BSplineCurve::extended` now meets the
   length asked exactly rather than to first order.
+- **Global minima.** `global_minimum` finds the least value of a
+  function over a box by branch and bound, certified to a tolerance under
+  slope and curvature bounds it estimates; `swarm_minimum` is a particle
+  swarm; `minimize_local` is a Nelder-Mead descent in several variables.
 
 ### Fixed
 

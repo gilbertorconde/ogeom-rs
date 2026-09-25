@@ -21,6 +21,7 @@ pub mod integrate;
 pub mod interval;
 pub mod knots;
 pub mod matrix;
+pub mod optimize;
 pub mod point;
 pub mod quadric;
 pub mod quaternion;
@@ -43,6 +44,7 @@ pub use integrate::{gauss_kronrod, gauss_legendre, gauss_legendre_rule, integrat
 pub use interval::Interval;
 pub use knots::{BasisValues, KnotVector};
 pub use matrix::{Matrix2, Matrix3};
+pub use optimize::{Minimum, global_minimum, minimize_local, swarm_minimum};
 pub use point::{Point, Point2};
 pub use quadric::{Cone, Cylinder, Plane, Sphere, Torus, TorusKind};
 pub use quaternion::Quaternion;

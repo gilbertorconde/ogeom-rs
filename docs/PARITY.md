@@ -15,8 +15,8 @@ per package.
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 74 |
-| `partial` | 10 |
+| `covered` | 75 |
+| `partial` | 9 |
 | `divergent` | 9 |
 | `n/a` | 5 |
 
@@ -194,8 +194,7 @@ counted as skipped.
 - **math.bspline-basis**: The B-spline basis: knots, evaluation, derivatives, insertion, elevation, splitting · `covered` · 14 headers claimed
 - **math.curve-constructors**: Constructing curves from constraints: through points, from centre and radius, trimmed arcs · `covered` · 59 headers claimed
 - **math.elementary-evaluation**: Evaluating and parameterizing the elementary curves and surfaces in closed form · `covered` · 2 headers claimed
-- **math.equation-solving**: Roots and minima of functions and systems: Newton, Brent, bisection, polynomial roots · `partial` · 31 headers claimed
-  - *restriction:* Local methods only. The reference also ships global optimisers (math_GlobOptMin, math_PSO); consumers here seed local solves from coarse parameter scans instead, which the extrema and projection pipelines do explicitly. A case needing a true global optimum with no seedable structure has not arisen; if one does, this is the row to reopen.
+- **math.equation-solving**: Roots and minima of functions and systems: Newton, Brent, bisection, polynomial roots, global minima · `covered` · 31 headers claimed
 - **math.expressions**: A symbolic expression interpreter · `n/a` · 68 headers claimed
   - *reasoning:* A symbolic algebra layer serves parametric applications (dimension formulas, feature trees), not the geometry kernel; nothing in the modelling pipeline evaluates an expression tree. An application wanting formulas brings its own interpreter, as the consumers surveyed do.
 - **math.linear-algebra**: Dense and sparse linear systems, least squares, eigenvalues · `divergent` · 16 headers claimed
