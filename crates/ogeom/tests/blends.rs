@@ -867,12 +867,11 @@ fn round_vertex_rounds_a_five_edged_apex_with_a_sliver_ridge() {
     );
 }
 
-/// The refusals name their families: a curved-edged corner and an oblique
-/// one both belong to the setback construction, and say so.
+/// A vertex where only two surfaces meet is no corner: a drum's rim meets
+/// its own seam there, and the refusal says what a corner needs.
 #[test]
-fn round_vertex_refuses_the_setback_family_by_name() {
+fn round_vertex_refuses_a_vertex_of_two_surfaces_by_name() {
     let mut model = Model::new();
-    // A cylinder's rim vertex has a curved edge: refused as curved.
     let cyl = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 10.0, T)
         .unwrap()
         .shape;
@@ -881,11 +880,221 @@ fn round_vertex_refuses_the_setback_family_by_name() {
         .unwrap_err()
         .to_string();
     assert!(
-        err.contains("still owed") || err.contains("exactly three"),
-        "the curved corner names its family: {err}"
+        err.contains("three faces meet"),
+        "the refusal names what a corner needs: {err}"
     );
 }
 
+/// A cube of side 10 in common with a drum of radius 6 standing on its
+/// middle: the drum shaves the four vertical corners, and each top corner
+/// is where the top, a side and the drum meet: a corner with a curved face
+/// and a curved edge. Returns the part, the corner and the three edges'
+/// midpoints (top and side, top and drum, side and drum).
+fn shaved_cube(model: &mut Model) -> (Shape, Point, [Point; 3]) {
+    let block = ogeom::algo::make_box(model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(5.0, 5.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let drum = ogeom::algo::make_cylinder(model, frame, 6.0, 12.0, T)
+        .unwrap()
+        .shape;
+    let part = ogeom::boolean::common(model, &block, &drum, T)
+        .unwrap()
+        .shape;
+    let y = 5.0 - 11.0_f64.sqrt();
+    let arc_mid = {
+        // Halfway round the drum's rim between the corner and the side y = 0.
+        let a = (y - 5.0).atan2(-5.0);
+        let b = (-5.0_f64).atan2(y - 5.0);
+        let m = f64::midpoint(a, b);
+        Point::new(5.0 + 6.0 * m.cos(), 5.0 + 6.0 * m.sin(), 10.0)
+    };
+    (
+        part,
+        Point::new(0.0, y, 10.0),
+        [Point::new(0.0, 5.0, 10.0), arc_mid, Point::new(0.0, y, 5.0)],
+    )
+}
+
+/// The spherical faces of a shape and their centres and radii.
+fn spheres(model: &Model, shape: &Shape) -> Vec<(Point, f64)> {
+    explore_unique(model, shape, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter_map(|f| {
+            let data = model.node(&f)?.data().as_face()?;
+            match model.geometry().surface(data.surface)? {
+                ogeom::geom::SurfaceGeometry::Sphere(s) => {
+                    Some((s.sphere().frame().origin(), s.sphere().radius()))
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// The ball a radius in from the top (z = 10), the side (x = 0) and the
+/// drum (radius 6 about x = y = 5): its centre is a radius from each.
+fn assert_corner_ball(centre: Point, radius: f64) {
+    let from_drum = 6.0 - (centre.x - 5.0).hypot(centre.y - 5.0);
+    for (host, d) in [
+        ("top", 10.0 - centre.z),
+        ("side", centre.x),
+        ("drum", from_drum),
+    ] {
+        assert!(
+            (d - radius).abs() < 1e-9,
+            "the corner ball stands {d} from the {host}, not {radius}"
+        );
+    }
+}
+
+#[test]
+fn a_corner_with_a_curved_face_rounds_with_one_ball() {
+    let mut model = Model::new();
+    let (part, corner, _) = shaved_cube(&mut model);
+    let v = vertex_near(&model, &part, corner);
+    let rounded = ogeom::fillet::round_vertex(&mut model, &part, &v, 1.0, T).unwrap();
+    let diagnosis = ogeom::algo::check(&model, &rounded.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let balls = spheres(&model, &rounded.shape);
+    assert_eq!(balls.len(), 1, "one ball rounds the corner");
+    assert!((balls[0].1 - 1.0).abs() < 1e-12);
+    assert_corner_ball(balls[0].0, 1.0);
+    // The corner's tip is gone.
+    let deflection = ogeom::mesh::Deflection::default();
+    assert_eq!(
+        ogeom::algo::classify_in_solid(&model, &rounded.shape, corner, deflection, T).unwrap(),
+        ogeom::algo::Containment::Out
+    );
+}
+
+#[test]
+fn a_curved_corner_closes_the_same_way_round_either_order() {
+    // Two routes to one rounded corner: all three edges in one call (the
+    // corner first, the bands stopping flush against its ball), and the
+    // bands one at a time with the corner tool after. The drum's ruling
+    // goes first on the second route; its band and the top's two meet
+    // at the corner only through the ball.
+    let mut model = Model::new();
+    let (part, corner, mids) = shaved_cube(&mut model);
+    let edges: Vec<Shape> = mids.iter().map(|m| edge_near(&model, &part, *m)).collect();
+    let together = ogeom::fillet::fillet_edges(&mut model, &part, &edges, 1.0, T).unwrap();
+    let diagnosis = ogeom::algo::check(&model, &together.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let balls = spheres(&model, &together.shape);
+    assert_eq!(balls.len(), 1, "one ball rounds the corner");
+    assert_corner_ball(balls[0].0, 1.0);
+
+    let v = vertex_near(&model, &part, corner);
+    let mut current = part.clone();
+    for i in [2, 0, 1] {
+        let live = edge_near(&model, &current, mids[i]);
+        current = ogeom::fillet::fillet_edge(&mut model, &current, &live, 1.0, T)
+            .unwrap()
+            .shape;
+    }
+    let apart = ogeom::fillet::round_vertex(&mut model, &current, &v, 1.0, T).unwrap();
+    let diagnosis = ogeom::algo::check(&model, &apart.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // Every face of both is analytic, so the volumes integrate exactly and
+    // agree to rounding.
+    let volume = |shape: &Shape| {
+        ogeom::algo::volume_properties(&model, shape, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let (a, b) = (volume(&together.shape), volume(&apart.shape));
+    assert!((a - b).abs() < 1e-9 * a, "{a} one call, {b} one at a time");
+}
+
+#[test]
+fn a_wall_meeting_a_drum_along_a_ruling_blends_exactly() {
+    // The side x = 0 meets the drum along a vertical ruling: every section
+    // is the same, the band is a drum of the fillet's radius, and the
+    // material removed is the section's area times the edge's length.
+    let mut model = Model::new();
+    let (part, _, mids) = shaved_cube(&mut model);
+    let edge = edge_near(&model, &part, mids[2]);
+    let radius = 1.0;
+    let result = ogeom::fillet::fillet_edge(&mut model, &part, &edge, radius, T).unwrap();
+    let diagnosis = ogeom::algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let bands: Vec<(Point, f64)> = explore_unique(&model, &result.shape, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter_map(|f| {
+            let data = model.node(&f)?.data().as_face()?;
+            match model.geometry().surface(data.surface)? {
+                ogeom::geom::SurfaceGeometry::Cylinder(c) if c.cylinder().radius() < 2.0 => {
+                    Some((c.cylinder().frame().origin(), c.cylinder().radius()))
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    assert_eq!(bands.len(), 1, "the band is one exact drum");
+    assert!((bands[0].1 - radius).abs() < 1e-12);
+
+    // The section in the plane z = const: the crease at (0, y0), the ball
+    // at (1, yc) touching the side at (0, yc) and the drum where the line
+    // from the drum's axis through the ball's centre meets it. The area
+    // between crease, touches and the ball's arc, by Green's theorem over
+    // a finely sampled boundary.
+    let y0 = 5.0 - 11.0_f64.sqrt();
+    // The ball's centre: x = 1 and 5 from the axis (6 less the radius).
+    let yc = 5.0 - (25.0_f64 - 16.0).sqrt();
+    let centre: (f64, f64) = (1.0, yc);
+    let on_drum = {
+        let (dx, dy) = (centre.0 - 5.0, centre.1 - 5.0);
+        let d = dx.hypot(dy);
+        (5.0 + dx / d * 6.0, 5.0 + dy / d * 6.0)
+    };
+    let mut boundary: Vec<(f64, f64)> = Vec::new();
+    let steps = 20_000;
+    for i in 0..steps {
+        let t = f64::from(i) / f64::from(steps);
+        boundary.push((0.0, y0 + (yc - y0) * t));
+    }
+    let arc = |from: (f64, f64), to: (f64, f64), about: (f64, f64)| {
+        let a = (from.1 - about.1).atan2(from.0 - about.0);
+        let mut b = (to.1 - about.1).atan2(to.0 - about.0);
+        while b - a > core::f64::consts::PI {
+            b -= core::f64::consts::TAU;
+        }
+        while a - b > core::f64::consts::PI {
+            b += core::f64::consts::TAU;
+        }
+        let r = (from.0 - about.0).hypot(from.1 - about.1);
+        (0..steps)
+            .map(|i| {
+                let t = a + (b - a) * f64::from(i) / f64::from(steps);
+                (about.0 + r * t.cos(), about.1 + r * t.sin())
+            })
+            .collect::<Vec<_>>()
+    };
+    boundary.extend(arc((0.0, yc), on_drum, centre));
+    boundary.extend(arc(on_drum, (0.0, y0), (5.0, 5.0)));
+    let area = boundary
+        .iter()
+        .zip(boundary.iter().cycle().skip(1))
+        .map(|(p, q)| p.0 * q.1 - q.0 * p.1)
+        .sum::<f64>()
+        .abs()
+        / 2.0;
+    let volume = |shape: &Shape| {
+        ogeom::algo::volume_properties(&model, shape, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let removed = volume(&part) - volume(&result.shape);
+    // The sampled boundary's chords shave the arcs by under 1e-9 of area.
+    assert!(
+        (removed - area * 10.0).abs() < 1e-6,
+        "removed {removed}, the section's {area} over the edge's 10"
+    );
+}
 /// A box grooved by a tilted drum,
 /// whose creases are ellipse arcs cut open by the box sides and split
 /// again by the cylinder's own seam.

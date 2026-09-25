@@ -764,10 +764,11 @@ These are settled. They are listed so nobody reopens them by accident.
    turned it back round, two thin curves through two touching points came back
    as one confident loop lying on neither. So a condition declares whether its
    tangent's sign is meaningful, and that declaration matters.
-4. ~~**B1**: the marching blend.~~ **Done.** **B2**'s corner family is down to
-   the curved-edged corner. Any convex planar vertex rounds, as the exact
-   envelope of the rolling ball where no single ball touches all its faces.
-   What is left depends on **A6** (tangency at a face's own corner), not on A5.
+4. ~~**B1**: the marching blend.~~ **Done.** **B2**'s corner family is done
+   for convex corners: any planar vertex rounds, as the exact envelope of the
+   rolling ball where no single ball touches all its faces, and a vertex
+   where a curved face meets rounds with the one ball touching its three
+   surfaces.
 5. ~~**D1**: marched silhouettes.~~ **Done**. They were indeed a second
    condition for a walker that already existed.
 6. **F2**: IGES.

@@ -63,14 +63,27 @@ pub(crate) struct Mate {
 }
 
 impl Mate {
-    /// Whether any mate's end at `at` is a vertex the corner tool closed.
-    pub(crate) fn settled_at(mates: &[Self], at: Point, tol: Tolerances) -> bool {
-        mates.iter().any(|mate| {
+    /// Whether any mate's end at `at` is a vertex the corner tool closed,
+    /// or `at` is an end of the request's own edge `index` whose vertex the
+    /// corner tool closed.
+    ///
+    /// The second reading is the one a band asks of itself: a corner tool
+    /// trims the edge back to the plane square to it through the ball's
+    /// centre, so the edge's end now stands a setback from the vertex it
+    /// was named at, and the nearer of its original ends says which one
+    /// it is.
+    pub(crate) fn settled_at(mates: &[Self], index: usize, at: Point, tol: Tolerances) -> bool {
+        let other = mates.iter().any(|mate| {
             mate.ends
                 .iter()
                 .zip(mate.settled)
                 .any(|((p, _), settled)| settled && p.distance(at) <= tol.confusion() * 1e3)
-        })
+        });
+        let own = mates.get(index).is_some_and(|mate| {
+            let nearer = usize::from(mate.ends[1].0.distance(at) < mate.ends[0].0.distance(at));
+            mate.settled[nearer]
+        });
+        other || own
     }
 }
 
@@ -98,7 +111,14 @@ fn fillet_edge_meeting(
     let (curve, crange) = edge_curve(model, edge, tol)?;
     let closed = ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
     match curve {
-        Curve::Line(_) => planar_fillet(model, solid, edge, radius, mates, tol),
+        Curve::Line(_) if crate::support::hosts_planar(model, solid, edge, tol)? => {
+            planar_fillet(model, solid, edge, radius, mates, tol)
+        }
+        Curve::Line(_) => match crate::ruled::ruled_fillet(model, solid, edge, radius, mates, tol)?
+        {
+            Some(built) => Ok(built),
+            None => crate::marched::marched_fillet(model, solid, edge, radius, mates, tol),
+        },
         Curve::Circle(c) => {
             // A rim on a planar cap and its coaxial wall is the revolved
             // blend's, exact; a circle on any other pair of hosts (a bore
@@ -169,7 +189,8 @@ fn fillet_edge_meeting(
 /// ball touches) rather than leaving the bands' caps standing. The corner
 /// goes first and the bands stop flush against its patch: bands built
 /// first crash into each other at an apex. A corner the tool does not
-/// speak (a curved face through it, a concave vertex) keeps its caps,
+/// speak (a concave vertex, more than three surfaces with no shared
+/// ball when one of them is curved) keeps its caps,
 /// which is the honest picture of a corner no ball rolls around. Other
 /// junctions leave the wedges' caps standing likewise.
 ///
@@ -612,7 +633,7 @@ fn planar_fillet(
         if chain {
             continue;
         }
-        if Mate::settled_at(mates, at, tol) {
+        if Mate::settled_at(mates, index, at, tol) {
             continue;
         }
         let hosts = [&seat.faces[0], &seat.faces[1]];

@@ -304,66 +304,15 @@ pub(crate) fn marched_fillet(
     // either direction. The edge's midpoint is on the crease by definition.
     use ogeom_geom::Surface as _;
     let mid_t = f64::midpoint(edge_range.0, edge_range.1);
-    let mid = guide.point_at(mid_t, tol)?;
-    let outward_at = |surface: &SurfaceGeometry, sign: f64| -> OgeomResult<Vector> {
-        let projection = ogeom_algo::project_on_surface(surface, mid, 32, tol)?;
-        let (u, v) = projection.parameters;
-        let (du, dv) = surface.d1_at(u, v, tol)?;
-        let n = du.cross(dv);
-        Ok(n / n.magnitude() * sign)
-    };
-    let n1 = outward_at(&first, sign_first)?;
-    let n2 = outward_at(&second, sign_second)?;
-    let convex = {
-        let tangent = {
-            let d = guide.d1_at(mid_t, tol)?;
-            d / d.magnitude()
-        };
-        let raw = {
-            let t = n1.cross(tangent);
-            let m = t.magnitude();
-            if m <= tol.angular() {
-                ogeom_bail!(Construction, "a face is tangent to its own edge");
-            }
-            t / m
-        };
-        let span = guide.point_at(edge_range.0, tol)?.distance(mid).max(radius);
-        let mut extends: Option<Vector> = None;
-        'scales: for scale in [1e-3, 1e-2, 5e-2] {
-            let eps = span * scale;
-            let deflection = ogeom_mesh::Deflection {
-                chord: eps * 0.1,
-                ..ogeom_mesh::Deflection::default()
-            };
-            for dir in [raw, -raw] {
-                // The step is chordal; on a curved host it leaves the
-                // surface quadratically, and an off-surface probe classifies
-                // as nothing. Project it home first.
-                let probe = ogeom_algo::project_on_surface(&first, mid + dir * eps, 32, tol)?.point;
-                if ogeom_algo::classify_on_face(model, &face_first, probe, deflection, tol)?
-                    == ogeom_algo::Containment::In
-                {
-                    extends = Some(dir);
-                    break 'scales;
-                }
-            }
-        }
-        let Some(extends) = extends else {
-            ogeom_bail!(
-                Construction,
-                "cannot read which way the edge's face extends; the face is \
-                 thinner than the probe can resolve"
-            );
-        };
-        let lean = extends.dot(n2);
-        if lean.abs() <= tol.angular() {
-            ogeom_bail!(
-                Construction,
-                "the edge's faces are tangent; there is no corner"
-            );
-        }
-        lean < 0.0
-    };
+    let convex = crease_convexity(
+        model,
+        &face_first,
+        [(&first, sign_first), (&second, sign_second)],
+        &guide,
+        edge_range,
+        radius,
+        tol,
+    )?;
     // The fillet's ball rides the material's own side of each support: its
     // centre sits inside the material at a convex corner and out in the
     // notch at a concave one.
@@ -1111,8 +1060,9 @@ fn open_runout_wedge(
                     (chain, corner && !chain)
                 }
             };
-            let settled =
-                mates.is_some_and(|(_, mates)| crate::fillet::Mate::settled_at(mates, at, tol));
+            let settled = mates.is_some_and(|(index, mates)| {
+                crate::fillet::Mate::settled_at(mates, index, at, tol)
+            });
             if chain_mate || settled {
                 continue;
             }
@@ -1800,6 +1750,90 @@ pub(crate) fn build_open_band(
     ];
     faces.extend(caps);
     apply_wedge(model, solid, Some(edge), &faces, additive, tol)
+}
+
+/// Whether the crease between the two hosts is convex, read from the solid
+/// itself the way the planar seat reads it: which way the first face
+/// extends from the edge, leaned against the second's outward normal. It
+/// decides which of the four ball seatings is the fillet's, and whether
+/// the wedge adds or removes.
+///
+/// Probed at the *edge's* own midpoint, not a reconstructed loop's: a
+/// conic arc re-opened to its full period runs through territory the
+/// boolean cut away, and a probe standing off the solid reads nothing in
+/// either direction. The edge's midpoint is on the crease by definition.
+pub(crate) fn crease_convexity(
+    model: &Model,
+    face_first: &Shape,
+    hosts: [(&SurfaceGeometry, f64); 2],
+    guide: &Curve,
+    edge_range: (f64, f64),
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    use ogeom_geom::Surface as _;
+    let [(first, sign_first), (second, sign_second)] = hosts;
+    let mid_t = f64::midpoint(edge_range.0, edge_range.1);
+    let mid = guide.point_at(mid_t, tol)?;
+    let outward_at = |surface: &SurfaceGeometry, sign: f64| -> OgeomResult<Vector> {
+        let projection = ogeom_algo::project_on_surface(surface, mid, 32, tol)?;
+        let (u, v) = projection.parameters;
+        let (du, dv) = surface.d1_at(u, v, tol)?;
+        let n = du.cross(dv);
+        Ok(n / n.magnitude() * sign)
+    };
+    let n1 = outward_at(first, sign_first)?;
+    let n2 = outward_at(second, sign_second)?;
+    {
+        let tangent = {
+            let d = guide.d1_at(mid_t, tol)?;
+            d / d.magnitude()
+        };
+        let raw = {
+            let t = n1.cross(tangent);
+            let m = t.magnitude();
+            if m <= tol.angular() {
+                ogeom_bail!(Construction, "a face is tangent to its own edge");
+            }
+            t / m
+        };
+        let span = guide.point_at(edge_range.0, tol)?.distance(mid).max(radius);
+        let mut extends: Option<Vector> = None;
+        'scales: for scale in [1e-3, 1e-2, 5e-2] {
+            let eps = span * scale;
+            let deflection = ogeom_mesh::Deflection {
+                chord: eps * 0.1,
+                ..ogeom_mesh::Deflection::default()
+            };
+            for dir in [raw, -raw] {
+                // The step is chordal; on a curved host it leaves the
+                // surface quadratically, and an off-surface probe classifies
+                // as nothing. Project it home first.
+                let probe = ogeom_algo::project_on_surface(first, mid + dir * eps, 32, tol)?.point;
+                if ogeom_algo::classify_on_face(model, face_first, probe, deflection, tol)?
+                    == ogeom_algo::Containment::In
+                {
+                    extends = Some(dir);
+                    break 'scales;
+                }
+            }
+        }
+        let Some(extends) = extends else {
+            ogeom_bail!(
+                Construction,
+                "cannot read which way the edge's face extends; the face is \
+                 thinner than the probe can resolve"
+            );
+        };
+        let lean = extends.dot(n2);
+        if lean.abs() <= tol.angular() {
+            ogeom_bail!(
+                Construction,
+                "the edge's faces are tangent; there is no corner"
+            );
+        }
+        Ok(lean < 0.0)
+    }
 }
 
 /// The start or end of the edge's own stored curve over its own range,

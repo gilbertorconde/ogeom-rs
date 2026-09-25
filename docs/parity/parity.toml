@@ -1115,8 +1115,17 @@ end of the crease (the seam of two equal drums crossing, at the points \
 where they touch) pinches there: the stations are solved one by one \
 toward the pole, the pole's collapsed section closes the band, and the \
 wedge has no cap at that end. A tangency inside a crease with none at \
-its ends is refused by name. What is owed now, of the corner family: \
-the curved-edged corner. The corner tool rounds any convex planar vertex. \
+its ends is refused by name. A straight crease whose faces are planes \
+or drums parallel to it (a wall meeting a drum along a ruling) blends \
+exactly: the section swept straight, its band a drum of the fillet's \
+radius. A vertex where a curved face meets rounds with the one ball \
+touching its three surfaces, its centre walked to a radius in from each \
+and its compartment bounded by the planes through the centre and each \
+pair of touch points, so each band's end section is the ball's own; \
+`fillet_edges` closes such a corner, and the bands one at a time with \
+the corner tool after agree with it to rounding when the ruling's band \
+goes first. Owed: a straight band and a rim arc's band one at a time \
+into such a corner, where the second band's cut does not close. The corner tool rounds any convex planar vertex. \
 Where one ball touches every face (a square or oblique trihedral corner, \
 a square pyramid's four-edged apex), its block is the polyhedron of the N \
 host planes and the N planes through the ball's centre square to the \

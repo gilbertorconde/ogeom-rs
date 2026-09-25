@@ -24,6 +24,21 @@ bump may break the API and a patch bump may not.
   where the drums touch, blends: the band narrows to a point at the pole.
   Both the fused drums' notch and their common part's ridge round, one
   seam edge at a time or all in one call.
+- **Corners where a curved face meets round.** `round_vertex` rounds a
+  convex vertex whose three faces include a drum, cone, ball or spline:
+  one ball touches all three and its patch closes the corner. `fillet_edges`
+  on the three edges of such a corner closes it with that ball.
+- **Exact fillets where a wall meets a drum along a ruling.** A straight
+  edge between two planes or drums parallel to it (the vertical edge where
+  an extruded profile's line meets its arc) blends with an exact drum band,
+  and no longer fails for want of a planar pair.
+
+### Fixed
+
+- **A boolean on a prism split its near cap where its far cap was cut.**
+  The far cap of an extrusion is its near cap moved, sharing its edges
+  under a displacement, and the boolean shared edge splits by edge alone.
+  Edges now count as one only at the same placement.
 
 ## [0.3.3] - 2026-09-25
 

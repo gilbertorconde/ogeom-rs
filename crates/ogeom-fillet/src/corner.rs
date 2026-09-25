@@ -39,13 +39,18 @@ use ogeom_topo::{Model, Shape, ShapeType};
 /// fillet of a virtual crease. The compartments meet on the planes
 /// square to the ridges, cap to cap.
 ///
+/// A vertex where a curved face meets (fewer than three planes pass
+/// through it) is rounded by the one ball touching the three surfaces that
+/// do, wherever they curve: its centre walked to a radius in from each,
+/// the compartment bounded by the three planes through the centre and two
+/// touch points, clipped to the solid, less the ball.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
 /// vertex is not a vertex of the solid; if fewer than three planes pass
-/// through it (a curved-edged corner is the setback family's, still
-/// owed; see docs/PARITY.md, fillet.edge-blends); if the region the ball's
-/// centre may occupy has a tip vertex touching more than three planes
+/// through it and other than three surfaces do, or the ball does not seat
+/// inside every face; if the region the ball's centre may occupy has a tip vertex touching more than three planes
 /// without one ball touching all of the corner's, or with other than three
 /// edges leaving it; or if the corner turns out concave, where a ball adds
 /// material instead of shedding it and a tool built from a cut cannot say
@@ -110,13 +115,9 @@ pub fn round_vertex(
     }
     let n = m.len();
     if n < 3 {
-        ogeom_bail!(
-            Construction,
-            "round_vertex speaks the planar corner: at least three planes \
-             must pass through the vertex, found {n}; the curved-edged corner \
-             is the setback family's, still owed; see docs/PARITY.md, \
-             fillet.edge-blends"
-        );
+        // A curved face meets here: the one-ball corner on whatever
+        // surfaces pass through the vertex.
+        return crate::corner_curved::curved_corner(model, solid, vertex, corner, radius, tol);
     }
     // The ball's centre: the point a radius in from every plane. Three
     // planes that span always hold one; more only when they share a

@@ -114,6 +114,34 @@ pub(crate) fn edge_curve(
     Ok((placed, *range))
 }
 
+/// Whether every face of `solid` bounding `edge` is planar: the straight
+/// seat's own forms speak only planes, and a straight edge on a curved
+/// face (a ruling of a drum where it meets a wall) is the march's.
+pub(crate) fn hosts_planar(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+        let touches = explore(model, &face, Filter::OfType(ShapeType::Edge))?
+            .iter()
+            .any(|e| same_occurrence(model, e, edge, tol));
+        if !touches {
+            continue;
+        }
+        let planar = model
+            .node(&face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+            .is_some_and(|s| matches!(s, SurfaceGeometry::Plane(_)));
+        if !planar {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Find the seat of a blend: the straight edge's ends and direction, and the
 /// outward normals of the exactly two planar faces of `solid` meeting there.
 ///

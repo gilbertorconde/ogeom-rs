@@ -11,11 +11,13 @@ pub mod analyse;
 pub mod chamfer;
 pub mod corner;
 pub mod corner2d;
+mod corner_curved;
 pub mod facepair;
 pub mod fillet;
 pub mod march;
 mod marched;
 mod pinched;
+mod ruled;
 mod support;
 
 pub use analyse::{BlendContact, analyse_blend};
