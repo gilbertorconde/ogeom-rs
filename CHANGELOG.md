@@ -129,6 +129,10 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A washer's medial axis did not settle (#71).** A face bounded by two
+  full circles has no branch point, and its one branch, the ellipse
+  between the circles, was never emitted. It now comes back as one closed
+  branch naming a single vertex at both ends.
 - **A fillet on a prism's base edge was refused as too wide (#70).** The
   check stepped into the reversed base face on the wrong side of the
   edge. Each face's inner side is now read from the face itself.

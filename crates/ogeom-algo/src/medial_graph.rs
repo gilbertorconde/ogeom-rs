@@ -61,7 +61,9 @@ pub struct MedialBranch {
     pub curve: ogeom_geom::Curve,
     /// The portion of `curve` the branch covers.
     pub range: (f64, f64),
-    /// The vertices at `range.0` and `range.1`, by index.
+    /// The vertices at `range.0` and `range.1`, by index. A closed branch
+    /// no branch point touches (a washer's, between its two circles) runs
+    /// a full period and names one vertex on it twice.
     pub ends: [usize; 2],
     /// The two sites the branch is equidistant from.
     pub sites: [MedialSite; 2],
@@ -1234,6 +1236,32 @@ fn build(
             branch_sites.push([pair.0, pair.1]);
             continue;
         };
+        // A closed bisector no branch point touches (a washer's, between
+        // its two circles) is one closed branch: a single vertex on it,
+        // where the ellipse's major axis meets it on the second site's
+        // side, both ends of a full period.
+        if ends.is_empty() && bisector.periodic() {
+            let at = bisector.at(0.0);
+            let index = vertices.len();
+            vertices.push(MedialVertex {
+                point: lift(&boundary.frame, at),
+                clearance: sites[pair.0].distance(at, tol)?,
+            });
+            nodes.push(Node {
+                at,
+                sites: vec![pair.0, pair.1],
+                boundary: false,
+            });
+            let range = (0.0, core::f64::consts::TAU);
+            branches.push(MedialBranch {
+                curve: bisector.curve(&boundary.frame, range, tol)?,
+                range,
+                ends: [index, index],
+                sites: [sites[pair.0].origin.clone(), sites[pair.1].origin.clone()],
+            });
+            branch_sites.push([pair.0, pair.1]);
+            continue;
+        }
         let unwrap = |t: f64, about: f64| -> f64 {
             if bisector.periodic() {
                 let tau = core::f64::consts::TAU;

@@ -331,3 +331,37 @@ fn a_half_ellipse_fits_its_branches_to_the_tolerance() {
     // long, which sit within a hundredth of a micron of it.
     check_axis(&model, &face, &pieces, 2e-4);
 }
+
+/// A washer's axis is one closed branch between its two circles: the
+/// ellipse with the circles' centres for foci, no branch point on it, its
+/// clearance least where the hole comes nearest the rim.
+#[test]
+fn a_washers_axis_is_one_closed_branch_between_its_circles() {
+    let tau = core::f64::consts::TAU;
+    for (hole_centre, hole_radius, least) in [((0.0, 0.0), 7.0, 1.5), ((2.0, 0.0), 5.0, 1.5)] {
+        let mut model = Model::new();
+        let outer = vec![Piece::Arc(Point::ORIGIN, 10.0, 0.0, tau)];
+        let hole = vec![Piece::Arc(
+            Point::new(hole_centre.0, hole_centre.1, 0.0),
+            hole_radius,
+            0.0,
+            tau,
+        )];
+        let face = face_of(&mut model, &[outer.clone(), hole.clone()]);
+        let mut all = outer;
+        all.extend(hole);
+        let graph = check_axis(&model, &face, &all, 1e-9);
+        assert_eq!(graph.branches.len(), 1);
+        let branch = &graph.branches[0];
+        assert_eq!(
+            branch.ends[0], branch.ends[1],
+            "the branch closes on itself"
+        );
+        assert!(((branch.range.1 - branch.range.0) - tau).abs() < 1e-12);
+        let min = (0..=200)
+            .map(|i| branch.range.0 + (branch.range.1 - branch.range.0) * f64::from(i) / 200.0)
+            .map(|t| graph.clearance_at(0, t, T).unwrap())
+            .fold(f64::INFINITY, f64::min);
+        assert!((min - least).abs() < 1e-3, "least clearance {min}");
+    }
+}
