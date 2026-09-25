@@ -135,8 +135,9 @@ bump may break the API and a patch bump may not.
 - **A chamfer wider than its face cut through it** (#67): a 12 mm bevel
   on a 10 mm face sliced a slab off the box. A setback running past a
   face's far side is now refused, naming the edge and the distance. A
-  fillet on an edge between planes is held to the same: its ball touches
-  each face the radius times the tangent of half the faces' turn back.
+  fillet is held to the same on any edge, curved faces and concave edges
+  included: its ball's contacts, set back the radius times the tangent of
+  half the faces' turn, must land on the solid's boundary.
 - **A refined solid of pads measured from its mesh** (#64). The face
   `unify_same_domain` merged lay on one of the merged planes, whose window
   did not cover the union, and the plane refused to be read past it. A

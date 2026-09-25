@@ -89,3 +89,65 @@ fn a_fillet_wider_than_its_face_is_refused() {
         }
     }
 }
+
+/// On a drum's top rim the ball sets back its radius across the top disc:
+/// radius 4 fits a disc of radius 5 and radius 6 does not.
+#[test]
+fn a_rim_fillet_wider_than_its_cap_is_refused() {
+    for (r, fits) in [(4.0, true), (6.0, false)] {
+        let mut model = Model::new();
+        let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 10.0, T)
+            .unwrap()
+            .shape;
+        let rim = explore_unique(&model, &drum, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                let b = ogeom::algo::shape_bounds(&model, e, T).unwrap();
+                b.low().unwrap().z > 10.0 - 1e-3 && b.size().x > 9.0
+            })
+            .expect("the top rim");
+        let result = ogeom::fillet::fillet_edges(&mut model, &drum, &[rim], r, T);
+        assert_eq!(result.is_ok(), fits, "radius {r}: {:?}", result.err());
+    }
+}
+
+/// The inside edge of an L, where the fillet adds material: 3 fits the
+/// 4 mm of floor beside the wall and 5 does not.
+#[test]
+fn a_concave_fillet_wider_than_its_floor_is_refused() {
+    for (r, fits) in [(3.0, true), (5.0, false)] {
+        let mut model = Model::new();
+        let pts = [
+            (0.0, 0.0),
+            (6.0, 0.0),
+            (6.0, 2.0),
+            (2.0, 2.0),
+            (2.0, 8.0),
+            (0.0, 8.0),
+        ]
+        .map(|(x, z)| Point::new(x, 0.0, z));
+        let wire = make_polygon(&mut model, &pts, true, T).unwrap().shape;
+        let plane = PlaneSurface::new(Plane::through(Point::ORIGIN, -ogeom::math::Direction::Y));
+        let face = make_face(&mut model, plane.into(), &[wire], T)
+            .unwrap()
+            .shape;
+        let l = make_prism(&mut model, &face, Vector::new(0.0, 10.0, 0.0), T)
+            .unwrap()
+            .shape;
+        let inner = explore_unique(&model, &l, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                let b = ogeom::algo::shape_bounds(&model, e, T).unwrap();
+                let (lo, hi) = (b.low().unwrap(), b.high().unwrap());
+                (lo.x - 2.0).abs() < 1e-3
+                    && (hi.x - 2.0).abs() < 1e-3
+                    && (lo.z - 2.0).abs() < 1e-3
+                    && (hi.z - 2.0).abs() < 1e-3
+            })
+            .expect("the inside edge");
+        let result = ogeom::fillet::fillet_edges(&mut model, &l, &[inner], r, T);
+        assert_eq!(result.is_ok(), fits, "radius {r}: {:?}", result.err());
+    }
+}

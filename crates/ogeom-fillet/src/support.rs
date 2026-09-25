@@ -696,3 +696,173 @@ pub(crate) fn face_reach(
     }
     Ok(reach)
 }
+
+/// Whether a rolling ball of `radius` sits on both faces along `edge`: at
+/// stations along it, each face's contact is set back into the face by
+/// `radius · tan(φ/2)` (φ the turn between the faces' outward normals,
+/// taken on the surfaces where the edge runs), found on the face's surface
+/// and classified against the face. A contact outside a face is a band
+/// that runs past it; the refusal names the edge and the distance. Edges
+/// that are not shared by exactly two faces, and faces meeting tangent,
+/// are left to the blend itself.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+/// where a contact falls outside its face.
+pub(crate) fn ball_fits(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    use ogeom_geom::Surface as _;
+    let Ok((curve, range)) = edge_curve(model, edge, tol) else {
+        return Ok(());
+    };
+    // Each face holding the edge, with the edge's sense in that face's walk.
+    let mut sides: Vec<(Shape, bool)> = Vec::new();
+    for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+        for e in explore(model, &face, Filter::OfType(ShapeType::Edge))? {
+            if same_occurrence(model, &e, edge, tol) {
+                // The walk as the face presents it: a reversed face walks
+                // its rings the other way.
+                let reversed = (e.orientation() == Orientation::Reversed)
+                    != (face.orientation() == Orientation::Reversed);
+                sides.push((face.clone(), reversed));
+                break;
+            }
+        }
+    }
+    let [(face0, rev0), (face1, rev1)] = sides.as_slice() else {
+        return Ok(());
+    };
+    let normal_at = |face: &Shape, p: Point| -> OgeomResult<Option<(SurfaceGeometry, Vector)>> {
+        let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
+            return Ok(None);
+        };
+        let Some(surface) = model.geometry().surface(data.surface) else {
+            return Ok(None);
+        };
+        use ogeom_geom::Transformable as _;
+        let placed = surface
+            .clone()
+            .transformed(&face.transform(model.datums())?, tol)?;
+        let found = ogeom_algo::project_on_surface(&placed, p, 16, tol)?;
+        let (u, v) = found.parameters;
+        let Ok(n) = placed.normal_at(u, v, tol) else {
+            return Ok(None);
+        };
+        let n = if face.orientation() == Orientation::Reversed {
+            -n.vector()
+        } else {
+            n.vector()
+        };
+        Ok(Some((placed, n)))
+    };
+    // The edge's curve comes placed. Stations stay clear of its ends,
+    // where a neighbouring face in a chain carries the band on.
+    for fraction in [0.25, 0.5, 0.75] {
+        let t = range.0 + (range.1 - range.0) * fraction;
+        let p = curve.point_at(t, tol)?;
+        let d = curve.d1_at(t, tol)?;
+        let m = d.magnitude();
+        if m <= tol.confusion() {
+            continue;
+        }
+        let tangent = d / m;
+        let (Some((s0, n0)), Some((s1, n1))) = (normal_at(face0, p)?, normal_at(face1, p)?) else {
+            continue;
+        };
+        // Into each face: the normal across the edge as the face walks it.
+        let into = |n: Vector, reversed: bool| -> Vector {
+            let walk = if reversed { -tangent } else { tangent };
+            let d = n.cross(walk);
+            let l = d.magnitude();
+            if l > 0.0 { d / l } else { d }
+        };
+        let (d0, d1) = (into(n0, *rev0), into(n1, *rev1));
+        let turn = n0.dot(n1).clamp(-1.0, 1.0).acos();
+        if turn <= tol.angular() * 1e3 {
+            continue;
+        }
+        let setback = radius * (turn * 0.5).tan();
+        for (face, surface, step) in [(face0, &s0, d0), (face1, &s1, d1)] {
+            let guess = p + step * setback;
+            let found = ogeom_algo::project_on_surface(surface, guess, 16, tol)?;
+            let (u, v) = found.parameters;
+            // On its own face, or on any face of the solid it has run on
+            // to (a coplanar piece the face was split from, the next face
+            // of a chain): anywhere on the boundary the ball can sit.
+            if !chart_holds(model, face, ogeom_math::Point2::new(u, v), tol)?
+                && !on_boundary(model, solid, found.point, tol)?
+            {
+                ogeom_bail!(
+                    Construction,
+                    "a blend of radius {radius} on the edge through {p:?} sets back {setback} \
+                     across a face that does not reach so far"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether a chart point lies in a face's region: inside one of the
+/// triangles its own mesh lays over its chart, or on one's side.
+fn chart_holds(
+    model: &Model,
+    face: &Shape,
+    at: ogeom_math::Point2,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let mesh = ogeom_mesh::triangulate_face(model, face, ogeom_mesh::Deflection::default(), tol)?;
+    let chart = |i: u32| {
+        let (u, v) = mesh.parameters[i as usize];
+        ogeom_math::Point2::new(u, v)
+    };
+    let span = mesh
+        .parameters
+        .iter()
+        .fold(0.0_f64, |m, (u, v)| m.max(u.abs()).max(v.abs()))
+        .max(1.0);
+    let eps = span * 1e-9;
+    Ok(mesh.triangles.iter().any(|t| {
+        let [a, b, c] = t.map(chart);
+        let cross = |p: ogeom_math::Point2, q: ogeom_math::Point2| {
+            (q.x - p.x) * (at.y - p.y) - (q.y - p.y) * (at.x - p.x)
+        };
+        let (d1, d2, d3) = (cross(a, b), cross(b, c), cross(c, a));
+        let neg = d1 < -eps || d2 < -eps || d3 < -eps;
+        let pos = d1 > eps || d2 > eps || d3 > eps;
+        !(neg && pos)
+    }))
+}
+
+/// Whether a point lies on some face of `solid`: on its surface, within
+/// the model's reach, and inside its chart region.
+fn on_boundary(model: &Model, solid: &Shape, point: Point, tol: Tolerances) -> OgeomResult<bool> {
+    use ogeom_geom::Transformable as _;
+    let reach = tol.confusion() * 100.0;
+    for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+        let Some(NodeData::Face(data)) = model.node(&face).map(|n| n.data()) else {
+            continue;
+        };
+        let Some(surface) = model.geometry().surface(data.surface) else {
+            continue;
+        };
+        let placed = surface
+            .clone()
+            .transformed(&face.transform(model.datums())?, tol)?;
+        let found = ogeom_algo::project_on_surface(&placed, point, 16, tol)?;
+        if found.distance > reach {
+            continue;
+        }
+        let (u, v) = found.parameters;
+        if chart_holds(model, &face, ogeom_math::Point2::new(u, v), tol)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
