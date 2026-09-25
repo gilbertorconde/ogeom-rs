@@ -107,6 +107,9 @@ bump may break the API and a patch bump may not.
   arcs meeting tangent sweeps as extrusions and revolutions of the
   section, fused, so its walls are planes, drums, cones and tori and the
   solid measures in closed form.
+- **A wire swept round a skew corner.** A closed planar wire profile
+  sweeps round a corner that turns a curved leg out of its plane as the
+  walls of the face it bounds, where it was refused.
 - **Skinned lofts keep corners and circles** (#57). Two sections loft
   ruled and exact; more with matching corners loft as one strip per
   edge, corners kept; coaxial circles loft as a solid of revolution. Two

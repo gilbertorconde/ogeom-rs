@@ -2018,3 +2018,62 @@ fn a_square_runs_an_arc_and_on_along_its_tangent() {
         );
     }
 }
+
+/// The same skew corner with the square's wire rather than its face: the
+/// walls the face's sweep has, and no caps.
+#[test]
+fn a_wire_sweeps_a_skew_corner_as_the_walls_of_its_face() {
+    let build = |model: &mut ogeom_topo::Model, as_wire: bool| -> ogeom_topo::Shape {
+        let r = 20.0;
+        let a = Point::new(r, 0.0, 0.0);
+        let b = Point::new(0.0, r, 0.0);
+        let c = Point::new(0.0, r, 20.0);
+        let va = ogeom_algo::make_vertex(model, a).shape;
+        let vb = ogeom_algo::make_vertex(model, b).shape;
+        let vc = ogeom_algo::make_vertex(model, c).shape;
+        let arc = arc_between(
+            model,
+            Point::ORIGIN,
+            r,
+            (0.0, core::f64::consts::FRAC_PI_2),
+            &va,
+            &vb,
+        );
+        let lcurve = ogeom_geom::Curve::Line(ogeom_geom::LineCurve::segment(b, c, T).unwrap());
+        let ldomain = ogeom_geom::Curve3d::domain(&lcurve);
+        let leg = ogeom_algo::make_edge_between(model, lcurve, ldomain, &vb, &vc, T)
+            .unwrap()
+            .shape;
+        let spine = ogeom_algo::make_wire(model, &[arc, leg], T).unwrap().shape;
+        let face = square_profile(model, a, ogeom_math::Vector::Y, 4.0);
+        let profile = if as_wire {
+            explore(model, &face, Filter::OfType(ShapeType::Wire))
+                .unwrap()
+                .remove(0)
+        } else {
+            face
+        };
+        ogeom_offset::make_pipe_shell(model, &profile, &spine, false, 1e-3, T)
+            .unwrap()
+            .shape
+    };
+    let mut model = ogeom_topo::Model::new();
+    let solid = build(&mut model, false);
+    let shell = build(&mut model, true);
+    let count = |shape: &ogeom_topo::Shape| {
+        ogeom_topo::explore_unique(&model, shape, ShapeType::Face)
+            .unwrap()
+            .len()
+    };
+    assert_eq!(model.kind_of(&shell).unwrap(), ShapeType::Shell);
+    assert_eq!(count(&shell), count(&solid) - 2, "the walls and no caps");
+    let area = |shape: &ogeom_topo::Shape| {
+        ogeom_algo::surface_properties(&model, shape, fine(), T)
+            .unwrap()
+            .mass
+    };
+    assert!(
+        (area(&solid) - area(&shell) - 32.0).abs() < 1e-6,
+        "the caps are the 4 by 4 squares"
+    );
+}

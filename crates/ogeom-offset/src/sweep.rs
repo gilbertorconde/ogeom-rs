@@ -4419,12 +4419,71 @@ fn mitred_pieces(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    if model.kind_of(profile)? == ShapeType::Wire {
+        // A closed planar wire sweeps the walls of the face it bounds: the
+        // solid pieces are mitred and fused as for that face, and its end
+        // caps (on the planes square to the spine's ends) are taken off.
+        if !ogeom_algo::is_wire_closed(model, profile, tol)? {
+            ogeom_bail!(
+                Construction,
+                "a skew corner against a curved leg is mitred by fusing solid \
+                 pieces; an open wire bounds no face to sweep round it"
+            );
+        }
+        let Some(plane) = ogeom_algo::find_plane(model, profile, tol)? else {
+            ogeom_bail!(Construction, "a pipe shell sweeps a planar profile");
+        };
+        let reach = 1e4_f64;
+        let surface: SurfaceGeometry =
+            PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
+        let face = ogeom_algo::make_face(model, surface, std::slice::from_ref(profile), tol)?.shape;
+        let face = realized_profile(model, &face, &Transform::IDENTITY, tol)?;
+        let solid = mitred_pieces(
+            model, &face, spine, stations, skew, ring, probes, tolerance, tol,
+        )?
+        .shape;
+        let ends: Vec<(Point, Vector)> = if ring {
+            Vec::new()
+        } else {
+            vec![
+                (stations[0].at, stations[0].tangent),
+                (
+                    stations[stations.len() - 1].at,
+                    stations[stations.len() - 1].tangent,
+                ),
+            ]
+        };
+        let mut walls = Vec::new();
+        for f in explore(model, &solid, Filter::OfType(ShapeType::Face))? {
+            let Some(ogeom_topo::NodeData::Face(data)) = model.node(&f).map(|n| n.data()) else {
+                continue;
+            };
+            let cap = match model.geometry().surface(data.surface) {
+                Some(SurfaceGeometry::Plane(p)) => {
+                    let placed = p.plane();
+                    ends.iter().any(|(at, n)| {
+                        placed.normal().vector().cross(*n).magnitude() <= tol.angular()
+                            && placed.distance_to(*at) <= tol.confusion() * 100.0
+                    })
+                }
+                _ => false,
+            };
+            if !cap {
+                walls.push(f);
+            }
+        }
+        let sewn = sew(model, &walls, tol)?;
+        let shape = match sewn.shells.as_slice() {
+            [shell] => shell.clone(),
+            _ => ogeom_algo::make_compound(model, &sewn.shells)?.shape,
+        };
+        let mut history = History::new();
+        history.generate(profile, shape.clone());
+        history.generate(spine, shape.clone());
+        return Ok(Built::new(shape, history));
+    }
     if model.kind_of(profile)? != ShapeType::Face {
-        ogeom_bail!(
-            Construction,
-            "a skew corner against a curved leg is mitred by fusing solid \
-             pieces; sweep a face, not a wire, round it"
-        );
+        ogeom_bail!(Construction, "a pipe shell sweeps a planar wire or face");
     }
     let edges: Vec<Shape> = match model.kind_of(spine)? {
         ShapeType::Edge => vec![spine.clone()],
