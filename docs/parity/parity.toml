@@ -630,10 +630,12 @@ diagnosis, the reader's inline heal sequence, and the instructed fixes: \
 fix_face_pcurves fits the trims the reader refused at a caller's cap, and \
 reanchor_boundaries moves a boundary onto the surface it bounds with the \
 displacement recorded in widened tolerances, both measured on community \
-assemblies with boundaries millimetres off. What does not exist: \
-small-face and small-solid removal (removing a face opens its shell; that \
-is defeaturing's job) and the face-across-a-patch-grid rebuild. Healing \
-here is measured by the imported corpus rather than claimed in general."""
+assemblies with boundaries millimetres off. fix_small_faces collapses \
+a spot face to a point and a strip face to one long side, rebuilding its \
+neighbours so the shell stays closed; remove_small_solids drops debris \
+solids under a volume. A STEP grid of patches reads as one spline \
+surface. Healing here is measured by the imported corpus rather than \
+claimed in general."""
 claims = [
     "ShapeFix", "ShapeFix_Shape", "ShapeFix_Face", "ShapeFix_FaceConnect",
     "ShapeFix_Wire", "ShapeFix_Wireframe", "ShapeFix_WireSegment",
@@ -650,7 +652,8 @@ claims = [
     "ShapeExtend_ComplexCurve", "ShapeExtend_CompositeSurface",
 ]
 symbols = [
-    "ogeom_heal::fix_shape", "ogeom_heal::reanchor_periodic_rings", "ogeom_algo::sew",
+    "ogeom_heal::fix_shape", "ogeom_heal::fix_small_faces", "ogeom_heal::remove_small_solids",
+    "ogeom_heal::reanchor_periodic_rings", "ogeom_algo::sew",
     "ogeom_algo::restore_containment",
     "ogeom_algo::check",
 ]
@@ -1608,6 +1611,7 @@ tests = [
     "crates/ogeom/tests/imported_corpus.rs",
     "crates/ogeom/tests/assembly_corpus.rs",
     "crates/ogeom/tests/pmi_corpus.rs",
+    "crates/ogeom/tests/step_geometry_kinds.rs",
 ]
 
 [[capability]]

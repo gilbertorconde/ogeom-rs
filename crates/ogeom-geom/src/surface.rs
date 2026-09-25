@@ -668,6 +668,115 @@ impl OffsetSurface {
     pub const fn distance(&self) -> f64 {
         self.distance
     }
+
+    /// The offset as the analytic surface it is, where the basis is one: a
+    /// plane moved along its normal, a drum, ball or ring's tube grown or
+    /// shrunk, a cone's reference radius changed by `d / cos α` over the
+    /// same half-angle. Which way the offset grows is read off the basis's
+    /// own normal at a point, not assumed from its parameterization. `None`
+    /// for any other basis, or for an offset that would turn the surface
+    /// inside out (a radius through zero).
+    ///
+    /// # Errors
+    ///
+    /// As the basis's evaluation, or as the analytic constructors.
+    pub fn analytic(&self, tol: Tolerances) -> OgeomResult<Option<SurfaceGeometry>> {
+        let ((u0, u1), (v0, v1)) = self.basis.domain();
+        let clamp = |lo: f64, hi: f64| {
+            if lo.is_finite() && hi.is_finite() {
+                f64::midpoint(lo, hi)
+            } else {
+                0.0
+            }
+        };
+        let (u, v) = (clamp(u0, u1), clamp(v0, v1));
+        let at = self.basis.point_at(u, v, tol)?;
+        let normal = self.basis.normal_at(u, v, tol)?.vector();
+        let d = self.distance;
+        // Whether the basis normal points away from the axis or centre it
+        // is measured from: the offset then grows the radius.
+        let outward = |from_axis: Vector| normal.dot(from_axis) > 0.0;
+        Ok(match &self.basis {
+            SurfaceGeometry::Plane(p) => {
+                let plane = p.plane();
+                let frame = plane.frame();
+                let moved =
+                    ogeom_math::Frame::new(frame.origin() + normal * d, frame.z(), frame.x(), tol)?;
+                Some(PlaneSurface::over(ogeom_math::Plane::new(moved), (u0, u1), (v0, v1))?.into())
+            }
+            SurfaceGeometry::Cylinder(c) => {
+                let cylinder = c.cylinder();
+                let frame = cylinder.frame();
+                let radial = at - frame.origin();
+                let radial = radial - frame.z().vector() * radial.dot(frame.z().vector());
+                let radius = cylinder.radius() + if outward(radial) { d } else { -d };
+                if radius <= tol.confusion() {
+                    return Ok(None);
+                }
+                Some(
+                    CylinderSurface::new(ogeom_math::Cylinder::new(frame, radius, tol)?, (v0, v1))?
+                        .into(),
+                )
+            }
+            SurfaceGeometry::Cone(c) => {
+                let cone = c.cone();
+                let frame = cone.frame();
+                let radial = at - frame.origin();
+                let radial = radial - frame.z().vector() * radial.dot(frame.z().vector());
+                let grow = if outward(radial) { d } else { -d };
+                let radius = cone.reference_radius() + grow / cone.half_angle().cos();
+                if radius <= tol.confusion() {
+                    return Ok(None);
+                }
+                Some(
+                    ConeSurface::new(
+                        ogeom_math::Cone::new(frame, radius, cone.half_angle(), tol)?,
+                        (v0, v1),
+                    )?
+                    .into(),
+                )
+            }
+            SurfaceGeometry::Sphere(s) => {
+                let sphere = s.sphere();
+                let grow = if outward(at - sphere.frame().origin()) {
+                    d
+                } else {
+                    -d
+                };
+                let radius = sphere.radius() + grow;
+                if radius <= tol.confusion() {
+                    return Ok(None);
+                }
+                Some(
+                    SphereSurface::new(ogeom_math::Sphere::new(sphere.frame(), radius, tol)?)
+                        .into(),
+                )
+            }
+            SurfaceGeometry::Torus(t) => {
+                let torus = t.torus();
+                let frame = torus.frame();
+                // From the tube's own centre circle.
+                let flat = at - frame.origin();
+                let flat = flat - frame.z().vector() * flat.dot(frame.z().vector());
+                let ring = frame.origin() + flat * (torus.major_radius() / flat.magnitude());
+                let grow = if outward(at - ring) { d } else { -d };
+                let minor = torus.minor_radius() + grow;
+                if minor <= tol.confusion() {
+                    return Ok(None);
+                }
+                Some(
+                    TorusSurface::new(ogeom_math::Torus::new(
+                        frame,
+                        torus.major_radius(),
+                        minor,
+                        tol,
+                    )?)
+                    .into(),
+                )
+            }
+            _ => None,
+        })
+    }
 }
 
 impl Surface for OffsetSurface {

@@ -12,6 +12,7 @@ pub mod fix;
 pub mod fix_shape;
 pub mod reanchor;
 pub mod same_parameter;
+pub mod small;
 
 pub mod canonical;
 pub mod reshape;
@@ -23,4 +24,5 @@ pub use fix_shape::{FixReport, Fixed, fix_shape};
 pub use reanchor::reanchor_periodic_rings;
 pub use reshape::Reshape;
 pub use same_parameter::{SameParameterReport, repair_same_parameter};
+pub use small::{SmallFaces, fix_small_faces, remove_small_solids};
 pub use upgrade::{merge_edges, reduce_tolerances, unify_same_domain};

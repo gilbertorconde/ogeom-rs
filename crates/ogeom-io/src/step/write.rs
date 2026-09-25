@@ -483,6 +483,30 @@ impl Writer<'_> {
                 )))
             }
             Curve::BSpline(b) => self.bspline_curve(b),
+            // The open conics in STEP's own spelling, where their parameter
+            // runs STEP's way; a reversed one is written as its spline.
+            Curve::Hyperbola(h) if !h.is_reversed() => {
+                let hyperbola = h.hyperbola();
+                let frame = self.frame(&hyperbola.frame());
+                Ok(self.entity(format!(
+                    "HYPERBOLA('',#{frame},{},{})",
+                    real(hyperbola.major_radius()),
+                    real(hyperbola.minor_radius())
+                )))
+            }
+            Curve::Parabola(p) if !p.is_reversed() => {
+                let parabola = p.parabola();
+                let frame = self.frame(&parabola.frame());
+                Ok(self.entity(format!("PARABOLA('',#{frame},{})", real(parabola.focal()))))
+            }
+            Curve::Offset(o) => {
+                let basis = self.curve(o.basis(), range)?;
+                let reference = self.direction(o.reference().vector());
+                Ok(self.entity(format!(
+                    "OFFSET_CURVE_3D('',#{basis},{},.F.,#{reference})",
+                    real(o.distance())
+                )))
+            }
             other => {
                 // Exact for the conics and trims: the conversion is the §3
                 // machinery, not a fit. A helix refuses inside the
@@ -578,9 +602,35 @@ impl Writer<'_> {
             }
             SurfaceGeometry::BSpline(b) => self.bspline_surface(b),
             SurfaceGeometry::Trimmed(t) => self.surface(t.basis()),
-            other => {
-                let patch = other.to_bspline(self.tol)?;
-                self.bspline_surface(&patch)
+            // Swept and offset surfaces in STEP's own spelling: exact, and
+            // read back as themselves.
+            SurfaceGeometry::Revolution(r) => {
+                let curve = r.curve();
+                let range = ogeom_geom::Curve3d::domain(curve);
+                let swept = self.curve(curve, range)?;
+                let axis = r.axis();
+                let location = self.point(axis.location);
+                let direction = self.direction(axis.direction.vector());
+                let placement =
+                    self.entity(format!("AXIS1_PLACEMENT('',#{location},#{direction})"));
+                Ok(self.entity(format!("SURFACE_OF_REVOLUTION('',#{swept},#{placement})")))
+            }
+            SurfaceGeometry::Extrusion(e) => {
+                let curve = e.curve();
+                let range = ogeom_geom::Curve3d::domain(curve);
+                let swept = self.curve(curve, range)?;
+                let direction = self.direction(e.direction().vector());
+                let vector = self.entity(format!("VECTOR('',#{direction},1.0)"));
+                Ok(self.entity(format!(
+                    "SURFACE_OF_LINEAR_EXTRUSION('',#{swept},#{vector})"
+                )))
+            }
+            SurfaceGeometry::Offset(o) => {
+                let basis = self.surface(o.basis())?;
+                Ok(self.entity(format!(
+                    "OFFSET_SURFACE('',#{basis},{},.F.)",
+                    real(o.distance())
+                )))
             }
         }
     }

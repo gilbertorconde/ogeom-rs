@@ -55,6 +55,24 @@ bump may break the API and a patch bump may not.
   groups read as layers.
   Constructive solids read too: the primitives, solids of revolution and
   extrusion, boolean trees, assemblies and instances.
+- **Small faces and small solids go.** `fix_small_faces` collapses a face
+  that fits in a ball of the given size to a point, and a thin strip to one
+  of its long sides, rebuilding the faces around it. `remove_small_solids`
+  drops the solids enclosing less than a given volume.
+- **More STEP geometry reads.** Curves: Bezier, uniform and quasi-uniform
+  splines, hyperbolas, parabolas, trimmed curves, offset curves,
+  polylines, composite curves and curve replicas. Surfaces: surfaces of
+  revolution, offset surfaces, rectangular trimmed surfaces, curve-bounded
+  surfaces, degenerate tori, surface replicas, the Bezier and uniform
+  spline forms, and a rectangular grid of patches joined into one spline.
+  The writer puts hyperbolas, parabolas, offset curves, surfaces of
+  revolution, extrusions and offset surfaces out exactly instead of as
+  splines.
+- **An offset of an analytic surface is that analytic surface.**
+  `OffsetSurface::analytic` returns the plane, drum, cone, ball or torus
+  the offset is.
+- **A trimmed surface converts to a B-spline** as its basis over the
+  trim's window, where the basis is analytic, swept or an untrimmed spline.
 
 ### Fixed
 

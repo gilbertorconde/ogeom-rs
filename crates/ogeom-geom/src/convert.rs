@@ -962,8 +962,26 @@ impl crate::surface::SurfaceGeometry {
     /// surface's own extents are degenerate, or its geometry cannot be
     /// evaluated.
     pub fn to_bspline(&self, tol: Tolerances) -> OgeomResult<crate::surface::BSplineSurface> {
+        self.to_bspline_over(self.domain(), tol)
+    }
+
+    /// This surface over `window` of its own parameters as a B-spline patch,
+    /// exactly: [`to_bspline`](Self::to_bspline) for a window other than the
+    /// surface's own extents. A trimmed surface converts as its basis over
+    /// the trim's window.
+    ///
+    /// # Errors
+    ///
+    /// As [`to_bspline`](Self::to_bspline); also a spline basis restricted
+    /// to less than its own extents, which needs knot insertion in two
+    /// directions and is not built.
+    fn to_bspline_over(
+        &self,
+        window: ((f64, f64), (f64, f64)),
+        tol: Tolerances,
+    ) -> OgeomResult<crate::surface::BSplineSurface> {
         use crate::surface::SurfaceGeometry as S;
-        let ((ua, ub), (va, vb)) = self.domain();
+        let ((ua, ub), (va, vb)) = window;
         match self {
             // An offset of a free-form basis has no exact spline form
             // (the unit normal is a quotient), and this function's contract
@@ -1045,7 +1063,7 @@ impl crate::surface::SurfaceGeometry {
             S::Revolution(r) => revolved_patch(r.curve(), (va, vb), r.axis(), (ua, ub), tol),
 
             S::Extrusion(e) => {
-                let base = e.curve().to_bspline(tol)?;
+                let base = e.curve().to_bspline_over((ua, ub), tol)?;
                 let along = e.direction().vector() * (vb - va);
                 let start: Vec<Weighted<Point>> = base
                     .control_points()
@@ -1067,14 +1085,22 @@ impl crate::surface::SurfaceGeometry {
                 loft(base.knots(), &start, &end)
             }
 
-            S::BSpline(s) => Ok(s.clone()),
+            S::BSpline(s) => {
+                let whole = s.domain();
+                let near = |a: (f64, f64), b: (f64, f64)| {
+                    (a.0 - b.0).abs() <= tol.parametric() && (a.1 - b.1).abs() <= tol.parametric()
+                };
+                if !near(whole.0, (ua, ub)) || !near(whole.1, (va, vb)) {
+                    ogeom_bail!(
+                        Construction,
+                        "a spline restricted to less than its extents needs knot insertion \
+                         in two directions; not built yet"
+                    );
+                }
+                Ok(s.clone())
+            }
 
-            S::Trimmed(_) => ogeom_bail!(
-                Construction,
-                "a trimmed surface converts by converting what it trims and \
-                 restricting the result, which needs knot insertion in two \
-                 directions; not built yet"
-            ),
+            S::Trimmed(t) => t.basis().to_bspline_over(window, tol),
         }
     }
 
@@ -1371,10 +1397,26 @@ mod surface_tests {
     }
 
     #[test]
-    fn a_trimmed_surface_still_says_no_rather_than_approximating() {
+    fn a_trimmed_surface_converts_as_its_basis_over_the_window() {
         let plane: SurfaceGeometry = PlaneSurface::new(Plane::new(Frame::WORLD)).into();
         let trimmed: SurfaceGeometry = SurfaceGeometry::Trimmed(Box::new(
-            TrimmedSurface::new(plane, (0.0, 1.0), (0.0, 1.0), T).unwrap(),
+            TrimmedSurface::new(plane, (0.0, 1.0), (2.0, 5.0), T).unwrap(),
+        ));
+        let patch = trimmed.to_bspline(T).unwrap();
+        let flat = Plane::new(Frame::WORLD);
+        assert!(deviation(|p| flat.distance_to(p), &patch) < 1e-12);
+        assert!(spans_the_same(&trimmed, &patch));
+    }
+
+    #[test]
+    fn a_trimmed_spline_still_says_no_rather_than_approximating() {
+        let plane: SurfaceGeometry =
+            PlaneSurface::over(Plane::new(Frame::WORLD), (0.0, 4.0), (0.0, 4.0))
+                .unwrap()
+                .into();
+        let spline: SurfaceGeometry = plane.to_bspline(T).unwrap().into();
+        let trimmed: SurfaceGeometry = SurfaceGeometry::Trimmed(Box::new(
+            TrimmedSurface::new(spline, (0.0, 0.5), (0.0, 0.5), T).unwrap(),
         ));
         assert!(trimmed.to_bspline(T).is_err());
     }

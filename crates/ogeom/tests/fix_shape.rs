@@ -251,3 +251,121 @@ fn a_substituted_vertex_rebuilds_reversed_occurrences_head_to_tail() {
         }
     }
 }
+
+fn volume_of(model: &Model, shape: &Shape) -> f64 {
+    ogeom::algo::volume_properties(model, shape, Deflection::default(), T)
+        .unwrap()
+        .mass
+}
+
+/// A cube whose corner is bevelled a micron along its whole length has a
+/// strip face there: it collapses to one of its long sides, the two walls
+/// meet on it, and the cube is six faces again.
+#[test]
+fn a_strip_face_collapses_to_an_edge() {
+    let mut model = Model::new();
+    let bevel = 1e-3;
+    let corners = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(10.0, 0.0, 0.0),
+        Point::new(10.0, 10.0 - bevel, 0.0),
+        Point::new(10.0 - bevel, 10.0, 0.0),
+        Point::new(0.0, 10.0, 0.0),
+    ];
+    let wire = make_polygon(&mut model, &corners, true, T).unwrap().shape;
+    let edges =
+        ogeom::topo::explore(&model, &wire, ogeom::topo::Filter::OfType(ShapeType::Edge)).unwrap();
+    let plane = PlaneSurface::new(Plane::through(Point::ORIGIN, Direction::Z));
+    let profile = ogeom::algo::make_face_with_pcurves(&mut model, plane.into(), &[edges], T)
+        .unwrap()
+        .shape;
+    let chamfered = ogeom::algo::make_prism(&mut model, &profile, ogeom::math::Vector::Z * 10.0, T)
+        .unwrap()
+        .shape;
+    assert_eq!(
+        explore_unique(&model, &chamfered, ShapeType::Face)
+            .unwrap()
+            .len(),
+        7
+    );
+    let fixed = ogeom::heal::fix_small_faces(&mut model, &chamfered, 1e-2, T).unwrap();
+    assert_eq!((fixed.spots, fixed.strips), (0, 1));
+    let shape = &fixed.built.shape;
+    assert_eq!(
+        explore_unique(&model, shape, ShapeType::Face)
+            .unwrap()
+            .len(),
+        6
+    );
+    let diagnosis = check(&model, shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // The walls keep their geometry and meet across the bevel's width,
+    // which the merged edge owns as tolerance: the volume is the cube's to
+    // within that width over a wall's area.
+    let v = volume_of(&model, shape);
+    assert!((v - 1000.0).abs() < bevel * 100.0, "{v}");
+}
+
+/// A cube's corner cut a micron in is a spot: the little triangle
+/// collapses to a point, where the three walls meet again.
+#[test]
+fn a_spot_face_collapses_to_a_point() {
+    let mut model = Model::new();
+    let cube = make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let normal = Direction::new(ogeom::math::Vector::new(1.0, 1.0, 1.0), T).unwrap();
+    let cutting = Plane::through(Point::new(10.0 - 1e-3, 10.0, 10.0), normal);
+    let face = ogeom::algo::make_natural_face(
+        &mut model,
+        PlaneSurface::over(cutting, (-50.0, 50.0), (-50.0, 50.0))
+            .unwrap()
+            .into(),
+    )
+    .unwrap()
+    .shape;
+    let keep = ogeom::algo::make_half_space(&mut model, &face, Point::ORIGIN, T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::common(&mut model, &cube, &keep, T)
+        .unwrap()
+        .shape;
+    assert_eq!(
+        explore_unique(&model, &cut, ShapeType::Face).unwrap().len(),
+        7
+    );
+    let fixed = ogeom::heal::fix_small_faces(&mut model, &cut, 1e-2, T).unwrap();
+    assert_eq!((fixed.spots, fixed.strips), (1, 0));
+    let shape = &fixed.built.shape;
+    assert_eq!(
+        explore_unique(&model, shape, ShapeType::Face)
+            .unwrap()
+            .len(),
+        6
+    );
+    let diagnosis = check(&model, shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+}
+
+/// A speck beside a part is debris: the solid below the volume goes, the
+/// part stays.
+#[test]
+fn a_small_solid_beside_a_part_is_removed() {
+    let mut model = Model::new();
+    let part = make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(Point::new(20.0, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let speck = make_box(&mut model, at, (1e-2, 1e-2, 1e-2), T)
+        .unwrap()
+        .shape;
+    let both = make_compound(&mut model, &[part.clone(), speck.clone()])
+        .unwrap()
+        .shape;
+    let (built, removed) = ogeom::heal::remove_small_solids(&mut model, &both, 1e-3, T).unwrap();
+    assert_eq!(removed, 1);
+    let solids = explore_unique(&model, &built.shape, ShapeType::Solid).unwrap();
+    assert_eq!(solids.len(), 1);
+    assert_eq!(solids[0].node(), part.node());
+    assert!(built.history.is_deleted(&speck));
+}

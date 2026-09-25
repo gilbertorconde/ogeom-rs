@@ -27,13 +27,15 @@ use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve2d as _;
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::Surface as _;
+use ogeom_geom::Transformable as _;
 use ogeom_geom::{
     BSplineCurve, CircleCurve, ConeSurface, Curve, CylinderSurface, EllipseCurve, ExtrusionSurface,
-    LineCurve, PlanarCurve, PlaneSurface, SphereSurface, SurfaceGeometry, TorusSurface,
+    HyperbolaCurve, LineCurve, ParabolaCurve, PlanarCurve, PlaneSurface, SphereSurface,
+    SurfaceGeometry, TorusSurface,
 };
 use ogeom_math::{
-    Axis, Circle, Cone, Cylinder, Direction, Ellipse, Frame, KnotVector, Plane, Point, Sphere,
-    Torus, Transform, Vector,
+    Axis, Blend as _, Circle, Cone, Cylinder, Direction, Ellipse, Frame, Hyperbola, KnotVector,
+    Matrix3, Parabola, Plane, Point, Sphere, Torus, Transform, Vector, Weighted,
 };
 use ogeom_topo::{Location, Model, Shape};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -631,7 +633,50 @@ impl Reader<'_> {
                     )
                 };
                 return self
-                    .bspline_surface(id, degrees, grid_arg, mults_knots, weights)
+                    .bspline_surface(id, degrees, grid_arg, mults_knots, weights, None)
+                    .map(Some);
+            }
+        }
+        // A complex instance whose knots are implied by its form, or a
+        // simple one of those forms.
+        {
+            let (base, weights, form) = {
+                let instance = self.instance(id)?;
+                (
+                    instance.part("B_SPLINE_SURFACE").map(<[Arg]>::to_vec),
+                    instance
+                        .part("RATIONAL_B_SPLINE_SURFACE")
+                        .map(<[Arg]>::to_vec),
+                    ["BEZIER_SURFACE", "UNIFORM_SURFACE", "QUASI_UNIFORM_SURFACE"]
+                        .into_iter()
+                        .find(|k| instance.part(k).is_some()),
+                )
+            };
+            if let (Some(base), Some(form)) = (base, form) {
+                return self
+                    .bspline_surface(
+                        id,
+                        (base.first().cloned(), base.get(1).cloned()),
+                        base.get(2).cloned(),
+                        (None, None, None, None),
+                        weights,
+                        Some(form),
+                    )
+                    .map(Some);
+            }
+            if let Some(form) = ["BEZIER_SURFACE", "UNIFORM_SURFACE", "QUASI_UNIFORM_SURFACE"]
+                .into_iter()
+                .find(|k| *k == keyword)
+            {
+                return self
+                    .bspline_surface(
+                        id,
+                        (args.get(1).cloned(), args.get(2).cloned()),
+                        args.get(3).cloned(),
+                        (None, None, None, None),
+                        None,
+                        Some(form),
+                    )
                     .map(Some);
             }
         }
@@ -737,6 +782,66 @@ impl Reader<'_> {
                     ),
                 }
             }
+            "SURFACE_OF_REVOLUTION" => {
+                let Some(curve) = self.curve(args[1].reference().unwrap_or(0))? else {
+                    self.report.warnings.push(format!(
+                        "#{id}: a revolution's swept curve is not read; its face is skipped"
+                    ));
+                    return Ok(None);
+                };
+                let placement = self.args(args[2].reference().unwrap_or(0), "AXIS1_PLACEMENT")?;
+                let location = self.point(placement[1].reference().unwrap_or(0))?;
+                let direction = match placement.get(2).and_then(Arg::reference) {
+                    Some(r) => self.direction(r)?,
+                    None => Direction::Z,
+                };
+                Some(
+                    ogeom_geom::RevolutionSurface::new(
+                        curve,
+                        Axis {
+                            location,
+                            direction,
+                        },
+                        core::f64::consts::TAU,
+                    )?
+                    .into(),
+                )
+            }
+            "OFFSET_SURFACE" => {
+                let Some(basis) = self.surface(args[1].reference().unwrap_or(0))? else {
+                    return Ok(None);
+                };
+                let distance = args.get(2).and_then(Arg::number).unwrap_or(0.0) * scale;
+                if distance == 0.0 {
+                    return Ok(Some(basis));
+                }
+                // An analytic basis offsets to the analytic surface it is,
+                // which every downstream path speaks exactly.
+                let offset = ogeom_geom::OffsetSurface::new(basis, distance)?;
+                Some(match offset.analytic(self.tol)? {
+                    Some(analytic) => analytic,
+                    None => SurfaceGeometry::Offset(Box::new(offset)),
+                })
+            }
+            // A face's own edges bound it; the window these name is the
+            // basis's, restated.
+            "RECTANGULAR_TRIMMED_SURFACE" | "CURVE_BOUNDED_SURFACE" => {
+                self.surface(args[1].reference().unwrap_or(0))?
+            }
+            "DEGENERATE_TOROIDAL_SURFACE" => {
+                let frame = self.frame(args[1].reference().unwrap_or(0))?;
+                let major = radius_arg(&args, 2).unwrap_or(0.0) * scale;
+                let minor = radius_arg(&args, 3).unwrap_or(0.0) * scale;
+                Some(TorusSurface::new(Torus::new(frame, major, minor, self.tol)?).into())
+            }
+            "RECTANGULAR_COMPOSITE_SURFACE" => Some(self.composite_surface(id, &args)?),
+            "SURFACE_REPLICA" => {
+                let Some(parent) = self.surface(args[1].reference().unwrap_or(0))? else {
+                    return Ok(None);
+                };
+                let motion = self.transformation_operator(args[2].reference().unwrap_or(0))?;
+                Some(parent.transformed(&motion, self.tol)?)
+            }
             other => {
                 self.report.warnings.push(format!(
                     "#{id}: surface kind {other} is not read yet; its face is skipped"
@@ -772,6 +877,7 @@ impl Reader<'_> {
         grid_arg: Option<Arg>,
         mults_knots: (Option<Arg>, Option<Arg>, Option<Arg>, Option<Arg>),
         weights: Option<Vec<Arg>>,
+        form: Option<&str>,
     ) -> OgeomResult<SurfaceGeometry> {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let deg = |a: Option<Arg>| a.and_then(|x| x.number()).unwrap_or(1.0) as usize;
@@ -792,8 +898,18 @@ impl Reader<'_> {
                 points.push(self.point(cell.reference().unwrap_or(0))?);
             }
         }
-        let u_knots = KnotVector::new(Self::expand_knots(mults_knots.0, mults_knots.2), u_degree)?;
-        let v_knots = KnotVector::new(Self::expand_knots(mults_knots.1, mults_knots.3), v_degree)?;
+        let (u_raw, v_raw) = match form {
+            Some(form) => (
+                implied_knots(form, u_degree, u_count),
+                implied_knots(form, v_degree, v_count),
+            ),
+            None => (
+                Self::expand_knots(mults_knots.0, mults_knots.2),
+                Self::expand_knots(mults_knots.1, mults_knots.3),
+            ),
+        };
+        let u_knots = KnotVector::new(u_raw, u_degree)?;
+        let v_knots = KnotVector::new(v_raw, v_degree)?;
         let surface = if let Some(weights) = weights {
             let flat: Vec<f64> = weights
                 .first()
@@ -851,7 +967,19 @@ impl Reader<'_> {
                         .map(<[Arg]>::to_vec),
                 )
             };
-            if let (Some(base), Some(kp), Some(weights)) = (base, kp, weights) {
+            // A complex instance: the base part carries degree and control
+            // points; the knots come from the knots part or are implied by
+            // the form (Bézier, uniform, quasi-uniform); weights from the
+            // rational part where there is one.
+            let form = {
+                let instance = self.instance(id)?;
+                ["BEZIER_CURVE", "UNIFORM_CURVE", "QUASI_UNIFORM_CURVE"]
+                    .into_iter()
+                    .find(|k| instance.part(k).is_some())
+            };
+            if let Some(base) = base
+                && (kp.is_some() || form.is_some())
+            {
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let degree = base.first().and_then(Arg::number).unwrap_or(1.0) as usize;
                 let control: Vec<Point> = base
@@ -862,12 +990,15 @@ impl Reader<'_> {
                     .filter_map(Arg::reference)
                     .map(|r| self.point(r))
                     .collect::<OgeomResult<_>>()?;
-                let knots = KnotVector::new(
-                    Self::expand_knots(kp.first().cloned(), kp.get(1).cloned()),
-                    degree,
-                )?;
+                let knots = match (&kp, form) {
+                    (Some(kp), _) => Self::expand_knots(kp.first().cloned(), kp.get(1).cloned()),
+                    (None, Some(form)) => implied_knots(form, degree, control.len()),
+                    (None, None) => unreachable!("guarded above"),
+                };
+                let knots = KnotVector::new(knots, degree)?;
                 let flat: Vec<f64> = weights
-                    .first()
+                    .as_ref()
+                    .and_then(|w| w.first())
                     .and_then(Arg::list)
                     .unwrap_or(&[])
                     .iter()
@@ -944,6 +1075,115 @@ impl Reader<'_> {
                 // own, so unwrapping is the whole job.
                 self.curve(args.get(1).and_then(Arg::reference).unwrap_or(0))?
             }
+            "BEZIER_CURVE" | "UNIFORM_CURVE" | "QUASI_UNIFORM_CURVE" => {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let degree = args.get(1).and_then(Arg::number).unwrap_or(1.0) as usize;
+                let control: Vec<Point> = args
+                    .get(2)
+                    .and_then(Arg::list)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(Arg::reference)
+                    .map(|r| self.point(r))
+                    .collect::<OgeomResult<_>>()?;
+                let knots = implied_knots(&keyword, degree, control.len());
+                Some(BSplineCurve::new(KnotVector::new(knots, degree)?, control, self.tol)?.into())
+            }
+            "HYPERBOLA" => {
+                let frame = self.frame(args[1].reference().unwrap_or(0))?;
+                let a = args.get(2).and_then(Arg::number).unwrap_or(0.0) * scale;
+                let b = args.get(3).and_then(Arg::number).unwrap_or(0.0) * scale;
+                // The branch's reach in its own parameter: cosh 20 carries a
+                // hyperbola far past any part.
+                Some(HyperbolaCurve::new(Hyperbola::new(frame, a, b, self.tol)?, 20.0)?.into())
+            }
+            "PARABOLA" => {
+                let frame = self.frame(args[1].reference().unwrap_or(0))?;
+                let focal = args.get(2).and_then(Arg::number).unwrap_or(0.0) * scale;
+                Some(
+                    ParabolaCurve::new(Parabola::new(frame, focal, self.tol)?, SURFACE_EXTENT)?
+                        .into(),
+                )
+            }
+            "TRIMMED_CURVE" => {
+                // An edge's ends are its vertices; the trims restate them.
+                self.curve(args.get(1).and_then(Arg::reference).unwrap_or(0))?
+            }
+            "OFFSET_CURVE_3D" => {
+                let Some(basis) = self.curve(args.get(1).and_then(Arg::reference).unwrap_or(0))?
+                else {
+                    return Ok(None);
+                };
+                let distance = args.get(2).and_then(Arg::number).unwrap_or(0.0) * scale;
+                let reference =
+                    self.direction(args.get(4).and_then(Arg::reference).unwrap_or(0))?;
+                Some(Curve::Offset(Box::new(ogeom_geom::OffsetCurve::new(
+                    basis, distance, reference,
+                )?)))
+            }
+            "POLYLINE" => {
+                let points: Vec<Point> = args
+                    .get(1)
+                    .and_then(Arg::list)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(Arg::reference)
+                    .map(|r| self.point(r))
+                    .collect::<OgeomResult<_>>()?;
+                if points.len() < 2 {
+                    ogeom_bail!(Construction, "#{id}: a polyline of fewer than two points");
+                }
+                // Degree one through the points, a knot at each.
+                let mut knots = vec![0.0];
+                #[allow(clippy::cast_precision_loss)]
+                knots.extend((0..points.len()).map(|i| i as f64));
+                #[allow(clippy::cast_precision_loss)]
+                knots.push((points.len() - 1) as f64);
+                Some(BSplineCurve::new(KnotVector::new(knots, 1)?, points, self.tol)?.into())
+            }
+            "COMPOSITE_CURVE" => {
+                // Its segments, each over its own trim and in its own
+                // sense, as splines joined end to start.
+                let mut joined: Option<(KnotVector, Vec<ogeom_math::Weighted<Point>>)> = None;
+                let segments: Vec<u64> = args
+                    .get(1)
+                    .and_then(Arg::list)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(Arg::reference)
+                    .collect();
+                for segment in segments {
+                    let sargs = self.args(segment, "COMPOSITE_CURVE_SEGMENT")?;
+                    let same_sense = !sargs.get(1).is_some_and(|a| a.is_enum("F"));
+                    let parent = sargs.get(2).and_then(Arg::reference).unwrap_or(0);
+                    let Some((curve, range)) = self.bounded_curve(parent)? else {
+                        return Ok(None);
+                    };
+                    let mut spline = curve.to_bspline_over(range, self.tol)?;
+                    if !same_sense {
+                        let (knots, control) =
+                            ogeom_math::bspline::reverse(spline.knots(), spline.control_points());
+                        spline = BSplineCurve::rational(knots, control)?;
+                    }
+                    joined = Some(match joined {
+                        None => (spline.knots().clone(), spline.control_points().to_vec()),
+                        Some(held) => join_splines(held, &spline, self.tol)?,
+                    });
+                }
+                let Some((knots, control)) = joined else {
+                    ogeom_bail!(Construction, "#{id}: a composite curve with no segments");
+                };
+                Some(BSplineCurve::rational(knots, control)?.into())
+            }
+            "CURVE_REPLICA" => {
+                let Some(parent) = self.curve(args.get(1).and_then(Arg::reference).unwrap_or(0))?
+                else {
+                    return Ok(None);
+                };
+                let motion = self
+                    .transformation_operator(args.get(2).and_then(Arg::reference).unwrap_or(0))?;
+                Some(parent.transformed(&motion, self.tol)?)
+            }
             other => {
                 self.report.warnings.push(format!(
                     "#{id}: curve kind {other} is not read yet; its edge is skipped"
@@ -952,6 +1192,246 @@ impl Reader<'_> {
             }
         };
         Ok(out)
+    }
+
+    /// A rectangular composite surface: its grid of patches joined into one
+    /// B-spline surface, so a face across the grid is a face on one surface
+    /// and needs no rebuilding. Each patch in its spline form over its own
+    /// bounds, turned where its sense says, raised to the grid's degrees,
+    /// its knots unified with its column's and its row's, and joined to its
+    /// neighbours on their shared boundary. Neighbours that do not meet
+    /// there are refused by name.
+    fn composite_surface(&mut self, id: u64, args: &[Arg]) -> OgeomResult<SurfaceGeometry> {
+        let rows: Vec<Vec<u64>> = args
+            .get(1)
+            .and_then(Arg::list)
+            .unwrap_or(&[])
+            .iter()
+            .map(|row| {
+                row.list()
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(Arg::reference)
+                    .collect()
+            })
+            .collect();
+        if rows.is_empty()
+            || rows
+                .iter()
+                .any(|r| r.len() != rows[0].len() || r.is_empty())
+        {
+            ogeom_bail!(
+                Construction,
+                "#{id}: a composite surface's grid is not rectangular"
+            );
+        }
+        let mut grid: Vec<Vec<Patch>> = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let mut out = Vec::with_capacity(row.len());
+            for &patch in row {
+                let pargs = self.args(patch, "SURFACE_PATCH")?;
+                let parent = pargs.get(1).and_then(Arg::reference).unwrap_or(0);
+                let u_sense = !pargs.get(4).is_some_and(|a| a.is_enum("F"));
+                let v_sense = !pargs.get(5).is_some_and(|a| a.is_enum("F"));
+                let spline = self.bounded_surface_spline(parent)?;
+                let mut p = Patch::of(&spline)?;
+                if !u_sense {
+                    p = p.reversed_u();
+                }
+                if !v_sense {
+                    p = p.transposed().reversed_u().transposed();
+                }
+                out.push(p);
+            }
+            grid.push(out);
+        }
+        join_patches(grid, self.tol).map_err(|e| {
+            ogeom_core::ogeom_err!(
+                Construction,
+                "#{id}: a composite surface's patches do not join: {e}"
+            )
+        })
+    }
+
+    /// A composite's patch surface as a B-spline over its own bounds: a
+    /// B-spline as it is; a rectangularly trimmed surface's basis over its
+    /// window, in the file's reading of the basis's parameters.
+    fn bounded_surface_spline(&mut self, id: u64) -> OgeomResult<ogeom_geom::BSplineSurface> {
+        let keyword = self.instance(id)?.keyword().to_owned();
+        if keyword == "RECTANGULAR_TRIMMED_SURFACE" {
+            let args = self.args(id, "RECTANGULAR_TRIMMED_SURFACE")?;
+            let basis_id = args.get(1).and_then(Arg::reference).unwrap_or(0);
+            let Some(basis) = self.surface(basis_id)? else {
+                ogeom_bail!(Construction, "#{id}: a patch's basis is not read");
+            };
+            let angular = matches!(
+                self.instance(basis_id)?.keyword(),
+                "CYLINDRICAL_SURFACE"
+                    | "CONICAL_SURFACE"
+                    | "SPHERICAL_SURFACE"
+                    | "TOROIDAL_SURFACE"
+            );
+            let n = |i: usize| args.get(i).and_then(Arg::number).unwrap_or(0.0);
+            let (u_scale, v_scale) = if angular {
+                (self.angle_scale, self.report.scale_mm)
+            } else {
+                (self.report.scale_mm, self.report.scale_mm)
+            };
+            let (u1, u2) = (n(2) * u_scale, n(3) * u_scale);
+            let (v1, v2) = (n(4) * v_scale, n(5) * v_scale);
+            let window = ((u1.min(u2), u1.max(u2)), (v1.min(v2), v1.max(v2)));
+            let trimmed = ogeom_geom::TrimmedSurface::new(basis, window.0, window.1, self.tol)?;
+            return SurfaceGeometry::Trimmed(Box::new(trimmed)).to_bspline(self.tol);
+        }
+        let Some(surface) = self.surface(id)? else {
+            ogeom_bail!(Construction, "#{id}: a patch's surface is not read");
+        };
+        surface.to_bspline(self.tol)
+    }
+
+    /// A curve with the stretch of it an entity bounds: a trimmed curve's
+    /// basis between its trims (a point where the file gives one, else its
+    /// parameter in the file's own reading of the basis), in its own sense;
+    /// any other curve over its own domain, which must be bounded.
+    fn bounded_curve(&mut self, id: u64) -> OgeomResult<Option<(Curve, (f64, f64))>> {
+        let keyword = self.instance(id)?.keyword().to_owned();
+        if keyword != "TRIMMED_CURVE" {
+            let Some(curve) = self.curve(id)? else {
+                return Ok(None);
+            };
+            let (lo, hi) = curve.domain();
+            if !lo.is_finite() || !hi.is_finite() || hi - lo > SURFACE_EXTENT {
+                ogeom_bail!(
+                    Construction,
+                    "#{id}: an unbounded curve cannot stand as a composite's segment"
+                );
+            }
+            return Ok(Some((curve, (lo, hi))));
+        }
+        let args = self.args(id, "TRIMMED_CURVE")?;
+        let basis_id = args.get(1).and_then(Arg::reference).unwrap_or(0);
+        let Some(basis) = self.curve(basis_id)? else {
+            return Ok(None);
+        };
+        let basis_keyword = self.instance(basis_id)?.keyword().to_owned();
+        let forward = !args.get(4).is_some_and(|a| a.is_enum("F"));
+        let mut ends = Vec::with_capacity(2);
+        for trim in [args.get(2), args.get(3)] {
+            let items = trim.and_then(Arg::list).unwrap_or(&[]).to_vec();
+            let mut at: Option<Point> = None;
+            for item in &items {
+                if let Some(r) = item.reference() {
+                    at = Some(self.point(r)?);
+                }
+            }
+            if at.is_none() {
+                for item in &items {
+                    if let Arg::Typed(name, values) = item
+                        && name == "PARAMETER_VALUE"
+                        && let Some(v) = values.first().and_then(Arg::number)
+                    {
+                        at =
+                            Some(self.step_parameter_point(&basis, &basis_keyword, basis_id, v)?);
+                    }
+                }
+            }
+            let Some(point) = at else {
+                ogeom_bail!(
+                    Construction,
+                    "#{id}: a trim names neither point nor parameter"
+                );
+            };
+            let t = match self.parameter_of(&basis, point) {
+                Some(t) => t,
+                None => project_on_curve(&basis, point, 256, self.tol)?.parameter,
+            };
+            ends.push(t);
+        }
+        let (mut a, mut b) = (ends[0], ends[1]);
+        if !forward {
+            core::mem::swap(&mut a, &mut b);
+        }
+        if basis.is_periodic() && b <= a {
+            let (lo, hi) = basis.domain();
+            b += hi - lo;
+        }
+        let range = if a <= b { (a, b) } else { (b, a) };
+        let mut curve = basis;
+        if !forward || a > b {
+            // Travelled backward: the same points, the parameter turned.
+            let spline = curve.to_bspline_over(range, self.tol)?;
+            let (knots, control) =
+                ogeom_math::bspline::reverse(spline.knots(), spline.control_points());
+            curve = BSplineCurve::rational(knots, control)?.into();
+            let domain = curve.domain();
+            return Ok(Some((curve, domain)));
+        }
+        Ok(Some((curve, range)))
+    }
+
+    /// Where the file's parameter `v` stands on a basis curve, read as the
+    /// file reads it: a line's by its own vector's length, a conic's as an
+    /// angle in the file's angle unit, a spline's as it is.
+    fn step_parameter_point(
+        &mut self,
+        basis: &Curve,
+        keyword: &str,
+        basis_id: u64,
+        v: f64,
+    ) -> OgeomResult<Point> {
+        match keyword {
+            "LINE" => {
+                let args = self.args(basis_id, "LINE")?;
+                let through = self.point(args[1].reference().unwrap_or(0))?;
+                let vector = self.args(args[2].reference().unwrap_or(0), "VECTOR")?;
+                let direction = self.direction(vector[1].reference().unwrap_or(0))?;
+                let magnitude = vector.get(2).and_then(Arg::number).unwrap_or(1.0);
+                Ok(through + direction.vector() * (v * magnitude * self.report.scale_mm))
+            }
+            "CIRCLE" | "ELLIPSE" => basis.point_at(v * self.angle_scale, self.tol),
+            _ => basis.point_at(v, self.tol),
+        }
+    }
+
+    /// A Cartesian transformation operator as the motion it states: the
+    /// axes it names (completed square to one another), its origin, and
+    /// its uniform scale.
+    fn transformation_operator(&mut self, id: u64) -> OgeomResult<Transform> {
+        let args = self.args(id, "CARTESIAN_TRANSFORMATION_OPERATOR_3D")?;
+        let direction_at = |this: &mut Self, i: usize| -> OgeomResult<Option<Vector>> {
+            match args.get(i).and_then(Arg::reference) {
+                Some(r) => Ok(Some(this.direction(r)?.vector())),
+                None => Ok(None),
+            }
+        };
+        let (axis1, axis2, axis3) = (
+            direction_at(self, 1)?,
+            direction_at(self, 2)?,
+            direction_at(self, 5)?,
+        );
+        let origin = self.point(args.get(3).and_then(Arg::reference).unwrap_or(0))?;
+        let scale = args.get(4).and_then(Arg::number).unwrap_or(1.0);
+        let z = match (axis3, axis1, axis2) {
+            (Some(z), _, _) => z,
+            (None, Some(x), Some(y)) => x.cross(y),
+            _ => Vector::Z,
+        };
+        let z = Direction::new(z, self.tol)?.vector();
+        let x = match axis1 {
+            Some(x) => x - z * x.dot(z),
+            None => {
+                let seed = if z.x.abs() < 0.9 {
+                    Vector::X
+                } else {
+                    Vector::Y
+                };
+                seed - z * seed.dot(z)
+            }
+        };
+        let x = Direction::new(x, self.tol)?.vector();
+        let y = z.cross(x);
+        let linear = Matrix3::new([[x.x, y.x, z.x], [x.y, y.y, z.y], [x.z, y.z, z.z]]);
+        Transform::from_parts(linear, scale, origin.to_vector(), self.tol.angular())
     }
 
     /// The parameter of a point on one of this kernel's curves.
@@ -3421,6 +3901,273 @@ fn window_between_feet(
         return None;
     }
     Some((a, b))
+}
+
+/// The knots a STEP B-spline form implies when it states none: a Bézier
+/// form's pieces joined at whole numbers, a uniform form's knots one apart
+/// from `-degree`, a quasi-uniform form's the same clamped at both ends.
+fn implied_knots(form: &str, degree: usize, count: usize) -> Vec<f64> {
+    let p = degree.max(1);
+    #[allow(clippy::cast_precision_loss)]
+    let at = |i: usize| i as f64;
+    if form.starts_with("BEZIER") {
+        let pieces = (count.saturating_sub(1) / p).max(1);
+        let mut out = vec![0.0; p + 1];
+        for s in 1..pieces {
+            out.extend(std::iter::repeat_n(at(s), p));
+        }
+        out.extend(std::iter::repeat_n(at(pieces), p + 1));
+        out
+    } else if form.starts_with("QUASI_UNIFORM") {
+        let interior = count.saturating_sub(p + 1);
+        let mut out = vec![0.0; p + 1];
+        out.extend((1..=interior).map(at));
+        out.extend(std::iter::repeat_n(at(interior + 1), p + 1));
+        out
+    } else {
+        #[allow(clippy::cast_precision_loss)]
+        (0..count + p + 1).map(|i| i as f64 - p as f64).collect()
+    }
+}
+
+/// Two splines joined end to start: the lower degree raised to the
+/// higher, the second's weights scaled to meet the first's at the join (a
+/// rational curve is unchanged by scaling all its weights), and the join
+/// knot left at full multiplicity.
+fn join_splines(
+    held: (KnotVector, Vec<Weighted<Point>>),
+    next: &BSplineCurve,
+    tol: Tolerances,
+) -> OgeomResult<(KnotVector, Vec<Weighted<Point>>)> {
+    let (mut knots, mut control) = held;
+    let mut next = next.clone();
+    while next.degree() < knots.degree() {
+        next = next.elevated(tol)?;
+    }
+    while knots.degree() < next.degree() {
+        (knots, control) = ogeom_math::bspline::elevate_degree(&knots, &control, tol)?;
+    }
+    let (Some(end), Some(start)) = (control.last(), next.control_points().first()) else {
+        ogeom_bail!(Construction, "a composite segment has no control points");
+    };
+    let factor = end.weight / start.weight;
+    let scaled: Vec<Weighted<Point>> = next
+        .control_points()
+        .iter()
+        .map(|w| Weighted {
+            scaled: w.scaled.scale(factor),
+            weight: w.weight * factor,
+        })
+        .collect();
+    ogeom_math::bspline::join(&(knots, control), &(next.knots().clone(), scaled))
+}
+
+/// One patch of a composite surface as a tensor spline: its knots each way,
+/// on the unit interval, and its net indexed `[u][v]`.
+#[derive(Debug, Clone)]
+struct Patch {
+    u: KnotVector,
+    v: KnotVector,
+    net: Vec<Vec<Weighted<Point>>>,
+}
+
+impl Patch {
+    fn of(surface: &ogeom_geom::BSplineSurface) -> OgeomResult<Self> {
+        let grid = surface.grid();
+        let (nu, nv) = (grid.u_count(), grid.v_count());
+        let points = grid.points();
+        let net = (0..nu)
+            .map(|i| (0..nv).map(|j| points[i * nv + j]).collect())
+            .collect();
+        Ok(Self {
+            u: surface.u_knots().reparameterized(0.0, 1.0)?,
+            v: surface.v_knots().reparameterized(0.0, 1.0)?,
+            net,
+        })
+    }
+
+    fn transposed(self) -> Self {
+        let (nu, nv) = (self.net.len(), self.net[0].len());
+        let net = (0..nv)
+            .map(|j| (0..nu).map(|i| self.net[i][j]).collect())
+            .collect();
+        Self {
+            u: self.v,
+            v: self.u,
+            net,
+        }
+    }
+
+    fn reversed_u(mut self) -> Self {
+        self.net.reverse();
+        self.u = self.u.reversed();
+        self
+    }
+
+    /// Apply a curve operation along `u` to every column of the net.
+    fn along_u(
+        self,
+        op: impl Fn(&KnotVector, &[Weighted<Point>]) -> OgeomResult<(KnotVector, Vec<Weighted<Point>>)>,
+    ) -> OgeomResult<Self> {
+        let nv = self.net[0].len();
+        let mut knots = self.u.clone();
+        let mut columns = Vec::with_capacity(nv);
+        for j in 0..nv {
+            let column: Vec<Weighted<Point>> = self.net.iter().map(|row| row[j]).collect();
+            let (k, c) = op(&self.u, &column)?;
+            knots = k;
+            columns.push(c);
+        }
+        let nu = columns[0].len();
+        let net = (0..nu)
+            .map(|i| (0..nv).map(|j| columns[j][i]).collect())
+            .collect();
+        Ok(Self {
+            u: knots,
+            v: self.v,
+            net,
+        })
+    }
+}
+
+/// A grid of patches (`grid[i][j]`, `i` along `u`) joined into one surface.
+fn join_patches(mut grid: Vec<Vec<Patch>>, tol: Tolerances) -> OgeomResult<SurfaceGeometry> {
+    let (m, n) = (grid.len(), grid[0].len());
+    // Degrees raised to the grid's highest each way.
+    let pu = grid
+        .iter()
+        .flatten()
+        .map(|p| p.u.degree())
+        .max()
+        .unwrap_or(1);
+    let pv = grid
+        .iter()
+        .flatten()
+        .map(|p| p.v.degree())
+        .max()
+        .unwrap_or(1);
+    for patch in grid.iter_mut().flatten() {
+        let mut p = patch.clone();
+        while p.u.degree() < pu {
+            p = p.along_u(|k, c| ogeom_math::bspline::elevate_degree(k, c, tol))?;
+        }
+        p = p.transposed();
+        while p.u.degree() < pv {
+            p = p.along_u(|k, c| ogeom_math::bspline::elevate_degree(k, c, tol))?;
+        }
+        *patch = p.transposed();
+    }
+    // Knots unified: along u within each grid row of patches sharing an
+    // index `i` (their u knots must agree to share v boundaries), along v
+    // within each index `j`.
+    let unify = |patches: Vec<Patch>, along_v: bool| -> OgeomResult<Vec<Patch>> {
+        let turned: Vec<Patch> = if along_v {
+            patches.into_iter().map(Patch::transposed).collect()
+        } else {
+            patches
+        };
+        let mut wanted: Vec<(f64, usize)> = Vec::new();
+        for p in &turned {
+            for (value, count) in p.u.distinct() {
+                if value <= 1e-12 || value >= 1.0 - 1e-12 {
+                    continue;
+                }
+                match wanted.iter_mut().find(|(v, _)| (v - value).abs() <= 1e-12) {
+                    Some(slot) => slot.1 = slot.1.max(count),
+                    None => wanted.push((value, count)),
+                }
+            }
+        }
+        let mut out = Vec::with_capacity(turned.len());
+        for mut p in turned {
+            for &(value, count) in &wanted {
+                let have = p.u.multiplicity_of(value);
+                if have < count {
+                    p = p.along_u(|k, c| {
+                        ogeom_math::bspline::insert_knot(k, c, value, count - have, tol)
+                    })?;
+                }
+            }
+            out.push(if along_v { p.transposed() } else { p });
+        }
+        Ok(out)
+    };
+    for row in &mut grid {
+        *row = unify(std::mem::take(row), true)?;
+    }
+    for j in 0..n {
+        let column: Vec<Patch> = grid.iter().map(|row| row[j].clone()).collect();
+        for (row, p) in grid.iter_mut().zip(unify(column, false)?) {
+            row[j] = p;
+        }
+    }
+    // Joined: shared boundaries once, each join a knot of full multiplicity.
+    let near = |a: &Weighted<Point>, b: &Weighted<Point>| {
+        a.point().distance(b.point()) <= tol.confusion() * 100.0
+            && (a.weight - b.weight).abs() <= 1e-9 * a.weight.abs().max(1.0)
+    };
+    let mut rows: Vec<Vec<Weighted<Point>>> = Vec::new();
+    for (i, grid_row) in grid.iter().enumerate() {
+        let nu = grid_row[0].net.len();
+        for a in 0..nu {
+            if i > 0 && a == 0 {
+                // The row this patch shares with the one before it.
+                let prev = rows.len() - 1;
+                let mut shared = 0;
+                for (j, patch) in grid_row.iter().enumerate() {
+                    for (b, cell) in patch.net[0].iter().enumerate() {
+                        if j > 0 && b == 0 {
+                            continue;
+                        }
+                        if !near(&rows[prev][shared], cell) {
+                            ogeom_bail!(Construction, "neighbouring patches part along u");
+                        }
+                        shared += 1;
+                    }
+                }
+                continue;
+            }
+            let mut row = Vec::new();
+            for (j, patch) in grid_row.iter().enumerate() {
+                for (b, cell) in patch.net[a].iter().enumerate() {
+                    if j > 0 && b == 0 {
+                        if !near(row.last().unwrap_or(cell), cell) {
+                            ogeom_bail!(Construction, "neighbouring patches part along v");
+                        }
+                        continue;
+                    }
+                    row.push(*cell);
+                }
+            }
+            rows.push(row);
+        }
+    }
+    // Each patch's knots shifted to its own unit of the whole; at a join
+    // one copy of the shared end goes, leaving the multiplicity at the
+    // degree, and the next patch's run follows past its own clamped start.
+    let joined_knots = |parts: Vec<&KnotVector>, degree: usize| -> OgeomResult<KnotVector> {
+        let mut out: Vec<f64> = Vec::new();
+        for (k, knots) in parts.iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let shift = k as f64;
+            let values: Vec<f64> = knots.knots().iter().map(|x| x + shift).collect();
+            if k == 0 {
+                out.extend(values);
+            } else {
+                out.pop();
+                out.extend_from_slice(&values[degree + 1..]);
+            }
+        }
+        KnotVector::new(out, degree)
+    };
+    let u = joined_knots((0..m).map(|i| &grid[i][0].u).collect(), pu)?;
+    let v = joined_knots((0..n).map(|j| &grid[0][j].v).collect(), pv)?;
+    let (nu, nv) = (rows.len(), rows[0].len());
+    let cells: Vec<Weighted<Point>> = rows.into_iter().flatten().collect();
+    Ok(
+        ogeom_geom::BSplineSurface::rational(u, v, ogeom_math::ControlGrid::new(cells, nu, nv)?)?
+            .into(),
+    )
 }
 
 #[cfg(test)]
