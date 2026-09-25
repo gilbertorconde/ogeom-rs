@@ -881,7 +881,47 @@ pub fn face_normal(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<
     }
 
     let ((ua, ub), (va, vb)) = surface.domain();
-    let (u, v) = if count == 0 {
+    // A face with no trims on its surface is read at its outer wire's own
+    // middle, found on the surface; the middle of an unbounded plane's
+    // chart is its origin, which may be anywhere relative to the face.
+    let wire_middle = if count == 0 {
+        let mut points: Vec<Point> = Vec::new();
+        if let Some(outer) = model.children_of(face)?.first() {
+            for edge in model.children_of(outer)? {
+                let Some(edge_data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+                    continue;
+                };
+                let Some(EdgeRepr::Curve3d { curve, range, .. }) = edge_data.curve3d() else {
+                    continue;
+                };
+                let Some(geometry) = model.geometry().curve(*curve) else {
+                    continue;
+                };
+                for k in 0..4 {
+                    let t = range.0 + (range.1 - range.0) * f64::from(k) / 4.0;
+                    points.push(geometry.point_at(t, tol)?);
+                }
+            }
+        }
+        if points.is_empty() {
+            None
+        } else {
+            #[allow(clippy::cast_precision_loss)]
+            let n = points.len() as f64;
+            let sum = points
+                .iter()
+                .fold(Vector::new(0.0, 0.0, 0.0), |acc, p| acc + p.to_vector());
+            let centre = Point::from_vector(sum / n);
+            project_on_surface(surface, centre, 16, tol)
+                .ok()
+                .map(|found| found.parameters)
+        }
+    } else {
+        None
+    };
+    let (u, v) = if let Some(uv) = wire_middle {
+        uv
+    } else if count == 0 {
         (f64::midpoint(ua, ub), f64::midpoint(va, vb))
     } else {
         let n = f64::from(count);

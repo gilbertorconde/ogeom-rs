@@ -437,7 +437,10 @@ fn check_wire(
             );
             continue;
         };
-        if !end.is_same(&next) && !model.same_position(&end, &next, tol)? {
+        if !end.is_same(&next)
+            && !model.same_position(&end, &next, tol)?
+            && !crate::build::one_point(model, &end, &next, tol)?
+        {
             found.note(
                 Severity::Broken,
                 wire,

@@ -114,6 +114,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A partial revolve of a profile touching its axis failed** (#62). The
+  edge on the axis is its own image; a wire now joins one vertex under two
+  placements that land on one point, so the start and end faces close. A
+  profile face built without trims gets exact ones before a prism or
+  revolution keeps it as an end, and is read at its own middle rather than
+  at its plane's origin.
 - **A pipe shell failed on a profile ring walked by reversed edges**
   (#58). A reversed edge's ends were swapped twice.
 - **A profile square to a curved spine's start was refused as leaning**

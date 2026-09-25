@@ -86,7 +86,10 @@ pub fn make_prism(
 
     let rails = &mut Rails::new();
     match model.kind_of(profile)? {
-        ShapeType::Face => prism_over_face(model, rails, profile, &displacement, vector, tol),
+        ShapeType::Face => {
+            crate::build::trimmed_where_bare(model, profile, tol)?;
+            prism_over_face(model, rails, profile, &displacement, vector, tol)
+        }
         ShapeType::Wire => {
             let (faces, history) =
                 prism_over_wire(model, rails, profile, &displacement, vector, tol)?;
@@ -984,6 +987,7 @@ fn revolution_over_face(
     // The same question the prism asks, with the sweep direction read off the
     // turn: at the profile, revolving moves it along the tangent to its circle
     // about the axis, so that tangent is what its normal is compared against.
+    crate::build::trimmed_where_bare(model, face, tol)?;
     let (point, normal) = crate::measure::face_normal(model, face, tol)?;
     let tangent = turn
         .axis

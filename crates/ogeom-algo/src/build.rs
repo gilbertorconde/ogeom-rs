@@ -395,7 +395,10 @@ fn check_connected(model: &Model, edges: &[Shape], tol: Tolerances) -> OgeomResu
                 i + 1
             );
         };
-        if !end.is_same(next_start) && !model.same_position(end, next_start, tol)? {
+        if !end.is_same(next_start)
+            && !model.same_position(end, next_start, tol)?
+            && !one_point(model, end, next_start, tol)?
+        {
             if std::env::var("OGEOM_DEBUG_WIRE").is_ok()
                 && let (Some(a), Some(b)) = (
                     model.node(end).and_then(|n| n.data().as_vertex().cloned()),
@@ -439,7 +442,23 @@ pub fn is_wire_closed(model: &Model, wire: &Shape, tol: Tolerances) -> OgeomResu
     else {
         return Ok(false);
     };
-    Ok(start.is_same(&end) || model.same_position(&start, &end, tol)?)
+    Ok(start.is_same(&end)
+        || model.same_position(&start, &end, tol)?
+        || one_point(model, &start, &end, tol)?)
+}
+
+/// Whether two occurrences of one vertex node land on one point: a vertex
+/// on a revolution's axis, turned, is itself under another placement.
+pub(crate) fn one_point(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<bool> {
+    if a.node() != b.node() {
+        return Ok(false);
+    }
+    let Some(data) = model.node(a).and_then(|n| n.data().as_vertex()) else {
+        return Ok(false);
+    };
+    let pa = a.transform(model.datums())?.apply(data.point);
+    let pb = b.transform(model.datums())?.apply(data.point);
+    Ok(pa.distance(pb) <= data.tolerance.get().max(tol.confusion()))
 }
 
 /// Build a face on `surface`, bounded by `wires`.
@@ -958,6 +977,53 @@ pub fn is_shell_closed(model: &Model, shell: &Shape) -> OgeomResult<bool> {
         }
     }
     Ok(!uses.is_empty() && uses.values().all(|n| n % 2 == 0))
+}
+
+/// Give every edge of `face` that has no trim on the face's surface its
+/// exact one, where a closed form exists: a profile built from bare
+/// curves becomes a face a sweep can keep as an end.
+///
+/// # Errors
+///
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the face
+/// or an edge is not in this model.
+pub fn trimmed_where_bare(model: &mut Model, face: &Shape, tol: Tolerances) -> OgeomResult<()> {
+    let Some(data) = model.node(face).and_then(|n| n.data().as_face().cloned()) else {
+        ogeom_bail!(Dangling, "face is not in this model");
+    };
+    let Some(surface) = model.geometry().surface(data.surface).cloned() else {
+        ogeom_bail!(Dangling, "face refers to a surface not in this model");
+    };
+    for edge in ogeom_topo::explore_unique(model, face, ShapeType::Edge)? {
+        let Some(edge_data) = model.node(&edge).and_then(|n| n.data().as_edge().cloned()) else {
+            continue;
+        };
+        if edge_data
+            .pcurve_for(data.surface, edge.location())
+            .is_some()
+        {
+            continue;
+        }
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = edge_data.curve3d() else {
+            continue;
+        };
+        let Some(geometry) = model.geometry().curve(*curve).cloned() else {
+            continue;
+        };
+        use ogeom_geom::Transformable as _;
+        let placed = geometry.transformed(&edge.transform(model.datums())?, tol)?;
+        if let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&placed, &surface, tol) {
+            attach_pcurve(
+                model,
+                &edge,
+                pcurve,
+                data.surface,
+                edge.location().clone(),
+                *range,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Attach a pcurve to an edge, describing it in a surface's parameter space.
