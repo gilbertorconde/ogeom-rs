@@ -79,6 +79,10 @@ bump may break the API and a patch bump may not.
   `divide_by_continuity`, `divide_by_angle` and `divide_by_area` cut edges
   and faces at weak knots, past an angle or above an area. `to_bezier`
   leaves every curve and surface a single Bezier span.
+- **Every face divides.** A face with no boundary of its own (a whole
+  ball or torus) is first bounded by its chart's sides, seams and poles
+  included; a face on a surface with no closed-form iso-curve (an offset
+  of a spline) is cut along one fitted at its own parameters.
 - **Remodelling.** `restate_geometry` rebuilds a solid with its surfaces
   and curves restated by the caller, every trim re-derived.
   `restrict_degree` refits every spline above a degree at that degree,

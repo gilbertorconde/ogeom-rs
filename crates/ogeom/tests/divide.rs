@@ -208,3 +208,85 @@ fn a_torus_divides_by_angle_both_ways() {
         1e-3,
     );
 }
+
+/// A face with no boundary of its own (a whole ball, a whole torus) is
+/// bounded by its chart's sides first, then divided like any other.
+#[test]
+fn a_natural_face_divides_once_bounded() {
+    use ogeom::geom::{SphereSurface, TorusSurface};
+    use ogeom::math::{Sphere, Torus};
+    let cases: [(SurfaceGeometry, f64, usize); 2] = [
+        (
+            SphereSurface::new(Sphere::new(Frame::WORLD, 3.0, T).unwrap()).into(),
+            4.0 / 3.0 * core::f64::consts::PI * 27.0,
+            8,
+        ),
+        (
+            TorusSurface::new(Torus::new(Frame::WORLD, 5.0, 1.0, T).unwrap()).into(),
+            2.0 * core::f64::consts::PI.powi(2) * 5.0,
+            16,
+        ),
+    ];
+    for (surface, volume, pieces) in cases {
+        let mut model = Model::new();
+        let face = ogeom::algo::make_natural_face(&mut model, surface)
+            .unwrap()
+            .shape;
+        let shell = ogeom::algo::make_shell(&mut model, &[face]).unwrap().shape;
+        let solid = ogeom::algo::make_solid(&mut model, &[shell]).unwrap().shape;
+        let divided =
+            ogeom::heal::divide_by_angle(&mut model, &solid, core::f64::consts::FRAC_PI_2, T)
+                .unwrap()
+                .shape;
+        assert_eq!(faces(&model, &divided).len(), pieces);
+        holds(&model, &divided, volume, 1e-3);
+    }
+}
+
+/// A face on the offset of a spline has no closed-form iso-curve; the cut
+/// runs along one fitted at its own parameters.
+#[test]
+fn a_face_on_an_offset_spline_divides() {
+    use ogeom::core::OgeomResult;
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    // The top as a spline plane set back half a unit, offset up to it.
+    let top_as_offset = |s: &SurfaceGeometry| -> OgeomResult<Option<(SurfaceGeometry, bool)>> {
+        let SurfaceGeometry::Plane(p) = s else {
+            return Ok(None);
+        };
+        let f = p.plane().frame();
+        if f.z().vector().z < 0.5 || (f.origin().z - 10.0).abs() > 1e-6 {
+            return Ok(None);
+        }
+        let lowered = Frame::new(f.origin() - f.z().vector() * 0.5, f.z(), f.x(), T)?;
+        let window = ogeom::geom::Surface::domain(s);
+        let plane: SurfaceGeometry =
+            ogeom::geom::PlaneSurface::over(ogeom::math::Plane::new(lowered), window.0, window.1)?
+                .into();
+        let spline: SurfaceGeometry = plane.to_bspline(T)?.into();
+        Ok(Some((
+            SurfaceGeometry::Offset(Box::new(ogeom::geom::OffsetSurface::new(spline, 0.5)?)),
+            false,
+        )))
+    };
+    let keep = |_: &ogeom::geom::Curve,
+                _: (f64, f64)|
+     -> OgeomResult<Option<(ogeom::geom::Curve, (f64, f64))>> { Ok(None) };
+    let solid = ogeom::algo::restate_geometry(&mut model, &block, &top_as_offset, &keep, T)
+        .unwrap()
+        .shape;
+    let top = faces(&model, &solid)
+        .into_iter()
+        .find(|f| matches!(surface_of(&model, f), SurfaceGeometry::Offset(_)))
+        .expect("the offset top");
+    let ((u0, u1), _) = ogeom::geom::Surface::domain(surface_of(&model, &top));
+    let divided =
+        ogeom::heal::divide_face(&mut model, &solid, &top, IsoLine::U(0.5 * (u0 + u1)), T)
+            .unwrap()
+            .shape;
+    assert_eq!(faces(&model, &divided).len(), 7);
+    holds(&model, &divided, 1000.0, 1e-6);
+}

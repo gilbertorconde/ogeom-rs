@@ -15,8 +15,8 @@ per package.
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 76 |
-| `partial` | 8 |
+| `covered` | 77 |
+| `partial` | 7 |
 | `divergent` | 9 |
 | `n/a` | 5 |
 
@@ -134,8 +134,7 @@ to grow to, and a gap the recovered edges do not bridge.
   - *reasoning:* Healing outcomes here are values: `SameParameterReport`, `StepReport`, counts from `reduce_tolerances`. These are Rust Results rather than status bitfields read back through a registrator. A message-registration framework would add a second channel for what the return values already say.
 - **heal.substitution**: Recording shape substitutions and applying them across a model · `covered` · 6 headers claimed
 - **heal.tolerances**: Reading and tightening the tolerances a shape actually needs · `covered` · 2 headers claimed
-- **heal.upgrade**: Upgrading shapes in place: same-domain unification, edge merging, subdivision · `partial` · 34 headers claimed
-  - *restriction:* Unification (`unify_same_domain`) and edge merging are here, and the divide family: `divide_face` cuts a face along a line of its own parameters with the surface's exact iso-curve, the edges it crosses cut in every face that holds them; `divide_by_continuity` cuts edges and faces at the knots where they are less smooth than asked; `divide_by_angle` and `divide_by_area` cut until no face turns or covers more than asked; and `to_bezier` converts a shape to splines, cuts it at every knot and restates each piece as its single Bezier span. Not cut: a face with no boundary of its own (a natural-restriction face), and a surface with no closed-form iso-curve (an offset of a spline).
+- **heal.upgrade**: Upgrading shapes in place: same-domain unification, edge merging, subdivision · `covered` · 34 headers claimed
 
 ### ogeom-hlr
 

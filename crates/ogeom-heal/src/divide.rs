@@ -341,8 +341,21 @@ fn divide_faces(
             }
             let data = face_data(model, &face)?;
             if data.natural_restriction {
-                settled.insert(face.node());
-                continue;
+                // Bounded first, by its chart's own sides: then it cuts as
+                // any face does.
+                match bounded_natural(model, &face, tol)? {
+                    Some(bounded) => {
+                        let mut reshape = Reshape::new();
+                        reshape.replace(&forward(&face), bounded);
+                        let next = reshape.apply(model, &current.shape)?;
+                        current = Built::new(next.shape, current.history.then(&next.history));
+                        continue 'rounds;
+                    }
+                    None => {
+                        settled.insert(face.node());
+                        continue;
+                    }
+                }
             }
             let Some(surface) = model.geometry().surface(data.surface).cloned() else {
                 ogeom_bail!(Dangling, "surface is not in this model");
@@ -369,6 +382,195 @@ fn divide_faces(
         return Ok(current);
     }
     ogeom_bail!(Construction, "the division did not settle");
+}
+
+/// A face covering its surface's whole chart, rebuilt with that chart's
+/// sides as its boundary: a periodic direction's two sides one seam edge,
+/// a side the surface pinches to a point (a ball's pole) a degenerate edge.
+/// `None` where the chart is unbounded or a side has no closed-form curve.
+fn bounded_natural(model: &mut Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<Shape>> {
+    let face_fwd = forward(face);
+    let data = face_data(model, &face_fwd)?;
+    let Some(surface) = model.geometry().surface(data.surface).cloned() else {
+        ogeom_bail!(Dangling, "surface is not in this model");
+    };
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    if ![u0, u1, v0, v1]
+        .iter()
+        .all(|x| x.is_finite() && x.abs() < 1e6)
+    {
+        return Ok(None);
+    }
+    let (pu, pv) = (surface.is_periodic_u(), surface.is_periodic_v());
+    let corner = |u: f64, v: f64| surface.point_at(u, v, tol);
+    // Each side as (line, from, to) in the free parameter, walked so the
+    // ring runs counter-clockwise round the chart.
+    let sides = [
+        (IsoLine::V(v0), u0, u1),
+        (IsoLine::U(u1), v0, v1),
+        (IsoLine::V(v1), u1, u0),
+        (IsoLine::U(u0), v1, v0),
+    ];
+    // Vertices by chart corner, one where the corners meet in space.
+    let corners = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)];
+    let mut vertices: Vec<Shape> = Vec::with_capacity(4);
+    for (i, (u, v)) in corners.iter().enumerate() {
+        let p = corner(*u, *v)?;
+        let found = (0..i).find(|j| {
+            let (a, b) = corners[*j];
+            corner(a, b).is_ok_and(|q| q.distance(p) <= tol.confusion())
+        });
+        vertices.push(match found {
+            Some(j) => vertices[j].clone(),
+            None => model.add_vertex(VertexData::new(p)),
+        });
+    }
+    let chart_line = |line: IsoLine, a: f64, b: f64, t: (f64, f64)| -> OgeomResult<PlanarCurve> {
+        let knots = KnotVector::new(vec![t.0, t.0, t.1, t.1], 1)?;
+        let (p, q) = (line.point(a), line.point(b));
+        let (p, q) = if t.0 <= t.1 { (p, q) } else { (q, p) };
+        Ok(PlanarCurve::BSpline(BSpline2d::new(
+            knots,
+            vec![p, q],
+            tol,
+        )?))
+    };
+    // One edge per side, a periodic pair shared; each side's occurrence.
+    let mut ring: Vec<Shape> = Vec::with_capacity(4);
+    let mut seam_u: Option<Shape> = None;
+    let mut seam_v: Option<Shape> = None;
+    for (index, (line, a, b)) in sides.into_iter().enumerate() {
+        let (from, to) = (vertices[index].clone(), vertices[(index + 1) % 4].clone());
+        let periodic_pair = match line {
+            IsoLine::U(_) => pu,
+            IsoLine::V(_) => pv,
+        };
+        // The second side of a periodic pair is the first's seam, walked
+        // back.
+        if periodic_pair {
+            let held = match line {
+                IsoLine::U(_) => &seam_u,
+                IsoLine::V(_) => &seam_v,
+            };
+            if let Some(seam) = held {
+                ring.push(seam.reversed());
+                continue;
+            }
+        }
+        let (lo, hi) = (a.min(b), a.max(b));
+        let mid = line.point(0.5 * (lo + hi));
+        let pinched = corner(line.point(lo).x, line.point(lo).y)?.distance(corner(mid.x, mid.y)?)
+            <= tol.confusion()
+            && corner(line.point(hi).x, line.point(hi).y)?.distance(corner(mid.x, mid.y)?)
+                <= tol.confusion();
+        let edge = if pinched {
+            let mut edge_data = EdgeData::new();
+            edge_data.degenerate = true;
+            let trim = chart_line(line, lo, hi, (lo, hi))?;
+            let id = model.geometry_mut().add_pcurve(trim);
+            edge_data.add(EdgeRepr::PCurve {
+                curve: id,
+                surface: data.surface,
+                location: Location::identity(),
+                range: (lo, hi),
+            });
+            let pole = model.add_edge(edge_data, &[from.clone(), from.clone()])?;
+            // Its trim runs up the chart; the side may walk it down.
+            if a <= b { pole } else { pole.reversed() }
+        } else {
+            let Some((curve, scale, offset)) =
+                iso_curve(&surface, line, &[0.5 * (lo + hi)], (lo, hi), tol)?
+            else {
+                return Ok(None);
+            };
+            let (t_lo, t_hi) = (scale * lo + offset, scale * hi + offset);
+            let (range, rising) = if t_lo <= t_hi {
+                ((t_lo, t_hi), true)
+            } else {
+                ((t_hi, t_lo), false)
+            };
+            let curve_id = model.geometry_mut().add_curve(curve);
+            let mut edge_data = EdgeData::on_curve(curve_id, Location::identity(), range);
+            // The edge runs with its curve; the side walks from `a` to `b`.
+            let (start_v, end_v) = {
+                let low_end = if a <= b { &from } else { &to };
+                let high_end = if a <= b { &to } else { &from };
+                if rising {
+                    (low_end.clone(), high_end.clone())
+                } else {
+                    (high_end.clone(), low_end.clone())
+                }
+            };
+            let pcurve_at = |line: IsoLine| -> OgeomResult<PlanarCurve> {
+                let (p, q) = if rising {
+                    (line.point(lo), line.point(hi))
+                } else {
+                    (line.point(hi), line.point(lo))
+                };
+                let knots = KnotVector::new(vec![range.0, range.0, range.1, range.1], 1)?;
+                Ok(PlanarCurve::BSpline(BSpline2d::new(
+                    knots,
+                    vec![p, q],
+                    tol,
+                )?))
+            };
+            if periodic_pair {
+                // Its two chart sides: this one, and the one a period on.
+                let other = match line {
+                    IsoLine::U(c) => IsoLine::U(if (c - u1).abs() < (c - u0).abs() {
+                        u0
+                    } else {
+                        u1
+                    }),
+                    IsoLine::V(c) => IsoLine::V(if (c - v1).abs() < (c - v0).abs() {
+                        v0
+                    } else {
+                        v1
+                    }),
+                };
+                let here = model.geometry_mut().add_pcurve(pcurve_at(line)?);
+                let there = model.geometry_mut().add_pcurve(pcurve_at(other)?);
+                edge_data.add(EdgeRepr::Seam {
+                    forward: here,
+                    reversed: there,
+                    surface: data.surface,
+                    location: Location::identity(),
+                    range,
+                });
+            } else {
+                let id = model.geometry_mut().add_pcurve(pcurve_at(line)?);
+                edge_data.add(EdgeRepr::PCurve {
+                    curve: id,
+                    surface: data.surface,
+                    location: Location::identity(),
+                    range,
+                });
+            }
+            edge_data.assert_same_parameter(true);
+            let edge = model.add_edge(edge_data, &[start_v, end_v])?;
+            let walked_with_curve = (a <= b) == rising;
+            let occurrence = if walked_with_curve {
+                edge.clone()
+            } else {
+                edge.reversed()
+            };
+            if periodic_pair {
+                match line {
+                    IsoLine::U(_) => seam_u = Some(occurrence.clone()),
+                    IsoLine::V(_) => seam_v = Some(occurrence.clone()),
+                }
+            }
+            ring.push(occurrence);
+            continue;
+        };
+        ring.push(edge);
+    }
+    let wire = model.add_wire(&ring)?;
+    let mut fresh = data.clone();
+    fresh.natural_restriction = false;
+    fresh.triangulation = None;
+    let bounded = model.add_face(fresh, &[wire])?;
+    Ok(Some(bounded))
 }
 
 /// Cut every edge whose spline is less than `order` times differentiable at
@@ -838,7 +1040,11 @@ fn cut_face(
         .iter()
         .map(|&(i, j)| 0.5 * (meetings[i].0 + meetings[j].0))
         .collect();
-    let Some((curve, scale, offset)) = iso_curve(&surface, line, &probes, tol)? else {
+    let span = (
+        meetings.first().map_or(0.0, |m| m.0),
+        meetings.last().map_or(0.0, |m| m.0),
+    );
+    let Some((curve, scale, offset)) = iso_curve(&surface, line, &probes, span, tol)? else {
         ogeom_bail!(
             Construction,
             "the surface has no closed-form iso-curve to cut along"
@@ -1097,6 +1303,7 @@ fn iso_curve(
     surface: &SurfaceGeometry,
     line: IsoLine,
     probes: &[f64],
+    span: (f64, f64),
     tol: Tolerances,
 ) -> OgeomResult<Option<(Curve, f64, f64)>> {
     let c = line.at();
@@ -1183,8 +1390,33 @@ fn iso_curve(
             let turn = Transform::rotation(r.axis(), c);
             (r.curve().transformed(&turn, tol)?, 1.0, 0.0)
         }
-        (SurfaceGeometry::Trimmed(t), _) => return iso_curve(t.basis(), line, probes, tol),
-        _ => return Ok(None),
+        (SurfaceGeometry::Trimmed(t), _) => return iso_curve(t.basis(), line, probes, span, tol),
+        // No closed form (an offset of a spline): the iso-curve fitted
+        // through its own points at its own parameters, same-parameter
+        // with the straight chart line it runs along.
+        _ => {
+            const N: usize = 128;
+            let (lo, hi) = span;
+            if hi <= lo || !hi.is_finite() || !lo.is_finite() {
+                return Ok(None);
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let params: Vec<f64> = (0..=N)
+                .map(|i| lo + (hi - lo) * i as f64 / N as f64)
+                .collect();
+            let points: Vec<Point> = params
+                .iter()
+                .map(|w| {
+                    let on = line.point(*w);
+                    surface.point_at(on.x, on.y, tol)
+                })
+                .collect::<OgeomResult<_>>()?;
+            let fitted = ogeom_geom::fit::fit_points_at(&params, &points, 3, tol.confusion(), tol)?;
+            if !fitted.met {
+                return Ok(None);
+            }
+            (Curve::BSpline(fitted.curve), 1.0, 0.0)
+        }
     };
     // The closed forms above assume the surfaces' own conventions; hold
     // them to it.
