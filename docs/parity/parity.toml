@@ -1136,13 +1136,16 @@ pole stands along a ridge where there is one, its seam turned from the \
 corner, and otherwise the tool is offered on each of the corner's 2N \
 labellings in turn, the first that closes standing; the boolean \
 closes every labelling of an oblique corner and of a square pyramid's \
-apex, one solid each time. Owed: the third flush fillet \
-at a sharp apex, which dies in the cut where a band's section touches an \
-edge and its two descriptions of the touch point disagree by a tenth of \
-a micron; after a corner whose sphere clears a fourth plane by a few \
-hundredths of a millimetre, the envelope keeps a sliver of that plane \
-beside the patch, and the flush fillet that meets the sliver dies the \
-same way. The \
+apex, one solid each time. The flush fillets follow at a sharp apex \
+too, and after a corner whose sphere clears a fourth plane by a few \
+hundredths of a millimetre, where the envelope keeps a sliver of that \
+plane beside the patch and the band meeting the sliver runs a straight \
+end tangent to the sphere's rim: a line and a circle share no stretch, \
+so the tangency splits neither. Owed: a band whose end lands on the \
+ridge's cylinder rather than a sphere (a radius twice the apex's \
+setback), where the fitted end section does not sew to the cylinder's \
+arc, and at an oblique apex's larger radii a band that meets the patch \
+along an edge only. The \
 curved-seat corner is closed in either order: \
 through `fillet_edges` a marched blend and a straight one meet at their \
 corners, the later's run-out walking on under the earlier band, and the \

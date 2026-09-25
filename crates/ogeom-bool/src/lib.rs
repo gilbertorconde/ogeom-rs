@@ -2920,11 +2920,25 @@ fn fill(
                     })
                 })
                 .collect();
-            let measured: Vec<ogeom_intersect::Overlap> = if clipped.iter().any(survives) {
-                Vec::new()
-            } else {
-                measured_overlaps(&contact.curve, contact.crange, contact.tolerance, e, tol)?
+            // A line and a curved conic share no stretch, however loosely
+            // either is held: a straight edge tangent to an arc stays within
+            // the measuring width of it for a short run either side of the
+            // touch, and read as a span there it splits the arc at a vertex
+            // the face across the arc never has.
+            let conic = |c: &Curve| {
+                matches!(
+                    c,
+                    Curve::Circle(_) | Curve::Ellipse(_) | Curve::Hyperbola(_) | Curve::Parabola(_)
+                )
             };
+            let straight_on_conic = (matches!(contact.curve, Curve::Line(_)) && conic(&e.curve))
+                || (conic(&contact.curve) && matches!(e.curve, Curve::Line(_)));
+            let measured: Vec<ogeom_intersect::Overlap> =
+                if clipped.iter().any(survives) || straight_on_conic {
+                    Vec::new()
+                } else {
+                    measured_overlaps(&contact.curve, contact.crange, contact.tolerance, e, tol)?
+                };
             for overlap in clipped.iter().chain(measured.iter()) {
                 let ordered = |r: (f64, f64)| if r.0 <= r.1 { r } else { (r.1, r.0) };
                 let (lo, hi) = ordered(overlap.on_a);

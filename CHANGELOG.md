@@ -129,6 +129,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A flush fillet beside a rounded apex could fail to close.** A straight
+  band end tangent to the corner sphere's rim was read as running along
+  the rim for a short stretch, which split the rim at a vertex the band
+  never had. A line and a circle now share no stretch. The four flush
+  fillets close after an oblique apex's corner, and the five after an
+  irregular pentagonal one.
 - **A holed profile round a closed spine filled its hole.** Where the
   hole's ring wound the other way from the one the sweep assumed, its
   tunnel came out as material and the solid measured the hole's volume

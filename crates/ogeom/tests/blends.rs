@@ -773,11 +773,11 @@ fn round_vertex_rounds_an_apex_no_ball_touches() {
 }
 
 /// A flat rectangular pyramid's apex, and an oblique one: the same two
-/// spheres and a ridge, the flat one's edges taking their flush fillets
-/// after. At the oblique apex the corner rounds exactly, and its sphere
-/// clears the fourth plane by a few hundredths of a millimetre, so the
-/// envelope keeps a sliver of that plane beside the patch; the flush
-/// fillet that meets the sliver still dies in the cut, and is owed.
+/// spheres and a ridge, the edges taking their flush fillets after. At the
+/// oblique apex the corner's sphere clears the fourth plane by a few
+/// hundredths of a millimetre, so the envelope keeps a sliver of that
+/// plane beside the patch, and the flush fillet that meets the sliver runs
+/// a straight end tangent to the sphere's rim there.
 #[test]
 fn round_vertex_rounds_flat_and_oblique_apexes_no_ball_touches() {
     let r = 1.5;
@@ -787,10 +787,7 @@ fn round_vertex_rounds_flat_and_oblique_apexes_no_ball_touches() {
         Point::new(10.0, 4.0, 0.0),
         Point::new(-10.0, 4.0, 0.0),
     ];
-    for (apex, fillets) in [
-        (Point::new(0.0, 0.0, 8.0), true),
-        (Point::new(3.0, 1.0, 15.0), false),
-    ] {
+    for apex in [Point::new(0.0, 0.0, 8.0), Point::new(3.0, 1.0, 15.0)] {
         let mut model = Model::new();
         let (pyramid, vertex) = pyramid_apex(&mut model, &base, apex);
         let rounded = ogeom::fillet::round_vertex(&mut model, &pyramid, &vertex, r, T)
@@ -808,9 +805,6 @@ fn round_vertex_rounds_flat_and_oblique_apexes_no_ball_touches() {
                 .count();
             assert_eq!(touching, 3);
         }
-        if !fillets {
-            continue;
-        }
         let mut solid = rounded;
         for corner in &base {
             let edge = edge_near(&model, &solid, *corner + (apex - *corner) * 0.5);
@@ -819,13 +813,15 @@ fn round_vertex_rounds_flat_and_oblique_apexes_no_ball_touches() {
                 .shape;
             assert!(ogeom::algo::check(&model, &solid, T).unwrap().is_valid());
         }
+        let (balls, drums) = balls_and_drums(&model, &solid);
+        assert_eq!((balls.len(), drums.len()), (2, 5), "{apex:?}");
     }
 }
 
 /// An irregular pentagonal pyramid's apex: five planes, three tip vertices
 /// and two ridges, one of them seven microns long, a sliver of cylinder
 /// the tool keeps rather than merging into a sphere that touches none of
-/// its planes exactly.
+/// its planes exactly. The five edges then take their flush fillets.
 #[test]
 fn round_vertex_rounds_a_five_edged_apex_with_a_sliver_ridge() {
     let mut model = Model::new();
@@ -864,6 +860,21 @@ fn round_vertex_rounds_a_five_edged_apex_with_a_sliver_ridge() {
             .len(),
         16,
         "six walls, three spheres, two ridges and five flush ends"
+    );
+    let mut solid = rounded;
+    for corner in &base {
+        let edge = edge_near(&model, &solid, *corner + (apex - *corner) * 0.5);
+        solid = ogeom::fillet::fillet_edge(&mut model, &solid, &edge, 1.5, T)
+            .unwrap()
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &solid, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    }
+    let (balls, drums) = balls_and_drums(&model, &solid);
+    assert_eq!(
+        (balls.len(), drums.len()),
+        (3, 7),
+        "five bands join the corner"
     );
 }
 
