@@ -439,6 +439,7 @@ version = "0.3.3"
 dependencies = [
  "approx",
  "ogeom-algo",
+ "ogeom-bool",
  "ogeom-core",
  "ogeom-doc",
  "ogeom-geom",

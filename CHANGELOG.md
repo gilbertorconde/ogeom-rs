@@ -53,6 +53,8 @@ bump may break the API and a patch bump may not.
   callouts, a dimension whose text states a number also as its value.
   Subfigure instances place their shared definition, and levels and
   groups read as layers.
+  Constructive solids read too: the primitives, solids of revolution and
+  extrusion, boolean trees, assemblies and instances.
 
 ### Fixed
 

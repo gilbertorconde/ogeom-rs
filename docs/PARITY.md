@@ -177,7 +177,11 @@ callouts of the lines the file draws, a dimension whose text states a
 number carrying that value as a semantic dimension. Subfigure instances
 (408) place their definition (308), built once and shared under each
 instance's placement, translation and scale; levels (with 406 level lists)
-and groups (402) read as the document's layers. Refused by name: a
+and groups (402) read as the document's layers. Constructive solids read
+as the solids they describe: the block, wedge, cylinder, cone frustum,
+sphere, torus and ellipsoid primitives (150 to 168), solids of revolution
+and linear extrusion, boolean trees (180) through the kernel's own
+booleans, solid assemblies (184) and solid instances (430). Refused by name: a
 parameter-space trim on an analytic surface, whose IGES parameterization is
 the file's convention; a drawing's own annotation stays on the sheet and is
 counted as skipped.

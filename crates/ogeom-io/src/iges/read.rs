@@ -39,6 +39,11 @@ use std::collections::{BTreeMap, HashMap};
 /// and the surface's domain is only a parameter window).
 const SURFACE_EXTENT: f64 = 1e5;
 
+/// The constructive solid entities: the primitives, the solids of revolution
+/// and extrusion, the ellipsoid, the boolean tree, the solid assembly and
+/// the solid instance.
+const CSG_KINDS: [i64; 12] = [150, 152, 154, 156, 158, 160, 162, 164, 168, 180, 184, 430];
+
 /// What an import brought in, and what it left behind.
 #[derive(Debug, Default)]
 pub struct IgesReport {
@@ -163,6 +168,33 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
             } else {
                 sheets.push(shell.clone());
             }
+        }
+    }
+
+    // Constructive solids: every independent primitive, boolean tree,
+    // assembly and instance.
+    let csg_des: Vec<i64> = file
+        .entities
+        .iter()
+        .filter(|(de, e)| {
+            CSG_KINDS.contains(&e.kind)
+                && (e.status / 10_000) % 100 == 0
+                && !reader.visited.contains_key(de)
+        })
+        .map(|(de, _)| *de)
+        .collect();
+    for de in csg_des {
+        match reader.csg_solids(de) {
+            Ok(built) => {
+                for solid in built {
+                    built_from.push((de, solid.clone()));
+                    solids.push((de, solid));
+                }
+            }
+            Err(e) => reader
+                .report
+                .warnings
+                .push(format!("D{de}: constructive solid failed to build: {e}")),
         }
     }
 
@@ -1898,6 +1930,243 @@ impl<'a> Reader<'a> {
 
     /// The document: parts named from entity labels, colours from the fixed
     /// palette and from 314 entities the directory colour fields point at.
+    /// A constructive solid entity's solids: one for a primitive, a boolean
+    /// tree or an instance, one per item for an assembly.
+    fn csg_solids(&mut self, de: i64) -> OgeomResult<Vec<Shape>> {
+        let entity = self.entity(de)?;
+        if entity.kind != 184 {
+            return Ok(vec![self.csg(de)?]);
+        }
+        // Solid assembly: items, then a placement matrix for each.
+        let n = usize::try_from(entity.at(0).int()).unwrap_or(0);
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let item = entity.at(1 + i).int();
+            let matrix = entity.at(1 + n + i).int();
+            let mut solid = self.csg(item)?;
+            if matrix != 0 {
+                let placement = {
+                    let holder = Entity {
+                        kind: 0,
+                        form: 0,
+                        transform: matrix,
+                        colour: 0,
+                        level: 0,
+                        status: 0,
+                        label: String::new(),
+                        params: Vec::new(),
+                    };
+                    self.placement(&holder)?
+                };
+                let location = ogeom_topo::Location::of(self.model.add_datum(placement));
+                solid = solid.moved(&location);
+            }
+            out.push(solid);
+        }
+        Ok(out)
+    }
+
+    /// One constructive solid: a primitive (150–168), a boolean tree (180),
+    /// a solid instance (430) or a manifold solid (186), under the entity's
+    /// own placement.
+    #[allow(clippy::too_many_lines, reason = "one case per primitive")]
+    fn csg(&mut self, de: i64) -> OgeomResult<Shape> {
+        let entity = self.entity(de)?;
+        let s = self.report.scale_mm;
+        let tol = self.tol;
+        let r = |i: usize| entity.at(i).real();
+        let length = |i: usize| entity.at(i).real() * s;
+        let point = |i: usize| Point::new(r(i) * s, r(i + 1) * s, r(i + 2) * s);
+        // An axis the file leaves at its default is the default axis.
+        let direction = |i: usize, default: Vector| -> OgeomResult<Direction> {
+            let v = Vector::new(r(i), r(i + 1), r(i + 2));
+            Direction::new(if v.magnitude() > 0.0 { v } else { default }, tol)
+        };
+        let shape = match entity.kind {
+            150 => {
+                let frame = Frame::new(
+                    point(3),
+                    direction(9, Vector::Z)?,
+                    direction(6, Vector::X)?,
+                    tol,
+                )?;
+                ogeom_algo::make_box(
+                    &mut self.model,
+                    frame,
+                    (length(0), length(1), length(2)),
+                    tol,
+                )?
+                .shape
+            }
+            152 => {
+                // The file's wedge narrows along its local y, to `LTX` along
+                // x at y = LY; this vocabulary's narrows along its z. Its
+                // frame is the file's turned: z along the file's y, x along
+                // the file's z, so its y runs along the file's x.
+                let x_file = direction(7, Vector::X)?;
+                let z_file = direction(10, Vector::Z)?;
+                let y_file = Direction::new(z_file.vector().cross(x_file.vector()), tol)?;
+                let frame = Frame::new(point(4), y_file, z_file, tol)?;
+                ogeom_algo::make_wedge(
+                    &mut self.model,
+                    frame,
+                    (length(2), length(0), length(1)),
+                    (length(2), length(3)),
+                    tol,
+                )?
+                .shape
+            }
+            154 => {
+                let frame = frame_about(point(2), direction(5, Vector::Z)?, tol)?;
+                ogeom_algo::make_cylinder(&mut self.model, frame, length(1), length(0), tol)?.shape
+            }
+            156 => {
+                let frame = frame_about(point(3), direction(6, Vector::Z)?, tol)?;
+                ogeom_algo::make_cone(&mut self.model, frame, length(1), length(2), length(0), tol)?
+                    .shape
+            }
+            158 => {
+                let frame = frame_about(point(1), Direction::Z, tol)?;
+                ogeom_algo::make_sphere(&mut self.model, frame, length(0), tol)?.shape
+            }
+            160 => {
+                let frame = frame_about(point(2), direction(5, Vector::Z)?, tol)?;
+                ogeom_algo::make_torus(&mut self.model, frame, length(0), length(1), tol)?.shape
+            }
+            162 => {
+                // A planar profile turned about an axis by a fraction of a
+                // full turn; an open profile (form 1) closed to the axis.
+                let axis = ogeom_math::Axis::new(point(2), direction(5, Vector::Z)?);
+                let fraction = match r(1) {
+                    f if f > 0.0 => f.min(1.0),
+                    _ => 1.0,
+                };
+                let face = self.profile_face(de, entity.at(0).int(), Some(axis))?;
+                ogeom_algo::make_revolution(
+                    &mut self.model,
+                    &face,
+                    axis,
+                    core::f64::consts::TAU * fraction,
+                    tol,
+                )?
+                .shape
+            }
+            164 => {
+                let face = self.profile_face(de, entity.at(0).int(), None)?;
+                let along = direction(2, Vector::Z)?.vector() * length(1);
+                ogeom_algo::make_prism(&mut self.model, &face, along, tol)?.shape
+            }
+            168 => {
+                // A ball of unit radius, stretched along the local axes.
+                let x = direction(6, Vector::X)?.vector();
+                let z = direction(9, Vector::Z)?.vector();
+                let y = z.cross(x);
+                let (a, b, c) = (length(0), length(1), length(2));
+                let linear = Matrix3::new([
+                    [x.x * a, y.x * b, z.x * c],
+                    [x.y * a, y.y * b, z.y * c],
+                    [x.z * a, y.z * b, z.z * c],
+                ]);
+                let ball = ogeom_algo::make_sphere(&mut self.model, Frame::WORLD, 1.0, tol)?.shape;
+                let stretch = ogeom_math::GeneralTransform::new(linear, point(3).to_vector());
+                ogeom_algo::general_transformed_shape(&mut self.model, &ball, &stretch, tol)?.shape
+            }
+            180 => {
+                // Post-order: operands pushed, each operation code (1 union,
+                // 2 intersection, 3 difference) combining the last two.
+                let n = usize::try_from(entity.at(0).int()).unwrap_or(0);
+                let mut stack: Vec<Shape> = Vec::new();
+                for i in 0..n {
+                    let item = entity.at(1 + i).int();
+                    if item < 0 {
+                        stack.push(self.csg(-item)?);
+                        continue;
+                    }
+                    let (Some(b), Some(a)) = (stack.pop(), stack.pop()) else {
+                        ogeom_bail!(
+                            Construction,
+                            "D{de}: a boolean tree's operation has too few operands"
+                        );
+                    };
+                    let result = match item {
+                        1 => ogeom_bool::fuse(&mut self.model, &a, &b, tol)?,
+                        2 => ogeom_bool::common(&mut self.model, &a, &b, tol)?,
+                        3 => ogeom_bool::cut(&mut self.model, &a, &b, tol)?,
+                        code => ogeom_bail!(
+                            Construction,
+                            "D{de}: boolean operation code {code} names no operation"
+                        ),
+                    };
+                    stack.push(result.shape);
+                }
+                let [solid] = stack.as_slice() else {
+                    ogeom_bail!(
+                        Construction,
+                        "D{de}: a boolean tree leaves {} results",
+                        stack.len()
+                    );
+                };
+                solid.clone()
+            }
+            430 => self.csg(entity.at(0).int())?,
+            186 => self.manifold_solid(de)?,
+            kind => ogeom_bail!(
+                Construction,
+                "D{de}: type {kind} is not a constructive solid"
+            ),
+        };
+        let placement = self.placement(entity)?;
+        if placement == Transform::IDENTITY {
+            return Ok(shape);
+        }
+        let location = ogeom_topo::Location::of(self.model.add_datum(placement));
+        Ok(shape.moved(&location))
+    }
+
+    /// A planar face bounded by a closed curve entity, or, where the curve
+    /// is open and an axis is given, by the curve closed to the axis.
+    fn profile_face(
+        &mut self,
+        de: i64,
+        curve: i64,
+        axis: Option<ogeom_math::Axis>,
+    ) -> OgeomResult<Shape> {
+        let mut segments = self.curve_segments(curve)?;
+        let start = segments[0].0.point_at(segments[0].1.0, self.tol)?;
+        let last = &segments[segments.len() - 1];
+        let end = last.0.point_at(last.1.1, self.tol)?;
+        if start.distance(end) > self.tol.confusion() * 100.0 {
+            let Some(axis) = axis else {
+                ogeom_bail!(Construction, "D{de}: an extruded profile does not close");
+            };
+            let foot = |p: Point| {
+                let o = axis.location;
+                let d = axis.direction.vector();
+                o + d * (p - o).dot(d)
+            };
+            let (end_foot, start_foot) = (foot(end), foot(start));
+            for (a, b) in [(end, end_foot), (end_foot, start_foot), (start_foot, start)] {
+                if a.distance(b) > self.tol.confusion() * 100.0 {
+                    let line: Curve = LineCurve::segment(a, b, self.tol)?.into();
+                    let domain = line.domain();
+                    segments.push((line, domain));
+                }
+            }
+        }
+        let edges = self.wire_edges(de, segments)?;
+        let wire = ogeom_algo::make_wire(&mut self.model, &edges, self.tol)?.shape;
+        let Some(plane) = ogeom_algo::find_plane(&self.model, &wire, self.tol)? else {
+            ogeom_bail!(Construction, "D{de}: a solid's profile is not planar");
+        };
+        let surface: SurfaceGeometry = PlaneSurface::over(
+            plane,
+            (-SURFACE_EXTENT, SURFACE_EXTENT),
+            (-SURFACE_EXTENT, SURFACE_EXTENT),
+        )?
+        .into();
+        Ok(ogeom_algo::make_face_with_pcurves(&mut self.model, surface, &[edges], self.tol)?.shape)
+    }
+
     /// Every independent singular subfigure instance (408) placed: its
     /// definition's (308) solids moved into place, and its trimmed surfaces
     /// moved and sewn, closed shells becoming solids as a surface file's
@@ -3202,6 +3471,253 @@ mod tests {
         assert_eq!(
             names_of(&high_face),
             vec!["LID".to_owned(), "level 7".to_owned()]
+        );
+    }
+
+    /// Constructive solids against their closed forms: a block drilled by a
+    /// cylinder through a boolean tree, a wedge, a cone frustum, an
+    /// ellipsoid, a half-turn of revolution, an extruded square, and an
+    /// assembly placing one block twice.
+    #[test]
+    fn constructive_solids_read_as_their_volumes() {
+        let pi = core::f64::consts::PI;
+        let square = |base: i64, corners: [[f64; 3]; 4]| -> Vec<(i64, Entity)> {
+            let mut out = Vec::new();
+            let mut sides = vec![Value::Int(4)];
+            for i in 0..4 {
+                let de = base + 2 * i64::try_from(i).unwrap();
+                out.push((de, line(corners[i], corners[(i + 1) % 4])));
+                sides.push(Value::Int(de));
+            }
+            out.push((base + 8, entity(102, 0, sides)));
+            out
+        };
+        let mut entities = vec![
+            // Block 20³ at the origin.
+            (
+                1,
+                entity(
+                    150,
+                    0,
+                    reals(&[
+                        20.0, 20.0, 20.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                    ]),
+                ),
+            ),
+            // Cylinder r 5, h 40, up the block's middle from below.
+            (
+                3,
+                entity(
+                    154,
+                    0,
+                    reals(&[40.0, 5.0, 10.0, 10.0, -10.0, 0.0, 0.0, 1.0]),
+                ),
+            ),
+            (
+                5,
+                entity(
+                    180,
+                    0,
+                    vec![Value::Int(3), Value::Int(-1), Value::Int(-3), Value::Int(3)],
+                ),
+            ),
+            // Wedge 10 × 5 × 4, narrowing to 6 along x at y = 5.
+            (
+                7,
+                entity(
+                    152,
+                    0,
+                    reals(&[
+                        10.0, 5.0, 4.0, 6.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                    ]),
+                ),
+            ),
+            // Frustum h 10 from r 5 to r 2.
+            (
+                9,
+                entity(
+                    156,
+                    0,
+                    reals(&[10.0, 5.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]),
+                ),
+            ),
+            // Ellipsoid 3 × 2 × 1.
+            (
+                11,
+                entity(
+                    168,
+                    0,
+                    reals(&[3.0, 2.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]),
+                ),
+            ),
+            // Half a turn of the rectangle x 2..4, z 0..3 about z.
+            (
+                13,
+                entity(
+                    162,
+                    0,
+                    vec![
+                        Value::Int(29),
+                        Value::Real(0.5),
+                        Value::Real(0.0),
+                        Value::Real(0.0),
+                        Value::Real(0.0),
+                        Value::Real(0.0),
+                        Value::Real(0.0),
+                        Value::Real(1.0),
+                    ],
+                ),
+            ),
+            // The square 0..2 in xy extruded 5 up z.
+            (
+                15,
+                entity(
+                    164,
+                    0,
+                    vec![
+                        Value::Int(49),
+                        Value::Real(5.0),
+                        Value::Real(0.0),
+                        Value::Real(0.0),
+                        Value::Real(1.0),
+                    ],
+                ),
+            ),
+            // The block twice: as it stands, and moved 100 along x.
+            (
+                17,
+                entity(
+                    124,
+                    0,
+                    reals(&[1.0, 0.0, 0.0, 100.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+                ),
+            ),
+            (
+                19,
+                entity(
+                    184,
+                    0,
+                    vec![
+                        Value::Int(2),
+                        Value::Int(1),
+                        Value::Int(1),
+                        Value::Int(0),
+                        Value::Int(17),
+                    ],
+                ),
+            ),
+        ];
+        entities.extend(square(
+            21,
+            [
+                [2.0, 0.0, 0.0],
+                [4.0, 0.0, 0.0],
+                [4.0, 0.0, 3.0],
+                [2.0, 0.0, 3.0],
+            ],
+        ));
+        entities.extend(square(
+            41,
+            [
+                [0.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 2.0, 0.0],
+                [0.0, 2.0, 0.0],
+            ],
+        ));
+        let deck = file(entities);
+        let mut reader = reader(&deck);
+        let volume = |reader: &Reader<'_>, shape: &Shape| {
+            ogeom_algo::volume_properties(
+                &reader.model,
+                shape,
+                ogeom_mesh::Deflection::with_chord(1e-3).unwrap(),
+                T,
+            )
+            .unwrap()
+            .mass
+        };
+        for (de, want, within) in [
+            (5, 8000.0 - pi * 25.0 * 20.0, 1e-6),
+            (7, (10.0 + 6.0) / 2.0 * 5.0 * 4.0, 1e-9),
+            (9, pi * 10.0 / 3.0 * (25.0 + 10.0 + 4.0), 1e-6),
+            // Exact on its equation (below); the mesh measuring the volume
+            // falls short by the chord over the area, a part in a thousand.
+            (11, 4.0 / 3.0 * pi * 6.0, 2e-3),
+            (13, 0.5 * pi * (16.0 - 4.0) * 3.0, 1e-6),
+            (15, 20.0, 1e-9),
+        ] {
+            let solids = reader.csg_solids(de).unwrap();
+            let [solid] = solids.as_slice() else {
+                panic!("D{de} is one solid");
+            };
+            let got = volume(&reader, solid);
+            assert!(
+                (got - want).abs() <= within * want.max(1.0),
+                "D{de}: {got} against {want}"
+            );
+        }
+        // The ellipsoid's surface on its own equation, at points spread
+        // over every face.
+        let ellipsoid = reader.csg_solids(11).unwrap().remove(0);
+        for face in ogeom_topo::explore(
+            &reader.model,
+            &ellipsoid,
+            ogeom_topo::Filter::OfType(ogeom_topo::ShapeType::Face),
+        )
+        .unwrap()
+        {
+            let data = reader
+                .model
+                .node(&face)
+                .unwrap()
+                .data()
+                .as_face()
+                .unwrap()
+                .clone();
+            let surface = reader
+                .model
+                .geometry()
+                .surface(data.surface)
+                .unwrap()
+                .clone();
+            let ((u0, u1), (v0, v1)) = ogeom_geom::Surface::domain(&surface);
+            for i in 0..=6 {
+                for j in 0..=6 {
+                    let (u, v) = (
+                        u0 + (u1 - u0) * f64::from(i) / 6.0,
+                        v0 + (v1 - v0) * f64::from(j) / 6.0,
+                    );
+                    let p = ogeom_geom::Surface::point_at(&surface, u, v, T).unwrap();
+                    let residual = p.x * p.x / 9.0 + p.y * p.y / 4.0 + p.z * p.z - 1.0;
+                    assert!(residual.abs() < 1e-9, "off the ellipsoid: {p:?}");
+                }
+            }
+        }
+        let placed = reader.csg_solids(19).unwrap();
+        assert_eq!(placed.len(), 2);
+        let centres: Vec<Point> = placed
+            .iter()
+            .map(|s| {
+                ogeom_algo::volume_properties(
+                    &reader.model,
+                    s,
+                    ogeom_mesh::Deflection::default(),
+                    T,
+                )
+                .unwrap()
+                .centre
+            })
+            .collect();
+        assert!(
+            centres
+                .iter()
+                .any(|c| c.distance(Point::new(10.0, 10.0, 10.0)) < 1e-9)
+        );
+        assert!(
+            centres
+                .iter()
+                .any(|c| c.distance(Point::new(110.0, 10.0, 10.0)) < 1e-9)
         );
     }
 }

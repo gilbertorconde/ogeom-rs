@@ -30,6 +30,8 @@ ogeom-doc.workspace = true
 # pcurves for the edges it lands on faces; both live above the data layer.
 ogeom-algo.workspace = true
 ogeom-intersect.workspace = true
+# Constructive solids read as the booleans their trees name.
+ogeom-bool.workspace = true
 
 [dev-dependencies]
 # The round trip is only worth testing against shapes something really built,
