@@ -114,6 +114,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A pad placed again at a scale measured and fused wrong** (#63): a
+  cube padded from a square and copied 1.5 times the size measured 144
+  where it is 216. An edge's trim stored under the pad's own placement
+  was not found once the whole solid was placed again, and the trim of
+  the edge's unplaced twin was read instead.
 - **A partial revolve of a profile touching its axis failed** (#62). The
   edge on the axis is its own image; a wire now joins one vertex under two
   placements that land on one point, so the start and end faces close. A

@@ -157,6 +157,13 @@ impl Location {
         self.chain.is_empty()
     }
 
+    /// Whether this placement is `inner` with further placements outside
+    /// it: `inner`'s chain is this chain's tail.
+    #[must_use]
+    pub fn ends_with(&self, inner: &Self) -> bool {
+        self.chain.ends_with(&inner.chain)
+    }
+
     /// The chain, outermost entry first.
     #[must_use]
     pub fn chain(&self) -> &[(DatumId, i32)] {

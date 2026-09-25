@@ -707,6 +707,19 @@ impl EdgeData {
             .iter()
             .find(|r| r.surface() == Some(surface) && r.location() == Some(location))
             .or_else(|| {
+                // The whole shape placed again: the occurrence's chain is
+                // the stored one with placements outside it, and the
+                // longest such tail names the occurrence meant.
+                self.representations
+                    .iter()
+                    .filter(|r| {
+                        r.surface() == Some(surface)
+                            && r.location()
+                                .is_some_and(|l| !l.is_identity() && location.ends_with(l))
+                    })
+                    .max_by_key(|r| r.location().map_or(0, Location::depth))
+            })
+            .or_else(|| {
                 self.representations.iter().find(|r| {
                     r.surface() == Some(surface) && r.location().is_some_and(Location::is_identity)
                 })
