@@ -51,6 +51,8 @@ bump may break the API and a patch bump may not.
   distance varies, and trims given only in a B-spline surface's parameters.
   Model-space notes, leaders, labels, symbols and dimensions read as PMI
   callouts, a dimension whose text states a number also as its value.
+  Subfigure instances place their shared definition, and levels and
+  groups read as layers.
 
 ### Fixed
 

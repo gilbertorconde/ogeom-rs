@@ -1632,7 +1632,10 @@ trim given only in a B-spline surface's parameters is lifted through the
 surface. Model-space annotation (notes, leaders, labels, symbols and the
 linear, radial, diametral, angular and ordinate dimensions) reads as PMI
 callouts of the lines the file draws, a dimension whose text states a
-number carrying that value as a semantic dimension. Refused by name: a
+number carrying that value as a semantic dimension. Subfigure instances
+(408) place their definition (308), built once and shared under each
+instance's placement, translation and scale; levels (with 406 level lists)
+and groups (402) read as the document's layers. Refused by name: a
 parameter-space trim on an analytic surface, whose IGES parameterization is
 the file's convention; a drawing's own annotation stays on the sheet and is
 counted as skipped."""

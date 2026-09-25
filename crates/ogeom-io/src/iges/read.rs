@@ -126,6 +126,8 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
     // entities belong to something else and are not top-level geometry; the
     // subordinate switch is the second two-digit field of the status word.
     let mut faces = Vec::new();
+    // Which directory entry built which shape, for levels and groups.
+    let mut built_from: Vec<(i64, Shape)> = solids.clone();
     let face_des: Vec<i64> = file
         .entities
         .iter()
@@ -141,7 +143,10 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         ogeom_core::progress::checkpoint()?;
         ogeom_core::progress::stage_at("iges: face", done as u64 + 1, total);
         match reader.face(de) {
-            Ok(face) => faces.push(face),
+            Ok(face) => {
+                built_from.push((de, face.clone()));
+                faces.push(face);
+            }
             Err(e) => reader
                 .report
                 .warnings
@@ -160,6 +165,13 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
             }
         }
     }
+
+    // Subfigure instances: each independent 408 places its definition's
+    // solids and trimmed surfaces, built once and shared by every instance.
+    let (placed_solids, placed_sheets, placed_from) = reader.subfigure_instances(tol)?;
+    solids.extend(placed_solids.into_iter().map(|s| (0, s)));
+    sheets.extend(placed_sheets);
+    built_from.extend(placed_from);
 
     if solids.is_empty() && sheets.is_empty() {
         // A deck that *had* candidates which all failed is a different
@@ -186,6 +198,14 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         ));
     }
     let (callouts, dimensions) = reader.annotations();
+    // Groups and level lists become layers once the document stands.
+    for (de, entity) in &file.entities {
+        if (entity.kind == 402 && matches!(entity.form, 1 | 7 | 14 | 15))
+            || (entity.kind == 406 && entity.form == 1)
+        {
+            reader.visited.insert(*de, ());
+        }
+    }
     // Everything never visited, counted by type and form.
     for (de, entity) in &file.entities {
         if !reader.visited.contains_key(de) {
@@ -210,6 +230,7 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         }
         pmi.callouts.extend(callouts);
     }
+    layers(&file, &mut document, &built_from, &mut reader.report);
     let solids = solids.into_iter().map(|(_, s)| s).collect();
     Ok(IgesImport {
         document,
@@ -1877,6 +1898,135 @@ impl<'a> Reader<'a> {
 
     /// The document: parts named from entity labels, colours from the fixed
     /// palette and from 314 entities the directory colour fields point at.
+    /// Every independent singular subfigure instance (408) placed: its
+    /// definition's (308) solids moved into place, and its trimmed surfaces
+    /// moved and sewn, closed shells becoming solids as a surface file's
+    /// do. A definition is built once, however many instances place it:
+    /// the instances share its topology under their own placements.
+    #[allow(
+        clippy::type_complexity,
+        reason = "the solids, the sheets, and what built what"
+    )]
+    fn subfigure_instances(
+        &mut self,
+        tol: Tolerances,
+    ) -> OgeomResult<(Vec<Shape>, Vec<Shape>, Vec<(i64, Shape)>)> {
+        let instances: Vec<i64> = self
+            .file
+            .entities
+            .iter()
+            .filter(|(_, e)| e.kind == 408 && (e.status / 10_000) % 100 == 0)
+            .map(|(de, _)| *de)
+            .collect();
+        let mut built: HashMap<i64, (Vec<Shape>, Vec<Shape>)> = HashMap::new();
+        let (mut solids, mut sheets, mut from) = (Vec::new(), Vec::new(), Vec::new());
+        for de in instances {
+            let (placed_solids, faces) = match self.instance(de, &mut built, 0) {
+                Ok(found) => found,
+                Err(e) => {
+                    self.report
+                        .warnings
+                        .push(format!("D{de}: subfigure instance not placed: {e}"));
+                    continue;
+                }
+            };
+            from.extend(placed_solids.iter().map(|s| (de, s.clone())));
+            from.extend(faces.iter().map(|f| (de, f.clone())));
+            solids.extend(placed_solids);
+            if faces.is_empty() {
+                continue;
+            }
+            let sewn = sew(&mut self.model, &faces, tol)?;
+            for shell in &sewn.shells {
+                if ogeom_algo::is_shell_closed(&self.model, shell)? {
+                    solids.push(make_solid(&mut self.model, std::slice::from_ref(shell))?.shape);
+                } else {
+                    sheets.push(shell.clone());
+                }
+            }
+        }
+        Ok((solids, sheets, from))
+    }
+
+    /// One instance's solids and faces, placed: its own placement, then
+    /// the translation and uniform scale it states.
+    fn instance(
+        &mut self,
+        de: i64,
+        built: &mut HashMap<i64, (Vec<Shape>, Vec<Shape>)>,
+        depth: usize,
+    ) -> OgeomResult<(Vec<Shape>, Vec<Shape>)> {
+        if depth > 32 {
+            ogeom_bail!(
+                Construction,
+                "D{de}: subfigures nest past any sensible depth"
+            );
+        }
+        let entity = self.entity(de)?;
+        let definition = entity.at(0).int();
+        let s = self.report.scale_mm;
+        let offset = Vector::new(
+            entity.at(1).real() * s,
+            entity.at(2).real() * s,
+            entity.at(3).real() * s,
+        );
+        let factor = match entity.at(4).real() {
+            f if f > 0.0 => f,
+            _ => 1.0,
+        };
+        let (solids, faces) = self.subfigure(definition, built, depth)?;
+        let motion = self.placement(entity)?
+            * Transform::translation(offset)
+            * Transform::scaling(Point::ORIGIN, factor, self.tol)?;
+        let location = ogeom_topo::Location::of(self.model.add_datum(motion));
+        Ok((
+            solids.iter().map(|x| x.moved(&location)).collect(),
+            faces.iter().map(|x| x.moved(&location)).collect(),
+        ))
+    }
+
+    /// A subfigure definition's (308) solids and trimmed surfaces, at the
+    /// definition's own coordinates, nested instances placed within it.
+    fn subfigure(
+        &mut self,
+        de: i64,
+        built: &mut HashMap<i64, (Vec<Shape>, Vec<Shape>)>,
+        depth: usize,
+    ) -> OgeomResult<(Vec<Shape>, Vec<Shape>)> {
+        if let Some(found) = built.get(&de) {
+            return Ok(found.clone());
+        }
+        let entity = self.entity(de)?;
+        if entity.kind != 308 {
+            ogeom_bail!(
+                Construction,
+                "D{de}: an instance names a type {} entity, not a subfigure \
+                 definition",
+                entity.kind
+            );
+        }
+        let count = usize::try_from(entity.at(2).int()).unwrap_or(0);
+        let (mut solids, mut faces) = (Vec::new(), Vec::new());
+        for i in 0..count {
+            let member = entity.at(3 + i).int();
+            let Some(kind) = self.file.entity(member).map(|m| m.kind) else {
+                continue;
+            };
+            match kind {
+                186 => solids.push(self.manifold_solid(member)?),
+                143 | 144 => faces.push(self.face(member)?),
+                408 => {
+                    let (s, f) = self.instance(member, built, depth + 1)?;
+                    solids.extend(s);
+                    faces.extend(f);
+                }
+                _ => {}
+            }
+        }
+        built.insert(de, (solids.clone(), faces.clone()));
+        Ok((solids, faces))
+    }
+
     /// The model-space annotation: every independent drafting entity a
     /// drawing does not own, as a callout of the lines the file draws (its
     /// leaders, witness lines and symbol geometry, carried by their own
@@ -2176,6 +2326,76 @@ impl<'a> Reader<'a> {
 
 /// A trimmed carrier where the range is a strict part of the domain: a
 /// generatrix used by a sweep is exactly its stated span.
+/// The file's levels and groups as the document's layers: every shape on
+/// the layer of the level its entity sits on (a negative level names a
+/// definition-levels property listing several), and every group (402,
+/// forms 1, 7, 14 and 15) a layer named by the group's label holding the
+/// shapes its members built.
+fn layers(
+    file: &File,
+    document: &mut ogeom_doc::Document,
+    built_from: &[(i64, Shape)],
+    report: &mut IgesReport,
+) {
+    let mut by_name: HashMap<String, ogeom_doc::LayerId> = HashMap::new();
+    let mut layer = |document: &mut ogeom_doc::Document, name: String| {
+        *by_name
+            .entry(name.clone())
+            .or_insert_with(|| document.add_layer(name))
+    };
+    for (de, shape) in built_from {
+        let Some(entity) = file.entity(*de) else {
+            continue;
+        };
+        let levels: Vec<i64> = if entity.level > 0 {
+            vec![entity.level]
+        } else if entity.level < 0 {
+            match file.entity(-entity.level) {
+                Some(p) if p.kind == 406 && p.form == 1 => {
+                    let n = usize::try_from(p.at(0).int()).unwrap_or(0);
+                    (0..n).map(|i| p.at(1 + i).int()).collect()
+                }
+                _ => {
+                    report
+                        .warnings
+                        .push(format!("D{de}: its level names no levels property"));
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        for level in levels {
+            let id = layer(document, format!("level {level}"));
+            document.place_on_layer(shape, id);
+        }
+    }
+    for (de, group) in &file.entities {
+        if group.kind != 402 || !matches!(group.form, 1 | 7 | 14 | 15) {
+            continue;
+        }
+        let n = usize::try_from(group.at(0).int()).unwrap_or(0);
+        let members: Vec<i64> = (0..n).map(|i| group.at(1 + i).int().abs()).collect();
+        let shapes: Vec<&Shape> = built_from
+            .iter()
+            .filter(|(from, _)| members.contains(from))
+            .map(|(_, s)| s)
+            .collect();
+        if shapes.is_empty() {
+            continue;
+        }
+        let name = if group.label.is_empty() {
+            format!("group D{de}")
+        } else {
+            group.label.clone()
+        };
+        let id = layer(document, name);
+        for shape in shapes {
+            document.place_on_layer(shape, id);
+        }
+    }
+}
+
 /// The value a dimension's text states: `R5.5`, `Ø10`, `45°` read as 5.5,
 /// 10 and 45, and a patterned callout's leading count (`2X Ø5`, `4 x 12.7`)
 /// passed over for the value after it.
@@ -2817,5 +3037,171 @@ mod tests {
         );
         assert!(dimension.location);
         assert!(!reader.visited.contains_key(&13));
+    }
+
+    /// Two instances of one subfigure: a ten-square trimmed plane placed at
+    /// x = 100, and at y = 50 twice the size. Each is the definition's face
+    /// under its own placement, and the definition is built once.
+    #[test]
+    fn subfigure_instances_place_their_definition() {
+        let dependent = |mut e: Entity| {
+            e.status = 10_000;
+            e
+        };
+        let square = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let mut entities = vec![(1, dependent(entity(108, 0, reals(&[0.0, 0.0, 1.0, 0.0]))))];
+        let mut sides = Vec::new();
+        for i in 0..4 {
+            let (a, b) = (square[i], square[(i + 1) % 4]);
+            let de = 3 + 2 * i64::try_from(i).unwrap();
+            entities.push((de, dependent(line([a[0], a[1], 0.0], [b[0], b[1], 0.0]))));
+            sides.push(Value::Int(de));
+        }
+        let mut composite = vec![Value::Int(4)];
+        composite.extend(sides);
+        entities.push((11, dependent(entity(102, 0, composite))));
+        entities.push((
+            13,
+            dependent(entity(
+                144,
+                0,
+                vec![Value::Int(1), Value::Int(1), Value::Int(0), Value::Int(11)],
+            )),
+        ));
+        entities.push((
+            15,
+            entity(
+                308,
+                0,
+                vec![
+                    Value::Int(0),
+                    Value::Text("tile".to_owned()),
+                    Value::Int(1),
+                    Value::Int(13),
+                ],
+            ),
+        ));
+        entities.push((
+            17,
+            entity(
+                408,
+                0,
+                vec![
+                    Value::Int(15),
+                    Value::Real(100.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(1.0),
+                ],
+            ),
+        ));
+        entities.push((
+            19,
+            entity(
+                408,
+                0,
+                vec![
+                    Value::Int(15),
+                    Value::Real(0.0),
+                    Value::Real(50.0),
+                    Value::Real(0.0),
+                    Value::Real(2.0),
+                ],
+            ),
+        ));
+        let deck = file(entities);
+        let mut reader = reader(&deck);
+        let (solids, sheets, _) = reader.subfigure_instances(T).unwrap();
+        assert!(solids.is_empty());
+        assert_eq!(sheets.len(), 2);
+        let deflection = ogeom_mesh::Deflection::default();
+        let mut measured: Vec<(f64, Point)> = sheets
+            .iter()
+            .map(|sheet| {
+                let props =
+                    ogeom_algo::surface_properties(&reader.model, sheet, deflection, T).unwrap();
+                (props.mass, props.centre)
+            })
+            .collect();
+        measured.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert!((measured[0].0 - 100.0).abs() < 1e-9, "{measured:?}");
+        assert!(measured[0].1.distance(Point::new(105.0, 5.0, 0.0)) < 1e-9);
+        assert!((measured[1].0 - 400.0).abs() < 1e-9, "{measured:?}");
+        assert!(measured[1].1.distance(Point::new(10.0, 60.0, 0.0)) < 1e-9);
+        // One definition, one face node under two placements.
+        let face_of = |shape: &Shape| {
+            ogeom_topo::explore(
+                &reader.model,
+                shape,
+                ogeom_topo::Filter::OfType(ogeom_topo::ShapeType::Face),
+            )
+            .unwrap()
+            .remove(0)
+        };
+        assert_eq!(face_of(&sheets[0]).node(), face_of(&sheets[1]).node());
+    }
+
+    /// Levels and groups are layers: each face on its level's layer, and a
+    /// group's members on the group's own.
+    #[test]
+    fn levels_and_groups_read_as_layers() {
+        let square = |z: f64, base: i64| -> Vec<(i64, Entity)> {
+            let dependent = |mut e: Entity| {
+                e.status = 10_000;
+                e
+            };
+            let corners = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+            let mut out = vec![(base, dependent(entity(108, 0, reals(&[0.0, 0.0, 1.0, z]))))];
+            let mut sides = vec![Value::Int(4)];
+            for i in 0..4 {
+                let (a, b) = (corners[i], corners[(i + 1) % 4]);
+                let de = base + 2 + 2 * i64::try_from(i).unwrap();
+                out.push((de, dependent(line([a[0], a[1], z], [b[0], b[1], z]))));
+                sides.push(Value::Int(de));
+            }
+            out.push((base + 10, dependent(entity(102, 0, sides))));
+            out
+        };
+        let mut entities = square(0.0, 1);
+        entities.extend(square(5.0, 21));
+        let mut low = entity(
+            144,
+            0,
+            vec![Value::Int(1), Value::Int(1), Value::Int(0), Value::Int(11)],
+        );
+        low.level = 3;
+        let mut high = entity(
+            144,
+            0,
+            vec![Value::Int(21), Value::Int(1), Value::Int(0), Value::Int(31)],
+        );
+        high.level = 7;
+        entities.push((41, low));
+        entities.push((43, high));
+        let mut group = entity(402, 7, vec![Value::Int(1), Value::Int(43)]);
+        group.label = "LID".to_owned();
+        entities.push((45, group));
+        let deck = file(entities);
+        let mut reader = reader(&deck);
+        let low_face = reader.face(41).unwrap();
+        let high_face = reader.face(43).unwrap();
+        let built = vec![(41, low_face.clone()), (43, high_face.clone())];
+        let mut document = ogeom_doc::Document::over(std::mem::take(&mut reader.model));
+        let mut report = IgesReport::default();
+        layers(&deck, &mut document, &built, &mut report);
+        let names_of = |shape: &Shape| -> Vec<String> {
+            let mut names: Vec<String> = document
+                .layers_of(shape)
+                .iter()
+                .map(|id| document.layer(*id).unwrap().name.clone())
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(names_of(&low_face), vec!["level 3".to_owned()]);
+        assert_eq!(
+            names_of(&high_face),
+            vec!["LID".to_owned(), "level 7".to_owned()]
+        );
     }
 }
