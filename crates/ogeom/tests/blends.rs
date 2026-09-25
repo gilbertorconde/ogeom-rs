@@ -1834,6 +1834,55 @@ fn a_circular_rim_on_a_sphere_takes_the_march() {
     assert_marched_blend(&model, &drilled, &blended, "circular rim on a sphere");
 }
 
+/// A bore down the ball beside its pole: the rim stays clear of the pole,
+/// but the ball rolling round it touches the sphere along a rail that
+/// passes over the pole, so the sphere's leg is the band from the rail to
+/// the pole with the rim cut from it. The same bore turned onto another
+/// axis keeps the pole out of the leg, and the two blends agree.
+#[test]
+fn a_rim_whose_rail_rounds_the_sphere_s_pole_blends() {
+    let fine = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
+    let mut volumes = Vec::new();
+    for (origin, axis, x) in [
+        (Point::new(2.0, 0.0, -20.0), Direction::Z, Direction::X),
+        (Point::new(-20.0, 0.0, 2.0), Direction::X, Direction::Z),
+    ] {
+        let mut model = Model::new();
+        let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 10.0, T)
+            .unwrap()
+            .shape;
+        let frame = Frame::new(origin, axis, x, T).unwrap();
+        let bore = ogeom::algo::make_cylinder(&mut model, frame, 1.5, 40.0, T)
+            .unwrap()
+            .shape;
+        let drilled = ogeom::boolean::cut(&mut model, &ball, &bore, T)
+            .unwrap()
+            .shape;
+        // The rim on the far side along the bore's axis, beside the pole
+        // for the first placement.
+        let along = axis.vector();
+        let side = origin + along * 20.0;
+        let across = x.vector();
+        let near = side + across * 1.5;
+        let reach: f64 = (100.0 - (near - Point::ORIGIN).magnitude().powi(2)).sqrt();
+        let rim = edge_near(&model, &drilled, near + along * reach);
+        let blended = ogeom::fillet::fillet_edge(&mut model, &drilled, &rim, 1.0, T)
+            .unwrap()
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        volumes.push(
+            ogeom::algo::volume_properties(&model, &blended, fine, T)
+                .unwrap()
+                .mass,
+        );
+    }
+    assert!(
+        (volumes[0] - volumes[1]).abs() < 1e-5 * volumes[0],
+        "{volumes:?}"
+    );
+}
+
 /// A ring drilled through its tube: the seat runs round the drill on the
 /// torus, and the torus is a host the march had refused.
 #[test]

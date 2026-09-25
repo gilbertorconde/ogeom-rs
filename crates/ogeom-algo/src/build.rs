@@ -1492,7 +1492,8 @@ pub fn make_revolution_band(
 ///
 /// The caller's contract: both rings are closed, both chart images run the
 /// full period *forward* in `u`, and both start on the same column; the
-/// seam runs there, between the two start vertices.
+/// seam runs there, between the two start vertices. One ring may be a pole:
+/// a degenerate edge whose image is the pole's row over `(0, period)`.
 ///
 /// # Errors
 ///
@@ -1536,10 +1537,16 @@ pub fn make_band_between(
             let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
                 ogeom_bail!(Construction, "a band ring holds no edge data");
             };
-            let Some(EdgeRepr::Curve3d { range, .. }) = data.curve3d() else {
-                ogeom_bail!(Construction, "a band ring has no curve");
-            };
-            *range
+            // A pole: no curve, and its chart image the pole's row run over
+            // one period.
+            if data.degenerate {
+                (0.0, span)
+            } else {
+                let Some(EdgeRepr::Curve3d { range, .. }) = data.curve3d() else {
+                    ogeom_bail!(Construction, "a band ring has no curve");
+                };
+                *range
+            }
         };
         let start = pcurve.point_at(crange.0, tol)?;
         let end = pcurve.point_at(crange.1, tol)?;

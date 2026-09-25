@@ -2319,6 +2319,37 @@ fn host_leg(
         }
     };
 
+    let apex_winds = period_of(host).is_some_and(|period| {
+        let run = apex_chart[apex_chart.len() - 1].x - apex_chart[0].x;
+        (run / period).round().abs() >= 1.0
+    });
+    if (winding.abs() > 1e-6) != apex_winds {
+        // One loop winds the period and the other does not: the leg holds
+        // the pole between them (a rim beside a sphere's pole, its rail
+        // passing over it).
+        let (wound, contractible) = if apex_winds {
+            (
+                (&apex, apex_pcurve, guide_range),
+                (
+                    rail,
+                    rail_pcurve,
+                    (u_params[0], u_params[u_params.len() - 1]),
+                    rail_chart.as_slice(),
+                ),
+            )
+        } else {
+            (
+                (
+                    rail,
+                    rail_pcurve,
+                    (u_params[0], u_params[u_params.len() - 1]),
+                ),
+                (&apex, apex_pcurve, guide_range, apex_chart.as_slice()),
+            )
+        };
+        let wound_chart = if apex_winds { &apex_chart } else { &rail_chart };
+        return pole_leg(model, host, wound, wound_chart, contractible, tol);
+    }
     if winding.abs() > 1e-6 {
         // Both loops wind the period; the band with its connector closes the
         // strip between them. The band wants the period run *forward*.
@@ -2365,6 +2396,94 @@ fn host_leg(
         };
         Ok(ogeom_algo::make_face_on(model, surface_id, &wires, tol)?.shape)
     }
+}
+
+/// A leg holding a pole: the band from the loop that winds the period to
+/// the pole on the other loop's side, with the other loop cut from it as a
+/// hole.
+fn pole_leg(
+    model: &mut Model,
+    host: &SurfaceGeometry,
+    wound: (&Shape, PlanarCurve, (f64, f64)),
+    wound_chart: &[Point2],
+    contractible: (&Shape, PlanarCurve, (f64, f64), &[Point2]),
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    use ogeom_geom::{Curve2d as _, Surface as _};
+    if !matches!(host, SurfaceGeometry::Sphere(_)) {
+        ogeom_bail!(
+            Construction,
+            "the blend's rail winds round its host on one side and its edge \
+             does not, and this host has no pole to close the leg on; a ball \
+             too big for the wall beside the edge walks such a rail"
+        );
+    }
+    let (wound_edge, wound_pcurve, wound_range) = wound;
+    let (hole_edge, hole_pcurve, hole_range, hole_chart) = contractible;
+    let start = wound_pcurve.point_at(wound_range.0, tol)?;
+    let end = wound_pcurve.point_at(wound_range.1, tol)?;
+    if end.x < start.x {
+        ogeom_bail!(
+            Construction,
+            "the seat winds against its host's chart; reversing the \
+             guide is still owed; see docs/PARITY.md, fillet.edge-blends"
+        );
+    }
+    let mean = |chart: &[Point2]| {
+        #[allow(clippy::cast_precision_loss)]
+        let n = chart.len() as f64;
+        chart.iter().map(|p| p.y).sum::<f64>() / n
+    };
+    // The pole on the hole's side of the winding loop.
+    let ((u0, u1), (v0, v1)) = host.domain();
+    let above = mean(hole_chart) > mean(wound_chart);
+    let row = if above { v1 } else { v0 };
+    let pole = ogeom_algo::make_vertex(model, host.point_at(start.x, row, tol)?).shape;
+    let mut data = ogeom_topo::EdgeData::new();
+    data.degenerate = true;
+    let pole_edge = model.add_edge(data, &[pole.clone(), pole])?;
+    let pole_pcurve: PlanarCurve = ogeom_geom::Line2d::over(
+        ogeom_math::Axis2::new(
+            Point2::new(start.x, row),
+            ogeom_math::Direction2::new(ogeom_math::Vector2::new(1.0, 0.0), tol)?,
+        ),
+        0.0,
+        u1 - u0,
+    )?
+    .into();
+    let band = ogeom_algo::make_band_between(
+        model,
+        host,
+        [(wound_edge, wound_pcurve), (&pole_edge, pole_pcurve)],
+        tol,
+    )?;
+    let Some(surface_id) = model
+        .node(&band)
+        .and_then(|n| n.data().as_face())
+        .map(|d| d.surface)
+    else {
+        ogeom_bail!(Construction, "the pole band holds no face data");
+    };
+    let outer = model.children_of(&band)?[0].clone();
+    ogeom_algo::attach_pcurve(
+        model,
+        hole_edge,
+        hole_pcurve,
+        surface_id,
+        ogeom_topo::Location::identity(),
+        hole_range,
+    )?;
+    // The band's walk runs the winding loop forward, so it turns
+    // anticlockwise in the chart when the pole is above it; the hole turns
+    // the other way.
+    let outer_turn = if above { 1.0 } else { -1.0 };
+    let hole = if chart_area(hole_chart) * outer_turn > 0.0 {
+        hole_edge.reversed()
+    } else {
+        hole_edge.clone()
+    };
+    let hole_wire = ogeom_algo::make_wire(model, &[hole], tol)?.shape;
+    Ok(ogeom_algo::make_face_on(model, surface_id, &[outer, hole_wire], tol)?.shape)
 }
 
 /// The host surface cut down to the window the leg actually spans, padded a

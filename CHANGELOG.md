@@ -129,6 +129,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A rim blend beside a sphere's pole could not be built.** Where the
+  ball's rail on the sphere passes over the pole while the rim does not,
+  the sphere's leg was asked to be a band between two loops that both
+  wind round the pole. It is now the band from the rail to the pole with
+  the rim cut from it.
 - **A section through a point where two surfaces touch was fitted loosely.**
   The tracer could report one sample's position with its neighbour's
   parameters there, and the joint fit stalled near 1e-5 mm at that
