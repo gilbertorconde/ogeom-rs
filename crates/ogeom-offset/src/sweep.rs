@@ -4826,9 +4826,8 @@ fn spine_curve_of(model: &Model, edge: &Shape) -> OgeomResult<(ogeom_geom::Curve
 /// transported round a closed spine, the frame comes home twisted by some
 /// angle, and that twist is spread back along the arc so the last station's
 /// frame *is* the first's; without it the closed fit fights a helical
-/// grid. The profile must be one smooth closed loop; a faceted profile's
-/// strips and a holed profile's nested shells are still owed, and the
-/// Frenet law on a closed loop is not carried yet.
+/// grid. The profile may be smooth or faceted, and each hole sweeps a void
+/// tunnel of its own shell; the Frenet law rides the loop as well.
 fn closed_pipe_shell(
     model: &mut Model,
     profile: &Shape,
@@ -4843,17 +4842,14 @@ fn closed_pipe_shell(
     if stations.len() < 3 {
         ogeom_bail!(Construction, "a closed spine needs room to turn");
     }
-    // A sharp corner turns the section through a finite angle over no arc at
-    // all, which no skin can follow: the mitred ring is per-edge closed
-    // strips, still owed.
+    // A sharp corner is a kink, and a kinked ring is mitred by the caller;
+    // one arriving here has a heading that jumps between two stations.
     for i in 0..stations.len() {
         let next = &stations[(i + 1) % stations.len()];
         if stations[i].tangent.dot(next.tangent) < 0.9 {
             ogeom_bail!(
                 Construction,
-                "a closed spine with a sharp corner needs the mitred strips, \
-                 which are still owed; see docs/PARITY.md, offset.sweeps; round \
-                 the corner and the ring sweeps"
+                "a closed spine turns too sharply between two of its stations to skin"
             );
         }
     }
@@ -4965,15 +4961,36 @@ fn closed_pipe_shell(
             tolerance,
             tol,
         )?;
-        // A void's faces leave the material toward the tunnel: reversed
-        // against the outward orientation every shell is built with.
-        shells.push(if li == 0 { shell } else { shell.reversed() });
+        // The material side follows each loop's own winding, so it is
+        // read off the shell itself: the outer shell faces out of what it
+        // encloses, a void's faces toward its tunnel.
+        let enclosed = shell_signed_volume(model, &shell, tol)?;
+        let outward = enclosed > 0.0;
+        shells.push(if outward == (li == 0) {
+            shell
+        } else {
+            shell.reversed()
+        });
     }
     let mut built = make_solid(model, &shells)?;
     built.history.generate(profile, built.shape.clone());
     built.history.generate(spine, built.shape.clone());
     let _ = (smooth, profile_loop, edges);
     Ok(built)
+}
+
+/// The volume a closed shell encloses as it faces, from its mesh: negative
+/// where its faces point into what it bounds.
+fn shell_signed_volume(model: &Model, shell: &Shape, tol: Tolerances) -> OgeomResult<f64> {
+    let mesh = ogeom_mesh::triangulate(model, shell, ogeom_mesh::Deflection::default(), tol)?;
+    Ok(mesh
+        .triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|i| mesh.positions[i as usize].to_vector());
+            a.dot(b.cross(c)) / 6.0
+        })
+        .sum())
 }
 
 /// Sample a spine (one edge or a wire of them) into stations, each edge

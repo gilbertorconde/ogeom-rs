@@ -225,3 +225,79 @@ fn a_placed_profile_square_to_an_arc_sweeps_along_it() {
     assert!(exact);
     assert!((v - want).abs() < want * 1e-9, "{v} against {want}");
 }
+
+#[test]
+/// A square, holed or not, round a closed ellipse under either frame law:
+/// centred on the spine, it sweeps its area times the ellipse's length, the
+/// hole a void tunnel whichever way its ring is wound.
+fn a_holed_profile_rounds_an_elliptic_ring() {
+    let length = {
+        let n = 20_000;
+        (0..n)
+            .map(|i| {
+                let t = core::f64::consts::TAU * (f64::from(i) + 0.5) / f64::from(n);
+                (20.0 * t.sin()).hypot(15.0 * t.cos())
+            })
+            .sum::<f64>()
+            * core::f64::consts::TAU
+            / f64::from(n)
+    };
+    for frenet in [false, true] {
+        for holed in [false, true] {
+            let mut model = Model::new();
+            // An ellipse 20 by 15 in the XY plane, closed.
+            let ellipse = ogeom::math::Ellipse::new(Frame::WORLD, 20.0, 15.0, T).unwrap();
+            let e = make_edge(
+                &mut model,
+                ogeom::geom::EllipseCurve::new(ellipse).into(),
+                (0.0, core::f64::consts::TAU),
+                T,
+            )
+            .unwrap()
+            .shape;
+            let spine = make_wire(&mut model, &[e], T).unwrap().shape;
+            // A 4 x 4 square in the XZ plane at (20, 0, 0), square to +Y.
+            let pts = [(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)]
+                .map(|(a, b)| Point::new(20.0 + a, 0.0, b));
+            let outer = make_polygon(&mut model, &pts, true, T).unwrap().shape;
+            let frame =
+                Frame::new(Point::new(20.0, 0.0, 0.0), Direction::Y, Direction::X, T).unwrap();
+            let mut wires = vec![outer];
+            if holed {
+                let c = Circle::new(frame, 1.0, T).unwrap();
+                let he = make_edge(
+                    &mut model,
+                    CircleCurve::new(c).into(),
+                    (0.0, core::f64::consts::TAU),
+                    T,
+                )
+                .unwrap()
+                .shape;
+                wires.push(make_wire(&mut model, &[he], T).unwrap().shape);
+            }
+            let face = make_face(
+                &mut model,
+                PlaneSurface::new(Plane::new(frame)).into(),
+                &wires,
+                T,
+            )
+            .unwrap()
+            .shape;
+            let r = ogeom::offset::make_pipe_shell(&mut model, &face, &spine, frenet, 1e-3, T);
+            let pipe = r
+                .unwrap_or_else(|e| panic!("frenet {frenet} holed {holed}: {e}"))
+                .shape;
+            let (v, _) = measure(&model, &pipe);
+            let area = if holed {
+                16.0 - core::f64::consts::PI
+            } else {
+                16.0
+            };
+            let want = area * length;
+            assert!(
+                (v - want).abs() < want * 2e-3,
+                "frenet {frenet} holed {holed}: {v} against {want}"
+            );
+        }
+    }
+}

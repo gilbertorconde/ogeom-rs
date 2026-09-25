@@ -120,6 +120,10 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A holed profile round a closed spine filled its hole.** Where the
+  hole's ring wound the other way from the one the sweep assumed, its
+  tunnel came out as material and the solid measured the hole's volume
+  too many. Each shell is now turned by the volume it encloses.
 - **A partial revolve could build its end caps inside out.** Where the
   profile's ring wound against its plane's normal, the walls followed the
   ring and the caps the plane, and the caps faced into the solid; a cap
