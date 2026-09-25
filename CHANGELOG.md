@@ -117,6 +117,10 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A helical sweep measured 0.65% light at the default deflection**
+  (#69). Its fitted walls were measured from their mesh. A spline face
+  trimmed by its own chart's borders is now integrated on the exact
+  surface, knot span by knot span, and the thread measures to Pappus.
 - **A chamfer wider than its face cut through it** (#67): a 12 mm bevel
   on a 10 mm face sliced a slab off the box. A setback running past a
   face's far side is now refused, naming the edge and the distance. A

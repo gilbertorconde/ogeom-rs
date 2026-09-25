@@ -126,3 +126,18 @@ fn a_tapered_thread_builds_and_grows() {
     let bound = shape_bounds(&model, &thread, T).unwrap();
     assert!(bound.high().unwrap().x > 12.5);
 }
+
+#[test]
+fn a_thread_measures_to_pappus_at_the_default_deflection() {
+    let mut model = Model::new();
+    let profile = rectangle(&mut model);
+    let thread =
+        ogeom::offset::make_helical_sweep(&mut model, &profile, z_axis(), 5.0, 4.0, false, 0.0, T)
+            .unwrap()
+            .shape;
+    let want = 4.0 * 4.0 * core::f64::consts::TAU * 11.0;
+    let v = volume_properties(&model, &thread, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((v - want).abs() < want * 1e-4, "{v} against {want}");
+}

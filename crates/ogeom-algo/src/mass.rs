@@ -538,23 +538,47 @@ fn integrate_face(
             ..
         } => {
             let (u0, u1, v0, v1) = *rect;
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let u_panels = (((u1 - u0) / QUARTER).ceil() as usize).max(1);
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let v_panels = (((v1 - v0) / QUARTER).ceil() as usize).max(1);
-            let mut failure = None;
-            for iu in 0..u_panels {
+            // Panels no wider than a quarter turn, and a spline's also cut
+            // at its knots.
+            let breaks = |lo: f64, hi: f64, knots: Option<&ogeom_math::KnotVector>| {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let panels = (((hi - lo) / QUARTER).ceil() as usize).max(1);
                 #[allow(clippy::cast_precision_loss)]
-                let (ua, ub) = (
-                    u0 + (u1 - u0) * iu as f64 / u_panels as f64,
-                    u0 + (u1 - u0) * (iu + 1) as f64 / u_panels as f64,
-                );
-                for iv in 0..v_panels {
-                    #[allow(clippy::cast_precision_loss)]
-                    let (va, vb) = (
-                        v0 + (v1 - v0) * iv as f64 / v_panels as f64,
-                        v0 + (v1 - v0) * (iv + 1) as f64 / v_panels as f64,
+                let mut out: Vec<f64> = (0..=panels)
+                    .map(|i| lo + (hi - lo) * i as f64 / panels as f64)
+                    .collect();
+                if let Some(knots) = knots {
+                    out.extend(
+                        knots
+                            .distinct()
+                            .into_iter()
+                            .map(|(k, _)| k)
+                            .filter(|k| *k > lo && *k < hi),
                     );
+                    out.sort_by(f64::total_cmp);
+                    out.dedup_by(|a, b| (*a - *b).abs() <= 1e-14);
+                }
+                out
+            };
+            // An extruded curve's knots stand across the sweep, in `u`.
+            fn curve_knots(curve: &ogeom_geom::Curve) -> Option<&ogeom_math::KnotVector> {
+                match curve {
+                    ogeom_geom::Curve::BSpline(b) => Some(b.knots()),
+                    ogeom_geom::Curve::Trimmed(t) => curve_knots(t.basis()),
+                    _ => None,
+                }
+            }
+            let (u_knots, v_knots) = match surface {
+                ogeom_geom::SurfaceGeometry::BSpline(b) => (Some(b.u_knots()), Some(b.v_knots())),
+                ogeom_geom::SurfaceGeometry::Extrusion(e) => (curve_knots(e.curve()), None),
+                _ => (None, None),
+            };
+            let (u_breaks, v_breaks) = (breaks(u0, u1, u_knots), breaks(v0, v1, v_knots));
+            let mut failure = None;
+            for uw in u_breaks.windows(2) {
+                let (ua, ub) = (uw[0], uw[1]);
+                for vw in v_breaks.windows(2) {
+                    let (va, vb) = (vw[0], vw[1]);
                     // Nested Gauss with the callback fed directly: the outer
                     // integrand returns 0 and the samples carry the payload,
                     // with the weights recovered from unit integrands.
@@ -713,6 +737,11 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
             | ogeom_geom::SurfaceGeometry::Cone(_)
             | ogeom_geom::SurfaceGeometry::Sphere(_)
             | ogeom_geom::SurfaceGeometry::Torus(_)
+            // A spline trimmed by its chart's own borders: a rectangle,
+            // integrated knot span by knot span, where each span is one
+            // polynomial piece the Gauss rule takes exactly.
+            | ogeom_geom::SurfaceGeometry::BSpline(_)
+            | ogeom_geom::SurfaceGeometry::Extrusion(_)
     );
     if !analytic {
         return Ok(None);
@@ -1117,6 +1146,17 @@ fn exact_wire(
                         let b = pcurve.point_at(range.1, tol)?;
                         segments.push((a, b));
                     }
+                    // A trim fitted along a chart column or row (a rail a
+                    // strip adopted from its neighbour): every control
+                    // point on the one line makes it that segment.
+                    ogeom_geom::PlanarCurve::BSpline(spline)
+                        if along_one_chart_line(spline.control_points()) =>
+                    {
+                        use ogeom_geom::Curve2d as _;
+                        let a = pcurve.point_at(range.0, tol)?;
+                        let b = pcurve.point_at(range.1, tol)?;
+                        segments.push((a, b));
+                    }
                     ogeom_geom::PlanarCurve::Circle(arc) => {
                         use ogeom_geom::Curve2d as _;
                         // One circle's arcs, however many pieces the
@@ -1440,6 +1480,22 @@ fn quadratic_form(m: Matrix3, v: Vector) -> f64 {
         }
     }
     sum
+}
+
+/// Whether a chart curve's control points all stand on one column or one
+/// row of the chart, to rounding against its extent.
+fn along_one_chart_line(control: &[ogeom_math::Weighted<ogeom_math::Point2>]) -> bool {
+    let points: Vec<ogeom_math::Point2> = control.iter().map(|w| w.point()).collect();
+    let Some(first) = points.first() else {
+        return false;
+    };
+    let extent = points
+        .iter()
+        .map(|p| p.distance(*first))
+        .fold(0.0_f64, f64::max);
+    let eps = 1e-9 * extent.max(1.0);
+    points.iter().all(|p| (p.x - first.x).abs() <= eps)
+        || points.iter().all(|p| (p.y - first.y).abs() <= eps)
 }
 
 #[cfg(test)]
