@@ -628,6 +628,28 @@ fn inward_normals(base: &[Point], apex: Point) -> Vec<Vector> {
         .collect()
 }
 
+/// The edge whose two vertices lie on the line through `a` and `b`: what
+/// is left of a pyramid's edge once its apex is rounded, where a midpoint
+/// search can land on a shorter edge beside the patch.
+fn edge_along(model: &Model, shape: &Shape, a: Point, b: Point) -> Shape {
+    let d = b - a;
+    let on_line = |p: Point| {
+        let w = p - a;
+        (w - d * (w.dot(d) / d.dot(d))).magnitude() < 1e-6
+    };
+    explore_unique(model, shape, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let ends = model.children_of(e).unwrap();
+            ends.len() == 2
+                && ends
+                    .iter()
+                    .all(|v| on_line(model.node(v).unwrap().data().as_vertex().unwrap().point))
+        })
+        .unwrap()
+}
+
 /// A pyramid's apex rounded: the solid, the vertex, and the volume before.
 fn pyramid_apex(model: &mut Model, base: &[Point], apex: Point) -> (Shape, Shape) {
     let polygon = ogeom::algo::make_polygon(model, base, true, T)
@@ -777,7 +799,8 @@ fn round_vertex_rounds_an_apex_no_ball_touches() {
 /// oblique apex the corner's sphere clears the fourth plane by a few
 /// hundredths of a millimetre, so the envelope keeps a sliver of that
 /// plane beside the patch, and the flush fillet that meets the sliver runs
-/// a straight end tangent to the sphere's rim there.
+/// a straight end tangent to the sphere's rim there, at twice the radius
+/// as at the first.
 #[test]
 fn round_vertex_rounds_flat_and_oblique_apexes_no_ball_touches() {
     let r = 1.5;
@@ -787,7 +810,11 @@ fn round_vertex_rounds_flat_and_oblique_apexes_no_ball_touches() {
         Point::new(10.0, 4.0, 0.0),
         Point::new(-10.0, 4.0, 0.0),
     ];
-    for apex in [Point::new(0.0, 0.0, 8.0), Point::new(3.0, 1.0, 15.0)] {
+    for (apex, r) in [
+        (Point::new(0.0, 0.0, 8.0), r),
+        (Point::new(3.0, 1.0, 15.0), r),
+        (Point::new(3.0, 1.0, 15.0), 2.0 * r),
+    ] {
         let mut model = Model::new();
         let (pyramid, vertex) = pyramid_apex(&mut model, &base, apex);
         let rounded = ogeom::fillet::round_vertex(&mut model, &pyramid, &vertex, r, T)
@@ -807,14 +834,14 @@ fn round_vertex_rounds_flat_and_oblique_apexes_no_ball_touches() {
         }
         let mut solid = rounded;
         for corner in &base {
-            let edge = edge_near(&model, &solid, *corner + (apex - *corner) * 0.5);
+            let edge = edge_along(&model, &solid, *corner, apex);
             solid = ogeom::fillet::fillet_edge(&mut model, &solid, &edge, r, T)
                 .unwrap()
                 .shape;
             assert!(ogeom::algo::check(&model, &solid, T).unwrap().is_valid());
         }
         let (balls, drums) = balls_and_drums(&model, &solid);
-        assert_eq!((balls.len(), drums.len()), (2, 5), "{apex:?}");
+        assert_eq!((balls.len(), drums.len()), (2, 5), "{apex:?} at {r}");
     }
 }
 
