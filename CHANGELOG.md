@@ -11,6 +11,15 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **The middle path of a pipe-like solid.** `middle_path` walks a solid
+  from one named face to another and returns the curve through its
+  cross-section centroids: a line for a straight tube, a fitted spline
+  otherwise. Each point is the centroid of a section cut square to the
+  path, holes subtracted. The result carries the measured deviation, held
+  under the tolerance asked for.
+
 ## [0.3.3] - 2026-09-25
 
 A patch release with no API change; `cargo semver-checks` finds nothing
