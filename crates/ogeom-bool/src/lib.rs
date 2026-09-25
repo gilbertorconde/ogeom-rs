@@ -1801,9 +1801,11 @@ fn fill(
                         // the crossing found against the edge by that again.
                         let weld =
                             (reach + honest(section.tolerance, tol)).max(tol.confusion() * 1e2);
+                        let mut at_end: Option<(f64, Point)> = None;
                         for end in [e.crange.0, e.crange.1] {
                             let vertex = e.curve.point_at(end, tol)?;
                             if vertex.distance(crossing.point) <= weld + crossing.reach {
+                                at_end = Some((end, vertex));
                                 let snapped =
                                     ogeom_algo::project_on_curve(&section.curve, vertex, 64, tol)?;
                                 if snapped.distance <= weld + crossing.reach {
@@ -1869,6 +1871,26 @@ fn fill(
                                 if foot.distance <= width {
                                     on_a = end;
                                     on_b = onto_range(foot.parameter, &e.curve, e.crange, tol);
+                                    // A touch at the edge's own end vertex
+                                    // is that vertex: a section tangent to
+                                    // the edge there runs along it for a
+                                    // stretch either side, stops somewhere
+                                    // on that stretch, and split where it
+                                    // stopped the edge keeps a sliver the
+                                    // face across the vertex never has.
+                                    if let Some((end_b, vertex)) = at_end
+                                        && tip.distance(vertex) <= width.min(tol.confusion() * 1e5)
+                                    {
+                                        on_b = end_b;
+                                        let gap = tip.distance(vertex);
+                                        if gap > tol.confusion() * 1e2 {
+                                            junctions.push(Junction {
+                                                at: vertex,
+                                                reach: gap + tol.confusion() * 1e2,
+                                                onto_vertex: true,
+                                            });
+                                        }
+                                    }
                                     // Along the edge the touch is known only
                                     // as far as the two curves stay together:
                                     // a rail grazing a bore is met there by
@@ -1935,6 +1957,7 @@ fn fill(
                                     junctions.push(Junction {
                                         at: foot.point,
                                         reach: foot.distance + tol.confusion() * 1e2,
+                                        onto_vertex: false,
                                     });
                                 }
                             }
@@ -3440,6 +3463,10 @@ struct Junction {
     /// How far a strand end may sit from `at` and still be this junction:
     /// the cluster's span plus the rail's own reach.
     reach: f64,
+    /// Whether `at` is an edge's own end vertex that a section tangent to
+    /// the edge was welded onto: the section's chart image is bent onto it
+    /// rather than left where the section stopped.
+    onto_vertex: bool,
 }
 
 /// Junctions whose balls overlap, merged transitively into one junction
@@ -3518,7 +3545,11 @@ fn merge_junctions(junctions: Vec<Junction>) -> Vec<Junction> {
         if reach > widest * 4.0 {
             out.extend(members.iter().map(|&m| junctions[m]));
         } else {
-            out.push(Junction { at, reach });
+            out.push(Junction {
+                at,
+                reach,
+                onto_vertex: members.iter().any(|&m| junctions[m].onto_vertex),
+            });
         }
     }
     out
@@ -3562,6 +3593,7 @@ fn pave_junctions(
                 junctions.push(Junction {
                     at: cluster.at,
                     reach: cluster.span + cluster.honesty.max(floor),
+                    onto_vertex: false,
                 });
             }
         }
@@ -4185,7 +4217,11 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     if *DEBUG_WIRE {
                         eprintln!("JUNCTION from vertex at {at:?} radius {radius:.3e}");
                     }
-                    junctions.push(Junction { at, reach: radius });
+                    junctions.push(Junction {
+                        at,
+                        reach: radius,
+                        onto_vertex: false,
+                    });
                 }
             }
         }
@@ -4850,6 +4886,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     junctions.push(Junction {
                         at: from.midpoint(to),
                         reach: from.distance(to) / 2.0 + tol.confusion() * 1e2,
+                        onto_vertex: false,
                     });
                 }
             }
@@ -4901,6 +4938,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     junctions.push(Junction {
                         at: from.midpoint(to),
                         reach: from.distance(to) / 2.0 + tol.confusion() * 1e2,
+                        onto_vertex: false,
                     });
                 }
                 for (i, st) in strands.iter_mut().enumerate() {
@@ -5205,6 +5243,9 @@ struct Rebuild<'m> {
     junction_bins: bins::Bins,
     /// The widest reach of any junction.
     junction_reach: f64,
+    /// Vertices minted from junctions at an edge's own end vertex, which a
+    /// tangent section's chart image is bent onto.
+    onto_vertex: std::collections::HashSet<ogeom_topo::TShapeId>,
 }
 
 impl Rebuild<'_> {
@@ -5238,6 +5279,9 @@ impl Rebuild<'_> {
                     shape
                 }
             };
+            if junction.onto_vertex {
+                self.onto_vertex.insert(shape.node());
+            }
             // The junction owns its span, and an end welded in from the rim
             // widens it by what it actually sat off by, as any weld does.
             let gap = junction.at.distance(p);
@@ -5703,18 +5747,35 @@ fn build_sub_edge(
             let v1 = rebuild.vertex(to, tol);
             let model = &mut *rebuild.model;
             let built = make_edge_between(model, s.curve.clone(), (f0, f1), &v0, &v1, tol)?.shape;
+            // A piece welded into a junction some way off its own end (a
+            // section tangent to an edge at the edge's vertex, stopped
+            // where it began to hug the edge) owns that gap as the vertex
+            // does: the face it bounds meets its neighbour there only that
+            // closely, in its chart as in space.
+            let at = |v: &Shape| {
+                model
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex())
+                    .map(|d| d.point)
+            };
+            let ends = [at(&v0), at(&v1)];
+            let welded = [(ends[0], from), (ends[1], to)]
+                .iter()
+                .filter_map(|(v, p)| v.map(|v| v.distance(*p)))
+                .fold(0.0, f64::max);
+            let own = s.tolerance.max(welded);
             // A fitted section's pieces and their ends own the section's
             // stated slop, exactly as a tolerant boundary's do: the ring
             // they close alternates between the two, and both sides must
             // meet at the junction's own resolution.
-            if s.tolerance > tol.confusion() {
+            if own > tol.confusion() {
                 if let Some(node) = model.node_mut(&built)
                     && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
                 {
-                    data.tolerance = data.tolerance.widen_to(s.tolerance);
+                    data.tolerance = data.tolerance.widen_to(own);
                 }
                 for v in [&v0, &v1] {
-                    rebuild.widen(v, s.tolerance)?;
+                    rebuild.widen(v, own)?;
                 }
             }
             let model = &mut *rebuild.model;
@@ -5732,6 +5793,24 @@ fn build_sub_edge(
             let folded = fold_inside(mid, &face.surface, &trim);
             let shifted =
                 pcurve.transformed(&ogeom_math::Transform2::translation(folded - mid), tol)?;
+            // The chart image ends where the vertex is, as the edge does in
+            // space to its tolerance: a welded end left where the section
+            // stopped leaves the face's outline open by the weld in its
+            // chart, wider there than any later arrangement's snap.
+            let loose = s.tolerance.max(tol.confusion() * 1e2);
+            let bent = [
+                rebuild.onto_vertex.contains(&v0.node()),
+                rebuild.onto_vertex.contains(&v1.node()),
+            ];
+            let targets = [
+                ends[0].filter(|v| bent[0] && v.distance(from) > loose),
+                ends[1].filter(|v| bent[1] && v.distance(to) > loose),
+            ];
+            let shifted = if targets.iter().any(Option::is_some) {
+                pcurve_onto_ends(&shifted, (f0, f1), &face.surface, targets, tol)?
+            } else {
+                shifted
+            };
             ogeom_algo::attach_pcurve(
                 model,
                 &built,
@@ -5743,6 +5822,69 @@ fn build_sub_edge(
             Ok(built)
         }
     }
+}
+
+/// A pcurve over `range` bent at its ends onto the chart points of
+/// `targets`, where given: each end's correction fades linearly to nothing
+/// at the other end, and the result is refitted at the same parameters, so
+/// the image stays same-parameter with its edge to the correction's size.
+fn pcurve_onto_ends(
+    pcurve: &PlanarCurve,
+    range: (f64, f64),
+    surface: &SurfaceGeometry,
+    targets: [Option<Point>; 2],
+    tol: Tolerances,
+) -> OgeomResult<PlanarCurve> {
+    const SAMPLES: u32 = 32;
+    let ts: Vec<f64> = (0..=SAMPLES)
+        .map(|i| range.0 + (range.1 - range.0) * f64::from(i) / f64::from(SAMPLES))
+        .collect();
+    let mut points = ts
+        .iter()
+        .map(|t| pcurve.point_at(*t, tol))
+        .collect::<OgeomResult<Vec<Point2>>>()?;
+    let last = points.len() - 1;
+    for (k, target) in targets.iter().enumerate() {
+        let Some(target) = target else {
+            continue;
+        };
+        let end = points[if k == 0 { 0 } else { last }];
+        let foot = ogeom_algo::project_on_surface_from(surface, *target, (end.x, end.y), tol)?;
+        let raw = Point2::new(foot.parameters.0, foot.parameters.1);
+        // The foot may land a turn away from the end on a periodic chart,
+        // whether or not the surface's wrapper says it is periodic; a
+        // shifted candidate counts where the surface agrees it is the foot.
+        let turn = core::f64::consts::TAU;
+        let mut shifts = period_shifts(surface);
+        for du in [-turn, 0.0, turn] {
+            for dv in [-turn, 0.0, turn] {
+                shifts.push((du, dv));
+            }
+        }
+        let onto = shifts
+            .into_iter()
+            .map(|(du, dv)| Point2::new(raw.x + du, raw.y + dv))
+            .filter(|c| {
+                surface
+                    .point_at(c.x, c.y, tol)
+                    .is_ok_and(|q| q.distance(foot.point) <= tol.confusion() * 1e2)
+            })
+            .min_by(|a, b| {
+                a.distance(end)
+                    .partial_cmp(&b.distance(end))
+                    .unwrap_or(core::cmp::Ordering::Equal)
+            })
+            .unwrap_or(raw);
+        let delta = onto - end;
+        for (i, p) in points.iter_mut().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let along = i as f64 / last as f64;
+            let weight = if k == 0 { 1.0 - along } else { along };
+            *p += delta * weight;
+        }
+    }
+    let fitted = ogeom_geom::fit::fit_points_2d_at(&ts, &points, 3, tol.confusion() * 10.0, tol)?;
+    Ok(PlanarCurve::BSpline(fitted.curve))
 }
 
 /// Sew kept pieces, demand closure, and nest shells into solids and voids.
@@ -5813,6 +5955,7 @@ fn assemble_result(
         junctions: fused.junctions.iter().map(|j| (*j, None)).collect(),
         junction_bins,
         junction_reach,
+        onto_vertex: std::collections::HashSet::new(),
     };
     let mut faces = Vec::new();
     let mut kept_sources: std::collections::HashSet<Shape> = std::collections::HashSet::new();

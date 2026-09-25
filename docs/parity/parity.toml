@@ -1117,8 +1117,12 @@ and its compartment bounded by the planes through the centre and each \
 pair of touch points, so each band's end section is the ball's own; \
 `fillet_edges` closes such a corner, and the bands one at a time with \
 the corner tool after agree with it to rounding when the ruling's band \
-goes first. Owed: a straight band and a rim arc's band one at a time \
-into such a corner, where the second band's cut does not close. The corner tool rounds any convex planar vertex. \
+goes first, or when the rim arc's band goes first: the straight band's \
+section through the rim's torus runs tangent to the torus's end meridian \
+into the corner, and ends at that vertex. Owed: the straight band before \
+the rim arc's, where the rim's section is fitted to a few tenths of a \
+micron and hugs the straight band's cap arc and the meridian both, so its \
+cut does not close. The corner tool rounds any convex planar vertex. \
 Where one ball touches every face (a square or oblique trihedral corner, \
 a square pyramid's four-edged apex), its block is the polyhedron of the N \
 host planes and the N planes through the ball's centre square to the \

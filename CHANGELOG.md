@@ -129,6 +129,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A straight band after a rim arc's band could not close at a curved
+  corner.** Its section through the rim's torus runs tangent to the
+  torus's end meridian into the corner, stopped short of the vertex, and
+  split the meridian into a sliver. A tangent touch at an edge's end is
+  now that end's vertex, and the section's chart image is bent onto it.
 - **A flush fillet beside a rounded apex could fail to close.** A straight
   band end tangent to the corner sphere's rim was read as running along
   the rim for a short stretch, which split the rim at a vertex the band

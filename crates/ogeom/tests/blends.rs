@@ -1047,6 +1047,48 @@ fn a_curved_corner_closes_the_same_way_round_either_order() {
     assert!((a - b).abs() < 1e-9 * a, "{a} one call, {b} one at a time");
 }
 
+/// The rim arc's band first, then the straight band and the ruling's in
+/// either order: the straight band's section through the rim's torus runs
+/// tangent to the torus's end meridian into the corner below the rim, and
+/// ends at that vertex. The corner tool then closes the same solid the
+/// ruling-first order does.
+#[test]
+fn a_curved_corner_closes_with_the_rim_s_band_first() {
+    let fine = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
+    let mut volumes = Vec::new();
+    for order in [[2, 0, 1], [1, 0, 2], [1, 2, 0]] {
+        let mut model = Model::new();
+        let (part, corner, mids) = shaved_cube(&mut model);
+        let v = vertex_near(&model, &part, corner);
+        let mut current = part.clone();
+        for i in order {
+            let live = edge_near(&model, &current, mids[i]);
+            current = ogeom::fillet::fillet_edge(&mut model, &current, &live, 1.0, T)
+                .unwrap_or_else(|e| panic!("{order:?} at {i}: {e}"))
+                .shape;
+            let diagnosis = ogeom::algo::check(&model, &current, T).unwrap();
+            assert!(
+                diagnosis.is_valid(),
+                "{order:?} at {i}: {:?}",
+                diagnosis.problems
+            );
+        }
+        let rounded = ogeom::fillet::round_vertex(&mut model, &current, &v, 1.0, T)
+            .unwrap_or_else(|e| panic!("{order:?} corner: {e}"))
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &rounded, T).unwrap();
+        assert!(diagnosis.is_valid(), "{order:?}: {:?}", diagnosis.problems);
+        volumes.push(
+            ogeom::algo::volume_properties(&model, &rounded, fine, T)
+                .unwrap()
+                .mass,
+        );
+    }
+    for v in &volumes {
+        assert!((v - volumes[0]).abs() < 1e-7 * volumes[0], "{volumes:?}");
+    }
+}
+
 #[test]
 fn a_wall_meeting_a_drum_along_a_ruling_blends_exactly() {
     // The side x = 0 meets the drum along a vertical ruling: every section
