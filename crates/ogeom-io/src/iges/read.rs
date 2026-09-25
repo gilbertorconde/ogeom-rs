@@ -1347,6 +1347,32 @@ impl<'a> Reader<'a> {
             SurfaceGeometry::Cone(c) => c.cone().half_angle(),
             _ => 0.0,
         };
+        // A tabulated cylinder's parameters are both fractions: of its
+        // directrix's run and of the generator. A surface of revolution's
+        // are its generatrix's own parameter and the angle turned from the
+        // start angle; a line's own runs over [0, 1], a spline's is its own.
+        let swept = match (kind, &surface) {
+            (122, SurfaceGeometry::Extrusion(e)) => {
+                let (lo, hi) = ogeom_geom::Curve3d::domain(e.curve());
+                let extent = ogeom_geom::Surface::domain(&surface).1;
+                Some(((lo, hi - lo), (extent.0, extent.1 - extent.0), false))
+            }
+            (120, SurfaceGeometry::Revolution(r)) => {
+                let generatrix = self.entity(surface_de)?.at(1).int();
+                let (lo, hi) = ogeom_geom::Curve3d::domain(r.curve());
+                match self.entity(generatrix)?.kind {
+                    110 => Some(((lo, hi - lo), (0.0, 1.0), true)),
+                    126 => Some(((0.0, 1.0), (0.0, 1.0), true)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let start_angle = if kind == 120 {
+            self.entity(surface_de)?.at(2).real()
+        } else {
+            0.0
+        };
         let map = |p: ogeom_math::Point2| -> Option<ogeom_math::Point2> {
             use ogeom_math::Point2 as P;
             // The parameter-space curve was read as a model-space one and
@@ -1359,6 +1385,10 @@ impl<'a> Reader<'a> {
                 194 => Some(P::new(u.to_radians(), v * scale * half_angle.cos())),
                 196 => Some(P::new(u.to_radians(), v.to_radians())),
                 198 => Some(P::new((360.0 - v).to_radians(), u.to_radians())),
+                122 => swept.map(|((u0, du), (v0, dv), _)| P::new(u0 + du * u, v0 + dv * v)),
+                // The generatrix's parameter in `u`, the angle in `v`; the
+                // surface was built with the start angle turned in.
+                120 => swept.map(|((u0, du), _, _)| P::new(v - start_angle, u0 + du * u)),
                 _ => None,
             }
         };
@@ -3394,6 +3424,89 @@ mod tests {
             let (a, b) = (
                 curve.point_at(*t0, T).unwrap(),
                 curve.point_at(*t1, T).unwrap(),
+            );
+            assert!(a.distance(at_from) < 1e-6, "{a:?} against {at_from:?}");
+            assert!(b.distance(at_to) < 1e-6, "{b:?} against {at_to:?}");
+        }
+    }
+
+    /// A tabulated cylinder's trim is in fractions of its directrix and
+    /// generator; a surface of revolution's in its generatrix's own
+    /// parameter (a line's over [0, 1]) and the angle turned.
+    #[test]
+    fn a_parameter_space_trim_lifts_through_a_swept_surface() {
+        let on_surface = |surface: i64| {
+            entity(
+                142,
+                0,
+                vec![
+                    Value::Int(0),
+                    Value::Int(surface),
+                    Value::Int(3),
+                    Value::Int(0),
+                    Value::Int(0),
+                ],
+            )
+        };
+        // 122: the directrix (0,0,0)-(10,0,0), generator to (0,0,4): the
+        // parameters (0.5, 0) and (0.5, 1) are (5,0,0) and (5,0,4).
+        let tabulated = entity(
+            122,
+            0,
+            vec![
+                Value::Int(7),
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(4.0),
+            ],
+        );
+        // 120: the axis along z through the origin, the generatrix the
+        // line (2,0,0)-(2,0,6) turned from 0 to a quarter turn: (0, 0) is
+        // (2,0,0) and (1, pi/2) is (0,2,6).
+        let revolved = entity(
+            120,
+            0,
+            vec![
+                Value::Int(9),
+                Value::Int(7),
+                Value::Real(0.0),
+                Value::Real(core::f64::consts::FRAC_PI_2),
+            ],
+        );
+        let cases = [
+            (
+                tabulated,
+                line([0.0, 0.0, 0.0], [10.0, 0.0, 0.0]),
+                [0.5, 0.0],
+                [0.5, 1.0],
+                Point::new(5.0, 0.0, 0.0),
+                Point::new(5.0, 0.0, 4.0),
+            ),
+            (
+                revolved,
+                line([2.0, 0.0, 0.0], [2.0, 0.0, 6.0]),
+                [0.0, 0.0],
+                [1.0, core::f64::consts::FRAC_PI_2],
+                Point::new(2.0, 0.0, 0.0),
+                Point::new(0.0, 2.0, 6.0),
+            ),
+        ];
+        for (surface, curve, from, to, at_from, at_to) in cases {
+            let deck = file(vec![
+                (1, surface),
+                (3, line([from[0], from[1], 0.0], [to[0], to[1], 0.0])),
+                (5, on_surface(1)),
+                (7, curve),
+                (9, line([0.0, 0.0, 0.0], [0.0, 0.0, 1.0])),
+            ]);
+            let mut reader = reader(&deck);
+            let segments = reader.boundary_segments(5).unwrap();
+            let [(lifted, (t0, t1))] = segments.as_slice() else {
+                panic!("one segment");
+            };
+            let (a, b) = (
+                lifted.point_at(*t0, T).unwrap(),
+                lifted.point_at(*t1, T).unwrap(),
             );
             assert!(a.distance(at_from) < 1e-6, "{a:?} against {at_from:?}");
             assert!(b.distance(at_to) < 1e-6, "{b:?} against {at_to:?}");

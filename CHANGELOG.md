@@ -86,7 +86,8 @@ bump may break the API and a patch bump may not.
 - **IGES trims on analytic surfaces.** A trim given only in the
   parameters of a plane, cylinder, cone, sphere or torus is lifted through
   the format's parameterization, and those surfaces take the reference
-  direction the file names for where their angle starts.
+  direction the file names for where their angle starts. So is one on a
+  tabulated cylinder, and on a surface of revolution of a line or spline.
 - **Remodelling.** `restate_geometry` rebuilds a solid with its surfaces
   and curves restated by the caller, every trim re-derived.
   `restrict_degree` refits every spline above a degree at that degree,
