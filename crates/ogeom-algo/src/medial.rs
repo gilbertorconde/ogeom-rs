@@ -10,11 +10,11 @@
 //! exact: no reflex vertex, so no split events, so every branch is a
 //! straight segment between circumcentre-like meets.
 //!
-//! Everything else is refused by name: a face with holes, a reflex corner,
-//! a curved boundary. Each of those changes the mathematics (holes and
-//! reflex corners introduce split events, arcs introduce parabolic
-//! bisectors), and a wrong axis is worse than a named refusal, because tool
-//! paths gouge quietly.
+//! Everything else is refused here by name: a face with holes, a reflex
+//! corner, a curved boundary. Each of those gives the axis curved branches
+//! (a reflex corner bisects its far walls along parabolas, an arc along
+//! conics), which straight segments cannot hold; [`medial_graph`](fn@crate::medial_graph)
+//! builds them exactly.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
@@ -38,9 +38,8 @@ pub struct MedialAxis {
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction), each
 /// by name: a face that is not planar, carries inner wires, has a curved
-/// edge, or turns a reflex corner. Those need split events and parabolic
-/// bisectors this construction does not have; refusing is the honest answer
-/// until it does.
+/// edge, or turns a reflex corner. Those have curved branches, which
+/// [`medial_graph`](fn@crate::medial_graph) builds.
 pub fn medial_axis(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<MedialAxis> {
     let Some(data) = model.node(face).and_then(|n| match n.data() {
         NodeData::Face(d) => Some(d.clone()),
@@ -63,8 +62,8 @@ pub fn medial_axis(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<
     if wires.len() != 1 {
         ogeom_bail!(
             Construction,
-            "a face with inner wires needs split events; the medial axis of \
-             a region with holes is not constructed yet"
+            "a face with inner wires has curved medial branches; \
+             medial_graph builds them"
         );
     }
     let mut ring: Vec<Point2> = Vec::new();
@@ -81,8 +80,8 @@ pub fn medial_axis(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<
         if !matches!(geometry, ogeom_geom::Curve::Line(_)) {
             ogeom_bail!(
                 Construction,
-                "a curved boundary bisects along parabolas; the medial axis \
-                 of arcs is not constructed yet"
+                "a curved boundary bisects along conics; medial_graph \
+                 builds them"
             );
         }
         let (t0, t1) = if edge.orientation() == ogeom_topo::Orientation::Reversed {
@@ -110,8 +109,8 @@ pub fn medial_axis(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<
         if cross < -tol.confusion() {
             ogeom_bail!(
                 Construction,
-                "a reflex corner needs split events; the medial axis of a \
-                 non-convex region is not constructed yet"
+                "a reflex corner bisects along parabolas; medial_graph \
+                 builds them"
             );
         }
     }

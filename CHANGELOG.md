@@ -38,6 +38,14 @@ bump may break the API and a patch bump may not.
   pieces: each side runs on straight past the corner, is trimmed by the
   mitre plane and the pieces are fused. This was refused.
 
+- **The medial axis of any planar face.** `medial_graph` returns the
+  axis of a face with holes, reflex corners and curved edges as a graph of
+  branches, each the exact bisector of its two boundary elements: lines,
+  parabolas, hyperbolas and ellipses for segments, corners and circular
+  arcs, and a fitted curve held to the tolerance for any other edge. Each
+  branch point carries its clearance, and every branch is checked to keep
+  no other boundary element nearer than its own two.
+
 ### Fixed
 
 - **A pipe shell failed along an arc that runs on into a straight line.**

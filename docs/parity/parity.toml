@@ -1569,16 +1569,14 @@ tests = ["crates/ogeom-math/src/conic.rs"]
 id = "algo.medial-axis"
 title = "The medial axis of a planar region"
 crate = "ogeom-algo"
-verdict = "partial"
-restriction = """Convex polygonal faces, exactly: the shrinking-polygon
-construction, held to the rectangle's roof line and the 3–4–5 triangle's
-incenter and inradius. Holes, reflex corners and curved boundaries are
-refused by name: each changes the mathematics (split events, parabolic
-bisectors), and a wrong axis gouges tool paths quietly. The refusals are
-the worklist if a caller ever needs the general region."""
+verdict = "covered"
 claims = ["MAT_*", "MAT2d_*", "BRepMAT2d_*"]
-symbols = ["ogeom_algo::medial_axis", "ogeom_algo::MedialAxis"]
-tests = ["crates/ogeom-algo/tests/medial.rs"]
+symbols = [
+    "ogeom_algo::medial_axis", "ogeom_algo::MedialAxis",
+    "ogeom_algo::medial_graph", "ogeom_algo::MedialGraph",
+    "ogeom_algo::MedialBranch", "ogeom_algo::MedialVertex", "ogeom_algo::MedialSite",
+]
+tests = ["crates/ogeom-algo/tests/medial.rs", "crates/ogeom-algo/tests/medial_graph.rs"]
 
 [[capability]]
 id = "mesh.hatching"

@@ -23,6 +23,7 @@ pub mod mass;
 mod mass_chart;
 pub mod measure;
 pub mod medial;
+pub mod medial_graph;
 pub mod mesh_solid;
 pub mod pcurve_fit;
 pub mod place;
@@ -60,6 +61,7 @@ pub use measure::{
     relative_deflection, shape_bounds, surface_bounds, vertex_bounds, widened_to_hold,
 };
 pub use medial::{MedialAxis, medial_axis};
+pub use medial_graph::{MedialBranch, MedialGraph, MedialSite, MedialVertex, medial_graph};
 pub use mesh_solid::{MeshSolid, MeshSolidOptions, MeshSolidReport, solid_from_mesh};
 pub use place::{copied, transformed};
 pub use primitive::{
