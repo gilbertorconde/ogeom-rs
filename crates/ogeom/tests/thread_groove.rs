@@ -208,3 +208,14 @@ fn a_six_turn_groove_cuts_from_a_bored_block() {
 fn a_seven_turn_groove_cuts_from_a_bored_block() {
     cuts_from_a_bored_block(7.0);
 }
+
+/// Five and three quarter turns end the cap where one flank, turned about
+/// the helix by the sweep, has just dipped inside the bore: the flank meets
+/// the bore's wall along a two-millimetre run at a grazing angle, too
+/// shallow for sampled cells to cross, found from where it leaves the
+/// flank's border.
+#[test]
+fn a_groove_whose_flank_just_dips_into_the_bore_cuts_from_it() {
+    cuts_from_a_bored_block(5.75);
+    cuts_from_a_bored_block(6.75);
+}

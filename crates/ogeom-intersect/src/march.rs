@@ -203,7 +203,81 @@ pub fn seeds(
             found.push(contact);
         }
     }
+    // A branch that runs in from a spline's border at a grazing angle can
+    // be thinner than the sampling's sag, and no pair of cells crosses on
+    // it. Where it meets the border it is a curve piercing a surface,
+    // which is found exactly: each border of each spline is intersected
+    // with the other surface, and every piercing seeds.
+    let apart = span(a).min(span(b)) / f64::from(u32::try_from(options.grid).unwrap_or(1));
+    for (from_a, border_of, other) in [(true, a, b), (false, b, a)] {
+        for (border, at) in spline_borders(border_of, tol) {
+            let Ok(met) = crate::intersect_curve_surface(
+                &border,
+                other,
+                crate::CurveSurfaceOptions::default(),
+                tol,
+            ) else {
+                continue;
+            };
+            for piercing in met.crossings {
+                let on_border = at(piercing.on_curve);
+                let start = if from_a {
+                    [
+                        on_border.0,
+                        on_border.1,
+                        piercing.on_surface.0,
+                        piercing.on_surface.1,
+                    ]
+                } else {
+                    [
+                        piercing.on_surface.0,
+                        piercing.on_surface.1,
+                        on_border.0,
+                        on_border.1,
+                    ]
+                };
+                let Some(contact) = correct(a, b, start, piercing.point, None, tol) else {
+                    continue;
+                };
+                if found
+                    .iter()
+                    .any(|c| c.point.distance(contact.point) <= apart)
+                {
+                    continue;
+                }
+                found.push(contact);
+            }
+        }
+    }
     Ok(found)
+}
+
+/// A border of a surface as a curve, and the map from the curve's
+/// parameter to the surface's.
+type Border = (ogeom_geom::Curve, Box<dyn Fn(f64) -> (f64, f64)>);
+
+/// The open borders of a spline surface.
+fn spline_borders(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<Border> {
+    let SurfaceGeometry::BSpline(spline) = surface else {
+        return Vec::new();
+    };
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let mut out: Vec<Border> = Vec::new();
+    if !surface.is_closed_u(tol) {
+        for u in [u0, u1] {
+            if let Ok(c) = spline.iso_u_curve(u, tol) {
+                out.push((ogeom_geom::Curve::BSpline(c), Box::new(move |t| (u, t))));
+            }
+        }
+    }
+    if !surface.is_closed_v(tol) {
+        for v in [v0, v1] {
+            if let Ok(c) = spline.iso_v_curve(v, tol) {
+                out.push((ogeom_geom::Curve::BSpline(c), Box::new(move |t| (t, v))));
+            }
+        }
+    }
+    out
 }
 
 /// Every branch of the intersection: seed, trace each, and keep the distinct
@@ -243,6 +317,12 @@ pub fn branches(
             && branch.points.len() >= 2
             && !is_fragment(&branch, options)
         {
+            // A branch whose middle lies on one already traced is that
+            // branch again, reached from a seed its trace stopped short of.
+            let middle = branch.points[branch.points.len() / 2];
+            if out.iter().any(|other| passes_near(other, middle, reach)) {
+                continue;
+            }
             out.push(branch);
         }
     }

@@ -103,6 +103,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A thread groove failed to cut from a bored block at some lengths.**
+  Where the sweep had turned a flank just inside the bore, the flank met
+  the bore's wall along a short run at a grazing angle, shallower than the
+  sampled cells could see, and that section was missed. Sections are now
+  also found from where they cross a spline's border, so 5.75 and 6.75
+  turns cut.
 - **Rebuilding a torus broke its trims.** `to_nurbs` and `baked_shape`
   took every seam for a `u` column, so a torus's `v` seam was given
   pcurves on the wrong edges of the chart and the face could not be
