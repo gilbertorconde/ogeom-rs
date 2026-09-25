@@ -129,6 +129,9 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A fillet on a prism's base edge was refused as too wide (#70).** The
+  check stepped into the reversed base face on the wrong side of the
+  edge. Each face's inner side is now read from the face itself.
 - **A rim blend beside a sphere's pole could not be built.** Where the
   ball's rail on the sphere passes over the pole while the rim does not,
   the sphere's leg was asked to be a band between two loops that both

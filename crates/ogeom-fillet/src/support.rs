@@ -726,10 +726,9 @@ pub(crate) fn ball_fits(
     for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
         for e in explore(model, &face, Filter::OfType(ShapeType::Edge))? {
             if same_occurrence(model, &e, edge, tol) {
-                // The walk as the face presents it: a reversed face walks
-                // its rings the other way.
-                let reversed = (e.orientation() == Orientation::Reversed)
-                    != (face.orientation() == Orientation::Reversed);
+                // The walk as the face presents it: exploring under the
+                // face composes its orientation into the edge's already.
+                let reversed = e.orientation() == Orientation::Reversed;
                 sides.push((face.clone(), reversed));
                 break;
             }
@@ -775,19 +774,41 @@ pub(crate) fn ball_fits(
         let (Some((s0, n0)), Some((s1, n1))) = (normal_at(face0, p)?, normal_at(face1, p)?) else {
             continue;
         };
-        // Into each face: the normal across the edge as the face walks it.
-        let into = |n: Vector, reversed: bool| -> Vector {
-            let walk = if reversed { -tangent } else { tangent };
-            let d = n.cross(walk);
-            let l = d.magnitude();
-            if l > 0.0 { d / l } else { d }
-        };
-        let (d0, d1) = (into(n0, *rev0), into(n1, *rev1));
         let turn = n0.dot(n1).clamp(-1.0, 1.0).acos();
         if turn <= tol.angular() * 1e3 {
             continue;
         }
         let setback = radius * (turn * 0.5).tan();
+        // Into each face: across the edge, square to the normal, on the
+        // side a hair's step from the edge lands inside the face. The walk
+        // the orientation flags imply is the first guess; the face itself
+        // settles it.
+        let into = |face: &Shape,
+                    surface: &SurfaceGeometry,
+                    n: Vector,
+                    reversed: bool|
+         -> OgeomResult<Option<Vector>> {
+            let walk = if reversed { -tangent } else { tangent };
+            let d = n.cross(walk);
+            let l = d.magnitude();
+            if l <= 0.0 {
+                return Ok(None);
+            }
+            let d = d / l;
+            let hair = (setback * 1e-3).max(tol.confusion() * 10.0);
+            for side in [d, -d] {
+                let (u, v) =
+                    ogeom_algo::project_on_surface(surface, p + side * hair, 16, tol)?.parameters;
+                if chart_holds(model, face, ogeom_math::Point2::new(u, v), tol)? {
+                    return Ok(Some(side));
+                }
+            }
+            Ok(None)
+        };
+        let (Some(d0), Some(d1)) = (into(face0, &s0, n0, *rev0)?, into(face1, &s1, n1, *rev1)?)
+        else {
+            continue;
+        };
         for (face, surface, step) in [(face0, &s0, d0), (face1, &s1, d1)] {
             let guess = p + step * setback;
             let found = ogeom_algo::project_on_surface(surface, guess, 16, tol)?;

@@ -151,3 +151,30 @@ fn a_concave_fillet_wider_than_its_floor_is_refused() {
         assert_eq!(result.is_ok(), fits, "radius {r}: {:?}", result.err());
     }
 }
+
+/// A 2 mm blend on every edge of a 20 x 20 x 10 prism fits everywhere: the
+/// faces beside each edge reach well past it, whichever way their
+/// orientation flags run (a prism's base face is its sketch, reversed).
+#[test]
+fn a_blend_on_every_edge_of_a_prism_fits() {
+    let mut model = Model::new();
+    let pts =
+        [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].map(|(x, y)| Point::new(x, y, 0.0));
+    let wire = make_polygon(&mut model, &pts, true, T).unwrap().shape;
+    let face = make_face(
+        &mut model,
+        PlaneSurface::new(Plane::new(ogeom::math::Frame::WORLD)).into(),
+        &[wire],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let block = make_prism(&mut model, &face, Vector::new(0.0, 0.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let blended = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &blended, T).unwrap().is_valid());
+}
