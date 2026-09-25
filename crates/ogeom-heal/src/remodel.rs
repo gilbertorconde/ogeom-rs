@@ -7,7 +7,7 @@
 //! cones, balls or tori as what they are: an extruded line or circle, a
 //! revolved line or circle.
 
-use ogeom_algo::{Built, project_on_surface, restate_geometry};
+use ogeom_algo::{Built, normals_oppose, project_on_surface, restate_geometry};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{
     ConeSurface, Curve, CylinderSurface, PlaneSurface, SphereSurface, Surface as _,
@@ -56,7 +56,7 @@ pub fn restrict_degree(
             );
         }
         let restated = SurfaceGeometry::BSpline(fitted.curve);
-        let flipped = turned(s, &restated, tol)?;
+        let flipped = normals_oppose(s, &restated, tol)?;
         Ok(Some((restated, flipped)))
     };
     let curve = |c: &Curve, range: (f64, f64)| -> OgeomResult<Option<(Curve, (f64, f64))>> {
@@ -108,7 +108,7 @@ pub fn swept_to_elementary(
                 return Ok(None);
             }
         }
-        let flipped = turned(s, &candidate, tol)?;
+        let flipped = normals_oppose(s, &candidate, tol)?;
         Ok(Some((candidate, flipped)))
     };
     let curve = |_: &Curve, _: (f64, f64)| -> OgeomResult<Option<(Curve, (f64, f64))>> { Ok(None) };
@@ -279,17 +279,4 @@ fn interior_samples(s: &SurfaceGeometry, n: usize, tol: Tolerances) -> OgeomResu
         }
     }
     Ok(out)
-}
-
-/// Whether `new`'s normal points against `old`'s, where they meet at the
-/// middle of `old`'s chart.
-fn turned(old: &SurfaceGeometry, new: &SurfaceGeometry, tol: Tolerances) -> OgeomResult<bool> {
-    let ((u0, u1), (v0, v1)) = old.domain();
-    // Off the exact middle: a revolution's middle can sit on its axis.
-    let (u, v) = (u0 + (u1 - u0) * 0.43, v0 + (v1 - v0) * 0.57);
-    let p = old.point_at(u, v, tol)?;
-    let n_old = old.normal_at(u, v, tol)?;
-    let at = project_on_surface(new, p, 16, tol)?.parameters;
-    let n_new = new.normal_at(at.0, at.1, tol)?;
-    Ok(n_old.vector().dot(n_new.vector()) < 0.0)
 }

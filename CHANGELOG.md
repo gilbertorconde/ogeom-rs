@@ -84,6 +84,11 @@ bump may break the API and a patch bump may not.
   `restrict_degree` refits every spline above a degree at that degree,
   within a tolerance. `swept_to_elementary` names an extruded or revolved
   line or circle as the plane, drum, cone, ball or torus it is.
+- **NURBS conversion within a tolerance.** `to_nurbs_within` converts a
+  solid exactly where a closed form exists and fits the rest (offset
+  surfaces, helices, offset curves) within the tolerance given, where
+  `to_nurbs` refuses. `SurfaceGeometry::fitted_bspline` fits any bounded
+  surface.
 
 ### Fixed
 

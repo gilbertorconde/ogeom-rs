@@ -482,35 +482,89 @@ impl crate::surface::BSplineSurface {
                 met: true,
             });
         }
-        if !(tolerance > 0.0 && tolerance.is_finite()) {
-            ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
-        }
-        let ((ua, ub), (va, vb)) = self.domain();
-        let mut samples = 16usize;
-        let mut best: Option<Fitted<Self>> = None;
-        for _ in 0..4 {
-            let mut rows: Vec<Vec<Point>> = Vec::with_capacity(samples + 1);
-            for j in 0..=samples {
+        grid_fitted(
+            |u, v| self.point_at(u, v, tol),
+            self.domain(),
+            max_degree,
+            tolerance,
+            tol,
+        )
+    }
+}
+
+/// A patch fitted at `degree` through a grid of `point` over `domain`, the
+/// grid doubled until the fit holds every sample to `tolerance` or the
+/// budget runs out; the best fit either way, its error measured at the
+/// samples.
+fn grid_fitted(
+    point: impl Fn(f64, f64) -> OgeomResult<Point>,
+    domain: ((f64, f64), (f64, f64)),
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<crate::surface::BSplineSurface>> {
+    if !(tolerance > 0.0 && tolerance.is_finite()) {
+        ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
+    }
+    let ((ua, ub), (va, vb)) = domain;
+    if ![ua, ub, va, vb].iter().all(|x| x.is_finite()) {
+        ogeom_bail!(Construction, "an unbounded surface cannot be fitted");
+    }
+    let mut samples = 16usize;
+    let mut best: Option<Fitted<crate::surface::BSplineSurface>> = None;
+    for _ in 0..4 {
+        let mut rows: Vec<Vec<Point>> = Vec::with_capacity(samples + 1);
+        for j in 0..=samples {
+            #[allow(clippy::cast_precision_loss)]
+            let v = va + (vb - va) * j as f64 / samples as f64;
+            let mut row = Vec::with_capacity(samples + 1);
+            for i in 0..=samples {
                 #[allow(clippy::cast_precision_loss)]
-                let v = va + (vb - va) * j as f64 / samples as f64;
-                let mut row = Vec::with_capacity(samples + 1);
-                for i in 0..=samples {
-                    #[allow(clippy::cast_precision_loss)]
-                    let u = ua + (ub - ua) * i as f64 / samples as f64;
-                    row.push(self.point_at(u, v, tol)?);
-                }
-                rows.push(row);
+                let u = ua + (ub - ua) * i as f64 / samples as f64;
+                row.push(point(u, v)?);
             }
-            let fitted = fit::fit_surface_grid(&rows, max_degree, tolerance, tol)?;
-            if fitted.met {
-                return Ok(fitted);
-            }
-            if best.as_ref().is_none_or(|b| fitted.error < b.error) {
-                best = Some(fitted);
-            }
-            samples *= 2;
+            rows.push(row);
         }
-        best.ok_or_else(|| ogeom_err!(Construction, "the patch could not be sampled"))
+        let fitted = fit::fit_surface_grid(&rows, degree, tolerance, tol)?;
+        if fitted.met {
+            return Ok(fitted);
+        }
+        if best.as_ref().is_none_or(|b| fitted.error < b.error) {
+            best = Some(fitted);
+        }
+        samples *= 2;
+    }
+    best.ok_or_else(|| ogeom_err!(Construction, "the patch could not be sampled"))
+}
+
+impl crate::surface::SurfaceGeometry {
+    /// This surface as a B-spline *fitted* over its own domain to a stated
+    /// tolerance: the approximation [`to_bspline`](Self::to_bspline)
+    /// refuses to make silently, for an offset surface or anything else
+    /// with no exact rational form. A grid of the surface's points is
+    /// fitted at degree three, the grid doubled until every sample is
+    /// within the tolerance or the budget runs out, and `error` is what
+    /// was measured. The fit's parameterization is its own, so a pcurve
+    /// spoken against the surface must be re-derived against the result.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+    /// the domain is unbounded or the tolerance is not a distance; as
+    /// [`fit::fit_surface_grid`].
+    pub fn fitted_bspline(
+        &self,
+        tolerance: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<Fitted<crate::surface::BSplineSurface>> {
+        use crate::traits::Surface as _;
+        grid_fitted(
+            |u, v| self.point_at(u, v, tol),
+            self.domain(),
+            3,
+            tolerance,
+            tol,
+        )
     }
 }
 

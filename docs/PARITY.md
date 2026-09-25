@@ -15,8 +15,8 @@ per package.
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 72 |
-| `partial` | 12 |
+| `covered` | 73 |
+| `partial` | 11 |
 | `divergent` | 9 |
 | `n/a` | 5 |
 
@@ -34,8 +34,7 @@ per package.
 - **algo.global-properties**: Volume, area, mass, centroid and principal moments of shapes · `covered` · 24 headers claimed
 - **algo.history**: Every operation emits history: what was generated, modified, deleted · `covered` · 1 header claimed
 - **algo.medial-axis**: The medial axis of a planar region · `covered` · 18 headers claimed
-- **algo.nurbs-conversion**: Converting a shape's geometry to NURBS form · `partial` · 2 headers claimed
-  - *restriction:* `to_nurbs` converts what has a closed NURBS form and refuses by name what does not: a helix has no exact NURBS representation, and the refusal is pinned so it cannot reach an exchange writer as a silent approximation (docs/PLAN.md, Decisions). The approximation exists only as an explicit ask: `Curve::fitted_bspline_over` fits a helix, an offset curve or a surface curve at a *stated* tolerance, same-parameter with the curve and the error reported as measured. The whole-shape conversion does not take a tolerance yet.
+- **algo.nurbs-conversion**: Converting a shape's geometry to NURBS form · `covered` · 2 headers claimed
 - **algo.place-copy**: Copying and transforming shapes, rigidly or generally, sharing what can be shared · `covered` · 10 headers claimed
 - **algo.point-projection**: Projecting a point onto a curve or a surface, nearest first, all minima found · `covered` · 26 headers claimed
 - **algo.primitives**: The primitive solids: box, wedge, cylinder, cone, sphere, torus, half-space, prism, revolution · `covered` · 23 headers claimed

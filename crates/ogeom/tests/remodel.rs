@@ -254,3 +254,62 @@ fn a_torus_rebuilds_with_both_seams() {
     let nurbs = ogeom::algo::to_nurbs(&mut model, &ring, T).unwrap().shape;
     holds(&model, &nurbs, 2.0 * core::f64::consts::PI.powi(2) * 5.0);
 }
+
+/// Planes and drums restated as offsets of a plane or drum set back by
+/// half a unit: the same points, spelt with no exact spline form.
+fn as_offset(s: &SurfaceGeometry) -> OgeomResult<Option<(SurfaceGeometry, bool)>> {
+    let back = 0.5;
+    let basis: SurfaceGeometry = match s {
+        SurfaceGeometry::Plane(p) => {
+            let f = p.plane().frame();
+            let moved = Frame::new(f.origin() - f.z().vector() * back, f.z(), f.x(), T)?;
+            let (u, v) = s.domain();
+            ogeom::geom::PlaneSurface::over(ogeom::math::Plane::new(moved), u, v)?.into()
+        }
+        SurfaceGeometry::Cylinder(c) => {
+            let cylinder = c.cylinder();
+            ogeom::geom::CylinderSurface::new(
+                ogeom::math::Cylinder::new(cylinder.frame(), cylinder.radius() - back, T)?,
+                c.domain().1,
+            )?
+            .into()
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some((
+        SurfaceGeometry::Offset(Box::new(ogeom::geom::OffsetSurface::new(basis, back)?)),
+        false,
+    )))
+}
+
+#[test]
+fn offset_faces_convert_to_nurbs_within_a_tolerance() {
+    for drum in [false, true] {
+        let mut model = Model::new();
+        let (solid, volume) = if drum {
+            (
+                ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 2.0, 5.0, T)
+                    .unwrap()
+                    .shape,
+                core::f64::consts::PI * 4.0 * 5.0,
+            )
+        } else {
+            (
+                ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+                    .unwrap()
+                    .shape,
+                1000.0,
+            )
+        };
+        let offset = ogeom::algo::restate_geometry(&mut model, &solid, &as_offset, &keep_curves, T)
+            .unwrap()
+            .shape;
+        assert!(kinds(&model, &offset).contains(&"other"));
+        assert!(ogeom::algo::to_nurbs(&mut model, &offset, T).is_err());
+        let nurbs = ogeom::algo::to_nurbs_within(&mut model, &offset, 1e-4, T)
+            .unwrap()
+            .shape;
+        assert!(kinds(&model, &nurbs).iter().all(|k| *k == "spline"));
+        holds(&model, &nurbs, volume);
+    }
+}

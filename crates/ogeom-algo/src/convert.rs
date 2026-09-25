@@ -52,6 +52,88 @@ pub fn to_nurbs(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResul
     rebuild(model, shape, None, Restate::Nurbs, tol)
 }
 
+/// Rebuild a solid with every surface and curve in B-spline form: exactly
+/// where a closed form exists, as [`to_nurbs`] does, and fitted within
+/// `tolerance` where none does (an offset surface, a helix, an offset
+/// curve), where [`to_nurbs`] refuses.
+///
+/// A fitted curve is same-parameter with the curve it replaces; a fitted
+/// surface has its own parameterization, and every trim on it is
+/// re-derived.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// `tolerance` is not a distance;
+/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if a fit cannot
+/// reach it; as [`to_nurbs`].
+pub fn to_nurbs_within(
+    model: &mut Model,
+    shape: &Shape,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if !(tolerance.is_finite() && tolerance > 0.0) {
+        ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
+    }
+    let surface = |s: &SurfaceGeometry| -> OgeomResult<Option<(SurfaceGeometry, bool)>> {
+        if let Ok(exact) = s.to_bspline(tol) {
+            return Ok(Some((exact.into(), false)));
+        }
+        let fitted = s.fitted_bspline(tolerance, tol)?;
+        if !fitted.met {
+            ogeom_bail!(
+                NotDone,
+                "a surface fitted as a spline stays {} away",
+                fitted.error
+            );
+        }
+        let fitted: SurfaceGeometry = fitted.curve.into();
+        let turned = normals_oppose(s, &fitted, tol)?;
+        Ok(Some((fitted, turned)))
+    };
+    let curve = |c: &Curve, range: (f64, f64)| -> OgeomResult<Option<(Curve, (f64, f64))>> {
+        if let Ok(exact) = c.to_bspline_over(range, tol) {
+            let exact: Curve = exact.into();
+            let domain = exact.domain();
+            return Ok(Some((exact, domain)));
+        }
+        let fitted = c.fitted_bspline_over(range, tolerance, tol)?;
+        if !fitted.met {
+            ogeom_bail!(
+                NotDone,
+                "a curve fitted as a spline stays {} away",
+                fitted.error
+            );
+        }
+        Ok(Some((fitted.curve.into(), range)))
+    };
+    rebuild(model, shape, None, Restate::With(&surface, &curve), tol)
+}
+
+/// Whether `new`'s normal points against `old`'s where they meet, read
+/// off the middle of `old`'s chart: what a restatement reports when it
+/// replaces a surface by one of the same points.
+///
+/// # Errors
+///
+/// As [`project_on_surface`](crate::project_on_surface), and if either
+/// surface has no normal there.
+pub fn normals_oppose(
+    old: &SurfaceGeometry,
+    new: &SurfaceGeometry,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let ((u0, u1), (v0, v1)) = old.domain();
+    // Off the exact middle: a revolution's middle can sit on its axis.
+    let (u, v) = (u0 + (u1 - u0) * 0.43, v0 + (v1 - v0) * 0.57);
+    let p = old.point_at(u, v, tol)?;
+    let n_old = old.normal_at(u, v, tol)?;
+    let at = crate::measure::project_on_surface(new, p, 16, tol)?.parameters;
+    let n_new = new.normal_at(at.0, at.1, tol)?;
+    Ok(n_old.vector().dot(n_new.vector()) < 0.0)
+}
+
 /// Rebuild a solid with its placements baked into the geometry, keeping
 /// every surface and curve in its own analytic vocabulary.
 ///
@@ -929,10 +1011,31 @@ fn bounded_to_face(
         SurfaceGeometry::Cone(c) => {
             ogeom_geom::ConeSurface::new(c.cone(), (v0 - margin, v1 + margin))?.into()
         }
+        // An offset over a plane's or drum's unbounded chart has no
+        // extent to fit or convert over; held to the face's window, it has.
+        SurfaceGeometry::Offset(o) if !finite(o.basis().domain()) => {
+            let ((du0, du1), (dv0, dv1)) = placed.domain();
+            ogeom_geom::TrimmedSurface::new(
+                placed.clone(),
+                ((u0 - margin).max(du0), (u1 + margin).min(du1)),
+                ((v0 - margin).max(dv0), (v1 + margin).min(dv1)),
+                tol,
+            )
+            .map_or_else(
+                |_| placed.clone(),
+                |t| SurfaceGeometry::Trimmed(Box::new(t)),
+            )
+        }
         other => other.clone(),
     };
     let window = bounded.domain();
     Ok((bounded, window))
+}
+
+fn finite(domain: ChartWindow) -> bool {
+    [domain.0.0, domain.0.1, domain.1.0, domain.1.1]
+        .iter()
+        .all(|x| x.is_finite() && x.abs() < 1e6)
 }
 
 /// A B-spline patch with its control points carried through an affine map.

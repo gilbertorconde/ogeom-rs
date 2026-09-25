@@ -959,19 +959,15 @@ tests = ["crates/ogeom-algo/src/place.rs"]
 id = "algo.nurbs-conversion"
 title = "Converting a shape's geometry to NURBS form"
 crate = "ogeom-algo"
-verdict = "partial"
-restriction = """`to_nurbs` converts what has a closed NURBS form and refuses \
-by name what does not: a helix has no exact NURBS representation, and the \
-refusal is pinned so it cannot reach an exchange writer as a silent \
-approximation (docs/PLAN.md, Decisions). The approximation exists only as an \
-explicit ask: `Curve::fitted_bspline_over` fits a helix, an offset curve or a \
-surface curve at a *stated* tolerance, same-parameter with the curve and the \
-error reported as measured. The whole-shape conversion does not take a \
-tolerance yet."""
+verdict = "covered"
 claims = ["BRepBuilderAPI_NurbsConvert", "BRepTools_NurbsConvertModification"]
-symbols = ["ogeom_algo::to_nurbs", "ogeom_geom::Curve::fitted_bspline_over"]
+symbols = [
+    "ogeom_algo::to_nurbs", "ogeom_algo::to_nurbs_within",
+    "ogeom_geom::Curve::fitted_bspline_over", "ogeom_geom::SurfaceGeometry::fitted_bspline",
+]
 tests = [
     "crates/ogeom-algo/src/convert.rs",
+    "crates/ogeom/tests/remodel.rs::offset_faces_convert_to_nurbs_within_a_tolerance",
     "crates/ogeom-geom/src/convert.rs::a_helix_fits_to_a_stated_tolerance_at_its_own_parameters",
 ]
 
