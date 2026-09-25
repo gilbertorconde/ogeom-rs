@@ -26,7 +26,7 @@ per package.
 
 ### ogeom-algo
 
-- **algo.bounds**: Guaranteed bounding boxes, axis-aligned and oriented, for curves, surfaces and shapes · `covered` · 16 headers claimed
+- **algo.bounds**: Guaranteed and tight bounding boxes, axis-aligned and oriented, for curves, surfaces and shapes · `covered` · 16 headers claimed
 - **algo.builders**: Building topology by hand: vertices, edges, wires, faces, shells, solids · `covered` · 35 headers claimed
 - **algo.classification**: Classifying a point against a solid or a face: in, out, or on, exactly · `covered` · 22 headers claimed
 - **algo.curve-sampling**: Sampling curves: by count, by spacing, by deflection, by abscissa · `covered` · 14 headers claimed

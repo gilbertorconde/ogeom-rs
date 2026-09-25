@@ -34,6 +34,7 @@ pub mod recognize;
 pub mod sew;
 pub mod sweep;
 pub mod text;
+pub mod tight;
 
 pub use build::{
     attach_pcurve, attach_seam, chain_wire_branches, edge_vertices, find_plane, is_shell_closed,
@@ -77,3 +78,4 @@ pub use recognize::{Canonical, Recognized, recognize_points};
 pub use sew::{Sewn, make_wire_unordered, order_edges, sew};
 pub use sweep::{make_prism, make_prism_tapered, make_revolution};
 pub use text::make_text;
+pub use tight::tight_bounds;

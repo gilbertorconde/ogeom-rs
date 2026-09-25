@@ -1463,16 +1463,19 @@ tests = ["crates/ogeom-math/src/conic.rs::circle_through_three_points"]
 
 [[capability]]
 id = "algo.bounds"
-title = "Guaranteed bounding boxes, axis-aligned and oriented, for curves, surfaces and shapes"
+title = "Guaranteed and tight bounding boxes, axis-aligned and oriented, for curves, surfaces and shapes"
 crate = "ogeom-algo"
 verdict = "covered"
 claims = ["Bnd_*", "BRepBndLib", "BndLib", "BndLib_*"]
 symbols = [
     "ogeom_algo::shape_bounds", "ogeom_algo::curve_bounds",
     "ogeom_algo::surface_bounds", "ogeom_algo::oriented_bounds",
-    "ogeom_algo::Obb", "ogeom_math::Aabb",
+    "ogeom_algo::Obb", "ogeom_math::Aabb", "ogeom_algo::tight_bounds",
 ]
-tests = ["crates/ogeom-algo/src/measure.rs::every_curves_bound_contains_the_curve"]
+tests = [
+    "crates/ogeom-algo/src/measure.rs::every_curves_bound_contains_the_curve",
+    "crates/ogeom/tests/tight_bounds.rs",
+]
 
 [[capability]]
 id = "algo.spatial-acceleration"

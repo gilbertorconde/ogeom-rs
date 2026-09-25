@@ -111,6 +111,9 @@ bump may break the API and a patch bump may not.
   ruled and exact; more with matching corners loft as one strip per
   edge, corners kept; coaxial circles loft as a solid of revolution. Two
   squares give the prism and two circles the drum.
+- **Tight bounds** (#65). `tight_bounds` gives the smallest axis-aligned
+  box holding a shape, each side where the shape actually reaches: a
+  revolved tube of outer radius 6 bounds at 6, not at its carrier's 8.29.
 
 ### Fixed
 
