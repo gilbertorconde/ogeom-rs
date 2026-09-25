@@ -83,6 +83,10 @@ bump may break the API and a patch bump may not.
   ball or torus) is first bounded by its chart's sides, seams and poles
   included; a face on a surface with no closed-form iso-curve (an offset
   of a spline) is cut along one fitted at its own parameters.
+- **IGES trims on analytic surfaces.** A trim given only in the
+  parameters of a plane, cylinder, cone, sphere or torus is lifted through
+  the format's parameterization, and those surfaces take the reference
+  direction the file names for where their angle starts.
 - **Remodelling.** `restate_geometry` rebuilds a solid with its surfaces
   and curves restated by the caller, every trim re-derived.
   `restrict_degree` refits every spline above a degree at that degree,

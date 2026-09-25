@@ -886,7 +886,11 @@ impl<'a> Reader<'a> {
             190 => {
                 let point = self.location_entity(entity.at(0).int())?;
                 let normal = self.direction_entity(entity.at(1).int())?;
-                let plane = Plane::through(point, normal);
+                // A parameterized plane names the direction its `u` runs.
+                let plane = match self.reference_direction(entity, 2)? {
+                    Some(x) => Plane::new(Frame::new(point, normal, x, self.tol)?),
+                    None => Plane::through(point, normal),
+                };
                 PlaneSurface::over(
                     plane,
                     (-SURFACE_EXTENT, SURFACE_EXTENT),
@@ -964,7 +968,7 @@ impl<'a> Reader<'a> {
                 let point = self.location_entity(entity.at(0).int())?;
                 let dir = self.direction_entity(entity.at(1).int())?;
                 let radius = entity.at(2).real() * scale;
-                let frame = frame_about(point, dir, self.tol)?;
+                let frame = self.framed(point, dir, entity, 3)?;
                 CylinderSurface::new(
                     Cylinder::new(frame, radius, self.tol)?,
                     (-SURFACE_EXTENT, SURFACE_EXTENT),
@@ -976,7 +980,7 @@ impl<'a> Reader<'a> {
                 let dir = self.direction_entity(entity.at(1).int())?;
                 let radius = entity.at(2).real() * scale;
                 let half_angle = entity.at(3).real().to_radians();
-                let frame = frame_about(point, dir, self.tol)?;
+                let frame = self.framed(point, dir, entity, 4)?;
                 ConeSurface::new(
                     Cone::new(frame, radius, half_angle, self.tol)?,
                     (-SURFACE_EXTENT, SURFACE_EXTENT),
@@ -986,14 +990,21 @@ impl<'a> Reader<'a> {
             196 => {
                 let centre = self.location_entity(entity.at(0).int())?;
                 let radius = entity.at(1).real() * scale;
-                SphereSurface::new(Sphere::centred(centre, radius, self.tol)?).into()
+                // A parameterized sphere names its axis and where `u` starts.
+                if entity.at(2).int() != 0 {
+                    let axis = self.direction_entity(entity.at(2).int())?;
+                    let frame = self.framed(centre, axis, entity, 3)?;
+                    SphereSurface::new(Sphere::new(frame, radius, self.tol)?).into()
+                } else {
+                    SphereSurface::new(Sphere::centred(centre, radius, self.tol)?).into()
+                }
             }
             198 => {
                 let centre = self.location_entity(entity.at(0).int())?;
                 let dir = self.direction_entity(entity.at(1).int())?;
                 let major = entity.at(2).real() * scale;
                 let minor = entity.at(3).real() * scale;
-                let frame = frame_about(centre, dir, self.tol)?;
+                let frame = self.framed(centre, dir, entity, 4)?;
                 TorusSurface::new(Torus::new(frame, major, minor, self.tol)?).into()
             }
             kind => ogeom_bail!(
@@ -1229,6 +1240,39 @@ impl<'a> Reader<'a> {
     }
 
     /// A direction entity (123) as a unit vector.
+    /// The reference direction a parameterized analytic surface names at
+    /// `field`, where it names one: where its angle or `u` starts.
+    fn reference_direction(
+        &mut self,
+        entity: &Entity,
+        field: usize,
+    ) -> OgeomResult<Option<Direction>> {
+        let de = entity.at(field).int();
+        if de == 0 || !self.file.entities.contains_key(&de) {
+            return Ok(None);
+        }
+        Ok(Some(self.direction_entity(de)?))
+    }
+
+    /// A frame about `axis` at `origin`, its `x` the surface's reference
+    /// direction where it names one (squared off the axis), else any.
+    fn framed(
+        &mut self,
+        origin: Point,
+        axis: Direction,
+        entity: &Entity,
+        field: usize,
+    ) -> OgeomResult<Frame> {
+        if let Some(reference) = self.reference_direction(entity, field)? {
+            let r = reference.vector();
+            let square = r - axis.vector() * r.dot(axis.vector());
+            if let Ok(x) = Direction::new(square, self.tol) {
+                return Frame::new(origin, axis, x, self.tol);
+            }
+        }
+        frame_about(origin, axis, self.tol)
+    }
+
     fn direction_entity(&mut self, de: i64) -> OgeomResult<Direction> {
         let e = self.entity(de)?;
         if e.kind != 123 {
@@ -1289,17 +1333,43 @@ impl<'a> Reader<'a> {
         surface_de: i64,
         b: i64,
     ) -> OgeomResult<Vec<(Curve, (f64, f64))>> {
-        if self.entity(surface_de)?.kind != 128 {
+        let kind = self.entity(surface_de)?.kind;
+        let surface = self.surface(surface_de)?;
+        let scale = self.report.scale_mm;
+        // The file's parameters into this kernel's chart. A B-spline's are
+        // its own; the analytic surfaces' are the format's: lengths along
+        // a plane's axes, a cylinder's and cone's angle in degrees with a
+        // length along the axis (a cone's along its slant), a sphere's
+        // two angles in degrees, and a torus's pair turned: its first
+        // round the tube, its second (measured back from a full turn)
+        // round the axis.
+        let half_angle = match &surface {
+            SurfaceGeometry::Cone(c) => c.cone().half_angle(),
+            _ => 0.0,
+        };
+        let map = |p: ogeom_math::Point2| -> Option<ogeom_math::Point2> {
+            use ogeom_math::Point2 as P;
+            // The parameter-space curve was read as a model-space one and
+            // carries the unit scale on both coordinates.
+            let (u, v) = (p.x / scale, p.y / scale);
+            match kind {
+                128 => Some(P::new(u, v)),
+                190 => Some(P::new(u * scale, v * scale)),
+                192 => Some(P::new(u.to_radians(), v * scale)),
+                194 => Some(P::new(u.to_radians(), v * scale * half_angle.cos())),
+                196 => Some(P::new(u.to_radians(), v.to_radians())),
+                198 => Some(P::new((360.0 - v).to_radians(), u.to_radians())),
+                _ => None,
+            }
+        };
+        if map(ogeom_math::Point2::new(0.0, 0.0)).is_none() {
             ogeom_bail!(
                 Construction,
                 "D{de}: a curve-on-surface carries no model-space curve, and \
-                 its surface's parameters are the file's convention rather \
-                 than this kernel's; only a B-spline surface's lift is \
-                 translated; see docs/PARITY.md, io.iges"
+                 its surface's parameters are the file's convention for a \
+                 kind this reader does not translate; see docs/PARITY.md, io.iges"
             );
         }
-        let surface = self.surface(surface_de)?;
-        let scale = self.report.scale_mm;
         let mut out = Vec::new();
         for (curve, range) in self.curve_segments(b)? {
             // The parameter-space curve read as a model-space one carries
@@ -1312,7 +1382,10 @@ impl<'a> Reader<'a> {
                 let t = range.0 + (range.1 - range.0) * (i as f64) / SAMPLES as f64;
                 let p = curve.point_at(t, self.tol)?;
                 parameters.push(t);
-                points.push(ogeom_math::Point2::new(p.x / scale, p.y / scale));
+                let Some(q) = map(ogeom_math::Point2::new(p.x, p.y)) else {
+                    ogeom_bail!(Construction, "D{de}: a trim's parameters did not translate");
+                };
+                points.push(q);
             }
             let chart =
                 ogeom_geom::fit::fit_points_2d_at(&parameters, &points, 3, 1e-10, self.tol)?;
@@ -3218,6 +3291,112 @@ mod tests {
                 (mid.x - mid.y).abs() < 1e-6 && mid.z.abs() < 1e-9,
                 "D{de} {mid:?}"
             );
+        }
+    }
+
+    /// A trim given in an analytic surface's own parameters lifts through
+    /// the format's parameterization: a cylinder's angle in degrees and
+    /// height, a sphere's two angles, a torus's pair turned; each angle
+    /// measured from the surface's reference direction.
+    #[test]
+    fn a_parameter_space_trim_lifts_through_an_analytic_surface() {
+        let point = |p: [f64; 3]| entity(116, 0, reals(&p));
+        let direction = |d: [f64; 3]| entity(123, 0, reals(&d));
+        let on_surface = |surface: i64| {
+            entity(
+                142,
+                0,
+                vec![
+                    Value::Int(0),
+                    Value::Int(surface),
+                    Value::Int(3),
+                    Value::Int(0),
+                    Value::Int(0),
+                ],
+            )
+        };
+        // Location, axis +z, reference +y (so angle zero points along +y).
+        type Case = (Entity, [f64; 2], [f64; 2], Point, Point);
+        let cases: Vec<Case> = vec![
+            (
+                // Cylinder radius 2: angle 0 -> 90 degrees, height 0 -> 5.
+                entity(
+                    192,
+                    1,
+                    vec![
+                        Value::Int(11),
+                        Value::Int(13),
+                        Value::Real(2.0),
+                        Value::Int(15),
+                    ],
+                ),
+                [0.0, 0.0],
+                [90.0, 5.0],
+                Point::new(0.0, 2.0, 0.0),
+                Point::new(-2.0, 0.0, 5.0),
+            ),
+            (
+                // Sphere radius 3: from (0, 0) to (90 degrees, 90 degrees), the pole.
+                entity(
+                    196,
+                    1,
+                    vec![
+                        Value::Int(11),
+                        Value::Real(3.0),
+                        Value::Int(13),
+                        Value::Int(15),
+                    ],
+                ),
+                [0.0, 0.0],
+                [90.0, 45.0],
+                Point::new(0.0, 3.0, 0.0),
+                Point::new(
+                    -3.0 * core::f64::consts::FRAC_1_SQRT_2,
+                    0.0,
+                    3.0 * core::f64::consts::FRAC_1_SQRT_2,
+                ),
+            ),
+            (
+                // Torus 5 by 1: IGES (u round the tube, v round the axis
+                // measured back from a full turn). (0, 360) is the outer
+                // equator at angle zero; (90, 270) a quarter round each.
+                entity(
+                    198,
+                    1,
+                    vec![
+                        Value::Int(11),
+                        Value::Int(13),
+                        Value::Real(5.0),
+                        Value::Real(1.0),
+                        Value::Int(15),
+                    ],
+                ),
+                [0.0, 360.0],
+                [90.0, 270.0],
+                Point::new(0.0, 6.0, 0.0),
+                Point::new(-5.0, 0.0, 1.0),
+            ),
+        ];
+        for (surface, from, to, at_from, at_to) in cases {
+            let deck = file(vec![
+                (1, surface),
+                (3, line([from[0], from[1], 0.0], [to[0], to[1], 0.0])),
+                (5, on_surface(1)),
+                (11, point([0.0, 0.0, 0.0])),
+                (13, direction([0.0, 0.0, 1.0])),
+                (15, direction([0.0, 1.0, 0.0])),
+            ]);
+            let mut reader = reader(&deck);
+            let segments = reader.boundary_segments(5).unwrap();
+            let [(curve, (t0, t1))] = segments.as_slice() else {
+                panic!("one segment");
+            };
+            let (a, b) = (
+                curve.point_at(*t0, T).unwrap(),
+                curve.point_at(*t1, T).unwrap(),
+            );
+            assert!(a.distance(at_from) < 1e-6, "{a:?} against {at_from:?}");
+            assert!(b.distance(at_to) < 1e-6, "{b:?} against {at_to:?}");
         }
     }
 

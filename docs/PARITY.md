@@ -177,10 +177,13 @@ and groups (402) read as the document's layers. Constructive solids read
 as the solids they describe: the block, wedge, cylinder, cone frustum,
 sphere, torus and ellipsoid primitives (150 to 168), solids of revolution
 and linear extrusion, boolean trees (180) through the kernel's own
-booleans, solid assemblies (184) and solid instances (430). Refused by name: a
-parameter-space trim on an analytic surface, whose IGES parameterization is
-the file's convention; a drawing's own annotation stays on the sheet and is
-counted as skipped.
+booleans, solid assemblies (184) and solid instances (430). A trim given only
+in the parameters of a plane, cylinder, cone, sphere or torus is lifted
+through the format's parameterization, each surface framed by the reference
+direction it names. Refused by name: such a trim on a surface of revolution
+or a tabulated cylinder, whose parameter is the generating curve's own IGES
+one; a drawing's own annotation stays on the sheet and is counted as
+skipped.
 - **io.mesh-formats**: The mesh exchange formats: STL, OBJ, PLY, glTF/GLB, 3MF, with welding on import · `covered` · 69 headers claimed
 - **io.native-format**: The native shape interchange format, versioned, with location and triangulation sets · `covered` · 24 headers claimed
 - **io.step**: STEP, both directions: shapes, assemblies, colours, validation properties, semantic and presentation PMI · `covered` · 211 headers claimed
