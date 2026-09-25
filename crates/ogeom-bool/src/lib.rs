@@ -39,6 +39,7 @@
 mod arrange;
 mod bins;
 mod defeature;
+mod half_space;
 
 pub use defeature::remove_faces;
 
@@ -6084,50 +6085,38 @@ fn baked_if_scaled(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomRe
     Ok(ogeom_algo::baked_shape(model, shape, tol)?.shape)
 }
 
-/// Whether a shape is a half space: one shell of one planar face, open by
-/// construction.
+/// Whether a shape is a half space: one shell of one face, open by
+/// construction or closed inside out.
 fn is_half_space(model: &Model, shape: &Shape) -> OgeomResult<bool> {
-    if model.kind_of(shape)? != ShapeType::Solid {
-        return Ok(false);
-    }
-    let shells = ogeom_topo::explore_unique(model, shape, ShapeType::Shell)?;
-    let faces = ogeom_topo::explore_unique(model, shape, ShapeType::Face)?;
-    if shells.len() != 1 || faces.len() != 1 {
-        return Ok(false);
-    }
-    let Some(data) = model.node(&faces[0]).and_then(|n| n.data().as_face()) else {
-        return Ok(false);
-    };
-    let planar = matches!(
-        model.geometry().surface(data.surface),
-        Some(SurfaceGeometry::Plane(_))
-    );
-    Ok(planar && !ogeom_algo::is_shell_closed(model, &shells[0])?)
+    Ok(half_space::half_space_face(model, shape, Tolerances::millimetres())?.is_some())
 }
 
-/// A half space resolved into the solid the operation can act on: a box
-/// filling the material side of the boundary plane, sized past the other
-/// argument's whole reach.
+/// A half space resolved into the solid the operation can act on.
 ///
-/// The box's plane-side face is *coplanar with the boundary itself*, so the
-/// cut the caller sees is the exact plane; the box's far faces stand
-/// outside everything the other shape reaches and never appear in the
-/// result. A shape that is not a half space passes through untouched.
+/// A planar boundary becomes a box filling the material side, sized past
+/// the other argument's whole reach. The box's plane-side face is
+/// *coplanar with the boundary itself*, so the cut the caller sees is the
+/// exact plane; its far faces stand outside everything the other shape
+/// reaches and never appear in the result. A curved boundary is resolved
+/// by [`half_space::resolved`]. A shape that is not a half space passes
+/// through untouched.
 fn resolved_half_space(
     model: &mut Model,
     shape: &Shape,
     other: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
-    if !is_half_space(model, shape)? {
+    let Some(face) = half_space::half_space_face(model, shape, tol)? else {
         return Ok(shape.clone());
-    }
-    let Some(face) = ogeom_topo::explore_unique(model, shape, ShapeType::Face)?
-        .first()
-        .cloned()
-    else {
-        ogeom_bail!(Construction, "the half space lost its face between checks");
     };
+    let planar = model
+        .node(&face)
+        .and_then(|n| n.data().as_face())
+        .and_then(|d| model.geometry().surface(d.surface))
+        .is_some_and(|s| matches!(s, SurfaceGeometry::Plane(_)));
+    if !planar {
+        return half_space::resolved(model, &face, other, tol);
+    }
     // The boundary's outward normal points away from the material.
     let (at, outward) = ogeom_algo::face_normal(model, &face, tol)?;
     let bound = ogeom_algo::shape_bounds(model, other, tol)?;

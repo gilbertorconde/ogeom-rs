@@ -1262,7 +1262,10 @@ pub fn make_half_space(
     if model.kind_of(face)? != ShapeType::Face {
         ogeom_bail!(Construction, "a half space is bounded by a face");
     }
-    let (at, normal) = crate::measure::face_normal(model, face, tol)?;
+    // The side is read where the surface comes nearest the point: a normal
+    // sampled anywhere else on a closed surface (a rod's far side) can face
+    // the point across the surface and name the wrong side.
+    let (at, normal) = nearest_normal(model, face, inside, tol)?;
     let towards = inside - at;
     let reach = towards.magnitude();
     if reach <= tol.confusion() {
@@ -1297,6 +1300,44 @@ pub fn make_half_space(
     history.generate(face, shell);
     history.generate(face, solid.clone());
     Ok(Built::new(solid, history))
+}
+
+/// The point of a face's surface nearest `target`, and the face's normal
+/// there (flipped where the face presents the surface's other side).
+fn nearest_normal(
+    model: &Model,
+    face: &Shape,
+    target: Point,
+    tol: Tolerances,
+) -> OgeomResult<(Point, ogeom_math::Vector)> {
+    let Some(data) = model.node(face).and_then(|n| n.data().as_face()) else {
+        ogeom_bail!(Construction, "face node holds no face data");
+    };
+    let Some(surface) = model.geometry().surface(data.surface) else {
+        ogeom_bail!(Dangling, "face refers to a surface not in this model");
+    };
+    let placement = face.transform(model.datums())?;
+    let local = placement.inverse()?.apply(target);
+    let foot = crate::measure::project_on_surface(surface, local, 32, tol)?;
+    let (u, v) = foot.parameters;
+    // At a pole or an apex the surface has no normal of its own; a hair
+    // towards the middle of the domain it has, pointing the same way out.
+    let normal = match surface.normal_at(u, v, tol) {
+        Ok(n) => n,
+        Err(_) => {
+            let ((ua, ub), (va, vb)) = surface.domain();
+            let (mu, mv) = (f64::midpoint(ua, ub), f64::midpoint(va, vb));
+            let nudge = |x: f64, mid: f64| x + (mid - x).signum() * 1e-6 * (1.0 + x.abs());
+            surface.normal_at(nudge(u, mu), nudge(v, mv), tol)?
+        }
+    };
+    let normal = placement.apply_vector(normal.vector());
+    let normal = if face.orientation() == ogeom_topo::Orientation::Reversed {
+        -normal
+    } else {
+        normal
+    };
+    Ok((placement.apply(foot.point), normal))
 }
 
 /// A frame turned end for end: its origin at `height` along the old `z`, and

@@ -11,7 +11,24 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Half spaces bounded by curved faces.** `cut`, `common` and `section`
+  accept a half space from `make_half_space` whatever its face's surface.
+  A drum, cone, ball or ring divides all of space and is exact on its
+  surface; a drum and a cone are read as unbounded along their axes. An
+  open surface (a spline patch, an extrusion, a revolution, trimmed or
+  offset surfaces) divides space across its own extent: the other
+  argument must lie across it, and the surface must not fold back along
+  the direction into its material, or the operation says which. An
+  extrusion can stop exactly on a curved face.
+
 ### Fixed
+
+- **`make_half_space` could pick the wrong side of a closed surface.** The
+  side was read from the normal at one sample of the face, which on a rod
+  or a ball can face the given point across the surface. It is read where
+  the surface comes nearest the point.
 
 - **A hole drilled through a large converted part failed, and slowly.**
   One loose edge on a face set how far every end on that face was welded,
