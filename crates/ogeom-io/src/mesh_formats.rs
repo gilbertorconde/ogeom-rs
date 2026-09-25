@@ -1032,13 +1032,13 @@ fn read_gltf_document(
 /// is nothing worse than three multiplications, so the reader carries the
 /// affine map plainly and applies it to points and normals.
 #[derive(Debug, Clone, Copy)]
-struct Placement {
-    columns: [Vector; 3],
-    translation: Vector,
+pub(crate) struct Placement {
+    pub(crate) columns: [Vector; 3],
+    pub(crate) translation: Vector,
 }
 
 impl Placement {
-    const IDENTITY: Self = Self {
+    pub(crate) const IDENTITY: Self = Self {
         columns: [
             Vector::new(1.0, 0.0, 0.0),
             Vector::new(0.0, 1.0, 0.0),
@@ -1048,7 +1048,7 @@ impl Placement {
     };
 
     /// `self` after `inner`: the child's own map applied first.
-    fn then(self, inner: Self) -> Self {
+    pub(crate) fn then(self, inner: Self) -> Self {
         let map = |v: Vector| self.columns[0] * v.x + self.columns[1] * v.y + self.columns[2] * v.z;
         Self {
             columns: inner.columns.map(map),
@@ -1056,7 +1056,7 @@ impl Placement {
         }
     }
 
-    fn point(self, p: Point) -> Point {
+    pub(crate) fn point(self, p: Point) -> Point {
         Point::ORIGIN
             + self.columns[0] * p.x
             + self.columns[1] * p.y
@@ -1315,7 +1315,7 @@ fn read_primitive(
 }
 
 /// Area-weighted vertex normals, for a file that gave none.
-fn normals_from_triangles(positions: &[Point], triangles: &[[u32; 3]]) -> Vec<Vector> {
+pub(crate) fn normals_from_triangles(positions: &[Point], triangles: &[[u32; 3]]) -> Vec<Vector> {
     let mut out = vec![Vector::new(0.0, 0.0, 0.0); positions.len()];
     for [a, b, c] in triangles {
         let (pa, pb, pc) = (

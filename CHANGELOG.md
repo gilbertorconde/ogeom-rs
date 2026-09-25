@@ -97,6 +97,9 @@ bump may break the API and a patch bump may not.
   function over a box by branch and bound, certified to a tolerance under
   slope and curvature bounds it estimates; `swarm_minimum` is a particle
   swarm; `minimize_local` is a Nelder-Mead descent in several variables.
+- **VRML reads.** `read_vrml` reads VRML 2.0 and 1.0 scenes into placed
+  meshes: face sets and the box, ball, drum and cone primitives, with
+  `DEF`/`USE`, transforms, switches and material colours honoured.
 
 ### Fixed
 

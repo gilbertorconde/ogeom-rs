@@ -1676,17 +1676,10 @@ claims = [
 id = "io.vrml"
 title = "VRML scenes"
 crate = "ogeom-io"
-verdict = "partial"
-restriction = """Writing works and is round-trip-checked by parsing what was \
-written. Reading arbitrary VRML files (the reference's VrmlData, a legacy \
-viewer-format importer) is absent by choice, not by \
-backlog: a legacy viewer format's importer serves no consumer this kernel \
-has, and the non-coverage is deliberate (issue #28). It would join the \
-queue behind IGES if legacy scene import ever mattered; nothing else \
-depends on it."""
+verdict = "covered"
 claims = ["Vrml", "Vrml_*", "VrmlAPI", "VrmlAPI_*", "VrmlConverter_*", "VrmlData_*"]
-symbols = ["ogeom_io::write_vrml"]
-tests = ["crates/ogeom/tests/exchange.rs"]
+symbols = ["ogeom_io::write_vrml", "ogeom_io::read_vrml"]
+tests = ["crates/ogeom/tests/exchange.rs", "crates/ogeom/tests/vrml_read.rs"]
 
 [[capability]]
 id = "io.mesh-formats"

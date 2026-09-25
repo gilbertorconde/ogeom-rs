@@ -35,6 +35,7 @@ pub(crate) mod pcurves;
 pub mod step;
 pub mod stl;
 pub mod threemf;
+pub mod vrml;
 pub(crate) mod xml;
 
 pub use iges::{IgesImport, IgesReport, read_iges, write_iges};
@@ -44,3 +45,4 @@ pub use mesh_formats::{
 pub use step::{StepImport, StepReport, UntrimmedFace, WarningSummary, read_step, write_step};
 pub use stl::{Encoding, read, write};
 pub use threemf::{ObjectType, ThreeMfImport, ThreeMfObject, read_3mf, write_3mf};
+pub use vrml::read_vrml;

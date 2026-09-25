@@ -15,8 +15,8 @@ per package.
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 75 |
-| `partial` | 9 |
+| `covered` | 76 |
+| `partial` | 8 |
 | `divergent` | 9 |
 | `n/a` | 5 |
 
@@ -185,8 +185,7 @@ counted as skipped.
 - **io.mesh-formats**: The mesh exchange formats: STL, OBJ, PLY, glTF/GLB, 3MF, with welding on import · `covered` · 69 headers claimed
 - **io.native-format**: The native shape interchange format, versioned, with location and triangulation sets · `covered` · 24 headers claimed
 - **io.step**: STEP, both directions: shapes, assemblies, colours, validation properties, semantic and presentation PMI · `covered` · 211 headers claimed
-- **io.vrml**: VRML scenes · `partial` · 102 headers claimed
-  - *restriction:* Writing works and is round-trip-checked by parsing what was written. Reading arbitrary VRML files (the reference's VrmlData, a legacy viewer-format importer) is absent by choice, not by backlog: a legacy viewer format's importer serves no consumer this kernel has, and the non-coverage is deliberate (issue #28). It would join the queue behind IGES if legacy scene import ever mattered; nothing else depends on it.
+- **io.vrml**: VRML scenes · `covered` · 102 headers claimed
 
 ### ogeom-math
 

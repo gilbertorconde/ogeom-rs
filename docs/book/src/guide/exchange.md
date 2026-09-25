@@ -83,7 +83,7 @@ handling is error-prone.
 | glTF / GLB | yes | GLB |
 | OBJ | yes | yes |
 | PLY | yes | yes |
-| VRML | no | yes |
+| VRML (1.0 and 2.0) | yes | yes |
 | 3MF (deflated or stored, multi-part) | yes | yes |
 | DXF (2D drawings) | yes | yes |
 
@@ -91,6 +91,10 @@ handling is error-prone.
 follows multi-part packages from the production extension, scales the
 model's unit to millimetres, keeps a uniform object colour when the file
 has one, and warns about anything read with a caveat.
+
+`read_vrml` returns one placed mesh per shape the scene draws: face sets
+and the box, ball, drum and cone primitives, with `DEF`/`USE`, transforms,
+switches and material colours honoured.
 
 The mesh writers take the tessellation you built, so the error is the
 deflection you chose. DXF is the output for
