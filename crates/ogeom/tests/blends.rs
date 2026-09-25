@@ -1089,6 +1089,43 @@ fn a_curved_corner_closes_with_the_rim_s_band_first() {
     }
 }
 
+/// The straight band, then the rim arc's, then the ruling's: the rim's
+/// section through the straight band crosses the point on top where the
+/// cap, the band and the torus all touch, and is fitted there as closely
+/// as elsewhere. Three of its faces are measured from a mesh, so the
+/// volume agrees with the other orders to the mesh's resolution.
+#[test]
+fn a_curved_corner_closes_with_the_straight_band_first() {
+    let fine = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
+    let mut measured = Vec::new();
+    for order in [[2, 0, 1], [0, 1, 2]] {
+        let mut model = Model::new();
+        let (part, corner, mids) = shaved_cube(&mut model);
+        let v = vertex_near(&model, &part, corner);
+        let mut current = part.clone();
+        for i in order {
+            let live = edge_near(&model, &current, mids[i]);
+            current = ogeom::fillet::fillet_edge(&mut model, &current, &live, 1.0, T)
+                .unwrap_or_else(|e| panic!("{order:?} at {i}: {e}"))
+                .shape;
+        }
+        let rounded = ogeom::fillet::round_vertex(&mut model, &current, &v, 1.0, T)
+            .unwrap_or_else(|e| panic!("{order:?} corner: {e}"))
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &rounded, T).unwrap();
+        assert!(diagnosis.is_valid(), "{order:?}: {:?}", diagnosis.problems);
+        measured.push(
+            ogeom::algo::volume_properties(&model, &rounded, fine, T)
+                .unwrap()
+                .mass,
+        );
+    }
+    assert!(
+        (measured[0] - measured[1]).abs() < 1e-4 * measured[0],
+        "{measured:?}"
+    );
+}
+
 #[test]
 fn a_wall_meeting_a_drum_along_a_ruling_blends_exactly() {
     // The side x = 0 meets the drum along a vertical ruling: every section

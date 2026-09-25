@@ -129,6 +129,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A section through a point where two surfaces touch was fitted loosely.**
+  The tracer could report one sample's position with its neighbour's
+  parameters there, and the joint fit stalled near 1e-5 mm at that
+  sample. Such samples are dropped before fitting, and a torus against a
+  cylinder now fits to about 3e-7 mm.
 - **A straight band after a rim arc's band could not close at a curved
   corner.** Its section through the rim's torus runs tangent to the
   torus's end meridian into the corner, stopped short of the vertex, and

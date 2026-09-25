@@ -86,11 +86,29 @@ pub fn approximate_branch(
     let mut points: Vec<ogeom_math::Point> = Vec::with_capacity(branch.points.len());
     let mut kept_a = Vec::with_capacity(branch.on_a.len());
     let mut kept_b = Vec::with_capacity(branch.on_b.len());
+    // A sample is one point seen three ways, and where the three disagree
+    // it is not data: through a point where the surfaces touch, the tracer
+    // can report a step's position with its neighbour's parameters, and
+    // the joint fit, asked to pass through both descriptions at once,
+    // stalls a thousand times above its budget at that one sample.
+    let agrees = |i: usize, p: &ogeom_math::Point| -> bool {
+        let limit = tolerance.max(tol.confusion());
+        let (ua, va) = branch.on_a[i];
+        let (ub, vb) = branch.on_b[i];
+        a.point_at(ua, va, tol)
+            .is_ok_and(|q| q.distance(*p) <= limit)
+            && b.point_at(ub, vb, tol)
+                .is_ok_and(|q| q.distance(*p) <= limit)
+    };
     for (i, p) in branch.points.iter().enumerate() {
+        let end = i == 0 || i + 1 == branch.points.len();
         if let Some(last) = points.last()
             && last.distance(*p) <= tol.confusion() * 10.0
             && i + 1 != branch.points.len()
         {
+            continue;
+        }
+        if !end && !agrees(i, p) {
             continue;
         }
         points.push(*p);
