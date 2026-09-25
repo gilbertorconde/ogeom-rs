@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Typed DXF reading (#72).** `read_dxf_entities` reads lines, arcs,
+  circles, ellipses, splines and polylines with their bulges and closed
+  flags, the drawing's `$INSUNITS`, and which layers and linetypes are
+  dashed. `read_dxf` now closes a closed polyline and no longer reads a
+  `POLYLINE` header's elevation point as its first vertex.
 - **The middle path of a pipe-like solid.** `middle_path` walks a solid
   from one named face to another and returns the curve through its
   cross-section centroids: a line for a straight tube, a fitted spline

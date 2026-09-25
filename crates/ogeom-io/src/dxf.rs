@@ -1,4 +1,8 @@
-//! Writing DXF: 2D polylines, the drawing interchange the field expects.
+//! DXF: 2D drawings, the interchange the field expects.
+//!
+//! Reading takes a drawing's curves as written ([`read_dxf_entities`]: lines,
+//! arcs, circles, ellipses, splines and bulged polylines, with the units and
+//! which layers are dashed), or as polylines ([`read_dxf`]).
 //!
 //! R12 ASCII, the most widely readable dialect: a TABLES section declaring
 //! the two linetypes and two layers a technical drawing needs, then one
@@ -8,7 +12,7 @@
 //! curves (the hidden-line projector, a section outline, a sketch) writes
 //! without this crate knowing where they came from.
 
-use ogeom_math::Point2;
+use ogeom_math::{Point2, Vector2};
 use std::fmt::Write as _;
 
 /// Write polylines as an R12 DXF document.
@@ -163,158 +167,504 @@ pub struct DxfDrawing {
 
 /// Read the polylines out of an ASCII DXF.
 ///
-/// `POLYLINE`/`VERTEX`/`SEQEND` and `LWPOLYLINE` become polylines; `LINE`
-/// becomes a polyline of two points. Layers are read by name: `HIDDEN`
-/// separates, everything else is visible, which is the convention this
-/// crate's own writer uses and the one a drawing's reader can act on
-/// without guessing at linetypes.
+/// `POLYLINE` and `LWPOLYLINE` become polylines, a closed one ending on
+/// its first point again; `LINE` becomes a polyline of two points. A
+/// polyline's bulges are read as straight chords here: the typed reader,
+/// [`read_dxf_entities`], keeps them and every curve besides. Hidden
+/// curves are those on the `HIDDEN` layer or drawn in a dashed or hidden
+/// linetype.
 ///
-/// Everything else in a DXF (blocks, text, dimensions, splines, hatches)
-/// is skipped. This reads *drawings as curves*, which is what a kernel has
-/// use for; it does not pretend to be a DXF application.
+/// # Errors
+///
+/// As [`read_dxf_entities`].
+pub fn read_dxf(text: &str) -> ogeom_core::OgeomResult<DxfDrawing> {
+    let mut out = DxfDrawing::default();
+    for entity in read_dxf_entities(text)?.entities {
+        let points = match entity.curve {
+            DxfCurve::Line { start, end } => vec![start, end],
+            DxfCurve::Polyline { vertices, closed } => {
+                let mut points: Vec<Point2> = vertices.iter().map(|v| v.0).collect();
+                if closed
+                    && points.len() > 2
+                    && let (Some(first), Some(last)) = (points.first(), points.last())
+                    && first.distance(*last) > 0.0
+                {
+                    points.push(*first);
+                }
+                points
+            }
+            _ => continue,
+        };
+        if points.len() < 2 {
+            continue;
+        }
+        if entity.hidden {
+            out.hidden.push(points);
+        } else {
+            out.visible.push(points);
+        }
+    }
+    Ok(out)
+}
+
+/// A DXF's drawing entities, typed, with the drawing's units.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DxfEntities {
+    /// `$INSUNITS` from the HEADER, when present (0 is unitless).
+    pub insunits: Option<i32>,
+    /// Millimetres per drawing unit, when `insunits` names a length unit.
+    pub unit_mm: Option<f64>,
+    /// The ENTITIES section's curves, in file order.
+    pub entities: Vec<DxfEntity>,
+}
+
+/// One entity: the curve, and where it was drawn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DxfEntity {
+    /// Group 8, as written (`"0"` when absent).
+    pub layer: String,
+    /// Whether the layer is `HIDDEN`, or the entity's or its layer's
+    /// linetype is dashed or hidden.
+    pub hidden: bool,
+    /// The curve.
+    pub curve: DxfCurve,
+}
+
+/// A DXF curve in the drawing's plane.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DxfCurve {
+    /// A segment.
+    Line {
+        /// Where it starts.
+        start: Point2,
+        /// Where it ends.
+        end: Point2,
+    },
+    /// Counter-clockwise from `start_angle` to `end_angle`, in radians.
+    Arc {
+        /// The centre.
+        centre: Point2,
+        /// The radius.
+        radius: f64,
+        /// Where it starts, radians.
+        start_angle: f64,
+        /// Where it ends, radians.
+        end_angle: f64,
+    },
+    /// A full circle.
+    Circle {
+        /// The centre.
+        centre: Point2,
+        /// The radius.
+        radius: f64,
+    },
+    /// An ellipse or elliptic arc, parameters as DXF gives them: a full
+    /// ellipse when they span two pi.
+    Ellipse {
+        /// The centre.
+        centre: Point2,
+        /// The major axis's end, relative to the centre.
+        major: Vector2,
+        /// Minor over major.
+        ratio: f64,
+        /// Start parameter.
+        start_param: f64,
+        /// End parameter.
+        end_param: f64,
+    },
+    /// A B-spline as written: degree, knots, control points and weights.
+    /// A spline given only by fit points carries them as its control
+    /// points and no knots.
+    Spline {
+        /// The degree.
+        degree: usize,
+        /// The knot vector.
+        knots: Vec<f64>,
+        /// The control points, or the fit points where there are none.
+        control_points: Vec<Point2>,
+        /// The weights, for a rational spline.
+        weights: Option<Vec<f64>>,
+        /// Whether the spline is closed.
+        closed: bool,
+    },
+    /// A `POLYLINE` or `LWPOLYLINE`: each vertex with the bulge of the
+    /// segment that starts at it (the tangent of a quarter of the included
+    /// angle, positive counter-clockwise).
+    Polyline {
+        /// The vertices and their bulges.
+        vertices: Vec<(Point2, f64)>,
+        /// Whether the last vertex joins the first.
+        closed: bool,
+    },
+}
+
+/// Millimetres per unit for a `$INSUNITS` code that names a length.
+fn unit_mm(code: i32) -> Option<f64> {
+    Some(match code {
+        1 => 25.4,
+        2 => 304.8,
+        3 => 1_609_344.0,
+        4 => 1.0,
+        5 => 10.0,
+        6 => 1000.0,
+        7 => 1.0e6,
+        8 => 2.54e-5,
+        9 => 0.0254,
+        10 => 914.4,
+        11 => 1.0e-7,
+        12 => 1.0e-6,
+        13 => 1.0e-3,
+        14 => 100.0,
+        15 => 1.0e4,
+        16 => 1.0e5,
+        17 => 1.0e12,
+        18 => 1.495_978_707e14,
+        19 => 9.460_730_472_580_8e18,
+        20 => 3.085_677_581_491_367e19,
+        _ => return None,
+    })
+}
+
+/// One group-coded record: the entity or table entry a `0` code opens, and
+/// the pairs up to the next.
+struct Record<'a> {
+    kind: &'a str,
+    pairs: Vec<(i32, &'a str)>,
+}
+
+impl Record<'_> {
+    fn text(&self, code: i32) -> Option<&str> {
+        self.pairs.iter().find(|p| p.0 == code).map(|p| p.1)
+    }
+
+    fn real(&self, code: i32) -> Option<f64> {
+        self.text(code).and_then(|v| v.parse().ok())
+    }
+
+    fn int(&self, code: i32) -> Option<i64> {
+        self.text(code).and_then(|v| v.parse().ok())
+    }
+
+    fn point(&self, x: i32, y: i32) -> Option<Point2> {
+        Some(Point2::new(self.real(x)?, self.real(y)?))
+    }
+
+    fn reals(&self, code: i32) -> Vec<f64> {
+        self.pairs
+            .iter()
+            .filter(|p| p.0 == code)
+            .filter_map(|p| p.1.parse().ok())
+            .collect()
+    }
+
+    /// Points given as repeated `x`/`y` pairs, in order.
+    fn points(&self, x: i32, y: i32) -> Vec<Point2> {
+        let mut out: Vec<Point2> = Vec::new();
+        for (code, value) in &self.pairs {
+            let Ok(v) = value.parse::<f64>() else {
+                continue;
+            };
+            if *code == x {
+                out.push(Point2::new(v, 0.0));
+            } else if *code == y
+                && let Some(last) = out.last_mut()
+            {
+                last.y = v;
+            }
+        }
+        out
+    }
+}
+
+/// Whether a linetype name draws hidden lines.
+fn dashed(linetype: &str) -> bool {
+    let name = linetype.to_ascii_uppercase();
+    name.contains("HIDDEN") || name.contains("DASH")
+}
+
+/// Read the typed entities, the units and the layers' linetypes out of an
+/// ASCII DXF.
+///
+/// Lines, arcs, circles, ellipses, splines, `POLYLINE` and `LWPOLYLINE`
+/// are read from the ENTITIES section, with a polyline's closed flag and
+/// bulges; a `POLYLINE` header's own point is its elevation, not a
+/// vertex. An entity whose extrusion is `(0, 0, -1)` is seen from below,
+/// and its planar coordinates are mirrored in x to the drawing's own view.
+/// Blocks, inserts, text, dimensions and hatches are skipped.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-/// file is not group-coded in pairs, which is the one thing every DXF is.
-pub fn read_dxf(text: &str) -> ogeom_core::OgeomResult<DxfDrawing> {
+/// file is not group-coded in pairs, or an entity's extrusion is neither
+/// up nor down, or an ellipse or spline is seen from below.
+pub fn read_dxf_entities(text: &str) -> ogeom_core::OgeomResult<DxfEntities> {
     // A DXF is a stream of (code, value) pairs, one per line each.
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
-    if !lines.len().is_multiple_of(2) {
-        // A trailing blank line is ordinary; anything else is not pairs.
-        if !lines.last().is_some_and(|l| l.is_empty()) {
+    if !lines.len().is_multiple_of(2) && !lines.last().is_some_and(|l| l.is_empty()) {
+        ogeom_core::ogeom_bail!(
+            Construction,
+            "a DXF is group codes and values in pairs; this has an odd number of lines"
+        );
+    }
+    let mut pairs: Vec<(i32, &str)> = Vec::with_capacity(lines.len() / 2);
+    for [code, value] in lines.as_chunks::<2>().0 {
+        let Ok(code) = code.parse::<i32>() else {
             ogeom_core::ogeom_bail!(
                 Construction,
-                "a DXF is group codes and values in pairs; this has an odd number of lines"
+                "a DXF group code is an integer; found {code:?}"
             );
-        }
+        };
+        pairs.push((code, *value));
     }
 
-    let mut out = DxfDrawing::default();
-    let mut entity = String::new();
-    let mut layer = String::new();
-    let mut points: Vec<Point2> = Vec::new();
-    let mut pending: Option<(Option<f64>, Option<f64>)> = None;
-    let mut line_ends: [Option<Point2>; 2] = [None, None];
-
-    let flush = |entity: &str, layer: &str, points: &mut Vec<Point2>, out: &mut DxfDrawing| {
-        if points.len() >= 2 {
-            let drawn = core::mem::take(points);
-            if layer.eq_ignore_ascii_case("HIDDEN") {
-                out.hidden.push(drawn);
-            } else {
-                out.visible.push(drawn);
+    // Records within each section, by name.
+    let mut sections: Vec<(&str, Vec<Record<'_>>)> = Vec::new();
+    let mut k = 0;
+    while k < pairs.len() {
+        if pairs[k] == (0, "SECTION") && k + 1 < pairs.len() && pairs[k + 1].0 == 2 {
+            let name = pairs[k + 1].1;
+            k += 2;
+            let mut records: Vec<Record<'_>> = Vec::new();
+            // The pairs before the section's first 0 code (the HEADER's
+            // variables) make a record of their own.
+            let mut current = Record {
+                kind: "",
+                pairs: Vec::new(),
+            };
+            while k < pairs.len() && pairs[k] != (0, "ENDSEC") {
+                if pairs[k].0 == 0 {
+                    records.push(core::mem::replace(
+                        &mut current,
+                        Record {
+                            kind: pairs[k].1,
+                            pairs: Vec::new(),
+                        },
+                    ));
+                } else {
+                    current.pairs.push(pairs[k]);
+                }
+                k += 1;
             }
-        } else {
-            points.clear();
+            records.push(current);
+            sections.push((name, records));
         }
-        let _ = entity;
-    };
+        k += 1;
+    }
 
-    let mut i = 0;
-    while i + 1 < lines.len() {
-        let code = lines[i];
-        let value = lines[i + 1];
-        i += 2;
-        match code {
-            "0" => {
-                // A new entity ends whatever was being gathered.
-                match entity.as_str() {
-                    "POLYLINE" | "LWPOLYLINE" => {
-                        if let Some((Some(x), Some(y))) = pending.take() {
-                            points.push(Point2::new(x, y));
-                        }
-                        if value != "VERTEX" && value != "SEQEND" {
-                            flush(&entity, &layer, &mut points, &mut out);
+    let mut out = DxfEntities::default();
+    let mut layer_linetype: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for (name, records) in &sections {
+        match *name {
+            "HEADER" => {
+                for record in records {
+                    let mut it = record.pairs.iter();
+                    while let Some((code, value)) = it.next() {
+                        if *code == 9
+                            && *value == "$INSUNITS"
+                            && let Some((70, units)) = it.next()
+                            && let Ok(units) = units.parse::<i32>()
+                        {
+                            out.insunits = Some(units);
+                            out.unit_mm = unit_mm(units);
                         }
                     }
-                    "LINE" => {
-                        if let [Some(a), Some(b)] = line_ends {
-                            let mut segment = vec![a, b];
-                            if layer.eq_ignore_ascii_case("HIDDEN") {
-                                out.hidden.push(core::mem::take(&mut segment));
-                            } else {
-                                out.visible.push(core::mem::take(&mut segment));
-                            }
-                        }
-                        line_ends = [None, None];
-                    }
-                    _ => {}
                 }
-                if value == "VERTEX" {
-                    if let Some((Some(x), Some(y))) = pending.take() {
-                        points.push(Point2::new(x, y));
-                    }
-                    pending = Some((None, None));
-                    continue;
-                }
-                if value == "SEQEND" {
-                    flush("POLYLINE", &layer, &mut points, &mut out);
-                    entity.clear();
-                    continue;
-                }
-                entity = value.to_string();
-                if entity == "POLYLINE" || entity == "LWPOLYLINE" {
-                    points.clear();
-                    pending = Some((None, None));
-                } else if entity == "LINE" {
-                    line_ends = [None, None];
-                }
-                layer.clear();
             }
-            "8" => layer = value.to_string(),
-            "10" | "20" | "11" | "21" => {
-                let Ok(number) = value.parse::<f64>() else {
-                    continue;
-                };
-                match (entity.as_str(), code) {
-                    ("LINE", "10") => {
-                        line_ends[0] = Some(Point2::new(number, line_ends[0].map_or(0.0, |p| p.y)));
+            "TABLES" => {
+                for record in records.iter().filter(|r| r.kind == "LAYER") {
+                    if let Some(layer) = record.text(2) {
+                        layer_linetype.insert(
+                            layer.to_ascii_uppercase(),
+                            record.text(6).unwrap_or("").to_string(),
+                        );
                     }
-                    ("LINE", "20") => {
-                        let x = line_ends[0].map_or(0.0, |p| p.x);
-                        line_ends[0] = Some(Point2::new(x, number));
-                    }
-                    ("LINE", "11") => {
-                        line_ends[1] = Some(Point2::new(number, line_ends[1].map_or(0.0, |p| p.y)));
-                    }
-                    ("LINE", "21") => {
-                        let x = line_ends[1].map_or(0.0, |p| p.x);
-                        line_ends[1] = Some(Point2::new(x, number));
-                    }
-                    (_, "10") => {
-                        // An LWPOLYLINE gives its vertices as repeated
-                        // 10/20 pairs without a VERTEX entity between them,
-                        // so a fresh 10 closes the one before it.
-                        if let Some((Some(x), Some(y))) = pending {
-                            points.push(Point2::new(x, y));
-                        }
-                        pending = Some((Some(number), None));
-                    }
-                    (_, "20") => {
-                        if let Some((x, _)) = pending {
-                            pending = Some((x, Some(number)));
-                        }
-                    }
-                    _ => {}
                 }
             }
             _ => {}
         }
     }
-    // Whatever the last entity was gathering.
-    if let Some((Some(x), Some(y))) = pending.take() {
-        points.push(Point2::new(x, y));
-    }
-    flush(&entity, &layer, &mut points, &mut out);
-    if entity == "LINE"
-        && let [Some(a), Some(b)] = line_ends
-    {
-        if layer.eq_ignore_ascii_case("HIDDEN") {
-            out.hidden.push(vec![a, b]);
-        } else {
-            out.visible.push(vec![a, b]);
-        }
+
+    let Some((_, records)) = sections.iter().find(|(name, _)| *name == "ENTITIES") else {
+        return Ok(out);
+    };
+    let mut k = 0;
+    while k < records.len() {
+        let record = &records[k];
+        k += 1;
+        let layer = record.text(8).unwrap_or("0").to_string();
+        let hidden = layer.eq_ignore_ascii_case("HIDDEN")
+            || record.text(6).is_some_and(dashed)
+            || layer_linetype
+                .get(&layer.to_ascii_uppercase())
+                .is_some_and(|l| dashed(l));
+        // The arbitrary axis: straight up reads as written, straight down
+        // mirrors x; anything tilted is not a drawing's plane.
+        let from_below = match record.real(230) {
+            None => false,
+            Some(z)
+                if (record.real(210).unwrap_or(0.0).abs()
+                    + record.real(220).unwrap_or(0.0).abs())
+                    <= 1e-12 =>
+            {
+                z < 0.0
+            }
+            Some(_) => ogeom_core::ogeom_bail!(
+                Construction,
+                "a {} entity is extruded along a tilted axis; only drawings in the XY plane \
+                 are read",
+                record.kind
+            ),
+        };
+        let flip = |p: Point2| {
+            if from_below {
+                Point2::new(-p.x, p.y)
+            } else {
+                p
+            }
+        };
+        let curve = match record.kind {
+            "LINE" => {
+                let (Some(a), Some(b)) = (record.point(10, 20), record.point(11, 21)) else {
+                    continue;
+                };
+                DxfCurve::Line {
+                    start: flip(a),
+                    end: flip(b),
+                }
+            }
+            "CIRCLE" => {
+                let (Some(centre), Some(radius)) = (record.point(10, 20), record.real(40)) else {
+                    continue;
+                };
+                DxfCurve::Circle {
+                    centre: flip(centre),
+                    radius,
+                }
+            }
+            "ARC" => {
+                let (Some(centre), Some(radius)) = (record.point(10, 20), record.real(40)) else {
+                    continue;
+                };
+                let start = record.real(50).unwrap_or(0.0).to_radians();
+                let end = record.real(51).unwrap_or(360.0).to_radians();
+                // Mirrored, the counter-clockwise run from start to end
+                // becomes the one from the mirror of end to that of start.
+                let (start_angle, end_angle) = if from_below {
+                    (core::f64::consts::PI - end, core::f64::consts::PI - start)
+                } else {
+                    (start, end)
+                };
+                DxfCurve::Arc {
+                    centre: flip(centre),
+                    radius,
+                    start_angle,
+                    end_angle,
+                }
+            }
+            "ELLIPSE" | "SPLINE" if from_below => ogeom_core::ogeom_bail!(
+                Construction,
+                "a {} seen from below (extrusion 0, 0, -1) is not read yet",
+                record.kind
+            ),
+            "ELLIPSE" => {
+                let (Some(centre), Some(major)) = (record.point(10, 20), record.point(11, 21))
+                else {
+                    continue;
+                };
+                DxfCurve::Ellipse {
+                    centre,
+                    major: Vector2::new(major.x, major.y),
+                    ratio: record.real(40).unwrap_or(1.0),
+                    start_param: record.real(41).unwrap_or(0.0),
+                    end_param: record.real(42).unwrap_or(core::f64::consts::TAU),
+                }
+            }
+            "SPLINE" => {
+                let flags = record.int(70).unwrap_or(0);
+                let control = record.points(10, 20);
+                let weights = record.reals(41);
+                let (control_points, knots) = if control.is_empty() {
+                    (record.points(11, 21), Vec::new())
+                } else {
+                    (control, record.reals(40))
+                };
+                DxfCurve::Spline {
+                    degree: usize::try_from(record.int(71).unwrap_or(3)).unwrap_or(3),
+                    knots,
+                    weights: (!weights.is_empty() && weights.len() == control_points.len())
+                        .then_some(weights),
+                    control_points,
+                    closed: flags & 1 != 0,
+                }
+            }
+            "LWPOLYLINE" => {
+                let mut vertices: Vec<(Point2, f64)> = Vec::new();
+                for (code, value) in &record.pairs {
+                    let Ok(v) = value.parse::<f64>() else {
+                        continue;
+                    };
+                    match code {
+                        10 => vertices.push((Point2::new(v, 0.0), 0.0)),
+                        20 => {
+                            if let Some(last) = vertices.last_mut() {
+                                last.0.y = v;
+                            }
+                        }
+                        42 => {
+                            if let Some(last) = vertices.last_mut() {
+                                last.1 = v;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                polyline(vertices, record.int(70).unwrap_or(0), from_below)
+            }
+            "POLYLINE" => {
+                // The header's own 10/20 is the elevation; the vertices
+                // follow as records of their own up to SEQEND.
+                let mut vertices: Vec<(Point2, f64)> = Vec::new();
+                while k < records.len() && records[k].kind == "VERTEX" {
+                    let v = &records[k];
+                    k += 1;
+                    // A spline frame's control point is not on the curve.
+                    if v.int(70).unwrap_or(0) & 16 != 0 {
+                        continue;
+                    }
+                    if let Some(p) = v.point(10, 20) {
+                        vertices.push((p, v.real(42).unwrap_or(0.0)));
+                    }
+                }
+                if k < records.len() && records[k].kind == "SEQEND" {
+                    k += 1;
+                }
+                polyline(vertices, record.int(70).unwrap_or(0), from_below)
+            }
+            _ => continue,
+        };
+        out.entities.push(DxfEntity {
+            layer,
+            hidden,
+            curve,
+        });
     }
     Ok(out)
+}
+
+/// A polyline from its vertices and flags, mirrored in x when seen from
+/// below (a mirror turns every bulge the other way).
+fn polyline(vertices: Vec<(Point2, f64)>, flags: i64, from_below: bool) -> DxfCurve {
+    let vertices = if from_below {
+        vertices
+            .into_iter()
+            .map(|(p, b)| (Point2::new(-p.x, p.y), -b))
+            .collect()
+    } else {
+        vertices
+    };
+    DxfCurve::Polyline {
+        vertices,
+        closed: flags & 1 != 0,
+    }
 }
