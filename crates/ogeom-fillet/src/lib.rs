@@ -15,6 +15,7 @@ pub mod facepair;
 pub mod fillet;
 pub mod march;
 mod marched;
+mod pinched;
 mod support;
 
 pub use analyse::{BlendContact, analyse_blend};

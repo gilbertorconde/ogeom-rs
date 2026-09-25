@@ -247,9 +247,26 @@ pub(crate) fn marched_fillet(
 
     // A seat running through a point where its hosts are tangent (the
     // crossing of two equal drums) has no section there: the ball's arc
-    // collapses at the pole, and the march can only stall on it. Refused by
-    // name up front, sampled along the whole reconstructed loop.
-    {
+    // collapses at the pole, and the march can only stall on it. Where a
+    // pole is one of the crease's own ends, the band pinches there and the
+    // pinched construction builds it; a pole inside a crease with none at
+    // its ends is refused by name, sampled along the whole reconstructed
+    // loop.
+    let pinched = [
+        crate::pinched::hosts_tangent_at(
+            &first,
+            &second,
+            stored_end(model, edge, false, tol)?,
+            tol,
+        )?,
+        crate::pinched::hosts_tangent_at(
+            &first,
+            &second,
+            stored_end(model, edge, true, tol)?,
+            tol,
+        )?,
+    ];
+    if pinched == [false, false] {
         use ogeom_geom::Surface as _;
         for i in 0..64 {
             #[allow(clippy::cast_precision_loss)]
@@ -267,9 +284,9 @@ pub(crate) fn marched_fillet(
                 ogeom_bail!(
                     Construction,
                     "the seat passes through a point where its two hosts are \
-                     tangent; the ball's section collapses at that pole and \
-                     the pinched seam is refused; see docs/PARITY.md, \
-                     fillet.edge-blends"
+                     tangent inside the crease; the ball's section collapses \
+                     at that pole and the pinched seam is refused; see \
+                     docs/PARITY.md, fillet.edge-blends"
                 );
             }
         }
@@ -356,6 +373,20 @@ pub(crate) fn marched_fillet(
         first: (seat_sign * sign_first) as i8,
         second: (seat_sign * sign_second) as i8,
     };
+
+    if pinched != [false, false] {
+        return crate::pinched::pinched_fillet(
+            model,
+            solid,
+            edge,
+            [(&first, sign_first), (&second, sign_second)],
+            sides,
+            convex,
+            radius,
+            pinched,
+            tol,
+        );
+    }
 
     // Seeded at the edge's own midpoint: on a reconstructed loop the domain
     // midpoint may stand in cut-away territory where no ball seats, but the
@@ -931,8 +962,7 @@ fn open_runout_wedge(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     use ogeom_geom::Surface as _;
-    let [(first, sign_first), (second, sign_second)] = hosts;
-    let additive = !convex;
+    let [(first, _), (second, _)] = hosts;
 
     // The walker clamps the guide parameter into its window; a run that
     // crossed the period comes back wrapped. Unwrap it into one monotonic
@@ -1320,6 +1350,45 @@ fn open_runout_wedge(
         }
     }
 
+    build_open_band(
+        model,
+        solid,
+        edge,
+        &blend,
+        guide,
+        hosts,
+        radius,
+        convex,
+        [false, false],
+        tol,
+    )
+}
+
+/// The band and wedge over an open run of stations that spans exactly the
+/// window the wedge owns, applied to the solid.
+///
+/// An end that is `pinched` stands on a pole where the hosts turn tangent:
+/// its station's touch points and crease point are the one pole, its row
+/// collapses to it, and the wedge closes there without a cap, the band's
+/// end arc a degenerate edge and both legs meeting the rails at the pole.
+/// Every other end is capped in its section's own plane.
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
+#[allow(clippy::too_many_lines, reason = "one wedge, assembled end to end")]
+pub(crate) fn build_open_band(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    blend: &crate::march::MarchedBlend,
+    guide: &Curve,
+    hosts: [(&SurfaceGeometry, f64); 2],
+    radius: f64,
+    convex: bool,
+    pinched: [bool; 2],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    use ogeom_geom::Surface as _;
+    let [(first, sign_first), (second, sign_second)] = hosts;
+    let additive = !convex;
     let n = blend.len();
     // Two tenths of a micron at unit scale: what the march's own stations
     // hold to, and what the band's edges are widened to say.
@@ -1333,6 +1402,12 @@ fn open_runout_wedge(
     const ACROSS_OPEN: usize = 17;
     let mut rows: Vec<Vec<Point>> = (0..ACROSS_OPEN).map(|_| Vec::with_capacity(n)).collect();
     for at in 0..n {
+        if (at == 0 && pinched[0]) || (at == n - 1 && pinched[1]) {
+            for row in &mut rows {
+                row.push(blend.touch_first[at]);
+            }
+            continue;
+        }
         let centre = blend.spine[at];
         let a = (blend.touch_first[at] - centre) / radius;
         let b = (blend.touch_second[at] - centre) / radius;
@@ -1422,11 +1497,27 @@ fn open_runout_wedge(
             "the crease does not cross a run-out cap's section plane"
         );
     };
-    let plane0 = section_plane(0)?;
-    let plane1 = section_plane(n - 1)?;
+    // A pinched end has no section plane: its apex is the pole itself,
+    // at the station's own parameter.
+    let plane0 = if pinched[0] {
+        None
+    } else {
+        Some(section_plane(0)?)
+    };
+    let plane1 = if pinched[1] {
+        None
+    } else {
+        Some(section_plane(n - 1)?)
+    };
     let (t0, t1) = (
-        apex_on(&plane0, blend.along[0])?,
-        apex_on(&plane1, blend.along[n - 1])?,
+        match &plane0 {
+            Some(plane) => apex_on(plane, blend.along[0])?,
+            None => blend.along[0],
+        },
+        match &plane1 {
+            Some(plane) => apex_on(plane, blend.along[n - 1])?,
+            None => blend.along[n - 1],
+        },
     );
     if t1 <= t0 {
         ogeom_bail!(Construction, "the run-out caps cross; nothing to blend");
@@ -1436,10 +1527,28 @@ fn open_runout_wedge(
     let corner = |i: usize, j: usize| point_at(i, j);
     let va0 = ogeom_algo::make_vertex(model, apex0).shape;
     let va1 = ogeom_algo::make_vertex(model, apex1).shape;
-    let vc00 = ogeom_algo::make_vertex(model, corner(0, 0)).shape;
-    let vc01 = ogeom_algo::make_vertex(model, corner(0, l_count - 1)).shape;
-    let vc10 = ogeom_algo::make_vertex(model, corner(k_count - 1, 0)).shape;
-    let vc11 = ogeom_algo::make_vertex(model, corner(k_count - 1, l_count - 1)).shape;
+    // At a pinched end the crease, both rails and the collapsed row all
+    // stand on the pole: one vertex.
+    let vc00 = if pinched[0] {
+        va0.clone()
+    } else {
+        ogeom_algo::make_vertex(model, corner(0, 0)).shape
+    };
+    let vc01 = if pinched[1] {
+        va1.clone()
+    } else {
+        ogeom_algo::make_vertex(model, corner(0, l_count - 1)).shape
+    };
+    let vc10 = if pinched[0] {
+        va0.clone()
+    } else {
+        ogeom_algo::make_vertex(model, corner(k_count - 1, 0)).shape
+    };
+    let vc11 = if pinched[1] {
+        va1.clone()
+    } else {
+        ogeom_algo::make_vertex(model, corner(k_count - 1, l_count - 1)).shape
+    };
     // The corners stand a fit error from the exact touch points the
     // connectors end at; the vertices own that slop.
     for v in [&vc00, &vc01, &vc10, &vc11] {
@@ -1467,11 +1576,23 @@ fn open_runout_wedge(
         ogeom_algo::make_edge_between(model, border(0)?, v_dom, &vc00, &vc01, tol)?.shape;
     let rail_second =
         ogeom_algo::make_edge_between(model, border(k_count - 1)?, v_dom, &vc10, &vc11, tol)?.shape;
-    let arc_start =
-        ogeom_algo::make_edge_between(model, end_arc(0)?, u_dom, &vc00, &vc10, tol)?.shape;
-    let arc_end =
-        ogeom_algo::make_edge_between(model, end_arc(l_count - 1)?, u_dom, &vc01, &vc11, tol)?
-            .shape;
+    // A pinched end's arc is the collapsed row: a degenerate edge, which
+    // carries its chart image and no curve.
+    let collapsed = |model: &mut Model, at: &Shape| -> OgeomResult<Shape> {
+        let mut data = ogeom_topo::EdgeData::new();
+        data.degenerate = true;
+        model.add_edge(data, &[at.clone(), at.clone()])
+    };
+    let arc_start = if pinched[0] {
+        collapsed(model, &vc00)?
+    } else {
+        ogeom_algo::make_edge_between(model, end_arc(0)?, u_dom, &vc00, &vc10, tol)?.shape
+    };
+    let arc_end = if pinched[1] {
+        collapsed(model, &vc01)?
+    } else {
+        ogeom_algo::make_edge_between(model, end_arc(l_count - 1)?, u_dom, &vc01, &vc11, tol)?.shape
+    };
     for rail in [&rail_first, &rail_second, &arc_start, &arc_end] {
         if let Some(node) = model.node_mut(rail)
             && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
@@ -1499,46 +1620,41 @@ fn open_runout_wedge(
     };
 
     // One connector per host per end: the host's own section in the cap's
-    // plane, from the crease to the touch rail.
-    let conn_first_0 = section_connector(
-        model,
-        first,
-        plane0,
-        (&va0, apex0),
-        (&vc00, corner(0, 0)),
-        radius,
-        fit_target,
-        tol,
-    )?;
-    let conn_first_1 = section_connector(
+    // plane, from the crease to the touch rail. A pinched end has none.
+    let connector = |model: &mut Model,
+                     host: &SurfaceGeometry,
+                     plane: Option<ogeom_math::Plane>,
+                     apex: (&Shape, Point),
+                     touch: (&Shape, Point)|
+     -> OgeomResult<Option<Shape>> {
+        match plane {
+            Some(plane) => Ok(Some(section_connector(
+                model, host, plane, apex, touch, radius, fit_target, tol,
+            )?)),
+            None => Ok(None),
+        }
+    };
+    let conn_first_0 = connector(model, first, plane0, (&va0, apex0), (&vc00, corner(0, 0)))?;
+    let conn_first_1 = connector(
         model,
         first,
         plane1,
         (&va1, apex1),
         (&vc01, corner(0, l_count - 1)),
-        radius,
-        fit_target,
-        tol,
     )?;
-    let conn_second_0 = section_connector(
+    let conn_second_0 = connector(
         model,
         second,
         plane0,
         (&va0, apex0),
         (&vc10, corner(k_count - 1, 0)),
-        radius,
-        fit_target,
-        tol,
     )?;
-    let conn_second_1 = section_connector(
+    let conn_second_1 = connector(
         model,
         second,
         plane1,
         (&va1, apex1),
         (&vc11, corner(k_count - 1, l_count - 1)),
-        radius,
-        fit_target,
-        tol,
     )?;
 
     // The band face: same-parameter iso pcurves on its own chart, no seam.
@@ -1618,27 +1734,23 @@ fn open_runout_wedge(
 
     // The legs: each host's own surface between the crease and its rail,
     // closed at the ends by the connectors.
-    let leg_first = face_from_edges(
+    let leg = |model: &mut Model,
+               host: &SurfaceGeometry,
+               rail: &Shape,
+               ends: [&Option<Shape>; 2]|
+     -> OgeomResult<Shape> {
+        let mut edges = vec![apex_edge.clone()];
+        edges.extend(ends[1].clone());
+        edges.push(rail.reversed());
+        edges.extend(ends[0].as_ref().map(Shape::reversed));
+        face_from_edges(model, host.clone(), &edges, tol)
+    };
+    let leg_first = leg(model, first, &rail_first, [&conn_first_0, &conn_first_1])?;
+    let leg_second = leg(
         model,
-        first.clone(),
-        &[
-            apex_edge.clone(),
-            conn_first_1.clone(),
-            rail_first.reversed(),
-            conn_first_0.reversed(),
-        ],
-        tol,
-    )?;
-    let leg_second = face_from_edges(
-        model,
-        second.clone(),
-        &[
-            apex_edge.clone(),
-            conn_second_1.clone(),
-            rail_second.reversed(),
-            conn_second_0.reversed(),
-        ],
-        tol,
+        second,
+        &rail_second,
+        [&conn_second_0, &conn_second_1],
     )?;
 
     // The caps: the section planes, bounded by connector–arc–connector.
@@ -1659,39 +1771,42 @@ fn open_runout_wedge(
             Ok(face.reversed())
         }
     };
-    let cap0 = cap(
-        model,
-        plane0,
-        &[
-            conn_first_0.clone(),
-            arc_start.clone(),
-            conn_second_0.reversed(),
-        ],
-        -guide.d1_at(t0, tol)?,
-    )?;
-    let cap1 = cap(
-        model,
-        plane1,
-        &[
-            conn_first_1.clone(),
-            arc_end.clone(),
-            conn_second_1.reversed(),
-        ],
-        guide.d1_at(t1, tol)?,
-    )?;
+    let mut caps = Vec::new();
+    if let (Some(plane), Some(c1), Some(c2)) = (plane0, &conn_first_0, &conn_second_0) {
+        caps.push(cap(
+            model,
+            plane,
+            &[c1.clone(), arc_start.clone(), c2.reversed()],
+            -guide.d1_at(t0, tol)?,
+        )?);
+    }
+    if let (Some(plane), Some(c1), Some(c2)) = (plane1, &conn_first_1, &conn_second_1) {
+        caps.push(cap(
+            model,
+            plane,
+            &[c1.clone(), arc_end.clone(), c2.reversed()],
+            guide.d1_at(t1, tol)?,
+        )?);
+    }
 
     let orient = |face: Shape, host_sign: f64| -> Shape {
         let aligned = if additive { -host_sign } else { host_sign };
         if aligned > 0.0 { face } else { face.reversed() }
     };
-    let faces = [
+    let mut faces = vec![
         orient(leg_first, sign_first),
         orient(leg_second, sign_second),
         blend_face,
-        cap0,
-        cap1,
     ];
+    faces.extend(caps);
     apply_wedge(model, solid, Some(edge), &faces, additive, tol)
+}
+
+/// The start or end of the edge's own stored curve over its own range,
+/// placed: the crease's ends, whatever loop the seat was rebuilt on.
+fn stored_end(model: &Model, edge: &Shape, end: bool, tol: Tolerances) -> OgeomResult<Point> {
+    let (curve, (lo, hi)) = edge_curve(model, edge, tol)?;
+    curve.point_at(if end { hi } else { lo }, tol)
 }
 
 /// Whether the crease ends at `at` because the solid does (its end vertex

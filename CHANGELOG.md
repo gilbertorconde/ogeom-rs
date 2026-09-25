@@ -19,6 +19,11 @@ bump may break the API and a patch bump may not.
   otherwise. Each point is the centroid of a section cut square to the
   path, holes subtracted. The result carries the measured deviation, held
   under the tolerance asked for.
+- **Fillets pinched at a tangent pole.** A crease whose two faces turn
+  tangent at one of its ends, such as the seam of two equal drums crossing
+  where the drums touch, blends: the band narrows to a point at the pole.
+  Both the fused drums' notch and their common part's ridge round, one
+  seam edge at a time or all in one call.
 
 ## [0.3.3] - 2026-09-25
 

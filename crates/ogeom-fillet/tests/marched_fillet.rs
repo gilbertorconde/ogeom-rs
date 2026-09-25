@@ -207,13 +207,13 @@ fn the_seam_of_a_branch_cylinder_gains_a_marched_fillet() {
     assert!(has_spline_face, "the blend face rides its fitted surface");
 }
 
-#[test]
-fn two_equal_drums_refuse_the_tangent_pole_by_name() {
-    // Equal radii pinch: the seam's ellipses pass through the two points
-    // where the drums are tangent, the ball's section collapses there, and
-    // the honest answer is a refusal that says so.
-    let mut model = ogeom_topo::Model::new();
-    let upright = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 20.0, T).unwrap();
+/// Two drums of radius 5 crossing square, fused or in common, and their
+/// seam's elliptical edges.
+fn equal_drums(
+    model: &mut ogeom_topo::Model,
+    common: bool,
+) -> (ogeom_topo::Shape, Vec<ogeom_topo::Shape>) {
+    let upright = ogeom_algo::make_cylinder(model, Frame::WORLD, 5.0, 20.0, T).unwrap();
     let across_frame = Frame::new(
         Point::new(-20.0, 0.0, 10.0),
         ogeom_math::Direction::X,
@@ -221,12 +221,16 @@ fn two_equal_drums_refuse_the_tangent_pole_by_name() {
         T,
     )
     .unwrap();
-    let across = ogeom_algo::make_cylinder(&mut model, across_frame, 5.0, 40.0, T).unwrap();
-    let joined = ogeom_bool::fuse(&mut model, &upright.shape, &across.shape, T).unwrap();
-    let edge = explore_unique(&model, &joined.shape, ShapeType::Edge)
+    let across = ogeom_algo::make_cylinder(model, across_frame, 5.0, 40.0, T).unwrap();
+    let joined = if common {
+        ogeom_bool::common(model, &upright.shape, &across.shape, T).unwrap()
+    } else {
+        ogeom_bool::fuse(model, &upright.shape, &across.shape, T).unwrap()
+    };
+    let seam = explore_unique(model, &joined.shape, ShapeType::Edge)
         .unwrap()
         .into_iter()
-        .find(|e| {
+        .filter(|e| {
             model
                 .node(e)
                 .and_then(|n| n.data().as_edge())
@@ -239,9 +243,158 @@ fn two_equal_drums_refuse_the_tangent_pole_by_name() {
                 })
                 .is_some_and(|c| matches!(c, ogeom_geom::Curve::Ellipse(_)))
         })
-        .expect("the crossing has its elliptical seam arcs");
-    let err = ogeom_fillet::fillet_edge(&mut model, &joined.shape, &edge, 1.0, T).unwrap_err();
-    assert!(err.to_string().contains("tangent"), "{err}");
+        .collect();
+    (joined.shape, seam)
+}
+
+/// A volume from the mesh alone. The pinched band's fitted face sends the
+/// integrator to the mesh, while the drums alone integrate exactly; a
+/// difference of the two would be mostly the mesh's deficit. Both meshed
+/// at one chord, the deficits away from the band cancel.
+fn mesh_volume(model: &ogeom_topo::Model, shape: &ogeom_topo::Shape) -> f64 {
+    let mesh = ogeom_mesh::triangulate(
+        model,
+        shape,
+        ogeom_mesh::Deflection {
+            chord: 1e-3,
+            ..ogeom_mesh::Deflection::default()
+        },
+        T,
+    )
+    .unwrap();
+    mesh.triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|i| mesh.positions[i as usize].to_vector());
+            a.dot(b.cross(c)) / 6.0
+        })
+        .sum()
+}
+
+/// The largest distance, less the radius, from the band face's mesh to the
+/// ball's centre line: where the drums offset to `offset` cross, the two
+/// ellipses `z = 10 ± x` on the drum of that radius.
+fn band_off_the_ball(
+    model: &ogeom_topo::Model,
+    shape: &ogeom_topo::Shape,
+    offset: f64,
+    radius: f64,
+) -> f64 {
+    let centres: Vec<Point> = (0..=20_000)
+        .flat_map(|i| {
+            let phi = core::f64::consts::TAU * f64::from(i) / 20_000.0;
+            let (x, y) = (offset * phi.cos(), offset * phi.sin());
+            [Point::new(x, y, 10.0 + x), Point::new(x, y, 10.0 - x)]
+        })
+        .collect();
+    let mut worst = 0.0_f64;
+    for face in explore(model, shape, Filter::OfType(ShapeType::Face)).unwrap() {
+        let fitted = model
+            .node(&face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+            .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::BSpline(_)));
+        if !fitted {
+            continue;
+        }
+        let mesh = ogeom_mesh::triangulate_face(
+            model,
+            &face,
+            ogeom_mesh::Deflection {
+                chord: 1e-3,
+                ..ogeom_mesh::Deflection::default()
+            },
+            T,
+        )
+        .unwrap();
+        for p in &mesh.positions {
+            let nearest = centres
+                .iter()
+                .map(|c| c.distance(*p))
+                .fold(f64::INFINITY, f64::min);
+            worst = worst.max((nearest - radius).abs());
+        }
+    }
+    worst
+}
+
+#[test]
+fn two_equal_drums_blend_pinched_at_their_tangent_poles() {
+    // Equal radii pinch: the seam's ellipses pass through the two points
+    // where the drums are tangent, and the ball's section shrinks to
+    // nothing there. Every seam edge has a pole for at least one end.
+    let mut model = ogeom_topo::Model::new();
+    let (joined, seam) = equal_drums(&mut model, false);
+    let edge = seam[0].clone();
+    let radius = 1.0;
+    let result = ogeom_fillet::fillet_edge(&mut model, &joined, &edge, radius, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    assert!(result.history.is_deleted(&edge));
+
+    // The notch is concave, so the band adds material: less than the
+    // quarter-round's share of the radius square along the whole seam,
+    // two ellipses of semi-axes 5 and 5√2.
+    let added = mesh_volume(&model, &result.shape) - mesh_volume(&model, &joined);
+    let seam_length = 4.0 * core::f64::consts::PI * ((25.0 + 50.0) / 2.0_f64).sqrt();
+    let bound = radius * radius * (1.0 - core::f64::consts::FRAC_PI_4) * seam_length;
+    assert!(
+        added > 0.0 && added < bound,
+        "added {added}, outside (0, {bound})"
+    );
+
+    // The ball rolls outside both drums, its centre a radius out from each.
+    // The centre line is sampled every few microns and the band is fitted
+    // to two tenths of one; a hundredth covers both and the mesh.
+    let off = band_off_the_ball(&model, &result.shape, 5.0 + radius, radius);
+    assert!(off < 1e-2, "the band stands {off} off the rolling ball");
+}
+
+#[test]
+fn the_common_of_two_equal_drums_rounds_pinched_at_its_poles() {
+    // The convex twin: the drums' common part, whose seam edges are
+    // ridges. The ball rolls inside both drums and the band takes material
+    // away, pinched at the same poles.
+    let mut model = ogeom_topo::Model::new();
+    let (joined, seam) = equal_drums(&mut model, true);
+    let radius = 1.0;
+    for edge in &seam {
+        let result = ogeom_fillet::fillet_edge(&mut model, &joined, edge, radius, T).unwrap();
+        let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let removed = mesh_volume(&model, &joined) - mesh_volume(&model, &result.shape);
+        assert!(
+            removed > 0.0,
+            "a ridge's fillet removes material, not {removed}"
+        );
+        let off = band_off_the_ball(&model, &result.shape, 5.0 - radius, radius);
+        assert!(off < 1e-2, "the band stands {off} off the rolling ball");
+    }
+}
+
+#[test]
+fn pinched_bands_add_up_across_the_seam() {
+    // Every seam edge blended in one call adds what the edges add one at a
+    // time: the bands meet only at the poles, where each pinches to a
+    // point, and cap to cap where a drum's seam splits an arc. The meshes
+    // at one chord agree to a few tenths of a percent on these deltas; one
+    // percent is that noise with room, and far under any band's own share.
+    let mut model = ogeom_topo::Model::new();
+    let (joined, seam) = equal_drums(&mut model, false);
+    let base = mesh_volume(&model, &joined);
+    let mut each = 0.0;
+    for edge in &seam {
+        let one = ogeom_fillet::fillet_edge(&mut model, &joined, edge, 1.0, T).unwrap();
+        each += mesh_volume(&model, &one.shape) - base;
+    }
+    let all = ogeom_fillet::fillet_edges(&mut model, &joined, &seam, 1.0, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &all.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let together = mesh_volume(&model, &all.shape) - base;
+    assert!(
+        (together - each).abs() < each.abs() * 1e-2,
+        "together {together}, one at a time {each}"
+    );
 }
 
 /// The edge of a converted solid nearest a point, straight or curved as asked.
