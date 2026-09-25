@@ -141,3 +141,50 @@ fn a_thread_measures_to_pappus_at_the_default_deflection() {
         .mass;
     assert!((v - want).abs() < want * 1e-4, "{v} against {want}");
 }
+
+/// Under the Frenet frame a profile square to a helix rides the helix's own
+/// screw: the solid is as big as the profile's area times its centroid's
+/// path, and it reaches as far out as the profile does.
+#[test]
+fn a_frenet_pipe_on_a_helix_is_a_screw() {
+    use ogeom::geom::{Curve3d as _, HelixCurve};
+    let mut model = Model::new();
+    let helix = HelixCurve::new(Frame::WORLD, 11.0, 5.0, 4.0).unwrap();
+    let range = helix.domain();
+    let start = helix.point_at(range.0, T).unwrap();
+    let tangent = helix.d1_at(range.0, T).unwrap();
+    let length = {
+        let per_turn = (core::f64::consts::TAU * 11.0).hypot(5.0);
+        per_turn * 4.0
+    };
+    let edge = ogeom::algo::make_edge(&mut model, helix.into(), range, T)
+        .unwrap()
+        .shape;
+    let spine = ogeom::algo::make_wire(&mut model, &[edge], T)
+        .unwrap()
+        .shape;
+    let normal = Direction::new(tangent, T).unwrap();
+    // The square's sides: one radial, one square to it in the section.
+    let radial = Direction::new(start - Point::new(0.0, 0.0, start.z), T).unwrap();
+    let frame = Frame::new(start, normal, radial, T).unwrap();
+    let (x, y) = (frame.x().vector(), frame.y().vector());
+    let pts: Vec<Point> = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+        .iter()
+        .map(|(a, b)| start + x * *a + y * *b)
+        .collect();
+    let wire = make_polygon(&mut model, &pts, true, T).unwrap().shape;
+    let face = make_face(
+        &mut model,
+        PlaneSurface::new(Plane::new(frame)).into(),
+        &[wire],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let pipe = ogeom::offset::make_pipe_shell(&mut model, &face, &spine, true, 1e-3, T)
+        .unwrap()
+        .shape;
+    let v = volume(&model, &pipe);
+    let want = 4.0 * length;
+    assert!((v - want).abs() < want * 1e-3, "{v} against {want}");
+}
