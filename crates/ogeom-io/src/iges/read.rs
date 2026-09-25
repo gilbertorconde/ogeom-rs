@@ -178,6 +178,14 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         );
     }
 
+    if reader.vertex_misses.0 > 0 {
+        let (count, worst) = reader.vertex_misses;
+        reader.report.warnings.push(format!(
+            "{count} vertices sat off the curve ends they bound, by up to {worst:.2e}; \
+             their tolerances grew to say so"
+        ));
+    }
+    let (callouts, dimensions) = reader.annotations();
     // Everything never visited, counted by type and form.
     for (de, entity) in &file.entities {
         if !reader.visited.contains_key(de) {
@@ -189,15 +197,19 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
             *reader.report.skipped.entry(key).or_default() += 1;
         }
     }
-
-    if reader.vertex_misses.0 > 0 {
-        let (count, worst) = reader.vertex_misses;
-        reader.report.warnings.push(format!(
-            "{count} vertices sat off the curve ends they bound, by up to {worst:.2e}; \
-             their tolerances grew to say so"
-        ));
+    let mut document = reader.document(&solids, &sheets);
+    {
+        let pmi = document.pmi_mut();
+        let base = pmi.dimensions.len();
+        for (i, dimension) in dimensions.into_iter().enumerate() {
+            let (callout, dimension) = dimension;
+            pmi.dimensions.push(dimension);
+            let mut callout = callout;
+            callout.annotates = Some(ogeom_doc::Annotated::Dimension(base + i));
+            pmi.callouts.push(callout);
+        }
+        pmi.callouts.extend(callouts);
     }
-    let document = reader.document(&solids, &sheets);
     let solids = solids.into_iter().map(|(_, s)| s).collect();
     Ok(IgesImport {
         document,
@@ -329,11 +341,13 @@ impl<'a> Reader<'a> {
     }
 
     /// Conic arc: `A x² + B xy + C y² + D x + E y + F = 0` in the definition
-    /// plane, axis-aligned. The coefficients say which conic it is (both
-    /// squares one sign an ellipse, opposite signs a hyperbola, one square
-    /// missing a parabola), and each translates to its own curve, the arc's
-    /// ends read off the start and terminate points. A rotated conic is
-    /// refused by name until a file demands it.
+    /// plane. The coefficients say which conic it is (both squares one sign
+    /// an ellipse, opposite signs a hyperbola, one square missing a
+    /// parabola), and each translates to its own curve, the arc's ends read
+    /// off the start and terminate points. A conic whose axes turn (`B` not
+    /// zero) is read in the frame turned by `θ`, `tan 2θ = B / (A − C)`,
+    /// where its cross term vanishes, and turned back: the curve is exact
+    /// either way.
     fn conic(&mut self, de: i64, entity: &Entity) -> OgeomResult<(Curve, (f64, f64))> {
         let scale = self.report.scale_mm;
         let (a, b, c, d, e, f) = (
@@ -344,14 +358,6 @@ impl<'a> Reader<'a> {
             entity.at(4).real(),
             entity.at(5).real(),
         );
-        if b.abs() > 1e-12 {
-            ogeom_bail!(
-                Construction,
-                "D{de}: conic arc form {} turns its axes; only an axis-aligned \
-                 conic is translated; see docs/PARITY.md, io.iges",
-                entity.form
-            );
-        }
         let zt = entity.at(6).real() * scale;
         let start = Point::new(entity.at(7).real() * scale, entity.at(8).real() * scale, zt);
         let end = Point::new(
@@ -359,6 +365,38 @@ impl<'a> Reader<'a> {
             entity.at(10).real() * scale,
             zt,
         );
+        if b.abs() > 1e-12 {
+            let theta = 0.5 * b.atan2(a - c);
+            let (sin, cos) = theta.sin_cos();
+            // x = x' cos θ − y' sin θ, y = x' sin θ + y' cos θ.
+            let turned = [
+                a * cos * cos + b * cos * sin + c * sin * sin,
+                a * sin * sin - b * cos * sin + c * cos * cos,
+                d * cos + e * sin,
+                -d * sin + e * cos,
+                f,
+            ];
+            let about = ogeom_math::Axis::new(Point::ORIGIN, Direction::Z);
+            let back = Transform::rotation(about, theta);
+            let into = Transform::rotation(about, -theta);
+            let (curve, range) =
+                self.axis_aligned_conic(de, turned, zt, into.apply(start), into.apply(end))?;
+            return Ok((curve.transformed(&back, self.tol)?, range));
+        }
+        self.axis_aligned_conic(de, [a, c, d, e, f], zt, start, end)
+    }
+
+    /// [`Reader::conic`] once its axes are the definition plane's own:
+    /// `A x² + C y² + D x + E y + F = 0`.
+    fn axis_aligned_conic(
+        &mut self,
+        de: i64,
+        [a, c, d, e, f]: [f64; 5],
+        zt: f64,
+        start: Point,
+        end: Point,
+    ) -> OgeomResult<(Curve, (f64, f64))> {
+        let scale = self.report.scale_mm;
         // Both squares present and of one sign: an ellipse, its coefficients
         // made positive.
         if a != 0.0 && c != 0.0 && (a > 0.0) == (c > 0.0) {
@@ -552,22 +590,21 @@ impl<'a> Reader<'a> {
         Ok((curve, (t0, t1)))
     }
 
-    /// Offset curve (130): a base curve displaced a constant distance
-    /// perpendicular to a reference direction. The file displaces along
-    /// the reference crossed with the tangent; this vocabulary's offset runs
-    /// along the tangent crossed with the reference, so the distance flips
-    /// sign. A varying offset (a function of the parameter) is refused by
-    /// name.
+    /// Offset curve (130): a base curve displaced perpendicular to a
+    /// reference direction. The file displaces along the reference crossed
+    /// with the tangent; this vocabulary's offset runs along the tangent
+    /// crossed with the reference, so the distance flips sign. A constant
+    /// distance is the exact offset curve. A distance that varies (type 2,
+    /// linearly with arc length from `D1` at `TD1` to `D2` at `TD2`; type 3,
+    /// as a coordinate of another curve at the same parameter) has no
+    /// closed form, and the displaced points are fitted, same-parameter
+    /// with the base curve, to a hundredth of a micron.
     fn offset_curve(&mut self, de: i64, entity: &Entity) -> OgeomResult<(Curve, (f64, f64))> {
         let scale = self.report.scale_mm;
         let kind = entity.at(1).int();
         let (d1, d2) = (entity.at(5).real(), entity.at(7).real());
         if kind != 1 || (d1 - d2).abs() > 1e-12 {
-            ogeom_bail!(
-                Construction,
-                "D{de}: only a constant offset (type 1) is translated; see \
-                 docs/PARITY.md, io.iges"
-            );
+            return self.varying_offset(de, entity, kind);
         }
         let (basis, range) = self.curve(entity.at(0).int())?;
         let reference = Direction::from_coords(
@@ -580,6 +617,110 @@ impl<'a> Reader<'a> {
         let range = if tt2 > tt1 { (tt1, tt2) } else { range };
         let offset = OffsetCurve::new(basis, -d1 * scale, reference)?;
         Ok((Curve::Offset(Box::new(offset)), range))
+    }
+
+    /// The varying arm of [`Reader::offset_curve`].
+    fn varying_offset(
+        &mut self,
+        de: i64,
+        entity: &Entity,
+        kind: i64,
+    ) -> OgeomResult<(Curve, (f64, f64))> {
+        let scale = self.report.scale_mm;
+        let (basis, range) = self.curve(entity.at(0).int())?;
+        let reference = Direction::from_coords(
+            entity.at(9).real(),
+            entity.at(10).real(),
+            entity.at(11).real(),
+            self.tol,
+        )?
+        .vector();
+        let (tt1, tt2) = (entity.at(12).real(), entity.at(13).real());
+        let range = if tt2 > tt1 { (tt1, tt2) } else { range };
+        const SAMPLES: usize = 400;
+        let parameters: Vec<f64> = (0..=SAMPLES)
+            .map(|i| {
+                #[allow(clippy::cast_precision_loss)]
+                let f = i as f64 / SAMPLES as f64;
+                range.0 + (range.1 - range.0) * f
+            })
+            .collect();
+        let distance: Box<dyn Fn(usize, f64) -> OgeomResult<f64>> = match kind {
+            2 => {
+                // Linear in arc length along the base, from TD1 to TD2.
+                let (d1, td1, d2, td2) = (
+                    entity.at(5).real(),
+                    entity.at(6).real(),
+                    entity.at(7).real(),
+                    entity.at(8).real(),
+                );
+                let mut lengths = vec![0.0_f64];
+                let mut last = basis.point_at(parameters[0], self.tol)?;
+                for &t in &parameters[1..] {
+                    let p = basis.point_at(t, self.tol)?;
+                    let held = lengths[lengths.len() - 1];
+                    lengths.push(held + last.distance(p) / scale);
+                    last = p;
+                }
+                let span = td2 - td1;
+                Box::new(move |i, _| {
+                    let f = if span.abs() > 0.0 {
+                        (lengths[i] - td1) / span
+                    } else {
+                        0.0
+                    };
+                    Ok(d1 + (d2 - d1) * f)
+                })
+            }
+            3 => {
+                // A coordinate (TT: 1 x, 2 y, 3 z) of another curve at the
+                // same parameter.
+                let (function, _) = self.curve(entity.at(2).int())?;
+                let which = entity.at(3).int();
+                let tol = self.tol;
+                Box::new(move |_, t| {
+                    let p = function.point_at(t, tol)?;
+                    let value = match which {
+                        1 => p.x,
+                        2 => p.y,
+                        _ => p.z,
+                    };
+                    Ok(value / scale)
+                })
+            }
+            _ => ogeom_bail!(
+                Construction,
+                "D{de}: offset curve type {kind} names no distance law"
+            ),
+        };
+        let mut points = Vec::with_capacity(parameters.len());
+        for (i, &t) in parameters.iter().enumerate() {
+            let p = basis.point_at(t, self.tol)?;
+            let tangent = basis.d1_at(t, self.tol)?;
+            let side = reference.cross(tangent);
+            let m = side.magnitude();
+            if m <= self.tol.angular() {
+                ogeom_bail!(
+                    Construction,
+                    "D{de}: the offset's reference runs along its base curve"
+                );
+            }
+            points.push(p + side * (distance(i, t)? * scale / m));
+        }
+        let fitted = ogeom_geom::fit::fit_points_at(
+            &parameters,
+            &points,
+            3,
+            self.tol.confusion() * 100.0,
+            self.tol,
+        )?;
+        if !fitted.met {
+            self.report.warnings.push(format!(
+                "D{de}: a varying offset curve fitted to {:.2e}",
+                fitted.error
+            ));
+        }
+        Ok((Curve::from(fitted.curve), range))
     }
 
     fn spline_curve(&mut self, de: i64, entity: &Entity) -> OgeomResult<(Curve, (f64, f64))> {
@@ -738,6 +879,7 @@ impl<'a> Reader<'a> {
                     .into()
             }
             128 => self.nurbs_surface(de, entity)?,
+            114 => self.spline_surface(de, entity)?,
             118 => self.ruled_surface(de, entity)?,
             140 => {
                 // Normal, distance, base surface: displaced along the
@@ -876,6 +1018,106 @@ impl<'a> Reader<'a> {
         Ok(BSplineSurface::rational(a.knots().clone(), across, grid)?.into())
     }
 
+    /// Parametric spline surface (114): a grid of bicubic polynomial
+    /// patches, each over its own span of break points, its sixteen
+    /// coefficients per coordinate multiplying `s^m t^l` at index `m + 4l`
+    /// with `s` and `t` measured from the patch's first break points. Each
+    /// patch is converted to Bézier form exactly (its monomials scaled to
+    /// the unit square, then to the Bernstein basis both ways) and the
+    /// patches joined on shared rows, every break point a knot of
+    /// multiplicity three: the spline curve's (112) construction, both ways.
+    /// After each row of patches the file carries one arbitrary patch, and
+    /// after the last row one arbitrary row; both are skipped.
+    fn spline_surface(&mut self, de: i64, entity: &Entity) -> OgeomResult<SurfaceGeometry> {
+        let m = usize::try_from(entity.at(2).int()).unwrap_or(0);
+        let n = usize::try_from(entity.at(3).int()).unwrap_or(0);
+        if m == 0 || n == 0 {
+            ogeom_bail!(Construction, "D{de}: a spline surface with no patches");
+        }
+        let scale = self.report.scale_mm;
+        let tu = |i: usize| entity.at(4 + i).real();
+        let tv = |j: usize| entity.at(4 + m + 1 + j).real();
+        let base = 4 + (m + 1) + (n + 1);
+        let (rows, columns) = (3 * m + 1, 3 * n + 1);
+        let mut net = vec![Point::ORIGIN; rows * columns];
+        // Monomial coefficients on [0, 1] to Bernstein control values:
+        // `p_r = Σ_{k ≤ r} C(r, k) / C(3, k) · b_k`.
+        const TO_BERNSTEIN: [[f64; 4]; 4] = [
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 1.0 / 3.0, 0.0, 0.0],
+            [1.0, 2.0 / 3.0, 1.0 / 3.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0],
+        ];
+        for i in 0..m {
+            let h = tu(i + 1) - tu(i);
+            for j in 0..n {
+                let k = tv(j + 1) - tv(j);
+                if h <= 0.0 || k <= 0.0 {
+                    ogeom_bail!(
+                        Construction,
+                        "D{de}: spline surface patch ({i}, {j}) has no span"
+                    );
+                }
+                let at = base + (i * (n + 1) + j) * 48;
+                let mut coords = [[[0.0_f64; 4]; 4]; 3];
+                for (axis, block) in coords.iter_mut().enumerate() {
+                    // b[mu][lv]: the coefficient of σ^mu τ^lv on the unit square.
+                    let mut b = [[0.0_f64; 4]; 4];
+                    for (mu, row) in b.iter_mut().enumerate() {
+                        for (lv, value) in row.iter_mut().enumerate() {
+                            let raw = entity.at(at + 16 * axis + mu + 4 * lv).real();
+                            #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+                            let scaled = raw * h.powi(mu as i32) * k.powi(lv as i32);
+                            *value = scaled;
+                        }
+                    }
+                    // Bernstein in s, then in t.
+                    let mut q = [[0.0_f64; 4]; 4];
+                    for r in 0..4 {
+                        for lv in 0..4 {
+                            q[r][lv] = (0..4).map(|mu| TO_BERNSTEIN[r][mu] * b[mu][lv]).sum();
+                        }
+                    }
+                    for r in 0..4 {
+                        for c in 0..4 {
+                            block[r][c] = (0..4).map(|lv| TO_BERNSTEIN[c][lv] * q[r][lv]).sum();
+                        }
+                    }
+                }
+                for r in 0..4 {
+                    for c in 0..4 {
+                        net[(3 * i + r) * columns + 3 * j + c] = Point::new(
+                            coords[0][r][c] * scale,
+                            coords[1][r][c] * scale,
+                            coords[2][r][c] * scale,
+                        );
+                    }
+                }
+            }
+        }
+        let knots = |count: usize, at: &dyn Fn(usize) -> f64| -> Vec<f64> {
+            let mut out = vec![at(0); 4];
+            for i in 1..count {
+                out.extend([at(i); 3]);
+            }
+            out.extend([at(count); 4]);
+            out
+        };
+        let grid = ControlGrid::new(
+            net.into_iter()
+                .map(|p| Weighted::new(p, 1.0, self.tol))
+                .collect::<OgeomResult<Vec<_>>>()?,
+            rows,
+            columns,
+        )?;
+        Ok(ogeom_geom::BSplineSurface::rational(
+            KnotVector::new(knots(m, &tu), 3)?,
+            KnotVector::new(knots(n, &tv), 3)?,
+            grid,
+        )?
+        .into())
+    }
+
     fn nurbs_surface(&mut self, de: i64, entity: &Entity) -> OgeomResult<SurfaceGeometry> {
         let k1 = usize::try_from(entity.at(0).int()).unwrap_or(0);
         let k2 = usize::try_from(entity.at(1).int()).unwrap_or(0);
@@ -955,17 +1197,14 @@ impl<'a> Reader<'a> {
             // Curve on surface: the model-space curve is the trim's truth;
             // the file's pcurve is advisory, because faces recompute exact
             // pcurves and say when they cannot.
+            // Creation, surface, parameter-space curve, model-space curve.
             142 => {
-                let c = entity.at(2).int();
-                if c == 0 {
-                    ogeom_bail!(
-                        Construction,
-                        "D{de}: a curve-on-surface carries no model-space \
-                         curve; pcurve-only trimming is not translated; see \
-                         docs/PARITY.md, io.iges"
-                    );
+                let c = entity.at(3).int();
+                if c != 0 {
+                    return self.curve_segments(c);
                 }
-                self.curve_segments(c)
+                let (surface_de, b) = (entity.at(1).int(), entity.at(2).int());
+                self.lifted_segments(de, surface_de, b)
             }
             141 => {
                 let n = usize::try_from(entity.at(3).int()).unwrap_or(0);
@@ -983,6 +1222,63 @@ impl<'a> Reader<'a> {
             }
             _ => self.curve_segments(de),
         }
+    }
+
+    /// A trim given only in the surface's parameters: each parameter-space
+    /// segment lifted through the surface into a model-space curve, fitted
+    /// same-parameter with the composition to a hundredth of a micron. On a
+    /// B-spline surface the file's parameters are the surface's own; an
+    /// analytic surface's IGES parameterization is the file's convention,
+    /// not this kernel's, and its lift is refused by name.
+    fn lifted_segments(
+        &mut self,
+        de: i64,
+        surface_de: i64,
+        b: i64,
+    ) -> OgeomResult<Vec<(Curve, (f64, f64))>> {
+        if self.entity(surface_de)?.kind != 128 {
+            ogeom_bail!(
+                Construction,
+                "D{de}: a curve-on-surface carries no model-space curve, and \
+                 its surface's parameters are the file's convention rather \
+                 than this kernel's; only a B-spline surface's lift is \
+                 translated; see docs/PARITY.md, io.iges"
+            );
+        }
+        let surface = self.surface(surface_de)?;
+        let scale = self.report.scale_mm;
+        let mut out = Vec::new();
+        for (curve, range) in self.curve_segments(b)? {
+            // The parameter-space curve read as a model-space one carries
+            // the unit scale; the surface's parameters do not.
+            const SAMPLES: usize = 200;
+            let mut parameters = Vec::with_capacity(SAMPLES + 1);
+            let mut points = Vec::with_capacity(SAMPLES + 1);
+            for i in 0..=SAMPLES {
+                #[allow(clippy::cast_precision_loss)]
+                let t = range.0 + (range.1 - range.0) * (i as f64) / SAMPLES as f64;
+                let p = curve.point_at(t, self.tol)?;
+                parameters.push(t);
+                points.push(ogeom_math::Point2::new(p.x / scale, p.y / scale));
+            }
+            let chart =
+                ogeom_geom::fit::fit_points_2d_at(&parameters, &points, 3, 1e-10, self.tol)?;
+            let lifted = Curve::OnSurface(Box::new(ogeom_geom::CurveOnSurface::new(
+                chart.curve.into(),
+                surface.clone(),
+            )));
+            let fitted =
+                lifted.fitted_bspline_over(range, self.tol.confusion() * 100.0, self.tol)?;
+            if !fitted.met {
+                self.report.warnings.push(format!(
+                    "D{de}: a parameter-space trim lifted to within {:.2e}",
+                    fitted.error
+                ));
+            }
+            let domain = ogeom_geom::Curve3d::domain(&fitted.curve);
+            out.push((Curve::from(fitted.curve), domain));
+        }
+        Ok(out)
     }
 
     fn curve_segments(&mut self, de: i64) -> OgeomResult<Vec<(Curve, (f64, f64))>> {
@@ -1581,6 +1877,243 @@ impl<'a> Reader<'a> {
 
     /// The document: parts named from entity labels, colours from the fixed
     /// palette and from 314 entities the directory colour fields point at.
+    /// The model-space annotation: every independent drafting entity a
+    /// drawing does not own, as a callout of the lines the file draws (its
+    /// leaders, witness lines and symbol geometry, carried by their own
+    /// placements into the part's coordinates) named by its note's text.
+    /// A dimension whose text reads as a number is also the semantic
+    /// dimension of that value, which the callout draws; which geometry
+    /// it measures the file does not say. A drawing's own annotation lives
+    /// on the sheet, not on the part, and stays in the skipped table.
+    fn annotations(
+        &mut self,
+    ) -> (
+        Vec<ogeom_doc::Callout>,
+        Vec<(ogeom_doc::Callout, ogeom_doc::Dimension)>,
+    ) {
+        let mut on_sheets: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+        for entity in self.file.entities.values().filter(|e| e.kind == 404) {
+            let views = usize::try_from(entity.at(0).int()).unwrap_or(0);
+            let at = 1 + 3 * views;
+            let count = usize::try_from(entity.at(at).int()).unwrap_or(0);
+            for i in 0..count {
+                on_sheets.insert(entity.at(at + 1 + i).int().abs());
+            }
+        }
+        let drafting: Vec<i64> = self
+            .file
+            .entities
+            .iter()
+            .filter(|(de, e)| {
+                matches!(
+                    e.kind,
+                    202 | 206 | 208 | 210 | 212 | 214 | 216 | 218 | 220 | 222 | 228
+                ) && (e.status / 10_000) % 100 == 0
+                    && !on_sheets.contains(de)
+            })
+            .map(|(de, _)| *de)
+            .collect();
+        let mut callouts = Vec::new();
+        let mut dimensions = Vec::new();
+        for de in drafting {
+            match self.drafting(de) {
+                Ok((callout, Some(dimension))) => dimensions.push((callout, dimension)),
+                Ok((callout, None)) => callouts.push(callout),
+                Err(e) => self
+                    .report
+                    .warnings
+                    .push(format!("D{de}: annotation not drawn: {e}")),
+            }
+        }
+        (callouts, dimensions)
+    }
+
+    /// One drafting entity as a callout, and the dimension it states where
+    /// it is one.
+    fn drafting(
+        &mut self,
+        de: i64,
+    ) -> OgeomResult<(ogeom_doc::Callout, Option<ogeom_doc::Dimension>)> {
+        let entity = self.entity(de)?;
+        let pointer = |i: usize| entity.at(i).int();
+        let mut polylines: Vec<Vec<Point>> = Vec::new();
+        let mut text = String::new();
+        let mut measure: Option<(&str, ogeom_doc::MeasureKind)> = None;
+        let draw = |reader: &mut Self, lines: &mut Vec<Vec<Point>>, de: i64| -> OgeomResult<()> {
+            if de != 0 {
+                lines.push(reader.drafted_line(de)?);
+            }
+            Ok(())
+        };
+        match entity.kind {
+            212 => text = self.note_text(de)?,
+            214 => polylines.push(self.drafted_line(de)?),
+            216 => {
+                text = self.note_text(pointer(0))?;
+                for i in 1..=4 {
+                    draw(self, &mut polylines, pointer(i))?;
+                }
+                measure = Some(("linear distance", ogeom_doc::MeasureKind::Length));
+            }
+            206 => {
+                text = self.note_text(pointer(0))?;
+                for i in 1..=2 {
+                    draw(self, &mut polylines, pointer(i))?;
+                }
+                measure = Some(("diameter", ogeom_doc::MeasureKind::Length));
+            }
+            222 => {
+                text = self.note_text(pointer(0))?;
+                draw(self, &mut polylines, pointer(1))?;
+                if entity.params.len() > 4 {
+                    draw(self, &mut polylines, pointer(4))?;
+                }
+                measure = Some(("radius", ogeom_doc::MeasureKind::Length));
+            }
+            202 => {
+                text = self.note_text(pointer(0))?;
+                for i in [1, 2, 6, 7] {
+                    draw(self, &mut polylines, pointer(i))?;
+                }
+                measure = Some(("angle", ogeom_doc::MeasureKind::Angle));
+            }
+            218 | 220 => {
+                text = self.note_text(pointer(0))?;
+                draw(self, &mut polylines, pointer(1))?;
+                measure = Some(("ordinate", ogeom_doc::MeasureKind::Length));
+                if entity.kind == 220 {
+                    measure = None;
+                }
+            }
+            208 | 210 => {
+                // A flag note: its place and angle, then its note and
+                // leaders; a label: its note, then its leaders.
+                let at = if entity.kind == 208 { 4 } else { 0 };
+                text = self.note_text(pointer(at))?;
+                let n = usize::try_from(pointer(at + 1)).unwrap_or(0);
+                for i in 0..n {
+                    draw(self, &mut polylines, pointer(at + 2 + i))?;
+                }
+            }
+            228 => {
+                // Note, the symbol's geometry, then its leaders.
+                text = self.note_text(pointer(0))?;
+                let ng = usize::try_from(pointer(1)).unwrap_or(0);
+                for i in 0..ng {
+                    polylines.push(self.sampled_curve(pointer(2 + i))?);
+                }
+                let nl = usize::try_from(pointer(2 + ng)).unwrap_or(0);
+                for i in 0..nl {
+                    draw(self, &mut polylines, pointer(3 + ng + i))?;
+                }
+            }
+            kind => ogeom_bail!(Construction, "type {kind} is not drafting"),
+        }
+        let placement = self.placement(entity)?;
+        let plane = Frame::new(
+            placement.apply(Point::ORIGIN),
+            Direction::new(placement.apply_vector(Vector::Z), self.tol)?,
+            Direction::new(placement.apply_vector(Vector::X), self.tol)?,
+            self.tol,
+        )
+        .ok();
+        let callout = ogeom_doc::Callout {
+            name: text.clone(),
+            plane,
+            polylines,
+            annotates: None,
+        };
+        let dimension = measure.and_then(|(name, kind)| {
+            let value = first_number(&text)?;
+            let value = match kind {
+                ogeom_doc::MeasureKind::Angle => value.to_radians(),
+                ogeom_doc::MeasureKind::Length => value * self.report.scale_mm,
+            };
+            Some(ogeom_doc::Dimension {
+                name: name.to_owned(),
+                values: vec![value],
+                kind,
+                plus: None,
+                minus: None,
+                features: Vec::new(),
+                location: entity.kind == 216 || entity.kind == 218,
+            })
+        });
+        Ok((callout, dimension))
+    }
+
+    /// A general note's (212) text, its strings one line each.
+    fn note_text(&mut self, de: i64) -> OgeomResult<String> {
+        if de == 0 {
+            return Ok(String::new());
+        }
+        let entity = self.entity(de)?;
+        if entity.kind != 212 {
+            ogeom_bail!(Construction, "D{de}: type {} is not a note", entity.kind);
+        }
+        let count = usize::try_from(entity.at(0).int()).unwrap_or(0);
+        let mut lines = Vec::with_capacity(count);
+        for i in 0..count {
+            if let super::parse::Value::Text(t) = entity.at(1 + 12 * i + 11) {
+                lines.push(t.clone());
+            }
+        }
+        Ok(lines.join("\n"))
+    }
+
+    /// A leader (214) or witness line (106) as the polyline it draws, in
+    /// the part's coordinates.
+    fn drafted_line(&mut self, de: i64) -> OgeomResult<Vec<Point>> {
+        let entity = self.entity(de)?;
+        let s = self.report.scale_mm;
+        let mut points = Vec::new();
+        match entity.kind {
+            214 => {
+                let n = usize::try_from(entity.at(0).int()).unwrap_or(0);
+                let z = entity.at(3).real();
+                points.push(Point::new(
+                    entity.at(4).real() * s,
+                    entity.at(5).real() * s,
+                    z * s,
+                ));
+                for i in 0..n {
+                    points.push(Point::new(
+                        entity.at(6 + 2 * i).real() * s,
+                        entity.at(7 + 2 * i).real() * s,
+                        z * s,
+                    ));
+                }
+            }
+            106 => {
+                let n = usize::try_from(entity.at(1).int()).unwrap_or(0);
+                let z = entity.at(2).real();
+                for i in 0..n {
+                    points.push(Point::new(
+                        entity.at(3 + 2 * i).real() * s,
+                        entity.at(4 + 2 * i).real() * s,
+                        z * s,
+                    ));
+                }
+            }
+            _ => return self.sampled_curve(de),
+        }
+        let placement = self.placement(entity)?;
+        Ok(points.into_iter().map(|p| placement.apply(p)).collect())
+    }
+
+    /// Any curve the reader translates, as a polyline for drawing.
+    fn sampled_curve(&mut self, de: i64) -> OgeomResult<Vec<Point>> {
+        let (curve, range) = self.curve(de)?;
+        (0..=32)
+            .map(|i| {
+                curve.point_at(
+                    range.0 + (range.1 - range.0) * f64::from(i) / 32.0,
+                    self.tol,
+                )
+            })
+            .collect()
+    }
+
     fn document(&mut self, solids: &[(i64, Shape)], sheets: &[Shape]) -> ogeom_doc::Document {
         let colours: Vec<(Shape, ogeom_doc::Colour)> = solids
             .iter()
@@ -1643,6 +2176,30 @@ impl<'a> Reader<'a> {
 
 /// A trimmed carrier where the range is a strict part of the domain: a
 /// generatrix used by a sweep is exactly its stated span.
+/// The value a dimension's text states: `R5.5`, `Ø10`, `45°` read as 5.5,
+/// 10 and 45, and a patterned callout's leading count (`2X Ø5`, `4 x 12.7`)
+/// passed over for the value after it.
+fn first_number(text: &str) -> Option<f64> {
+    let trimmed = text.trim_start();
+    let count = trimmed
+        .find(|c: char| !c.is_ascii_digit())
+        .filter(|&n| n > 0)
+        .and_then(|n| {
+            let rest = trimmed[n..].trim_start();
+            rest.strip_prefix(['X', 'x']).map(|after| after.len())
+        });
+    let text = match count {
+        Some(len) => &trimmed[trimmed.len() - len..],
+        None => text,
+    };
+    let start = text.find(|c: char| c.is_ascii_digit() || c == '.')?;
+    let tail = &text[start..];
+    let end = tail
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(tail.len());
+    tail[..end].parse().ok()
+}
+
 fn trimmed_to(curve: Curve, range: (f64, f64), tol: Tolerances) -> OgeomResult<Curve> {
     let (lo, hi) = curve.domain();
     if (range.0 - lo).abs() < tol.parametric() && (range.1 - hi).abs() < tol.parametric() {
@@ -1917,5 +2474,348 @@ mod tests {
         assert!((t0, t1) == (0.0, 10.0));
         let at = offset.point_at(5.0, T).unwrap();
         assert!(at.distance(Point::new(5.0, 2.0, 0.0)) < 1e-9, "{at:?}");
+    }
+
+    /// A conic whose axes turn reads as the ellipse it is: `x'²/16 + y'²/4
+    /// = 1` turned thirty degrees, written with its cross term.
+    #[test]
+    fn a_rotated_conic_reads_as_its_turned_curve() {
+        let theta = 30.0_f64.to_radians();
+        let (sin, cos) = theta.sin_cos();
+        let (a2, b2) = (16.0, 4.0);
+        let coefficients = [
+            cos * cos / a2 + sin * sin / b2,
+            2.0 * sin * cos * (1.0 / a2 - 1.0 / b2),
+            sin * sin / a2 + cos * cos / b2,
+            0.0,
+            0.0,
+            -1.0,
+        ];
+        let start = [4.0 * cos, 4.0 * sin];
+        let end = [-2.0 * sin, 2.0 * cos];
+        let mut values = coefficients.to_vec();
+        values.extend([0.0, start[0], start[1], end[0], end[1]]);
+        let deck = file(vec![(1, entity(104, 1, reals(&values)))]);
+        let mut reader = reader(&deck);
+        let (curve, (t0, t1)) = reader.curve(1).unwrap();
+        assert!(matches!(curve, Curve::Ellipse(_)), "a turned ellipse");
+        assert!(
+            curve
+                .point_at(t0, T)
+                .unwrap()
+                .distance(Point::new(start[0], start[1], 0.0))
+                < 1e-9
+        );
+        assert!(
+            curve
+                .point_at(t1, T)
+                .unwrap()
+                .distance(Point::new(end[0], end[1], 0.0))
+                < 1e-9
+        );
+        for k in 0..=8 {
+            let p = curve
+                .point_at(t0 + (t1 - t0) * f64::from(k) / 8.0, T)
+                .unwrap();
+            let [a, b, c, _, _, f] = coefficients;
+            let residual = a * p.x * p.x + b * p.x * p.y + c * p.y * p.y + f;
+            assert!(residual.abs() < 1e-9, "on the conic: {p:?}");
+        }
+    }
+
+    /// An offset growing linearly with arc length (type 2) from one at the
+    /// base line's start to three at its end: the displaced curve rises
+    /// along the reference crossed with the tangent.
+    #[test]
+    fn a_linearly_varying_offset_curve_reads_as_its_fitted_displacement() {
+        let deck = file(vec![
+            (1, line([0.0, 0.0, 0.0], [10.0, 0.0, 0.0])),
+            (
+                3,
+                entity(
+                    130,
+                    0,
+                    vec![
+                        Value::Int(1),
+                        Value::Int(2),
+                        Value::Int(0),
+                        Value::Int(0),
+                        Value::Int(0),
+                        Value::Real(1.0),
+                        Value::Real(0.0),
+                        Value::Real(3.0),
+                        Value::Real(10.0),
+                        Value::Real(0.0),
+                        Value::Real(0.0),
+                        Value::Real(1.0),
+                        Value::Real(0.0),
+                        Value::Real(0.0),
+                    ],
+                ),
+            ),
+        ]);
+        let mut reader = reader(&deck);
+        let (curve, (t0, t1)) = reader.curve(3).unwrap();
+        for k in 0..=10 {
+            let t = t0 + (t1 - t0) * f64::from(k) / 10.0;
+            let p = curve.point_at(t, T).unwrap();
+            let want = Point::new(p.x, 1.0 + 2.0 * p.x / 10.0, 0.0);
+            assert!(p.distance(want) < 1e-5, "{p:?} against {want:?}");
+        }
+        assert!(
+            curve
+                .point_at(t0, T)
+                .unwrap()
+                .distance(Point::new(0.0, 1.0, 0.0))
+                < 1e-5
+        );
+        assert!(
+            curve
+                .point_at(t1, T)
+                .unwrap()
+                .distance(Point::new(10.0, 3.0, 0.0))
+                < 1e-5
+        );
+    }
+
+    /// The parametric spline surface `(s, t, s·t)`: one patch over
+    /// `[0, 2] × [0, 3]`, and the same surface as two patches split at
+    /// `s = 1` (the second re-expanded about its own break point). Both
+    /// read as the exact bicubic B-spline through the same points.
+    #[test]
+    fn a_parametric_spline_surface_reads_as_its_exact_bspline() {
+        let patch = |x: &[(usize, f64)], y: &[(usize, f64)], z: &[(usize, f64)]| -> Vec<f64> {
+            let mut out = vec![0.0; 48];
+            for (axis, terms) in [x, y, z].iter().enumerate() {
+                for &(k, v) in *terms {
+                    out[16 * axis + k] = v;
+                }
+            }
+            out
+        };
+        let header = |m: i64, n: i64, tu: &[f64], tv: &[f64]| -> Vec<Value> {
+            let mut out = vec![Value::Int(3), Value::Int(0), Value::Int(m), Value::Int(n)];
+            out.extend(reals(tu));
+            out.extend(reals(tv));
+            out
+        };
+        // x = s, y = t, z = s·t: index 1 is s, 4 is t, 5 is s·t.
+        let whole = {
+            let mut v = header(1, 1, &[0.0, 2.0], &[0.0, 3.0]);
+            v.extend(reals(&patch(&[(1, 1.0)], &[(4, 1.0)], &[(5, 1.0)])));
+            v.extend(reals(&[0.0; 48]));
+            v.extend(reals(&[0.0; 96]));
+            v
+        };
+        // Split at s = 1: the second patch about s = 1 is x = 1 + s',
+        // z = t + s'·t.
+        let split = {
+            let mut v = header(2, 1, &[0.0, 1.0, 2.0], &[0.0, 3.0]);
+            v.extend(reals(&patch(&[(1, 1.0)], &[(4, 1.0)], &[(5, 1.0)])));
+            v.extend(reals(&[0.0; 48]));
+            v.extend(reals(&patch(
+                &[(0, 1.0), (1, 1.0)],
+                &[(4, 1.0)],
+                &[(4, 1.0), (5, 1.0)],
+            )));
+            v.extend(reals(&[0.0; 48]));
+            v.extend(reals(&[0.0; 96]));
+            v
+        };
+        let deck = file(vec![(1, entity(114, 0, whole)), (3, entity(114, 0, split))]);
+        let mut reader = reader(&deck);
+        for de in [1, 3] {
+            let surface = reader.surface(de).unwrap();
+            for (u, v) in [(0.0, 0.0), (0.5, 1.0), (1.0, 2.5), (1.5, 0.7), (2.0, 3.0)] {
+                let p = ogeom_geom::Surface::point_at(&surface, u, v, T).unwrap();
+                let want = Point::new(u, v, u * v);
+                assert!(p.distance(want) < 1e-12, "D{de} at ({u}, {v}): {p:?}");
+            }
+        }
+    }
+
+    /// A curve-on-surface is creation, surface, parameter-space curve,
+    /// model-space curve: the model curve is read where the file gives it,
+    /// and a trim given only in the surface's parameters is lifted through
+    /// a B-spline surface.
+    #[test]
+    fn a_parameter_space_trim_lifts_through_its_bspline_surface() {
+        // The bilinear patch (10u, 10v, 0) over the unit square.
+        let surface = entity(
+            128,
+            0,
+            vec![
+                Value::Int(1),
+                Value::Int(1),
+                Value::Int(1),
+                Value::Int(1),
+                Value::Int(0),
+                Value::Int(0),
+                Value::Int(1),
+                Value::Int(0),
+                Value::Int(0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(1.0),
+                Value::Real(1.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(1.0),
+                Value::Real(1.0),
+                Value::Real(1.0),
+                Value::Real(1.0),
+                Value::Real(1.0),
+                Value::Real(1.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(10.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(10.0),
+                Value::Real(0.0),
+                Value::Real(10.0),
+                Value::Real(10.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(1.0),
+                Value::Real(0.0),
+                Value::Real(1.0),
+            ],
+        );
+        let on_surface = |model_curve: i64| {
+            entity(
+                142,
+                0,
+                vec![
+                    Value::Int(0),
+                    Value::Int(1),
+                    Value::Int(3),
+                    Value::Int(model_curve),
+                    Value::Int(0),
+                ],
+            )
+        };
+        let deck = file(vec![
+            (1, surface),
+            (3, line([0.2, 0.2, 0.0], [0.8, 0.8, 0.0])),
+            (5, on_surface(0)),
+            (7, line([2.0, 2.0, 0.0], [8.0, 8.0, 0.0])),
+            (9, on_surface(7)),
+        ]);
+        let mut reader = reader(&deck);
+        for de in [5, 9] {
+            let segments = reader.boundary_segments(de).unwrap();
+            let [(curve, (t0, t1))] = segments.as_slice() else {
+                panic!("one segment");
+            };
+            assert!(
+                curve
+                    .point_at(*t0, T)
+                    .unwrap()
+                    .distance(Point::new(2.0, 2.0, 0.0))
+                    < 1e-6
+            );
+            assert!(
+                curve
+                    .point_at(*t1, T)
+                    .unwrap()
+                    .distance(Point::new(8.0, 8.0, 0.0))
+                    < 1e-6
+            );
+            let mid = curve.point_at(f64::midpoint(*t0, *t1), T).unwrap();
+            assert!(
+                (mid.x - mid.y).abs() < 1e-6 && mid.z.abs() < 1e-9,
+                "D{de} {mid:?}"
+            );
+        }
+    }
+
+    /// A linear dimension in model space draws its leaders and witness
+    /// lines, is named by its note's text, and states the value that text
+    /// reads; a note a drawing owns stays on the sheet.
+    #[test]
+    fn a_model_space_dimension_reads_as_its_callout_and_value() {
+        let note = |text: &str| {
+            let mut e = entity(
+                212,
+                0,
+                vec![
+                    Value::Int(1),
+                    Value::Int(5),
+                    Value::Real(10.0),
+                    Value::Real(3.0),
+                    Value::Int(1),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Int(0),
+                    Value::Int(0),
+                    Value::Real(10.0),
+                    Value::Real(12.0),
+                    Value::Real(0.0),
+                    Value::Text(text.to_owned()),
+                ],
+            );
+            e.status = 10_000;
+            e
+        };
+        let leader = |head: [f64; 2], tail: [f64; 2]| {
+            let mut e = entity(
+                214,
+                1,
+                reals(&[1.0, 1.0, 0.5, 0.0, head[0], head[1], tail[0], tail[1]]),
+            );
+            e.status = 10_000;
+            e
+        };
+        let witness = |a: [f64; 2], b: [f64; 2]| {
+            let mut e = entity(106, 40, reals(&[1.0, 2.0, 0.0, a[0], a[1], b[0], b[1]]));
+            e.status = 10_000;
+            e
+        };
+        let dimension = entity(
+            216,
+            0,
+            vec![
+                Value::Int(3),
+                Value::Int(5),
+                Value::Int(7),
+                Value::Int(9),
+                Value::Int(11),
+            ],
+        );
+        let mut sheet_note = note("on the sheet");
+        sheet_note.status = 0;
+        let drawing = entity(404, 0, vec![Value::Int(0), Value::Int(1), Value::Int(13)]);
+        let deck = file(vec![
+            (1, dimension),
+            (3, note("2X 25.40")),
+            (5, leader([0.0, 11.0], [8.0, 11.0])),
+            (7, leader([25.4, 11.0], [17.0, 11.0])),
+            (9, witness([0.0, 0.0], [0.0, 12.0])),
+            (11, witness([25.4, 0.0], [25.4, 12.0])),
+            (13, sheet_note),
+            (15, drawing),
+        ]);
+        let mut reader = reader(&deck);
+        let (callouts, dimensions) = reader.annotations();
+        assert!(callouts.is_empty(), "the sheet's note stays on the sheet");
+        let [(callout, dimension)] = dimensions.as_slice() else {
+            panic!("one dimension, found {}", dimensions.len());
+        };
+        assert_eq!(callout.name, "2X 25.40");
+        assert_eq!(
+            callout.polylines.len(),
+            4,
+            "two leaders and two witness lines"
+        );
+        assert!(
+            (dimension.values[0] - 25.4).abs() < 1e-12,
+            "{:?}",
+            dimension.values
+        );
+        assert!(dimension.location);
+        assert!(!reader.visited.contains_key(&13));
     }
 }

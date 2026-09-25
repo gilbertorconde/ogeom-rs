@@ -46,6 +46,12 @@ bump may break the API and a patch bump may not.
   branch point carries its clearance, and every branch is checked to keep
   no other boundary element nearer than its own two.
 
+- **More of IGES reads.** A conic arc whose axes turn, parametric
+  spline surfaces (114) as exact bicubic B-splines, offset curves whose
+  distance varies, and trims given only in a B-spline surface's parameters.
+  Model-space notes, leaders, labels, symbols and dimensions read as PMI
+  callouts, a dimension whose text states a number also as its value.
+
 ### Fixed
 
 - **A pipe shell failed along an arc that runs on into a straight line.**
@@ -53,6 +59,10 @@ bump may break the API and a patch bump may not.
   reach the tolerance. Each spine edge now skins its own run, the runs
   sharing the section at the join, and a run whose sections share a plane
   is built on that plane.
+- **IGES curve-on-surface entities read their model-space curve from the
+  wrong field.** The reader took the parameter-space curve as the
+  model-space one; it now reads the fields in the order the format gives
+  them.
 - **A boolean on a prism split its near cap where its far cap was cut.**
   The far cap of an extrusion is its near cap moved, sharing its edges
   under a displacement, and the boolean shared edge splits by edge alone.

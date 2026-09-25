@@ -1623,9 +1623,19 @@ boolean result, a spline-walled prism through 126/128, and inch-unit
 scaling. The reader also takes every axis-aligned conic arc (104: ellipse,
 hyperbola, parabola, each as its own curve), ruled surfaces (118) as the
 degree-one patch between the two curves' exact spline forms, and constant
-offset curves and offset surfaces (130, 140). Not translated, refused by
-name: parametric spline surfaces (114), a rotated conic, an offset curve
-whose distance varies, pcurve-only trimming, annotation and drafting."""
+offset curves and offset surfaces (130, 140). A conic whose axes turn is
+read in the frame where its cross term vanishes and turned back, exactly;
+parametric spline surfaces (114) convert exactly to bicubic B-splines; an
+offset curve whose distance varies (linearly with arc length, or as a
+function curve's coordinate) is fitted same-parameter with its base; and a
+trim given only in a B-spline surface's parameters is lifted through the
+surface. Model-space annotation (notes, leaders, labels, symbols and the
+linear, radial, diametral, angular and ordinate dimensions) reads as PMI
+callouts of the lines the file draws, a dimension whose text states a
+number carrying that value as a semantic dimension. Refused by name: a
+parameter-space trim on an analytic surface, whose IGES parameterization is
+the file's convention; a drawing's own annotation stays on the sheet and is
+counted as skipped."""
 claims = [
     "IGESControl_*", "IGESCAFControl_*", "IGESToBRep_*", "IGESData_*",
     "IGESSelect", "IGESSelect_*", "IGESConvGeom", "IGESConvGeom_*",
