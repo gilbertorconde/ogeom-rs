@@ -33,8 +33,18 @@ bump may break the API and a patch bump may not.
   an extruded profile's line meets its arc) blends with an exact drum band,
   and no longer fails for want of a planar pair.
 
+- **Pipe shells round a skew corner against a curved leg.** Where a
+  spine turns a curved leg's end out of its plane, the sweep is built in
+  pieces: each side runs on straight past the corner, is trimmed by the
+  mitre plane and the pieces are fused. This was refused.
+
 ### Fixed
 
+- **A pipe shell failed along an arc that runs on into a straight line.**
+  One skin fitted across the join, where the curvature steps, and could not
+  reach the tolerance. Each spine edge now skins its own run, the runs
+  sharing the section at the join, and a run whose sections share a plane
+  is built on that plane.
 - **A boolean on a prism split its near cap where its far cap was cut.**
   The far cap of an extrusion is its near cap moved, sharing its edges
   under a displacement, and the boolean shared edge splits by edge alone.

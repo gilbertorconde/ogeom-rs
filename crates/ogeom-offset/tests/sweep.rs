@@ -911,13 +911,14 @@ fn a_round_profile_along_a_closed_square_spine_is_a_ring() {
     let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
 
-    // One face bounding itself both ways round, and a volume in a coarse
-    // band of Pappus: the corners are smoothed by the skin.
+    // One wall per spine edge, each skinned along its own curve and meeting
+    // the next on their shared section, so the corners are the arcs
+    // themselves and not a skin smoothed across them.
     assert_eq!(
         explore(&model, &result.shape, Filter::OfType(ShapeType::Face))
             .unwrap()
             .len(),
-        1
+        8
     );
     // Pappus round the rounded square: perimeter = four flats and a full
     // circle of corner arcs.
@@ -931,8 +932,10 @@ fn a_round_profile_along_a_closed_square_spine_is_a_ring() {
     )
     .unwrap()
     .mass;
+    // The unit circle skinned to five hundredths on each arc run is all
+    // the error left: two parts in a thousand of the volume covers it.
     assert!(
-        (measured - expected).abs() / expected < 0.02,
+        (measured - expected).abs() / expected < 2e-3,
         "square ring volume {measured} against {expected}"
     );
 }
@@ -1893,7 +1896,11 @@ fn a_d_shaped_ring_corners_its_curved_leg_at_both_ends() {
 /// generators for one profile point are skew and never meet, and the sweep
 /// says so by name instead of sewing a gap.
 #[test]
-fn a_skew_corner_against_a_curved_leg_is_refused_by_name() {
+fn a_skew_corner_against_a_curved_leg_mitres_in_pieces() {
+    // A quarter arc in the floor, then a leg rising out of the arc's plane:
+    // the corner turns the curved leg's end out of its plane, so the two
+    // legs' generators miss. Each side is swept on past the corner and
+    // trimmed by the mitre plane x = z, and the pieces fused.
     let mut model = ogeom_topo::Model::new();
     let r = 20.0;
     let a = Point::new(r, 0.0, 0.0);
@@ -1919,10 +1926,95 @@ fn a_skew_corner_against_a_curved_leg_is_refused_by_name() {
         .unwrap()
         .shape;
     let profile = square_profile(&mut model, a, ogeom_math::Vector::Y, 4.0);
-    let err =
-        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap_err();
+    let result =
+        ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // The two pieces stand either side of the mitre plane, so the solid is
+    // their sum. The leg, 4 by 4 by 20, is trimmed by a plane through its
+    // own axis at the corner: what its run-back gains below the plane it
+    // loses above, and it keeps 320. The arc's square section sweeps a
+    // quarter turn at radius 20 (Pappus: 16 × 10π), keeps the 8 of its
+    // run-on the plane leaves it (z below x < 0), and loses where the
+    // plane cuts back into its curved end: every point within `z` of the
+    // corner's section, radius ρ across 18..22 and height z over 0..2,
+    // which is ∫∫ ρ·asin(z/ρ).
+    let lost = {
+        let steps = 400;
+        let mut sum = 0.0;
+        for i in 0..steps {
+            let z = 2.0 * (f64::from(i) + 0.5) / f64::from(steps);
+            for j in 0..steps {
+                let rho = 18.0 + 4.0 * (f64::from(j) + 0.5) / f64::from(steps);
+                sum += rho * (z / rho).asin();
+            }
+        }
+        sum * (2.0 / f64::from(steps)) * (4.0 / f64::from(steps))
+    };
+    let expected = 16.0 * 10.0 * core::f64::consts::PI + 8.0 - lost + 320.0;
+    let measured = volume(&model, &result.shape);
     assert!(
-        err.to_string().contains("skew corner against a curved leg"),
-        "{err}"
+        (measured - expected).abs() < 1e-2,
+        "the mitred pieces measure {measured} against {expected}"
     );
+    // Where the curved leg's section on the mitre plane differs from the
+    // straight leg's, the difference is a face of the plane.
+    let on_mitre = explore(&model, &result.shape, Filter::OfType(ShapeType::Face))
+        .unwrap()
+        .into_iter()
+        .filter(|f| {
+            let centre = ogeom_algo::surface_properties(&model, f, fine(), T)
+                .unwrap()
+                .centre;
+            (centre.x - centre.z).abs() < 1e-6
+        })
+        .count();
+    assert!(on_mitre > 0, "the sections' difference stands on the mitre");
+}
+
+#[test]
+fn a_square_runs_an_arc_and_on_along_its_tangent() {
+    // A quarter arc and the straight leg it runs on into, tangent at the
+    // join: one smooth spine whose curvature steps. Each edge skins its
+    // own run and the two share the section at the join; one fit across
+    // the step cannot follow it. Pappus: the square's area times the
+    // centroid's path, a quarter turn at radius 20 and then the leg.
+    for len in [2.0, 5.0, 20.0] {
+        let mut model = ogeom_topo::Model::new();
+        let r = 20.0;
+        let a = Point::new(r, 0.0, 0.0);
+        let b = Point::new(0.0, r, 0.0);
+        let c = Point::new(-len, r, 0.0);
+        let va = ogeom_algo::make_vertex(&mut model, a).shape;
+        let vb = ogeom_algo::make_vertex(&mut model, b).shape;
+        let vc = ogeom_algo::make_vertex(&mut model, c).shape;
+        let arc = arc_between(
+            &mut model,
+            Point::ORIGIN,
+            r,
+            (0.0, core::f64::consts::FRAC_PI_2),
+            &va,
+            &vb,
+        );
+        let lcurve = ogeom_geom::Curve::Line(ogeom_geom::LineCurve::segment(b, c, T).unwrap());
+        let ldomain = ogeom_geom::Curve3d::domain(&lcurve);
+        let leg = ogeom_algo::make_edge_between(&mut model, lcurve, ldomain, &vb, &vc, T)
+            .unwrap()
+            .shape;
+        let spine = ogeom_algo::make_wire(&mut model, &[arc, leg], T)
+            .unwrap()
+            .shape;
+        let profile = square_profile(&mut model, a, ogeom_math::Vector::Y, 4.0);
+        let result =
+            ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T).unwrap();
+        let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let expected = 16.0 * (10.0 * core::f64::consts::PI + len);
+        let measured = volume(&model, &result.shape);
+        assert!(
+            (measured - expected).abs() < 1e-2,
+            "leg {len}: {measured} against {expected}"
+        );
+    }
 }
