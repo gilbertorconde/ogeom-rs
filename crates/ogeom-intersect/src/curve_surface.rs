@@ -26,7 +26,7 @@ use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve3d, Surface, SurfaceGeometry};
 use ogeom_math::{Point, solve};
 
-use crate::march::{Cell, sample, segment_meets_triangle};
+use crate::march::{Cell, sample_by, segment_meets_triangle};
 
 /// One piercing of a surface by a curve.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -330,7 +330,7 @@ fn general(
     options: CurveSurfaceOptions,
     tol: Tolerances,
 ) -> OgeomResult<CurveSurfaceIntersection> {
-    let cells = sample(surface, options.grid, tol);
+    let cells = sample_by(surface, seeding(surface, options.grid), tol);
     let (lo, hi) = curve.domain();
 
     let mut points = Vec::with_capacity(options.samples + 1);
@@ -347,10 +347,17 @@ fn general(
         let (t0, p0) = pair[0];
         let (t1, p1) = pair[1];
         for cell in &cells {
-            if !segment_near_cell(p0, p1, cell, options.gap) {
+            // Near the cell within the surface's own bow from it: a curve
+            // crossing the surface in the gap between the flat cell and
+            // the curved patch it stands for (a ray starting a few microns
+            // from the wall it leaves by) meets no cell, and is seeded by
+            // its nearness instead.
+            if !segment_near_cell(p0, p1, cell, options.gap.max(cell.sag)) {
                 continue;
             }
-            if segment_meets_triangle(p0, p1, cell.corners).is_none() {
+            if segment_meets_triangle(p0, p1, cell.corners).is_none()
+                && !(cell.sag > options.gap && segment_near_cell(p0, p1, cell, cell.sag))
+            {
                 continue;
             }
             let seed_t = f64::midpoint(t0, t1);
@@ -377,6 +384,24 @@ fn general(
         crossings,
         lying: Vec::new(),
     })
+}
+
+/// How many seed cells to lay along each direction of a surface: the
+/// asked grid, and for a spline at least two per knot span. A patch swept
+/// several turns round an axis (a thread's flank) spans dozens of knots
+/// along its length, and a grid of the asked size lays flat cells a turn's
+/// fraction wide whose chords stand a tenth of a millimetre off the wall;
+/// a curve crossing the wall inside that gap meets no cell and is missed.
+fn seeding(surface: &SurfaceGeometry, grid: usize) -> (usize, usize) {
+    const CAP: usize = 1024;
+    let SurfaceGeometry::BSpline(spline) = surface else {
+        return (grid, grid);
+    };
+    let spans = |knots: &ogeom_math::KnotVector| knots.distinct().len().saturating_sub(1);
+    (
+        grid.max(2 * spans(spline.u_knots())).min(CAP.max(grid)),
+        grid.max(2 * spans(spline.v_knots())).min(CAP.max(grid)),
+    )
 }
 
 /// Whether a segment's box comes near a cell's.

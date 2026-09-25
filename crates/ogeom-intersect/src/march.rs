@@ -730,10 +730,22 @@ pub(crate) struct Cell {
     pub(crate) at: (f64, f64),
     pub(crate) low: Point,
     pub(crate) high: Point,
+    /// How far the surface bows from the flat cell: its middle's distance
+    /// from the middle of the diagonal the two triangles share.
+    pub(crate) sag: f64,
 }
 
 /// Sample a surface into triangles.
 pub(crate) fn sample(surface: &SurfaceGeometry, grid: usize, tol: Tolerances) -> Vec<Cell> {
+    sample_by(surface, (grid, grid), tol)
+}
+
+/// Sample a surface into triangles, `counts` cells along `u` and along `v`.
+pub(crate) fn sample_by(
+    surface: &SurfaceGeometry,
+    counts: (usize, usize),
+    tol: Tolerances,
+) -> Vec<Cell> {
     let ((ua, ub), (va, vb)) = surface.domain();
     // An unbounded domain would put the samples a billion units apart and find
     // nothing. Clamped to something a real model lives inside.
@@ -743,13 +755,13 @@ pub(crate) fn sample(surface: &SurfaceGeometry, grid: usize, tol: Tolerances) ->
 
     let mut out = Vec::new();
     #[allow(clippy::cast_precision_loss)]
-    let n = grid as f64;
-    for i in 0..grid {
-        for j in 0..grid {
+    let (nu, nv) = (counts.0 as f64, counts.1 as f64);
+    for i in 0..counts.0 {
+        for j in 0..counts.1 {
             #[allow(clippy::cast_precision_loss)]
-            let (s0, s1) = (i as f64 / n, (i + 1) as f64 / n);
+            let (s0, s1) = (i as f64 / nu, (i + 1) as f64 / nu);
             #[allow(clippy::cast_precision_loss)]
-            let (t0, t1) = (j as f64 / n, (j + 1) as f64 / n);
+            let (t0, t1) = (j as f64 / nv, (j + 1) as f64 / nv);
             let at = |s: f64, t: f64| {
                 let (u, v) = (ua + (ub - ua) * s, va + (vb - va) * t);
                 surface.point_at(u, v, tol).map(|p| ((u, v), p))
@@ -759,6 +771,8 @@ pub(crate) fn sample(surface: &SurfaceGeometry, grid: usize, tol: Tolerances) ->
             else {
                 continue;
             };
+            let sag = at(f64::midpoint(s0, s1), f64::midpoint(t0, t1))
+                .map_or(0.0, |(_, middle)| middle.distance(a00.midpoint(a11)));
             for corners in [[a00, a10, a11], [a00, a11, a01]] {
                 let low = Point::new(
                     corners.iter().map(|p| p.x).fold(f64::MAX, f64::min),
@@ -775,6 +789,7 @@ pub(crate) fn sample(surface: &SurfaceGeometry, grid: usize, tol: Tolerances) ->
                     at: p00,
                     low,
                     high,
+                    sag,
                 });
             }
         }

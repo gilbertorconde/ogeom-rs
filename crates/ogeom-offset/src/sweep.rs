@@ -974,6 +974,36 @@ fn adopt_border(
     Ok(())
 }
 
+/// An adopted border's image on a surface it was not fitted on: the
+/// border's own points, each read off the surface at its nearest point,
+/// fitted at the border's own parameters so the image is same-parameter
+/// with it. Returned with the parameter range it spans.
+fn adopted_image(
+    model: &Model,
+    edge: &Shape,
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> OgeomResult<(ogeom_geom::PlanarCurve, (f64, f64))> {
+    const SAMPLES: u32 = 64;
+    let (curve, range) = spine_curve_of(model, edge)?;
+    let mut params = Vec::with_capacity(SAMPLES as usize + 1);
+    let mut image = Vec::with_capacity(SAMPLES as usize + 1);
+    let mut guess: Option<(f64, f64)> = None;
+    for step in 0..=SAMPLES {
+        let t = range.0 + (range.1 - range.0) * f64::from(step) / f64::from(SAMPLES);
+        let p = curve.point_at(t, tol)?;
+        let foot = match guess {
+            Some(g) => ogeom_algo::project_on_surface_from(surface, p, g, tol)?,
+            None => ogeom_algo::project_on_surface(surface, p, 16, tol)?,
+        };
+        guess = Some(foot.parameters);
+        params.push(t);
+        image.push(Point2::new(foot.parameters.0, foot.parameters.1));
+    }
+    let fitted = ogeom_geom::fit::fit_points_2d_at(&params, &image, 3, tol.confusion(), tol)?;
+    Ok((fitted.curve.into(), range))
+}
+
 /// A solid skinned over a grid of section samples: [`skinned_wall`] with a
 /// planar cap over each end ring.
 /// How a skinned solid's end is closed.
@@ -1907,38 +1937,30 @@ fn skinned_strip(
         )?
         .into())
     };
-    ogeom_algo::attach_pcurve(
-        model,
-        &bottom,
-        row_line(v_dom.0)?,
-        surface_id,
-        ogeom_topo::Location::identity(),
-        u_dom,
-    )?;
-    ogeom_algo::attach_pcurve(
-        model,
-        &top,
-        row_line(v_dom.1)?,
-        surface_id,
-        ogeom_topo::Location::identity(),
-        u_dom,
-    )?;
-    ogeom_algo::attach_pcurve(
-        model,
-        &rail0,
-        column_line(u_dom.0)?,
-        surface_id,
-        ogeom_topo::Location::identity(),
-        v_dom,
-    )?;
-    ogeom_algo::attach_pcurve(
-        model,
-        &rail1,
-        column_line(u_dom.1)?,
-        surface_id,
-        ogeom_topo::Location::identity(),
-        v_dom,
-    )?;
+    // A border this strip fitted runs along its own row or column, and its
+    // image is that straight line. One adopted from the neighbour was fitted
+    // at the neighbour's pace along the sweep, which is not this strip's:
+    // its image here is read off this surface point by point.
+    for (edge, given, straight, span) in [
+        (&bottom, shared[0].is_some(), row_line(v_dom.0)?, u_dom),
+        (&top, shared[1].is_some(), row_line(v_dom.1)?, u_dom),
+        (&rail0, shared[2].is_some(), column_line(u_dom.0)?, v_dom),
+        (&rail1, shared[3].is_some(), column_line(u_dom.1)?, v_dom),
+    ] {
+        let (image, range) = if given {
+            adopted_image(model, edge, &surface_geo, tol)?
+        } else {
+            (straight, span)
+        };
+        ogeom_algo::attach_pcurve(
+            model,
+            edge,
+            image,
+            surface_id,
+            ogeom_topo::Location::identity(),
+            range,
+        )?;
+    }
     // The rails carry the fit's honest budget: the neighbouring strip fitted
     // the same transported corners independently, and the weld between them
     // is only as tight as both fits.

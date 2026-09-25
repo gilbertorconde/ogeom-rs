@@ -25,6 +25,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A thread groove would not cut from a block.** A section swept along a
+  helix skins one wall per profile edge, each fitted at its own pace
+  along the sweep, and a wall adopting its neighbour's rail took that
+  rail's image on itself to be straight; along a helix it drifted a fifth
+  of a millimetre off. The image is now read off the adopting wall. And a
+  ray starting a few microns from a wall winding several turns crossed it
+  in the gap between the wall and the flat cells seeding its crossings,
+  so a point in the groove read as outside; a curve near a cell by its
+  surface's bow from it is now seeded there. The groove cuts from a block
+  for any number of turns.
 - **`make_half_space` could pick the wrong side of a closed surface.** The
   side was read from the normal at one sample of the face, which on a rod
   or a ball can face the given point across the surface. It is read where
