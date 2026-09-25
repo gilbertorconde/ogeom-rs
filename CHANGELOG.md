@@ -39,6 +39,9 @@ bump may break the API and a patch bump may not.
   The far cap of an extrusion is its near cap moved, sharing its edges
   under a displacement, and the boolean shared edge splits by edge alone.
   Edges now count as one only at the same placement.
+- **`analyse_blend` failed on a corner patch whose corner is its ball's
+  pole.** A pcurve ending on the pole stood a rounding past the sphere's
+  chart there; the station is now read at the chart's edge.
 
 ## [0.3.3] - 2026-09-25
 

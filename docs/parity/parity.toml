@@ -1141,8 +1141,9 @@ edges the corner goes first and the flush fillets follow, since bands \
 built before the corner crash into each other at the apex. The ball's \
 pole stands along a ridge where there is one, its seam turned from the \
 corner, and otherwise the tool is offered on each of the corner's 2N \
-labellings in turn, the first that closes standing: the boolean's \
-indifference to that labelling is owed, and so is the third flush fillet \
+labellings in turn, the first that closes standing; the boolean \
+closes every labelling of an oblique corner and of a square pyramid's \
+apex, one solid each time. Owed: the third flush fillet \
 at a sharp apex, which dies in the cut where a band's section touches an \
 edge and its two descriptions of the touch point disagree by a tenth of \
 a micron; after a corner whose sphere clears a fourth plane by a few \

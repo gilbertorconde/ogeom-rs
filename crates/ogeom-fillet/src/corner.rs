@@ -64,6 +64,20 @@ pub fn round_vertex(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    round_vertex_with(model, solid, vertex, radius, None, tol)
+}
+
+/// [`round_vertex`], with the one-ball corner held to the labelling
+/// `forced` names (by index, the ring's start then its direction) instead
+/// of offered each in turn.
+pub(crate) fn round_vertex_with(
+    model: &mut Model,
+    solid: &Shape,
+    vertex: &Shape,
+    radius: f64,
+    forced: Option<usize>,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     if model.kind_of(vertex)? != ShapeType::Vertex {
         ogeom_bail!(Construction, "round_vertex rounds a vertex");
     }
@@ -303,15 +317,14 @@ pub fn round_vertex(
     //
     // Which edge is first and which way the ring runs is the tool's
     // labelling, and the solid it builds is the same for all 2N. The
-    // boolean is not yet indifferent to it: the charts the block's faces
-    // and the ball wear decide where a rim is exact and where fitted, where
-    // a seam falls against a patch arc, and at an oblique corner two of the
-    // six labellings still die in the cut. So the tool is offered on each
-    // labelling in turn and the first that closes stands (every one of
-    // them is the same exact construction) and the corner is refused by
-    // name only when none does. A failed attempt's nodes stay in the model
-    // unreferenced, under their own operation. The boolean closing all of
-    // them is owed (docs/PARITY.md, fillet.edge-blends).
+    // charts the block's faces and the ball wear differ between them (where
+    // a rim is exact and where fitted, where a seam falls against a patch
+    // arc) and the boolean closes every one: the unit tests below round an
+    // oblique corner under all six and a pyramid's apex under all eight,
+    // one solid each time. The tool still offers each labelling in turn
+    // and the first that closes stands, so a corner no labelling closes is
+    // refused by name. A failed attempt's nodes stay in the model
+    // unreferenced, under their own operation.
     let attempt = |model: &mut Model, start: usize, reverse: bool| -> OgeomResult<Built> {
         // Edge t of the labelling and the host plane holding edges t and t+1.
         let edge_at = |t: usize| -> usize {
@@ -392,10 +405,6 @@ pub fn round_vertex(
     };
     let mut outcome: Option<Built> = None;
     let mut last: Option<ogeom_core::OgeomError> = None;
-    // Forensics: one labelling only, by index, for the boolean's benefit.
-    let forced: Option<usize> = std::env::var("OGEOM_CORNER_LABELLING")
-        .ok()
-        .and_then(|v| v.parse().ok());
     let labellings = (0..2 * n).map(|index| (index % n, index >= n));
     for (index, (start, reverse)) in labellings.enumerate() {
         if forced.is_some_and(|f| f != index) {
@@ -1017,4 +1026,104 @@ fn ball_block(
         2 * n,
         last.map_or_else(String::new, |e| e.to_string())
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    use super::round_vertex_with;
+    use ogeom_core::Tolerances;
+    use ogeom_math::{Point, Vector};
+    use ogeom_topo::{Model, Shape, ShapeType};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn vertex_at(model: &Model, shape: &Shape, at: Point) -> Shape {
+        ogeom_topo::explore_unique(model, shape, ShapeType::Vertex)
+            .unwrap()
+            .into_iter()
+            .find(|v| {
+                model
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex())
+                    .is_some_and(|d| d.point.distance(at) < 1e-9)
+            })
+            .unwrap()
+    }
+
+    fn volume(model: &Model, shape: &Shape) -> f64 {
+        ogeom_algo::volume_properties(model, shape, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    }
+
+    /// Every labelling of a corner closes in the cut and builds one solid:
+    /// the charts differ, the construction does not.
+    fn every_labelling_agrees(model: &mut Model, solid: &Shape, vertex: &Shape, count: usize) {
+        let mut volumes = Vec::with_capacity(count);
+        for index in 0..count {
+            let rounded = round_vertex_with(model, solid, vertex, 2.0, Some(index), T)
+                .unwrap_or_else(|e| panic!("labelling {index} did not close: {e}"));
+            let diagnosis = ogeom_algo::check(model, &rounded.shape, T).unwrap();
+            assert!(
+                diagnosis.is_valid(),
+                "labelling {index}: {:?}",
+                diagnosis.problems
+            );
+            volumes.push(volume(model, &rounded.shape));
+        }
+        // A labelling decides where a rim is exact and where fitted, and a
+        // rim fitted to a tenth of a micron moves a few square millimetres
+        // of patch by a few millionths of a cubic millimetre: one part in
+        // ten million of these solids covers it.
+        for (index, v) in volumes.iter().enumerate() {
+            assert!(
+                (v - volumes[0]).abs() < 1e-7 * volumes[0],
+                "labelling {index} builds {v}, labelling 0 {}",
+                volumes[0]
+            );
+        }
+    }
+
+    #[test]
+    fn an_oblique_corner_rounds_the_same_under_every_labelling() {
+        let mut model = Model::new();
+        let (a, b, c) = (
+            Vector::new(20.0, 0.0, 0.0),
+            Vector::new(6.0, 20.0, 0.0),
+            Vector::new(3.6, 6.0, 20.0),
+        );
+        let block = ogeom_algo::make_parallelepiped(&mut model, Point::ORIGIN, [a, b, c], T)
+            .unwrap()
+            .shape;
+        let vertex = vertex_at(&model, &block, Point::ORIGIN);
+        every_labelling_agrees(&mut model, &block, &vertex, 6);
+    }
+
+    #[test]
+    fn a_square_pyramid_apex_rounds_the_same_under_every_labelling() {
+        let mut model = Model::new();
+        let apex = Point::new(0.0, 0.0, 15.0);
+        let base = [
+            Point::new(-10.0, -10.0, 0.0),
+            Point::new(10.0, -10.0, 0.0),
+            Point::new(10.0, 10.0, 0.0),
+            Point::new(-10.0, 10.0, 0.0),
+        ];
+        // Four slopes and the base, each wound about its outward normal.
+        let mut faces = Vec::new();
+        for k in 0..4 {
+            let (p, q) = (base[k], base[(k + 1) % 4]);
+            let outward = (q - p).cross(apex - p);
+            faces.push(crate::support::planar_face(&mut model, &[p, q, apex], outward, T).unwrap());
+        }
+        let reversed: Vec<Point> = base.iter().rev().copied().collect();
+        faces.push(crate::support::planar_face(&mut model, &reversed, -Vector::Z, T).unwrap());
+        let sewn = ogeom_algo::sew(&mut model, &faces, T).unwrap();
+        let pyramid = ogeom_algo::make_solid(&mut model, &sewn.shells[..1])
+            .unwrap()
+            .shape;
+        let vertex = vertex_at(&model, &pyramid, apex);
+        every_labelling_agrees(&mut model, &pyramid, &vertex, 8);
+    }
 }

@@ -138,6 +138,25 @@ pub fn analyse_blend(
                 ] {
                     let pt = (prange.1 - prange.0).mul_add(f, prange.0);
                     let uv = ogeom_geom::Curve2d::point_at(pcurve, pt, tol)?;
+                    // A pcurve ending on a chart's pole may stand a rounding
+                    // past the chart's window there; the station is read at
+                    // the window's edge, and the gap says what that costs.
+                    let uv = {
+                        use ogeom_geom::Surface as _;
+                        let ((u0, u1), (v0, v1)) = surface.domain();
+                        ogeom_math::Point2::new(
+                            if surface.is_periodic_u() {
+                                uv.x
+                            } else {
+                                uv.x.clamp(u0, u1)
+                            },
+                            if surface.is_periodic_v() {
+                                uv.y
+                            } else {
+                                uv.y.clamp(v0, v1)
+                            },
+                        )
+                    };
                     worst_gap =
                         worst_gap.max(surface.point_at(uv.x, uv.y, tol)?.distance(on_curve));
                     // A station on a chart's pole (a corner patch's own
