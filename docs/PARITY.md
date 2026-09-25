@@ -138,7 +138,7 @@ to grow to, and a gap the recovered edges do not bridge.
 - **heal.substitution**: Recording shape substitutions and applying them across a model · `covered` · 6 headers claimed
 - **heal.tolerances**: Reading and tightening the tolerances a shape actually needs · `covered` · 2 headers claimed
 - **heal.upgrade**: Upgrading shapes in place: same-domain unification, edge merging, subdivision · `partial` · 34 headers claimed
-  - *restriction:* Unification (`unify_same_domain`) and edge merging are here; the divide family (splitting faces and edges by continuity, angle or area) and whole-shape Bézier conversion are not. A downstream consumer that needs C1 pieces gets the C0 shape and must split it itself. The need arrives with exchange writers targeting formats that cap continuity or degree, which is where this row will be reopened.
+  - *restriction:* Unification (`unify_same_domain`) and edge merging are here, and the divide family: `divide_face` cuts a face along a line of its own parameters with the surface's exact iso-curve, the edges it crosses cut in every face that holds them; `divide_by_continuity` cuts edges and faces at the knots where they are less smooth than asked; `divide_by_angle` and `divide_by_area` cut until no face turns or covers more than asked; and `to_bezier` converts a shape to splines, cuts it at every knot and restates each piece as its single Bezier span. Not cut: a face with no boundary of its own (a natural-restriction face), and a surface with no closed-form iso-curve (an offset of a spline).
 
 ### ogeom-hlr
 

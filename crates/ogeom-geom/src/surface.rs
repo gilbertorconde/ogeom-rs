@@ -489,6 +489,43 @@ impl BSplineSurface {
         BSplineCurve::rational(self.u_knots.clone(), control)
     }
 
+    /// The patch of this surface over `u` by `v`, exactly and keeping its
+    /// parameters: the patch at `(u, v)` is this surface at `(u, v)`.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Domain`](ogeom_core::OgeomError::Domain) if either range
+    /// is empty or leaves the domain.
+    pub fn segment(&self, u: (f64, f64), v: (f64, f64), tol: Tolerances) -> OgeomResult<Self> {
+        let (nu, nv) = (self.grid.u_count(), self.grid.v_count());
+        let points = self.grid.points();
+        // Each row cut along `v`, then each column of the result along `u`.
+        let v_piece = |row: Vec<Weighted<Point>>| -> OgeomResult<BSplineCurve> {
+            BSplineCurve::rational(self.v_knots.clone(), row)?.segment(v, tol)
+        };
+        let mut rows = Vec::with_capacity(nu);
+        let mut v_knots = self.v_knots.clone();
+        for i in 0..nu {
+            let piece = v_piece(points[i * nv..(i + 1) * nv].to_vec())?;
+            v_knots = piece.knots().clone();
+            rows.push(piece.control_points().to_vec());
+        }
+        let mv = v_knots.control_point_count();
+        let mut columns = Vec::with_capacity(mv);
+        let mut u_knots = self.u_knots.clone();
+        for j in 0..mv {
+            let column: Vec<Weighted<Point>> = rows.iter().map(|r| r[j]).collect();
+            let piece = BSplineCurve::rational(self.u_knots.clone(), column)?.segment(u, tol)?;
+            u_knots = piece.knots().clone();
+            columns.push(piece.control_points().to_vec());
+        }
+        let mu = u_knots.control_point_count();
+        let net: Vec<Weighted<Point>> = (0..mu)
+            .flat_map(|i| columns.iter().map(move |c| c[i]))
+            .collect();
+        Self::rational(u_knots, v_knots, ControlGrid::new(net, mu, mv)?)
+    }
+
     /// The `u` knot vector.
     #[must_use]
     pub const fn u_knots(&self) -> &KnotVector {

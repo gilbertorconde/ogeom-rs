@@ -1059,6 +1059,37 @@ impl BSplineCurve {
         })
     }
 
+    /// The piece of this curve over `range`, exactly and keeping its
+    /// parameters: the piece at `t` is this curve at `t`.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Domain`](ogeom_core::OgeomError::Domain) if `range` is
+    /// empty or leaves the domain.
+    pub fn segment(&self, range: (f64, f64), tol: Tolerances) -> OgeomResult<Self> {
+        let (a, b) = self.knots.domain();
+        let eps = tol.parametric();
+        if range.1 <= range.0 + eps || range.0 < a - eps || range.1 > b + eps {
+            ogeom_bail!(
+                Domain,
+                "[{}, {}] is no piece of [{a}, {b}]",
+                range.0,
+                range.1
+            );
+        }
+        let mut piece = Self {
+            periodic: false,
+            ..self.clone()
+        };
+        if range.0 > a + eps {
+            piece = piece.split_at(range.0, tol)?.1;
+        }
+        if range.1 < b - eps {
+            piece = piece.split_at(range.1, tol)?.0;
+        }
+        Ok(piece)
+    }
+
     /// Split into two curves meeting at `u`.
     ///
     /// # Errors

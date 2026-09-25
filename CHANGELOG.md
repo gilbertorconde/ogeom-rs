@@ -72,7 +72,13 @@ bump may break the API and a patch bump may not.
   `OffsetSurface::analytic` returns the plane, drum, cone, ball or torus
   the offset is.
 - **A trimmed surface converts to a B-spline** as its basis over the
-  trim's window, where the basis is analytic, swept or an untrimmed spline.
+  trim's window. `BSplineCurve::segment` and `BSplineSurface::segment`
+  cut a spline to a piece of itself, parameters kept.
+- **Dividing shapes.** `divide_face` cuts a face along a line of its own
+  parameters, with the surface's exact iso-curve as the new edge.
+  `divide_by_continuity`, `divide_by_angle` and `divide_by_area` cut edges
+  and faces at weak knots, past an angle or above an area. `to_bezier`
+  leaves every curve and surface a single Bezier span.
 
 ### Fixed
 

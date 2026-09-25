@@ -595,15 +595,23 @@ id = "heal.upgrade"
 title = "Upgrading shapes in place: same-domain unification, edge merging, subdivision"
 crate = "ogeom-heal"
 verdict = "partial"
-restriction = """Unification (`unify_same_domain`) and edge merging are here; \
-the divide family (splitting faces and edges by continuity, angle or area) \
-and whole-shape Bézier conversion are not. A downstream consumer that needs \
-C1 pieces gets the C0 shape and must split it itself. The need arrives with \
-exchange writers targeting formats that cap continuity or degree, which is \
-where this row will be reopened."""
+restriction = """Unification (`unify_same_domain`) and edge merging are here, \
+and the divide family: `divide_face` cuts a face along a line of its own \
+parameters with the surface's exact iso-curve, the edges it crosses cut in \
+every face that holds them; `divide_by_continuity` cuts edges and faces at \
+the knots where they are less smooth than asked; `divide_by_angle` and \
+`divide_by_area` cut until no face turns or covers more than asked; and \
+`to_bezier` converts a shape to splines, cuts it at every knot and restates \
+each piece as its single Bezier span. Not cut: a face with no boundary of \
+its own (a natural-restriction face), and a surface with no closed-form \
+iso-curve (an offset of a spline)."""
 claims = ["ShapeUpgrade", "ShapeUpgrade_*", "BRepLib_FuseEdges"]
-symbols = ["ogeom_heal::unify_same_domain", "ogeom_heal::merge_edges"]
-tests = ["crates/ogeom/tests/upgrade.rs"]
+symbols = [
+    "ogeom_heal::unify_same_domain", "ogeom_heal::merge_edges", "ogeom_heal::divide_face",
+    "ogeom_heal::divide_by_continuity", "ogeom_heal::divide_by_angle",
+    "ogeom_heal::divide_by_area", "ogeom_heal::to_bezier",
+]
+tests = ["crates/ogeom/tests/upgrade.rs", "crates/ogeom/tests/divide.rs"]
 
 [[capability]]
 id = "heal.tolerances"

@@ -20,6 +20,8 @@ use ogeom_topo::{Model, NodeData, Orientation, Shape, ShapeType, TShapeId};
 pub struct Reshape {
     /// `None` removes the node; `Some` replaces it.
     requests: HashMap<TShapeId, Option<Shape>>,
+    /// Nodes cut into pieces, in their forward order.
+    splits: HashMap<TShapeId, Vec<Shape>>,
 }
 
 impl Reshape {
@@ -34,6 +36,13 @@ impl Reshape {
         self.requests.insert(old.node(), Some(new));
     }
 
+    /// Replace every occurrence of `old` with `pieces`, in order: an edge
+    /// cut in a wire, a face cut in a shell. A reversed occurrence takes
+    /// the pieces reversed, in reverse order.
+    pub fn split(&mut self, old: &Shape, pieces: Vec<Shape>) {
+        self.splits.insert(old.node(), pieces);
+    }
+
     /// Remove every occurrence of `old`.
     pub fn remove(&mut self, old: &Shape) {
         self.requests.insert(old.node(), None);
@@ -42,13 +51,13 @@ impl Reshape {
     /// How many replacements are staged.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.requests.len()
+        self.requests.len() + self.splits.len()
     }
 
     /// Whether anything is requested.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.requests.is_empty()
+        self.requests.is_empty() && self.splits.is_empty()
     }
 
     /// Apply the batch over `shape`, rebuilding what the substitutions
@@ -70,6 +79,12 @@ impl Reshape {
             match request {
                 Some(new) => history.modify(&stand_in, new.clone()),
                 None => history.delete(&stand_in),
+            }
+        }
+        for (old, pieces) in &self.splits {
+            let stand_in = Shape::of(*old);
+            for piece in pieces {
+                history.modify(&stand_in, piece.clone());
             }
         }
         Ok(Built::new(result, history))
@@ -119,6 +134,15 @@ impl Reshape {
         let mut rebuilt_children = Vec::with_capacity(children.len());
         let mut changed = false;
         for child in &children {
+            if let Some(pieces) = self.splits.get(&child.node()) {
+                changed = true;
+                if child.orientation() == Orientation::Reversed {
+                    rebuilt_children.extend(pieces.iter().rev().map(Shape::reversed));
+                } else {
+                    rebuilt_children.extend(pieces.iter().cloned());
+                }
+                continue;
+            }
             match self.rebuilt(model, child, memo, history)? {
                 Some(new) => {
                     if new.node() != child.node() {

@@ -972,9 +972,7 @@ impl crate::surface::SurfaceGeometry {
     ///
     /// # Errors
     ///
-    /// As [`to_bspline`](Self::to_bspline); also a spline basis restricted
-    /// to less than its own extents, which needs knot insertion in two
-    /// directions and is not built.
+    /// As [`to_bspline`](Self::to_bspline).
     fn to_bspline_over(
         &self,
         window: ((f64, f64), (f64, f64)),
@@ -1090,14 +1088,11 @@ impl crate::surface::SurfaceGeometry {
                 let near = |a: (f64, f64), b: (f64, f64)| {
                     (a.0 - b.0).abs() <= tol.parametric() && (a.1 - b.1).abs() <= tol.parametric()
                 };
-                if !near(whole.0, (ua, ub)) || !near(whole.1, (va, vb)) {
-                    ogeom_bail!(
-                        Construction,
-                        "a spline restricted to less than its extents needs knot insertion \
-                         in two directions; not built yet"
-                    );
+                if near(whole.0, (ua, ub)) && near(whole.1, (va, vb)) {
+                    Ok(s.clone())
+                } else {
+                    s.segment((ua, ub), (va, vb), tol)
                 }
-                Ok(s.clone())
             }
 
             S::Trimmed(t) => t.basis().to_bspline_over(window, tol),
@@ -1409,16 +1404,44 @@ mod surface_tests {
     }
 
     #[test]
-    fn a_trimmed_spline_still_says_no_rather_than_approximating() {
+    fn a_trimmed_spline_converts_to_its_piece() {
         let plane: SurfaceGeometry =
             PlaneSurface::over(Plane::new(Frame::WORLD), (0.0, 4.0), (0.0, 4.0))
                 .unwrap()
                 .into();
         let spline: SurfaceGeometry = plane.to_bspline(T).unwrap().into();
         let trimmed: SurfaceGeometry = SurfaceGeometry::Trimmed(Box::new(
-            TrimmedSurface::new(spline, (0.0, 0.5), (0.0, 0.5), T).unwrap(),
+            TrimmedSurface::new(spline, (0.25, 0.5), (0.0, 0.75), T).unwrap(),
         ));
-        assert!(trimmed.to_bspline(T).is_err());
+        let patch = trimmed.to_bspline(T).unwrap();
+        assert!(spans_the_same(&trimmed, &patch));
+    }
+
+    #[test]
+    fn a_spline_segment_keeps_its_parameters() {
+        let cylinder: SurfaceGeometry = CylinderSurface::new(
+            ogeom_math::Cylinder::new(Frame::WORLD, 2.0, T).unwrap(),
+            (0.0, 3.0),
+        )
+        .unwrap()
+        .into();
+        let whole = cylinder.to_bspline(T).unwrap();
+        let ((ua, ub), (va, vb)) = whole.domain();
+        let u = (ua + 0.2 * (ub - ua), ua + 0.7 * (ub - ua));
+        let v = (va + 0.1 * (vb - va), va + 0.6 * (vb - va));
+        let piece = whole.segment(u, v, T).unwrap();
+        assert_eq!(piece.domain(), (u, v));
+        for i in 0..=8 {
+            for j in 0..=8 {
+                let s = u.0 + (u.1 - u.0) * f64::from(i) / 8.0;
+                let t = v.0 + (v.1 - v.0) * f64::from(j) / 8.0;
+                let off = piece
+                    .point_at(s, t, T)
+                    .unwrap()
+                    .distance(whole.point_at(s, t, T).unwrap());
+                assert!(off < 1e-12, "{off} off at ({s}, {t})");
+            }
+        }
     }
 }
 
