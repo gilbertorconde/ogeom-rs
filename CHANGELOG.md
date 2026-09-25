@@ -117,6 +117,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A partial revolve could build its end caps inside out.** Where the
+  profile's ring wound against its plane's normal, the walls followed the
+  ring and the caps the plane, and the caps faced into the solid; a cap
+  in a plane through the axis adds nothing to the volume, so only its
+  orientation was wrong. The caps now face the way the prism's do and the
+  walls are turned to meet them. Surfaces of revolution of a spline
+  curve trimmed by their chart now measure exactly too.
 - **A helical sweep measured 0.65% light at the default deflection**
   (#69). Its fitted walls were measured from their mesh. A spline face
   trimmed by its own chart's borders is now integrated on the exact

@@ -1048,18 +1048,27 @@ fn revolution_over_face(
         }
         area.dot(tangent)
     };
-    let profile = if hand < 0.0 {
+    // The caps face the way the profile's surface does, turned to face
+    // along the sweep as the prism's do; the walls follow the walk, and a
+    // profile whose walk runs against its own surface's normal (a face
+    // built on a ring wound the other way) has its walls turned to match.
+    let profile = if along < 0.0 {
         face.reversed()
     } else {
         face.clone()
     };
+    let walls_turned = (hand < 0.0) != (along < 0.0);
 
     let mut history = History::new();
     let mut faces = Vec::new();
     for wire in model.children_of(&profile)? {
         let (sides, wire_history) = revolution_over_wire(model, rails, &wire, turn, tol)?;
         history = history.then(&wire_history);
-        faces.extend(sides);
+        if walls_turned {
+            faces.extend(sides.into_iter().map(|f| f.reversed()));
+        } else {
+            faces.extend(sides);
+        }
     }
 
     if turn.full {

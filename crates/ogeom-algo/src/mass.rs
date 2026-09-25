@@ -560,7 +560,8 @@ fn integrate_face(
                 }
                 out
             };
-            // An extruded curve's knots stand across the sweep, in `u`.
+            // A swept curve's knots stand across its sweep: in `u` for an
+            // extrusion, in `v` for a revolution.
             fn curve_knots(curve: &ogeom_geom::Curve) -> Option<&ogeom_math::KnotVector> {
                 match curve {
                     ogeom_geom::Curve::BSpline(b) => Some(b.knots()),
@@ -571,6 +572,7 @@ fn integrate_face(
             let (u_knots, v_knots) = match surface {
                 ogeom_geom::SurfaceGeometry::BSpline(b) => (Some(b.u_knots()), Some(b.v_knots())),
                 ogeom_geom::SurfaceGeometry::Extrusion(e) => (curve_knots(e.curve()), None),
+                ogeom_geom::SurfaceGeometry::Revolution(r) => (None, curve_knots(r.curve())),
                 _ => (None, None),
             };
             let (u_breaks, v_breaks) = (breaks(u0, u1, u_knots), breaks(v0, v1, v_knots));
@@ -742,6 +744,7 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
             // polynomial piece the Gauss rule takes exactly.
             | ogeom_geom::SurfaceGeometry::BSpline(_)
             | ogeom_geom::SurfaceGeometry::Extrusion(_)
+            | ogeom_geom::SurfaceGeometry::Revolution(_)
     );
     if !analytic {
         return Ok(None);
