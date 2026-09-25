@@ -15,8 +15,8 @@ per package.
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 71 |
-| `partial` | 13 |
+| `covered` | 72 |
+| `partial` | 12 |
 | `divergent` | 9 |
 | `n/a` | 5 |
 
@@ -126,8 +126,7 @@ to grow to, and a gap the recovered edges do not bridge.
 ### ogeom-heal
 
 - **heal.canonical-simplification**: Recognizing that exact geometry is secretly analytic: a B-spline that is a cylinder · `covered` · 1 header claimed
-- **heal.custom-remodelling**: Rebuilding a shape's geometry wholesale: baking transforms, converting representations · `partial` · 12 headers claimed
-  - *restriction:* Baking a transform into geometry is here (`baked_shape`, which the boolean requires before accepting a scaled placement), and so is whole-shape B-spline conversion (`to_nurbs`). Degree restriction exists at the geometry level (a curve or a patch brought under a degree limit at a stated tolerance, the curve same-parameter, the patch on the fit's own parameterization), but not yet as a whole-shape pass that re-derives every pcurve against the restricted patches; swept-to-elementary is not carried.
+- **heal.custom-remodelling**: Rebuilding a shape's geometry wholesale: baking transforms, converting representations · `covered` · 12 headers claimed
 - **heal.fix-shape**: Fixing broken shapes: wires, faces, shells, solids, free bounds, small features · `partial` · 35 headers claimed
   - *restriction:* `fix_shape` is the standalone entry point: diagnose, put a wire's edges end to end where an order exists, collapse edges shorter than their own vertices' tolerances, fit missing pcurves, sew loose faces, tighten tolerances, restore tolerance containment by widening what is bounded (`restore_containment`, which the STEP and IGES readers run on every body they build), diagnose again, and report what it did and what remains. Beneath it: reanchoring periodic rings, sewing, validity diagnosis, the reader's inline heal sequence, and the instructed fixes: fix_face_pcurves fits the trims the reader refused at a caller's cap, and reanchor_boundaries moves a boundary onto the surface it bounds with the displacement recorded in widened tolerances, both measured on community assemblies with boundaries millimetres off. fix_small_faces collapses a spot face to a point and a strip face to one long side, rebuilding its neighbours so the shell stays closed; remove_small_solids drops debris solids under a volume. A STEP grid of patches reads as one spline surface. Healing here is measured by the imported corpus rather than claimed in general.
 - **heal.same-parameter**: Diagnosing and repairing the same-parameter law between a curve and its pcurves · `covered` · 26 headers claimed

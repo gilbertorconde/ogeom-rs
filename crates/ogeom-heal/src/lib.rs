@@ -12,6 +12,7 @@ pub mod divide;
 pub mod fix;
 pub mod fix_shape;
 pub mod reanchor;
+pub mod remodel;
 pub mod same_parameter;
 pub mod small;
 
@@ -26,6 +27,7 @@ pub use divide::{
 pub use fix::{FixedTrims, ReanchoredBoundaries, fix_face_pcurves, reanchor_boundaries};
 pub use fix_shape::{FixReport, Fixed, fix_shape};
 pub use reanchor::reanchor_periodic_rings;
+pub use remodel::{restrict_degree, swept_to_elementary};
 pub use reshape::Reshape;
 pub use same_parameter::{SameParameterReport, repair_same_parameter};
 pub use small::{SmallFaces, fix_small_faces, remove_small_solids};

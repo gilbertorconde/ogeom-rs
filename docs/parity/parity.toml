@@ -685,23 +685,20 @@ tests = ["crates/ogeom/tests/canonical.rs"]
 id = "heal.custom-remodelling"
 title = "Rebuilding a shape's geometry wholesale: baking transforms, converting representations"
 crate = "ogeom-heal"
-verdict = "partial"
-restriction = """Baking a transform into geometry is here (`baked_shape`, \
-which the boolean requires before accepting a scaled placement), and so is \
-whole-shape B-spline conversion (`to_nurbs`). Degree restriction exists at \
-the geometry level (a curve or a patch brought under a degree limit at a \
-stated tolerance, the curve same-parameter, the patch on the fit's own \
-parameterization), but not yet as a whole-shape pass that re-derives every \
-pcurve against the restricted patches; swept-to-elementary is not carried."""
+verdict = "covered"
 claims = ["ShapeCustom", "ShapeCustom_*"]
 symbols = [
     "ogeom_algo::baked_shape",
     "ogeom_algo::to_nurbs",
+    "ogeom_algo::restate_geometry",
+    "ogeom_heal::restrict_degree",
+    "ogeom_heal::swept_to_elementary",
     "ogeom_geom::BSplineCurve::restricted_to_degree",
     "ogeom_geom::BSplineSurface::restricted_to_degree",
 ]
 tests = [
     "crates/ogeom/tests/boolean_options.rs",
+    "crates/ogeom/tests/remodel.rs",
     "crates/ogeom-geom/src/convert.rs::a_curve_restricted_in_degree_holds_its_tolerance",
     "crates/ogeom-geom/src/convert.rs::a_patch_restricted_in_degree_holds_its_samples",
 ]

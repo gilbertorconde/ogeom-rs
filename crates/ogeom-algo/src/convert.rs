@@ -49,7 +49,7 @@ type ChartWindow = ((f64, f64), (f64, f64));
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if a pcurve
 /// refit cannot reach its target.
 pub fn to_nurbs(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Built> {
-    rebuild(model, shape, None, true, tol)
+    rebuild(model, shape, None, Restate::Nurbs, tol)
 }
 
 /// Rebuild a solid with its placements baked into the geometry, keeping
@@ -67,7 +67,7 @@ pub fn to_nurbs(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResul
 ///
 /// As [`to_nurbs`].
 pub fn baked_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Built> {
-    rebuild(model, shape, None, false, tol)
+    rebuild(model, shape, None, Restate::Keep, tol)
 }
 
 /// Rebuild a solid under a general affine transform.
@@ -102,7 +102,50 @@ pub fn general_transformed_shape(
     if let Some(similarity) = transform.to_similarity(tol.angular()) {
         return crate::place::transformed(model, shape, similarity);
     }
-    rebuild(model, shape, Some(transform), true, tol)
+    rebuild(model, shape, Some(transform), Restate::Nurbs, tol)
+}
+
+/// A caller's restatement of a surface: the new surface and whether its
+/// normal points against the old one's, or `None` to keep it.
+pub type SurfaceRestatement<'a> =
+    &'a dyn Fn(&SurfaceGeometry) -> OgeomResult<Option<(SurfaceGeometry, bool)>>;
+
+/// A caller's restatement of a curve over a range: the new curve and the
+/// range on it tracing the same points, or `None` to keep it.
+pub type CurveRestatement<'a> =
+    &'a dyn Fn(&Curve, (f64, f64)) -> OgeomResult<Option<(Curve, (f64, f64))>>;
+
+/// Rebuild a solid with its surfaces and curves restated by the caller,
+/// every placement baked in and every pcurve re-derived against the new
+/// surfaces at the new edges' parameters.
+///
+/// `surface` is handed each face's surface, placed and bounded to the face;
+/// `curve` each edge's curve, placed, with the edge's range on it. Each
+/// answers `None` to keep what it was handed. A restatement must trace the
+/// same points: the rebuild re-derives trims, it does not move boundaries.
+///
+/// # Errors
+///
+/// As [`to_nurbs`], and whatever a restatement returns.
+pub fn restate_geometry(
+    model: &mut Model,
+    shape: &Shape,
+    surface: SurfaceRestatement<'_>,
+    curve: CurveRestatement<'_>,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    rebuild(model, shape, None, Restate::With(surface, curve), tol)
+}
+
+/// How a rebuild restates the geometry it carries.
+#[derive(Clone, Copy)]
+enum Restate<'a> {
+    /// As it is, placed.
+    Keep,
+    /// As B-splines, exactly.
+    Nurbs,
+    /// As the caller says.
+    With(SurfaceRestatement<'a>, CurveRestatement<'a>),
 }
 
 /// The shared engine: convert, refit, optionally move control points.
@@ -110,7 +153,7 @@ fn rebuild(
     model: &mut Model,
     shape: &Shape,
     affine: Option<&GeneralTransform>,
-    convert: bool,
+    restate: Restate<'_>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     if model.kind_of(shape)? != ShapeType::Solid {
@@ -155,14 +198,23 @@ fn rebuild(
                 placement.scale_factor().abs(),
                 tol,
             )?;
-            let patch_surface: SurfaceGeometry = if convert {
-                let mut patch = placed.to_bspline(tol)?;
-                if let Some(t) = affine {
-                    patch = transformed_patch(&patch, t)?;
+            let mut flipped = false;
+            let patch_surface: SurfaceGeometry = match restate {
+                Restate::Nurbs => {
+                    let mut patch = placed.to_bspline(tol)?;
+                    if let Some(t) = affine {
+                        patch = transformed_patch(&patch, t)?;
+                    }
+                    patch.into()
                 }
-                patch.into()
-            } else {
-                placed.clone()
+                Restate::Keep => placed.clone(),
+                Restate::With(surface, _) => match surface(&placed)? {
+                    Some((restated, flip)) => {
+                        flipped = flip;
+                        restated
+                    }
+                    None => placed.clone(),
+                },
             };
             let surface_id = model.geometry_mut().add_surface(patch_surface.clone());
 
@@ -235,7 +287,7 @@ fn rebuild(
                                 &edge,
                                 &data,
                                 &map,
-                                convert,
+                                restate,
                                 &mut new_vertices,
                                 tol,
                             )?;
@@ -407,7 +459,8 @@ fn rebuild(
             // a reflecting placement flipped the old chart's natural normal,
             // and the flag must carry that flip or the baked solid comes
             // out inside-out.
-            let reflected = !face.location().preserves_handedness(model.datums())?;
+            // A restated surface whose normal turned is the same flip.
+            let reflected = !face.location().preserves_handedness(model.datums())? != flipped;
             let built = if (face.orientation() == Orientation::Reversed) != reflected {
                 built.reversed()
             } else {
@@ -429,7 +482,7 @@ fn convert_edge(
     edge: &Shape,
     data: &ogeom_topo::EdgeData,
     map: &dyn Fn(Point) -> Point,
-    convert: bool,
+    restate: Restate<'_>,
     vertices: &mut HashMap<(TShapeId, [u64; 3]), Shape>,
     tol: Tolerances,
 ) -> OgeomResult<(Shape, Curve, (f64, f64))> {
@@ -453,7 +506,7 @@ fn convert_edge(
         }
         _ => *range,
     };
-    let (curve, new_range): (Curve, (f64, f64)) = if convert {
+    let (curve, new_range): (Curve, (f64, f64)) = if matches!(restate, Restate::Nurbs) {
         let spline = placed.to_bspline_over(range_on_placed, tol)?;
         // The affine map moves control points; the parameterization and the
         // weights stay, which is the whole point of converting first.
@@ -469,6 +522,8 @@ fn convert_edge(
         let curve: Curve = spline.into();
         let range = curve.domain();
         (curve, range)
+    } else if let Restate::With(_, restated) = restate {
+        restated(&placed, range_on_placed)?.unwrap_or((placed, range_on_placed))
     } else {
         (placed, range_on_placed)
     };
@@ -673,32 +728,84 @@ fn exact_iso_pcurve(
     Ok(Some(ogeom_geom::Line2d::segment(a, b, tol)?.into()))
 }
 
-/// Exact seam columns for a closed patch: the chart's two `u` edges over the
-/// seam's projected `v` span. `None` when the projections cannot say.
+/// Exact seam pcurves for a closed patch: the chart's two edges the seam
+/// runs along (its `u` columns or its `v` rows), each following the seam's
+/// projected course at the edge's own parameters. `None` where the seam
+/// does not lie on either pair of edges, or its course is not affine in
+/// its parameter.
 fn exact_seam_columns(
     curve: &Curve,
     range: (f64, f64),
     surface: &SurfaceGeometry,
     tol: Tolerances,
 ) -> Option<(ogeom_geom::PlanarCurve, ogeom_geom::PlanarCurve)> {
-    let ((u0, u1), _) = {
-        use ogeom_geom::Surface as _;
-        surface.domain()
+    use ogeom_geom::Surface as _;
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    const N: usize = 8;
+    #[allow(clippy::cast_precision_loss)]
+    let params: Vec<f64> = (0..=N)
+        .map(|i| range.0 + (range.1 - range.0) * i as f64 / N as f64)
+        .collect();
+    let mut chart: Vec<Point2> = Vec::with_capacity(N + 1);
+    for &t in &params {
+        let p = curve.point_at(t, tol).ok()?;
+        let at = crate::measure::project_on_surface(surface, p, 24, tol).ok()?;
+        chart.push(Point2::new(at.parameters.0, at.parameters.1));
+    }
+    let on = |x: f64, a: f64, b: f64| {
+        let eps = (b - a).abs() * 1e-6;
+        (x - a).abs() <= eps || (x - b).abs() <= eps
     };
-    let start = curve.point_at(range.0, tol).ok()?;
-    let end = curve.point_at(range.1, tol).ok()?;
-    let a = crate::measure::project_on_surface(surface, start, 24, tol).ok()?;
-    let b = crate::measure::project_on_surface(surface, end, 24, tol).ok()?;
-    let (va, vb) = (a.parameters.1, b.parameters.1);
-    let forward: ogeom_geom::PlanarCurve =
-        ogeom_geom::Line2d::segment(Point2::new(u1, va), Point2::new(u1, vb), tol)
-            .ok()?
-            .into();
-    let reversed: ogeom_geom::PlanarCurve =
-        ogeom_geom::Line2d::segment(Point2::new(u0, va), Point2::new(u0, vb), tol)
-            .ok()?
-            .into();
-    Some((forward, reversed))
+    // Which pair of chart edges the seam runs on, and the coordinate it
+    // runs along.
+    let (columns, lo, hi, period) = if chart.iter().all(|p| on(p.x, u0, u1)) {
+        (true, u0, u1, surface.is_periodic_v().then_some(v1 - v0))
+    } else if chart.iter().all(|p| on(p.y, v0, v1)) {
+        (false, v0, v1, surface.is_periodic_u().then_some(u1 - u0))
+    } else {
+        return None;
+    };
+    let mut run: Vec<f64> = chart
+        .iter()
+        .map(|p| if columns { p.y } else { p.x })
+        .collect();
+    if let Some(period) = period {
+        for i in 1..run.len() {
+            while run[i] - run[i - 1] > period * 0.5 {
+                run[i] -= period;
+            }
+            while run[i] - run[i - 1] < -period * 0.5 {
+                run[i] += period;
+            }
+        }
+    }
+    let slope = (run[N] - run[0]) / (range.1 - range.0);
+    let span = (run[N] - run[0]).abs();
+    if span <= tol.parametric() {
+        return None;
+    }
+    let affine = params
+        .iter()
+        .zip(&run)
+        .all(|(t, r)| (run[0] + slope * (t - range.0) - r).abs() <= span * 1e-7);
+    if !affine {
+        return None;
+    }
+    let side = |at: f64| -> Option<ogeom_geom::PlanarCurve> {
+        let (a, b) = if columns {
+            (Point2::new(at, run[0]), Point2::new(at, run[N]))
+        } else {
+            (Point2::new(run[0], at), Point2::new(run[N], at))
+        };
+        let knots =
+            ogeom_math::KnotVector::new(vec![range.0, range.0, range.1, range.1], 1).ok()?;
+        Some(
+            ogeom_geom::BSpline2d::new(knots, vec![a, b], tol)
+                .ok()?
+                .into(),
+        )
+    };
+    Some((side(hi)?, side(lo)?))
 }
 
 /// The two seam-side pcurves of a closed patch: the chart's first and last

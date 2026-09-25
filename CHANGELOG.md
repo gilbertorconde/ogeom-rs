@@ -79,9 +79,18 @@ bump may break the API and a patch bump may not.
   `divide_by_continuity`, `divide_by_angle` and `divide_by_area` cut edges
   and faces at weak knots, past an angle or above an area. `to_bezier`
   leaves every curve and surface a single Bezier span.
+- **Remodelling.** `restate_geometry` rebuilds a solid with its surfaces
+  and curves restated by the caller, every trim re-derived.
+  `restrict_degree` refits every spline above a degree at that degree,
+  within a tolerance. `swept_to_elementary` names an extruded or revolved
+  line or circle as the plane, drum, cone, ball or torus it is.
 
 ### Fixed
 
+- **Rebuilding a torus broke its trims.** `to_nurbs` and `baked_shape`
+  took every seam for a `u` column, so a torus's `v` seam was given
+  pcurves on the wrong edges of the chart and the face could not be
+  meshed. A seam on the `v` rows now gets its trims there.
 - **A pipe shell failed along an arc that runs on into a straight line.**
   One skin fitted across the join, where the curvature steps, and could not
   reach the tolerance. Each spine edge now skins its own run, the runs
