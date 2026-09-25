@@ -35,6 +35,19 @@ bump may break the API and a patch bump may not.
   so a point in the groove read as outside; a curve near a cell by its
   surface's bow from it is now seeded there. The groove cuts from a block
   for any number of turns.
+- **A thread groove would not cut from a bored block.** Where the groove
+  runs in and out of the bore, four things went wrong. A section winding
+  several turns round the bore was fitted as one curve that wandered
+  hundreds of millimetres between the points it was checked at; fits are
+  now checked between their samples too, and a trace no single fit
+  follows is fitted in pieces. Such a section crossed the bore's seam
+  once a turn and was read as running along it. A section ending along a
+  rail, or two meeting a rail that grazes the bore, ended beside the
+  rail's split point by more than the weld reached in the face's chart;
+  they now meet where the junction there says. And a ray crossing a wall
+  near the end of its patch was solved from a seed that stepped off the
+  patch, so a point in the groove's end read as outside. The groove cuts
+  from a bored block for one to seven turns.
 - **`make_half_space` could pick the wrong side of a closed surface.** The
   side was read from the normal at one sample of the face, which on a rod
   or a ball can face the given point across the surface. It is read where

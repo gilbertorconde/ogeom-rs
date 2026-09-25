@@ -794,18 +794,19 @@ fn marched(
         // is not there. (A boolean marching an *exact* pair whose image has
         // no closed form holds its own marched sections to a budget, in
         // its own fallback, where a miss is a miss.)
-        let fitted = approximate_branch(a, b, branch, options.tolerance, tol)?;
-        out.push(SectionCurve {
-            curve: fitted.curve.into(),
-            on_a: Some(fitted.on_a.into()),
-            on_b: Some(fitted.on_b.into()),
-            // The sum of the stated parts: the trace is within its chord of
-            // the truth, the fit within its error of the trace.
-            tolerance: options.marching.chord + fitted.fit_error,
-            exact: false,
-            closed: fitted.closed,
-            tangential: false,
-        });
+        for fitted in fitted_in_pieces(a, b, branch, options.tolerance, tol)? {
+            out.push(SectionCurve {
+                curve: fitted.curve.into(),
+                on_a: Some(fitted.on_a.into()),
+                on_b: Some(fitted.on_b.into()),
+                // The sum of the stated parts: the trace is within its chord of
+                // the truth, the fit within its error of the trace.
+                tolerance: options.marching.chord + fitted.fit_error,
+                exact: false,
+                closed: fitted.closed,
+                tangential: false,
+            });
+        }
     }
     for contact in &contacts {
         let fitted = approximate_branch(a, b, contact, options.tolerance, tol)?;
@@ -823,6 +824,77 @@ fn marched(
         return Ok(SurfaceIntersection::Apart);
     }
     Ok(SurfaceIntersection::Along(out))
+}
+
+/// A traced branch fitted, in pieces where whole it will not fit.
+///
+/// A trace winding several turns round a drum (a thread's flank meeting a
+/// bore) is long and turns the same way throughout, and one fit of it can
+/// run out of room and come back with an error of the drum's size. An open
+/// branch whose fit strays farther from the trace than the trace's own
+/// step, and so is no longer the curve traced, is split at its middle
+/// sample and each half fitted the same way, down to a floor of samples
+/// and depth; the pieces meet at the shared sample. A fit that misses its
+/// tolerance by less stands whole, its error stated: a caller takes one
+/// curve per branch where it can, and a few microns do not warrant more.
+/// So does a closed branch, or one no split helps.
+fn fitted_in_pieces(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    branch: &crate::march::Traced,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Vec<crate::approx::IntersectionCurve>> {
+    const DEPTH: u32 = 6;
+    const FLOOR: usize = 16;
+    fn go(
+        a: &SurfaceGeometry,
+        b: &SurfaceGeometry,
+        branch: &crate::march::Traced,
+        tolerance: f64,
+        depth: u32,
+        tol: Tolerances,
+    ) -> OgeomResult<Vec<crate::approx::IntersectionCurve>> {
+        let whole = approximate_branch(a, b, branch, tolerance, tol)?;
+        let step = branch
+            .points
+            .windows(2)
+            .map(|w| w[0].distance(w[1]))
+            .fold(0.0_f64, f64::max);
+        if whole.met
+            || whole.fit_error <= step
+            || branch.closed()
+            || depth == 0
+            || branch.points.len() < 2 * FLOOR
+        {
+            return Ok(vec![whole]);
+        }
+        let middle = branch.points.len() / 2;
+        let half = |range: core::ops::RangeInclusive<usize>| crate::march::Traced {
+            points: branch.points[range.clone()].to_vec(),
+            on_a: branch.on_a[range.clone()].to_vec(),
+            on_b: branch.on_b[range].to_vec(),
+            stopped: branch.stopped,
+        };
+        let mut pieces = go(a, b, &half(0..=middle), tolerance, depth - 1, tol)?;
+        pieces.extend(go(
+            a,
+            b,
+            &half(middle..=branch.points.len() - 1),
+            tolerance,
+            depth - 1,
+            tol,
+        )?);
+        // Worse in pieces than whole (a trace that is noise, not length):
+        // the whole stands.
+        let worst = pieces.iter().map(|p| p.fit_error).fold(0.0_f64, f64::max);
+        Ok(if worst < whole.fit_error {
+            pieces
+        } else {
+            vec![whole]
+        })
+    }
+    go(a, b, branch, tolerance, DEPTH, tol)
 }
 
 /// Follow the contact a tangential fragment sits on, unless one already

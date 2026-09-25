@@ -1844,7 +1844,13 @@ fn fill(
                                 if foot.distance <= width {
                                     on_a = end;
                                     on_b = onto_range(foot.parameter, &e.curve, e.crange, tol);
-                                    honesty = honesty.max(foot.distance);
+                                    // Along the edge the touch is known only
+                                    // as far as the two curves stay together:
+                                    // a rail grazing a bore is met there by
+                                    // the sections on the faces either side
+                                    // of it a hundredth of a millimetre
+                                    // apart, and those are one junction.
+                                    honesty = honesty.max(foot.distance).max(crossing.reach);
                                 }
                                 break;
                             }
@@ -2200,6 +2206,7 @@ fn fill(
                     }
                     let mut all_near = true;
                     let mut votes: Vec<usize> = vec![0; own.edges.len()];
+                    let mut contact_votes: Vec<usize> = vec![0; contacts.len()];
                     for i in 0..=4 {
                         let t = lo + (hi - lo) * f64::from(i) / 4.0;
                         let tf = if section.closed { fold(t, domain) } else { t };
@@ -2248,17 +2255,15 @@ fn fill(
                         // the arrangement cannot walk a line it meets from both
                         // sides at once. Two boxes side by side put the low one's
                         // lid exactly there.
-                        if !near {
-                            for c in &contacts {
-                                if c.target_from_a != side_from_a || c.target_face != side_face {
-                                    continue;
-                                }
-                                if distance_to_edge_curve(&c.curve, c.crange, at, tol)?
-                                    <= width.max(c.tolerance * 2.0)
-                                {
-                                    near = true;
-                                    break;
-                                }
+                        for (ci, c) in contacts.iter().enumerate() {
+                            if c.target_from_a != side_from_a || c.target_face != side_face {
+                                continue;
+                            }
+                            if distance_to_edge_curve(&c.curve, c.crange, at, tol)?
+                                <= width.max(c.tolerance * 2.0)
+                            {
+                                near = true;
+                                contact_votes[ci] += 1;
                             }
                         }
                         if !near {
@@ -2266,7 +2271,12 @@ fn fill(
                             break;
                         }
                     }
-                    hugs[side] = all_near;
+                    // And along one of them all the way: a section winding
+                    // round a drum passes the drum's seam once a turn, and a
+                    // stretch spanning whole turns puts every sample on the
+                    // seam without running along it anywhere between.
+                    let one_line = votes.iter().chain(&contact_votes).any(|&v| v == 5);
+                    hugs[side] = all_near && one_line;
                     if all_near {
                         hugged[side].extend(
                             votes
@@ -4600,6 +4610,75 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             })
             .fold(face_snap, f64::min)
             .max(PARAM_SNAP);
+        // A section that runs along one of this face's edges into its end
+        // stops within the hug's width of the node the edge was split at,
+        // and two sections meeting a rail that grazes this face stop on it
+        // as far apart as the rail stays within tolerance of the face. The
+        // junction there says each pair is one point. Where a chart unit is
+        // shorter than a millimetre, or the graze long, that gap is wider in
+        // the chart than the weld, and the section dangles beside the node it
+        // ends at. Its end moves onto a boundary node the junction holds, or
+        // onto the first section end already there.
+        let mut anchors: Vec<(Option<usize>, Point2, Point)> = strands
+            .iter()
+            .filter(|st| st.boundary && st.polyline.len() >= 2)
+            .flat_map(|st| [st.polyline[0], st.polyline[st.polyline.len() - 1]])
+            .filter_map(|p| {
+                face.surface
+                    .point_at(p.x, p.y, tol)
+                    .ok()
+                    .map(|q| (None, p, q))
+            })
+            .collect();
+        for st in strands
+            .iter_mut()
+            .filter(|st| matches!(st.tag, Tag::Section { .. }) && st.polyline.len() >= 2)
+        {
+            let last = st.polyline.len() - 1;
+            for at in [0, last] {
+                let p = st.polyline[at];
+                if anchors
+                    .iter()
+                    .any(|(held, n, _)| held.is_none() && n.distance(p) <= face_snap)
+                {
+                    continue;
+                }
+                let Ok(q) = face.surface.point_at(p.x, p.y, tol) else {
+                    continue;
+                };
+                let Some((ji, junction)) = junctions
+                    .iter()
+                    .enumerate()
+                    .find(|(_, j)| j.at.distance(q) <= j.reach)
+                else {
+                    continue;
+                };
+                // The nearest in space the junction also holds, and reached
+                // across the chart without leaving it: the chart's midpoint
+                // of the two lies midway in space too, where a node in
+                // another period's copy would not.
+                let anchor = anchors
+                    .iter()
+                    .filter(|(held, _, s)| {
+                        held.is_none_or(|h| h == ji) && junction.at.distance(*s) <= junction.reach
+                    })
+                    .filter(|(_, n, s)| {
+                        face.surface
+                            .point_at((n.x + p.x) / 2.0, (n.y + p.y) / 2.0, tol)
+                            .is_ok_and(|m| m.distance(q.midpoint(*s)) <= junction.reach)
+                    })
+                    .min_by(|a, b| {
+                        a.2.distance(q)
+                            .partial_cmp(&b.2.distance(q))
+                            .unwrap_or(core::cmp::Ordering::Equal)
+                    })
+                    .map(|(_, n, _)| *n);
+                match anchor {
+                    Some(n) => st.polyline[at] = n,
+                    None => anchors.push((Some(ji), p, q)),
+                }
+            }
+        }
         if *DEBUG_STRANDS {
             eprintln!(
                 "FACE-SNAP from_a={from_a} fi={fi}: snap {face_snap:.3e} edges {:?}",

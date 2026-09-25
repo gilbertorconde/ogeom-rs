@@ -2,8 +2,10 @@
 //! and cut from a block.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+use ogeom::algo::Containment;
 use ogeom::algo::{
-    check, make_box, make_edge, make_face, make_polygon, make_wire, volume_properties,
+    check, classify_in_solid_exact, make_box, make_cylinder, make_edge, make_face, make_polygon,
+    make_wire, volume_properties,
 };
 use ogeom::core::Tolerances;
 use ogeom::geom::{Curve2d as _, Curve3d as _, HelixCurve, PlaneSurface, Surface as _};
@@ -124,4 +126,85 @@ fn a_thread_groove_cuts_from_a_block() {
         );
         assert!(taken > 3.0 * (turns - 1.0), "{turns} turns take {taken}");
     }
+}
+
+/// A point a hundredth of a millimetre behind the end of a three-turn
+/// groove, near its wall: inside. A ray from it leaves through the wall a
+/// few hundredths on, close to where the wall's patch ends, and the Newton
+/// solve seeded at the corner of the patch's last cell stepped past the
+/// patch's end and stalled against it, so the crossing went uncounted.
+#[test]
+fn a_point_just_inside_the_grooves_end_is_inside() {
+    let mut model = Model::new();
+    let groove = groove(&mut model, 3.0);
+    let point = Point::new(
+        12.499_990_690_040_166,
+        9.993_177_265_028_299,
+        8.231_476_863_123_2,
+    );
+    assert_eq!(
+        classify_in_solid_exact(&model, &groove, point, T).unwrap(),
+        Containment::In
+    );
+}
+
+/// The groove cut from a block bored 2.5 in radius up the groove's axis
+/// from z = 2, so the groove's inner flank runs in and out of the bore's
+/// wall: valid, and the bored block less what the groove holds of it.
+fn cuts_from_a_bored_block(turns: f64) {
+    let mut model = Model::new();
+    let groove = groove(&mut model, turns);
+    let block = make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let axis = Frame::new(Point::new(10.0, 10.0, 2.0), Direction::Z, Direction::X, T).unwrap();
+    let bore = make_cylinder(&mut model, axis, 2.5, 9.0, T).unwrap().shape;
+    let bored = ogeom::boolean::cut(&mut model, &block, &bore, T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(&mut model, &bored, &groove, T)
+        .unwrap_or_else(|e| panic!("{turns} turns: {e}"))
+        .shape;
+    let diagnosis = check(&model, &cut, T).unwrap();
+    assert!(diagnosis.is_valid(), "{turns} turns: {diagnosis}");
+    let inside = ogeom::boolean::common(&mut model, &bored, &groove, T)
+        .unwrap_or_else(|e| panic!("{turns} turns: {e}"))
+        .shape;
+    let diagnosis = check(&model, &inside, T).unwrap();
+    assert!(diagnosis.is_valid(), "{turns} turns: {diagnosis}");
+    // The bore's wall, cut into pieces, is measured by its mesh, and the
+    // mesh of a hollow lies inside it by a share of the chord over its
+    // whole area. At a chord of 3e-5 the two add up to a millionth.
+    let chord = 1e-3;
+    let whole = 4000.0 - core::f64::consts::PI * 2.5 * 2.5 * 8.0;
+    let wall = core::f64::consts::TAU * 2.5 * 8.0;
+    let (left, taken) = (volume(&model, &cut), volume(&model, &inside));
+    assert!(
+        (left + taken - whole).abs() < whole * 1e-6 + wall * chord,
+        "{turns} turns: {left} + {taken} against {whole}"
+    );
+    assert!(taken > 3.0 * (turns - 1.0), "{turns} turns take {taken}");
+}
+
+/// Three turns end the groove's cap on the line where the bore's surface
+/// closes on itself, leaving a sliver of the bore's wall beside that line
+/// inside the groove.
+#[test]
+fn a_three_turn_groove_cuts_from_a_bored_block() {
+    cuts_from_a_bored_block(3.0);
+}
+
+/// Six turns end it there too, where the groove's rail grazes the bore:
+/// the sections on the two walls either side of the rail meet it a
+/// hundredth of a millimetre apart.
+#[test]
+fn a_six_turn_groove_cuts_from_a_bored_block() {
+    cuts_from_a_bored_block(6.0);
+}
+
+/// Seven turns end the cap across the bore's wall, and the flank's section
+/// winds round the bore for turns before it.
+#[test]
+fn a_seven_turn_groove_cuts_from_a_bored_block() {
+    cuts_from_a_bored_block(7.0);
 }

@@ -360,18 +360,25 @@ fn general(
             {
                 continue;
             }
-            let seed_t = f64::midpoint(t0, t1);
-            if let Some(found) = polish(curve, surface, seed_t, cell.at, tol) {
-                if found.gap > options.gap {
-                    continue;
-                }
-                let reach = tol.confusion() * 100.0;
-                if !crossings
-                    .iter()
-                    .any(|c| c.point.distance(found.point) <= reach)
-                {
-                    crossings.push(found);
-                }
+            // Newton from where the segment meets the cell, not from the
+            // cell's corner: on a wall bowing a few hundredths of a
+            // millimetre over a cell, the corner can stand far enough off
+            // that the first step leaves the chart, and clamped at its edge
+            // the solve stalls there. The corner stays a second try.
+            let (near_t, near_uv) = seed_in(cell, p0, p1, t0, t1);
+            let Some(found) = [(near_t, near_uv), (f64::midpoint(t0, t1), cell.at)]
+                .into_iter()
+                .filter_map(|(t, uv)| polish(curve, surface, t, uv, tol))
+                .find(|found| found.gap <= options.gap)
+            else {
+                continue;
+            };
+            let reach = tol.confusion() * 100.0;
+            if !crossings
+                .iter()
+                .any(|c| c.point.distance(found.point) <= reach)
+            {
+                crossings.push(found);
             }
         }
     }
@@ -401,6 +408,53 @@ fn seeding(surface: &SurfaceGeometry, grid: usize) -> (usize, usize) {
     (
         grid.max(2 * spans(spline.u_knots())).min(CAP.max(grid)),
         grid.max(2 * spans(spline.v_knots())).min(CAP.max(grid)),
+    )
+}
+
+/// Where to start Newton for a segment near a cell: the point of the cell
+/// the segment passes through, or failing that the one nearest its middle,
+/// with its parameters on the curve and on the surface read off the cell's
+/// corners.
+fn seed_in(cell: &Cell, p0: Point, p1: Point, t0: f64, t1: f64) -> (f64, (f64, f64)) {
+    let [a, b, c] = cell.corners;
+    let (t, at) = segment_meets_triangle(p0, p1, cell.corners).map_or_else(
+        || (f64::midpoint(t0, t1), p0.midpoint(p1)),
+        |x| {
+            let length = p0.distance(p1);
+            let f = if length > 0.0 {
+                p0.distance(x) / length
+            } else {
+                0.5
+            };
+            (t0 + (t1 - t0) * f, x)
+        },
+    );
+    // Barycentric weights of the point's foot in the cell's plane, pulled
+    // back inside the cell.
+    let (e1, e2, d) = (b - a, c - a, at - a);
+    let (d11, d12, d22) = (e1.dot(e1), e1.dot(e2), e2.dot(e2));
+    let (d1, d2) = (d.dot(e1), d.dot(e2));
+    let det = d11 * d22 - d12 * d12;
+    let (mut wb, mut wc) = if det > 0.0 {
+        ((d22 * d1 - d12 * d2) / det, (d11 * d2 - d12 * d1) / det)
+    } else {
+        (1.0 / 3.0, 1.0 / 3.0)
+    };
+    wb = wb.clamp(0.0, 1.0);
+    wc = wc.clamp(0.0, 1.0);
+    if wb + wc > 1.0 {
+        let sum = wb + wc;
+        wb /= sum;
+        wc /= sum;
+    }
+    let wa = 1.0 - wb - wc;
+    let [pa, pb, pc] = cell.params;
+    (
+        t,
+        (
+            wa * pa.0 + wb * pb.0 + wc * pc.0,
+            wa * pa.1 + wb * pb.1 + wc * pc.1,
+        ),
     )
 }
 

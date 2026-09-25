@@ -733,6 +733,8 @@ pub(crate) struct Cell {
     /// How far the surface bows from the flat cell: its middle's distance
     /// from the middle of the diagonal the two triangles share.
     pub(crate) sag: f64,
+    /// The parameters of the three corners, in `corners` order.
+    pub(crate) params: [(f64, f64); 3],
 }
 
 /// Sample a surface into triangles.
@@ -766,14 +768,17 @@ pub(crate) fn sample_by(
                 let (u, v) = (ua + (ub - ua) * s, va + (vb - va) * t);
                 surface.point_at(u, v, tol).map(|p| ((u, v), p))
             };
-            let (Ok((p00, a00)), Ok((_, a10)), Ok((_, a01)), Ok((_, a11))) =
+            let (Ok((p00, a00)), Ok((p10, a10)), Ok((p01, a01)), Ok((p11, a11))) =
                 (at(s0, t0), at(s1, t0), at(s0, t1), at(s1, t1))
             else {
                 continue;
             };
             let sag = at(f64::midpoint(s0, s1), f64::midpoint(t0, t1))
                 .map_or(0.0, |(_, middle)| middle.distance(a00.midpoint(a11)));
-            for corners in [[a00, a10, a11], [a00, a11, a01]] {
+            for (corners, params) in [
+                ([a00, a10, a11], [p00, p10, p11]),
+                ([a00, a11, a01], [p00, p11, p01]),
+            ] {
                 let low = Point::new(
                     corners.iter().map(|p| p.x).fold(f64::MAX, f64::min),
                     corners.iter().map(|p| p.y).fold(f64::MAX, f64::min),
@@ -790,6 +795,7 @@ pub(crate) fn sample_by(
                     low,
                     high,
                     sag,
+                    params,
                 });
             }
         }

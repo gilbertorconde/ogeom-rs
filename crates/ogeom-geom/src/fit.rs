@@ -769,7 +769,8 @@ fn fit_spaced<const D: usize>(
         for _ in 0..2 {
             correct_parameters::<D>(&knots, &control, &points, &mut parameters, closed);
         }
-        let errors = residuals::<D>(&knots, &control, &points, &parameters);
+        let mut errors = residuals::<D>(&knots, &control, &points, &parameters);
+        wandering::<D>(&knots, &control, &points, &parameters, &mut errors);
         let worst = errors.iter().fold(0.0_f64, |acc, e| acc.max(e.1));
         if best.as_ref().is_none_or(|(_, _, held)| worst < *held) {
             best = Some((knots.clone(), control.clone(), worst));
@@ -1681,6 +1682,34 @@ fn residuals<const D: usize>(
         .collect()
 }
 
+/// How far the curve strays between samples, charged to the samples.
+///
+/// Correction lets every point find its own foot, so a curve that loops
+/// away between two samples and comes back for each still meets every
+/// point: a trace of fifty millimetres read within tolerance as a curve of
+/// three metres. Midway between two samples' parameters the curve lies
+/// within half their chord of the chord's middle, or the excess is the
+/// fit's error at both samples, where refinement can act on it.
+fn wandering<const D: usize>(
+    knots: &KnotVector,
+    control: &[[f64; D]],
+    points: &[[f64; D]],
+    parameters: &[f64],
+    errors: &mut [(f64, f64)],
+) {
+    for k in 0..parameters.len().saturating_sub(1) {
+        let middle = f64::midpoint(parameters[k], parameters[k + 1]);
+        let (at, _, _) = evaluate::<D>(knots, control, middle);
+        let chord: [f64; D] =
+            core::array::from_fn(|d| f64::midpoint(points[k][d], points[k + 1][d]));
+        let excess = distance::<D>(&at, &chord) - distance::<D>(&points[k], &points[k + 1]) / 2.0;
+        if excess > 0.0 {
+            errors[k].1 = errors[k].1.max(excess);
+            errors[k + 1].1 = errors[k + 1].1.max(excess);
+        }
+    }
+}
+
 /// The knot vector with every offending span split.
 ///
 /// Split at the *median parameter* inside the span, not its geometric middle.
@@ -1865,6 +1894,23 @@ mod tests {
     use super::*;
     use crate::traits::{Curve2d as _, Curve3d as _};
     use core::f64::consts::TAU;
+
+    /// A cubic through two samples at its ends that bulges ten units off
+    /// the chord between them meets both samples exactly, and strays by
+    /// its bulge less half the chord: charged to both.
+    #[test]
+    fn a_curve_straying_between_its_samples_is_charged_for_it() {
+        let knots = KnotVector::new(vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 3).unwrap();
+        let control = [[0.0, 0.0], [0.0, 10.0], [1.0, 10.0], [1.0, 0.0]];
+        let points = [[0.0, 0.0], [1.0, 0.0]];
+        let parameters = [0.0, 1.0];
+        let mut errors = residuals::<2>(&knots, &control, &points, &parameters);
+        assert!(errors.iter().all(|e| e.1 < 1e-12));
+        wandering::<2>(&knots, &control, &points, &parameters, &mut errors);
+        for e in &errors {
+            assert!((e.1 - 7.0).abs() < 1e-12, "{e:?}");
+        }
+    }
 
     #[test]
     fn scattered_points_fit_without_a_grid() {
