@@ -559,8 +559,13 @@ fn a_fitted_patch_wall_drafts_to_the_requested_angle() {
         ring(&mut model, 10.0),
     ];
     // A cubic through forty-eight samples of a circle of radius ten sits
-    // seven microns off it; the skin's target says so.
-    let solid = ogeom_offset::make_loft_skinned(&mut model, &sections, 1e-2, T)
+    // seven microns off it; the skin's target says so. The aligned loft
+    // skins by fitting where the plain one would build the drum exactly.
+    let hints: Vec<Point> = [0.0, 5.0, 10.0]
+        .iter()
+        .map(|z| Point::new(10.0, 0.0, *z))
+        .collect();
+    let solid = ogeom_offset::make_loft_skinned_aligned(&mut model, &sections, &hints, 1e-2, T)
         .unwrap()
         .shape;
     let wall = explore(&model, &solid, Filter::OfType(ShapeType::Face))

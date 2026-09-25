@@ -2126,6 +2126,310 @@ fn planar_strip(
     })
 }
 
+/// A loft through circles standing coaxial on parallel planes: the solid of
+/// revolution of the meridian through their radii, a spline through them
+/// in the half-plane of the first circle's start. `None` where the
+/// sections are anything else.
+fn coaxial_circles_loft(
+    model: &mut Model,
+    sections: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let mut circles = Vec::with_capacity(sections.len());
+    for wire in sections {
+        if model.kind_of(wire)? != ShapeType::Wire {
+            return Ok(None);
+        }
+        let edges = model.ordered_children_of(wire)?;
+        let [edge] = edges.as_slice() else {
+            return Ok(None);
+        };
+        let (curve, _) = spine_curve_of(model, edge)?;
+        let ogeom_geom::Curve::Circle(c) = curve else {
+            return Ok(None);
+        };
+        let placed = c
+            .circle()
+            .transformed(&edge.transform(model.datums())?, tol)?;
+        circles.push(placed);
+    }
+    let first = circles[0].frame();
+    let (c0, z0) = (first.origin(), first.z().vector());
+    let last = circles[circles.len() - 1].centre();
+    let rise = last - c0;
+    if rise.magnitude() <= tol.confusion() {
+        return Ok(None);
+    }
+    let z = rise / rise.magnitude();
+    if z.cross(z0).magnitude() > tol.angular() {
+        return Ok(None);
+    }
+    let mut heights = Vec::with_capacity(circles.len());
+    for c in &circles {
+        let off = c.centre() - c0;
+        if off.cross(z).magnitude() > tol.confusion() * 10.0
+            || c.frame().z().vector().cross(z).magnitude() > tol.angular()
+        {
+            return Ok(None);
+        }
+        heights.push(off.dot(z));
+    }
+    if heights.windows(2).any(|w| w[1] <= w[0] + tol.confusion()) {
+        return Ok(None);
+    }
+    let x = first.x().vector();
+    let meridian: Vec<Point> = circles
+        .iter()
+        .zip(&heights)
+        .map(|(c, h)| c0 + z * *h + x * c.radius())
+        .collect();
+    let degree = (meridian.len() - 1).min(3);
+    let fitted = ogeom_geom::fit::fit_points(&meridian, degree, tol.confusion() * 1e-3, tol)?;
+    let spline: ogeom_geom::Curve = fitted.curve.into();
+    let domain = spline.domain();
+    let top = c0 + z * heights[heights.len() - 1];
+    let vertex = |model: &mut Model, p: Point| ogeom_algo::make_vertex(model, p).shape;
+    let (v_axis0, v_axis1) = (vertex(model, c0), vertex(model, top));
+    let (v_rim0, v_rim1) = (
+        vertex(model, meridian[0]),
+        vertex(model, meridian[meridian.len() - 1]),
+    );
+    let segment =
+        |model: &mut Model, a: (&Shape, Point), b: (&Shape, Point)| -> OgeomResult<Shape> {
+            let line: ogeom_geom::Curve = LineCurve::segment(a.1, b.1, tol)?.into();
+            let range = line.domain();
+            Ok(make_edge_between(model, line, range, a.0, b.0, tol)?.shape)
+        };
+    let bottom = segment(model, (&v_axis0, c0), (&v_rim0, meridian[0]))?;
+    let side = make_edge_between(model, spline, domain, &v_rim0, &v_rim1, tol)?.shape;
+    let top_edge = segment(
+        model,
+        (&v_rim1, meridian[meridian.len() - 1]),
+        (&v_axis1, top),
+    )?;
+    let axis_edge = segment(model, (&v_axis1, top), (&v_axis0, c0))?;
+    let wire = ogeom_algo::make_wire(model, &[bottom, side, top_edge, axis_edge], tol)?.shape;
+    // Framed from a point inside the profile: a plane's own origin is
+    // where its face is read when it carries no trims.
+    let inside = c0
+        + z * (heights[heights.len() - 1] * 0.5)
+        + x * (circles
+            .iter()
+            .map(|c| c.radius())
+            .fold(f64::INFINITY, f64::min)
+            * 0.5);
+    let plane = Plane::new(Frame::new(
+        inside,
+        Direction::new(z.cross(x), tol)?,
+        Direction::new(x, tol)?,
+        tol,
+    )?);
+    let face = ogeom_algo::make_face(model, PlaneSurface::new(plane).into(), &[wire], tol)?.shape;
+    let axis = ogeom_math::Axis {
+        location: c0,
+        direction: Direction::new(z, tol)?,
+    };
+    let built = ogeom_algo::make_revolution(model, &face, axis, core::f64::consts::TAU, tol)?;
+    Ok(Some(built))
+}
+
+/// A loft through sections of one edge count, every vertex a corner: one
+/// strip per edge through all the sections, meeting its neighbours along
+/// seams through the matched corners, each strip a plane wherever its rows
+/// share one. `None` where the sections do not pair edge for edge.
+fn cornered_loft(
+    model: &mut Model,
+    sections: &[Shape],
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let mut rings: Vec<Vec<Shape>> = Vec::with_capacity(sections.len());
+    for wire in sections {
+        if model.kind_of(wire)? != ShapeType::Wire || !ogeom_algo::is_wire_closed(model, wire, tol)?
+        {
+            return Ok(None);
+        }
+        rings.push(model.ordered_children_of(wire)?);
+    }
+    let count = rings[0].len();
+    if count < 2 || rings.iter().any(|r| r.len() != count) {
+        return Ok(None);
+    }
+    let (Some(plane0), Some(plane1)) = (
+        ogeom_algo::find_plane(model, &sections[0], tol)?,
+        ogeom_algo::find_plane(model, &sections[sections.len() - 1], tol)?,
+    ) else {
+        return Ok(None);
+    };
+    const ALONG: usize = 16;
+    // Every edge of every section sampled in its ring's sense.
+    let mut samples: Vec<Vec<Vec<Point>>> = Vec::with_capacity(rings.len());
+    for ring in &rings {
+        let mut per_edge = Vec::with_capacity(count);
+        for edge in ring {
+            let (curve, range) = spine_curve_of(model, edge)?;
+            let curve = curve.transformed(&edge.transform(model.datums())?, tol)?;
+            let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+            let mut row = Vec::with_capacity(ALONG + 1);
+            for k in 0..=ALONG {
+                #[allow(clippy::cast_precision_loss)]
+                let f = k as f64 / ALONG as f64;
+                let t = if reversed {
+                    range.1 - (range.1 - range.0) * f
+                } else {
+                    range.0 + (range.1 - range.0) * f
+                };
+                row.push(curve.point_at(t, tol)?);
+            }
+            per_edge.push(row);
+        }
+        samples.push(per_edge);
+    }
+    let corners = |model: &mut Model, s: usize| -> Vec<Shape> {
+        (0..count)
+            .map(|e| ogeom_algo::make_vertex(model, samples[s][e][0]).shape)
+            .collect()
+    };
+    let (from, to) = (corners(model, 0), corners(model, sections.len() - 1));
+    let middle = &samples[sections.len() / 2];
+    let hint = {
+        let all: Vec<Point> = middle.iter().flatten().copied().collect();
+        #[allow(clippy::cast_precision_loss)]
+        let n = all.len() as f64;
+        Point::from_vector(
+            all.iter()
+                .fold(Vector::new(0.0, 0.0, 0.0), |acc, p| acc + p.to_vector())
+                / n,
+        )
+    };
+    let mut faces = Vec::with_capacity(count + 2);
+    let (mut bottoms, mut tops) = (Vec::with_capacity(count), Vec::with_capacity(count));
+    let mut first_rail: Option<Shape> = None;
+    let mut prev_rail: Option<Shape> = None;
+    for e in 0..count {
+        let rows: Vec<Vec<Point>> = samples.iter().map(|s| s[e].clone()).collect();
+        let next = (e + 1) % count;
+        let last_rail = if e + 1 == count {
+            first_rail.clone()
+        } else {
+            None
+        };
+        let strip = skinned_strip(
+            model,
+            &rows,
+            (&from[e], &from[next], &to[e], &to[next]),
+            [None, None, prev_rail.as_ref(), last_rail.as_ref()],
+            hint,
+            false,
+            tolerance,
+            tol,
+        )?;
+        if e == 0 {
+            first_rail = Some(strip.rail0.clone());
+        }
+        prev_rail = Some(strip.rail1.clone());
+        faces.push(strip.face.clone());
+        bottoms.push(strip.bottom);
+        tops.push(strip.top);
+    }
+    let towards = hint - samples[0][0][0];
+    let n0 = plane0.normal().vector();
+    let n0 = if n0.dot(towards) > 0.0 { -n0 } else { n0 };
+    let away = hint - samples[sections.len() - 1][0][0];
+    let n1 = plane1.normal().vector();
+    let n1 = if n1.dot(away) > 0.0 { -n1 } else { n1 };
+    faces.push(plane_cap(model, samples[0][0][0], n0, &[bottoms], tol)?);
+    faces.push(plane_cap(
+        model,
+        samples[sections.len() - 1][0][0],
+        n1,
+        &[tops],
+        tol,
+    )?);
+    let sewn = sew(model, &faces, tol)?;
+    if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
+        ogeom_bail!(Construction, "the cornered loft did not close");
+    }
+    Ok(Some(make_solid(model, &sewn.shells)?))
+}
+
+/// A planar cap through `at`, facing `outward`, bounded by loops of spline
+/// or line edges lying in it; each edge's trim is its exact projection into
+/// the plane's chart.
+fn plane_cap(
+    model: &mut Model,
+    at: Point,
+    outward: Vector,
+    loops: &[Vec<Shape>],
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let cap_plane = Plane::through(at, Direction::new(outward, tol)?);
+    let mut reach = 1.0_f64;
+    for edges in loops {
+        for edge in edges {
+            let (curve, range) = spine_curve_of(model, edge)?;
+            for k in 0..8 {
+                let p = curve.point_at(range.0 + (range.1 - range.0) * f64::from(k) / 8.0, tol)?;
+                reach = reach.max(p.distance(at) * 2.0);
+            }
+        }
+    }
+    let surface: SurfaceGeometry =
+        PlaneSurface::over(cap_plane, (-reach, reach), (-reach, reach))?.into();
+    let mut wires = Vec::with_capacity(loops.len());
+    for edges in loops {
+        wires.push(ogeom_algo::make_wire(model, edges, tol)?.shape);
+    }
+    let face = ogeom_algo::make_face(model, surface, &wires, tol)?.shape;
+    let cap_id = {
+        let Some(ogeom_topo::NodeData::Face(data)) = model.node(&face).map(|n| n.data()) else {
+            ogeom_bail!(Construction, "the cap holds no face data");
+        };
+        data.surface
+    };
+    let frame = cap_plane.frame();
+    let flat = |p: Point| {
+        let local = frame.to_local(p);
+        Point2::new(local.x, local.y)
+    };
+    for edges in loops {
+        for edge in edges {
+            let (curve, range) = spine_curve_of(model, edge)?;
+            let pcurve: ogeom_geom::PlanarCurve = match &curve {
+                ogeom_geom::Curve::BSpline(bs) => {
+                    let control2: Vec<Point2> = bs
+                        .control_points()
+                        .iter()
+                        .map(|w| flat(w.point()))
+                        .collect();
+                    ogeom_geom::BSpline2d::new(bs.knots().clone(), control2, tol)?.into()
+                }
+                ogeom_geom::Curve::Line(line) => {
+                    let axis = line.axis();
+                    let origin = flat(axis.location);
+                    let ahead = flat(axis.location + axis.direction.vector());
+                    ogeom_geom::Line2d::over(
+                        ogeom_math::Axis2::through(origin, ahead, tol)?,
+                        range.0,
+                        range.1,
+                    )?
+                    .into()
+                }
+                _ => ogeom_bail!(Construction, "a cap edge is neither a spline nor a line"),
+            };
+            ogeom_algo::attach_pcurve(
+                model,
+                edge,
+                pcurve,
+                cap_id,
+                ogeom_topo::Location::identity(),
+                range,
+            )?;
+        }
+    }
+    Ok(face)
+}
+
 /// Loft a solid through many closed planar sections, skinned smoothly.
 ///
 /// The sections are sampled at matched arc-length fractions from their own
@@ -2147,6 +2451,24 @@ pub fn make_loft_skinned(
 ) -> OgeomResult<Built> {
     if sections.len() < 2 {
         ogeom_bail!(Construction, "a loft needs at least two sections");
+    }
+    let to_point = model.kind_of(&sections[sections.len() - 1])? == ShapeType::Vertex;
+    // The smooth skin through two sections is the ruled one, and that is
+    // built exactly: a drum or cone between circles, planes between
+    // polygons.
+    if sections.len() == 2
+        && !to_point
+        && let Ok(built) = make_loft(model, &sections[0], &sections[1], tol)
+    {
+        return Ok(built);
+    }
+    if sections.len() > 2 && !to_point {
+        if let Some(built) = coaxial_circles_loft(model, sections, tol)? {
+            return Ok(built);
+        }
+        if let Some(built) = cornered_loft(model, sections, tolerance, tol)? {
+            return Ok(built);
+        }
     }
     const AROUND: usize = 48;
     // A trailing vertex is the apex form: the skin narrows to a point and

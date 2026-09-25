@@ -1294,13 +1294,19 @@ by a patch skinned from the rim to a point inside it), ends at a point on \
 request, loops back on itself, and takes per-section alignment hints. A ruled wall between two segments that \
 are not coplanar is the bilinear patch through its four corners, exact, so \
 polygon sections may be turned against each other; mixed edge counts are \
-authorship, not geometry, and stay with the skinned resampling."""
+authorship, not geometry, and stay with the skinned resampling. The skinned \
+loft holds its sections exactly where they are exact: through two sections \
+it is the ruled loft; through more with matching corners, one strip per \
+edge meeting along seams through the corners, a plane wherever its rows \
+share one; through coaxial circles, the revolution of a meridian through \
+their radii."""
 claims = ["BRepOffsetAPI_ThruSections"]
 symbols = [
     "ogeom_offset::make_loft", "ogeom_offset::make_loft_skinned",
     "ogeom_offset::make_loft_skinned_closed", "ogeom_offset::make_loft_skinned_aligned",
 ]
 tests = [
+    "crates/ogeom/tests/loft_exact.rs",
     "crates/ogeom/tests/mechanical_part.rs",
     "crates/ogeom/tests/loft.rs",
     "crates/ogeom-offset/tests/sweep.rs",

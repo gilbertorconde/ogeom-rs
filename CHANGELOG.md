@@ -107,6 +107,10 @@ bump may break the API and a patch bump may not.
   arcs meeting tangent sweeps as extrusions and revolutions of the
   section, fused, so its walls are planes, drums, cones and tori and the
   solid measures in closed form.
+- **Skinned lofts keep corners and circles** (#57). Two sections loft
+  ruled and exact; more with matching corners loft as one strip per
+  edge, corners kept; coaxial circles loft as a solid of revolution. Two
+  squares give the prism and two circles the drum.
 
 ### Fixed
 
