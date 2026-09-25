@@ -888,24 +888,35 @@ impl Surface for OffsetSurface {
     }
 }
 
+fn finite_parameters(u: f64, v: f64) -> OgeomResult<()> {
+    if u.is_finite() && v.is_finite() {
+        Ok(())
+    } else {
+        ogeom_bail!(Domain, "parameters ({u}, {v}) are not finite")
+    }
+}
+
 impl Surface for PlaneSurface {
     fn domain(&self) -> ((f64, f64), (f64, f64)) {
         self.domain
     }
 
-    fn point_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<Point> {
-        let (u, v) = self.normalize_parameters(u, v, tol)?;
+    // A plane's window says where its face was built, not where the plane
+    // ends: it is evaluated anywhere, so a face merged across two windows
+    // (or trimmed a hair past one) is read where it lies.
+    fn point_at(&self, u: f64, v: f64, _tol: Tolerances) -> OgeomResult<Point> {
+        finite_parameters(u, v)?;
         Ok(elementary::plane_at(&self.plane, u, v).point)
     }
 
-    fn d1_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<(Vector, Vector)> {
-        self.normalize_parameters(u, v, tol)?;
+    fn d1_at(&self, u: f64, v: f64, _tol: Tolerances) -> OgeomResult<(Vector, Vector)> {
+        finite_parameters(u, v)?;
         let f = self.plane.frame();
         Ok((f.x().vector(), f.y().vector()))
     }
 
-    fn d2_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<(Vector, Vector, Vector)> {
-        self.normalize_parameters(u, v, tol)?;
+    fn d2_at(&self, u: f64, v: f64, _tol: Tolerances) -> OgeomResult<(Vector, Vector, Vector)> {
+        finite_parameters(u, v)?;
         Ok((Vector::ZERO, Vector::ZERO, Vector::ZERO))
     }
 
@@ -2035,6 +2046,14 @@ mod tests {
         for s in every_surface() {
             let ((ua, ub), (va, vb)) = s.domain();
             let inside = ((ua + ub) / 2.0, (va + vb) / 2.0);
+            if s.kind() == SurfaceKind::Plane {
+                // A plane's window is where its face was built; the plane
+                // goes on past it.
+                let p = s.point_at(ub + 1.0, inside.1, T).unwrap();
+                let q = s.point_at(ub, inside.1, T).unwrap();
+                assert!((p.distance(q) - 1.0).abs() < 1e-12);
+                continue;
+            }
             if s.is_periodic_u() {
                 assert!(s.point_at(ub + 1.0, inside.1, T).is_ok(), "{:?}", s.kind());
             } else {

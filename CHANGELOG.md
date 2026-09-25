@@ -114,6 +114,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A refined solid of pads measured from its mesh** (#64). The face
+  `unify_same_domain` merged lay on one of the merged planes, whose window
+  did not cover the union, and the plane refused to be read past it. A
+  plane is now read anywhere; its window only says where its face was
+  built.
 - **A pad placed again at a scale measured and fused wrong** (#63): a
   cube padded from a square and copied 1.5 times the size measured 144
   where it is 216. An edge's trim stored under the pad's own placement

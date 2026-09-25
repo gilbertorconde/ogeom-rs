@@ -197,3 +197,31 @@ fn a_profile_square_to_a_conical_helix_sweeps() {
         .shape;
     ogeom::offset::make_pipe_shell(&mut model, &face, &spine, false, 1e-3, T).unwrap();
 }
+
+#[test]
+fn a_placed_profile_square_to_an_arc_sweeps_along_it() {
+    let mut model = Model::new();
+    let profile = square(&mut model, 2.0);
+    let profile = ogeom::algo::transformed(&mut model, &profile, ogeom::math::Transform::IDENTITY)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(10.0, 0.0, 0.0), Direction::Y, -Direction::X, T).unwrap();
+    let circle = Circle::new(frame, 10.0, T).unwrap();
+    let quarter = core::f64::consts::FRAC_PI_2;
+    let edge = make_edge(
+        &mut model,
+        CircleCurve::new(circle).into(),
+        (0.0, quarter),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let spine = make_wire(&mut model, &[edge], T).unwrap().shape;
+    let pipe = ogeom::offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T)
+        .unwrap()
+        .shape;
+    let (v, exact) = measure(&model, &pipe);
+    let want = 16.0 * quarter * 10.0;
+    assert!(exact);
+    assert!((v - want).abs() < want * 1e-9, "{v} against {want}");
+}
