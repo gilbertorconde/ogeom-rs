@@ -117,6 +117,9 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A chamfer wider than its face cut through it** (#67): a 12 mm bevel
+  on a 10 mm face sliced a slab off the box. A setback running past a
+  face's far side is now refused, naming the edge and the distance.
 - **A refined solid of pads measured from its mesh** (#64). The face
   `unify_same_domain` merged lay on one of the merged planes, whose window
   did not cover the union, and the plane refused to be read past it. A
