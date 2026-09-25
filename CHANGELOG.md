@@ -119,6 +119,8 @@ bump may break the API and a patch bump may not.
   did not cover the union, and the plane refused to be read past it. A
   plane is now read anywhere; its window only says where its face was
   built.
+- **A wall drafted a degree and a half could not be measured** (#66): its
+  trim reached past the plane's window. The same change reads it.
 - **A pad placed again at a scale measured and fused wrong** (#63): a
   cube padded from a square and copied 1.5 times the size measured 144
   where it is 216. An edge's trim stored under the pad's own placement
