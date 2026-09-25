@@ -69,11 +69,41 @@ const PARAM_SNAP: f64 = 1e-6;
 
 // --- gathering ---------------------------------------------------------------
 
+/// An edge occurrence's identity: its node and where it is placed.
+///
+/// One node placed twice is two edges in space: a prism's far cap is its
+/// near cap moved, the same nodes under a displacement. Paves shared by
+/// node alone would split the near cap's edges wherever the far cap's were
+/// crossed. The placement is folded in as its hash, which keeps the key a
+/// plain value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct EdgeKey {
+    node: ogeom_topo::TShapeId,
+    placement: u64,
+}
+
+impl EdgeKey {
+    fn of(edge: &Shape) -> Self {
+        use core::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        edge.location().hash(&mut hasher);
+        Self {
+            node: edge.node(),
+            placement: hasher.finish(),
+        }
+    }
+
+    /// The node's index, for the debug traces.
+    fn index(self) -> u32 {
+        self.node.index()
+    }
+}
+
 /// One boundary strand source: an edge as one face uses it, with the pcurve
 /// that side of it.
 struct BoundaryEdge {
-    /// The edge's node identity, for sharing paves across faces.
-    node: ogeom_topo::TShapeId,
+    /// The edge occurrence's identity, for sharing paves across faces.
+    node: EdgeKey,
     /// The curve in world space.
     curve: Curve,
     /// The portion the edge covers, in the curve's parameter.
@@ -265,7 +295,7 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
                 ends
             };
             edges.push(BoundaryEdge {
-                node: edge.node(),
+                node: EdgeKey::of(&edge),
                 curve: world,
                 crange: *range,
                 pcurve,
@@ -887,7 +917,7 @@ struct SectionPiece {
     /// along this edge of the hugging face: (edge node, target from A,
     /// target face). Two sections hugging one edge onto one face are the
     /// same split, kept once.
-    hug_key: Option<(ogeom_topo::TShapeId, bool, usize)>,
+    hug_key: Option<(EdgeKey, bool, usize)>,
 }
 
 /// One boundary edge of one argument's face, lying in a face of the other
@@ -903,7 +933,7 @@ struct ContactRec {
     pcurve: PlanarCurve,
     prange: (f64, f64),
     /// The owner edge's node, whose paves this record shares.
-    node: ogeom_topo::TShapeId,
+    node: EdgeKey,
     /// The owner edge's own tolerance: how far its curve may honestly sit
     /// from the exact geometry it meets, which is how far a crossing filter
     /// must reach to see a fitted rail cross an exact seam.
@@ -1277,7 +1307,7 @@ fn fill(
     Vec<ContactRec>,
     Vec<TangentRec>,
     Vec<Vec<(f64, f64)>>,
-    std::collections::HashMap<ogeom_topo::TShapeId, Vec<Pave>>,
+    std::collections::HashMap<EdgeKey, Vec<Pave>>,
     Vec<Vec<usize>>,
     Vec<Vec<usize>>,
     Vec<Junction>,
@@ -1673,25 +1703,20 @@ fn fill(
 
     // Crossings of each section with the boundary edges of both its faces,
     // and with every other section sharing a face.
-    let mut paves: std::collections::HashMap<ogeom_topo::TShapeId, Vec<Pave>> =
-        std::collections::HashMap::new();
+    let mut paves: std::collections::HashMap<EdgeKey, Vec<Pave>> = std::collections::HashMap::new();
     let mut pieces: Vec<SectionPiece> = Vec::new();
     // Each section's paving depends only on the sections and the two
     // gathered solids, all read-only here, and writes nothing the next
     // section reads. So the measuring runs in parallel and the accumulating
     // runs afterwards in section order: the same split `tessellate` uses,
     // and the same reason: nothing about scheduling can reach the answer.
-    type SectionWork = (
-        Vec<(ogeom_topo::TShapeId, Pave)>,
-        Vec<SectionPiece>,
-        Vec<Junction>,
-    );
+    type SectionWork = (Vec<(EdgeKey, Pave)>, Vec<SectionPiece>, Vec<Junction>);
     let mut hug_junctions: Vec<Junction> = Vec::new();
     let paved: Vec<OgeomResult<SectionWork>> = ogeom_core::parallel::map_ordered(
         &sections,
         |si, section: &SectionRec| {
             ogeom_core::progress::checkpoint()?;
-            let mut paves: Vec<(ogeom_topo::TShapeId, Pave)> = Vec::new();
+            let mut paves: Vec<(EdgeKey, Pave)> = Vec::new();
             let mut pieces: Vec<SectionPiece> = Vec::new();
             let mut junctions: Vec<Junction> = Vec::new();
             // A fitted section meets an edge within its own budget, not within
@@ -1705,7 +1730,7 @@ fn fill(
             let mut trim_ts: Vec<f64> = Vec::new();
             // Crossings with boundary edges: side, edge, parameter on the
             // edge, parameter on the section, and how honestly the stop sits.
-            let mut hits: Vec<(usize, ogeom_topo::TShapeId, f64, f64, f64)> = Vec::new();
+            let mut hits: Vec<(usize, EdgeKey, f64, f64, f64)> = Vec::new();
             // Spans of the section running *along* a boundary edge. The split
             // such a span would make already exists as boundary (stacked boxes'
             // perpendicular side planes meet exactly at the boxes' own edges),
@@ -1933,7 +1958,7 @@ fn fill(
                     *on_a > lo + tol.parametric() && *on_a < hi - tol.parametric()
                 })
             });
-            let edge_hits: Vec<(ogeom_topo::TShapeId, f64, f64, f64)> = hits
+            let edge_hits: Vec<(EdgeKey, f64, f64, f64)> = hits
                 .iter()
                 .map(|(_, node, on_b, on_a, honesty)| (*node, *on_b, *on_a, *honesty))
                 .collect();
@@ -2018,7 +2043,7 @@ fn fill(
                     // and lands off the edge, as far off as the two stay
                     // within their doubt of each other; the edge's stop is
                     // the one where they cannot be told apart up to it.
-                    let shared = |edges: &[BoundaryEdge], node: ogeom_topo::TShapeId| {
+                    let shared = |edges: &[BoundaryEdge], node: EdgeKey| {
                         edges.iter().any(|e| e.node == node)
                     };
                     let apart_on = if other.face_a == section.face_a {
@@ -2297,7 +2322,7 @@ fn fill(
                 // carried onto the other face as a contact: then the split
                 // is laid down once already, and a section would lay it
                 // twice.
-                let mut hug_key: Option<(ogeom_topo::TShapeId, bool, usize)> = None;
+                let mut hug_key: Option<(EdgeKey, bool, usize)> = None;
                 let admitted = if held[0] && held[1] {
                     true
                 } else if hugs[0] != hugs[1] {
@@ -3490,11 +3515,10 @@ fn merge_junctions(junctions: Vec<Junction>) -> Vec<Junction> {
 fn pave_junctions(
     ga: &GSolid,
     gb: &GSolid,
-    paves: &std::collections::HashMap<ogeom_topo::TShapeId, Vec<Pave>>,
+    paves: &std::collections::HashMap<EdgeKey, Vec<Pave>>,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Junction>> {
-    let mut seen: std::collections::HashSet<ogeom_topo::TShapeId> =
-        std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<EdgeKey> = std::collections::HashSet::new();
     let mut junctions = Vec::new();
     for e in ga
         .faces

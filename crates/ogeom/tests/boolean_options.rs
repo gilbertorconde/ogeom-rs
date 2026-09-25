@@ -241,3 +241,53 @@ fn a_periodic_pattern_fuses_into_one() {
         .mass;
     assert!((v - 3000.0).abs() < 1e-6, "three cells, one bar: {v}");
 }
+
+/// A prism's far cap is its near cap moved: the same edge nodes under a
+/// displacement. A box notching only the far cap's edges splits them
+/// there, and the near cap's edges, the same nodes in another place, stay
+/// whole: the near cap is still the triangle it was.
+#[test]
+fn a_prism_s_near_cap_keeps_its_edges_when_its_far_cap_is_notched() {
+    use ogeom::topo::{Filter, ShapeType, explore};
+    let mut model = Model::new();
+    let corners = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(4.0, 0.0, 0.0),
+        Point::new(0.0, 4.0, 0.0),
+    ];
+    let wire = ogeom::algo::make_polygon(&mut model, &corners, true, T)
+        .unwrap()
+        .shape;
+    let edges = explore(&model, &wire, Filter::OfType(ShapeType::Edge)).unwrap();
+    let plane =
+        ogeom::geom::PlaneSurface::new(ogeom::math::Plane::through(corners[0], Direction::Z));
+    let profile = ogeom::algo::make_face_with_pcurves(&mut model, plane.into(), &[edges], T)
+        .unwrap()
+        .shape;
+    let prism = ogeom::algo::make_prism(&mut model, &profile, ogeom::math::Vector::Z * 5.0, T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(1.0, -1.0, 4.0), Direction::Z, Direction::X, T).unwrap();
+    let notch = ogeom::algo::make_box(&mut model, frame, (1.0, 7.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(&mut model, &prism, &notch, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &cut, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let near_cap = explore(&model, &cut, Filter::OfType(ShapeType::Face))
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let centre = ogeom::algo::surface_properties(&model, f, Deflection::default(), T)
+                .unwrap()
+                .centre;
+            centre.z.abs() < 1e-9
+        })
+        .expect("the near cap survives");
+    let sides = explore(&model, &near_cap, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .len();
+    assert_eq!(sides, 3, "the near cap is still a triangle");
+}
