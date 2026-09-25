@@ -100,9 +100,23 @@ bump may break the API and a patch bump may not.
 - **VRML reads.** `read_vrml` reads VRML 2.0 and 1.0 scenes into placed
   meshes: face sets and the box, ball, drum and cone primitives, with
   `DEF`/`USE`, transforms, switches and material colours honoured.
+- **Helical sweeps.** `make_helical_sweep` turns a profile lying in a
+  plane through an axis along a helix about it (a thread or a spring):
+  every point runs its own helix, cylindrical or tapered, either hand.
+- **Pipe shells along lines and arcs are exact.** A spine of lines and
+  arcs meeting tangent sweeps as extrusions and revolutions of the
+  section, fused, so its walls are planes, drums, cones and tori and the
+  solid measures in closed form.
 
 ### Fixed
 
+- **A pipe shell failed on a profile ring walked by reversed edges**
+  (#58). A reversed edge's ends were swapped twice.
+- **A profile square to a curved spine's start was refused as leaning**
+  (#59). The test now reads the spine's exact start tangent, to an
+  angle's tolerance.
+- **A circle piped along a line was 2.6% short of its cylinder** (#60),
+  and a square along an arc 0.6% short of Pappus. Both are now exact.
 - **A thread groove failed to cut from a bored block at some lengths.**
   Where the sweep had turned a flank just inside the bore, the flank met
   the bore's wall along a short run at a grazing angle, shallower than the

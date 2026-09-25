@@ -22,7 +22,7 @@ pub use middle::{MiddlePath, middle_path};
 pub use project::{Projected, normal_projection};
 pub use shape::{make_thick_solid, offset_shape};
 pub use sweep::{
-    make_evolved, make_loft, make_loft_skinned, make_loft_skinned_aligned,
+    make_evolved, make_helical_sweep, make_loft, make_loft_skinned, make_loft_skinned_aligned,
     make_loft_skinned_closed, make_pipe, make_pipe_shell, make_pipe_skinned,
 };
 pub use wire2d::{Join, offset_wire};

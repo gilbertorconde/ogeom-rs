@@ -1257,7 +1257,14 @@ difference between the two sections standing as a face of the mitre \
 plane; a wire profile, which sweeps no solid, is refused there by name. \
 Each spine edge skins its own run, so a spine whose curvature steps at a \
 smooth join (an arc into its tangent line) is followed exactly, and a run \
-whose sections share a plane is that plane."""
+whose sections share a plane is that plane. A spine of lines and arcs \
+meeting tangent is swept exactly: each line leg an extrusion of the \
+section, each arc leg its revolution about the arc's axis, the legs fused, \
+so every wall is the plane, drum, cone, ball or torus its profile edge \
+sweeps. `make_helical_sweep` is the screw motion of a profile in a plane \
+through the axis, cylindrical or tapered, either hand: every point runs \
+its own helix and the walls are fitted through those images in quarter \
+turns."""
 claims = [
     "BRepOffsetAPI_MakePipe", "BRepOffsetAPI_MakePipeShell",
     "BRepOffsetAPI_MakeEvolved", "BRepSweep_*", "BRepFill", "BRepFill_*",
@@ -1266,8 +1273,12 @@ claims = [
 symbols = [
     "ogeom_offset::make_pipe", "ogeom_offset::make_pipe_skinned",
     "ogeom_offset::make_pipe_shell", "ogeom_offset::make_evolved",
+    "ogeom_offset::make_helical_sweep",
 ]
-tests = ["crates/ogeom-offset/tests/sweep.rs", "crates/ogeom/tests/evolved.rs"]
+tests = [
+    "crates/ogeom-offset/tests/sweep.rs", "crates/ogeom/tests/evolved.rs",
+    "crates/ogeom/tests/pipe_shell_exact.rs", "crates/ogeom/tests/helical_sweep.rs",
+]
 
 [[capability]]
 id = "offset.loft"

@@ -2746,6 +2746,475 @@ impl SpineWalk<'_> {
     }
 }
 
+/// Sweep a planar profile lying in a plane through `axis` along a helix
+/// about `axis`: a screw motion, the profile keeping its plane through the
+/// axis the whole way, every point of it running its own helix. The
+/// thread and spring operation.
+///
+/// `pitch` is the advance per turn along `axis`, `turns` how far the
+/// profile turns, `left_handed` turns it the other way about the axis for
+/// the same advance, and `taper_per_turn` moves every point away from the
+/// axis by that much per turn (a conical helix; zero for a cylindrical
+/// one). The walls are fitted through each profile edge's exact screw
+/// images; the caps are the profile where it starts and where it ends.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// the profile is not a planar face whose plane holds the axis, reaches
+/// the axis, would meet itself one turn on (its extent along the axis is
+/// not less than the pitch), or tapers onto the axis; if `pitch` or
+/// `turns` is not positive.
+/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if a wall
+/// cannot be fitted.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub fn make_helical_sweep(
+    model: &mut Model,
+    profile: &Shape,
+    axis: ogeom_math::Axis,
+    pitch: f64,
+    turns: f64,
+    left_handed: bool,
+    taper_per_turn: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if !(pitch.is_finite() && pitch > 0.0) || !(turns.is_finite() && turns > 0.0) {
+        ogeom_bail!(
+            Construction,
+            "a helical sweep needs a positive pitch and turn count; got {pitch} and {turns}"
+        );
+    }
+    if !taper_per_turn.is_finite() {
+        ogeom_bail!(Construction, "a taper of {taper_per_turn} is not a length");
+    }
+    if model.kind_of(profile)? != ShapeType::Face {
+        ogeom_bail!(Construction, "a helical sweep sweeps a planar face");
+    }
+    let Some(plane) = ogeom_algo::find_plane(model, profile, tol)? else {
+        ogeom_bail!(Construction, "a helical sweep sweeps a planar face");
+    };
+    let z = axis.direction.vector();
+    if plane.normal().vector().dot(z).abs() > tol.angular()
+        || plane.distance_to(axis.location) > tol.confusion() * 100.0
+    {
+        ogeom_bail!(
+            Construction,
+            "the profile's plane does not hold the axis; a helical sweep \
+             turns a profile about an axis in its own plane"
+        );
+    }
+    let total = core::f64::consts::TAU * turns;
+    let sense = if left_handed { -1.0 } else { 1.0 };
+    // The screw image of a point after turning through `theta`.
+    let screw = |p: Point, theta: f64| -> OgeomResult<Point> {
+        let foot = axis.project(p);
+        let out = p - foot;
+        let rho = out.magnitude();
+        let grown = rho + taper_per_turn * theta / core::f64::consts::TAU;
+        if rho <= tol.confusion() || grown <= tol.confusion() {
+            ogeom_bail!(
+                Construction,
+                "the profile reaches the axis, where a helical sweep has no \
+                 helix to follow"
+            );
+        }
+        let radial = out / rho;
+        let across = z.cross(radial);
+        let (sin, cos) = (sense * theta).sin_cos();
+        let turned = radial * cos + across * sin;
+        Ok(foot + z * (pitch * theta / core::f64::consts::TAU) + turned * grown)
+    };
+
+    // The profile's loops, their edges in ring order, each sampled.
+    let loops = explore(model, profile, Filter::OfType(ShapeType::Wire))?;
+    if loops.is_empty() {
+        ogeom_bail!(Construction, "the profile has no loop to sweep");
+    }
+    // One turn on, the profile must clear itself.
+    if turns > 1.0 {
+        let mut low = f64::INFINITY;
+        let mut high = f64::NEG_INFINITY;
+        for wire in &loops {
+            for p in sample_wire(model, wire, 64, tol)? {
+                let h = (p - axis.location).dot(z);
+                low = low.min(h);
+                high = high.max(h);
+            }
+        }
+        if high - low >= pitch - tol.confusion() {
+            ogeom_bail!(
+                Construction,
+                "the profile spans {} along the axis, not less than the pitch \
+                 {pitch}; a turn on it meets itself",
+                high - low
+            );
+        }
+    }
+    let tolerance = tol.confusion() * 100.0;
+    // The walls in quarter turns, each a strip of its own sharing its
+    // borders with the next: one fit down many turns of a helix cannot
+    // reach the tolerance, a quarter turn's can.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let segments = ((turns * 4.0).ceil() as usize).max(1);
+    // The fit keeps fewer controls than samples, so its reach at the
+    // samples is set by how many there are.
+    const PER_SEGMENT: usize = 48;
+    #[allow(clippy::cast_precision_loss)]
+    let theta_at = |seg: usize, i: usize| {
+        total * ((seg * PER_SEGMENT + i) as f64) / ((segments * PER_SEGMENT) as f64)
+    };
+
+    let mut faces: Vec<Shape> = Vec::new();
+    let mut cap_loops: [Vec<Vec<Shape>>; 2] = [Vec::new(), Vec::new()];
+    for (li, wire) in loops.iter().enumerate() {
+        let hole = li != 0;
+        let edges = model.ordered_children_of(wire)?;
+        let centre = {
+            let samples = sample_wire(model, wire, 32, tol)?;
+            #[allow(clippy::cast_precision_loss)]
+            let n = samples.len() as f64;
+            let sum = samples
+                .iter()
+                .fold(Vector::new(0.0, 0.0, 0.0), |acc, p| acc + p.to_vector());
+            Point::from_vector(sum / n)
+        };
+        // The ring's pieces: every edge in the ring's sense, a closed one
+        // (a circle, the whole ring) cut in quarters so each strip's fit
+        // spans a quarter turn round it at most.
+        let mut pieces: Vec<(ogeom_geom::Curve, f64, f64)> = Vec::new();
+        for edge in &edges {
+            let (curve, range) = spine_curve_of(model, edge)?;
+            let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+            let (t0, t1) = if reversed { (range.1, range.0) } else { range };
+            let closed =
+                ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
+            let parts = if closed { 4 } else { 1 };
+            for k in 0..parts {
+                #[allow(clippy::cast_precision_loss)]
+                let (f0, f1) = (k as f64 / parts as f64, (k + 1) as f64 / parts as f64);
+                pieces.push((curve.clone(), t0 + (t1 - t0) * f0, t0 + (t1 - t0) * f1));
+            }
+        }
+        // Each piece's samples, in the ring's sense, ends on its corners
+        // exactly.
+        let starts: Vec<Point> = pieces
+            .iter()
+            .map(|(curve, a, _)| curve.point_at(*a, tol))
+            .collect::<OgeomResult<_>>()?;
+        let count = pieces.len();
+        let mut rows0: Vec<Vec<Point>> = Vec::with_capacity(count);
+        for (pi, (curve, a, b)) in pieces.iter().enumerate() {
+            let along = if matches!(curve, ogeom_geom::Curve::Line(_)) {
+                8
+            } else {
+                24
+            };
+            let mut row = Vec::with_capacity(along + 1);
+            for k in 0..=along {
+                #[allow(clippy::cast_precision_loss)]
+                let f = (k as f64) / (along as f64);
+                row.push(curve.point_at(a + (b - a) * f, tol)?);
+            }
+            row[0] = starts[pi];
+            row[along] = starts[(pi + 1) % count];
+            rows0.push(row);
+        }
+        let rows_of = |row0: &[Point], seg: usize| -> OgeomResult<Vec<Vec<Point>>> {
+            (0..=PER_SEGMENT)
+                .map(|i| {
+                    row0.iter()
+                        .map(|p| screw(*p, theta_at(seg, i)))
+                        .collect::<OgeomResult<Vec<Point>>>()
+                })
+                .collect()
+        };
+
+        // A vertex set at every segment boundary.
+        let mut corners: Vec<Vec<Shape>> = Vec::with_capacity(segments + 1);
+        for b in 0..=segments {
+            let theta = if b == segments { total } else { theta_at(b, 0) };
+            let mut set = Vec::with_capacity(count);
+            for p in &starts {
+                set.push(ogeom_algo::make_vertex(model, screw(*p, theta)?).shape);
+            }
+            corners.push(set);
+        }
+        let mut bottoms = Vec::with_capacity(count);
+        let mut tops = Vec::with_capacity(count);
+        // Per edge, the previous segment's top border, for the next to
+        // start on.
+        let mut held_tops: Vec<Option<Shape>> = vec![None; count];
+        for seg in 0..segments {
+            let hint = screw(centre, theta_at(seg, PER_SEGMENT / 2))?;
+            let mut first_rail: Option<Shape> = None;
+            let mut prev_rail: Option<Shape> = None;
+            for ei in 0..count {
+                let rows = rows_of(&rows0[ei], seg)?;
+                let next = (ei + 1) % count;
+                let last_rail = if ei + 1 == count {
+                    first_rail.clone()
+                } else {
+                    None
+                };
+                let (from, to) = (&corners[seg], &corners[seg + 1]);
+                let strip = skinned_strip(
+                    model,
+                    &rows,
+                    (&from[ei], &from[next], &to[ei], &to[next]),
+                    [
+                        held_tops[ei].as_ref(),
+                        None,
+                        prev_rail.as_ref(),
+                        last_rail.as_ref(),
+                    ],
+                    hint,
+                    hole,
+                    tolerance,
+                    tol,
+                )?;
+                if ei == 0 {
+                    first_rail = Some(strip.rail0.clone());
+                }
+                prev_rail = Some(strip.rail1.clone());
+                faces.push(strip.face.clone());
+                if seg == 0 {
+                    bottoms.push(strip.bottom.clone());
+                }
+                if seg + 1 == segments {
+                    tops.push(strip.top.clone());
+                }
+                held_tops[ei] = Some(strip.top);
+            }
+        }
+        cap_loops[0].push(bottoms);
+        cap_loops[1].push(tops);
+    }
+
+    // The caps: the profile's plane where it starts, and that plane
+    // screwed on to where it ends.
+    for (end, loops) in cap_loops.iter().enumerate() {
+        let theta = if end == 0 { 0.0 } else { total };
+        let at = screw(centre_of(model, profile, tol)?, theta)?;
+        // Square to the way the profile turns there: out of the solid,
+        // back at the start and on at the end.
+        let normal = {
+            let out = at - axis.project(at);
+            let travel = z.cross(out / out.magnitude()) * sense;
+            if end == 0 { -travel } else { travel }
+        };
+        let cap_plane = Plane::through(at, Direction::new(normal, tol)?);
+        let mut reach = 1.0_f64;
+        for edges in loops {
+            for edge in edges {
+                let (curve, range) = spine_curve_of(model, edge)?;
+                for k in 0..8 {
+                    let p =
+                        curve.point_at(range.0 + (range.1 - range.0) * f64::from(k) / 8.0, tol)?;
+                    reach = reach.max(p.distance(at) * 2.0);
+                }
+            }
+        }
+        let surface: SurfaceGeometry =
+            PlaneSurface::over(cap_plane, (-reach, reach), (-reach, reach))?.into();
+        let mut wires = Vec::with_capacity(loops.len());
+        for edges in loops {
+            wires.push(ogeom_algo::make_wire(model, edges, tol)?.shape);
+        }
+        let face = ogeom_algo::make_face(model, surface, &wires, tol)?.shape;
+        let cap_id = {
+            let Some(ogeom_topo::NodeData::Face(data)) = model.node(&face).map(|n| n.data()) else {
+                ogeom_bail!(Construction, "the cap holds no face data");
+            };
+            data.surface
+        };
+        let frame = cap_plane.frame();
+        for edges in loops {
+            for edge in edges {
+                let (curve, range) = spine_curve_of(model, edge)?;
+                let ogeom_geom::Curve::BSpline(bs) = &curve else {
+                    ogeom_bail!(Construction, "a swept ring is not a spline");
+                };
+                let control2: Vec<Point2> = bs
+                    .control_points()
+                    .iter()
+                    .map(|w| {
+                        let local = frame.to_local(w.point());
+                        Point2::new(local.x, local.y)
+                    })
+                    .collect();
+                let pcurve: ogeom_geom::PlanarCurve =
+                    ogeom_geom::BSpline2d::new(bs.knots().clone(), control2, tol)?.into();
+                ogeom_algo::attach_pcurve(
+                    model,
+                    edge,
+                    pcurve,
+                    cap_id,
+                    ogeom_topo::Location::identity(),
+                    range,
+                )?;
+            }
+        }
+        faces.push(face);
+    }
+
+    let sewn = sew(model, &faces, tol)?;
+    if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
+        ogeom_bail!(Construction, "the helical sweep did not close");
+    }
+    let solid = make_solid(model, &sewn.shells)?.shape;
+    let mut history = History::new();
+    history.generate(profile, solid.clone());
+    Ok(Built::new(solid, history))
+}
+
+/// The centroid of a face's outer ring's samples.
+fn centre_of(model: &Model, profile: &Shape, tol: Tolerances) -> OgeomResult<Point> {
+    let Some(wire) = explore(model, profile, Filter::OfType(ShapeType::Wire))?
+        .into_iter()
+        .next()
+    else {
+        ogeom_bail!(Construction, "the profile has no loop");
+    };
+    let samples = sample_wire(model, &wire, 32, tol)?;
+    #[allow(clippy::cast_precision_loss)]
+    let n = samples.len() as f64;
+    let sum = samples
+        .iter()
+        .fold(Vector::new(0.0, 0.0, 0.0), |acc, p| acc + p.to_vector());
+    Ok(Point::from_vector(sum / n))
+}
+
+/// The pipe along a spine of lines and circular arcs meeting tangent to
+/// one another, built exactly: down a line the section is extruded, round
+/// an arc it is revolved about the arc's axis (the rotation-minimizing
+/// frame of a circle is its own rotation), and the legs are fused on the
+/// sections they share. Every wall is then the closed form its profile
+/// edge sweeps: a plane, drum, cone, ball or torus where the edge is a
+/// line or circle. `None` where the spine or profile is not of that kind,
+/// for the general construction to take.
+fn exact_legs(
+    model: &mut Model,
+    profile: &Shape,
+    spine: &Shape,
+    frenet: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    use ogeom_geom::{Curve, Curve3d as _};
+    let edges: Vec<Shape> = match model.kind_of(spine)? {
+        ShapeType::Edge => vec![spine.clone()],
+        ShapeType::Wire => model.ordered_children_of(spine)?,
+        _ => return Ok(None),
+    };
+    let solid = match model.kind_of(profile)? {
+        ShapeType::Face => true,
+        ShapeType::Wire => false,
+        _ => return Ok(None),
+    };
+    if edges.is_empty() || (!solid && edges.len() > 1) {
+        return Ok(None);
+    }
+    // Each leg: where it starts and ends, its heading at either end, and
+    // the motion that carries the section down it.
+    struct Leg {
+        start: Point,
+        heading: (Vector, Vector),
+        motion: Transform,
+        along: LegKind,
+    }
+    enum LegKind {
+        Line(Vector),
+        Arc(ogeom_math::Axis, f64),
+    }
+    let mut legs = Vec::with_capacity(edges.len());
+    for edge in &edges {
+        let (curve, range) = spine_curve_of(model, edge)?;
+        let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+        let (t0, t1) = if reversed { (range.1, range.0) } else { range };
+        let (a, b) = (curve.point_at(t0, tol)?, curve.point_at(t1, tol)?);
+        let sense = if reversed { -1.0 } else { 1.0 };
+        let heading = (curve.d1_at(t0, tol)? * sense, curve.d1_at(t1, tol)? * sense);
+        let basis = match &curve {
+            Curve::Trimmed(t) => t.basis().clone(),
+            other => other.clone(),
+        };
+        let (motion, along) = match basis {
+            Curve::Line(_) => {
+                if frenet {
+                    return Ok(None);
+                }
+                (Transform::translation(b - a), LegKind::Line(b - a))
+            }
+            Curve::Circle(c) => {
+                let frame = c.circle().frame();
+                // Turning the way the walk heads at its start.
+                let turn = (a - frame.origin()).cross(heading.0);
+                let direction = if turn.dot(frame.z().vector()) > 0.0 {
+                    frame.z()
+                } else {
+                    -frame.z()
+                };
+                let axis = ogeom_math::Axis {
+                    location: frame.origin(),
+                    direction,
+                };
+                let angle = (t1 - t0).abs();
+                (Transform::rotation(axis, angle), LegKind::Arc(axis, angle))
+            }
+            _ => return Ok(None),
+        };
+        legs.push(Leg {
+            start: a,
+            heading,
+            motion,
+            along,
+        });
+    }
+    // Legs must meet tangent: a corner is mitred by the general path.
+    for pair in legs.windows(2) {
+        let (x, y) = (pair[0].heading.1, pair[1].heading.0);
+        if x.cross(y).magnitude() > tol.angular() * x.magnitude() * y.magnitude() || x.dot(y) <= 0.0
+        {
+            return Ok(None);
+        }
+    }
+    // The profile square to the spine's exact start tangent, and on it.
+    let Some(plane) = ogeom_algo::find_plane(model, profile, tol)? else {
+        return Ok(None);
+    };
+    let t0 = legs[0].heading.0;
+    if plane.normal().vector().cross(t0).magnitude() > tol.angular() * t0.magnitude()
+        || plane.distance_to(legs[0].start) > tol.confusion() * 100.0
+    {
+        return Ok(None);
+    }
+
+    let mut result: Option<Shape> = None;
+    let mut carried = Transform::IDENTITY;
+    for leg in &legs {
+        // Rebuilt even where it stands: the caps are this face, and it
+        // carries its trims on its own plane.
+        let heading = carried.apply_vector(legs[0].heading.0);
+        let section = realized_profile_wound(model, profile, &carried, Some(heading), tol)?;
+        let piece = match leg.along {
+            LegKind::Line(v) => ogeom_algo::make_prism(model, &section, v, tol)?.shape,
+            LegKind::Arc(axis, angle) => {
+                ogeom_algo::make_revolution(model, &section, axis, angle, tol)?.shape
+            }
+        };
+        carried = leg.motion * carried;
+        result = Some(match result {
+            None => piece,
+            Some(held) => ogeom_bool::fuse(model, &held, &piece, tol)?.shape,
+        });
+    }
+    Ok(result.map(|shape| {
+        let mut history = History::new();
+        history.generate(spine, shape.clone());
+        history.generate(profile, shape.clone());
+        Built::new(shape, history)
+    }))
+}
+
 /// Sweep a planar profile (a wire, or a face whose holes ride along)
 /// down an arbitrary spine, one skinned wall per profile loop.
 ///
@@ -2795,6 +3264,9 @@ pub fn make_pipe_shell(
 ) -> OgeomResult<Built> {
     const AROUND: usize = 40;
 
+    if let Some(exact) = exact_legs(model, profile, spine, frenet, tol)? {
+        return Ok(exact);
+    }
     let stations = shell_stations(model, spine, tol)?;
     // Corners: twin stations standing on one point with different headings.
     let corners: Vec<usize> = (0..stations.len() - 1)
@@ -3033,7 +3505,20 @@ pub fn make_pipe_shell(
         ogeom_bail!(Construction, "a pipe shell sweeps a planar profile");
     };
     let t0 = stations[0].tangent;
-    if plane.normal().vector().cross(t0).magnitude() > 1e-9 {
+    // Square to the spine's own start tangent, read exactly off its first
+    // edge, to an angle's tolerance.
+    let exact_t0 = {
+        let first = match model.kind_of(spine)? {
+            ShapeType::Edge => spine.clone(),
+            _ => model.ordered_children_of(spine)?[0].clone(),
+        };
+        let (curve, range) = spine_curve_of(model, &first)?;
+        let reversed = first.orientation() == ogeom_topo::Orientation::Reversed;
+        let d = curve.d1_at(if reversed { range.1 } else { range.0 }, tol)?;
+        let d = if reversed { -d } else { d };
+        d / d.magnitude()
+    };
+    if plane.normal().vector().cross(exact_t0).magnitude() > tol.angular() {
         ogeom_bail!(
             Construction,
             "the profile leans along its spine; a pipe shell runs square to \
@@ -3289,13 +3774,10 @@ pub fn make_pipe_shell(
             let count = edges.len();
             let mut corner_flat: Vec<(f64, f64)> = Vec::with_capacity(count);
             for edge in &edges {
-                let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+                // Already in the ring's own sense: a reversed edge's
+                // vertices come back end first.
+                let Some((start, _)) = ogeom_algo::edge_vertices(model, edge)? else {
                     ogeom_bail!(Construction, "a profile edge has no vertices");
-                };
-                let start = if edge.orientation() == ogeom_topo::Orientation::Reversed {
-                    b
-                } else {
-                    a
                 };
                 let Some(data) = model.node(&start).and_then(|n| n.data().as_vertex()) else {
                     ogeom_bail!(Construction, "a profile vertex holds no data");
@@ -3741,11 +4223,12 @@ fn mitred_pieces(
     for (run, start, end) in pieces {
         let mut wire_edges: Vec<Shape> = Vec::new();
         let traversal = |model: &Model, e: usize, at_start: bool| -> OgeomResult<Shape> {
+            // In the spine's own sense: a reversed edge's vertices come
+            // back end first.
             let Some((a, b)) = ogeom_algo::edge_vertices(model, &edges[e])? else {
                 ogeom_bail!(Construction, "a spine edge has no vertices");
             };
-            let reversed = edges[e].orientation() == ogeom_topo::Orientation::Reversed;
-            Ok(if at_start == reversed { b } else { a })
+            Ok(if at_start { a } else { b })
         };
         if let Some(i) = start {
             let split = &splits[i];
@@ -3821,6 +4304,18 @@ fn realized_profile(
     motion: &Transform,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
+    realized_profile_wound(model, profile, motion, None, tol)
+}
+
+/// As [`realized_profile`], each ring wound about `about` where given: the
+/// outer ring turning positively, every hole the other way.
+fn realized_profile_wound(
+    model: &mut Model,
+    profile: &Shape,
+    motion: &Transform,
+    about: Option<Vector>,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
     use ogeom_geom::Transformable as _;
     let Some(plane) = ogeom_algo::find_plane(model, profile, tol)? else {
         ogeom_bail!(Construction, "a pipe shell sweeps a planar profile");
@@ -3843,7 +4338,14 @@ fn realized_profile(
                     let (curve, range) = spine_curve_of(model, &edge)?;
                     let placed = curve.transformed(&edge.transform(model.datums())?, tol)?;
                     let moved = placed.transformed(motion, tol)?;
-                    let Some((a, b)) = ogeom_algo::edge_vertices(model, &edge)? else {
+                    // The copy is of the edge itself, in its own sense; the
+                    // ring's use of it is reapplied below.
+                    let own = if edge.orientation() == ogeom_topo::Orientation::Reversed {
+                        edge.reversed()
+                    } else {
+                        edge.clone()
+                    };
+                    let Some((a, b)) = ogeom_algo::edge_vertices(model, &own)? else {
                         ogeom_bail!(Construction, "a profile edge has no vertices");
                     };
                     let mut ends = Vec::with_capacity(2);
@@ -3878,12 +4380,49 @@ fn realized_profile(
                 copy
             });
         }
+        if let Some(axis) = about {
+            let turning = ring_turning(model, &ring, axis, tol)?;
+            let outer = wires.is_empty();
+            if (turning > 0.0) != outer {
+                ring = ring.iter().rev().map(Shape::reversed).collect();
+            }
+        }
         wires.push(ring);
     }
     let reach = 1e4_f64;
     let surface: SurfaceGeometry =
         PlaneSurface::over(moved_plane, (-reach, reach), (-reach, reach))?.into();
     Ok(ogeom_algo::make_face_with_pcurves(model, surface, &wires, tol)?.shape)
+}
+
+/// Twice the signed area a ring of edges encloses about `axis`, from its
+/// edges sampled in the ring's own sense.
+fn ring_turning(model: &Model, ring: &[Shape], axis: Vector, tol: Tolerances) -> OgeomResult<f64> {
+    let mut points: Vec<Point> = Vec::new();
+    for edge in ring {
+        let (curve, range) = spine_curve_of(model, edge)?;
+        let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+        for i in 0..32 {
+            let f = f64::from(i) / 32.0;
+            let t = if reversed {
+                range.1 - (range.1 - range.0) * f
+            } else {
+                range.0 + (range.1 - range.0) * f
+            };
+            points.push(curve.point_at(t, tol)?);
+        }
+    }
+    let Some(&origin) = points.first() else {
+        return Ok(0.0);
+    };
+    let n = points.len();
+    Ok((0..n)
+        .map(|i| {
+            (points[i] - origin)
+                .cross(points[(i + 1) % n] - origin)
+                .dot(axis)
+        })
+        .sum())
 }
 
 fn spine_curve_of(model: &Model, edge: &Shape) -> OgeomResult<(ogeom_geom::Curve, (f64, f64))> {
@@ -3956,7 +4495,20 @@ fn closed_pipe_shell(
         ogeom_bail!(Construction, "a pipe shell sweeps a planar profile");
     };
     let t0 = stations[0].tangent;
-    if plane.normal().vector().cross(t0).magnitude() > 1e-9 {
+    // Square to the spine's own start tangent, read exactly off its first
+    // edge, to an angle's tolerance.
+    let exact_t0 = {
+        let first = match model.kind_of(spine)? {
+            ShapeType::Edge => spine.clone(),
+            _ => model.ordered_children_of(spine)?[0].clone(),
+        };
+        let (curve, range) = spine_curve_of(model, &first)?;
+        let reversed = first.orientation() == ogeom_topo::Orientation::Reversed;
+        let d = curve.d1_at(if reversed { range.1 } else { range.0 }, tol)?;
+        let d = if reversed { -d } else { d };
+        d / d.magnitude()
+    };
+    if plane.normal().vector().cross(exact_t0).magnitude() > tol.angular() {
         ogeom_bail!(
             Construction,
             "the profile leans along its spine; a pipe shell runs square to \
