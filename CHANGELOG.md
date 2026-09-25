@@ -124,6 +124,10 @@ bump may break the API and a patch bump may not.
   orientation was wrong. The caps now face the way the prism's do and the
   walls are turned to meet them. Surfaces of revolution of a spline
   curve trimmed by their chart now measure exactly too.
+- **Spline faces with any trim measure exactly.** Mass properties
+  integrate a spline face, or a spline curve extruded or revolved, round
+  its own trims on the exact surface, the panels broken at its knots; a
+  converted box drilled through keeps its volume to rounding.
 - **A helical sweep measured 0.65% light at the default deflection**
   (#69). Its fitted walls were measured from their mesh. A spline face
   trimmed by its own chart's borders is now integrated on the exact

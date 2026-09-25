@@ -91,9 +91,36 @@ fn integrable(surface: &SurfaceGeometry) -> bool {
         | SurfaceGeometry::Cone(_)
         | SurfaceGeometry::Sphere(_)
         | SurfaceGeometry::Torus(_) => true,
-        SurfaceGeometry::Extrusion(e) => conic(e.curve()),
-        SurfaceGeometry::Revolution(r) => conic(r.curve()),
+        // A spline, and a spline curve swept or revolved, is a polynomial
+        // (or rational) piece by knot span: taken with the panels broken
+        // at its knots.
+        SurfaceGeometry::BSpline(_) => true,
+        SurfaceGeometry::Extrusion(e) => conic(e.curve()) || spline_knots(e.curve()).is_some(),
+        SurfaceGeometry::Revolution(r) => conic(r.curve()) || spline_knots(r.curve()).is_some(),
         _ => false,
+    }
+}
+
+/// A spline curve's distinct knots, through a trim.
+fn spline_knots(curve: &Curve) -> Option<Vec<f64>> {
+    match curve {
+        Curve::BSpline(b) => Some(b.knots().distinct().into_iter().map(|(k, _)| k).collect()),
+        Curve::Trimmed(t) => spline_knots(t.basis()),
+        _ => None,
+    }
+}
+
+/// Where a surface's integrand changes piece: its knot lines in `u` and
+/// in `v`.
+fn knot_lines(surface: &SurfaceGeometry) -> (Vec<f64>, Vec<f64>) {
+    let distinct = |k: &ogeom_math::KnotVector| -> Vec<f64> {
+        k.distinct().into_iter().map(|(x, _)| x).collect()
+    };
+    match surface {
+        SurfaceGeometry::BSpline(b) => (distinct(b.u_knots()), distinct(b.v_knots())),
+        SurfaceGeometry::Extrusion(e) => (spline_knots(e.curve()).unwrap_or_default(), Vec::new()),
+        SurfaceGeometry::Revolution(r) => (Vec::new(), spline_knots(r.curve()).unwrap_or_default()),
+        _ => (Vec::new(), Vec::new()),
     }
 }
 
@@ -572,6 +599,41 @@ impl ChartFace {
             _ => Vec::new(),
         };
         breaks.extend(knots.into_iter().filter(|k| *k > lo && *k < hi));
+        // Where the piece crosses the surface's own knot lines, found on a
+        // sampling and settled by bisection.
+        let (u_knots, v_knots) = knot_lines(&self.surface);
+        if !u_knots.is_empty() || !v_knots.is_empty() {
+            const N: usize = 32;
+            let mut prev: Option<(f64, Point2)> = None;
+            for k in 0..=N {
+                #[allow(clippy::cast_precision_loss)]
+                let t = t0 + (t1 - t0) * k as f64 / N as f64;
+                let (p, _) = segment.at(t, tol)?;
+                if let Some((tp, pp)) = prev {
+                    for (lines, read) in [(&u_knots, 0usize), (&v_knots, 1usize)] {
+                        let coord = |q: Point2| if read == 0 { q.x } else { q.y };
+                        for line in lines.iter() {
+                            let (a, b) = (coord(pp) - line, coord(p) - line);
+                            if a * b >= 0.0 {
+                                continue;
+                            }
+                            let (mut lo_t, mut hi_t, mut f_lo) = (tp, t, a);
+                            for _ in 0..60 {
+                                let mid = 0.5 * (lo_t + hi_t);
+                                let f = coord(segment.at(mid, tol)?.0) - line;
+                                if f.signum() == f_lo.signum() {
+                                    (lo_t, f_lo) = (mid, f);
+                                } else {
+                                    hi_t = mid;
+                                }
+                            }
+                            breaks.push(0.5 * (lo_t + hi_t));
+                        }
+                    }
+                }
+                prev = Some((t, p));
+            }
+        }
         // How far the piece reaches across the chart, in quarter turns of
         // whichever parameters are angles.
         let mut pieces = match segment.curve {
@@ -626,9 +688,19 @@ impl ChartFace {
         } else {
             ((ub - ua).abs() / QUARTER).ceil().clamp(1.0, 64.0) as u32
         } * fine;
-        for k in 0..pieces {
-            let a = ua + (ub - ua) * f64::from(k) / f64::from(pieces);
-            let b = ua + (ub - ua) * f64::from(k + 1) / f64::from(pieces);
+        let (u_knots, _) = knot_lines(&self.surface);
+        let (lo, hi) = (ua.min(ub), ua.max(ub));
+        let mut cuts: Vec<f64> = (0..=pieces)
+            .map(|k| ua + (ub - ua) * f64::from(k) / f64::from(pieces))
+            .collect();
+        cuts.extend(u_knots.into_iter().filter(|k| *k > lo && *k < hi));
+        cuts.sort_by(f64::total_cmp);
+        if ub < ua {
+            cuts.reverse();
+        }
+        cuts.dedup();
+        for pair in cuts.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
             for (u, wu) in gauss_legendre_rule(a, b) {
                 let p = self.surface.point_at(u, at.y, tol)?;
                 let (du, dv) = self.surface.d1_at(u, at.y, tol)?;
