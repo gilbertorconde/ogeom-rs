@@ -188,3 +188,69 @@ fn a_frenet_pipe_on_a_helix_is_a_screw() {
     let want = 4.0 * length;
     assert!((v - want).abs() < want * 1e-3, "{v} against {want}");
 }
+
+/// A coil kept inside a block that cuts across its turns measures what it
+/// is at the default deflection: the fitted sections the boolean leaves on
+/// its walls meet within their stated tolerances, and the integral takes
+/// them there rather than a coarse mesh. Each point of the section, `r` out
+/// from the axis, lies inside for `acos(-x0 / r)` of every half turn.
+#[test]
+fn a_coil_trimmed_by_a_block_measures_its_closed_form() {
+    let axis = Axis {
+        location: Point::ORIGIN,
+        direction: Direction::Y,
+    };
+    for x0 in [-3.0_f64, 0.5, 2.0] {
+        let mut model = Model::new();
+        let pts =
+            [(5.0, 0.0), (6.0, 0.0), (6.0, 1.0), (5.0, 1.0)].map(|(x, y)| Point::new(x, y, 0.0));
+        let wire = make_polygon(&mut model, &pts, true, T).unwrap().shape;
+        let square = make_face(
+            &mut model,
+            PlaneSurface::new(Plane::new(Frame::WORLD)).into(),
+            &[wire],
+            T,
+        )
+        .unwrap()
+        .shape;
+        let coil =
+            ogeom::offset::make_helical_sweep(&mut model, &square, axis, 3.0, 4.0, false, 0.0, T)
+                .unwrap()
+                .shape;
+        let frame = Frame::new(Point::new(x0, -5.0, -20.0), Direction::Z, Direction::X, T).unwrap();
+        let size = (20.0 - x0, 30.0, 40.0);
+        let block = ogeom::algo::make_box(&mut model, frame, size, T)
+            .unwrap()
+            .shape;
+        let n = 20_000;
+        let want: f64 = (0..n)
+            .map(|i| {
+                let r = 5.0 + (f64::from(i) + 0.5) / f64::from(n);
+                8.0 * r * (x0 / r).clamp(-1.0, 1.0).acos()
+            })
+            .sum::<f64>()
+            / f64::from(n);
+        let kept = ogeom::boolean::common(&mut model, &block, &coil, T)
+            .unwrap()
+            .shape;
+        let cut = ogeom::boolean::cut(&mut model, &block, &coil, T)
+            .unwrap()
+            .shape;
+        let default = |shape: &Shape| {
+            volume_properties(&model, shape, Deflection::default(), T)
+                .unwrap()
+                .mass
+        };
+        let (common, rest) = (default(&kept), default(&cut));
+        assert!(
+            (common - want).abs() < want * 2e-3,
+            "x0 {x0}: common {common} against {want}"
+        );
+        let block_volume = size.0 * size.1 * size.2;
+        assert!(
+            (rest - (block_volume - want)).abs() < want * 2e-3,
+            "x0 {x0}: cut {rest} against {}",
+            block_volume - want
+        );
+    }
+}

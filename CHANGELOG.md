@@ -26,6 +26,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A helical sweep trimmed by a boolean measured about 3% out (#80).**
+  The fitted sections the boolean leaves on its walls meet within their
+  own stated tolerances, and the exact integral refused them for missing
+  a millionth of the chart, falling back to a coarse mesh. Chart loops now
+  close, and pcurves lie on their edges, within those tolerances, so the
+  common and the cut measure their closed forms at the default deflection.
 - **A half space clear of a solid sectioned it anyway (#83).** The box
   standing in for a planar half space reached twice the other shape's
   diagonal from the plane, so a plane further off than that put the box's

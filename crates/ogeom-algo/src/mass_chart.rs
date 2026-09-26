@@ -264,14 +264,27 @@ fn walked(
         return Ok(None);
     }
 
-    // Each loop must close, piece to piece, to a millionth of the chart.
+    // Each loop must close, piece to piece, to a millionth of the chart, or
+    // to what the two edges meeting there own: fitted sections meet at a
+    // junction only as closely as their stated tolerances, which the chart
+    // reads through the surface's stretch there.
     let reach = scale * 1e-6 + tol.parametric();
+    let owned = |edge: &Shape| {
+        model
+            .node(edge)
+            .and_then(|n| n.data().as_edge())
+            .map_or(0.0, |d| d.tolerance.get())
+    };
     for segments in &loops {
         for (k, segment) in segments.iter().enumerate() {
             let next = &segments[(k + 1) % segments.len()];
             let (end, _) = segment.at(segment.t1, tol)?;
             let (start, _) = next.at(next.t0, tol)?;
-            if end.distance(start) > reach {
+            let slack = owned(&segment.edge).max(owned(&next.edge));
+            let stretch = placed.d1_at(end.x, end.y, tol).map_or(1.0, |(du, dv)| {
+                du.magnitude().min(dv.magnitude()).max(tol.confusion())
+            });
+            if end.distance(start) > reach + slack / stretch {
                 return Ok(None);
             }
         }
@@ -408,11 +421,12 @@ fn walk(
 }
 
 /// Whether a piece's pcurve, lifted through the surface, runs along its
-/// edge's own curve to a hundred times the confusion distance. A fitted
-/// pcurve can stray from its edge by the edge's tolerance, and the region
-/// it bounds would be measured that far off; the mesh, which takes its
-/// boundary from the edge, is asked instead. An edge with no curve of its
-/// own (a pole) has nothing to stray from.
+/// edge's own curve: to a hundred times the confusion distance, or to the
+/// edge's own stated tolerance where that is looser. A fitted pcurve can
+/// stray from its edge by the edge's tolerance, and the region it bounds is
+/// measured that closely; one straying further is left to the mesh, which
+/// takes its boundary from the edge. An edge with no curve of its own (a
+/// pole) has nothing to stray from.
 ///
 /// The two curves need not share a parameter, so each lifted point is
 /// measured against the nearest point of the edge's curve over its range.
@@ -436,7 +450,13 @@ fn lies_on_edge(
     let curve = curve
         .clone()
         .transformed(&edge.transform(model.datums())?, tol)?;
-    let reach = tol.confusion() * 100.0;
+    // The edge's own tolerance is the slop it states: a pcurve within it
+    // bounds the region that closely, far closer than a mesh would.
+    let stated = model
+        .node(edge)
+        .and_then(|n| n.data().as_edge())
+        .map_or(0.0, |d| d.tolerance.get());
+    let reach = (tol.confusion() * 100.0).max(stated);
     for k in 1..=5 {
         let t = segment.t0 + (segment.t1 - segment.t0) * f64::from(k) / 6.0;
         let (at, _) = segment.at(t, tol)?;
