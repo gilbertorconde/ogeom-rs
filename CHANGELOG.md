@@ -11,6 +11,15 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Sections of a face or an open shell by a plane (#84).**
+  `section_face` gives the edges where a face, shell or compound of faces
+  crosses a plane, each trimmed to the face it lies on: exact where the
+  surface and the plane have a closed form, fitted otherwise, a face's own
+  boundary where it lies in the plane. `section` takes such a sheet
+  against a half space bounded by a plane.
+
 ### Fixed
 
 - **A half space clear of a solid sectioned it anyway (#83).** The box

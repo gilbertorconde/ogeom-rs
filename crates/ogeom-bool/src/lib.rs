@@ -40,8 +40,10 @@ mod arrange;
 mod bins;
 mod defeature;
 mod half_space;
+mod section_face;
 
 pub use defeature::remove_faces;
+pub use section_face::section_face;
 
 use ogeom_algo::{
     Built, Containment, History, is_shell_closed, make_edge_between, make_face_on, make_vertex,
@@ -6406,6 +6408,31 @@ fn resolved_half_space(
     Ok(ogeom_algo::make_box(model, placed, (reach, reach, depth), tol)?.shape)
 }
 
+/// The plane bounding a half space, where `shape` is one and its boundary
+/// is planar.
+fn half_space_plane(
+    model: &Model,
+    shape: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<ogeom_math::Plane>> {
+    let Some(face) = half_space::half_space_face(model, shape, tol)? else {
+        return Ok(None);
+    };
+    let Some(surface) = model
+        .node(&face)
+        .and_then(|n| n.data().as_face())
+        .and_then(|d| model.geometry().surface(d.surface))
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    use ogeom_geom::Transformable as _;
+    match surface.transformed(&face.transform(model.datums())?, tol)? {
+        SurfaceGeometry::Plane(p) => Ok(Some(p.plane())),
+        _ => Ok(None),
+    }
+}
+
 /// The union of two solids.
 ///
 /// # Errors
@@ -6511,10 +6538,24 @@ pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRes
 
 /// The edges where the two solids' boundaries cross.
 ///
+/// Either argument may instead be a face, a shell or a compound of faces
+/// with no solid behind it, when the other is a half space bounded by a
+/// plane: the section is then [`section_face`]'s, the curves where its
+/// faces cross the plane.
+///
 /// # Errors
 ///
 /// As [`fuse`].
 pub fn section(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    // A face, shell or compound with no solid behind it, against a half
+    // space bounded by a plane: the curves where its faces cross the plane.
+    for (sheet, other) in [(a, b), (b, a)] {
+        if model.kind_of(sheet)? != ShapeType::Solid
+            && let Some(plane) = half_space_plane(model, other, tol)?
+        {
+            return section_face(model, sheet, &plane, tol);
+        }
+    }
     let (a, b) = (
         &resolved_half_space(model, a, b, tol)?,
         &resolved_half_space(model, b, a, tol)?,
