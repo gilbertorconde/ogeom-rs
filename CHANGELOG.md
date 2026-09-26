@@ -13,6 +13,10 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Pipe shells round straight corners are exact.** A face swept down an
+  open spine of straight legs with corners is each leg's prism, run on
+  past its corners, trimmed at the mitre planes and fused: planes and
+  drums, measured exactly, whatever the profile's seam (#82).
 - **Sections of a face or an open shell by a plane (#84).**
   `section_face` gives the edges where a face, shell or compound of faces
   crosses a plane, each trimmed to the face it lies on: exact where the

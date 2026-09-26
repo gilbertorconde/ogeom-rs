@@ -301,3 +301,102 @@ fn a_holed_profile_rounds_an_elliptic_ring() {
         }
     }
 }
+
+/// A disc piped round an L of straight legs is exact whatever the circle's
+/// seam: each leg a drum run on past the corner and trimmed at the mitre,
+/// so the tube measures its area times the path's length.
+#[test]
+fn a_disc_round_an_l_is_exact_wherever_its_seam() {
+    use ogeom::math::{Transform, Vector};
+    let disc = |model: &mut Model, frame: Frame| {
+        let circle = Circle::new(frame, 1.0, T).unwrap();
+        let e = make_edge(
+            model,
+            CircleCurve::new(circle).into(),
+            (0.0, core::f64::consts::TAU),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let w = make_wire(model, &[e], T).unwrap().shape;
+        make_face(model, PlaneSurface::new(Plane::new(frame)).into(), &[w], T)
+            .unwrap()
+            .shape
+    };
+    for placed in [true, false] {
+        let mut model = Model::new();
+        let spine = make_polygon(
+            &mut model,
+            &[
+                Point::new(10.0, 10.0, 0.0),
+                Point::new(0.0, 10.0, 0.0),
+                Point::ORIGIN,
+            ],
+            false,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let profile = if placed {
+            // The disc in the XZ plane, turned a quarter about Z and moved to
+            // the spine's start: its seam on the far side.
+            let f = disc(
+                &mut model,
+                Frame::new(Point::ORIGIN, -Direction::Y, Direction::X, T).unwrap(),
+            );
+            let turn = Transform::rotation(
+                ogeom::math::Axis::new(Point::ORIGIN, Direction::Z),
+                -core::f64::consts::FRAC_PI_2,
+            );
+            let moved = Transform::translation(Vector::new(10.0, 10.0, 0.0)) * turn;
+            ogeom::algo::transformed(&mut model, &f, moved)
+                .unwrap()
+                .shape
+        } else {
+            disc(
+                &mut model,
+                Frame::new(Point::new(10.0, 10.0, 0.0), Direction::X, Direction::Y, T).unwrap(),
+            )
+        };
+        let pipe = ogeom::offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T)
+            .unwrap_or_else(|e| panic!("placed {placed}: {e}"))
+            .shape;
+        let (v, exact) = measure(&model, &pipe);
+        let want = 20.0 * core::f64::consts::PI;
+        assert!(exact, "measured from a mesh");
+        assert!(
+            (v - want).abs() < want * 1e-9,
+            "placed {placed}: {v} against {want}"
+        );
+    }
+}
+
+/// A square down a spine of three straight legs turning out of plane:
+/// mitred exactly at both corners, its volume the area times the length.
+#[test]
+fn a_square_down_a_skew_polyline_is_mitred_exactly() {
+    let mut model = Model::new();
+    let profile = square(&mut model, 1.0);
+    let spine = make_polygon(
+        &mut model,
+        &[
+            Point::ORIGIN,
+            Point::new(0.0, 0.0, 12.0),
+            Point::new(10.0, 0.0, 12.0),
+            Point::new(10.0, 8.0, 12.0),
+        ],
+        false,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let pipe = ogeom::offset::make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &pipe, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let (v, exact) = measure(&model, &pipe);
+    let want = 4.0 * 30.0;
+    assert!(exact, "measured from a mesh");
+    assert!((v - want).abs() < want * 1e-9, "{v} against {want}");
+}

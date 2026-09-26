@@ -3491,13 +3491,24 @@ fn exact_legs(
             along,
         });
     }
-    // Legs must meet tangent: a corner is mitred by the general path.
-    for pair in legs.windows(2) {
+    // Legs meet tangent, or all are straight and their corners are mitred
+    // exactly below; any other corner is mitred by the general path.
+    let cornered = legs.windows(2).any(|pair| {
         let (x, y) = (pair[0].heading.1, pair[1].heading.0);
-        if x.cross(y).magnitude() > tol.angular() * x.magnitude() * y.magnitude() || x.dot(y) <= 0.0
-        {
-            return Ok(None);
-        }
+        x.cross(y).magnitude() > tol.angular() * x.magnitude() * y.magnitude() || x.dot(y) <= 0.0
+    });
+    if cornered {
+        let lines: Option<Vec<(Point, Vector)>> = legs
+            .iter()
+            .map(|leg| match leg.along {
+                LegKind::Line(v) => Some((leg.start, v)),
+                LegKind::Arc(..) => None,
+            })
+            .collect();
+        return match lines {
+            Some(lines) if solid && !frenet => mitred_lines(model, profile, spine, &lines, tol),
+            _ => Ok(None),
+        };
     }
     // The profile square to the spine's exact start tangent, and on it.
     let Some(plane) = ogeom_algo::find_plane(model, profile, tol)? else {
@@ -3524,6 +3535,124 @@ fn exact_legs(
             }
         };
         carried = leg.motion * carried;
+        result = Some(match result {
+            None => piece,
+            Some(held) => ogeom_bool::fuse(model, &held, &piece, tol)?.shape,
+        });
+    }
+    Ok(result.map(|shape| {
+        let mut history = History::new();
+        history.generate(spine, shape.clone());
+        history.generate(profile, shape.clone());
+        Built::new(shape, history)
+    }))
+}
+
+/// A face swept down a spine of straight legs with corners, exactly: each
+/// leg is the profile's prism, run on past its corners and trimmed by the
+/// mitre plane that halves each corner, and the pieces are fused. The
+/// section turns at each corner by the least rotation taking one leg's
+/// heading to the next's, as the rotation-minimizing frame does, and every
+/// wall is the closed form its profile edge sweeps along a line.
+///
+/// `None` where the spine closes on itself (a ring's section may come back
+/// turned, which the general construction settles), a corner all but
+/// doubles back, or a leg is too short for the corners at its ends to trim
+/// it apart.
+fn mitred_lines(
+    model: &mut Model,
+    profile: &Shape,
+    spine: &Shape,
+    legs: &[(Point, Vector)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    if let (Some(first), Some(last)) = (legs.first(), legs.last())
+        && first.0.distance(last.0 + last.1) <= tol.confusion() * 100.0
+    {
+        return Ok(None);
+    }
+    let bounds = ogeom_algo::shape_bounds(model, profile, tol)?;
+    let (Some(low), Some(high)) = (bounds.low(), bounds.high()) else {
+        return Ok(None);
+    };
+    let width = low.distance(high);
+    let unit = |v: Vector| v / v.magnitude();
+    // Each corner's mitre: its point and the normal of the plane halving it,
+    // pointing on along the next leg.
+    let mut mitres: Vec<(Point, Vector)> = Vec::with_capacity(legs.len().saturating_sub(1));
+    for pair in legs.windows(2) {
+        let (d0, d1) = (unit(pair[0].1), unit(pair[1].1));
+        // A corner turning past a right angle and a half reaches too far
+        // along its legs for the mitre to stay on them.
+        if d0.dot(d1) < -0.7 {
+            return Ok(None);
+        }
+        mitres.push((pair[1].0, unit(d0 + d1)));
+    }
+    // How far a section reaches along its leg from a corner's mitre.
+    let reach = width * 2.0;
+    for (i, (_, v)) in legs.iter().enumerate() {
+        let corners = f64::from(u8::from(i > 0) + u8::from(i + 1 < legs.len()));
+        if v.magnitude() <= reach * corners * 0.5 {
+            return Ok(None);
+        }
+    }
+
+    let mut carried = Transform::IDENTITY;
+    let mut result: Option<Shape> = None;
+    for (i, &(_, v)) in legs.iter().enumerate() {
+        let d = unit(v);
+        let before = if i > 0 { reach } else { 0.0 };
+        let after = if i + 1 < legs.len() { reach } else { 0.0 };
+        let section = realized_profile_wound(
+            model,
+            profile,
+            &(Transform::translation(-d * before) * carried),
+            Some(d),
+            tol,
+        )?;
+        let mut piece =
+            ogeom_algo::make_prism(model, &section, v + d * (before + after), tol)?.shape;
+        // Trimmed back to the mitres at either end.
+        for (at, normal, keep_ahead) in [
+            (i > 0).then(|| (mitres[i - 1].0, mitres[i - 1].1, true)),
+            (i + 1 < legs.len()).then(|| (mitres[i].0, mitres[i].1, false)),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let plane = Plane::through(at, Direction::new(normal, tol)?);
+            let face = ogeom_algo::make_natural_face(
+                model,
+                SurfaceGeometry::Plane(ogeom_geom::PlaneSurface::over(
+                    plane,
+                    (-reach * 4.0 - width, reach * 4.0 + width),
+                    (-reach * 4.0 - width, reach * 4.0 + width),
+                )?),
+            )?
+            .shape;
+            let side = if keep_ahead { normal } else { -normal };
+            let half = ogeom_algo::make_half_space(model, &face, at + side * width, tol)?.shape;
+            piece = ogeom_bool::common(model, &piece, &half, tol)?.shape;
+        }
+        // On to the next leg: along this one, then turned at the corner by
+        // the least rotation between the headings.
+        carried = Transform::translation(v) * carried;
+        if let Some(&(corner, next)) = legs.get(i + 1) {
+            let n = unit(next);
+            let axis = d.cross(n);
+            if axis.magnitude() > tol.angular() {
+                let angle = d.dot(n).clamp(-1.0, 1.0).acos();
+                let rotation = Transform::rotation(
+                    ogeom_math::Axis {
+                        location: corner,
+                        direction: Direction::new(axis, tol)?,
+                    },
+                    angle,
+                );
+                carried = rotation * carried;
+            }
+        }
         result = Some(match result {
             None => piece,
             Some(held) => ogeom_bool::fuse(model, &held, &piece, tol)?.shape,
