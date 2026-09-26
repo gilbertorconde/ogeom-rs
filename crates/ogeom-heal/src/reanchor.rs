@@ -250,12 +250,15 @@ pub fn reanchor_periodic_rings(
         } else {
             rebuild_plain_face(model, &face, &substitution, tol)?
         };
-        let rebuilt = if face.orientation() == ogeom_topo::Orientation::Reversed {
+        // The rebuild is the face as stored, before any orientation; the
+        // shells below place it as each occurrence does. History names the
+        // occurrence met here, so it takes this one's orientation.
+        let oriented = if face.orientation() == ogeom_topo::Orientation::Reversed {
             rebuilt.reversed()
         } else {
-            rebuilt
+            rebuilt.clone()
         };
-        history.modify(&face, rebuilt.clone());
+        history.modify(&face, oriented);
         face_map.insert(face.node(), rebuilt);
     }
 

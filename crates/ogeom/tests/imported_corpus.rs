@@ -860,3 +860,42 @@ fn faces_bounded_by_arcs_of_an_eccentric_ellipse_mesh_on_themselves() {
         }
     }
 }
+
+/// Re-anchoring a solid's periodic rings rebuilds every face that uses a
+/// moved ring, and a rebuilt face keeps the side its flag named: a plate's
+/// underside, holed by rings the heal moves, still faces down afterwards,
+/// so a boolean or a volume read from it counts the plate as material.
+#[test]
+fn a_face_rebuilt_by_ring_reanchoring_keeps_its_side() {
+    use ogeom::algo::{Containment, classify_on_face};
+    use ogeom::math::Point;
+    let text = corpus("nist_ctc_01_asme1_rd.stp");
+    let mut import = ogeom::io::read_step(&text, T).unwrap();
+    let solid = import.solids[0].clone();
+    // A point on the plate's underside, material above it.
+    let at = Point::new(73.3, -91.16, -50.0);
+    let facing = |model: &ogeom::topo::Model, shape: &ogeom::topo::Shape| -> f64 {
+        let face = explore(model, shape, Filter::OfType(ShapeType::Face))
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                classify_on_face(model, f, at, ogeom::mesh::Deflection::default(), T).unwrap()
+                    == Containment::In
+            })
+            .expect("the underside holds the point");
+        let (_, normal) = ogeom::algo::face_normal(model, &face, T).unwrap();
+        normal.z
+    };
+    assert!(
+        facing(import.document.model(), &solid) < 0.0,
+        "imported facing down"
+    );
+    let healed = ogeom::heal::reanchor_periodic_rings(import.document.model_mut(), &solid, T)
+        .unwrap()
+        .0
+        .shape;
+    assert!(
+        facing(import.document.model(), &healed) < 0.0,
+        "the rebuilt underside faces down still"
+    );
+}

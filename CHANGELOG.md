@@ -11,6 +11,16 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Re-anchoring periodic rings turned rebuilt faces inside out.**
+  `reanchor_periodic_rings` reversed a reversed face once when rebuilding
+  it and again when rebuilding its shell, so the face came back facing
+  into the solid. `check` passed it and a mesh volume did not notice, but
+  a boolean's exact volume lost the material behind it: a drill through
+  an imported plate measured 1.5% light. Found by the new robustness
+  harness.
+
 ## [0.3.4] - 2026-09-26
 
 A patch release with no API change needing a bump; `cargo semver-checks`
