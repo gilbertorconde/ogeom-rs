@@ -1,0 +1,62 @@
+name: Release
+
+# A tag `vX.Y.Z` publishes every crate in the workspace to crates.io, once
+# the tag names the workspace's own version and the full check passes.
+#
+# Authentication is crates.io trusted publishing: the job trades its GitHub
+# OIDC token for a short-lived crates.io token, so no API token is stored in
+# the repository. Each crate must name this repository and this workflow
+# file (release.yml) as a trusted publisher in its crates.io settings.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  publish:
+    name: publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The tag names the workspace version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tag="${GITHUB_REF_NAME#v}"
+          echo "workspace $version, tag $tag"
+          test "$version" = "$tag" || { echo "tag $GITHUB_REF_NAME does not match version $version"; exit 1; }
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook
+
+      - name: Check
+        run: ./tools/check.sh
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      # Publishes in dependency order, waiting for each crate to reach the
+      # index before the ones that depend on it.
+      - name: Publish
+        run: cargo publish --workspace
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
