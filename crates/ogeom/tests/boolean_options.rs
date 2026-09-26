@@ -291,3 +291,57 @@ fn a_prism_s_near_cap_keeps_its_edges_when_its_far_cap_is_notched() {
         .len();
     assert_eq!(sides, 3, "the near cap is still a triangle");
 }
+
+/// A half space below a plane clear of the solid holds all of it: its
+/// section is empty, its common the whole solid and its cut nothing, however
+/// far the plane stands off. Below a plane through the solid, the section
+/// is where the plane crosses it.
+#[test]
+fn a_half_space_clear_of_a_solid_sections_nothing() {
+    use ogeom::geom::{PlaneSurface, SurfaceGeometry};
+    use ogeom::math::Plane;
+    use ogeom::topo::{ShapeType, explore_unique};
+    let below = |model: &mut Model, height: f64| {
+        let plane = Plane::through(Point::new(0.0, 0.0, height), Direction::Z);
+        let surface = PlaneSurface::over(plane, (-1e6, 1e6), (-1e6, 1e6)).unwrap();
+        let face = ogeom::algo::make_natural_face(model, SurfaceGeometry::Plane(surface))
+            .unwrap()
+            .shape;
+        ogeom::algo::make_half_space(model, &face, Point::new(0.0, 0.0, height - 1.0), T)
+            .unwrap()
+            .shape
+    };
+    let mut model = Model::new();
+    let cube = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    for height in [15.0, 40.0, 400.0] {
+        let half = below(&mut model, height);
+        let section = ogeom::boolean::section(&mut model, &cube, &half, T)
+            .unwrap()
+            .shape;
+        assert!(
+            explore_unique(&model, &section, ShapeType::Edge)
+                .unwrap()
+                .is_empty(),
+            "a plane at {height} sections nothing"
+        );
+        let kept = ogeom::boolean::common(&mut model, &cube, &half, T)
+            .unwrap()
+            .shape;
+        let v = ogeom::algo::volume_properties(&model, &kept, Deflection::default(), T)
+            .unwrap()
+            .mass;
+        assert!((v - 1000.0).abs() < 1e-6, "{height}: {v}");
+    }
+    let half = below(&mut model, 4.0);
+    let section = ogeom::boolean::section(&mut model, &cube, &half, T)
+        .unwrap()
+        .shape;
+    assert_eq!(
+        explore_unique(&model, &section, ShapeType::Edge)
+            .unwrap()
+            .len(),
+        4
+    );
+}

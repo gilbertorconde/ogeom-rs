@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A half space clear of a solid sectioned it anyway (#83).** The box
+  standing in for a planar half space reached twice the other shape's
+  diagonal from the plane, so a plane further off than that put the box's
+  far face inside the shape: a section returned edges and a common trimmed
+  material. The box now reaches past the shape's far side.
 - **Re-anchoring periodic rings turned rebuilt faces inside out.**
   `reanchor_periodic_rings` reversed a reversed face once when rebuilding
   it and again when rebuilding its shell, so the face came back facing

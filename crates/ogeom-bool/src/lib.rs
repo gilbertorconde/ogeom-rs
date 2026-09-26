@@ -6399,7 +6399,11 @@ fn resolved_half_space(
     let corner =
         foot - oriented.x().vector() * (reach / 2.0) - oriented.y().vector() * (reach / 2.0);
     let placed = ogeom_math::Frame::new(corner, into, frame_x, tol)?;
-    Ok(ogeom_algo::make_box(model, placed, (reach, reach, reach), tol)?.shape)
+    // Deep enough to pass the other shape's far side however far the
+    // plane stands from it: a stand-in whose far face fell inside the
+    // shape would cut it there, where the half space cuts nothing.
+    let depth = reach + (centre - at).dot(into.vector()).max(0.0);
+    Ok(ogeom_algo::make_box(model, placed, (reach, reach, depth), tol)?.shape)
 }
 
 /// The union of two solids.
