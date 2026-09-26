@@ -26,6 +26,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean between a helical sweep and a box whose face holds the helix
+  axis did not close (#81).** The sweep's walls were fitted a quarter turn
+  at a time with their borders on the profile's own plane and the planes
+  square to it, so such a face met the walls only along those borders,
+  where no section starts. The borders now stand an eighth of a turn off
+  those planes, and the box keeps exactly half the coil either side. A
+  junction between fitted sections now closes in the exact integral within
+  both sections' tolerances or the vertex's, whichever is wider.
 - **A helical sweep trimmed by a boolean measured about 3% out (#80).**
   The fitted sections the boolean leaves on its walls meet within their
   own stated tolerances, and the exact integral refused them for missing

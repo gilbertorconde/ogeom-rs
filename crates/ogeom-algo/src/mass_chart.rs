@@ -265,22 +265,35 @@ fn walked(
     }
 
     // Each loop must close, piece to piece, to a millionth of the chart, or
-    // to what the two edges meeting there own: fitted sections meet at a
-    // junction only as closely as their stated tolerances, which the chart
-    // reads through the surface's stretch there.
+    // to what the two edges meeting there own: fitted sections each miss
+    // their junction by up to their stated tolerance, possibly opposite
+    // ways, and the vertex there records any wider gap it absorbed. The
+    // chart reads that slack through the surface's stretch there.
     let reach = scale * 1e-6 + tol.parametric();
     let owned = |edge: &Shape| {
-        model
+        let own = model
             .node(edge)
             .and_then(|n| n.data().as_edge())
-            .map_or(0.0, |d| d.tolerance.get())
+            .map_or(0.0, |d| d.tolerance.get());
+        let ends = crate::edge_vertices(model, edge)
+            .ok()
+            .flatten()
+            .map_or(0.0, |(a, b)| {
+                [a, b]
+                    .iter()
+                    .filter_map(|v| model.node(v).and_then(|n| n.data().as_vertex()))
+                    .map(|d| d.tolerance.get())
+                    .fold(0.0, f64::max)
+            });
+        (own, ends)
     };
     for segments in &loops {
         for (k, segment) in segments.iter().enumerate() {
             let next = &segments[(k + 1) % segments.len()];
             let (end, _) = segment.at(segment.t1, tol)?;
             let (start, _) = next.at(next.t0, tol)?;
-            let slack = owned(&segment.edge).max(owned(&next.edge));
+            let (a, b) = (owned(&segment.edge), owned(&next.edge));
+            let slack = (a.0 + b.0).max(a.1).max(b.1);
             let stretch = placed.d1_at(end.x, end.y, tol).map_or(1.0, |(du, dv)| {
                 du.magnitude().min(dv.magnitude()).max(tol.confusion())
             });

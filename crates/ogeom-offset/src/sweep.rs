@@ -3175,15 +3175,26 @@ pub fn make_helical_sweep(
     let tolerance = tol.confusion() * 100.0;
     // The walls in quarter turns, each a strip of its own sharing its
     // borders with the next: one fit down many turns of a helix cannot
-    // reach the tolerance, a quarter turn's can.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let segments = ((turns * 4.0).ceil() as usize).max(1);
+    // reach the tolerance, a quarter turn's can. The borders stand an
+    // eighth of a turn off the profile's own plane and the planes square to
+    // it: a strip's border is a copy of the profile, and a plane through the
+    // axis at those angles (a block's face set on the axis) would otherwise
+    // meet a strip only along its border, where no section starts.
+    let quarter = core::f64::consts::FRAC_PI_2;
+    let mut borders = vec![0.0];
+    let mut next_border = quarter / 2.0;
+    while next_border < total - quarter * 1e-3 {
+        borders.push(next_border);
+        next_border += quarter;
+    }
+    borders.push(total);
+    let segments = borders.len() - 1;
     // The fit keeps fewer controls than samples, so its reach at the
     // samples is set by how many there are.
     const PER_SEGMENT: usize = 48;
     #[allow(clippy::cast_precision_loss)]
     let theta_at = |seg: usize, i: usize| {
-        total * ((seg * PER_SEGMENT + i) as f64) / ((segments * PER_SEGMENT) as f64)
+        borders[seg] + (borders[seg + 1] - borders[seg]) * (i as f64) / (PER_SEGMENT as f64)
     };
 
     let mut faces: Vec<Shape> = Vec::new();

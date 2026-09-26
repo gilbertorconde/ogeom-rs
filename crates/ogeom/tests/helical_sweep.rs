@@ -193,14 +193,15 @@ fn a_frenet_pipe_on_a_helix_is_a_screw() {
 /// is at the default deflection: the fitted sections the boolean leaves on
 /// its walls meet within their stated tolerances, and the integral takes
 /// them there rather than a coarse mesh. Each point of the section, `r` out
-/// from the axis, lies inside for `acos(-x0 / r)` of every half turn.
+/// from the axis, lies inside for `acos(-x0 / r)` of every half turn. A
+/// block whose face holds the axis (`x0 = 0`) keeps half the coil.
 #[test]
 fn a_coil_trimmed_by_a_block_measures_its_closed_form() {
     let axis = Axis {
         location: Point::ORIGIN,
         direction: Direction::Y,
     };
-    for x0 in [-3.0_f64, 0.5, 2.0] {
+    for x0 in [-3.0_f64, 0.0, 0.5, 2.0] {
         let mut model = Model::new();
         let pts =
             [(5.0, 0.0), (6.0, 0.0), (6.0, 1.0), (5.0, 1.0)].map(|(x, y)| Point::new(x, y, 0.0));
@@ -253,4 +254,47 @@ fn a_coil_trimmed_by_a_block_measures_its_closed_form() {
             block_volume - want
         );
     }
+}
+
+/// The block on the other side of the axis keeps the other half: the coil
+/// is symmetric about the plane through its axis, turn for turn.
+#[test]
+fn a_coil_halved_by_a_block_on_its_axis_keeps_half_either_side() {
+    let axis = Axis {
+        location: Point::ORIGIN,
+        direction: Direction::Y,
+    };
+    let mut model = Model::new();
+    let pts = [(5.0, 0.0), (6.0, 0.0), (6.0, 1.0), (5.0, 1.0)].map(|(x, y)| Point::new(x, y, 0.0));
+    let wire = make_polygon(&mut model, &pts, true, T).unwrap().shape;
+    let square = make_face(
+        &mut model,
+        PlaneSurface::new(Plane::new(Frame::WORLD)).into(),
+        &[wire],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let coil =
+        ogeom::offset::make_helical_sweep(&mut model, &square, axis, 3.0, 4.0, false, 0.0, T)
+            .unwrap()
+            .shape;
+    let frame = Frame::new(
+        Point::new(-20.0, -5.0, -20.0),
+        Direction::Z,
+        Direction::X,
+        T,
+    )
+    .unwrap();
+    let block = ogeom::algo::make_box(&mut model, frame, (20.0, 30.0, 40.0), T)
+        .unwrap()
+        .shape;
+    let kept = ogeom::boolean::common(&mut model, &block, &coil, T)
+        .unwrap()
+        .shape;
+    let v = volume_properties(&model, &kept, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    let want = core::f64::consts::PI * 4.0 * 5.5;
+    assert!((v - want).abs() < want * 2e-3, "{v} against {want}");
 }
