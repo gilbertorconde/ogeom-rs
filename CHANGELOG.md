@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-09-26
+
+A patch release with no API change needing a bump; `cargo semver-checks`
+finds nothing against 0.3.3. It adds typed DXF reading, helical sweeps,
+exact pipe shells along lines and arcs, the medial axis of any planar
+face and the middle path of a pipe-like solid, dividing and remodelling
+shapes, NURBS conversion within a tolerance, tight bounds, VRML reading
+and more of STEP and IGES. Fillets pinch at tangent poles, round corners
+where a curved face meets and close in more orders at apexes and curved
+corners, and a fillet or chamfer too wide for its face is refused.
+
 ### Added
 
 - **Typed DXF reading (#72).** `read_dxf_entities` reads lines, arcs,
@@ -1160,7 +1171,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.0...v0.3.1
