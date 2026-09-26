@@ -298,3 +298,43 @@ fn a_coil_halved_by_a_block_on_its_axis_keeps_half_either_side() {
     let want = core::f64::consts::PI * 4.0 * 5.5;
     assert!((v - want).abs() < want * 2e-3, "{v} against {want}");
 }
+
+/// No pitch and a taper is a flat spiral: the profile turns in its plane
+/// square to the axis while moving out, three turns of a unit square two
+/// out per turn. Its volume is the area times the arc its centroid runs,
+/// `2 pi * turns * r0 + pi * taper * turns^2`, and it stays as high as the
+/// profile.
+#[test]
+fn no_pitch_and_a_taper_is_a_flat_spiral() {
+    let axis = Axis {
+        location: Point::ORIGIN,
+        direction: Direction::Y,
+    };
+    let mut model = Model::new();
+    let pts = [(5.0, 0.0), (6.0, 0.0), (6.0, 1.0), (5.0, 1.0)].map(|(x, y)| Point::new(x, y, 0.0));
+    let wire = make_polygon(&mut model, &pts, true, T).unwrap().shape;
+    let square = make_face(
+        &mut model,
+        PlaneSurface::new(Plane::new(Frame::WORLD)).into(),
+        &[wire],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let spiral =
+        ogeom::offset::make_helical_sweep(&mut model, &square, axis, 0.0, 3.0, false, 2.0, T)
+            .unwrap()
+            .shape;
+    assert!(check(&model, &spiral, T).unwrap().is_valid());
+    let v = volume(&model, &spiral);
+    let pi = core::f64::consts::PI;
+    let want = 2.0 * pi * 3.0 * 5.5 + pi * 2.0 * 9.0;
+    assert!((v - want).abs() < want * 5e-3, "{v} against {want}");
+    let b = ogeom::algo::tight_bounds(&model, &spiral, T).unwrap();
+    assert!(b.low().unwrap().y > -1e-6 && b.high().unwrap().y < 1.0 + 1e-6);
+    // A taper that does not clear the profile's width meets the last turn.
+    assert!(
+        ogeom::offset::make_helical_sweep(&mut model, &square, axis, 0.0, 3.0, false, 0.5, T)
+            .is_err()
+    );
+}

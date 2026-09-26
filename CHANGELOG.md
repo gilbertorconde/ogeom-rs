@@ -13,6 +13,9 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Flat spirals (#79).** `make_helical_sweep` with a pitch of zero and a
+  taper per turn turns the profile in its plane square to the axis while
+  moving it out, refused where one turn would meet the last.
 - **Pipe shells round straight corners are exact.** A face swept down an
   open spine of straight legs with corners is each leg's prism, run on
   past its corners, trimmed at the mitre planes and fused: planes and

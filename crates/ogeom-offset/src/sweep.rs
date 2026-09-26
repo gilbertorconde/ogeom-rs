@@ -3077,16 +3077,20 @@ impl SpineWalk<'_> {
 /// profile turns, `left_handed` turns it the other way about the axis for
 /// the same advance, and `taper_per_turn` moves every point away from the
 /// axis by that much per turn (a conical helix; zero for a cylindrical
-/// one). The walls are fitted through each profile edge's exact screw
-/// images; the caps are the profile where it starts and where it ends.
+/// one). A pitch of zero with a taper is a flat spiral, every point
+/// turning in its plane square to the axis while moving out. The walls are
+/// fitted through each profile edge's exact screw images; the caps are the
+/// profile where it starts and where it ends.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
 /// the profile is not a planar face whose plane holds the axis, reaches
 /// the axis, would meet itself one turn on (its extent along the axis is
-/// not less than the pitch), or tapers onto the axis; if `pitch` or
-/// `turns` is not positive.
+/// not less than the pitch, or for a flat spiral its extent away from the
+/// axis not less than the taper), or tapers onto the axis; if `turns` is
+/// not positive, `pitch` is negative, or both `pitch` and the taper are
+/// zero.
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if a wall
 /// cannot be fitted.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -3100,14 +3104,22 @@ pub fn make_helical_sweep(
     taper_per_turn: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    if !(pitch.is_finite() && pitch > 0.0) || !(turns.is_finite() && turns > 0.0) {
+    if !(pitch.is_finite() && pitch >= 0.0) || !(turns.is_finite() && turns > 0.0) {
         ogeom_bail!(
             Construction,
-            "a helical sweep needs a positive pitch and turn count; got {pitch} and {turns}"
+            "a helical sweep needs a pitch of zero or more and a positive turn count; \
+             got {pitch} and {turns}"
         );
     }
     if !taper_per_turn.is_finite() {
         ogeom_bail!(Construction, "a taper of {taper_per_turn} is not a length");
+    }
+    let flat = pitch <= tol.confusion();
+    if flat && taper_per_turn.abs() <= tol.confusion() {
+        ogeom_bail!(
+            Construction,
+            "a helical sweep with no pitch and no taper turns the profile onto itself"
+        );
     }
     if model.kind_of(profile)? != ShapeType::Face {
         ogeom_bail!(Construction, "a helical sweep sweeps a planar face");
@@ -3152,22 +3164,32 @@ pub fn make_helical_sweep(
     if loops.is_empty() {
         ogeom_bail!(Construction, "the profile has no loop to sweep");
     }
-    // One turn on, the profile must clear itself.
+    // One turn on, the profile must clear itself: along the axis by the
+    // pitch, or for a flat spiral away from it by the taper.
     if turns > 1.0 {
         let mut low = f64::INFINITY;
         let mut high = f64::NEG_INFINITY;
         for wire in &loops {
             for p in sample_wire(model, wire, 64, tol)? {
-                let h = (p - axis.location).dot(z);
+                let h = if flat {
+                    p.distance(axis.project(p))
+                } else {
+                    (p - axis.location).dot(z)
+                };
                 low = low.min(h);
                 high = high.max(h);
             }
         }
-        if high - low >= pitch - tol.confusion() {
+        let (clearance, across) = if flat {
+            (taper_per_turn.abs(), "away from the axis")
+        } else {
+            (pitch, "along the axis")
+        };
+        if high - low >= clearance - tol.confusion() {
             ogeom_bail!(
                 Construction,
-                "the profile spans {} along the axis, not less than the pitch \
-                 {pitch}; a turn on it meets itself",
+                "the profile spans {} {across}, not less than the turn's advance \
+                 {clearance}; a turn on it meets itself",
                 high - low
             );
         }
