@@ -22,6 +22,7 @@ members = [
     "crates/ogeom-doc",
     "crates/ogeom",
     "tools/ogeom-bench",
+    "tools/ogeom-stress",
     "tools/ogeom-cli",
     "tools/ogeom-view",
 ]

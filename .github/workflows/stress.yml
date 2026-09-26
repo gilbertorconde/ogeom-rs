@@ -1,0 +1,54 @@
+name: Stress
+
+# The randomized robustness harness (tools/ogeom-stress), nightly and on
+# demand. It fails when any scenario has fewer good results or more bad ones
+# (invalid solids, wrong answers, crashes) than tools/ogeom-stress/baseline.json
+# records, and keeps the full report as an artifact either way.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Seed for the case generator"
+        default: "1"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release -p ogeom-stress
+
+      # The baseline was recorded at seed 1; another seed explores new cases
+      # and is reported, not gated.
+      # `shell: bash` runs with pipefail, so `tee` does not hide the result.
+      - name: Run
+        shell: bash
+        run: |
+          seed="${{ github.event.inputs.seed || '1' }}"
+          if [ "$seed" = "1" ]; then
+            ./target/release/ogeom-stress --seed 1 --check tools/ogeom-stress/baseline.json | tee stress-report.txt
+          else
+            ./target/release/ogeom-stress --seed "$seed" | tee stress-report.txt
+          fi
+
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: stress-report
+          path: stress-report.txt

@@ -493,6 +493,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ogeom-stress"
+version = "0.3.4"
+dependencies = [
+ "ogeom",
+]
+
+[[package]]
 name = "ogeom-topo"
 version = "0.3.4"
 dependencies = [

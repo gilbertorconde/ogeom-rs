@@ -1,0 +1,21 @@
+[package]
+name = "ogeom-stress"
+description = "Randomized robustness harness for the ogeom kernel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Not published: a harness whose audience is this repository.
+publish = false
+
+[[bin]]
+name = "ogeom-stress"
+path = "src/main.rs"
+
+[dependencies]
+ogeom = { path = "../../crates/ogeom", version = "0.3.4" }
+
+[lints]
+workspace = true
