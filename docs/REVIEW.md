@@ -118,6 +118,19 @@ New findings while fixing, all open:
 - The reader cannot fuzz without a nightly toolchain; the seeded mangling
   test (`7584668`) stands in for the `cargo fuzz` targets.
 
+## Where to pick up
+
+Every item above is closed. Before revisiting this document, the open
+GitHub issues come first: #85 (an auxiliary guide ending a hair short of
+the last station), #86 (pipe sections with misaligned starts twist) and
+#87 (a binormal-law pipe measured 1.5% high at the default deflection).
+Then the new findings listed under Progress, most useful first:
+
+1. The ftc_06 drills: a boundary strand dangles in the arrangement.
+2. The bound-filter audit on the curved-corner blends.
+3. The exact mass path for placed faces (mirrored solids).
+4. `canonical_simplify` on a reversed spline.
+
 ## Correctness bugs
 
 ### B1. Shells are nested by bounding box: disjoint solids become voids
