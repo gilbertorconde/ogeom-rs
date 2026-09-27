@@ -90,3 +90,57 @@ fn make_volume_nests_an_island_as_a_solid() {
     assert!((volumes[0] - 8.0).abs() < 1e-6, "{volumes:?}");
     assert!((volumes[1] - 784.0).abs() < 1e-6, "{volumes:?}");
 }
+
+/// The three cells from one arrangement are the three booleans: the same
+/// volumes as cutting each way and taking the common part separately, for
+/// crossing boxes, a drum through a box, and boxes sharing a face.
+#[test]
+fn cells_are_the_three_booleans() {
+    let volume = |model: &Model, shape: &Shape| {
+        ogeom::algo::volume_properties(model, shape, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    type Pair = fn(&mut Model) -> (Shape, Shape);
+    let pairs: [Pair; 3] = [
+        |m| {
+            (
+                cube(m, (0.0, 0.0, 0.0), (4.0, 4.0, 4.0)),
+                cube(m, (2.0, 1.0, -1.0), (4.0, 2.0, 6.0)),
+            )
+        },
+        |m| {
+            let frame =
+                Frame::new(Point::new(2.0, 2.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+            (
+                cube(m, (0.0, 0.0, 0.0), (4.0, 4.0, 4.0)),
+                ogeom::algo::make_cylinder(m, frame, 1.5, 6.0, T)
+                    .unwrap()
+                    .shape,
+            )
+        },
+        |m| {
+            (
+                cube(m, (0.0, 0.0, 0.0), (4.0, 4.0, 4.0)),
+                cube(m, (0.0, 0.0, 4.0), (4.0, 2.0, 3.0)),
+            )
+        },
+    ];
+    for make in pairs {
+        let mut model = Model::new();
+        let (a, b) = make(&mut model);
+        let cells = ogeom::boolean::cells(&mut model, &a, &b, T).unwrap();
+        let a_not_b = ogeom::boolean::cut(&mut model, &a, &b, T).unwrap().shape;
+        let b_not_a = ogeom::boolean::cut(&mut model, &b, &a, T).unwrap().shape;
+        let common = ogeom::boolean::common(&mut model, &a, &b, T).unwrap().shape;
+        for (together, separate) in [
+            (&cells.a_not_b.shape, &a_not_b),
+            (&cells.b_not_a.shape, &b_not_a),
+            (&cells.common.shape, &common),
+        ] {
+            assert!(ogeom::algo::check(&model, together, T).unwrap().is_valid());
+            let (x, y) = (volume(&model, together), volume(&model, separate));
+            assert!((x - y).abs() <= y.abs() * 1e-9 + 1e-9, "{x} against {y}");
+        }
+    }
+}

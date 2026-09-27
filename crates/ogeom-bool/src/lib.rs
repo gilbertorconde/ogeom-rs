@@ -6442,10 +6442,43 @@ pub struct Cells {
 ///
 /// As the operations themselves.
 pub fn cells(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Cells> {
+    let (a, b) = (
+        &resolved_half_space(model, a, b, tol)?,
+        &resolved_half_space(model, b, a, tol)?,
+    );
+    let (a, b) = (
+        &baked_if_scaled(model, a, tol)?,
+        &baked_if_scaled(model, b, tol)?,
+    );
+    // One arrangement answers all three: each cell is a different choice
+    // of the same classified pieces, the choices `cut` and `common` make,
+    // and the cut the other way round with the arguments' roles swapped.
+    let fused = general_fuse(model, a, b, tol)?;
+    let keep = |choose: &dyn Fn(&FacePiece) -> Option<bool>| -> Vec<(usize, bool)> {
+        fused
+            .pieces
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| choose(p).map(|flip| (i, flip)))
+            .collect()
+    };
+    let cut_from = |first: bool| {
+        move |p: &FacePiece| match (p.from_a == first, p.state) {
+            (true, PieceState::Out | PieceState::OnOpposed) => Some(false),
+            (false, PieceState::In) => Some(true),
+            _ => None,
+        }
+    };
+    let a_only = keep(&cut_from(true));
+    let b_only = keep(&cut_from(false));
+    let both = keep(&|p: &FacePiece| {
+        (p.state == PieceState::In || (p.state == PieceState::OnAligned && !p.covered))
+            .then_some(false)
+    });
     Ok(Cells {
-        a_not_b: cut(model, a, b, tol)?,
-        b_not_a: cut(model, b, a, tol)?,
-        common: common(model, a, b, tol)?,
+        a_not_b: assemble_result(model, &fused, &a_only, a, b, tol)?,
+        b_not_a: assemble_result(model, &fused, &b_only, a, b, tol)?,
+        common: assemble_result(model, &fused, &both, a, b, tol)?,
     })
 }
 

@@ -3695,7 +3695,7 @@ fn exact_legs(
         return Ok(None);
     }
 
-    let mut result: Option<Shape> = None;
+    let mut joined: Vec<Shape> = Vec::new();
     let mut carried = Transform::IDENTITY;
     for leg in &legs {
         // Rebuilt even where it stands: the caps are this face, and it
@@ -3709,11 +3709,9 @@ fn exact_legs(
             }
         };
         carried = leg.motion * carried;
-        result = Some(match result {
-            None => piece,
-            Some(held) => ogeom_bool::fuse(model, &held, &piece, tol)?.shape,
-        });
+        joined.push(piece);
     }
+    let result = fuse_in_order(model, joined, tol)?;
     Ok(result.map(|shape| {
         let mut history = History::new();
         history.generate(spine, shape.clone());
@@ -3773,7 +3771,7 @@ fn mitred_lines(
     }
 
     let mut carried = Transform::IDENTITY;
-    let mut result: Option<Shape> = None;
+    let mut joined: Vec<Shape> = Vec::new();
     for (i, &(_, v)) in legs.iter().enumerate() {
         let d = unit(v);
         let before = if i > 0 { reach } else { 0.0 };
@@ -3827,11 +3825,9 @@ fn mitred_lines(
                 carried = rotation * carried;
             }
         }
-        result = Some(match result {
-            None => piece,
-            Some(held) => ogeom_bool::fuse(model, &held, &piece, tol)?.shape,
-        });
+        joined.push(piece);
     }
+    let result = fuse_in_order(model, joined, tol)?;
     Ok(result.map(|shape| {
         let mut history = History::new();
         history.generate(spine, shape.clone());
@@ -4133,7 +4129,7 @@ fn cornered_lines(
             .fold(0.0_f64, f64::max);
         far / turn.sin().max(1e-3)
     };
-    let mut result: Option<Shape> = None;
+    let mut joined: Vec<Shape> = Vec::new();
     for (i, &(_, v)) in legs.iter().enumerate() {
         let d = unit(v);
         let (mut before, mut after) = (0.0, 0.0);
@@ -4178,11 +4174,9 @@ fn cornered_lines(
             let bend = ogeom_algo::make_revolution(model, &outer, axis, angle, tol)?.shape;
             piece = ogeom_bool::fuse(model, &piece, &bend, tol)?.shape;
         }
-        result = Some(match result {
-            None => piece,
-            Some(held) => ogeom_bool::fuse(model, &held, &piece, tol)?.shape,
-        });
+        joined.push(piece);
     }
+    let result = fuse_in_order(model, joined, tol)?;
     let Some(shape) = result else {
         ogeom_bail!(Construction, "the spine has no leg");
     };
@@ -5830,7 +5824,7 @@ fn mitred_pieces(
         blocks.push(block);
     }
 
-    let mut result: Option<Shape> = None;
+    let mut joined: Vec<Shape> = Vec::new();
     for (run, start, end) in pieces {
         let mut wire_edges: Vec<Shape> = Vec::new();
         let traversal = |model: &Model, e: usize, at_start: bool| -> OgeomResult<Shape> {
@@ -5891,11 +5885,9 @@ fn mitred_pieces(
         if let Some(i) = end {
             piece = ogeom_bool::cut(model, &piece, &blocks[i], tol)?.shape;
         }
-        result = Some(match result {
-            None => piece,
-            Some(held) => ogeom_bool::fuse(model, &held, &piece, tol)?.shape,
-        });
+        joined.push(piece);
     }
+    let result = fuse_in_order(model, joined, tol)?;
     let Some(shape) = result else {
         ogeom_bail!(Construction, "the spine produced no piece to sweep");
     };
@@ -6574,10 +6566,9 @@ pub fn make_evolved(
     // *same* placed profile, which is the coincident-face case the boolean
     // resolves by identifying it rather than by probing across it.
     let mut history = History::new();
-    let mut shape = pieces[0].clone();
-    for piece in &pieces[1..] {
-        shape = ogeom_bool::fuse(model, &shape, piece, tol)?.shape;
-    }
+    let Some(shape) = fuse_in_order(model, pieces, tol)? else {
+        ogeom_bail!(Construction, "the spine produced no piece to sweep");
+    };
     history.generate(spine, shape.clone());
     history.generate(profile, shape.clone());
     Ok(Built::new(shape, history))
@@ -6925,4 +6916,29 @@ fn corner_piece(
              that wedge"
         ),
     }
+}
+
+/// Pieces laid end to end, fused: pairs of neighbours first, then pairs of
+/// those, so each fuse joins two runs of about equal size where one at a
+/// time fused every piece onto everything before it, redoing the whole run
+/// so far each time. Neighbours stay neighbours, so every fuse still meets
+/// its partner across the shared section. `None` for no pieces.
+fn fuse_in_order(
+    model: &mut Model,
+    pieces: Vec<Shape>,
+    tol: Tolerances,
+) -> OgeomResult<Option<Shape>> {
+    let mut runs = pieces;
+    while runs.len() > 1 {
+        let mut next = Vec::with_capacity(runs.len().div_ceil(2));
+        let mut pending = runs.into_iter();
+        while let Some(first) = pending.next() {
+            match pending.next() {
+                Some(second) => next.push(ogeom_bool::fuse(model, &first, &second, tol)?.shape),
+                None => next.push(first),
+            }
+        }
+        runs = next;
+    }
+    Ok(runs.pop())
 }

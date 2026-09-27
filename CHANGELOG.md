@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **`cells` runs one boolean, not three:** the three cells are three
+  choices of the same classified pieces. Pipes and evolved solids fuse
+  their pieces in a balanced order, neighbours with neighbours, instead of
+  each onto everything before it.
+
 - **The intersectors' small Newton solves allocate nothing.** Curve
   crossings, curve and surface extrema, curve-surface polishing and the
   marcher's contact solve run on `newton_system_fixed`, the same damped
