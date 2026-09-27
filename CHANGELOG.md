@@ -13,6 +13,10 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Revolutions up to a face (#73).** `make_revolution_until` turns each
+  point of a profile about its axis until its circle first meets a limit
+  face's surface, refused by name where a circle never meets it or meets
+  it only past half a turn.
 - **Arc joins for thick solids (#75).** `make_thick_solid_with` takes a
   `Join`: the walls extended to meet, or rounded about each edge convex on
   the side they grow toward, a cylinder of the wall's thickness about the

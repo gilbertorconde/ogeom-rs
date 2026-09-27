@@ -3424,6 +3424,132 @@ pub fn make_helical_sweep(
     Ok(Built::new(solid, history))
 }
 
+/// Revolve `profile` (a planar face) about `axis`, each point turning the
+/// right-handed way about it until its circle first meets the surface of
+/// `limit`, a face taken as its whole surface the way
+/// [`make_half_space`](ogeom_algo::make_half_space) takes it: the revolution
+/// "up to face", stopping on the target at a different angle for each
+/// point.
+///
+/// Built as the half turn of the profile kept on the profile's side of the
+/// limit: exact wherever every circle meets the surface within that half
+/// turn and does not come back to the profile's side before it ends.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// profile is not a planar face whose plane holds the axis, a point's
+/// circle never meets the surface, or one meets it only past half a turn or
+/// crosses it back within the half turn; as the revolution, the half space
+/// and the boolean otherwise.
+pub fn make_revolution_until(
+    model: &mut Model,
+    profile: &Shape,
+    axis: ogeom_math::Axis,
+    limit: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    use ogeom_geom::Surface as _;
+    if model.kind_of(profile)? != ShapeType::Face {
+        ogeom_bail!(
+            Construction,
+            "a revolution up to a face revolves a planar face"
+        );
+    }
+    if model.kind_of(limit)? != ShapeType::Face {
+        ogeom_bail!(Construction, "a revolution stops on a face");
+    }
+    let Some(plane) = ogeom_algo::find_plane(model, profile, tol)? else {
+        ogeom_bail!(
+            Construction,
+            "a revolution up to a face revolves a planar face"
+        );
+    };
+    let z = axis.direction.vector();
+    if plane.normal().vector().dot(z).abs() > tol.angular()
+        || plane.distance_to(axis.location) > tol.confusion() * 100.0
+    {
+        ogeom_bail!(
+            Construction,
+            "the profile's plane does not hold the axis; a revolution up to a \
+             face turns a profile about an axis in its own plane"
+        );
+    }
+    // The limit's surface, placed, and which side of it a point stands.
+    let (surface, flip) = {
+        let Some(data) = model.node(limit).and_then(|n| n.data().as_face()) else {
+            ogeom_bail!(Construction, "the limit holds no face data");
+        };
+        let Some(surface) = model.geometry().surface(data.surface) else {
+            ogeom_bail!(Dangling, "the limit's surface is not in this model");
+        };
+        (
+            surface
+                .clone()
+                .transformed(&limit.transform(model.datums())?, tol)?,
+            limit.orientation() == ogeom_topo::Orientation::Reversed,
+        )
+    };
+    let side = |p: Point| -> OgeomResult<f64> {
+        let foot = ogeom_algo::project_on_surface(&surface, p, 16, tol)?;
+        let (u, v) = foot.parameters;
+        let n = surface.normal_at(u, v, tol)?.vector();
+        let s = (p - foot.point).dot(n);
+        Ok(if flip { -s } else { s })
+    };
+    // Every boundary point's circle: its first meeting within half a turn,
+    // and no return to the profile's side before the half turn ends.
+    let turn_of = |p: Point, theta: f64| Transform::rotation(axis, theta).apply(p);
+    let mut rings = Vec::new();
+    for wire in explore(model, profile, Filter::OfType(ShapeType::Wire))? {
+        rings.extend(sample_wire(model, &wire, 64, tol)?);
+    }
+    let start_side = side(centre_of(model, profile, tol)?)?.signum();
+    const STEPS: u32 = 360;
+    for p in &rings {
+        let mut met: Option<f64> = None;
+        for k in 1..=STEPS {
+            let theta = core::f64::consts::TAU * f64::from(k) / f64::from(STEPS);
+            let here = side(turn_of(*p, theta))?;
+            match met {
+                None if here.signum() != start_side && here.abs() > tol.confusion() => {
+                    met = Some(theta);
+                }
+                Some(first)
+                    if theta <= core::f64::consts::PI
+                        && here.signum() == start_side
+                        && here.abs() > tol.confusion() =>
+                {
+                    ogeom_bail!(
+                        Construction,
+                        "the circle through {p:?} meets the limit at {first} and \
+                         crosses back within half a turn; a revolution up to it \
+                         is not built there"
+                    );
+                }
+                _ => {}
+            }
+        }
+        match met {
+            None => ogeom_bail!(
+                Construction,
+                "the circle through {p:?} never meets the limit's surface"
+            ),
+            Some(first) if first > core::f64::consts::PI => ogeom_bail!(
+                Construction,
+                "the circle through {p:?} meets the limit only past half a turn"
+            ),
+            _ => {}
+        }
+    }
+    let half = ogeom_algo::make_revolution(model, profile, axis, core::f64::consts::PI, tol)?;
+    let inside = centre_of(model, profile, tol)?;
+    let bound = ogeom_algo::make_half_space(model, limit, inside, tol)?.shape;
+    let mut built = ogeom_bool::common(model, &half.shape, &bound, tol)?;
+    built.history.generate(profile, built.shape.clone());
+    Ok(built)
+}
+
 /// The centroid of a face's outer ring's samples.
 fn centre_of(model: &Model, profile: &Shape, tol: Tolerances) -> OgeomResult<Point> {
     let Some(wire) = explore(model, profile, Filter::OfType(ShapeType::Wire))?
