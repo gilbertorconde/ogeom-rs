@@ -4250,6 +4250,7 @@ fn densified(
     spine: &Shape,
     stations: Vec<SpineStation>,
     law: &PipeLaw<'_>,
+    tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Vec<SpineStation>> {
     const MOST: f64 = 0.05;
@@ -4264,7 +4265,7 @@ fn densified(
     }
     let mut stations = stations;
     for _ in 0..12 {
-        let normals = law_normals(model, &stations, law, tol)?;
+        let normals = law_normals(model, &stations, law, tolerance, tol)?;
         let mut out: Vec<SpineStation> = Vec::with_capacity(stations.len() * 2);
         let mut added = false;
         for i in 0..stations.len() {
@@ -4391,7 +4392,7 @@ fn law_loft(
             "an auxiliary or binormal law sweeps a profile with no hole"
         );
     }
-    let normals = law_normals(model, stations, law, tol)?;
+    let normals = law_normals(model, stations, law, tolerance, tol)?;
     let start = station_frame(&stations[0], normals[0], tol)?;
     let mut sections: Vec<Shape> = Vec::with_capacity(stations.len());
     let mut last: Option<Point> = None;
@@ -4451,7 +4452,7 @@ pub fn make_pipe_sections(
     };
     let stations = shell_stations(model, spine, tol)?;
     let stations = evenly(model, spine, stations, 24, false, tol)?;
-    let normals = law_normals(model, &stations, &law, tol)?;
+    let normals = law_normals(model, &stations, &law, tolerance, tol)?;
     // Length run along the spine at each station.
     let mut run = vec![0.0_f64];
     for pair in stations.windows(2) {
@@ -4653,10 +4654,15 @@ fn evenly_by(
 }
 
 /// The frame normals a law gives at each station.
+///
+/// An auxiliary guide ending within `reach` of a station's plane (a
+/// sketch's end in single precision) is taken to cross it, carried on
+/// along its end tangent.
 fn law_normals(
     model: &Model,
     stations: &[SpineStation],
     law: &PipeLaw<'_>,
+    reach: f64,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Vector>> {
     match law {
@@ -4729,6 +4735,35 @@ fn law_normals(
                         prev = here;
                     }
                 }
+                if best.is_none() {
+                    let near = last.unwrap_or(p);
+                    for (curve, range) in &curves {
+                        for u in [range.0, range.1] {
+                            let q = curve.point_at(u, tol)?;
+                            let h = (q - p).dot(t);
+                            if h.abs() > reach {
+                                continue;
+                            }
+                            let d = curve.d1_at(u, tol)?;
+                            let along = d.dot(t);
+                            let onto = if along.abs() > tol.angular() * d.magnitude() {
+                                q - d * (h / along)
+                            } else {
+                                q
+                            };
+                            // A tangent nearly in the plane carries the end
+                            // far; the end itself is then as good.
+                            let q = if onto.distance(q) <= 2.0 * reach {
+                                onto
+                            } else {
+                                q
+                            };
+                            if best.is_none_or(|b| q.distance(near) < b.distance(near)) {
+                                best = Some(q);
+                            }
+                        }
+                    }
+                }
                 let Some(q) = best else {
                     ogeom_bail!(
                         Construction,
@@ -4775,7 +4810,7 @@ fn pipe_shell_law(
     } else {
         // As many stations as the law's turning asks, spread evenly: the
         // skin takes its sections at even steps of its own parameter.
-        let wanted = densified(model, spine, stations.clone(), law, tol)?.len();
+        let wanted = densified(model, spine, stations.clone(), law, tolerance, tol)?.len();
         // Shared out along the spine by length, so the spacing is the same
         // on every edge: the skin steps evenly along its whole run.
         let mut lengths: Vec<f64> = Vec::new();
@@ -4848,7 +4883,7 @@ fn pipe_shell_law(
              spine with the rotation-minimizing frame"
         );
     }
-    let normals = law_normals(model, &stations, law, tol)?;
+    let normals = law_normals(model, &stations, law, tolerance, tol)?;
     // A ring's frame must come home: carry once more across the wrap
     // corner, read the twist between departure and return, and spread it
     // along the arc: the smooth loop's own reconciliation, ending at a

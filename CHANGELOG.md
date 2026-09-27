@@ -206,6 +206,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **An auxiliary pipe guide ending a hair short of the last station** (a
+  sketch's end in single precision) is carried along its end tangent to the
+  station's plane when within the sweep's tolerance, instead of refused
+  (#85).
+
 - **`check` names each part too tight for its bound once.** A vertex
   reached through both of a face's edges was reported twice.
 

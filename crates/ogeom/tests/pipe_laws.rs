@@ -144,6 +144,47 @@ fn an_auxiliary_spine_turns_the_section_toward_it() {
     assert!((reach - 2.0_f64.sqrt()).abs() < 1e-2, "reaches x {reach}");
 }
 
+/// A guide ending a few micrometres short of the last station's plane, as
+/// single-precision sketch data does, is taken to cross it at its end.
+#[test]
+fn an_auxiliary_spine_ending_a_hair_short_still_turns_the_section() {
+    let mut model = Model::new();
+    let profile = square(&mut model);
+    let spine = make_polygon(
+        &mut model,
+        &[Point::ORIGIN, Point::new(0.0, 20.0, 0.0)],
+        false,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let guide = make_polygon(
+        &mut model,
+        &[
+            Point::new(5.0, 0.0, 0.0),
+            Point::new(0.0, 20.0 - 3.1e-6, 5.0),
+        ],
+        false,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let pipe = make_pipe_shell_with(
+        &mut model,
+        &profile,
+        &spine,
+        &PipeLaw::Auxiliary { guide: &guide },
+        PipeCorners::Mitre,
+        1e-3,
+        T,
+    )
+    .unwrap()
+    .shape;
+    assert!(ogeom::algo::check(&model, &pipe, T).unwrap().is_valid());
+    let v = volume(&model, &pipe);
+    assert!((v - 80.0).abs() < 80.0 * 5e-3, "{v}");
+}
+
 fn highest_on_edges(model: &Model, shape: &Shape) -> f64 {
     use ogeom::geom::Curve3d as _;
     let mut best = f64::NEG_INFINITY;
