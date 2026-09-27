@@ -151,25 +151,33 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
     // document colours, plus product colours carried by their solids.
     let mut styled = Vec::new();
     let node_colours: HashMap<_, _> = document.colours().collect();
-    for (node, step_id) in writer.written_nodes.clone() {
+    // The written entities by node, each list in the order they were
+    // written: a coloured product finds its own without walking them all.
+    let written = std::mem::take(&mut writer.written_nodes);
+    let mut by_node: HashMap<ogeom_topo::TShapeId, Vec<u64>> = HashMap::new();
+    for &(node, step_id) in &written {
+        by_node.entry(node).or_default().push(step_id);
+    }
+    for &(node, step_id) in &written {
         if let Some(colour) = node_colours.get(&node) {
             styled.push(writer.styled_item(step_id, *colour));
         }
     }
-    for (id, product) in document.products() {
+    for (_, product) in document.products() {
         let Some(colour) = product.colour else {
             continue;
         };
         let ProductKind::Part { shape } = &product.kind else {
             continue;
         };
-        let _ = id;
-        for (node, step_id) in writer.written_nodes.clone() {
-            if node == shape.node() && !node_colours.contains_key(&node) {
-                styled.push(writer.styled_item(step_id, colour));
-            }
+        if node_colours.contains_key(&shape.node()) {
+            continue;
+        }
+        for &step_id in by_node.get(&shape.node()).map_or(&[][..], Vec::as_slice) {
+            styled.push(writer.styled_item(step_id, colour));
         }
     }
+    writer.written_nodes = written;
     if !styled.is_empty() {
         let list = styled
             .iter()

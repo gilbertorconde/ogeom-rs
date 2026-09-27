@@ -330,7 +330,7 @@ struct Reader<'a> {
 /// this long is a cycle or a hostile file.
 const MOST_NESTING: u32 = 64;
 
-impl Reader<'_> {
+impl<'a> Reader<'a> {
     /// Run a builder one level deeper, refusing past [`MOST_NESTING`].
     fn nested<T>(&mut self, build: impl FnOnce(&mut Self) -> OgeomResult<T>) -> OgeomResult<T> {
         if self.depth >= MOST_NESTING {
@@ -346,9 +346,12 @@ impl Reader<'_> {
         built
     }
 
-    fn instance(&mut self, id: u64) -> OgeomResult<&'_ Instance> {
+    /// The instance behind an id. Borrowed from the exchange, not from the
+    /// reader, so its arguments can be read while the reader builds.
+    fn instance(&mut self, id: u64) -> OgeomResult<&'a Instance> {
         self.visited.mark(id);
-        self.exchange.data.get(&id).ok_or_else(|| {
+        let exchange = self.exchange;
+        exchange.data.get(&id).ok_or_else(|| {
             ogeom_core::ogeom_err!(
                 Construction,
                 "the file references #{id}, which does not exist"
@@ -359,13 +362,13 @@ impl Reader<'_> {
     /// A face's arguments (name, bounds, surface, sense), whether the file
     /// wrote it as the `ADVANCED_FACE` every modern writer uses or as the
     /// plain `FACE_SURFACE` it specialises, which carries the same four.
-    fn face_args(&mut self, id: u64) -> OgeomResult<Vec<Arg>> {
+    fn face_args(&mut self, id: u64) -> OgeomResult<&'a [Arg]> {
         let instance = self.instance(id)?;
         if let Some(args) = instance
             .part("ADVANCED_FACE")
             .or_else(|| instance.part("FACE_SURFACE"))
         {
-            return Ok(args.to_vec());
+            return Ok(args);
         }
         ogeom_bail!(
             Construction,
@@ -374,7 +377,7 @@ impl Reader<'_> {
         );
     }
 
-    fn args(&mut self, id: u64, keyword: &str) -> OgeomResult<Vec<Arg>> {
+    fn args(&mut self, id: u64, keyword: &str) -> OgeomResult<&'a [Arg]> {
         let instance = self.instance(id)?;
         let Some(args) = instance.part(keyword) else {
             ogeom_bail!(
@@ -383,7 +386,7 @@ impl Reader<'_> {
                 instance.keyword()
             );
         };
-        Ok(args.to_vec())
+        Ok(args)
     }
 
     // --- units ---------------------------------------------------------------
@@ -599,12 +602,11 @@ impl Reader<'_> {
         let (keyword, args) = {
             let instance = self.instance(id)?;
             (
-                instance.keyword().to_owned(),
+                instance.keyword(),
                 instance
                     .parts
                     .first()
-                    .map(|(_, a)| a.clone())
-                    .unwrap_or_default(),
+                    .map_or(&[][..], |(_, a)| a.as_slice()),
             )
         };
         let scale = self.report.scale_mm;
@@ -616,13 +618,9 @@ impl Reader<'_> {
             let (base, knots_part, weights) = {
                 let instance = self.instance(id)?;
                 (
-                    instance.part("B_SPLINE_SURFACE").map(<[Arg]>::to_vec),
-                    instance
-                        .part("B_SPLINE_SURFACE_WITH_KNOTS")
-                        .map(<[Arg]>::to_vec),
-                    instance
-                        .part("RATIONAL_B_SPLINE_SURFACE")
-                        .map(<[Arg]>::to_vec),
+                    instance.part("B_SPLINE_SURFACE"),
+                    instance.part("B_SPLINE_SURFACE_WITH_KNOTS"),
+                    instance.part("RATIONAL_B_SPLINE_SURFACE"),
                 )
             };
             if let Some(kp) = knots_part {
@@ -660,10 +658,8 @@ impl Reader<'_> {
             let (base, weights, form) = {
                 let instance = self.instance(id)?;
                 (
-                    instance.part("B_SPLINE_SURFACE").map(<[Arg]>::to_vec),
-                    instance
-                        .part("RATIONAL_B_SPLINE_SURFACE")
-                        .map(<[Arg]>::to_vec),
+                    instance.part("B_SPLINE_SURFACE"),
+                    instance.part("RATIONAL_B_SPLINE_SURFACE"),
                     ["BEZIER_SURFACE", "UNIFORM_SURFACE", "QUASI_UNIFORM_SURFACE"]
                         .into_iter()
                         .find(|k| instance.part(k).is_some()),
@@ -697,9 +693,9 @@ impl Reader<'_> {
                     .map(Some);
             }
         }
-        let out = match keyword.as_str() {
+        let out = match keyword {
             "PLANE" => {
-                let frame = self.frame(ref_at(&args, 1))?;
+                let frame = self.frame(ref_at(args, 1))?;
                 Some(
                     PlaneSurface::over(
                         Plane::new(frame),
@@ -710,8 +706,8 @@ impl Reader<'_> {
                 )
             }
             "CYLINDRICAL_SURFACE" => {
-                let frame = self.frame(ref_at(&args, 1))?;
-                let radius = radius_arg(&args, 2).unwrap_or(0.0) * scale;
+                let frame = self.frame(ref_at(args, 1))?;
+                let radius = radius_arg(args, 2).unwrap_or(0.0) * scale;
                 Some(
                     CylinderSurface::new(
                         Cylinder::new(frame, radius, self.tol)?,
@@ -721,9 +717,9 @@ impl Reader<'_> {
                 )
             }
             "CONICAL_SURFACE" => {
-                let frame = self.frame(ref_at(&args, 1))?;
-                let radius = radius_arg(&args, 2).unwrap_or(0.0) * scale;
-                let angle = radius_arg(&args, 3).unwrap_or(0.0) * self.angle_scale;
+                let frame = self.frame(ref_at(args, 1))?;
+                let radius = radius_arg(args, 2).unwrap_or(0.0) * scale;
+                let angle = radius_arg(args, 3).unwrap_or(0.0) * self.angle_scale;
                 Some(
                     ConeSurface::new(
                         Cone::new(frame, radius, angle, self.tol)?,
@@ -733,14 +729,14 @@ impl Reader<'_> {
                 )
             }
             "SPHERICAL_SURFACE" => {
-                let frame = self.frame(ref_at(&args, 1))?;
-                let radius = radius_arg(&args, 2).unwrap_or(0.0) * scale;
+                let frame = self.frame(ref_at(args, 1))?;
+                let radius = radius_arg(args, 2).unwrap_or(0.0) * scale;
                 Some(SphereSurface::new(Sphere::new(frame, radius, self.tol)?).into())
             }
             "TOROIDAL_SURFACE" => {
-                let frame = self.frame(ref_at(&args, 1))?;
-                let major = radius_arg(&args, 2).unwrap_or(0.0) * scale;
-                let minor = radius_arg(&args, 3).unwrap_or(0.0) * scale;
+                let frame = self.frame(ref_at(args, 1))?;
+                let major = radius_arg(args, 2).unwrap_or(0.0) * scale;
+                let minor = radius_arg(args, 3).unwrap_or(0.0) * scale;
                 Some(TorusSurface::new(Torus::new(frame, major, minor, self.tol)?).into())
             }
             "SURFACE_OF_LINEAR_EXTRUSION" => {
@@ -751,13 +747,13 @@ impl Reader<'_> {
                 // plane they are, exact and known everywhere downstream.
                 // Anything else sweeps as itself, over a window the face's
                 // own edges then widen to fit.
-                let Some(curve) = self.curve(ref_at(&args, 1))? else {
+                let Some(curve) = self.curve(ref_at(args, 1))? else {
                     self.report.warnings.push(format!(
                         "#{id}: an extrusion's swept curve is not read; its face is skipped"
                     ));
                     return Ok(None);
                 };
-                let vector = self.args(ref_at(&args, 2), "VECTOR")?;
+                let vector = self.args(ref_at(args, 2), "VECTOR")?;
                 let direction = self.direction(vector[1].reference().unwrap_or(0))?;
                 // Parallel to the file's own precision in directions: a
                 // writer states an axis to nine digits, a whisker off the
@@ -800,13 +796,13 @@ impl Reader<'_> {
                 }
             }
             "SURFACE_OF_REVOLUTION" => {
-                let Some(curve) = self.curve(ref_at(&args, 1))? else {
+                let Some(curve) = self.curve(ref_at(args, 1))? else {
                     self.report.warnings.push(format!(
                         "#{id}: a revolution's swept curve is not read; its face is skipped"
                     ));
                     return Ok(None);
                 };
-                let placement = self.args(ref_at(&args, 2), "AXIS1_PLACEMENT")?;
+                let placement = self.args(ref_at(args, 2), "AXIS1_PLACEMENT")?;
                 let location = self.point(placement[1].reference().unwrap_or(0))?;
                 let direction = match placement.get(2).and_then(Arg::reference) {
                     Some(r) => self.direction(r)?,
@@ -825,7 +821,7 @@ impl Reader<'_> {
                 )
             }
             "OFFSET_SURFACE" => {
-                let Some(basis) = self.surface(ref_at(&args, 1))? else {
+                let Some(basis) = self.surface(ref_at(args, 1))? else {
                     return Ok(None);
                 };
                 let distance = args.get(2).and_then(Arg::number).unwrap_or(0.0) * scale;
@@ -843,20 +839,20 @@ impl Reader<'_> {
             // A face's own edges bound it; the window these name is the
             // basis's, restated.
             "RECTANGULAR_TRIMMED_SURFACE" | "CURVE_BOUNDED_SURFACE" => {
-                self.surface(ref_at(&args, 1))?
+                self.surface(ref_at(args, 1))?
             }
             "DEGENERATE_TOROIDAL_SURFACE" => {
-                let frame = self.frame(ref_at(&args, 1))?;
-                let major = radius_arg(&args, 2).unwrap_or(0.0) * scale;
-                let minor = radius_arg(&args, 3).unwrap_or(0.0) * scale;
+                let frame = self.frame(ref_at(args, 1))?;
+                let major = radius_arg(args, 2).unwrap_or(0.0) * scale;
+                let minor = radius_arg(args, 3).unwrap_or(0.0) * scale;
                 Some(TorusSurface::new(Torus::new(frame, major, minor, self.tol)?).into())
             }
-            "RECTANGULAR_COMPOSITE_SURFACE" => Some(self.composite_surface(id, &args)?),
+            "RECTANGULAR_COMPOSITE_SURFACE" => Some(self.composite_surface(id, args)?),
             "SURFACE_REPLICA" => {
-                let Some(parent) = self.surface(ref_at(&args, 1))? else {
+                let Some(parent) = self.surface(ref_at(args, 1))? else {
                     return Ok(None);
                 };
-                let motion = self.transformation_operator(ref_at(&args, 2))?;
+                let motion = self.transformation_operator(ref_at(args, 2))?;
                 Some(parent.transformed(&motion, self.tol)?)
             }
             other => {
@@ -884,7 +880,7 @@ impl Reader<'_> {
         degrees: (Option<Arg>, Option<Arg>),
         grid_arg: Option<Arg>,
         mults_knots: (Option<Arg>, Option<Arg>, Option<Arg>, Option<Arg>),
-        weights: Option<Vec<Arg>>,
+        weights: Option<&[Arg]>,
         form: Option<&str>,
     ) -> OgeomResult<SurfaceGeometry> {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -959,12 +955,11 @@ impl Reader<'_> {
         let (keyword, args) = {
             let instance = self.instance(id)?;
             (
-                instance.keyword().to_owned(),
+                instance.keyword(),
                 instance
                     .parts
                     .first()
-                    .map(|(_, a)| a.clone())
-                    .unwrap_or_default(),
+                    .map_or(&[][..], |(_, a)| a.as_slice()),
             )
         };
         let scale = self.report.scale_mm;
@@ -972,13 +967,9 @@ impl Reader<'_> {
             let (base, kp, weights) = {
                 let instance = self.instance(id)?;
                 (
-                    instance.part("B_SPLINE_CURVE").map(<[Arg]>::to_vec),
-                    instance
-                        .part("B_SPLINE_CURVE_WITH_KNOTS")
-                        .map(<[Arg]>::to_vec),
-                    instance
-                        .part("RATIONAL_B_SPLINE_CURVE")
-                        .map(<[Arg]>::to_vec),
+                    instance.part("B_SPLINE_CURVE"),
+                    instance.part("B_SPLINE_CURVE_WITH_KNOTS"),
+                    instance.part("RATIONAL_B_SPLINE_CURVE"),
                 )
             };
             // A complex instance: the base part carries degree and control
@@ -1025,13 +1016,13 @@ impl Reader<'_> {
                 return Ok(Some(BSplineCurve::rational(knots, weighted)?.into()));
             }
         }
-        let out: Option<Curve> = match keyword.as_str() {
+        let out: Option<Curve> = match keyword {
             "LINE" => {
-                let through = self.point(ref_at(&args, 1))?;
+                let through = self.point(ref_at(args, 1))?;
                 // The vector's magnitude scales STEP's parameter; ranges here
                 // are re-derived from vertex geometry, so only the direction
                 // matters.
-                let vector = self.args(ref_at(&args, 2), "VECTOR")?;
+                let vector = self.args(ref_at(args, 2), "VECTOR")?;
                 let direction = self.direction(vector[1].reference().unwrap_or(0))?;
                 Some(
                     LineCurve::new(Axis {
@@ -1042,12 +1033,12 @@ impl Reader<'_> {
                 )
             }
             "CIRCLE" => {
-                let frame = self.frame(ref_at(&args, 1))?;
+                let frame = self.frame(ref_at(args, 1))?;
                 let radius = args.get(2).and_then(Arg::number).unwrap_or(0.0) * scale;
                 Some(CircleCurve::new(Circle::new(frame, radius, self.tol)?).into())
             }
             "ELLIPSE" => {
-                let frame = self.frame(ref_at(&args, 1))?;
+                let frame = self.frame(ref_at(args, 1))?;
                 let a = args.get(2).and_then(Arg::number).unwrap_or(0.0) * scale;
                 let b = args.get(3).and_then(Arg::number).unwrap_or(0.0) * scale;
                 Some(EllipseCurve::new(Ellipse::new(frame, a, b, self.tol)?).into())
@@ -1088,11 +1079,11 @@ impl Reader<'_> {
                     .filter_map(Arg::reference)
                     .map(|r| self.point(r))
                     .collect::<OgeomResult<_>>()?;
-                let knots = implied_knots(&keyword, degree, control.len());
+                let knots = implied_knots(keyword, degree, control.len());
                 Some(BSplineCurve::new(KnotVector::new(knots, degree)?, control, self.tol)?.into())
             }
             "HYPERBOLA" => {
-                let frame = self.frame(ref_at(&args, 1))?;
+                let frame = self.frame(ref_at(args, 1))?;
                 let a = args.get(2).and_then(Arg::number).unwrap_or(0.0) * scale;
                 let b = args.get(3).and_then(Arg::number).unwrap_or(0.0) * scale;
                 // The branch's reach in its own parameter: cosh 20 carries a
@@ -1100,7 +1091,7 @@ impl Reader<'_> {
                 Some(HyperbolaCurve::new(Hyperbola::new(frame, a, b, self.tol)?, 20.0)?.into())
             }
             "PARABOLA" => {
-                let frame = self.frame(ref_at(&args, 1))?;
+                let frame = self.frame(ref_at(args, 1))?;
                 let focal = args.get(2).and_then(Arg::number).unwrap_or(0.0) * scale;
                 Some(
                     ParabolaCurve::new(Parabola::new(frame, focal, self.tol)?, SURFACE_EXTENT)?
@@ -1388,8 +1379,8 @@ impl Reader<'_> {
         match keyword {
             "LINE" => {
                 let args = self.args(basis_id, "LINE")?;
-                let through = self.point(ref_at(&args, 1))?;
-                let vector = self.args(ref_at(&args, 2), "VECTOR")?;
+                let through = self.point(ref_at(args, 1))?;
+                let vector = self.args(ref_at(args, 2), "VECTOR")?;
                 let direction = self.direction(vector[1].reference().unwrap_or(0))?;
                 let magnitude = vector.get(2).and_then(Arg::number).unwrap_or(1.0);
                 Ok(through + direction.vector() * (v * magnitude * self.report.scale_mm))
@@ -1452,7 +1443,7 @@ impl Reader<'_> {
             return Ok(shape.clone());
         }
         let args = self.args(id, "VERTEX_POINT")?;
-        let point = self.point(ref_at(&args, 1))?;
+        let point = self.point(ref_at(args, 1))?;
         let shape = make_vertex(&mut self.model, point).shape;
         self.vertices.insert(id, shape.clone());
         Ok(shape)
@@ -1468,20 +1459,20 @@ impl Reader<'_> {
             return Ok(Some(found.clone()));
         }
         let args = self.args(id, "EDGE_CURVE")?;
-        let v1 = ref_at(&args, 1);
-        let v2 = ref_at(&args, 2);
-        let Some(mut curve) = self.curve(ref_at(&args, 3))? else {
+        let v1 = ref_at(args, 1);
+        let v2 = ref_at(args, 2);
+        let Some(mut curve) = self.curve(ref_at(args, 3))? else {
             return Ok(None);
         };
         let same_sense = !args.get(4).is_some_and(|a| a.is_enum("F"));
 
         let p1 = {
             let vargs = self.args(v1, "VERTEX_POINT")?;
-            self.point(ref_at(&vargs, 1))?
+            self.point(ref_at(vargs, 1))?
         };
         let p2 = {
             let vargs = self.args(v2, "VERTEX_POINT")?;
-            self.point(ref_at(&vargs, 1))?
+            self.point(ref_at(vargs, 1))?
         };
 
         // The edge is built along the curve's own parameter; a STEP edge
@@ -1648,7 +1639,7 @@ impl Reader<'_> {
             .iter()
             .filter_map(Arg::reference)
             .collect();
-        let Some(surface) = self.surface(ref_at(&args, 2))? else {
+        let Some(surface) = self.surface(ref_at(args, 2))? else {
             return Ok(None);
         };
         let face_forward = !args.get(3).is_some_and(|a| a.is_enum("F"));
@@ -1688,7 +1679,7 @@ impl Reader<'_> {
             let (loop_id, bound_forward) = self.bound_args(bound)?;
             if let Some(vertex_loop) = {
                 let instance = self.instance(loop_id)?;
-                instance.part("VERTEX_LOOP").map(<[Arg]>::to_vec)
+                instance.part("VERTEX_LOOP")
             } {
                 // A loop of one vertex: a pole or an apex. It has no edges,
                 // but it still bounds the face in parameter space, as a
@@ -1697,7 +1688,7 @@ impl Reader<'_> {
                 // are built.
                 let vertex_id = vertex_loop.get(1).and_then(Arg::reference).unwrap_or(0);
                 let vargs = self.args(vertex_id, "VERTEX_POINT")?;
-                let at = self.point(ref_at(&vargs, 1))?;
+                let at = self.point(ref_at(vargs, 1))?;
                 let vertex = self.vertex(vertex_id)?;
                 let projection = ogeom_algo::project_on_surface(&surface, at, 32, self.tol)?;
                 let ((ua, ub), _) = surface.domain();
@@ -2528,10 +2519,7 @@ impl Reader<'_> {
 
     fn shell_at(&mut self, shell_id: u64) -> OgeomResult<Option<Shape>> {
         let shell_instance = self.instance(shell_id)?;
-        if let Some(oriented) = shell_instance
-            .part("ORIENTED_CLOSED_SHELL")
-            .map(<[Arg]>::to_vec)
-        {
+        if let Some(oriented) = shell_instance.part("ORIENTED_CLOSED_SHELL") {
             let Some(base) = oriented.get(2).and_then(Arg::reference) else {
                 ogeom_bail!(Construction, "#{shell_id}: an oriented shell names none");
             };
@@ -2779,7 +2767,6 @@ impl Reader<'_> {
             self.instance(formation)
                 .ok()?
                 .part(keyword)
-                .map(<[Arg]>::to_vec)
                 .or_else(|| self.args(formation, keyword).ok())?
                 .get(2)
                 .and_then(Arg::reference)
@@ -3598,7 +3585,7 @@ impl Reader<'_> {
                 .and_then(|args| args.first().and_then(Arg::list))
                 .map(|list| list.iter().filter_map(Arg::reference).collect())
                 .unwrap_or_default();
-            let curve_set = instance.part("TESSELLATED_CURVE_SET").map(<[Arg]>::to_vec);
+            let curve_set = instance.part("TESSELLATED_CURVE_SET");
             let placement = instance
                 .part("REPOSITIONED_TESSELLATED_ITEM")
                 .and_then(|args| args.first().and_then(Arg::reference));
@@ -3741,7 +3728,6 @@ impl Reader<'_> {
             instance
                 .part("DIMENSIONAL_SIZE")
                 .or_else(|| instance.part("ANGULAR_SIZE"))
-                .map(<[Arg]>::to_vec)
         };
         if let Some(args) = size {
             let name = match args.get(1) {
@@ -3758,7 +3744,6 @@ impl Reader<'_> {
             instance
                 .part("DIMENSIONAL_LOCATION")
                 .or_else(|| instance.part("ANGULAR_LOCATION"))
-                .map(<[Arg]>::to_vec)
         };
         if let Some(args) = location {
             let name = match args.first() {

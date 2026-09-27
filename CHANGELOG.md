@@ -13,6 +13,10 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **The STEP reader borrows its arguments instead of copying them,** and
+  the writer finds a coloured product's entities by node instead of
+  scanning every written entity per product.
+
 - **Projection onto a plane, cylinder or sphere starts from its closed
   form** where the foot lies in the window, instead of a 33 by 33 grid.
   `SolidMesh` meshes a solid once to classify many points; the fillet's
