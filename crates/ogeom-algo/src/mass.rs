@@ -824,7 +824,7 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
 /// An instanced solid says nothing here: one edge stands in several places
 /// and nothing in a name tells them apart, so its flags are taken as they
 /// come, which is what they were before there was anything to ask.
-fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<bool> {
+pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<bool> {
     use ogeom_geom::Curve2d as _;
     use ogeom_geom::Surface as _;
     let placed_at = ogeom_topo::Location::default();

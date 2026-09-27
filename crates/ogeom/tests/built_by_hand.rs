@@ -117,10 +117,11 @@ fn a_hand_built_prism_closes_and_measures_its_closed_form() {
         .collect();
 
     let mut faces = Vec::with_capacity(SIDES + 2);
+    // The bottom faces down, out of the prism, as the top faces up.
     faces.push(face(
         &mut model,
         bottom_pts[0],
-        Direction::Z,
+        -Direction::Z,
         Direction::X,
         bottom_edges.clone(),
     ));
