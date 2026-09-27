@@ -1365,7 +1365,8 @@ pub fn evaluate_surface<P: Blend>(
 /// Evaluate a surface and its partial derivatives up to total order `order`.
 ///
 /// `result[k][l]` is the derivative taken `k` times in `u` and `l` times in `v`,
-/// so `result[0][0]` is the point itself.
+/// so `result[0][0]` is the point itself, for `k + l <= order`; entries of
+/// higher total order are left zero rather than computed.
 ///
 /// # Errors
 ///
@@ -1389,21 +1390,32 @@ pub fn surface_derivatives<P: Blend>(
         core::iter::repeat_with(|| core::iter::repeat_with(P::zero).take(order + 1).collect())
             .take(order + 1)
             .collect();
+    // Each control row's sum across v, per v order: the same for every u
+    // order, so summed once. Only the orders a caller can use are filled,
+    // those of total order at most `order`; the rest stay zero.
+    let mut across: SmallVec<[SmallVec<[P; 8]>; 4]> = SmallVec::new();
+    for weights_v in dv.iter().take(order + 1) {
+        let mut row: SmallVec<[P; 8]> = SmallVec::new();
+        for i in 0..=p {
+            let mut inner = P::zero();
+            for (j, &weight_v) in weights_v.iter().enumerate() {
+                let Some(point) = grid.get(su - p + i, sv - q + j) else {
+                    ogeom_bail!(Dimension, "control grid index out of range");
+                };
+                inner = inner.add(point.scale(weight_v));
+            }
+            row.push(inner);
+        }
+        across.push(row);
+    }
     for (k, row) in out.iter_mut().enumerate() {
-        for (l, cell) in row.iter_mut().enumerate() {
+        for (l, cell) in row.iter_mut().enumerate().take(order + 1 - k) {
             // Derivatives past the degree in either direction vanish, and the
             // basis returns them as exact zeros, so this sums to zero without
             // needing a special case.
             let mut total = P::zero();
             for (i, &weight_u) in du[k].iter().enumerate() {
-                let mut inner = P::zero();
-                for (j, &weight_v) in dv[l].iter().enumerate() {
-                    let Some(point) = grid.get(su - p + i, sv - q + j) else {
-                        ogeom_bail!(Dimension, "control grid index out of range");
-                    };
-                    inner = inner.add(point.scale(weight_v));
-                }
-                total = total.add(inner.scale(weight_u));
+                total = total.add(across[l][i].scale(weight_u));
             }
             *cell = total;
         }
@@ -1472,7 +1484,9 @@ pub fn rational_surface_derivatives<P: Blend>(
             .take(order + 1)
             .collect();
     for k in 0..=order {
-        for l in 0..=order {
+        // Each value reads only lower orders in both directions, so the
+        // total order's bound holds the recurrence closed.
+        for l in 0..=order - k {
             let mut value = h[k][l].scaled;
             #[allow(clippy::cast_precision_loss)]
             for i in 1..=k {

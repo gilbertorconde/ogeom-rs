@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **Smaller savings.** A surface's derivative table is filled only to the
+  total order asked for, each control row summed across `v` once; the
+  thick-solid edge scan maps edges to faces in one walk; `ancestors_of`
+  searches each candidate for the target's type only; `fix_shape` skips
+  measuring an edge whose ends already stand further apart than the reach.
+  A marched fillet's chord and the offset guard's finer retry follow the
+  part's own size, not fixed lengths.
+
 - **Spline basis derivatives run on fixed arrays below degree eight,** bit
   for bit the general recurrence without its nested scratch vectors: a
   third off the thread-groove tests. Curve crossings skip segment pairs

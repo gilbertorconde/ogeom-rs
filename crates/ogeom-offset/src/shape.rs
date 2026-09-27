@@ -1224,21 +1224,39 @@ pub(crate) fn rebuilt(
     // cusp (a small blend meeting its face) can defeat that resolution
     // without anything being wrong. One finer retry separates a mesh that
     // cannot see the cusp from a solid that is genuinely inside out.
+    // The finer retry is a fraction of the part's own size, not a fixed
+    // length: a metre-sized part meshed at a tenth of a micron is millions
+    // of triangles for a sign.
+    let size = ogeom_algo::shape_bounds(model, &built.shape, tol)?.diagonal();
+    let fine = (size * 1e-5).clamp(
+        tol.confusion() * 1e2,
+        ogeom_mesh::Deflection::default().chord,
+    );
     let mut mass = None;
-    for chord in [ogeom_mesh::Deflection::default().chord, 1e-4] {
+    let mut first_error = None;
+    for chord in [ogeom_mesh::Deflection::default().chord, fine] {
         let deflection = ogeom_mesh::Deflection {
             chord,
             ..ogeom_mesh::Deflection::default()
         };
-        if let Ok(props) = ogeom_algo::volume_properties(model, &built.shape, deflection, tol) {
-            mass = Some(props.mass);
-            break;
+        match ogeom_algo::volume_properties(model, &built.shape, deflection, tol) {
+            Ok(props) => {
+                mass = Some(props.mass);
+                break;
+            }
+            Err(e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_))) => {
+                return Err(e);
+            }
+            Err(e) => {
+                first_error.get_or_insert(e);
+            }
         }
     }
     let Some(mass) = mass else {
         ogeom_bail!(
             Construction,
-            "the offset solid's mesh does not close at any tried resolution"
+            "the offset solid's mesh does not close at any tried resolution{}",
+            first_error.map_or_else(String::new, |e| format!(": {e}"))
         );
     };
     if !mass.is_finite() || mass <= tol.confusion() {
@@ -1752,9 +1770,23 @@ fn growing_edges(
     tol: Tolerances,
 ) -> OgeomResult<Vec<Shape>> {
     use ogeom_geom::{Curve3d as _, Surface as _};
+    // Which faces hold each edge, gathered in one walk over the faces, in
+    // the faces' order: asking per edge walked every face each time.
+    let mut holders: std::collections::HashMap<TShapeId, Vec<(Shape, Shape)>> =
+        std::collections::HashMap::new();
+    for face in ogeom_topo::explore(model, body, ogeom_topo::Filter::OfType(ShapeType::Face))? {
+        for e in ogeom_topo::explore(model, &face, ogeom_topo::Filter::OfType(ShapeType::Edge))? {
+            holders.entry(e.node()).or_default().push((e, face.clone()));
+        }
+    }
     let mut out = Vec::new();
     for edge in ogeom_topo::explore_unique(model, body, ShapeType::Edge)? {
-        let faces = ogeom_topo::ancestors_of(model, body, &edge, ShapeType::Face)?;
+        let mut faces: Vec<Shape> = Vec::new();
+        for (e, face) in holders.get(&edge.node()).map_or(&[][..], Vec::as_slice) {
+            if e.is_same(&edge) && !faces.iter().any(|f| f.is_same(face)) {
+                faces.push(face.clone());
+            }
+        }
         let mut distinct: Vec<Shape> = Vec::new();
         for f in faces {
             if !distinct.iter().any(|d| d.node() == f.node()) {

@@ -232,6 +232,19 @@ fn collapse_small_edges(
             .filter_map(|v| model.tolerance_of(v).ok().flatten())
             .map(|t| t.get())
             .fold(tol.confusion(), f64::max);
+        // An edge is at least as long as the gap between its ends: where
+        // that alone passes the reach, nothing needs measuring.
+        let ends = |v: &Shape| -> OgeomResult<Option<ogeom_math::Point>> {
+            let Some(data) = model.node(v).and_then(|n| n.data().as_vertex()) else {
+                return Ok(None);
+            };
+            Ok(Some(v.transform(model.datums())?.apply(data.point)))
+        };
+        if let (Some(pa), Some(pb)) = (ends(&a)?, ends(&b)?)
+            && pa.distance(pb) > reach
+        {
+            continue;
+        }
         let length = linear_properties(model, &edge, Deflection::default(), tol)?.mass;
         if length > reach {
             continue;

@@ -357,7 +357,10 @@ pub(crate) fn marched_fillet(
         sides,
         seed_t,
         Marching {
-            chord: 3e-6,
+            // Three millionths of the radius: the blend's own scale, so a
+            // wide rim marches as many stations as a small one rather than
+            // running out of them.
+            chord: (radius * 3e-6).max(tol.confusion() * 0.1),
             ..Marching::default()
         },
         tol,

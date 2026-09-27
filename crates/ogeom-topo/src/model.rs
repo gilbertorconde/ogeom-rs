@@ -1215,9 +1215,12 @@ pub fn ancestors_of(
     target: &Shape,
     want: ShapeType,
 ) -> OgeomResult<Vec<Shape>> {
+    // Each candidate is searched for the target's own type only: a walk
+    // for an edge never enters a vertex list.
+    let kind = model.kind_of(target)?;
     let mut out = Vec::new();
     for candidate in explore(model, root, Filter::OfType(want))? {
-        if explore(model, &candidate, Filter::All)?
+        if explore(model, &candidate, Filter::OfType(kind))?
             .iter()
             .any(|s| s.is_same(target))
         {
