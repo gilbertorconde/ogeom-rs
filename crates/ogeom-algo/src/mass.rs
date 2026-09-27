@@ -833,6 +833,7 @@ pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> Ogeo
         // say which side the face lies on at every point, concave or not.
         if let Some(stations) = crate::mass_chart::material_sides(model, &face, tol) {
             for (edge, at, toward) in stations {
+                let at = crate::mass_chart::into_domain(&placed, at);
                 let (du, dv) = placed.d1_at(at.x, at.y, tol)?;
                 let raw = du.cross(dv);
                 let inward = du * toward.x + dv * toward.y;
@@ -984,6 +985,7 @@ pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> Ogeo
         for (index, here) in stations.into_iter().enumerate() {
             let (middle, _) = middles[index];
             for (edge, at) in here {
+                let at = crate::mass_chart::into_domain(&placed, at);
                 let (du, dv) = placed.d1_at(at.x, at.y, tol)?;
                 let raw = du.cross(dv);
                 if raw.magnitude() <= tol.angular() {

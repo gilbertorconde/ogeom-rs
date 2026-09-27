@@ -71,6 +71,13 @@ fn a_leaning_binormal_turns_the_section_as_it_goes() {
     let v = volume(&model, &pipe);
     let want = 4.0 * 10.0 * PI;
     assert!((v - want).abs() < want * 5e-3, "{v} against {want}");
+    // Measured at the default deflection too: the walls are splines whose
+    // fitted pcurves stray past the chart's border by rounding, and the
+    // exact integral takes them all the same.
+    let coarse = volume_properties(&model, &pipe, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((coarse - want).abs() < 5e-3, "{coarse} against {want}");
     let top = highest(&model, &pipe, |p| p.z);
     assert!((top - 2.0_f64.sqrt()).abs() < 1e-2, "reaches z {top}");
 }

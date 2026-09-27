@@ -206,6 +206,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Spline walls whose pcurves stray past the chart's border by rounding
+  are measured exactly.** The exact volume path and its orientation check
+  bring such points back into the surface's domain instead of falling back
+  to the mesh, which read a binormal-law pipe 1.5% high at the default
+  deflection (#87).
+
 - **`make_pipe_sections` matches each section's start and sense to the
   section before** in the spine's frame, so sections drawn from different
   seams or running opposite ways blend without a twist (#86).

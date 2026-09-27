@@ -478,12 +478,32 @@ fn lies_on_edge(
     for k in 1..=5 {
         let t = segment.t0 + (segment.t1 - segment.t0) * f64::from(k) / 6.0;
         let (at, _) = segment.at(t, tol)?;
+        let at = into_domain(placed, at);
         let lifted = placed.point_at(at.x, at.y, tol)?;
         if nearest(&curve, *range, lifted, tol)? > reach {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+/// A chart point brought into the surface's domain where a pcurve fitted
+/// along its border strays past it by rounding, a millionth of the span or
+/// less; any further is left for the evaluation to refuse.
+pub(crate) fn into_domain(surface: &SurfaceGeometry, at: Point2) -> Point2 {
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let onto = |x: f64, lo: f64, hi: f64, periodic: bool| {
+        let slack = (hi - lo) * 1e-6;
+        if periodic || !(lo..=hi).contains(&x) && (x < lo - slack || x > hi + slack) {
+            x
+        } else {
+            x.clamp(lo, hi)
+        }
+    };
+    Point2::new(
+        onto(at.x, u0, u1, surface.is_periodic_u()),
+        onto(at.y, v0, v1, surface.is_periodic_v()),
+    )
 }
 
 /// The distance from `target` to `curve` over `range`: the best of a
@@ -549,6 +569,7 @@ impl ChartFace {
     pub(crate) fn anchor(&self, tol: Tolerances) -> OgeomResult<Point> {
         let segment = &self.loops[0].0[0];
         let (at, _) = segment.at(segment.t0, tol)?;
+        let at = into_domain(&self.surface, at);
         self.surface.point_at(at.x, at.y, tol)
     }
 
@@ -755,6 +776,7 @@ impl ChartFace {
         tol: Tolerances,
         sink: &mut dyn FnMut(Sample),
     ) -> OgeomResult<()> {
+        let at = into_domain(&self.surface, at);
         let (ua, ub) = (self.u_ref, at.x);
         if ua == ub || outer == 0.0 {
             return Ok(());
