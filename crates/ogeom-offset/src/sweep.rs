@@ -2587,7 +2587,25 @@ fn sample_wire_from(
     start_hint: Option<Point>,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Point>> {
-    // Dense polyline by traversal, then resample by cumulative length.
+    let mut dense = dense_wire(model, wire, tol)?;
+    if let Some(hint) = start_hint {
+        let mut best = 0usize;
+        let mut held = f64::INFINITY;
+        for (i, p) in dense.iter().enumerate() {
+            let d = p.distance(hint);
+            if d < held {
+                held = d;
+                best = i;
+            }
+        }
+        dense.rotate_left(best);
+    }
+    Ok(resampled(&dense, count))
+}
+
+/// A closed wire as a dense polyline, by traversal, without the closing
+/// point.
+fn dense_wire(model: &Model, wire: &Shape, tol: Tolerances) -> OgeomResult<Vec<Point>> {
     let mut dense: Vec<Point> = Vec::new();
     for edge in explore(model, wire, Filter::OfType(ShapeType::Edge))? {
         let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
@@ -2612,18 +2630,15 @@ fn sample_wire_from(
             dense.push(placement.apply(geometry.point_at(t, tol)?));
         }
     }
-    if let Some(hint) = start_hint {
-        let mut best = 0usize;
-        let mut held = f64::INFINITY;
-        for (i, p) in dense.iter().enumerate() {
-            let d = p.distance(hint);
-            if d < held {
-                held = d;
-                best = i;
-            }
-        }
-        dense.rotate_left(best);
+    if dense.is_empty() {
+        ogeom_bail!(Construction, "a section has no edges");
     }
+    Ok(dense)
+}
+
+/// `count` points at even fractions of a closed polyline's length, from
+/// its first point.
+fn resampled(dense: &[Point], count: usize) -> Vec<Point> {
     let mut lengths = vec![0.0];
     for w in dense.windows(2) {
         let last = lengths[lengths.len() - 1];
@@ -2653,7 +2668,44 @@ fn sample_wire_from(
         };
         out.push(a + (b - a) * f.clamp(0.0, 1.0));
     }
-    Ok(out)
+    out
+}
+
+/// A section's samples in its own frame, started and run where they best
+/// match the section before (`previous`, in its frame): a section's start
+/// and sense are accidents of how it was drawn, and matched as given they
+/// twist the blend. Every start of the dense polyline is tried both ways;
+/// the given start and sense win a tie.
+fn matched_samples(dense: &[Point], count: usize, previous: &[Point]) -> Vec<Point> {
+    let cost = |samples: &[Point]| -> f64 {
+        samples
+            .iter()
+            .zip(previous)
+            .map(|(p, q)| (*p - *q).dot(*p - *q))
+            .sum()
+    };
+    let mut best = resampled(dense, count);
+    let mut held = cost(&best);
+    let scale: f64 = previous
+        .iter()
+        .chain(&best)
+        .map(|p| (*p - Point::ORIGIN).dot(*p - Point::ORIGIN))
+        .sum();
+    let slack = scale * 1e-12;
+    let backward: Vec<Point> = dense.iter().rev().copied().collect();
+    for way in [dense, &backward[..]] {
+        for start in 0..way.len() {
+            let mut turned = way.to_vec();
+            turned.rotate_left(start);
+            let samples = resampled(&turned, count);
+            let c = cost(&samples);
+            if c < held - slack {
+                held = c;
+                best = samples;
+            }
+        }
+    }
+    best
 }
 
 /// Sweep a circular profile along a free-form spine, skinned.
@@ -4513,8 +4565,15 @@ pub fn make_pipe_sections(
             tol,
         )?;
         let into = Transform::to_frame(&frame);
-        let samples = sample_wire(model, &ring, AROUND, tol)?;
-        placed.push((along, samples.iter().map(|p| into.apply(*p)).collect()));
+        let dense: Vec<Point> = dense_wire(model, &ring, tol)?
+            .iter()
+            .map(|p| into.apply(*p))
+            .collect();
+        let samples = match placed.last() {
+            Some((_, previous)) => matched_samples(&dense, AROUND, previous),
+            None => resampled(&dense, AROUND),
+        };
+        placed.push((along, samples));
     }
     for pair in placed.windows(2) {
         if pair[1].0 <= pair[0].0 + tol.confusion() {

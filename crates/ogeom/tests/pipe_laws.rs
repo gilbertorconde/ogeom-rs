@@ -307,6 +307,65 @@ fn a_pipe_through_two_sections_changes_its_shape_down_the_path() {
     assert!((v - want).abs() < want * 1e-2, "{v} against {want}");
 }
 
+/// The end circle drawn with its seam on the other side, turned a quarter,
+/// or running the other way, as a face or as a wire: the sections' starts
+/// are matched before blending, so every one is the same frustum.
+#[test]
+fn sections_drawn_from_different_starts_blend_without_a_twist() {
+    let want = PI * 20.0 / 3.0 * (4.0 + 6.0 + 9.0);
+    let ends = [
+        (Direction::Y, -Direction::X, false),
+        (Direction::Y, -Direction::X, true),
+        (Direction::Y, Direction::Z, false),
+        (-Direction::Y, Direction::X, false),
+        (-Direction::Y, -Direction::Z, true),
+    ];
+    for (normal, x_axis, as_face) in ends {
+        let mut model = Model::new();
+        let small = circle_wire(
+            &mut model,
+            Frame::new(Point::ORIGIN, Direction::Y, Direction::X, T).unwrap(),
+            2.0,
+        );
+        let frame = Frame::new(Point::new(0.0, 20.0, 0.0), normal, x_axis, T).unwrap();
+        let mut large = circle_wire(&mut model, frame, 3.0);
+        let mut small = small;
+        if as_face {
+            let face = |model: &mut Model, wire: Shape, frame: Frame| {
+                make_face(
+                    model,
+                    PlaneSurface::new(Plane::new(frame)).into(),
+                    &[wire],
+                    T,
+                )
+                .unwrap()
+                .shape
+            };
+            let start = Frame::new(Point::ORIGIN, Direction::Y, Direction::X, T).unwrap();
+            small = face(&mut model, small, start);
+            large = face(&mut model, large, frame);
+        }
+        let spine = make_polygon(
+            &mut model,
+            &[Point::ORIGIN, Point::new(0.0, 20.0, 0.0)],
+            false,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let pipe =
+            ogeom::offset::make_pipe_sections(&mut model, &[small, large], &spine, false, 1e-3, T)
+                .unwrap()
+                .shape;
+        assert!(ogeom::algo::check(&model, &pipe, T).unwrap().is_valid());
+        let v = volume(&model, &pipe);
+        assert!(
+            (v - want).abs() < want * 1e-2,
+            "{v} against {want} for {normal:?}, {x_axis:?}"
+        );
+    }
+}
+
 /// Two equal circles at the ends of a quarter arc: the same tube a single
 /// section sweeps, its area times the arc.
 #[test]

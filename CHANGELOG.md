@@ -206,6 +206,10 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`make_pipe_sections` matches each section's start and sense to the
+  section before** in the spine's frame, so sections drawn from different
+  seams or running opposite ways blend without a twist (#86).
+
 - **An auxiliary pipe guide ending a hair short of the last station** (a
   sketch's end in single precision) is carried along its end tangent to the
   station's plane when within the sweep's tolerance, instead of refused
