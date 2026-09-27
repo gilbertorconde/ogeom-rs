@@ -13,6 +13,10 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **A boolean splits and classifies its faces in parallel,** each face's
+  pieces and junctions joined in face order, and intersects a contact
+  edge only with target edges whose boxes it can reach.
+
 - **Checks and bounds repeat less.** `shape_bounds` bounds each shared
   edge and vertex once per call; the face-orientation agreement places
   each edge's curve once and keeps one golden-section point per round;

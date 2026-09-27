@@ -995,6 +995,9 @@ struct ContactRec {
     /// The target: which argument's face list, and which face.
     target_from_a: bool,
     target_face: usize,
+    /// The owner edge's conservative box: a target edge whose own box
+    /// stands further off than a crossing can reach is not intersected.
+    bound: ogeom_math::Aabb,
 }
 
 /// A same-domain contact edge's image in the shared surface's chart, where
@@ -1517,6 +1520,7 @@ fn fill(
                                 tolerance: e.tolerance,
                                 target_from_a,
                                 target_face,
+                                bound: e.bound,
                             });
                         }
                     }
@@ -2977,6 +2981,9 @@ fn fill(
             ..CurveCurveOptions::default()
         };
         for e in &target.edges {
+            if !contact.bound.expanded(reach).intersects(&e.bound) {
+                continue;
+            }
             let found = intersect_curves(&contact.curve, &e.curve, cc, tol)?;
             for crossing in &found.crossings {
                 if crossing.gap > reach {
@@ -4993,18 +5000,50 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             && (a.2.0 - b.2.0).abs() <= tol.parametric()
             && (a.2.1 - b.2.1).abs() <= tol.parametric()
     };
-    for (from_a, own, other) in [(true, &ga, &gb.solid), (false, &gb, &ga.solid)] {
-        // The other solid's boundary, prepared once for the whole side. It is
-        // asked once per face piece, and what it costs to prepare (every
-        // face's trimming rings, polylined) does not depend on the point
-        // being asked about. Rebuilt per question it dwarfed the question:
-        // 3.5 ms of preparation against 5.6 µs of ray casting.
-        let boundary = ogeom_algo::SolidBoundary::of(model, other, tol.confusion() * 1e4, tol)?;
-        for (fi, face) in own.faces.iter().enumerate() {
-            ogeom_core::progress::checkpoint()?;
-            let Some((mut strands, face_snap)) = prepared[usize::from(!from_a)][fi].take() else {
+    // The other solid's boundary, prepared once per side. It is asked once
+    // per face piece, and what it costs to prepare (every face's trimming
+    // rings, polylined) does not depend on the point being asked about.
+    // Rebuilt per question it dwarfed the question: 3.5 ms of preparation
+    // against 5.6 µs of ray casting.
+    let boundaries = [
+        ogeom_algo::SolidBoundary::of(model, &gb.solid, tol.confusion() * 1e4, tol)?,
+        ogeom_algo::SolidBoundary::of(model, &ga.solid, tol.confusion() * 1e4, tol)?,
+    ];
+    // Each face is split and its pieces classified on its own: it reads
+    // the two solids, the sections, the contacts and the junctions found
+    // so far, and writes only its own pieces and the junctions it adds. So
+    // the faces run in parallel, and their findings are joined in face
+    // order, the order one thread would have made them in.
+    type FaceWork = std::sync::Mutex<Prepared>;
+    let mut work: Vec<(bool, usize, FaceWork)> = Vec::new();
+    for (side, slots) in prepared.iter_mut().enumerate() {
+        for (fi, slot) in slots.iter_mut().enumerate() {
+            let Some(prepared_face) = slot.take() else {
                 ogeom_bail!(Construction, "a face was prepared twice");
             };
+            work.push((side == 0, fi, std::sync::Mutex::new(Some(prepared_face))));
+        }
+    }
+    let found = ogeom_core::parallel::map_ordered(
+        &work,
+        |_, (from_a, fi, prepared_face)| -> OgeomResult<(Vec<FacePiece>, Vec<Junction>)> {
+            ogeom_core::progress::checkpoint()?;
+            let (from_a, fi) = (*from_a, *fi);
+            let (own, other, boundary) = if from_a {
+                (&ga, &gb.solid, &boundaries[0])
+            } else {
+                (&gb, &ga.solid, &boundaries[1])
+            };
+            let face = &own.faces[fi];
+            let Some((mut strands, face_snap)) = prepared_face
+                .lock()
+                .map_err(|_| ogeom_core::ogeom_err!(Construction, "a face's work was poisoned"))?
+                .take()
+            else {
+                ogeom_bail!(Construction, "a face was prepared twice");
+            };
+            let mut pieces: Vec<FacePiece> = Vec::new();
+            let mut junctions: Vec<Junction> = Vec::new();
             // A piece some other chart already collapsed collapses here too:
             // its ends become one node, every neighbour meeting them moves
             // onto it, and one junction owns the span in space so the
@@ -5299,10 +5338,10 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                             ogeom_bail!(
                                 NotDone,
                                 "a piece lies on the other solid's boundary \
-                                 with no coincident partner face to compare \
-                                 sides against; edge or vertex contact is \
-                                 refused rather than resolved; see the \
-                                 remaining work in docs/PLAN.md"
+                             with no coincident partner face to compare \
+                             sides against; edge or vertex contact is \
+                             refused rather than resolved; see the \
+                             remaining work in docs/PLAN.md"
                             );
                         };
                         state
@@ -5318,7 +5357,14 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     covered: false,
                 });
             }
-        }
+
+            Ok((pieces, junctions))
+        },
+    );
+    for face in found {
+        let (face_pieces, face_junctions) = face?;
+        pieces.extend(face_pieces);
+        junctions.extend(face_junctions);
     }
     mark_covered_coincidences(&ga, &mut pieces, tol);
     if *ARRANGE_DEBUG {
