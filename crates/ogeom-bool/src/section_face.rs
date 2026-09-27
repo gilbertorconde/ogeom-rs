@@ -60,10 +60,25 @@ pub fn section_face(
     let mut vertices: Vec<(Point, Shape)> = Vec::new();
     let mut seen_boundary: Vec<ogeom_topo::TShapeId> = Vec::new();
     for face in &faces {
-        let Some(data) = model.node(face).and_then(|n| n.data().as_face()).cloned() else {
+        // A face whose box stands wholly on one side of the plane cannot
+        // meet it: its corners' signed distances say so without asking the
+        // intersector.
+        let corners = shape_bounds(model, face, tol)?.corners();
+        let side = |c: &Point| plane.signed_distance_to(*c);
+        if !corners.is_empty()
+            && (corners.iter().all(|c| side(c) > tol.confusion())
+                || corners.iter().all(|c| side(c) < -tol.confusion()))
+        {
+            continue;
+        }
+        let Some(surface_id) = model
+            .node(face)
+            .and_then(|n| n.data().as_face())
+            .map(|d| d.surface)
+        else {
             continue;
         };
-        let Some(surface) = model.geometry().surface(data.surface).cloned() else {
+        let Some(surface) = model.geometry().surface(surface_id) else {
             continue;
         };
         let placed = surface.transformed(&face.transform(model.datums())?, tol)?;

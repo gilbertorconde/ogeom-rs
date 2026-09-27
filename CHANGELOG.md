@@ -13,6 +13,9 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **A planar section skips faces wholly on one side of its plane** by
+  their boxes, before intersecting their surfaces.
+
 - **Meshing measures each chart edge's sag once** across the refinement's
   rounds and the triangles sharing it, and a fillet chain finds its next
   edges by projection only among edges whose boxes reach them.
