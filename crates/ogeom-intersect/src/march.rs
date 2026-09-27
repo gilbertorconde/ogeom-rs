@@ -701,10 +701,17 @@ fn correct(
     let system = |x: &[f64]| {
         let (ua, va) = clamp(a, x[0], x[1]);
         let (ub, vb) = clamp(b, x[2], x[3]);
-        let pa = a.point_at(ua, va, tol).unwrap_or(Point::ORIGIN);
-        let pb = b.point_at(ub, vb, tol).unwrap_or(Point::ORIGIN);
-        let (au, av) = a.d1_at(ua, va, tol).unwrap_or((Vector::ZERO, Vector::ZERO));
-        let (bu, bv) = b.d1_at(ub, vb, tol).unwrap_or((Vector::ZERO, Vector::ZERO));
+        // Where either surface cannot be evaluated the residual is
+        // infinite, so the damped step backs off rather than reading a
+        // made-up point as a root.
+        let (Ok(pa), Ok(pb), Ok((au, av)), Ok((bu, bv))) = (
+            a.point_at(ua, va, tol),
+            b.point_at(ub, vb, tol),
+            a.d1_at(ua, va, tol),
+            b.d1_at(ub, vb, tol),
+        ) else {
+            return (vec![f64::INFINITY; 4], vec![vec![0.0; 4]; 4]);
+        };
 
         let gap = pa - pb;
         let residual = vec![gap.x, gap.y, gap.z, (pa - anchor).dot(along) - reach];

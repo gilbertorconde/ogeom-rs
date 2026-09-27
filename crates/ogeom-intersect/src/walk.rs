@@ -337,13 +337,15 @@ fn correct<C: Condition + ?Sized>(
     let system = |x: &[f64]| {
         let mut at = x.to_vec();
         condition.clamp(&mut at);
-        let (mut residual, mut jacobian) = condition
-            .system(&at, tol)
-            .unwrap_or_else(|| (vec![0.0; n - 1], vec![vec![0.0; n]; n - 1]));
-        let point = condition.position(&at, tol).unwrap_or(Point::ORIGIN);
-        let gradient = condition
-            .position_gradient(&at, tol)
-            .unwrap_or_else(|| vec![Vector::ZERO; n]);
+        // Where the condition cannot be evaluated the residual is infinite,
+        // so the damped step backs off; a zero there would read as a root.
+        let (Some((mut residual, mut jacobian)), Some(point), Some(gradient)) = (
+            condition.system(&at, tol),
+            condition.position(&at, tol),
+            condition.position_gradient(&at, tol),
+        ) else {
+            return (vec![f64::INFINITY; n], vec![vec![0.0; n]; n]);
+        };
         residual.push((point - anchor).dot(along) - reach);
         jacobian.push(gradient.iter().map(|g| g.dot(along)).collect());
         (residual, jacobian)

@@ -516,12 +516,15 @@ fn polish(
     let system = |x: &[f64]| {
         let t = clamp_t(x[0]);
         let (u, v) = clamp_uv(x[1], x[2]);
-        let pc = curve.point_at(t, tol).unwrap_or(Point::ORIGIN);
-        let ps = surface.point_at(u, v, tol).unwrap_or(Point::ORIGIN);
-        let dc = curve.d1_at(t, tol).unwrap_or(ogeom_math::Vector::ZERO);
-        let (du, dv) = surface
-            .d1_at(u, v, tol)
-            .unwrap_or((ogeom_math::Vector::ZERO, ogeom_math::Vector::ZERO));
+        let (Ok(pc), Ok(ps), Ok(dc), Ok((du, dv))) = (
+            curve.point_at(t, tol),
+            surface.point_at(u, v, tol),
+            curve.d1_at(t, tol),
+            surface.d1_at(u, v, tol),
+        ) else {
+            // Nowhere to measure from: infinite, so the damped step backs off.
+            return (vec![f64::INFINITY; 3], vec![vec![0.0; 3]; 3]);
+        };
         let gap = pc - ps;
         (
             vec![gap.x, gap.y, gap.z],

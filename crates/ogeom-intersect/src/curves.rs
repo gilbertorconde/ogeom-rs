@@ -1411,10 +1411,16 @@ fn polish_3d(
 ) -> Option<Crossing<Point>> {
     let system = |x: &[f64]| {
         let (t, s) = (clamp_3d(a, x[0]), clamp_3d(b, x[1]));
-        let pa = a.point_at(t, tol).unwrap_or(Point::ORIGIN);
-        let pb = b.point_at(s, tol).unwrap_or(Point::ORIGIN);
-        let da = a.derivatives_at(t, 2, tol).unwrap_or_default();
-        let db = b.derivatives_at(s, 2, tol).unwrap_or_default();
+        let (Ok(pa), Ok(pb), Ok(da), Ok(db)) = (
+            a.point_at(t, tol),
+            b.point_at(s, tol),
+            a.derivatives_at(t, 2, tol),
+            b.derivatives_at(s, 2, tol),
+        ) else {
+            // A zero here would read as a root; infinite, the damped step
+            // backs off instead.
+            return (vec![f64::INFINITY; 2], vec![vec![0.0; 2]; 2]);
+        };
         let zero = ogeom_math::Vector::ZERO;
         let (d1a, d2a) = (
             da.get(1).copied().unwrap_or(zero),
