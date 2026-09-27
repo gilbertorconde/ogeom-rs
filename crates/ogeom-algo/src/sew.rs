@@ -256,19 +256,12 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
         // way from the one it replaced.
         let mut merged: HashMap<TShapeId, (TShapeId, bool)> = HashMap::new();
         let mut joined = 0;
-        // The widest reach any pair compares its ends at.
-        let reach = catalogue
-            .iter()
-            .fold(tol.confusion(), |acc, (_, print)| acc.max(print.width));
-        let mut starts = Bins::new(reach);
-        for (index, (_, print)) in catalogue.iter().enumerate() {
-            starts.insert(print.start, index);
-        }
+        let starts = StartBins::new(&catalogue, tol);
         for i in 0..catalogue.len() {
             if merged.contains_key(&catalogue[i].0) {
                 continue;
             }
-            for j in twin_candidates(&catalogue, &starts, reach, i) {
+            for j in starts.twin_candidates(&catalogue, i) {
                 if merged.contains_key(&catalogue[j].0) {
                     continue;
                 }
@@ -932,27 +925,75 @@ impl Fingerprint {
 /// binned by where they start, near either end of edge `i`, are every edge
 /// that could match, and an edge is asked about those alone rather than
 /// about the whole catalogue.
-fn twin_candidates(
-    catalogue: &[(TShapeId, Fingerprint)],
-    starts: &Bins,
-    reach: f64,
-    i: usize,
-) -> Vec<usize> {
-    let print = &catalogue[i].1;
-    let (Some(from_start), Some(from_end)) = (
-        starts.near(print.start, reach),
-        starts.near(print.end, reach),
-    ) else {
-        return ((i + 1)..catalogue.len()).collect();
-    };
-    let mut out: Vec<usize> = from_start
-        .into_iter()
-        .chain(from_end)
-        .filter(|&j| j > i)
-        .collect();
-    out.sort_unstable();
-    out.dedup();
-    out
+/// Edge starts binned for the twin search. A pair is compared within the
+/// wider of its two edges' widths, so the few loose edges an import can
+/// carry are binned apart: the tight edges' cells are sized by the tight
+/// edges, and one loose edge does not coarsen the search for all of them.
+struct StartBins {
+    /// Edges no wider than `cell`.
+    tight: Bins,
+    cell: f64,
+    /// Edges wider than `cell`, in cells as wide as the widest.
+    loose: Bins,
+    widest: f64,
+}
+
+impl StartBins {
+    fn new(catalogue: &[(TShapeId, Fingerprint)], tol: Tolerances) -> Self {
+        let mut widths: Vec<f64> = catalogue
+            .iter()
+            .map(|(_, print)| print.width.max(tol.confusion()))
+            .collect();
+        widths.sort_by(f64::total_cmp);
+        let widest = widths.last().copied().unwrap_or(tol.confusion());
+        // The width nine in ten edges keep within.
+        let cell = widths
+            .get(widths.len().saturating_sub(1) * 9 / 10)
+            .copied()
+            .unwrap_or(tol.confusion());
+        let (mut tight, mut loose) = (Bins::new(cell), Bins::new(widest));
+        for (index, (_, print)) in catalogue.iter().enumerate() {
+            if print.width <= cell {
+                tight.insert(print.start, index);
+            } else {
+                loose.insert(print.start, index);
+            }
+        }
+        Self {
+            tight,
+            cell,
+            loose,
+            widest,
+        }
+    }
+
+    /// The edges after `i` whose start lies within reach of either of its
+    /// ends: every edge that could be its twin, and perhaps some that are
+    /// not, in order.
+    fn twin_candidates(&self, catalogue: &[(TShapeId, Fingerprint)], i: usize) -> Vec<usize> {
+        let print = &catalogue[i].1;
+        // A tight edge is compared within this edge's width or its own,
+        // which is at most `cell`; a loose one within at most the widest.
+        let near_tight = self.cell.max(print.width);
+        let found = [
+            self.tight.near(print.start, near_tight),
+            self.tight.near(print.end, near_tight),
+            self.loose.near(print.start, self.widest),
+            self.loose.near(print.end, self.widest),
+        ];
+        if found.iter().any(Option::is_none) {
+            return ((i + 1)..catalogue.len()).collect();
+        }
+        let mut out: Vec<usize> = found
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|&j| j > i)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
 }
 
 /// An edge's ends and midpoint, in space.
@@ -1592,6 +1633,36 @@ mod tests {
                  survived and whichever way it runs"
             );
         }
+    }
+
+    /// One loose edge among tight ones: the tight edges' twin search stays
+    /// local, and every pair within its wider width is still a candidate.
+    #[test]
+    fn one_loose_edge_does_not_widen_every_search() {
+        let mut model = Model::new();
+        let mut catalogue = Vec::new();
+        for k in 0..200 {
+            let x = f64::from(k);
+            let wire = make_polygon(
+                &mut model,
+                &[Point::new(x, 0.0, 0.0), Point::new(x + 0.5, 0.0, 0.0)],
+                false,
+                T,
+            )
+            .unwrap()
+            .shape;
+            let edge = model.children_of(&wire).unwrap()[0].clone();
+            let print = fingerprint(&model, &edge, T).unwrap().unwrap();
+            catalogue.push((edge.node(), print));
+        }
+        let loose = 150;
+        catalogue[loose].1.width = 20.0;
+        let bins = StartBins::new(&catalogue, T);
+        assert!(bins.twin_candidates(&catalogue, 0).len() <= 3);
+        // Edge 140 starts 10 from the loose edge, within its width.
+        assert!(bins.twin_candidates(&catalogue, 140).contains(&loose));
+        let from_loose = bins.twin_candidates(&catalogue, loose);
+        assert!((151..=170).all(|j| from_loose.contains(&j)));
     }
 
     #[test]

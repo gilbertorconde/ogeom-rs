@@ -13,6 +13,9 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **Sewing bins its few loose edges apart,** so one edge with a wide
+  stated tolerance no longer coarsens the twin search for every other.
+
 - **A planar section skips faces wholly on one side of its plane** by
   their boxes, before intersecting their surfaces.
 
