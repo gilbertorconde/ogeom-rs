@@ -384,42 +384,35 @@ impl Parser<'_> {
 
     fn string(&mut self) -> OgeomResult<Arg> {
         self.expect(b'\'')?;
-        let mut out = String::new();
+        let mut raw: Vec<u8> = Vec::new();
         loop {
-            // The common run (everything up to the next quote or non-ASCII
-            // byte) lands in one push, not a byte at a time. Bytes above
-            // ASCII keep their historical Latin-1 reading, one by one.
+            // The common run, everything up to the next quote, in one
+            // extend rather than a byte at a time.
             let start = self.at;
-            while self
-                .bytes
-                .get(self.at)
-                .is_some_and(|b| *b != b'\'' && b.is_ascii())
-            {
+            while self.bytes.get(self.at).is_some_and(|b| *b != b'\'') {
                 self.at += 1;
             }
-            if self.at > start
-                && let Ok(run) = std::str::from_utf8(&self.bytes[start..self.at])
-            {
-                out.push_str(run);
-            }
+            raw.extend_from_slice(&self.bytes[start..self.at]);
             match self.bytes.get(self.at) {
                 None => ogeom_bail!(Construction, "the exchange file ends inside a string"),
-                Some(b'\'') => {
+                Some(_) => {
                     if self.bytes.get(self.at + 1) == Some(&b'\'') {
-                        out.push('\'');
+                        raw.push(b'\'');
                         self.at += 2;
                     } else {
                         self.at += 1;
                         break;
                     }
                 }
-                Some(&b) => {
-                    out.push(char::from(b));
-                    self.at += 1;
-                }
             }
         }
-        Ok(Arg::Str(out))
+        // Bytes past ASCII are not the standard's, but exporters write
+        // them: UTF-8 where they are valid UTF-8, Latin-1 otherwise.
+        let text = match std::str::from_utf8(&raw) {
+            Ok(text) => text.to_owned(),
+            Err(_) => raw.iter().map(|b| char::from(*b)).collect(),
+        };
+        Ok(Arg::Str(decode_escapes(&text)))
     }
 
     fn number(&mut self) -> OgeomResult<Arg> {
@@ -464,6 +457,96 @@ impl Parser<'_> {
             })
         }
     }
+}
+
+/// A STEP string's escapes read: `\\` a backslash, `\X\hh` the Latin-1
+/// character `hh`, `\X2\...\X0\` UTF-16 and `\X4\...\X0\` UTF-32 code
+/// units in hex, `\S\c` the character `c` in the upper half of the code
+/// page. A code-page directive (`\P?\`) is dropped. Anything that does not
+/// parse as an escape is kept as written.
+pub(crate) fn decode_escapes(text: &str) -> String {
+    if !text.contains('\\') {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    let hex = |slice: &[char]| -> Option<u32> {
+        let s: String = slice.iter().collect();
+        u32::from_str_radix(&s, 16).ok()
+    };
+    while i < chars.len() {
+        let rest = &chars[i..];
+        let starts = |p: &str| {
+            let p: Vec<char> = p.chars().collect();
+            rest.len() >= p.len() && rest[..p.len()] == p[..]
+        };
+        if starts("\\\\") {
+            out.push('\\');
+            i += 2;
+        } else if starts("\\X2\\") || starts("\\X4\\") {
+            let width = if starts("\\X2\\") { 4 } else { 8 };
+            let body_start = i + 4;
+            let Some(end) = (body_start..chars.len().saturating_sub(3))
+                .find(|&k| chars[k..k + 4] == ['\\', 'X', '0', '\\'])
+            else {
+                out.push(chars[i]);
+                i += 1;
+                continue;
+            };
+            let body = &chars[body_start..end];
+            let units: Option<Vec<u32>> = body.chunks(width).map(hex).collect();
+            let decoded = units.and_then(|units| {
+                if width == 4 {
+                    let units: Vec<u16> = units
+                        .iter()
+                        .filter_map(|u| u16::try_from(*u).ok())
+                        .collect();
+                    String::from_utf16(&units).ok()
+                } else {
+                    units.iter().map(|u| char::from_u32(*u)).collect()
+                }
+            });
+            match decoded {
+                Some(decoded) if body.len().is_multiple_of(width) => {
+                    out.push_str(&decoded);
+                    i = end + 4;
+                }
+                _ => {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+            }
+        } else if starts("\\X\\") && rest.len() >= 5 {
+            match hex(&rest[3..5]).and_then(char::from_u32) {
+                Some(c) => {
+                    out.push(c);
+                    i += 5;
+                }
+                None => {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+            }
+        } else if starts("\\S\\") && rest.len() >= 4 {
+            match char::from_u32(u32::from(rest[3]) + 0x80) {
+                Some(c) if rest[3].is_ascii() => {
+                    out.push(c);
+                    i += 4;
+                }
+                _ => {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+            }
+        } else if starts("\\P") && rest.len() >= 4 && rest[3] == '\\' {
+            i += 4;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 #[cfg(test)]

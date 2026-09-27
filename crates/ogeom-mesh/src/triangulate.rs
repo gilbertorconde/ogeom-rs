@@ -1816,11 +1816,14 @@ fn boundary_ring(
                 let Some(geometry) = model.geometry().surface(surface) else {
                     ogeom_bail!(Dangling, "face refers to a surface not in this model");
                 };
+                // At the chord the faces agreed for this edge, like the
+                // 3D path above: a face that asked for finer gets it here
+                // too.
                 let (_, parameters) = crate::discretize::discretize_on_surface(
                     pcurve,
                     pcurve_range,
                     geometry,
-                    deflection,
+                    along,
                     tol,
                 )?;
                 parameters

@@ -102,6 +102,21 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **STEP names past ASCII round-trip.** The writer spells them in `\X2\`
+  escapes and doubles a backslash; the reader decodes `\X2\`, `\X4\`,
+  `\X\`, `\S\` and `\\`, and reads raw bytes as UTF-8 where they are.
+  A number that is not finite is refused rather than written as `NaN.0`.
+- **Smaller fixes.** `section` shares one vertex where consecutive pieces
+  meet, so the section is a wire's worth of edges. A pair of faces marched
+  whole because one curve had no chart image no longer drops the pair's
+  later curves or repeats its earlier ones. A strand end inside two
+  junctions names the nearer. `check_tolerances` holds a face to its edges
+  across the wire between them. Area and volume fall back to the mesh
+  alike where the closed forms cannot evaluate, and both report a
+  cancelled watch. Exact hidden lines draw a closed silhouette to the
+  deflection instead of as an octagon. A face edge with only a pcurve is
+  meshed at the chord the faces agreed on.
+
 - **A loft through unevenly spaced sections sagged between them.** The
   skin's parameters across the sections ignored their spacing, so a square
   twisting through steps of 0.625 and 0.3125 measured a fifth light or

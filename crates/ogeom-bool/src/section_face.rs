@@ -118,7 +118,7 @@ fn empty(model: &mut Model, shape: &Shape) -> OgeomResult<Built> {
 
 /// One vertex per place: neighbouring faces' sections meet at the edge they
 /// share, and there their ends are one vertex.
-fn vertex(
+pub(crate) fn vertex(
     model: &mut Model,
     vertices: &mut Vec<(Point, Shape)>,
     at: Point,

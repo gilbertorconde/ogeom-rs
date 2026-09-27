@@ -1021,26 +1021,39 @@ impl Model {
     /// [`OgeomError::Invariant`](ogeom_core::OgeomError::Invariant) at the first
     /// violation, naming the two shape types involved.
     pub fn check_tolerances(&self, root: &Shape) -> OgeomResult<()> {
-        let Some(node) = self.node(root) else {
-            ogeom_bail!(Dangling, "shape refers to a node not in this model");
-        };
-        let own = node.data().tolerance();
-        for child in self.children_of(root)? {
+        // Containers carry no tolerance of their own, so each node is held
+        // to the nearest tolerance above it, whatever lies between: a face's
+        // edges answer to the face across the wire that holds them. Each
+        // node is visited once per bound it is reached under.
+        let mut stack: Vec<(Shape, Option<(ogeom_core::Tolerance, ShapeType)>)> =
+            vec![(root.clone(), None)];
+        let mut seen = std::collections::HashSet::new();
+        while let Some((shape, bound)) = stack.pop() {
+            let Some(node) = self.node(&shape) else {
+                ogeom_bail!(Dangling, "shape refers to a node not in this model");
+            };
+            if !seen.insert((shape.node(), bound.map(|(t, _)| t.get().to_bits()))) {
+                continue;
+            }
+            let own = node.data().tolerance();
             // A boundary is *contained by* what it bounds, so the child (the
             // boundary) must be the looser of the two.
-            if let (Some(parent), Some(child_tolerance)) = (own, self.tolerance_of(&child)?)
+            if let (Some((parent, parent_kind)), Some(child_tolerance)) = (bound, own)
                 && child_tolerance < parent
             {
                 ogeom_bail!(
                     Invariant,
                     "a {:?} at tolerance {} bounds a {:?} at {}, which is tighter",
-                    self.kind_of(&child)?,
-                    child_tolerance.get(),
                     node.kind(),
+                    child_tolerance.get(),
+                    parent_kind,
                     parent.get()
                 );
             }
-            self.check_tolerances(&child)?;
+            let below = own.map(|t| (t, node.kind())).or(bound);
+            for child in node.children() {
+                stack.push((child.clone(), below));
+            }
         }
         Ok(())
     }
@@ -1764,6 +1777,41 @@ mod tests {
             model.tolerance_of(&vertex).unwrap(),
             Some(Tolerance::new(1e-1).unwrap())
         );
+    }
+
+    /// A face looser than its edges breaks the rule across the wire between
+    /// them, which carries no tolerance of its own to be compared with.
+    #[test]
+    fn check_tolerances_holds_a_face_to_its_edges_across_the_wire() {
+        let mut model = Model::new();
+        let vertex = Shape::of(model.nodes.insert(TShape::leaf(
+            ShapeType::Vertex,
+            NodeData::Vertex(VertexData::new(Point::ORIGIN)),
+        )));
+        let edge = Shape::of(model.nodes.insert(TShape::new(
+            ShapeType::Edge,
+            NodeData::Edge(Box::default()),
+            vec![vertex],
+        )));
+        let wire = Shape::of(
+            model
+                .nodes
+                .insert(TShape::container(ShapeType::Wire, vec![edge.clone()])),
+        );
+        let surface = model
+            .geometry_mut()
+            .add_surface(PlaneSurface::new(Plane::new(Frame::WORLD)).into());
+        let mut face_data = FaceData::new(surface, Location::identity());
+        face_data.widen(Tolerance::new(1e-2).unwrap());
+        let face = Shape::of(model.nodes.insert(TShape::new(
+            ShapeType::Face,
+            NodeData::Face(Box::new(face_data)),
+            vec![wire],
+        )));
+        let err = model.check_tolerances(&face).unwrap_err();
+        assert!(err.to_string().contains("tighter"), "{err}");
+        model.widen(&face, Tolerance::new(1e-2).unwrap()).unwrap();
+        assert!(model.check_tolerances(&face).is_ok());
     }
 
     #[test]

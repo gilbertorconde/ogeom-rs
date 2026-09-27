@@ -372,10 +372,10 @@ fn exact_volume_properties(
         // A face the closed forms cannot evaluate (a chart point a hair off
         // its surface's domain) is left to the mesh, like one they do not
         // speak at all.
-        match integrable_face(model, face, tol).ok().flatten() {
+        match or_mesh(integrable_face(model, face, tol), None)? {
             Some(found) => exact.extend(found),
             None => {
-                if std::env::var_os("OGEOM_DEBUG_MASS").is_some() {
+                if *DEBUG_MASS {
                     eprintln!(
                         "MASS face {} is not exactly integrable",
                         face.node().index()
@@ -388,7 +388,7 @@ fn exact_volume_properties(
     // And the faces must agree with each other about which way is out. A
     // boundary that cannot be walked to ask (a pcurve whose domain falls
     // short of its edge's range) is left to the mesh.
-    if !flags_agree(model, shape, tol).unwrap_or(false) {
+    if !or_mesh(flags_agree(model, shape, tol), false)? {
         return Ok(None);
     }
     // The divergence theorem needs a closed boundary; topology says whether
@@ -433,8 +433,8 @@ fn exact_volume_properties(
                     }
                 }
             }
-        })
-        .unwrap_or(false);
+        });
+        let settled = or_mesh(settled, false)?;
         if !settled {
             return Ok(None);
         }
@@ -475,7 +475,7 @@ fn exact_surface_properties(
     }
     let mut exact = Vec::with_capacity(faces.len());
     for face in &faces {
-        match integrable_face(model, face, tol)? {
+        match or_mesh(integrable_face(model, face, tol), None)? {
             Some(found) => exact.extend(found),
             None => return Ok(None),
         }
@@ -495,7 +495,8 @@ fn exact_surface_properties(
                     second.rows[i][j] += qi * qj * da;
                 }
             }
-        })?;
+        });
+        let settled = or_mesh(settled, false)?;
         if !settled {
             return Ok(None);
         }
@@ -508,6 +509,24 @@ fn exact_surface_properties(
     };
     Ok(Some(acc.finish(0.0)))
 }
+
+/// An exact path's answer, or `fallback` where the closed forms could not
+/// evaluate (a chart point a hair off its surface's domain): the mesh then
+/// answers, for volumes and areas alike. A cancelled watch and a broken
+/// model are errors whichever path meets them.
+fn or_mesh<T>(result: OgeomResult<T>, fallback: T) -> OgeomResult<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_))) => {
+            Err(e)
+        }
+        Err(_) => Ok(fallback),
+    }
+}
+
+/// Whether the exact path says which faces it leaves to the mesh. Read once.
+static DEBUG_MASS: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("OGEOM_DEBUG_MASS").is_some());
 
 /// Somewhere on the shape to measure moments from.
 fn reference_point(faces: &[ExactFace], tol: Tolerances) -> OgeomResult<Point> {
@@ -990,7 +1009,7 @@ pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> Ogeo
             }
         }
     }
-    if std::env::var_os("OGEOM_DEBUG_MASS").is_some() {
+    if *DEBUG_MASS {
         eprintln!("MASS flags_agree walked {} edges", walks.len());
     }
     for (edge, uses) in &walks {
@@ -1003,7 +1022,7 @@ pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> Ogeo
         }
         let ahead = uses.iter().filter(|(ahead, ..)| *ahead).count();
         if ahead * 2 != uses.len() {
-            if std::env::var_os("OGEOM_DEBUG_MASS").is_some() {
+            if *DEBUG_MASS {
                 eprintln!("MASS edge {} is walked {uses:?}", edge.index());
             }
             return Ok(false);

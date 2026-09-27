@@ -214,3 +214,43 @@ fn a_torus_silhouette_is_marched_and_lands_on_its_own_equators() {
         }
     }
 }
+
+/// A ball's outline drawn at a chord follows its circle to that chord: its
+/// points stand on the radius, and there are enough of them that no chord
+/// between neighbours sags past the deflection. Stepped by the straight
+/// distance between its range's ends, which a closed circle makes zero,
+/// it was an octagon.
+#[test]
+fn a_balls_outline_is_drawn_round_not_as_an_octagon() {
+    let mut model = Model::new();
+    let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 3.0, T)
+        .unwrap()
+        .shape;
+    let view = ogeom::hlr::View::looking(-Vector::Z, Vector::Y, T).unwrap();
+    let chord = 1e-3;
+    let drawing = ogeom::hlr::exact::project_exact(
+        &model,
+        &ball,
+        &view,
+        Deflection::with_chord(chord).unwrap(),
+        T,
+    )
+    .unwrap();
+    let outline: Vec<_> = drawing
+        .visible
+        .iter()
+        .filter(|c| matches!(c.source, ogeom::hlr::Source::Silhouette))
+        .flat_map(|c| {
+            c.points
+                .windows(2)
+                .map(|w| (w[0], w[1]))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(!outline.is_empty());
+    for (a, b) in &outline {
+        // A chord of a radius-3 circle sags by length squared over 24.
+        let length = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
+        assert!(length * length / 24.0 <= chord * 1.5, "a chord of {length}");
+    }
+}

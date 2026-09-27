@@ -36,6 +36,7 @@ use std::fmt::Write as _;
 /// shape's structure cannot be expressed: a non-rigid instance placement, a
 /// solid with no shell.
 pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
+    NON_FINITE.with(|seen| seen.set(false));
     let mut writer = Writer {
         model: document.model(),
         entities: Vec::new(),
@@ -202,7 +203,19 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
         let _ = writeln!(out, "#{}={entity};", i + 1);
     }
     out.push_str("ENDSEC;\nEND-ISO-10303-21;\n");
+    if NON_FINITE.with(std::cell::Cell::get) {
+        ogeom_bail!(
+            Construction,
+            "the model holds a number that is not finite, which a STEP file cannot state"
+        );
+    }
     Ok(out)
+}
+
+std::thread_local! {
+    /// Set when [`real`] meets a value Part 21 has no spelling for, so the
+    /// write refuses rather than emit a file no reader accepts.
+    static NON_FINITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The state of one write: the entity buffer and the per-placement caches.
@@ -1013,6 +1026,10 @@ impl Writer<'_> {
 /// A Part 21 real: shortest round-trip form, decimal point guaranteed,
 /// exponent uppercased.
 fn real(v: f64) -> String {
+    if !v.is_finite() {
+        NON_FINITE.with(|seen| seen.set(true));
+        return "0.0".into();
+    }
     let mut s = format!("{v:?}");
     if let Some(e) = s.find(['e', 'E']) {
         let (mantissa, exponent) = s.split_at(e);
@@ -1029,7 +1046,36 @@ fn real(v: f64) -> String {
 
 /// A string literal's body, quotes doubled per Part 21.
 fn escape(s: &str) -> String {
-    s.replace('\'', "''")
+    // Part 21 strings are ASCII: a quote is doubled, a backslash doubled,
+    // and every run of characters past ASCII written as UTF-16 in hex
+    // between `\X2\` and `\X0\`.
+    let mut out = String::with_capacity(s.len());
+    let mut wide: Vec<u16> = Vec::new();
+    let flush = |wide: &mut Vec<u16>, out: &mut String| {
+        if wide.is_empty() {
+            return;
+        }
+        out.push_str("\\X2\\");
+        for unit in wide.drain(..) {
+            out.push_str(&format!("{unit:04X}"));
+        }
+        out.push_str("\\X0\\");
+    };
+    for c in s.chars() {
+        if c.is_ascii() {
+            flush(&mut wide, &mut out);
+            match c {
+                '\'' => out.push_str("''"),
+                '\\' => out.push_str("\\\\"),
+                _ => out.push(c),
+            }
+        } else {
+            let mut units = [0_u16; 2];
+            wide.extend_from_slice(c.encode_utf16(&mut units));
+        }
+    }
+    flush(&mut wide, &mut out);
+    out
 }
 
 /// Knots as STEP states them: distinct values with multiplicities.
@@ -1071,4 +1117,28 @@ fn location_transform(location: &ogeom_topo::Location, model: &Model) -> OgeomRe
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod escape_tests {
+    /// Names past ASCII, quotes and backslashes survive a write and a read.
+    #[test]
+    fn strings_round_trip_through_part_21_escapes() {
+        for name in [
+            "Welle \u{f8}10",
+            "\u{65e5}\u{672c}",
+            "it's",
+            "back\\slash",
+            "emoji \u{1f600} end",
+        ] {
+            let written = super::escape(name);
+            assert!(written.is_ascii(), "{written}");
+            let read = super::super::parse::decode_escapes(&written.replace("''", "'"));
+            assert_eq!(read, name, "{written}");
+        }
+        // Escapes as other exporters write them.
+        assert_eq!(super::super::parse::decode_escapes("\\X\\F8"), "\u{f8}");
+        assert_eq!(super::super::parse::decode_escapes("a\\S\\xb"), "a\u{f8}b");
+        assert_eq!(super::super::parse::decode_escapes("\\PA\\ok"), "ok");
+    }
 }

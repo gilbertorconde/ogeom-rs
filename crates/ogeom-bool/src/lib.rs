@@ -1529,6 +1529,13 @@ fn fill(
                 // non-manifold contact it is.
                 SurfaceIntersection::Touching(_) => {}
                 SurfaceIntersection::Along(curves) => {
+                    // Where one curve has no chart image, the pair is
+                    // marched whole, every branch at once: the sections its
+                    // other curves already gave are replaced by the marched
+                    // set, and the curves after it add no more, while its
+                    // tangential contacts are still kept.
+                    let before = out.sections.len();
+                    let mut marched = false;
                     for sc in curves {
                         // A tangential curve is contact, not crossing: the
                         // two faces meet along it and neither passes
@@ -1545,6 +1552,9 @@ fn fill(
                                     face_b: ib,
                                 });
                             }
+                            continue;
+                        }
+                        if marched {
                             continue;
                         }
                         // A section can be no longer than a turn round the
@@ -1661,6 +1671,8 @@ fn fill(
                                         core::mem::discriminant(&fb.surface)
                                     );
                                 }
+                                out.sections.truncate(before);
+                                marched = true;
                                 let shared = if admitted {
                                     fa.bound.intersection(&fb.bound)
                                 } else {
@@ -1738,7 +1750,6 @@ fn fill(
                                         face_b: ib,
                                     });
                                 }
-                                break;
                             }
                         }
                     }
@@ -4876,7 +4887,10 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 let Some((ji, junction)) = junctions
                     .iter()
                     .enumerate()
-                    .find(|(_, j)| j.at.distance(q) <= j.reach)
+                    .filter(|(_, j)| j.at.distance(q) <= j.reach)
+                    .min_by(|(a, x), (b, y)| {
+                        x.at.distance(q).total_cmp(&y.at.distance(q)).then(a.cmp(b))
+                    })
                 else {
                     continue;
                 };
@@ -6783,14 +6797,18 @@ pub fn section(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeo
     }
     let mut history = History::new();
     let mut edges = Vec::new();
+    // Consecutive pieces of the section meet end to end, and there they
+    // share one vertex: the section is a wire's worth of edges, not a
+    // scatter of segments each with vertices of its own.
+    let mut vertices: Vec<(Point, Shape)> = Vec::new();
     for (si, range) in wanted {
         let s = &fused.sections[si];
         let domain = s.curve.domain();
         let (f0, f1) = folded_range(range, domain, s.closed);
         let from = s.curve.point_at(at_param(f0, domain, s.closed), tol)?;
         let to = s.curve.point_at(at_param(f1, domain, s.closed), tol)?;
-        let v0 = make_vertex(model, from).shape;
-        let v1 = make_vertex(model, to).shape;
+        let v0 = section_face::vertex(model, &mut vertices, from, tol);
+        let v1 = section_face::vertex(model, &mut vertices, to, tol);
         edges.push(make_edge_between(model, s.curve.clone(), (f0, f1), &v0, &v1, tol)?.shape);
     }
     // Contacts are not crossings, so no piece's ring carries them and the
@@ -6800,12 +6818,8 @@ pub fn section(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeo
         for (lo, hi) in contact_intervals(&fused, contact, tol)? {
             let from = contact.curve.point_at(lo, tol)?;
             let to = contact.curve.point_at(hi, tol)?;
-            let v0 = make_vertex(model, from).shape;
-            let v1 = if from.distance(to) <= tol.confusion() {
-                v0.clone()
-            } else {
-                make_vertex(model, to).shape
-            };
+            let v0 = section_face::vertex(model, &mut vertices, from, tol);
+            let v1 = section_face::vertex(model, &mut vertices, to, tol);
             edges.push(
                 make_edge_between(model, contact.curve.clone(), (lo, hi), &v0, &v1, tol)?.shape,
             );
@@ -6938,6 +6952,10 @@ mod tests {
         let result = section(&mut model, &a, &b, T).unwrap();
         let edges = explore(&model, &result.shape, Filter::OfType(ShapeType::Edge)).unwrap();
         assert_eq!(edges.len(), 6);
+        // One closed loop: six edges end to end on six shared vertices.
+        let vertices =
+            ogeom_topo::explore_unique(&model, &result.shape, ShapeType::Vertex).unwrap();
+        assert_eq!(vertices.len(), 6);
     }
 
     #[test]

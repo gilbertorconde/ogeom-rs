@@ -506,35 +506,18 @@ fn within_trim(
     Ok(out)
 }
 
-/// A curve's polyline over a range, at the given deflection.
+/// A curve's polyline over a range, at the given deflection: the same
+/// discretization the model's edges are drawn with, which follows the
+/// curve's turning. Estimating steps from the straight distance between
+/// the range's ends drew a closed silhouette (a sphere's great circle, a
+/// torus's loop, whose ends coincide) as an octagon.
 fn sampled(
     curve: &Curve,
     range: (f64, f64),
     deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Point>> {
-    // How finely to walk: enough steps that the chord between two of them
-    // stays inside the deflection, from the curve's own length.
-    let span = curve
-        .point_at(range.0, tol)?
-        .distance(curve.point_at(range.1, tol)?);
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a step count, clamped into range"
-    )]
-    let steps =
-        ((span / deflection.chord.max(tol.confusion())).sqrt().ceil() as usize).clamp(8, 512);
-    let mut out = Vec::with_capacity(steps + 1);
-    for k in 0..=steps {
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "a station index, far below the mantissa"
-        )]
-        let t = (range.1 - range.0).mul_add(k as f64 / steps as f64, range.0);
-        out.push(curve.point_at(t, tol)?);
-    }
-    Ok(out)
+    Ok(ogeom_mesh::discretize(curve, range, deflection, tol)?.points)
 }
 
 /// Even-odd containment against chart rings.
