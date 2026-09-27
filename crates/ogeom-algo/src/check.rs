@@ -771,31 +771,33 @@ pub fn check_self_intersection(
 ) -> OgeomResult<Vec<(Shape, Shape)>> {
     use ogeom_topo::explore_unique;
     let faces = explore_unique(model, shape, ShapeType::Face)?;
-    // The topology below each face, for the adjacency exclusion.
-    let mut below: Vec<std::collections::BTreeSet<u64>> = Vec::with_capacity(faces.len());
+    // The topology below each face, for the adjacency exclusion; each face
+    // gathered and bounded once, not once per pair it is in.
+    let mut below: Vec<std::collections::HashSet<TShapeId>> = Vec::with_capacity(faces.len());
+    let mut gathered = Vec::with_capacity(faces.len());
+    let mut bounds = Vec::with_capacity(faces.len());
     for face in &faces {
-        let mut set = std::collections::BTreeSet::new();
+        let mut set = std::collections::HashSet::new();
         for kind in [ShapeType::Edge, ShapeType::Vertex] {
             for sub in explore_unique(model, face, kind)? {
-                let mut hasher = std::hash::DefaultHasher::new();
-                std::hash::Hash::hash(&sub.node(), &mut hasher);
-                set.insert(std::hash::Hasher::finish(&hasher));
+                set.insert(sub.node());
             }
         }
         below.push(set);
+        gathered.push(crate::proximity::Elements::of(model, face, tol)?);
+        bounds.push(crate::measure::shape_bounds(model, face, tol)?.expanded(tol.confusion()));
     }
 
     let mut crossings = Vec::new();
     for i in 0..faces.len() {
         for j in i + 1..faces.len() {
             ogeom_core::progress::checkpoint()?;
-            if !below[i].is_disjoint(&below[j]) {
+            if !bounds[i].intersects(&bounds[j]) || !below[i].is_disjoint(&below[j]) {
                 continue;
             }
-            let reach = crate::distance_between_shapes(
-                model,
-                &faces[i],
-                &faces[j],
+            let reach = crate::proximity::distance_between_prepared(
+                &gathered[i],
+                &gathered[j],
                 ogeom_intersect::ExtremaOptions::default(),
                 tol,
             )?;

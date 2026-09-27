@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **Checks and bounds repeat less.** `shape_bounds` bounds each shared
+  edge and vertex once per call; the face-orientation agreement places
+  each edge's curve once and keeps one golden-section point per round;
+  `check_self_intersection` gathers each face once, skips pairs whose
+  boxes stand apart, and keys adjacency by node rather than by a hash
+  that could collide.
+
 - **`cells` runs one boolean, not three:** the three cells are three
   choices of the same classified pieces. Pipes and evolved solids fuse
   their pieces in a balanced order, neighbours with neighbours, instead of

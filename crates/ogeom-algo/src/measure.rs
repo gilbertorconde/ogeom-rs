@@ -348,6 +348,23 @@ impl Pipe for Vector {
 /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if any handle fails to
 /// resolve, and whatever the geometry's own bound reports.
 pub fn shape_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Aabb> {
+    // Shared sub-shapes are bounded once per call: in a closed solid every
+    // edge is reached from two faces and every vertex from several edges.
+    let mut seen = std::collections::HashMap::new();
+    bounds_within(model, shape, tol, &mut seen)
+}
+
+/// [`shape_bounds`], remembering what it has bounded, by node and placement.
+fn bounds_within(
+    model: &Model,
+    shape: &Shape,
+    tol: Tolerances,
+    seen: &mut std::collections::HashMap<(ogeom_topo::TShapeId, ogeom_topo::Location), Aabb>,
+) -> OgeomResult<Aabb> {
+    let key = (shape.node(), shape.location().clone());
+    if let Some(known) = seen.get(&key) {
+        return Ok(*known);
+    }
     let Some(node) = model.node(shape) else {
         ogeom_bail!(Dangling, "shape refers to a node not in this model");
     };
@@ -394,8 +411,9 @@ pub fn shape_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResul
 
     let mut out = own;
     for child in model.children_of(shape)? {
-        out = out.union(&shape_bounds(model, &child, tol)?);
+        out = out.union(&bounds_within(model, &child, tol, seen)?);
     }
+    seen.insert(key, out);
     Ok(out)
 }
 

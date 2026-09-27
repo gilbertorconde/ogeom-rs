@@ -773,6 +773,13 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
     Ok(Some(regions))
 }
 
+/// Edge curves placed once for [`flags_agree`], with their ranges, by edge
+/// occurrence: each is read at several stations of each face it bounds.
+type PlacedCurves = std::collections::HashMap<
+    (ogeom_topo::TShapeId, ogeom_topo::Location),
+    (ogeom_geom::Curve, (f64, f64)),
+>;
+
 /// Whether the faces agree with each other about which way is out.
 ///
 /// The flag on a face is the only thing that says which side of its surface
@@ -803,6 +810,7 @@ pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> Ogeo
         ogeom_topo::TShapeId,
         Vec<(bool, ogeom_topo::TShapeId, bool)>,
     > = std::collections::HashMap::new();
+    let mut curves: PlacedCurves = std::collections::HashMap::new();
     for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
         if face.location() != &placed_at {
             return Ok(true);
@@ -834,7 +842,7 @@ pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> Ogeo
                 let out = raw / raw.magnitude() * flag;
                 let walk = out.cross(inward / inward.magnitude());
                 let station = placed.point_at(at.x, at.y, tol)?;
-                let Some(along) = edge_heading(model, &edge, station, tol)? else {
+                let Some(along) = edge_heading(model, &edge, station, &mut curves, tol)? else {
                     return Ok(true);
                 };
                 walks.entry(edge.node()).or_default().push((
@@ -998,7 +1006,7 @@ pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> Ogeo
                 // station, since neither a pcurve's parameter nor its sense
                 // need be its curve's.
                 let station = placed.point_at(at.x, at.y, tol)?;
-                let Some(along) = edge_heading(model, &edge, station, tol)? else {
+                let Some(along) = edge_heading(model, &edge, station, &mut curves, tol)? else {
                     return Ok(true);
                 };
                 walks.entry(edge.node()).or_default().push((
@@ -1038,21 +1046,30 @@ fn edge_heading(
     model: &Model,
     edge: &Shape,
     at: Point,
+    curves: &mut PlacedCurves,
     tol: Tolerances,
 ) -> OgeomResult<Option<Vector>> {
     use ogeom_geom::Curve3d as _;
-    let Some((curve, range)) = model
-        .node(edge)
-        .and_then(|n| n.data().as_edge())
-        .and_then(|d| match d.curve3d()? {
-            EdgeRepr::Curve3d { curve, range, .. } => Some((*curve, *range)),
-            _ => None,
-        })
-        .and_then(|(id, range)| Some((model.geometry().curve(id)?.clone(), range)))
-    else {
+    let key = (edge.node(), edge.location().clone());
+    if !curves.contains_key(&key) {
+        let Some((curve, range)) = model
+            .node(edge)
+            .and_then(|n| n.data().as_edge())
+            .and_then(|d| match d.curve3d()? {
+                EdgeRepr::Curve3d { curve, range, .. } => Some((*curve, *range)),
+                _ => None,
+            })
+            .and_then(|(id, range)| Some((model.geometry().curve(id)?.clone(), range)))
+        else {
+            return Ok(None);
+        };
+        let placed = curve.transformed(&edge.transform(model.datums())?, tol)?;
+        curves.insert(key.clone(), (placed, range));
+    }
+    let Some((curve, range)) = curves.get(&key) else {
         return Ok(None);
     };
-    let curve = curve.transformed(&edge.transform(model.datums())?, tol)?;
+    let range = *range;
     let gap = |t: f64| -> OgeomResult<f64> { Ok(curve.point_at(t, tol)?.distance(at)) };
     const SAMPLES: u32 = 32;
     let step = (range.1 - range.0) / f64::from(SAMPLES);
@@ -1068,13 +1085,21 @@ fn edge_heading(
         (best.0 - step.abs()).max(range.0.min(range.1)),
         (best.0 + step.abs()).min(range.0.max(range.1)),
     );
+    // Golden section, each round keeping one of its two interior points.
     let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    let (mut c, mut d) = (b - (b - a) * ratio, a + (b - a) * ratio);
+    let (mut fc, mut fd) = (gap(c)?, gap(d)?);
     for _ in 0..60 {
-        let (c, d) = (b - (b - a) * ratio, a + (b - a) * ratio);
-        if gap(c)? < gap(d)? {
+        if fc < fd {
             b = d;
+            (d, fd) = (c, fc);
+            c = b - (b - a) * ratio;
+            fc = gap(c)?;
         } else {
             a = c;
+            (c, fc) = (d, fd);
+            d = a + (b - a) * ratio;
+            fd = gap(d)?;
         }
     }
     let along = curve.d1_at(f64::midpoint(a, b), tol)?;

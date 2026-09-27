@@ -100,21 +100,49 @@ pub fn distance_between_shapes(
 ) -> OgeomResult<ShapeDistance> {
     let ea = elements(model, a, tol)?;
     let eb = elements(model, b, tol)?;
+    distance_between_elements(&ea, &eb, options, tol)
+}
+
+/// The elements of a shape (its vertices, edges and faces, placed) for
+/// measuring it against others many times: see [`distance_between_elements`].
+pub(crate) struct Elements(Vec<Element>);
+
+impl Elements {
+    pub(crate) fn of(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Self> {
+        Ok(Self(elements(model, shape, tol)?))
+    }
+}
+
+/// [`distance_between_shapes`] on elements already gathered.
+pub(crate) fn distance_between_prepared(
+    a: &Elements,
+    b: &Elements,
+    options: ExtremaOptions,
+    tol: Tolerances,
+) -> OgeomResult<ShapeDistance> {
+    distance_between_elements(&a.0, &b.0, options, tol)
+}
+
+fn distance_between_elements(
+    ea: &[Element],
+    eb: &[Element],
+    options: ExtremaOptions,
+    tol: Tolerances,
+) -> OgeomResult<ShapeDistance> {
     if ea.is_empty() || eb.is_empty() {
         ogeom_bail!(Construction, "a shape with no elements has no distance");
     }
 
     let mut candidates: Vec<(f64, ClosestPair)> = Vec::new();
-    for element_a in &ea {
-        for element_b in &eb {
+    for element_a in ea {
+        for element_b in eb {
             approach(element_a, element_b, options, tol, &mut candidates)?;
         }
     }
-    let Some(least) = candidates
-        .iter()
-        .map(|(d, _)| *d)
-        .min_by(|x, y| x.partial_cmp(y).unwrap_or(core::cmp::Ordering::Equal))
-    else {
+    // A candidate that is not a number measures nothing; it neither wins
+    // nor, compared equal, lets every other through.
+    candidates.retain(|(d, _)| d.is_finite());
+    let Some(least) = candidates.iter().map(|(d, _)| *d).min_by(f64::total_cmp) else {
         ogeom_bail!(
             NotDone,
             "no candidate approach was found between these shapes"
