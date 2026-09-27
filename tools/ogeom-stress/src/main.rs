@@ -385,12 +385,14 @@ fn generated_parts() -> Vec<Part> {
 fn corpus_parts() -> Vec<Part> {
     let dir = format!("{}/../../tests/corpus", env!("CARGO_MANIFEST_DIR"));
     let mut parts = Vec::new();
-    // Parts whose drills finish in a minute or two each; nist_ftc_06's take
-    // several, which a nightly run cannot afford.
+    // Every part here drills in seconds. nist_ftc_06's drills are all
+    // refused today (a boundary strand of the drill's wall dangles), and
+    // the baseline says so, so a fix shows as an improvement.
     for file in [
         "nist_ftc_11_asme1_rb.stp",
         "nist_ctc_01_asme1_rd.stp",
         "nist_ctc_03_asme1_rc.stp",
+        "nist_ftc_06_asme1_rd.stp",
     ] {
         let Ok(text) = std::fs::read_to_string(format!("{dir}/{file}")) else {
             eprintln!("warning: corpus part {file} not found");
