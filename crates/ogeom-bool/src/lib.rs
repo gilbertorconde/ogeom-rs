@@ -106,8 +106,8 @@ impl EdgeKey {
 struct BoundaryEdge {
     /// The edge occurrence's identity, for sharing paves across faces.
     node: EdgeKey,
-    /// The curve in world space.
-    curve: Curve,
+    /// The curve in world space, shared by the faces the edge bounds.
+    curve: std::sync::Arc<Curve>,
     /// The portion the edge covers, in the curve's parameter.
     crange: (f64, f64),
     /// The pcurve on this face's surface.
@@ -231,6 +231,12 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
     }
 
     let mut faces = Vec::new();
+    // Each edge occurrence's world curve, placed once for the faces on
+    // either side of it.
+    let mut placed_curves: std::collections::HashMap<
+        (ogeom_topo::TShapeId, Location),
+        std::sync::Arc<Curve>,
+    > = std::collections::HashMap::new();
     for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
         let Some(node) = model.node(&face) else {
             ogeom_bail!(Dangling, "face is not in this model");
@@ -289,10 +295,16 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
                 }
                 continue;
             };
-            let Some(geometry) = model.geometry().curve(*curve) else {
-                ogeom_bail!(Dangling, "curve is not in this model");
+            let world = match placed_curves.entry((edge.node(), edge.location().clone())) {
+                std::collections::hash_map::Entry::Occupied(known) => known.get().clone(),
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    let Some(geometry) = model.geometry().curve(*curve) else {
+                        ogeom_bail!(Dangling, "curve is not in this model");
+                    };
+                    let placed = geometry.transformed(&edge.transform(model.datums())?, tol)?;
+                    slot.insert(std::sync::Arc::new(placed)).clone()
+                }
             };
-            let world = geometry.transformed(&edge.transform(model.datums())?, tol)?;
             let (pcurve, prange, other_side) =
                 match edge_data.pcurve_for(surface_id, edge.location()) {
                     Some(EdgeRepr::PCurve {
@@ -1503,7 +1515,7 @@ fn fill(
                                             if owner_from_a { "a" } else { "b" },
                                             if owner_from_a { ia } else { ib },
                                             e.node.index(),
-                                            core::mem::discriminant(&e.curve),
+                                            core::mem::discriminant(&*e.curve),
                                             e.curve.point_at(e.crange.0, tol).ok(),
                                             e.curve.point_at(e.crange.1, tol).ok()
                                         );
@@ -1512,7 +1524,7 @@ fn fill(
                                 }
                             };
                             out.contacts.push(ContactRec {
-                                curve: e.curve.clone(),
+                                curve: (*e.curve).clone(),
                                 crange: e.crange,
                                 pcurve,
                                 prange,
@@ -3086,7 +3098,7 @@ fn fill(
                 )
             };
             let straight_on_conic = (matches!(contact.curve, Curve::Line(_)) && conic(&e.curve))
-                || (conic(&contact.curve) && matches!(e.curve, Curve::Line(_)));
+                || (conic(&contact.curve) && matches!(*e.curve, Curve::Line(_)));
             let measured: Vec<ogeom_intersect::Overlap> =
                 if clipped.iter().any(survives) || straight_on_conic {
                     Vec::new()
@@ -5853,7 +5865,7 @@ fn build_sub_edge(
             let v0 = rebuild.vertex(from, tol);
             let v1 = rebuild.vertex(to, tol);
             let model = &mut *rebuild.model;
-            let built = make_edge_between(model, e.curve.clone(), *range, &v0, &v1, tol)?.shape;
+            let built = make_edge_between(model, (*e.curve).clone(), *range, &v0, &v1, tol)?.shape;
             // A piece of a tolerant edge is the same curve with the same
             // honest radius: a fitted rail's stated slop must survive the
             // split, or the next boolean over this solid measures the rail

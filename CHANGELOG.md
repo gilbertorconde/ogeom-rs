@@ -13,6 +13,9 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **A boolean places each edge's curve once,** shared by the faces on
+  either side of it, instead of copying and transforming it per face.
+
 - **An exact mass integral holds at most a million samples.** Each run's
   comparison measures are summed as its samples are drawn; a run past the
   bound is drawn a second time into the result instead of held, the same
