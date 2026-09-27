@@ -35,6 +35,9 @@ pub type BasisValues = SmallVec<[f64; 8]>;
 /// orders the kernel asks for.
 pub type DerivativeRows = SmallVec<[BasisValues; 4]>;
 
+/// Degrees below this take the fixed-array basis path.
+const SMALL_ORDER: usize = 8;
+
 /// A non-decreasing knot sequence with an associated degree.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KnotVector {
@@ -337,6 +340,94 @@ impl KnotVector {
     /// are returned as such rather than as noise.
     #[must_use]
     pub fn basis_derivatives(&self, span: usize, u: f64, n: usize) -> DerivativeRows {
+        if self.degree < SMALL_ORDER {
+            return self.basis_derivatives_small(span, u, n);
+        }
+        self.basis_derivatives_any(span, u, n)
+    }
+
+    /// [`Self::basis_derivatives`] for degree below [`SMALL_ORDER`], every
+    /// scratch table a fixed array: the same recurrence, the same
+    /// arithmetic in the same order, so the same bits, without building
+    /// nested vectors on each of the millions of calls a fit or a march
+    /// makes.
+    fn basis_derivatives_small(&self, span: usize, u: f64, n: usize) -> DerivativeRows {
+        const M: usize = SMALL_ORDER;
+        let p = self.degree;
+        let order = n.min(p);
+        let mut ndu = [[0.0_f64; M]; M];
+        ndu[0][0] = 1.0;
+        let mut left = [0.0_f64; M];
+        let mut right = [0.0_f64; M];
+        for j in 1..=p {
+            left[j] = u - self.knots[span + 1 - j];
+            right[j] = self.knots[span + j] - u;
+            let mut saved = 0.0;
+            for r in 0..j {
+                ndu[j][r] = right[r + 1] + left[j - r];
+                let temp = ndu[r][j - 1] / ndu[j][r];
+                ndu[r][j] = saved + right[r + 1] * temp;
+                saved = left[j - r] * temp;
+            }
+            ndu[j][j] = saved;
+        }
+
+        let mut rows = [[0.0_f64; M]; M];
+        for (j, slot) in rows[0].iter_mut().enumerate().take(p + 1) {
+            *slot = ndu[j][p];
+        }
+        let mut a = [[0.0_f64; M]; 2];
+        for r in 0..=p {
+            let (mut s1, mut s2) = (0_usize, 1_usize);
+            a[0][0] = 1.0;
+            for k in 1..=order {
+                let mut d = 0.0;
+                let rk = r as isize - k as isize;
+                let pk = p - k;
+                if r >= k {
+                    a[s2][0] = a[s1][0] / ndu[pk + 1][rk as usize];
+                    d = a[s2][0] * ndu[rk as usize][pk];
+                }
+                let j1 = if rk >= -1 { 1 } else { (-rk) as usize };
+                let j2 = if r as isize - 1 <= pk as isize {
+                    k - 1
+                } else {
+                    p - r
+                };
+                for j in j1..=j2 {
+                    let index = (rk + j as isize) as usize;
+                    a[s2][j] = (a[s1][j] - a[s1][j - 1]) / ndu[pk + 1][index];
+                    d += a[s2][j] * ndu[index][pk];
+                }
+                if r <= pk {
+                    a[s2][k] = -a[s1][k - 1] / ndu[pk + 1][r];
+                    d += a[s2][k] * ndu[r][pk];
+                }
+                rows[k][r] = d;
+                core::mem::swap(&mut s1, &mut s2);
+            }
+        }
+        let mut factor = p;
+        for (k, row) in rows.iter_mut().enumerate().take(order + 1).skip(1) {
+            #[allow(clippy::cast_precision_loss)]
+            let scale = factor as f64;
+            for value in row.iter_mut().take(p + 1) {
+                *value *= scale;
+            }
+            factor = factor.saturating_mul(p.saturating_sub(k));
+        }
+        (0..=n)
+            .map(|k| {
+                if k < M {
+                    BasisValues::from_slice(&rows[k][..=p])
+                } else {
+                    BasisValues::from_elem(0.0, p + 1)
+                }
+            })
+            .collect()
+    }
+
+    fn basis_derivatives_any(&self, span: usize, u: f64, n: usize) -> DerivativeRows {
         let p = self.degree;
         let order = n.min(p);
 
@@ -765,6 +856,31 @@ mod tests {
             let n = k.basis(span, u);
             assert_relative_eq!(n.iter().sum::<f64>(), 1.0, epsilon = 1e-14);
             assert!(n.iter().all(|v| v.is_finite()), "non-finite basis at {u}");
+        }
+    }
+
+    /// The fixed-array path answers bit for bit what the general one does,
+    /// at every degree it serves and every derivative order asked.
+    #[test]
+    fn the_small_basis_path_is_the_general_one_to_the_bit() {
+        for degree in 1..SMALL_ORDER {
+            let count = degree + 5;
+            let knots = KnotVector::clamped_uniform(degree, count).unwrap();
+            let (lo, hi) = knots.domain();
+            for step in 0..=40 {
+                let u = lo + (hi - lo) * f64::from(step) / 40.0;
+                let span = knots.span_unchecked(u);
+                for n in 0..=degree + 1 {
+                    let fast = knots.basis_derivatives_small(span, u, n);
+                    let slow = knots.basis_derivatives_any(span, u, n);
+                    assert_eq!(fast.len(), slow.len());
+                    for (a, b) in fast.iter().zip(&slow) {
+                        let bits =
+                            |r: &BasisValues| r.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                        assert_eq!(bits(a), bits(b), "degree {degree} u {u} n {n}");
+                    }
+                }
+            }
         }
     }
 }

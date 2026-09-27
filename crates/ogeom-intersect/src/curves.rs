@@ -1106,14 +1106,42 @@ fn general_3d(
     // found the same few crossings over and over: five in six polishes
     // were repeats.
     let (na, nb) = (sa.points.len(), sb.points.len());
+    // Pairs whose boxes stand further apart than the reach cannot be in
+    // it: they are not measured, and read as out of reach, which is what
+    // measuring them would have said, for the reach test and for the
+    // basin test alike.
+    let boxes = |s: &Sampled<Point>| -> Vec<(Point, Point)> {
+        s.points
+            .windows(2)
+            .map(|w| {
+                (
+                    Point::new(w[0].x.min(w[1].x), w[0].y.min(w[1].y), w[0].z.min(w[1].z)),
+                    Point::new(w[0].x.max(w[1].x), w[0].y.max(w[1].y), w[0].z.max(w[1].z)),
+                )
+            })
+            .collect()
+    };
+    let (boxes_a, boxes_b) = (boxes(&sa), boxes(&sb));
+    let apart = |x: &(Point, Point), y: &(Point, Point)| {
+        x.0.x - y.1.x > reach
+            || y.0.x - x.1.x > reach
+            || x.0.y - y.1.y > reach
+            || y.0.y - x.1.y > reach
+            || x.0.z - y.1.z > reach
+            || y.0.z - x.1.z > reach
+    };
     let mut approach: Vec<(f64, f64, f64)> =
         Vec::with_capacity(na.saturating_sub(1) * nb.saturating_sub(1));
     for i in 1..na {
         for j in 1..nb {
-            approach.push(segments_approach_3d(
-                (sa.points[i - 1], sa.points[i]),
-                (sb.points[j - 1], sb.points[j]),
-            ));
+            approach.push(if apart(&boxes_a[i - 1], &boxes_b[j - 1]) {
+                (0.0, 0.0, f64::INFINITY)
+            } else {
+                segments_approach_3d(
+                    (sa.points[i - 1], sa.points[i]),
+                    (sb.points[j - 1], sb.points[j]),
+                )
+            });
         }
     }
     let cols = nb.saturating_sub(1);

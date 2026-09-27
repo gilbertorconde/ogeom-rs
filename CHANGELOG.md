@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **Spline basis derivatives run on fixed arrays below degree eight,** bit
+  for bit the general recurrence without its nested scratch vectors: a
+  third off the thread-groove tests. Curve crossings skip segment pairs
+  whose boxes stand further apart than the reach.
+
 - **Exact volumes of spline faces cost a third of what they did.** The
   chart integral reads a polynomial patch along each inner integral's own
   `v` from the net summed across `v` once, and a polynomial patch's first
