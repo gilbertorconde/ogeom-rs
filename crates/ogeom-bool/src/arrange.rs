@@ -83,11 +83,37 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
     // Endpoints snapped to canonical nodes. Only endpoints: the pre-split
     // contract says strands meet nowhere else.
     let mut nodes: Vec<Point2> = Vec::new();
-    let canon = |p: Point2, nodes: &mut Vec<Point2>| -> usize {
-        if let Some(i) = nodes.iter().position(|n| n.distance(p) <= snap) {
+    // Nodes binned on a grid of the snap's own size, so an endpoint looks
+    // only at the nine bins about it; of the nodes in reach it takes the
+    // first made, the one a scan in order would have met first.
+    let cell = |p: Point2| -> (i64, i64) {
+        let at = |x: f64| -> i64 {
+            #[allow(clippy::cast_possible_truncation)]
+            let k = (x / snap.max(f64::MIN_POSITIVE)).floor() as i64;
+            k
+        };
+        (at(p.x), at(p.y))
+    };
+    let mut bins: std::collections::HashMap<(i64, i64), Vec<usize>> =
+        std::collections::HashMap::new();
+    let mut canon = |p: Point2, nodes: &mut Vec<Point2>| -> usize {
+        let (cx, cy) = cell(p);
+        let mut first: Option<usize> = None;
+        for dx in -1..=1_i64 {
+            for dy in -1..=1_i64 {
+                let key = (cx.saturating_add(dx), cy.saturating_add(dy));
+                for &i in bins.get(&key).map_or(&[][..], Vec::as_slice) {
+                    if nodes[i].distance(p) <= snap && first.is_none_or(|f| i < f) {
+                        first = Some(i);
+                    }
+                }
+            }
+        }
+        if let Some(i) = first {
             return i;
         }
         nodes.push(p);
+        bins.entry((cx, cy)).or_default().push(nodes.len() - 1);
         nodes.len() - 1
     };
     let mut ends: Vec<(usize, usize)> = Vec::new();
@@ -147,25 +173,41 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
     // Prune dangling chains. A section that fails to separate material hangs
     // by an end; a *boundary* strand doing so means the face's own boundary
     // does not close, which no amount of pruning repairs.
-    loop {
+    //
+    // Peeled by a queue: a strand goes when either end is left on fewer
+    // than two strands, and its going may leave its neighbours so, which
+    // the queue takes up in turn. What goes is what peeling round after
+    // round would take, and the survivors keep their order.
+    {
         let mut degree = vec![0_usize; nodes.len()];
-        for (u, v) in &ends {
+        let mut at_node: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+        for (k, (u, v)) in ends.iter().enumerate() {
             degree[*u] += 1;
             degree[*v] += 1;
+            at_node[*u].push(k);
+            at_node[*v].push(k);
         }
-        let mut dropped = false;
-        let mut keep_ends = Vec::with_capacity(ends.len());
-        let mut keep_live = Vec::with_capacity(live.len());
-        for (strand, (u, v)) in live.iter().zip(&ends) {
-            if degree[*u] < 2 || degree[*v] < 2 {
+        let mut gone = vec![false; ends.len()];
+        let mut queue: std::collections::VecDeque<usize> =
+            (0..nodes.len()).filter(|n| degree[*n] < 2).collect();
+        while let Some(n) = queue.pop_front() {
+            for &k in &at_node[n] {
+                if gone[k] {
+                    continue;
+                }
+                let (u, v) = ends[k];
+                if degree[u] >= 2 && degree[v] >= 2 {
+                    continue;
+                }
+                let strand = live[k];
                 if strand.boundary {
                     if std::env::var("OGEOM_ARRANGE_DEBUG").is_ok() {
                         eprintln!(
                             "DANGLE: boundary strand {:?} .. {:?} (deg {} / {})",
                             strand.polyline[0],
                             strand.polyline[strand.polyline.len() - 1],
-                            degree[*u],
-                            degree[*v]
+                            degree[u],
+                            degree[v]
                         );
                     }
                     ogeom_bail!(
@@ -174,17 +216,25 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
                          close in parameter space"
                     );
                 }
-                dropped = true;
-                continue;
+                gone[k] = true;
+                for end in [u, v] {
+                    degree[end] -= 1;
+                    if degree[end] < 2 {
+                        queue.push_back(end);
+                    }
+                }
             }
-            keep_live.push(*strand);
-            keep_ends.push((*u, *v));
+        }
+        let mut keep_live = Vec::with_capacity(live.len());
+        let mut keep_ends = Vec::with_capacity(ends.len());
+        for (k, (strand, end)) in live.iter().zip(&ends).enumerate() {
+            if !gone[k] {
+                keep_live.push(*strand);
+                keep_ends.push(*end);
+            }
         }
         live = keep_live;
         ends = keep_ends;
-        if !dropped {
-            break;
-        }
     }
     if live.is_empty() {
         ogeom_bail!(Construction, "the face's boundary vanished in arrangement");
@@ -215,11 +265,15 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
     for d in 0..dart_count {
         around[tail(d)].push(d);
     }
-    for (node, ring) in around.iter_mut().enumerate() {
+    // Each dart's angle once, not once per comparison.
+    let heading: Vec<f64> = (0..dart_count)
+        .map(|d| angle(nodes[tail(d)], leaving(d)))
+        .collect();
+    for ring in &mut around {
         ring.sort_by(|&x, &y| {
-            let a = angle(nodes[node], leaving(x));
-            let b = angle(nodes[node], leaving(y));
-            a.partial_cmp(&b).unwrap_or(core::cmp::Ordering::Equal)
+            heading[x]
+                .partial_cmp(&heading[y])
+                .unwrap_or(core::cmp::Ordering::Equal)
         });
     }
     let mut position = vec![0_usize; dart_count];
@@ -298,29 +352,53 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
     let nodes_of = |cycle: &[usize]| -> std::collections::BTreeSet<usize> {
         cycle.iter().map(|&d| tail(d)).collect()
     };
-    let meet = |x: &[usize], y: &[usize]| -> bool {
-        let ys = nodes_of(y);
-        nodes_of(x).iter().any(|n| ys.contains(n))
+    // Each cycle's nodes, area and box, found once: the nesting below asks
+    // them of every hole against every positive cycle, twice over.
+    let boxed = |line: &[Point2]| -> (Point2, Point2) {
+        line.iter().fold(
+            (
+                Point2::new(f64::INFINITY, f64::INFINITY),
+                Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+            ),
+            |(lo, hi), p| {
+                (
+                    Point2::new(lo.x.min(p.x), lo.y.min(p.y)),
+                    Point2::new(hi.x.max(p.x), hi.y.max(p.y)),
+                )
+            },
+        )
     };
+    let within = |b: &(Point2, Point2), p: Point2| {
+        p.x >= b.0.x && p.x <= b.1.x && p.y >= b.0.y && p.y <= b.1.y
+    };
+    let positive_nodes: Vec<_> = positives.iter().map(|(c, _)| nodes_of(c)).collect();
+    let positive_area: Vec<f64> = positives.iter().map(|(_, l)| area(l).abs()).collect();
+    let positive_box: Vec<_> = positives.iter().map(|(_, l)| boxed(l)).collect();
+    let negative_nodes: Vec<_> = negatives.iter().map(|(c, _)| nodes_of(c)).collect();
+    let meet = |x: &std::collections::BTreeSet<usize>, y: &std::collections::BTreeSet<usize>| {
+        x.iter().any(|n| y.contains(n))
+    };
+    // A point outside a polygon's box is outside the polygon.
+    let contains = |k: usize, p: Point2| within(&positive_box[k], p) && inside(&positives[k].1, p);
     let mut pieces = Vec::new();
-    for (cycle, line) in &positives {
+    for (pi, (cycle, line)) in positives.iter().enumerate() {
         let mut rings = vec![traversals(cycle, &live)];
         let mut rings_outline = vec![line.clone()];
-        for (hole_cycle, hole) in &negatives {
+        for (hi, (hole_cycle, hole)) in negatives.iter().enumerate() {
             // A hole belongs to the smallest positive cycle strictly
             // containing it; sharing a node means same component, not a hole.
-            if meet(hole_cycle, cycle) {
+            if meet(&negative_nodes[hi], &positive_nodes[pi]) {
                 continue;
             }
-            if !inside(line, hole[0]) {
+            if !contains(pi, hole[0]) {
                 continue;
             }
-            let direct = !positives.iter().any(|(other_cycle, other)| {
-                !core::ptr::eq(other, line)
-                    && inside(line, other[0])
-                    && area(other).abs() < area(line).abs()
-                    && inside(other, hole[0])
-                    && !meet(hole_cycle, other_cycle)
+            let direct = !(0..positives.len()).any(|oi| {
+                oi != pi
+                    && contains(pi, positives[oi].1[0])
+                    && positive_area[oi] < positive_area[pi]
+                    && contains(oi, hole[0])
+                    && !meet(&negative_nodes[hi], &positive_nodes[oi])
             });
             if direct {
                 rings.push(traversals(hole_cycle, &live));

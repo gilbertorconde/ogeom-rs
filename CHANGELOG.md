@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **A face's arrangement has no quadratic steps left.** Strand ends snap
+  through a grid, dangling chains peel through a queue, each dart's angle
+  is computed once before sorting, and hole nesting reads each cycle's
+  nodes, area and box once and tests boxes before polygons. Every choice
+  is the one the old scans made.
+
 - **A march's seeding tests each cell only against cells it could meet,**
   binned by box, in their own order, instead of every cell of the other
   surface.
