@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **Curve crossings seed only where the curves come nearest.** Two curves
+  running near each other (a boolean's section beside the edge it was cut
+  along) put hundreds of segment pairs in reach, and each was polished by
+  Newton to the same few crossings. Seeds are now the pairs nearest along
+  either curve, and stretches the curves share are not polished at all.
+  The stress harness runs in 16 s instead of 143 s with every outcome
+  unchanged; one corpus drill went from 18 s to 1.5 s.
+
 - **Walks, classification and evaluation do less of the same work.**
   `explore` no longer descends below the type it is looking for; a
   placed child is built in one step; a solid's prepared boundary answers a

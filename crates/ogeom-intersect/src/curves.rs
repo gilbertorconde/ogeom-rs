@@ -1074,14 +1074,69 @@ fn general_3d(
         reach += longest;
     }
 
-    let mut crossings: Vec<Crossing<Point>> = Vec::new();
-    for i in 1..sa.points.len() {
-        for j in 1..sb.points.len() {
-            let (ta, tb, gap) = segments_approach_3d(
+    // Where the first curve runs along the second, every segment pair near
+    // the stretch is in reach, and each seeds a polish that lands on the
+    // same shared support the overlap pass reports whole and removes the
+    // crossings of. So the samples' feet are found first, and a segment of
+    // the first curve lying wholly in such a stretch seeds nothing: a
+    // section along an edge would otherwise run thousands of polishes for
+    // crossings that are all discarded.
+    let feet: Vec<Option<(f64, f64)>> = sa
+        .points
+        .iter()
+        .map(|p| foot_via_samples(b, &sb, *p, tol))
+        .collect();
+    let overlaps = if hugging_runs(&feet, options.gap).contains(&true) {
+        shared_support_3d(a, b, &sa, &sb, &feet, options, tol)
+    } else {
+        Vec::new()
+    };
+    let shared = |lo: f64, hi: f64| {
+        overlaps.iter().any(|o| {
+            let (from, to) = order(o.on_a.0, o.on_a.1);
+            lo >= from && hi <= to
+        })
+    };
+
+    // Every segment pair's closest approach, then seeds only where it is a
+    // local minimum among the neighbouring pairs. Each crossing sits in
+    // such a basin; the pairs round it would all polish to the same place.
+    // Two curves running near each other (a section beside the edge it was
+    // cut along) put hundreds of pairs in reach, and polishing every one
+    // found the same few crossings over and over: five in six polishes
+    // were repeats.
+    let (na, nb) = (sa.points.len(), sb.points.len());
+    let mut approach: Vec<(f64, f64, f64)> =
+        Vec::with_capacity(na.saturating_sub(1) * nb.saturating_sub(1));
+    for i in 1..na {
+        for j in 1..nb {
+            approach.push(segments_approach_3d(
                 (sa.points[i - 1], sa.points[i]),
                 (sb.points[j - 1], sb.points[j]),
-            );
-            if gap > reach {
+            ));
+        }
+    }
+    let cols = nb.saturating_sub(1);
+    let gap_at = |i: usize, j: usize| approach[(i - 1) * cols + (j - 1)].2;
+    // Lowest along either curve: a pair nearer than both its neighbours in
+    // the first curve's direction, or in the second's.
+    let basin = |i: usize, j: usize| {
+        let here = gap_at(i, j);
+        let along_a = (i.saturating_sub(1).max(1)..=(i + 1).min(na - 1))
+            .all(|p| p == i || here <= gap_at(p, j));
+        let along_b = (j.saturating_sub(1).max(1)..=(j + 1).min(nb - 1))
+            .all(|q| q == j || here <= gap_at(i, q));
+        along_a || along_b
+    };
+    let mut crossings: Vec<Crossing<Point>> = Vec::new();
+    for i in 1..na {
+        let (lo, hi) = order(sa.parameters[i - 1], sa.parameters[i]);
+        if shared(lo, hi) {
+            continue;
+        }
+        for j in 1..nb {
+            let (ta, tb, gap) = approach[(i - 1) * cols + (j - 1)];
+            if gap > reach || !basin(i, j) {
                 continue;
             }
             let seed_a = sa.parameters[i - 1] + (sa.parameters[i] - sa.parameters[i - 1]) * ta;
@@ -1159,7 +1214,6 @@ fn general_3d(
     // consecutive samples within the gap is an overlap with its ends
     // bisected to parametric resolution, and the crossings inside it are
     // the overlap's, not the caller's.
-    let overlaps = shared_support_3d(a, b, &sa, &sb, options, tol);
     if !overlaps.is_empty() {
         crossings.retain(|c| {
             !overlaps.iter().any(|o| {
@@ -1229,38 +1283,68 @@ fn contact_between_3d(
 
 /// Runs of the first curve's samples whose feet on the second lie within
 /// the gap, each bisected to its parametric ends.
+/// The foot of a point on the second curve, seeded from its sampled
+/// polyline's nearest segment: the parameter and the distance there.
+fn foot_via_samples(
+    b: &Curve,
+    sb: &Sampled<Point>,
+    p: Point,
+    tol: Tolerances,
+) -> Option<(f64, f64)> {
+    let mut seed = (f64::INFINITY, 0.0);
+    for j in 1..sb.points.len() {
+        let (_, tb, gap) = segments_approach_3d((p, p), (sb.points[j - 1], sb.points[j]));
+        if gap < seed.0 {
+            seed = (
+                gap,
+                sb.parameters[j - 1] + (sb.parameters[j] - sb.parameters[j - 1]) * tb,
+            );
+        }
+    }
+    if !seed.0.is_finite() {
+        return None;
+    }
+    foot_on_3d(b, p, seed.1, tol)
+}
+
+/// Which samples of the first curve lie in a run of two or more whose feet
+/// on the second are within the gap: the stretches [`shared_support_3d`]
+/// reports as overlaps, sample by sample.
+fn hugging_runs(feet: &[Option<(f64, f64)>], gap: f64) -> Vec<bool> {
+    let within = |i: usize| feet[i].is_some_and(|(_, g)| g <= gap);
+    let mut out = vec![false; feet.len()];
+    let mut i = 0;
+    while i < feet.len() {
+        if !within(i) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i + 1 < feet.len() && within(i + 1) {
+            i += 1;
+        }
+        if i > start {
+            out[start..=i].fill(true);
+        }
+        i += 1;
+    }
+    out
+}
+
 fn shared_support_3d(
     a: &Curve,
     b: &Curve,
     sa: &Sampled<Point>,
     sb: &Sampled<Point>,
+    feet: &[Option<(f64, f64)>],
     options: CurveCurveOptions,
     tol: Tolerances,
 ) -> Vec<Overlap> {
-    // The foot of a point on the second curve, seeded from the sampled
-    // polyline's nearest segment.
-    let foot = |p: Point| -> Option<(f64, f64)> {
-        let mut seed = (f64::INFINITY, 0.0);
-        for j in 1..sb.points.len() {
-            let (_, tb, gap) = segments_approach_3d((p, p), (sb.points[j - 1], sb.points[j]));
-            if gap < seed.0 {
-                seed = (
-                    gap,
-                    sb.parameters[j - 1] + (sb.parameters[j] - sb.parameters[j - 1]) * tb,
-                );
-            }
-        }
-        if !seed.0.is_finite() {
-            return None;
-        }
-        foot_on_3d(b, p, seed.1, tol)
-    };
     let hugs = |t: f64| -> Option<(f64, f64)> {
         let p = a.point_at(t, tol).ok()?;
-        let (s, gap) = foot(p)?;
+        let (s, gap) = foot_via_samples(b, sb, p, tol)?;
         (gap <= options.gap).then_some((s, gap))
     };
-    let feet: Vec<Option<(f64, f64)>> = sa.points.iter().map(|p| foot(*p)).collect();
     let within = |i: usize| feet[i].is_some_and(|(_, gap)| gap <= options.gap);
 
     let mut overlaps = Vec::new();
