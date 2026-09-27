@@ -157,15 +157,48 @@ fn split_across_slivers(points: &[Point], triangles: &mut Vec<[u32; 3]>, slivers
             [p, middle, q]
         })
         .collect();
+    // The triangles on each undirected edge, by index, lowest first: the
+    // triangle across a sliver's long side is found from its edge, not by
+    // scanning the mesh, and the lowest index is the one a scan would meet
+    // first.
+    let key = |x: u32, y: u32| (x.min(y), x.max(y));
+    let mut on_edge: std::collections::HashMap<(u32, u32), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, t) in triangles.iter().enumerate() {
+        for k in 0..3 {
+            on_edge
+                .entry(key(t[k], t[(k + 1) % 3]))
+                .or_default()
+                .push(i);
+        }
+    }
+    let unlink =
+        |on_edge: &mut std::collections::HashMap<(u32, u32), Vec<usize>>, t: [u32; 3], i: usize| {
+            for k in 0..3 {
+                if let Some(list) = on_edge.get_mut(&key(t[k], t[(k + 1) % 3]))
+                    && let Ok(at) = list.binary_search(&i)
+                {
+                    list.remove(at);
+                }
+            }
+        };
+    let link =
+        |on_edge: &mut std::collections::HashMap<(u32, u32), Vec<usize>>, t: [u32; 3], i: usize| {
+            for k in 0..3 {
+                let list = on_edge.entry(key(t[k], t[(k + 1) % 3])).or_default();
+                if let Err(at) = list.binary_search(&i) {
+                    list.insert(at, i);
+                }
+            }
+        };
     loop {
         let mut progress = false;
         let mut left = Vec::new();
         for [p, middle, q] in pending {
-            let across = triangles.iter().position(|t| {
-                (0..3).any(|k| {
-                    let (x, y) = (t[k], t[(k + 1) % 3]);
-                    (x == p && y == q) || (x == q && y == p)
-                }) && !t.contains(&middle)
+            let across = on_edge.get(&key(p, q)).and_then(|list| {
+                list.iter()
+                    .copied()
+                    .find(|&i| !triangles[i].contains(&middle))
             });
             let Some(index) = across else {
                 left.push([p, middle, q]);
@@ -179,8 +212,11 @@ fn split_across_slivers(points: &[Point], triangles: &mut Vec<[u32; 3]>, slivers
                 continue;
             };
             let (x, y, z) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+            unlink(&mut on_edge, t, index);
             triangles[index] = [x, middle, z];
+            link(&mut on_edge, triangles[index], index);
             triangles.push([middle, y, z]);
+            link(&mut on_edge, [middle, y, z], triangles.len() - 1);
             progress = true;
         }
         pending = left;

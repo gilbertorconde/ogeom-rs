@@ -307,6 +307,10 @@ pub fn project_exact(
 struct Blocker {
     surface: SurfaceGeometry,
     rings: Vec<Vec<Point2>>,
+    /// The face's box: a face whose projected box misses a point's
+    /// projection, or that lies wholly behind the point, cannot hide it,
+    /// and is not intersected.
+    bound: ogeom_math::Aabb,
 }
 
 fn blockers(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<Blocker>> {
@@ -322,6 +326,7 @@ fn blockers(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<Bl
         out.push(Blocker {
             surface: ogeom_geom::Transformable::transformed(&surface, &placement, tol)?,
             rings: ogeom_mesh::face_boundary(model, &face, Deflection::default(), tol)?,
+            bound: ogeom_algo::shape_bounds(model, &face, tol)?.expanded(tol.confusion() * 1e3),
         });
     }
     Ok(out)
@@ -393,7 +398,21 @@ fn occluded(at: Point, view: &View, faces: &[Blocker], tol: Tolerances) -> Ogeom
         Direction::new(direction, tol)?,
     )));
     let options = ogeom_intersect::CurveSurfaceOptions::default();
+    let (seen, depth) = (view.project(at), view.depth(at));
     for face in faces {
+        let corners = face.bound.corners();
+        if corners.is_empty() {
+            continue;
+        }
+        let projected: Vec<Point2> = corners.iter().map(|c| view.project(*c)).collect();
+        let covers = projected.iter().any(|q| q.x <= seen.x)
+            && projected.iter().any(|q| q.x >= seen.x)
+            && projected.iter().any(|q| q.y <= seen.y)
+            && projected.iter().any(|q| q.y >= seen.y);
+        let in_front = corners.iter().any(|c| view.depth(*c) > depth);
+        if !covers || !in_front {
+            continue;
+        }
         let found = ogeom_intersect::intersect_curve_surface(&ray, &face.surface, options, tol)?;
         for piercing in &found.crossings {
             if piercing.on_curve <= clearance || piercing.on_curve >= reach {

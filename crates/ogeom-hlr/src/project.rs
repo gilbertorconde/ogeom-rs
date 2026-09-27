@@ -134,6 +134,7 @@ pub fn project(
     // inscribed mesh, and a sample on a front face must not be occluded by
     // that face's own triangles: the clearance a hit must beat.
     let clearance = deflection.chord.max(tol.confusion() * 1e3) * 4.0;
+    let occluders = Occluders::over(&mesh, view);
 
     let mut drawing = Drawing::default();
 
@@ -152,7 +153,7 @@ pub fn project(
             &points,
             Source::Edge(edge.clone()),
             view,
-            &mesh,
+            &occluders,
             clearance,
             tol,
         );
@@ -195,7 +196,7 @@ pub fn project(
             &points,
             Source::Silhouette,
             view,
-            &mesh,
+            &occluders,
             clearance,
             tol,
         );
@@ -209,7 +210,7 @@ fn classify_into(
     points: &[Point],
     source: Source,
     view: &View,
-    mesh: &Triangulation,
+    occluders: &Occluders<'_>,
     clearance: f64,
     tol: Tolerances,
 ) {
@@ -244,7 +245,7 @@ fn classify_into(
             f64::midpoint(a.y, b.y),
             f64::midpoint(a.z, b.z),
         );
-        let visibility = if occluded(mesh, mid, view, clearance) {
+        let visibility = if occluders.occlude(mid, view, clearance) {
             Visibility::Hidden
         } else {
             Visibility::Visible
@@ -261,12 +262,137 @@ fn classify_into(
     flush(&mut run, run_visibility);
 }
 
-/// Whether anything in the mesh stands between the point and the eye.
-fn occluded(mesh: &Triangulation, p: Point, view: &View, clearance: f64) -> bool {
+/// A mesh's triangles binned by where they project in the view.
+///
+/// The view is orthographic, so the ray from a point toward the eye can
+/// only hit a triangle whose projection covers the point's: a sample is
+/// tested against the triangles of its own cell of a grid over the drawing,
+/// not the whole mesh. The test itself is unchanged, so is the answer.
+struct Occluders<'m> {
+    mesh: &'m Triangulation,
+    cells: Vec<Vec<u32>>,
+    low: Point2,
+    size: f64,
+    columns: usize,
+    rows: usize,
+}
+
+impl<'m> Occluders<'m> {
+    fn over(mesh: &'m Triangulation, view: &View) -> Self {
+        let projected: Vec<Point2> = mesh.positions.iter().map(|p| view.project(*p)).collect();
+        let (mut low, mut high) = (
+            Point2::new(f64::INFINITY, f64::INFINITY),
+            Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+        );
+        for p in &projected {
+            low = Point2::new(low.x.min(p.x), low.y.min(p.y));
+            high = Point2::new(high.x.max(p.x), high.y.max(p.y));
+        }
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
+        let side = ((mesh.triangles.len() as f64).sqrt().ceil() as usize).clamp(1, 512);
+        let span = (high.x - low.x).max(high.y - low.y);
+        #[allow(clippy::cast_precision_loss)]
+        let size = if span.is_finite() && span > 0.0 {
+            span / side as f64
+        } else {
+            1.0
+        };
+        let (columns, rows) = (side, side);
+        let mut cells: Vec<Vec<u32>> = vec![Vec::new(); columns * rows];
+        let cell = |x: f64, lo: f64, n: usize| -> usize {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let k = ((x - lo) / size).floor().max(0.0) as usize;
+            k.min(n - 1)
+        };
+        for (t, triangle) in mesh.triangles.iter().enumerate() {
+            let corners = triangle.map(|i| projected[i as usize]);
+            let (x0, x1) = (
+                corners.iter().map(|p| p.x).fold(f64::INFINITY, f64::min),
+                corners
+                    .iter()
+                    .map(|p| p.x)
+                    .fold(f64::NEG_INFINITY, f64::max),
+            );
+            let (y0, y1) = (
+                corners.iter().map(|p| p.y).fold(f64::INFINITY, f64::min),
+                corners
+                    .iter()
+                    .map(|p| p.y)
+                    .fold(f64::NEG_INFINITY, f64::max),
+            );
+            if !(x0.is_finite() && x1.is_finite() && y0.is_finite() && y1.is_finite()) {
+                continue;
+            }
+            // A cell's worth of margin each way: the test's own tolerance
+            // lets a hit land a hair outside the exact projection.
+            let (c0, c1) = (
+                cell(x0 - size, low.x, columns),
+                cell(x1 + size, low.x, columns),
+            );
+            let (r0, r1) = (cell(y0 - size, low.y, rows), cell(y1 + size, low.y, rows));
+            #[allow(clippy::cast_possible_truncation)]
+            for r in r0..=r1 {
+                for c in c0..=c1 {
+                    cells[r * columns + c].push(t as u32);
+                }
+            }
+        }
+        Self {
+            mesh,
+            cells,
+            low,
+            size,
+            columns,
+            rows,
+        }
+    }
+
+    /// Whether anything in the mesh stands between `p` and the eye.
+    fn occlude(&self, p: Point, view: &View, clearance: f64) -> bool {
+        let q = view.project(p);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss
+        )]
+        let at = |x: f64, lo: f64, n: usize| -> Option<usize> {
+            // A point on the drawing's outer edge falls exactly at the
+            // grid's end: within a cell of it, it belongs to the last cell.
+            let k = ((x - lo) / self.size).floor();
+            (k >= -1.0 && k <= n as f64).then(|| (k.max(0.0) as usize).min(n - 1))
+        };
+        let (Some(c), Some(r)) = (
+            at(q.x, self.low.x, self.columns),
+            at(q.y, self.low.y, self.rows),
+        ) else {
+            return false;
+        };
+        occluded(
+            self.mesh,
+            self.cells[r * self.columns + c].iter().map(|t| *t as usize),
+            p,
+            view,
+            clearance,
+        )
+    }
+}
+
+/// Whether any of the given triangles stands between the point and the eye.
+fn occluded(
+    mesh: &Triangulation,
+    candidates: impl Iterator<Item = usize>,
+    p: Point,
+    view: &View,
+    clearance: f64,
+) -> bool {
     let toward_eye = view.toward_eye();
     let depth = view.depth(p);
-    for triangle in &mesh.triangles {
-        let [a, b, c] = *triangle;
+    for t in candidates {
+        let [a, b, c] = mesh.triangles[t];
         let (pa, pb, pc) = (
             mesh.positions[a as usize],
             mesh.positions[b as usize],

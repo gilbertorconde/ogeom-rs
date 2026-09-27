@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **Hidden lines test each sample against the triangles and faces in
+  front of it only.** The mesh drawing bins triangles by where they
+  project; the exact drawing skips faces whose projected box misses the
+  sample or that lie wholly behind it. Mesh-to-solid finds the triangle
+  across a sliver from an edge map instead of a scan.
+
 - **The STEP reader borrows its arguments instead of copying them,** and
   the writer finds a coloured product's entities by node instead of
   scanning every written entity per product.
