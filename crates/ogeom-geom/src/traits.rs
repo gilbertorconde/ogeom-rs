@@ -18,6 +18,12 @@
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_math::{Direction, Point, Point2, Transform, Vector, Vector2};
 
+/// Whether a curve evaluated outside its domain says where it was asked
+/// from. Read once: the refusal is routine inside booleans, and reading the
+/// environment takes a lock.
+static DEBUG_DOMAIN: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("OGEOM_DEBUG_DOMAIN").is_some());
+
 /// How smooth a curve or surface is.
 ///
 /// Ordered from least to most smooth, so `>=` is a meaningful test.
@@ -222,12 +228,15 @@ pub trait Curve3d {
     /// domain of a non-periodic curve by more than `tol.parametric()`.
     fn normalize_parameter(&self, u: f64, tol: Tolerances) -> OgeomResult<f64> {
         let (a, b) = self.domain();
-        if self.is_periodic() {
+        if self.is_periodic() && u.is_finite() {
+            if u >= a && u < b {
+                return Ok(u);
+            }
             let period = b - a;
             return Ok(a + (u - a).rem_euclid(period));
         }
         if !u.is_finite() || u < a - tol.parametric() || u > b + tol.parametric() {
-            if std::env::var_os("OGEOM_DEBUG_DOMAIN").is_some() {
+            if *DEBUG_DOMAIN {
                 eprintln!(
                     "DOMAIN {u} outside [{a}, {b}]:\n{}",
                     std::backtrace::Backtrace::force_capture()
@@ -577,11 +586,16 @@ pub trait Surface {
         let slack = tol.parametric();
         let u = if u >= ua - slack && u <= ub + slack && !self.is_periodic_u() {
             u.clamp(ua, ub)
+        } else if u >= ua && u < ub {
+            // Periodic and already in its first period: nothing to wrap.
+            u
         } else {
             self.parameter_outside(u, ua, ub, self.is_periodic_u(), true, tol)?
         };
         let v = if v >= va - slack && v <= vb + slack && !self.is_periodic_v() {
             v.clamp(va, vb)
+        } else if v >= va && v < vb {
+            v
         } else {
             self.parameter_outside(v, va, vb, self.is_periodic_v(), false, tol)?
         };
@@ -616,7 +630,7 @@ pub trait Surface {
         across: bool,
         tol: Tolerances,
     ) -> OgeomResult<f64> {
-        if periodic {
+        if periodic && t.is_finite() {
             return Ok(a + (t - a).rem_euclid(b - a));
         }
         let closed = if across {

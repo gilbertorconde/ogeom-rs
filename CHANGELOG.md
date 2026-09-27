@@ -47,6 +47,29 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A part standing in another's notch was swallowed as a void.** Results
+  of several shells were nested by bounding box, so a disjoint part inside
+  another's box became a void of it, and an island in a cavity a second
+  void. Shells are now nested by classifying one against the other, by
+  depth: a shell inside a void is a solid of its own. `make_volume` shares
+  the same nesting.
+- **Two planes a microradian apart were called one plane.** Parallel was
+  decided on one minus the cosine, a million times looser than the angle it
+  was compared with. Planes are now parallel when they part by no more than
+  the confusion distance across the region their windows cover.
+- **Surface extrema never polished a farthest point, and reported stalls
+  as extrema.** Seeds are the local minima and maxima of the near and far
+  fields over each surface's lattice, thinned apart, and every polished
+  point in curve and surface extrema is checked for stationarity by angle.
+- **A line touching a sphere or a cylinder was missed about half the
+  time.** A tangent discriminant that rounding leaves a few ulps below zero
+  is now the tangency.
+- **Smaller fixes.** Periodic curves and surfaces refuse a parameter that
+  is not finite instead of answering a point that is not a number. Two
+  boolean contact paves cap an imported edge's tolerance as the others do.
+  `fuse` decides half spaces at the caller's tolerances. Sewing carries
+  pcurves across in a fixed order, so repeated runs build identical tables.
+
 - **Malformed and hostile files are refused, never aborted on.** The STEP
   reader no longer panics on entities with too few arguments, overflows its
   stack on entities that refer in a circle or on deeply nested argument

@@ -347,7 +347,13 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
     // its boundary off the vertex it shares. Such a pcurve is refitted at
     // the survivor's own parameters: the survivor's point at each, found
     // on the dropped curve, read through the pcurve into the chart.
-    for (dropped, (kept, flipped)) in merged.clone() {
+    // In a fixed order: this adds pcurves to the geometry tables and
+    // appends to survivors' representations, and a map's order would make
+    // both differ from run to run.
+    let mut carries: Vec<(TShapeId, (TShapeId, bool))> =
+        merged.iter().map(|(d, k)| (*d, *k)).collect();
+    carries.sort_by_key(|(dropped, _)| dropped.index());
+    for (dropped, (kept, flipped)) in carries {
         let carried: Vec<EdgeRepr> = model
             .node_by_id(dropped)
             .and_then(|n| n.data().as_edge())
