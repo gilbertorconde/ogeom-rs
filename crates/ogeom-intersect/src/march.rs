@@ -170,12 +170,19 @@ pub fn seeds(
 ) -> OgeomResult<Vec<Contact>> {
     options.validate()?;
     let (mesh_a, mesh_b) = (sample(a, options.grid, tol), sample(b, options.grid, tol));
+    let apart = span(a).min(span(b)) / f64::from(u32::try_from(options.grid).unwrap_or(1));
+    let near = CellBins::over(&mesh_b, options.chord);
 
     let mut found: Vec<Contact> = Vec::new();
+    let mut candidates: Vec<usize> = Vec::new();
     for cell_a in &mesh_a {
-        for cell_b in &mesh_b {
-            // Cheap rejection first: most pairs are nowhere near each other,
-            // and the segment test below is far from free.
+        // Cheap rejection first: most pairs are nowhere near each other,
+        // and the segment test below is far from free. The bins hand over
+        // only the cells whose boxes could meet this one's, in their own
+        // order, so what follows sees what the full scan would have.
+        near.candidates(cell_a, &mut candidates);
+        for &j in &candidates {
+            let cell_b = &mesh_b[j];
             if !overlap(cell_a, cell_b, options.chord) {
                 continue;
             }
@@ -193,7 +200,6 @@ pub fn seeds(
             // about how far apart branches can be: a plane's clamped domain
             // spans a million units, and its cell would merge every branch
             // through a blend into one.
-            let apart = span(a).min(span(b)) / f64::from(u32::try_from(options.grid).unwrap_or(1));
             if found
                 .iter()
                 .any(|c| c.point.distance(contact.point) <= apart)
@@ -208,7 +214,6 @@ pub fn seeds(
     // it. Where it meets the border it is a curve piercing a surface,
     // which is found exactly: each border of each spline is intersected
     // with the other surface, and every piercing seeds.
-    let apart = span(a).min(span(b)) / f64::from(u32::try_from(options.grid).unwrap_or(1));
     for (from_a, border_of, other) in [(true, a, b), (false, b, a)] {
         for (border, at) in spline_borders(border_of, tol) {
             let Ok(met) = crate::intersect_curve_surface(
@@ -891,6 +896,112 @@ pub(crate) fn sample_by(
 }
 
 /// Whether two cells' boxes come within a margin of each other.
+/// Sampled cells binned by their boxes on a coarse grid, for finding the
+/// cells whose boxes could meet a given one without testing them all.
+struct CellBins {
+    low: Point,
+    size: f64,
+    counts: [usize; 3],
+    bins: Vec<Vec<usize>>,
+    margin: f64,
+}
+
+impl CellBins {
+    /// At most this many bins a side: a grid on a clamped plane's million
+    /// units would otherwise be all empty bins.
+    const MOST: usize = 48;
+
+    fn over(cells: &[Cell], margin: f64) -> Self {
+        let mut low = Point::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        let mut high = Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for c in cells {
+            low = Point::new(low.x.min(c.low.x), low.y.min(c.low.y), low.z.min(c.low.z));
+            high = Point::new(
+                high.x.max(c.high.x),
+                high.y.max(c.high.y),
+                high.z.max(c.high.z),
+            );
+        }
+        let extent = (high - low).magnitude();
+        #[allow(clippy::cast_precision_loss)]
+        let size = if extent.is_finite() && extent > 0.0 {
+            (extent / Self::MOST as f64).max(margin)
+        } else {
+            1.0
+        };
+        let count = |lo: f64, hi: f64| -> usize {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let n = ((hi - lo) / size).floor() as usize + 1;
+            n.clamp(1, Self::MOST + 1)
+        };
+        let counts = if extent.is_finite() {
+            [
+                count(low.x, high.x),
+                count(low.y, high.y),
+                count(low.z, high.z),
+            ]
+        } else {
+            [1, 1, 1]
+        };
+        let mut bins = vec![Vec::new(); counts[0] * counts[1] * counts[2]];
+        let mut this = Self {
+            low,
+            size,
+            counts,
+            bins: Vec::new(),
+            margin,
+        };
+        for (i, c) in cells.iter().enumerate() {
+            this.each_bin(c.low, c.high, |k| bins[k].push(i));
+        }
+        this.bins = bins;
+        this
+    }
+
+    /// Every bin a box grown by the margin touches.
+    fn each_bin(&self, low: Point, high: Point, mut visit: impl FnMut(usize)) {
+        let index = |x: f64, lo: f64, n: usize| -> usize {
+            if !x.is_finite() {
+                return if x > 0.0 { n - 1 } else { 0 };
+            }
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let k = ((x - lo) / self.size).floor().max(0.0) as usize;
+            k.min(n - 1)
+        };
+        let m = self.margin;
+        let [nx, ny, nz] = self.counts;
+        let (x0, x1) = (
+            index(low.x - m, self.low.x, nx),
+            index(high.x + m, self.low.x, nx),
+        );
+        let (y0, y1) = (
+            index(low.y - m, self.low.y, ny),
+            index(high.y + m, self.low.y, ny),
+        );
+        let (z0, z1) = (
+            index(low.z - m, self.low.z, nz),
+            index(high.z + m, self.low.z, nz),
+        );
+        for x in x0..=x1 {
+            for y in y0..=y1 {
+                for z in z0..=z1 {
+                    visit((x * ny + y) * nz + z);
+                }
+            }
+        }
+    }
+
+    /// The cells whose boxes could meet `cell`'s, lowest index first.
+    fn candidates(&self, cell: &Cell, out: &mut Vec<usize>) {
+        out.clear();
+        self.each_bin(cell.low, cell.high, |k| {
+            out.extend_from_slice(&self.bins[k])
+        });
+        out.sort_unstable();
+        out.dedup();
+    }
+}
+
 fn overlap(a: &Cell, b: &Cell, margin: f64) -> bool {
     a.low.x <= b.high.x + margin
         && b.low.x <= a.high.x + margin

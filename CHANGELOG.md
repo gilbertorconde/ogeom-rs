@@ -13,6 +13,10 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **A march's seeding tests each cell only against cells it could meet,**
+  binned by box, in their own order, instead of every cell of the other
+  surface.
+
 - **A STEP argument is 32 bytes instead of 56:** the rare typed value's
   keyword and list are boxed rather than sizing every argument of a file.
 
