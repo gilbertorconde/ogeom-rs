@@ -13,6 +13,16 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Pipe frame laws (#76).** `make_pipe_shell_law` and
+  `make_pipe_shell_with` take a `PipeLaw`: rotation-minimizing, Frenet, an
+  auxiliary spine the section's normal points at, or a fixed binormal.
+- **Extended and round pipe corners (#77).** `make_pipe_shell_with` takes
+  `PipeCorners`: the mitre, legs run on past the corner and fused, or the
+  section turned about the corner. Built for a face down an open spine of
+  straight legs.
+- **Multisection pipes (#78).** `make_pipe_sections` sweeps several planar
+  sections down one spine, each standing where the spine crosses its plane
+  and blended between them in the spine's moving frame.
 - **Flat spirals (#79).** `make_helical_sweep` with a pitch of zero and a
   taper per turn turns the profile in its plane square to the axis while
   moving it out, refused where one turn would meet the last.
@@ -29,6 +39,9 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Sweeps sampled a placed section where it was stored, not where it
+  stood.** A section wire carrying a placement was read at its unplaced
+  position when a pipe or loft sampled it.
 - **A boolean between a helical sweep and a box whose face holds the helix
   axis did not close (#81).** The sweep's walls were fitted a quarter turn
   at a time with their borders on the profile's own plane and the planes

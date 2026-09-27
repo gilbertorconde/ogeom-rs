@@ -369,7 +369,10 @@ fn exact_volume_properties(
     }
     let mut exact = Vec::with_capacity(faces.len());
     for face in &faces {
-        match integrable_face(model, face, tol)? {
+        // A face the closed forms cannot evaluate (a chart point a hair off
+        // its surface's domain) is left to the mesh, like one they do not
+        // speak at all.
+        match integrable_face(model, face, tol).ok().flatten() {
             Some(found) => exact.extend(found),
             None => {
                 if std::env::var_os("OGEOM_DEBUG_MASS").is_some() {
@@ -430,7 +433,8 @@ fn exact_volume_properties(
                     }
                 }
             }
-        })?;
+        })
+        .unwrap_or(false);
         if !settled {
             return Ok(None);
         }
