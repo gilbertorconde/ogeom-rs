@@ -13,6 +13,9 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **A STEP argument is 32 bytes instead of 56:** the rare typed value's
+  keyword and list are boxed rather than sizing every argument of a file.
+
 - **A boolean splits and classifies its faces in parallel,** each face's
   pieces and junctions joined in face order, and intersects a contact
   edge only with target edges whose boxes it can reach.
@@ -100,6 +103,12 @@ bump may break the API and a patch bump may not.
   boolean builds each face's chart outline and trim samples once.
 
 ### Added
+
+- **`native::compacted`:** a fresh model holding only what given roots
+  reach, for reclaiming what a long session's discarded and failed
+  operations left in the model.
+- **`Document::set_undo_limit`:** at most 256 checkpoints are kept by
+  default, the oldest dropped first.
 
 - **`solve::newton_system_fixed`:** the damped Newton iteration for a
   fixed number of unknowns, allocation-free.

@@ -144,3 +144,36 @@ fn cells_are_the_three_booleans() {
         }
     }
 }
+
+/// A model that ran many operations carries everything they built, kept or
+/// not; compacted to one result, it holds only that result, which measures
+/// the same.
+#[test]
+fn a_compacted_model_keeps_only_what_its_roots_reach() {
+    let mut model = Model::new();
+    let mut part = cube(&mut model, (0.0, 0.0, 0.0), (10.0, 10.0, 10.0));
+    for k in 0..6 {
+        let x = 1.0 + f64::from(k) * 1.4;
+        let tool = cube(&mut model, (x, 1.0, -1.0), (0.7, 8.0, 12.0));
+        part = ogeom::boolean::cut(&mut model, &part, &tool, T)
+            .unwrap()
+            .shape;
+        // A result nobody keeps: built into the model all the same.
+        let _ = ogeom::boolean::fuse(&mut model, &part, &tool, T);
+    }
+    let before = model.node_count();
+    let volume = |model: &Model, shape: &Shape| {
+        ogeom::algo::volume_properties(model, shape, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let want = volume(&model, &part);
+    let (small, roots) = ogeom::io::native::compacted(&model, std::slice::from_ref(&part)).unwrap();
+    assert!(
+        small.node_count() < before / 2,
+        "{} of {before}",
+        small.node_count()
+    );
+    assert!(ogeom::algo::check(&small, &roots[0], T).unwrap().is_valid());
+    assert!((volume(&small, &roots[0]) - want).abs() < want * 1e-12);
+}

@@ -29,8 +29,10 @@ pub enum Arg {
     Enum(String),
     /// A parenthesised list.
     List(Vec<Arg>),
-    /// `KEYWORD(...)` in argument position: a typed (select) value.
-    Typed(String, Vec<Arg>),
+    /// `KEYWORD(...)` in argument position: a typed (select) value: the
+    /// keyword and its arguments, boxed, so the rare typed value does not
+    /// size every argument of the file.
+    Typed(Box<(String, Vec<Arg>)>),
 }
 
 impl Arg {
@@ -371,7 +373,7 @@ impl Parser<'_> {
             _ if byte.is_ascii_alphabetic() || byte == b'_' => {
                 let keyword = self.keyword()?;
                 let args = self.arguments()?;
-                Ok(Arg::Typed(keyword, args))
+                Ok(Arg::Typed(Box::new((keyword, args))))
             }
             _ => ogeom_bail!(
                 Construction,
@@ -552,6 +554,18 @@ pub(crate) fn decode_escapes(text: &str) -> String {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+
+    /// An argument costs a pointer's worth of payload and a tag: a file
+    /// holds millions of them.
+    #[test]
+    fn an_argument_is_small() {
+        assert!(
+            core::mem::size_of::<Arg>() <= 32,
+            "{}",
+            core::mem::size_of::<Arg>()
+        );
+    }
+
     use super::*;
 
     const SMALL: &str = "ISO-10303-21;

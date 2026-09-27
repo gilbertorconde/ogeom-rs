@@ -89,6 +89,22 @@ impl Default for WriteOptions {
     }
 }
 
+/// A fresh model holding only what `roots` reach, with the roots in it.
+///
+/// A model only grows: every operation adds its results, and one that fails
+/// or is retried leaves what it built along the way, unreachable. A long
+/// session that has run many operations carries all of that. The native
+/// format writes exactly the reachable closure of its roots, so writing and
+/// reading back is a compaction: the same shapes, same geometry, same
+/// identities for what survives, in a model with nothing else in it.
+///
+/// # Errors
+///
+/// As [`write()`] and [`read()`].
+pub fn compacted(model: &Model, roots: &[Shape]) -> OgeomResult<(Model, Vec<Shape>)> {
+    read(&write(model, roots, WriteOptions::default())?)
+}
+
 /// Write a model, and the shapes it is a document *about*.
 ///
 /// `roots` are recorded so a reader gets back the same handles the writer had.

@@ -129,6 +129,9 @@ pub struct Document {
     history: Vec<State>,
     /// How many of `history`'s tail have been undone: the redo depth.
     undone: usize,
+    /// How many checkpoints are kept, oldest dropped first; `None` for
+    /// [`Document::DEFAULT_UNDO_LIMIT`].
+    undo_limit: Option<usize>,
 }
 
 /// Everything a document holds *about* a model, which is everything an undo
@@ -460,6 +463,28 @@ impl Document {
         }
         let state = self.state();
         self.history.push(state);
+        self.keep_to_limit();
+    }
+
+    /// How many checkpoints a document keeps unless told otherwise. Each is
+    /// a copy of everything the document says about its model, and a long
+    /// session checkpointing every edit would otherwise hold them all.
+    pub const DEFAULT_UNDO_LIMIT: usize = 256;
+
+    /// Keep at most `limit` checkpoints (at least one), dropping the oldest.
+    pub fn set_undo_limit(&mut self, limit: usize) {
+        self.undo_limit = Some(limit.max(1));
+        self.keep_to_limit();
+    }
+
+    fn keep_to_limit(&mut self) {
+        let limit = self.undo_limit.unwrap_or(Self::DEFAULT_UNDO_LIMIT);
+        // Only checkpoints behind the caller can go: an undone tail is the
+        // redo the caller may still want.
+        let behind = self.history.len() - self.undone;
+        if behind > limit {
+            self.history.drain(..behind - limit);
+        }
     }
 
     /// Step back to the last checkpoint. `false` when there is none.
@@ -820,6 +845,26 @@ mod tests {
             .unwrap()
             .shape;
         (document.add_part(name, shape.clone()), shape)
+    }
+
+    /// A long session keeps only its most recent checkpoints: the limit
+    /// holds, the newest states are the ones kept, and undo still reaches
+    /// back as far as the limit allows.
+    #[test]
+    fn undo_keeps_only_its_most_recent_checkpoints() {
+        let mut doc = Document::new();
+        doc.set_undo_limit(3);
+        for k in 0..10 {
+            doc.checkpoint();
+            doc.names
+                .insert(ogeom_topo::TShapeId::from_parts(k, 0), format!("state {k}"));
+        }
+        assert_eq!(doc.undo_depth(), (3, 0));
+        let mut steps = 0;
+        while doc.undo() {
+            steps += 1;
+        }
+        assert_eq!(steps, 3);
     }
 
     #[test]

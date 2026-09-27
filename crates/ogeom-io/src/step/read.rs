@@ -485,8 +485,8 @@ impl<'a> Reader<'a> {
                     .iter()
                     .flat_map(|(_, a)| a.iter())
                     .find_map(|a| match a {
-                        Arg::Typed(k, v) if k == "LENGTH_MEASURE" => {
-                            v.first().and_then(Arg::number)
+                        Arg::Typed(typed) if typed.0 == "LENGTH_MEASURE" => {
+                            typed.1.first().and_then(Arg::number)
                         }
                         _ => None,
                     });
@@ -537,8 +537,8 @@ impl<'a> Reader<'a> {
                     .iter()
                     .flat_map(|(_, a)| a.iter())
                     .find_map(|a| match a {
-                        Arg::Typed(k, v) if k == "PLANE_ANGLE_MEASURE" => {
-                            v.first().and_then(Arg::number)
+                        Arg::Typed(typed) if typed.0 == "PLANE_ANGLE_MEASURE" => {
+                            typed.1.first().and_then(Arg::number)
                         }
                         _ => None,
                     });
@@ -1323,9 +1323,9 @@ impl<'a> Reader<'a> {
             }
             if at.is_none() {
                 for item in &items {
-                    if let Arg::Typed(name, values) = item
-                        && name == "PARAMETER_VALUE"
-                        && let Some(v) = values.first().and_then(Arg::number)
+                    if let Arg::Typed(typed) = item
+                        && typed.0 == "PARAMETER_VALUE"
+                        && let Some(v) = typed.1.first().and_then(Arg::number)
                     {
                         at =
                             Some(self.step_parameter_point(&basis, &basis_keyword, basis_id, v)?);
@@ -3703,7 +3703,8 @@ impl<'a> Reader<'a> {
             instance.part("MEASURE_WITH_UNIT")?.to_vec()
         };
         match args.first() {
-            Some(Arg::Typed(kind, inner)) => {
+            Some(Arg::Typed(typed)) => {
+                let (kind, inner) = (&typed.0, &typed.1);
                 let value = inner.first().and_then(Arg::number)?;
                 if kind.contains("ANGLE") {
                     Some((value * self.angle_scale, ogeom_doc::MeasureKind::Angle))
@@ -3821,7 +3822,8 @@ fn collect_refs(args: &[Arg], out: &mut Vec<u64>) {
     for arg in args {
         match arg {
             Arg::Ref(id) => out.push(*id),
-            Arg::List(inner) | Arg::Typed(_, inner) => collect_refs(inner, out),
+            Arg::List(inner) => collect_refs(inner, out),
+            Arg::Typed(typed) => collect_refs(&typed.1, out),
             _ => {}
         }
     }
