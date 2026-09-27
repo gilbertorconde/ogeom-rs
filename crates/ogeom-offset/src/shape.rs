@@ -26,6 +26,7 @@
 //! marched and fitted, with its stated slop widening the edge; an edge
 //! that sits unmoved on both supports rebuilds on its own curve.
 
+use crate::wire2d::Join;
 use ogeom_algo::{
     Built, History, edge_vertices, make_edge, make_edge_between, make_face_with_pcurves,
     make_revolution_band, make_solid, make_vertex, sew,
@@ -149,12 +150,37 @@ pub fn make_thick_solid(
     thickness: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    make_thick_solid_with(model, solid, removed, thickness, Join::Intersection, tol)
+}
+
+/// [`make_thick_solid`] with a choice of how the walls meet across an edge.
+///
+/// [`Join::Intersection`] extends the walls until they meet: sharp corners,
+/// what [`make_thick_solid`] builds. [`Join::Arc`] rounds them about each
+/// edge that is convex on the side the walls grow toward, a cylinder of the
+/// wall thickness about the edge and a ball about a corner where several
+/// meet: the rolling ball's parallel body. Where the growing side is
+/// concave the two joins agree, and the opening faces stay flush either
+/// way.
+///
+/// # Errors
+///
+/// As [`make_thick_solid`], and for [`Join::Arc`] where an opening meets a
+/// tangent neighbour or the rounding fails.
+pub fn make_thick_solid_with(
+    model: &mut Model,
+    solid: &Shape,
+    removed: &[Shape],
+    thickness: f64,
+    join: Join,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     if !thickness.is_finite() || thickness.abs() <= tol.confusion() {
         ogeom_bail!(Construction, "a wall of {thickness} holds nothing");
     }
     let (canonical, mapped, prefix) = canonical_input(model, solid, removed, tol)?;
     if let Some(prefix) = prefix {
-        let mut out = make_thick_solid(model, &canonical, &mapped, thickness, tol)?;
+        let mut out = make_thick_solid_with(model, &canonical, &mapped, thickness, join, tol)?;
         out.history = prefix.then(&out.history);
         return Ok(out);
     }
@@ -196,6 +222,30 @@ pub fn make_thick_solid(
             &|_| None,
             tol,
         )?;
+        // The arc join rounds the moved copy about every edge between two
+        // moved faces that is convex on the growing side: a ball of the
+        // wall's thickness touching both moved walls stands on the old edge.
+        let moved = if join == Join::Arc {
+            let held: Vec<TShapeId> = removed
+                .iter()
+                .flat_map(|f| {
+                    moved
+                        .history
+                        .modified(f)
+                        .iter()
+                        .map(Shape::node)
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let edges = growing_edges(model, &moved.shape, &held, outward_walls, tol)?;
+            if edges.is_empty() {
+                moved
+            } else {
+                ogeom_fillet::fillet_edges(model, &moved.shape, &edges, reach, tol)?
+            }
+        } else {
+            moved
+        };
         // Inward, the moved copy is the cavity carved from the solid;
         // outward, the solid is the cavity carved from the moved copy. The
         // held-in-place opening faces coincide either way, and the melt is
@@ -211,6 +261,13 @@ pub fn make_thick_solid(
         return Ok(result);
     }
 
+    if join == Join::Arc {
+        ogeom_bail!(
+            Construction,
+            "the arc join is built where every opening meets its neighbours \
+             across a corner; an opening with a tangent neighbour is not yet"
+        );
+    }
     // The tangent construction: everything moves together (which is what
     // keeps the tangencies intact), and each opening is drilled back out by
     // extruding its opening image through where the wall now stands.
@@ -1681,4 +1738,75 @@ fn solve_corner(normals: &[Vector], amounts: &[f64], tol: Tolerances) -> OgeomRe
         }
     }
     Ok(Vector::new(x[0], x[1], x[2]))
+}
+
+/// The edges of `body` between two faces neither of which is `held`, that
+/// are convex (`convex` true) or concave: where the walls, grown toward
+/// that side, round about the old edge. An edge is convex where the face
+/// across it falls away below its neighbour's outward normal.
+fn growing_edges(
+    model: &Model,
+    body: &Shape,
+    held: &[TShapeId],
+    convex: bool,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Shape>> {
+    use ogeom_geom::{Curve3d as _, Surface as _};
+    let mut out = Vec::new();
+    for edge in ogeom_topo::explore_unique(model, body, ShapeType::Edge)? {
+        let faces = ogeom_topo::ancestors_of(model, body, &edge, ShapeType::Face)?;
+        let mut distinct: Vec<Shape> = Vec::new();
+        for f in faces {
+            if !distinct.iter().any(|d| d.node() == f.node()) {
+                distinct.push(f);
+            }
+        }
+        let [f1, f2] = distinct.as_slice() else {
+            continue;
+        };
+        if held.contains(&f1.node()) || held.contains(&f2.node()) {
+            continue;
+        }
+        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            continue;
+        };
+        let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            continue;
+        };
+        let Some(geometry) = model.geometry().curve(*curve) else {
+            continue;
+        };
+        let p = edge
+            .transform(model.datums())?
+            .apply(geometry.point_at(f64::midpoint(range.0, range.1), tol)?);
+        // The first face's outward normal at the edge.
+        let Some(NodeData::Face(face_data)) = model.node(f1).map(ogeom_topo::TShape::data) else {
+            continue;
+        };
+        let Some(surface) = model.geometry().surface(face_data.surface) else {
+            continue;
+        };
+        use ogeom_geom::Transformable as _;
+        let placed = surface
+            .clone()
+            .transformed(&f1.transform(model.datums())?, tol)?;
+        let (u, v) = ogeom_algo::project_on_surface(&placed, p, 16, tol)?.parameters;
+        let mut n1 = placed.normal_at(u, v, tol)?.vector();
+        if f1.orientation() == Orientation::Reversed {
+            n1 = -n1;
+        }
+        // Which side of the first face's plane the other face lies: its
+        // mesh point standing furthest off that plane says.
+        let mesh = ogeom_mesh::triangulate_face(model, f2, ogeom_mesh::Deflection::default(), tol)?;
+        let below = mesh
+            .positions
+            .iter()
+            .map(|q| (*q - p).dot(n1))
+            .max_by(|a, b| a.abs().total_cmp(&b.abs()))
+            .unwrap_or(0.0);
+        if (convex && below < -tol.confusion()) || (!convex && below > tol.confusion()) {
+            out.push(edge);
+        }
+    }
+    Ok(out)
 }

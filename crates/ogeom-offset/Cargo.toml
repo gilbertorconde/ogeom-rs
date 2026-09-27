@@ -20,9 +20,9 @@ ogeom-algo.workspace = true
 ogeom-intersect.workspace = true
 ogeom-bool.workspace = true
 ogeom-mesh.workspace = true
+ogeom-fillet.workspace = true
 
 [dev-dependencies]
-ogeom-fillet.workspace = true
 approx.workspace = true
 proptest.workspace = true
 

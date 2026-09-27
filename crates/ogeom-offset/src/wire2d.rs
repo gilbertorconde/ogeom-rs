@@ -25,14 +25,16 @@ use ogeom_geom::{CircleCurve, Curve, LineCurve, PlanarCurve};
 use ogeom_math::{Circle, Frame, Point, Point2, Vector2};
 use ogeom_topo::{EdgeRepr, Filter, Model, Shape, ShapeType, explore};
 
-/// How a gap at a corner is closed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How a gap at a corner is closed: by a planar wire's offset, or where a
+/// thick solid's walls meet across an edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Join {
     /// An arc about the old corner, radius the offset: the rounded corner.
     Arc,
     /// Both pieces extended to their meeting: the sharp corner. Supported
     /// where both sides are straight; extending arcs to a meeting that may
     /// not exist is refused.
+    #[default]
     Intersection,
 }
 

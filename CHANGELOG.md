@@ -13,6 +13,10 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Arc joins for thick solids (#75).** `make_thick_solid_with` takes a
+  `Join`: the walls extended to meet, or rounded about each edge convex on
+  the side they grow toward, a cylinder of the wall's thickness about the
+  edge and a ball at a corner.
 - **Pipe frame laws (#76).** `make_pipe_shell_law` and
   `make_pipe_shell_with` take a `PipeLaw`: rotation-minimizing, Frenet, an
   auxiliary spine the section's normal points at, or a fixed binormal.

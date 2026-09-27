@@ -409,3 +409,55 @@ fn a_negative_thickness_builds_the_walls_outward() {
         "outward shell volume {measured} against {expected}"
     );
 }
+
+/// The arc join: 1 mm walls grown outward round a 20 x 20 x 10 block open
+/// at the top are the block's rolling-ball parallel body cut at the top,
+/// less the block: a cylinder of the wall's thickness about every vertical
+/// and bottom edge, a ball's eighth at each bottom corner. Inward, round a
+/// convex block, the arc join is the intersection join.
+#[test]
+fn a_thickness_joins_its_walls_by_intersection_or_arc() {
+    use ogeom_offset::{Join, make_thick_solid_with};
+    let top_of = |model: &ogeom_topo::Model, block: &ogeom_topo::Shape| {
+        explore(model, block, Filter::OfType(ShapeType::Face))
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                let b = ogeom_algo::shape_bounds(model, f, T).unwrap();
+                (b.low().unwrap().z - 10.0).abs() < 1e-6
+            })
+            .expect("the top face")
+    };
+    let pi = core::f64::consts::PI;
+    for (thickness, join, want) in [
+        (-1.0, Join::Arc, 1200.0 + 30.0 * pi + 2.0 / 3.0 * pi),
+        (-1.0, Join::Intersection, 22.0 * 22.0 * 11.0 - 4000.0),
+        (1.0, Join::Arc, 4000.0 - 18.0 * 18.0 * 9.0),
+    ] {
+        let mut model = ogeom_topo::Model::new();
+        let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let top = top_of(&model, &block);
+        let shelled = make_thick_solid_with(
+            &mut model,
+            &block,
+            std::slice::from_ref(&top),
+            thickness,
+            join,
+            T,
+        )
+        .unwrap_or_else(|e| panic!("{thickness} {join:?}: {e}"));
+        let diagnosis = ogeom_algo::check(&model, &shelled.shape, T).unwrap();
+        assert!(
+            diagnosis.is_valid(),
+            "{thickness} {join:?}: {:?}",
+            diagnosis.problems
+        );
+        let measured = volume(&model, &shelled.shape);
+        assert!(
+            (measured - want).abs() < want * 1e-4,
+            "{thickness} {join:?}: {measured} against {want}"
+        );
+    }
+}
