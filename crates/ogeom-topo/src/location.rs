@@ -189,6 +189,13 @@ impl Location {
     /// equal to the identity rather than merely close to it.
     #[must_use]
     pub fn then(&self, inner: &Self) -> Self {
+        // Most placements in a tree are the identity: nothing to merge.
+        if inner.chain.is_empty() {
+            return self.clone();
+        }
+        if self.chain.is_empty() {
+            return inner.clone();
+        }
         let mut chain = self.chain.clone();
         for &(datum, power) in &inner.chain {
             match chain.last_mut() {

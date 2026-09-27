@@ -314,8 +314,21 @@ impl Shape {
     #[must_use]
     pub fn moved(&self, outer: &Location) -> Self {
         Self {
+            node: self.node,
             location: outer.then(&self.location),
-            ..self.clone()
+            orientation: self.orientation,
+        }
+    }
+
+    /// This shape as a child of a parent placed at `outer` with sense
+    /// `sense`: [`Self::moved`] and [`Self::composed`] in one step, with
+    /// one placement built rather than three copied.
+    #[must_use]
+    pub fn beneath(&self, outer: &Location, sense: Orientation) -> Self {
+        Self {
+            node: self.node,
+            location: outer.then(&self.location),
+            orientation: sense.compose(self.orientation),
         }
     }
 
@@ -323,8 +336,9 @@ impl Shape {
     #[must_use]
     pub fn oriented(&self, orientation: Orientation) -> Self {
         Self {
+            node: self.node,
+            location: self.location.clone(),
             orientation,
-            ..self.clone()
         }
     }
 

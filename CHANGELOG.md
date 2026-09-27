@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Performance
+
+- **Walks, classification and evaluation do less of the same work.**
+  `explore` no longer descends below the type it is looking for; a
+  placed child is built in one step; a solid's prepared boundary answers a
+  point near a face from what it prepared, not by rebuilding the face's
+  trim; interior mesh points are tested against a banded ring index;
+  de Boor evaluation and mass simplices use stack storage; the identity
+  transform returns its input; the walker measures each tangent once; the
+  boolean builds each face's chart outline and trim samples once.
+
 ### Added
 
 - **`check` finds faces turned inside out.** A flipped face leaves every
@@ -52,6 +63,14 @@ bump may break the API and a patch bump may not.
   against a half space bounded by a plane.
 
 ### Fixed
+
+- **Trims scaled with their basis only sometimes.** A trimmed surface
+  whose basis domain started at zero, and a trim of a trim of a line, kept
+  their old parameters under a scaling. Trims are now carried affinely from
+  the basis's old domain to its new one.
+- **A tangency contact on a full drum read as outside its face.** The
+  contact's trim test saw only one seam column; it now reads the same
+  welded outline every other trim test does.
 
 - **Faces built inside out, found by the new check.** A fillet that adds
   material (a concave seat) on a marched blend faced its blend band into

@@ -645,56 +645,8 @@ fn integrate_face(
 /// A tensor-product ten-by-ten Gauss rule over `[a,b] x [c,d]`, feeding each
 /// sample and its weight to the callback.
 fn gauss2(a: f64, b: f64, c: f64, d: f64, f: &mut dyn FnMut(f64, f64, f64)) {
-    // The rule's nodes recovered through the public one-dimensional
-    // integrator: integrating a delta-free payload is not possible, so the
-    // nodes are collected by integrating an indicator that records them.
-    let mut us: Vec<(f64, f64)> = Vec::with_capacity(10);
-    ogeom_math::gauss_legendre(
-        |u| {
-            us.push((u, 0.0));
-            1.0
-        },
-        a,
-        b,
-    );
-    // Weight of node i: integrate a basis that is 1 at that sample order.
-    // Simpler: the rule is linear, so the weight is the integral of the
-    // indicator sequence, recovered by a second pass per node.
-    for (i, entry) in us.iter_mut().enumerate() {
-        let mut k = 0;
-        let w = ogeom_math::gauss_legendre(
-            |_| {
-                let value = if k == i { 1.0 } else { 0.0 };
-                k += 1;
-                value
-            },
-            a,
-            b,
-        );
-        entry.1 = w;
-    }
-    let mut vs: Vec<(f64, f64)> = Vec::with_capacity(10);
-    ogeom_math::gauss_legendre(
-        |v| {
-            vs.push((v, 0.0));
-            1.0
-        },
-        c,
-        d,
-    );
-    for (j, entry) in vs.iter_mut().enumerate() {
-        let mut k = 0;
-        let w = ogeom_math::gauss_legendre(
-            |_| {
-                let value = if k == j { 1.0 } else { 0.0 };
-                k += 1;
-                value
-            },
-            c,
-            d,
-        );
-        entry.1 = w;
-    }
+    let us = ogeom_math::gauss_legendre_rule(a, b);
+    let vs = ogeom_math::gauss_legendre_rule(c, d);
     for &(u, wu) in &us {
         for &(v, wv) in &vs {
             f(u, v, wu * wv);
@@ -1392,7 +1344,10 @@ impl Accumulator {
         #[allow(clippy::cast_precision_loss)]
         let count = n as f64;
         let reference = *self.reference.get_or_insert(points[0]);
-        let local: Vec<Vector> = points.iter().map(|p| *p - reference).collect();
+        // A simplex has at most four corners: no heap for them, once per
+        // simplex of a whole mesh.
+        let local: smallvec::SmallVec<[Vector; 4]> =
+            points.iter().map(|p| *p - reference).collect();
         let sum: Vector = local.iter().fold(Vector::ZERO, |a, v| a + *v);
 
         self.mass += measure;

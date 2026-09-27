@@ -2755,6 +2755,9 @@ fn add_interior_points(
     if matches!(surface.kind(), ogeom_geom::SurfaceKind::Plane) {
         return Ok(());
     }
+    // Up to half a million grid points each asking the whole boundary: the
+    // banded index answers the same exact test from one band's edges.
+    let region = RingBands::over(rings);
 
     let bound = rings
         .iter()
@@ -2876,7 +2879,7 @@ fn add_interior_points(
         {
             // Interior points only: the boundary is already constrained, and a
             // point landing just off a constraint would split it.
-            if !inside_region(rings, Point2::new(u, v)) {
+            if !region.holds(Point2::new(u, v)) {
                 continue;
             }
             // Inside, and not *on* the boundary: a grid point can fall
@@ -3216,6 +3219,7 @@ fn sag_between(
 }
 
 /// Whether a point is inside the region the rings bound.
+#[cfg(test)]
 fn inside_region(rings: &[Vec<Point2>], p: Point2) -> bool {
     inside_boundary_with::<Exact>(rings, p)
 }

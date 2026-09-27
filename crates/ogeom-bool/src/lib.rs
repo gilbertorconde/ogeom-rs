@@ -165,6 +165,53 @@ struct GFace {
     chord_scale: f64,
     edges: Vec<BoundaryEdge>,
     poles: Vec<PoleEdge>,
+    /// The face's boundary polylined in its chart, both seam columns, ends
+    /// welded: the trim [`chart_point_of`] tests against. Built the first
+    /// time a probe asks and kept, since the same face is asked about once
+    /// per piece that might lie on it; `None` where a pcurve would not
+    /// polyline.
+    outline: std::sync::OnceLock<Option<Vec<Vec<Point2>>>>,
+    /// The face's trim sampled coarsely for folding a chart image inside
+    /// it: [`face_trim_lines`], kept for the face's every sub-edge.
+    trim_lines: std::sync::OnceLock<Vec<Vec<Point2>>>,
+}
+
+impl GFace {
+    fn trim_lines(&self, tol: Tolerances) -> &[Vec<Point2>] {
+        self.trim_lines.get_or_init(|| face_trim_lines(self, tol))
+    }
+
+    fn outline(&self, tol: Tolerances) -> Option<&[Vec<Point2>]> {
+        self.outline
+            .get_or_init(|| {
+                let mut lines: Vec<Vec<Point2>> = Vec::new();
+                for e in &self.edges {
+                    lines.push(
+                        pcurve_polyline(
+                            &e.pcurve,
+                            e.prange,
+                            e.crange,
+                            e.crange,
+                            &self.surface,
+                            tol,
+                        )
+                        .ok()?,
+                    );
+                    // A seam bounds the chart twice (once per column), and
+                    // a trim test that sees only one side reads half the
+                    // band as outside.
+                    if let Some((other, orange)) = &e.other_side {
+                        lines.push(
+                            pcurve_polyline(other, *orange, e.crange, e.crange, &self.surface, tol)
+                                .ok()?,
+                        );
+                    }
+                }
+                weld_outline_ends(&mut lines, outline_snap(self, tol));
+                Some(lines)
+            })
+            .as_deref()
+    }
 }
 
 /// An argument solid.
@@ -458,6 +505,8 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
             bound,
             chord_scale,
             edges,
+            outline: std::sync::OnceLock::new(),
+            trim_lines: std::sync::OnceLock::new(),
         });
     }
     if faces.is_empty() {
@@ -719,29 +768,27 @@ struct SectionRec {
 /// crossing finder is the wrong instrument for it. The cost of sampling is
 /// the usual one: a stretch shorter than a station can be missed, and an
 /// endpoint is placed within a station of the truth.
+/// A face's welded chart outline, borrowed as the trim tests take it.
+fn outline_refs(face: &GFace, tol: Tolerances) -> OgeomResult<Vec<&[Point2]>> {
+    let Some(lines) = face.outline(tol) else {
+        ogeom_bail!(
+            Construction,
+            "a face's boundary would not polyline in its chart"
+        );
+    };
+    Ok(lines.iter().map(Vec::as_slice).collect())
+}
+
 fn contact_intervals(
     fused: &GeneralFused,
     contact: &TangentRec,
     tol: Tolerances,
 ) -> OgeomResult<Vec<(f64, f64)>> {
-    let outline = |face: &GFace| -> OgeomResult<Vec<Vec<Point2>>> {
-        let mut lines = Vec::new();
-        for e in &face.edges {
-            lines.push(pcurve_polyline(
-                &e.pcurve,
-                e.prange,
-                e.crange,
-                e.crange,
-                &face.surface,
-                tol,
-            )?);
-        }
-        Ok(lines)
-    };
-    let rings_a = outline(&fused.a.faces[contact.face_a])?;
-    let rings_b = outline(&fused.b.faces[contact.face_b])?;
-    let refs_a: Vec<&[Point2]> = rings_a.iter().map(Vec::as_slice).collect();
-    let refs_b: Vec<&[Point2]> = rings_b.iter().map(Vec::as_slice).collect();
+    // The same welded outline, both seam columns, that every other trim
+    // test reads: with one column a full drum's trim is open, and every
+    // station of a contact on it reads outside.
+    let refs_a = outline_refs(&fused.a.faces[contact.face_a], tol)?;
+    let refs_b = outline_refs(&fused.b.faces[contact.face_b], tol)?;
 
     const STATIONS: usize = 64;
     let domain = contact.curve.domain();
@@ -3818,20 +3865,7 @@ fn chart_point_of(face: &GFace, p: Point, tol: Tolerances) -> Option<Point2> {
         }
     };
     let at = fold_point_into_chart(raw, &face.surface);
-    let mut lines: Vec<Vec<Point2>> = Vec::new();
-    for e in &face.edges {
-        lines.push(
-            pcurve_polyline(&e.pcurve, e.prange, e.crange, e.crange, &face.surface, tol).ok()?,
-        );
-        // A seam bounds the chart twice (once per column), and a trim test
-        // that sees only one side reads half the band as outside.
-        if let Some((other, orange)) = &e.other_side {
-            lines.push(
-                pcurve_polyline(other, *orange, e.crange, e.crange, &face.surface, tol).ok()?,
-            );
-        }
-    }
-    weld_outline_ends(&mut lines, outline_snap(face, tol));
+    let lines = face.outline(tol)?;
     let borrowed: Vec<&[Point2]> = lines.iter().map(Vec::as_slice).collect();
     // The face's boundary polylines are unwrapped (a winding ring may span
     // any one period's window, not necessarily the chart's canonical one,
@@ -5788,8 +5822,7 @@ fn build_sub_edge(
                 rescale(range.1, c.crange, c.prange),
             );
             let mid = c.pcurve.point_at(f64::midpoint(sub_p.0, sub_p.1), tol)?;
-            let trim = face_trim_lines(face, tol);
-            let trim: Vec<&[Point2]> = trim.iter().map(Vec::as_slice).collect();
+            let trim: Vec<&[Point2]> = face.trim_lines(tol).iter().map(Vec::as_slice).collect();
             let folded = fold_inside(mid, &face.surface, &trim);
             let shifted = c
                 .pcurve
@@ -5855,8 +5888,7 @@ fn build_sub_edge(
             // the arc's body is.
             let pcurve = if from_a { &s.pc_a } else { &s.pc_b };
             let mid = pcurve.point_at(f64::midpoint(f0, f1), tol)?;
-            let trim = face_trim_lines(face, tol);
-            let trim: Vec<&[Point2]> = trim.iter().map(Vec::as_slice).collect();
+            let trim: Vec<&[Point2]> = face.trim_lines(tol).iter().map(Vec::as_slice).collect();
             let folded = fold_inside(mid, &face.surface, &trim);
             let shifted =
                 pcurve.transformed(&ogeom_math::Transform2::translation(folded - mid), tol)?;

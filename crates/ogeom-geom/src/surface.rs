@@ -1530,6 +1530,9 @@ impl Surface for SurfaceGeometry {
 
 impl Transformable for SurfaceGeometry {
     fn transformed(&self, t: &Transform, tol: Tolerances) -> OgeomResult<Self> {
+        if t.kind() == ogeom_math::TransformKind::Identity {
+            return Ok(self.clone());
+        }
         let scale = t.scale_factor().abs();
         Ok(match self {
             Self::Plane(s) => Self::Plane(PlaneSurface {
@@ -1569,7 +1572,13 @@ impl Transformable for SurfaceGeometry {
                     s.grid.u_count(),
                     s.grid.v_count(),
                 )?;
-                Self::BSpline(BSplineSurface { grid, ..s.clone() })
+                Self::BSpline(BSplineSurface {
+                    u_knots: s.u_knots.clone(),
+                    v_knots: s.v_knots.clone(),
+                    grid,
+                    rational: s.rational,
+                    closed: s.closed,
+                })
             }
             Self::Revolution(s) => Self::Revolution(Box::new(RevolutionSurface {
                 curve: s.curve.transformed(t, tol)?,
@@ -1587,16 +1596,23 @@ impl Transformable for SurfaceGeometry {
             Self::Trimmed(s) => {
                 let basis = s.basis.transformed(t, tol)?;
                 // The trim range lives in the basis surface's parameters, and
-                // those rescale exactly when the basis domain does.
-                let ((oa, _), (ob, _)) = s.basis.domain();
-                let ((na, _), (nb, _)) = basis.domain();
-                let ur = if oa == 0.0 { 1.0 } else { na / oa };
-                let vr = if ob == 0.0 { 1.0 } else { nb / ob };
+                // moves with them: carried affinely from the basis's old
+                // domain to its new one, so a domain starting at zero
+                // rescales as surely as any other.
+                let (old_u, old_v) = s.basis.domain();
+                let (new_u, new_v) = basis.domain();
+                let carry = |x: f64, from: (f64, f64), to: (f64, f64)| carried(x, from, to);
                 Self::Trimmed(Box::new(TrimmedSurface {
                     basis,
                     domain: (
-                        (s.domain.0.0 * ur, s.domain.0.1 * ur),
-                        (s.domain.1.0 * vr, s.domain.1.1 * vr),
+                        (
+                            carry(s.domain.0.0, old_u, new_u),
+                            carry(s.domain.0.1, old_u, new_u),
+                        ),
+                        (
+                            carry(s.domain.1.0, old_v, new_v),
+                            carry(s.domain.1.1, old_v, new_v),
+                        ),
                     ),
                 }))
             }
@@ -1648,6 +1664,29 @@ impl From<TrimmedSurface> for SurfaceGeometry {
     fn from(s: TrimmedSurface) -> Self {
         Self::Trimmed(Box::new(s))
     }
+}
+
+/// A parameter carried from one domain to another by the affine map
+/// between them: where a transform rescales a parameter, a trim inside the
+/// old domain lands at the same place inside the new. Unchanged where the
+/// old domain has no width to map from.
+pub(crate) fn carried(x: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
+    let span = from.1 - from.0;
+    if span == 0.0 || !span.is_finite() || !(to.1 - to.0).is_finite() {
+        return x;
+    }
+    if from == to {
+        return x;
+    }
+    let ratio = (to.1 - to.0) / span;
+    // A plain rescaling about zero, as a length parameter under a scaling
+    // transform: the product, exactly, rather than an affine map that
+    // loses digits to cancellation across a wide domain.
+    let about_zero = |a: f64, b: f64| (a * ratio - b).abs() <= f64::EPSILON * 4.0 * b.abs();
+    if about_zero(from.0, to.0) && about_zero(from.1, to.1) {
+        return x * ratio;
+    }
+    to.0 + (x - from.0) * ratio
 }
 
 #[cfg(test)]

@@ -209,7 +209,9 @@ pub fn evaluate<P: Blend>(
     let span = knots.span(u, tol)?;
     let p = knots.degree();
 
-    let mut d: Vec<P> = (0..=p).map(|i| control[span - p + i]).collect();
+    // On the stack up to degree seven, which is every spline a model
+    // carries in practice: this runs for every point of every curve.
+    let mut d: smallvec::SmallVec<[P; 8]> = (0..=p).map(|i| control[span - p + i]).collect();
     let k = knots.knots();
     for r in 1..=p {
         for j in (r..=p).rev() {

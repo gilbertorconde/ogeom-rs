@@ -216,10 +216,18 @@ pub fn walk_one_way<C: Condition + ?Sized>(
     // The null-space tangent's sign is arbitrary from point to point, so the
     // walk carries the direction it is going and keeps to it.
     let mut heading: Option<Vector> = None;
+    // The tangent at the point just accepted, measured there to judge the
+    // step's turn: the same question the next step opens with, asked with
+    // the same heading, so it is answered once.
+    let mut ahead: Option<Option<Vector>> = None;
 
     while points.len() < options.max_points {
         ogeom_core::progress::checkpoint()?;
-        let Some(direction) = oriented(condition, &at, heading, sense, tol) else {
+        let direction = match ahead.take() {
+            Some(known) => known,
+            None => oriented(condition, &at, heading, sense, tol),
+        };
+        let Some(direction) = direction else {
             stopped = Stopped::Stalled;
             break;
         };
@@ -237,8 +245,8 @@ pub fn walk_one_way<C: Condition + ?Sized>(
             // Like against like: the *travel* direction at the next point,
             // sensed the same way, or a backward walk would read every step
             // as a half turn and crawl to a halt.
-            let turn = oriented(condition, &next.0, Some(direction), sense, tol)
-                .map_or(0.0, |t| direction.dot(t).clamp(-1.0, 1.0).acos());
+            let there = oriented(condition, &next.0, Some(direction), sense, tol);
+            let turn = there.map_or(0.0, |t| direction.dot(t).clamp(-1.0, 1.0).acos());
             let sag = step * turn / 8.0;
             if sag <= options.chord || step <= tol.confusion() * 8.0 {
                 // Aim the next step at exactly the tolerance. Sag grows with
@@ -250,12 +258,12 @@ pub fn walk_one_way<C: Condition + ?Sized>(
                 } else {
                     2.0
                 };
-                taken = Some((next, (step * scale).clamp(tol.confusion(), ceiling)));
+                taken = Some((next, (step * scale).clamp(tol.confusion(), ceiling), there));
                 break;
             }
             step *= (options.chord / sag).sqrt().clamp(0.25, 0.9);
         }
-        let Some(((next_state, next_point), following)) = taken else {
+        let Some(((next_state, next_point), following, there)) = taken else {
             // A stall right at a domain edge is the edge, not a singularity:
             // the walk converges on the boundary from inside and the
             // correction starts failing when the step would cross it, so the
@@ -286,6 +294,7 @@ pub fn walk_one_way<C: Condition + ?Sized>(
         points.push(next_point);
         at = next_state;
         step = following;
+        ahead = Some(there);
     }
 
     Ok(Walked {

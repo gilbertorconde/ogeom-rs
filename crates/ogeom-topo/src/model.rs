@@ -929,7 +929,7 @@ impl Model {
         Ok(node
             .children()
             .iter()
-            .map(|child| child.moved(shape.location()).composed(shape.orientation()))
+            .map(|child| child.beneath(shape.location(), shape.orientation()))
             .collect())
     }
 
@@ -1136,17 +1136,24 @@ pub fn explore(model: &Model, root: &Shape, filter: Filter) -> OgeomResult<Vec<S
         let Some(node) = model.node(&shape) else {
             ogeom_bail!(Dangling, "shape refers to a node not in this model");
         };
-        let matches = match filter {
-            Filter::OfType(want) => node.kind() == want,
-            Filter::All => true,
+        let (matches, descend) = match filter {
+            // Every child of anything but a compound is of a lower type (the
+            // builders refuse anything else), so below a match, or below a
+            // shape already lower than the one wanted, nothing can match:
+            // a walk for faces never enters a wire.
+            Filter::OfType(want) => (
+                node.kind() == want,
+                node.kind() == ShapeType::Compound || node.kind() > want,
+            ),
+            Filter::All => (true, true),
         };
-        let children = node.children();
+        let children = if descend { node.children() } else { &[] };
         stack.reserve(children.len());
         // `children_of`'s composition, inline: the parent's placement and
         // sense onto each child. Done here so the walk does not allocate a
         // `Vec` per node only to drain it.
         for child in children.iter().rev() {
-            stack.push(child.moved(shape.location()).composed(shape.orientation()));
+            stack.push(child.beneath(shape.location(), shape.orientation()));
         }
         if matches {
             // `shape` is owned and finished with; cloning it to keep it would

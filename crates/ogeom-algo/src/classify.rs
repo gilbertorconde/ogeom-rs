@@ -106,8 +106,28 @@ pub fn classify_on_face(
     }
 
     let rings = face_boundary(model, face, deflection, tol)?;
-    let (u, v) = projection.parameters;
-    let at = fold_toward_rings(surface, &rings, Point2::new(u, v));
+    Ok(against_rings(
+        surface,
+        &rings,
+        projection.parameters,
+        reach,
+        deflection.chord,
+        tol,
+    ))
+}
+
+/// Where a point already found on a face's surface, at chart parameters
+/// `(u, v)`, sits against the face's trimming rings: on them within `reach`
+/// plus the rings' own sag `chord`, inside, or out.
+fn against_rings(
+    surface: &ogeom_geom::SurfaceGeometry,
+    rings: &[Vec<Point2>],
+    (u, v): (f64, f64),
+    reach: f64,
+    chord: f64,
+    tol: Tolerances,
+) -> Containment {
+    let at = fold_toward_rings(surface, rings, Point2::new(u, v));
 
     // The uncertain band, converted from a distance in space into one in
     // parameter units through the surface's own scale. A fixed parameter
@@ -116,15 +136,15 @@ pub fn classify_on_face(
     // band carries that sag too: without it, a point between a tangent chord
     // and its arc (inside the true trim, outside the sampled one) would
     // read as Out when the honest answer at this resolution is On.
-    let band = parametric_band(surface, (u, v), reach + deflection.chord, tol);
-    if distance_to_rings(&rings, at) <= band {
-        return Ok(Containment::On);
+    let band = parametric_band(surface, (u, v), reach + chord, tol);
+    if distance_to_rings(rings, at) <= band {
+        return Containment::On;
     }
-    Ok(if inside_boundary(&rings, at) {
+    if inside_boundary(rings, at) {
         Containment::In
     } else {
         Containment::Out
-    })
+    }
 }
 
 /// Where a point sits relative to a closed shell or solid.
@@ -250,7 +270,6 @@ pub fn classify_in_solid_exact_banded(
 /// depend on the point being classified.
 #[derive(Debug)]
 struct PreparedFace {
-    face: Shape,
     surface: ogeom_geom::SurfaceGeometry,
     /// The placement's inverse, for carrying a point into the surface's frame.
     inverse: ogeom_math::Transform,
@@ -259,6 +278,30 @@ struct PreparedFace {
     /// Where the face can be, padded past anything its bound could miss: a
     /// point outside is not on it, and a ray missing it does not cross it.
     bound: Aabb,
+    /// How far off the surface a point still lies on the face: the face's
+    /// own tolerance, never under the confusion distance.
+    reach: f64,
+}
+
+impl PreparedFace {
+    /// Where a point sits against this face: [`classify_on_face`] on what
+    /// was prepared, with no surface lookup, placement or ring walk per
+    /// question.
+    fn holds(&self, point: Point, chord: f64, tol: Tolerances) -> OgeomResult<Containment> {
+        let local = self.inverse.apply(point);
+        let projection = project_on_surface(&self.surface, local, 32, tol)?;
+        if projection.distance > self.reach {
+            return Ok(Containment::Out);
+        }
+        Ok(against_rings(
+            &self.surface,
+            &self.rings,
+            projection.parameters,
+            self.reach,
+            chord,
+            tol,
+        ))
+    }
 }
 
 /// A solid's boundary, prepared once and asked about many points.
@@ -357,11 +400,11 @@ impl SolidBoundary {
                 ring_chord + data.tolerance.get() + tol.confusion() * 1e2 + own.diagonal() * 0.02,
             );
             Ok(PreparedFace {
-                face: face.clone(),
                 surface: surface.clone(),
                 inverse,
                 rings,
                 bound,
+                reach: tol.confusion().max(data.tolerance.get()),
             })
         })
         .into_iter()
@@ -380,7 +423,7 @@ impl SolidBoundary {
     /// # Errors
     ///
     /// As [`classify_in_solid_exact`].
-    pub fn holds(&self, model: &Model, point: Point, tol: Tolerances) -> OgeomResult<Containment> {
+    pub fn holds(&self, _model: &Model, point: Point, tol: Tolerances) -> OgeomResult<Containment> {
         let ring_chord = self.ring_chord;
         let ring_deflection = Deflection {
             chord: ring_chord,
@@ -400,9 +443,7 @@ impl SolidBoundary {
             if !prepared.bound.contains(point) {
                 continue;
             }
-            if classify_on_face(model, &prepared.face, point, ring_deflection, tol)?
-                != Containment::Out
-            {
+            if prepared.holds(point, ring_deflection.chord, tol)? != Containment::Out {
                 return Ok(Containment::On);
             }
         }

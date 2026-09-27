@@ -945,7 +945,8 @@ impl BSplineCurve {
         Ok(Self {
             knots,
             control,
-            ..self.clone()
+            rational: self.rational,
+            periodic: self.periodic,
         })
     }
 
@@ -959,7 +960,8 @@ impl BSplineCurve {
         Ok(Self {
             knots,
             control,
-            ..self.clone()
+            rational: self.rational,
+            periodic: self.periodic,
         })
     }
 
@@ -998,7 +1000,8 @@ impl BSplineCurve {
         Ok(Self {
             knots,
             control,
-            ..self.clone()
+            rational: self.rational,
+            periodic: self.periodic,
         })
     }
 
@@ -1037,7 +1040,8 @@ impl BSplineCurve {
             Ok(Self {
                 knots,
                 control,
-                ..self.clone()
+                rational: self.rational,
+                periodic: self.periodic,
             })
         };
         // The continuation over a span is the same polynomial whatever the
@@ -1192,8 +1196,10 @@ impl BSplineCurve {
             );
         }
         let mut piece = Self {
+            knots: self.knots.clone(),
+            control: self.control.clone(),
+            rational: self.rational,
             periodic: false,
-            ..self.clone()
         };
         if range.0 > a + eps {
             piece = piece.split_at(range.0, tol)?.1;
@@ -1215,12 +1221,14 @@ impl BSplineCurve {
             Self {
                 knots: lk,
                 control: lc,
-                ..self.clone()
+                rational: self.rational,
+                periodic: self.periodic,
             },
             Self {
                 knots: rk,
                 control: rc,
-                ..self.clone()
+                rational: self.rational,
+                periodic: self.periodic,
             },
         ))
     }
@@ -1691,6 +1699,9 @@ impl Curve3d for Curve {
 
 impl Transformable for Curve {
     fn transformed(&self, t: &Transform, tol: Tolerances) -> OgeomResult<Self> {
+        if t.kind() == ogeom_math::TransformKind::Identity {
+            return Ok(self.clone());
+        }
         Ok(match self {
             Self::Line(c) => Self::Line(LineCurve {
                 axis: Axis::new(
@@ -1732,7 +1743,9 @@ impl Transformable for Curve {
                     .collect::<OgeomResult<Vec<_>>>()?;
                 Self::BSpline(BSplineCurve {
                     control,
-                    ..c.clone()
+                    knots: c.knots.clone(),
+                    rational: c.rational,
+                    periodic: c.periodic,
                 })
             }
             Self::Helix(c) => Self::Helix(HelixCurve {
@@ -1751,18 +1764,22 @@ impl Transformable for Curve {
                 pcurve: c.pcurve.clone(),
                 surface: c.surface.transformed(t, tol)?,
             })),
-            Self::Trimmed(c) => Self::Trimmed(Box::new(TrimmedCurve {
-                basis: c.basis.transformed(t, tol)?,
-                // A line's parameter is a length and rescales; every other
-                // curve's is an angle or a spline parameter and does not.
-                domain: if matches!(c.basis, Self::Line(_)) {
-                    let s = t.scale_factor().abs();
-                    (c.domain.0 * s, c.domain.1 * s)
-                } else {
-                    c.domain
-                },
-                reversed: c.reversed,
-            })),
+            Self::Trimmed(c) => {
+                let basis = c.basis.transformed(t, tol)?;
+                // The trim lives in the basis's parameter and moves with it:
+                // a line's is a length and rescales, and so does anything
+                // built on one (a trim of a trim of a line); an angle or a
+                // spline parameter does not, and the map is the identity.
+                let (from, to) = (c.basis.domain(), basis.domain());
+                Self::Trimmed(Box::new(TrimmedCurve {
+                    domain: (
+                        crate::surface::carried(c.domain.0, from, to),
+                        crate::surface::carried(c.domain.1, from, to),
+                    ),
+                    basis,
+                    reversed: c.reversed,
+                }))
+            }
         })
     }
 }
@@ -1798,7 +1815,8 @@ impl Reversible for Curve {
                 Self::BSpline(BSplineCurve {
                     knots,
                     control,
-                    ..c.clone()
+                    rational: c.rational,
+                    periodic: c.periodic,
                 })
             }
             Self::Helix(c) => Self::Helix(HelixCurve {
