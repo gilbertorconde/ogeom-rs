@@ -124,10 +124,18 @@ fn vertex(
     at: Point,
     tol: Tolerances,
 ) -> Shape {
-    if let Some((_, v)) = vertices
+    if let Some((p, v)) = vertices
         .iter()
         .find(|(p, _)| p.distance(at) <= tol.confusion() * 10.0)
     {
+        // The shared vertex stands for this end too: it must reach it, or
+        // the edge ending here is refused as missing its vertex.
+        let gap = p.distance(at) * 1.01;
+        if gap > tol.confusion()
+            && let Ok(reach) = ogeom_core::Tolerance::new(gap)
+        {
+            let _ = model.widen(v, reach);
+        }
         return v.clone();
     }
     let v = make_vertex(model, at).shape;

@@ -1860,6 +1860,7 @@ fn skinned_strip(
     shared: [Option<&Shape>; 4],
     outward_hint: Point,
     hole: bool,
+    by_spacing: bool,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<SkinnedStrip> {
@@ -1881,7 +1882,13 @@ fn skinned_strip(
             tol,
         );
     }
-    let fitted = ogeom_geom::fit::fit_surface_grid(rows, 3, tolerance, tol)?;
+    // Sections a caller placed follow their own spacing across the skin;
+    // stations a sweep placed keep the fit's centripetal assignment.
+    let fitted = if by_spacing {
+        ogeom_geom::fit::fit_surface_grid_sections(rows, 3, tolerance, tol)?
+    } else {
+        ogeom_geom::fit::fit_surface_grid(rows, 3, tolerance, tol)?
+    };
     if !fitted.met {
         ogeom_bail!(
             NotDone,
@@ -2325,6 +2332,7 @@ fn cornered_loft(
             [None, None, prev_rail.as_ref(), last_rail.as_ref()],
             hint,
             false,
+            true,
             tolerance,
             tol,
         )?;
@@ -3330,6 +3338,7 @@ pub fn make_helical_sweep(
                     ],
                     hint,
                     hole,
+                    false,
                     tolerance,
                     tol,
                 )?;
@@ -4297,9 +4306,22 @@ fn densified(
         if !added {
             break;
         }
+        // A law whose frame jumps (a guide's nearest point switching
+        // branch) never settles: each round doubles the stations at the
+        // jump. Past this many the skin is refused, not grown.
+        if stations.len() > MOST_STATIONS {
+            ogeom_bail!(
+                NotDone,
+                "the frame law turns faster than {MOST_STATIONS} sections can follow; \
+                 it jumps somewhere along the spine"
+            );
+        }
     }
     Ok(stations)
 }
+
+/// The most sections a law pipe's skin is built through.
+const MOST_STATIONS: usize = 2048;
 
 /// The frame a law gives at a station: the spine's tangent as its `z`, the
 /// law's normal as its `x`.
@@ -4577,6 +4599,18 @@ fn evenly(
     keep: bool,
     tol: Tolerances,
 ) -> OgeomResult<Vec<SpineStation>> {
+    evenly_by(model, spine, stations, &|_| count, keep, tol)
+}
+
+/// [`evenly`], with each edge's own count: `count(e)` for edge `e`.
+fn evenly_by(
+    model: &Model,
+    spine: &Shape,
+    stations: Vec<SpineStation>,
+    count: &dyn Fn(usize) -> u32,
+    keep: bool,
+    tol: Tolerances,
+) -> OgeomResult<Vec<SpineStation>> {
     let edges: Vec<Shape> = match model.kind_of(spine)? {
         ShapeType::Edge => vec![spine.clone()],
         ShapeType::Wire => model.ordered_children_of(spine)?,
@@ -4599,6 +4633,7 @@ fn evenly(
         } else {
             vec![first.t, last.t]
         };
+        let count = count(e);
         for k in 1..count {
             ts.push(first.t + (last.t - first.t) * f64::from(k) / f64::from(count));
         }
@@ -4747,8 +4782,32 @@ fn pipe_shell_law(
         // As many stations as the law's turning asks, spread evenly: the
         // skin takes its sections at even steps of its own parameter.
         let wanted = densified(model, spine, stations.clone(), law, tol)?.len();
-        let per_edge = u32::try_from(wanted).unwrap_or(u32::MAX).max(2);
-        evenly(model, spine, stations, per_edge, false, tol)?
+        // Shared out along the spine by length, so the spacing is the same
+        // on every edge: the skin steps evenly along its whole run.
+        let mut lengths: Vec<f64> = Vec::new();
+        for pair in stations.windows(2) {
+            let e = pair[1].edge;
+            if lengths.len() <= e {
+                lengths.resize(e + 1, 0.0);
+            }
+            if pair[0].edge == e {
+                lengths[e] += pair[0].at.distance(pair[1].at);
+            }
+        }
+        let total: f64 = lengths.iter().sum();
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
+        let share = |e: usize| -> u32 {
+            let length = lengths.get(e).copied().unwrap_or(0.0);
+            if total <= 0.0 {
+                return 2;
+            }
+            ((wanted as f64 * length / total).ceil() as u32).max(2)
+        };
+        evenly_by(model, spine, stations, &share, false, tol)?
     };
     // Corners: twin stations standing on one point with different headings.
     let corners: Vec<usize> = (0..stations.len() - 1)
@@ -5397,6 +5456,7 @@ fn pipe_shell_law(
                         ],
                         hint,
                         hole,
+                        false,
                         tolerance,
                         tol,
                     )?;

@@ -39,6 +39,9 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fit_surface_grid_sections`:** a grid fit with rows placed across by
+  chord length, for sections lofted at spacings of their own.
+
 - **`check` finds faces turned inside out.** A flipped face leaves every
   edge used twice, so nothing topological saw it and a mesh volume repaired
   it silently. Where the faces' flags disagree along their shared edges,
@@ -78,6 +81,18 @@ bump may break the API and a patch bump may not.
   against a half space bounded by a plane.
 
 ### Fixed
+
+- **A loft through unevenly spaced sections sagged between them.** The
+  skin's parameters across the sections ignored their spacing, so a square
+  twisting through steps of 0.625 and 0.3125 measured a fifth light or
+  would not fit. Sections are now placed across the skin by chord length
+  (`fit_surface_grid_sections`). A section of a face whose ends two
+  neighbouring faces place a hair apart shares one vertex that reaches
+  both.
+- **A frame-law pipe asked every edge of its spine for the whole station
+  count,** and a law whose frame jumps doubled its stations twelve times.
+  Stations are now shared out by length, and a law that outruns 2048
+  sections is refused.
 
 - **Trims scaled with their basis only sometimes.** A trimmed surface
   whose basis domain started at zero, and a trim of a trim of a line, kept

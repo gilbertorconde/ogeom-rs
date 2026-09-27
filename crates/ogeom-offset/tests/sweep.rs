@@ -2114,3 +2114,49 @@ fn a_skinned_tube_round_a_bend_is_the_right_way_out_in_every_plane() {
         );
     }
 }
+
+/// A square twisting a quarter turn along twenty units, lofted through
+/// sections spaced unevenly (steps of 0.625 and 0.3125 in turn, then a
+/// coarse half and a fine half): the same 80 as evenly spaced sections.
+/// A skin parameterized without regard to the spacing sagged between the
+/// sections, and measured a fifth light or refused to fit.
+#[test]
+fn unevenly_spaced_loft_sections_measure_the_twisted_prism() {
+    let loft = |zs: &[f64]| {
+        let mut model = ogeom_topo::Model::new();
+        let length = zs[zs.len() - 1];
+        let sections: Vec<ogeom_topo::Shape> = zs
+            .iter()
+            .map(|&z| {
+                let a = core::f64::consts::FRAC_PI_2 * z / length;
+                let (c, s) = (a.cos(), a.sin());
+                let corners: Vec<Point> = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+                    .iter()
+                    .map(|&(x, y): &(f64, f64)| Point::new(x * c - y * s, x * s + y * c, z))
+                    .collect();
+                ogeom_algo::make_polygon(&mut model, &corners, true, T)
+                    .unwrap()
+                    .shape
+            })
+            .collect();
+        let solid = ogeom_offset::make_loft_skinned(&mut model, &sections, 1e-3, T)
+            .unwrap()
+            .shape;
+        assert!(ogeom_algo::check(&model, &solid, T).unwrap().is_valid());
+        volume(&model, &solid)
+    };
+    let mut alternating = vec![0.0_f64];
+    let mut step = 0;
+    while alternating[alternating.len() - 1] < 20.0 - 1e-9 {
+        let last = alternating[alternating.len() - 1];
+        let by = if step % 2 == 0 { 0.625 } else { 0.3125 };
+        alternating.push((last + by).min(20.0));
+        step += 1;
+    }
+    let mut halves: Vec<f64> = (0..=16).map(|k| 10.0 * f64::from(k) / 16.0).collect();
+    halves.extend((1..=32).map(|k| 10.0 + 10.0 * f64::from(k) / 32.0));
+    for zs in [&alternating, &halves] {
+        let v = loft(zs);
+        assert!((v - 80.0).abs() < 80.0 * 1e-3, "{v}");
+    }
+}

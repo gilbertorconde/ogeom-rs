@@ -1124,6 +1124,26 @@ pub fn fit_surface_grid_chordal(
     fit_surface_grid_inner(rows, degree, tolerance, false, true, tol)
 }
 
+/// As [`fit_surface_grid`], with the rows placed across `v` by chord
+/// length: sections lofted through, where the spacing between sections is
+/// the skin's own and may change along it. Centripetal parameters squash a
+/// change of spacing (a step twice another's gets a parameter step only
+/// about one and a half times as long), and a cubic through sections so
+/// placed sags between them. Each row keeps the centripetal assignment
+/// along `u`.
+///
+/// # Errors
+///
+/// As [`fit_surface_grid`].
+pub fn fit_surface_grid_sections(
+    rows: &[Vec<Point>],
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<crate::BSplineSurface>> {
+    fit_surface_grid_parameterized(rows, degree, tolerance, false, (false, true), tol)
+}
+
 /// As [`fit_surface_grid`], with the `v` direction closed into a smooth loop.
 ///
 /// The rows must form a loop (the first row repeated at the end), and the
@@ -1200,6 +1220,20 @@ fn fit_surface_grid_inner(
     by_chord: bool,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<crate::BSplineSurface>> {
+    fit_surface_grid_parameterized(rows, degree, tolerance, closed_v, (by_chord, by_chord), tol)
+}
+
+/// The grid fit, with chord-length or centripetal parameters chosen per
+/// direction: `by_chord.0` along the rows (`u`), `by_chord.1` across them
+/// (`v`).
+fn fit_surface_grid_parameterized(
+    rows: &[Vec<Point>],
+    degree: usize,
+    tolerance: f64,
+    closed_v: bool,
+    by_chord: (bool, bool),
+    tol: Tolerances,
+) -> OgeomResult<Fitted<crate::BSplineSurface>> {
     use crate::traits::Surface as _;
     if !tolerance.is_finite() || tolerance <= 0.0 {
         ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
@@ -1224,7 +1258,7 @@ fn fit_surface_grid_inner(
     // parameters toward the start and sends the fitted border curves on an
     // oscillating sprint over the tail. It rides the others' parameters
     // instead; a constant row fits exactly at any assignment.
-    let average = |families: &[Vec<[f64; 3]>]| -> Vec<f64> {
+    let average = |families: &[Vec<[f64; 3]>], by_chord: bool| -> Vec<f64> {
         let mut sums = vec![0.0; families[0].len()];
         let mut counted = 0.0_f64;
         for family in families {
@@ -1258,11 +1292,11 @@ fn fit_surface_grid_inner(
         }
         sums.iter().map(|s| s / counted).collect()
     };
-    let u_params = average(&raw);
+    let u_params = average(&raw, by_chord.0);
     let columns: Vec<Vec<[f64; 3]>> = (0..nu)
         .map(|i| raw.iter().map(|r| r[i]).collect())
         .collect();
-    let v_params = average(&columns);
+    let v_params = average(&columns, by_chord.1);
 
     // Pass one: every row on one shared knot vector.
     let (u_knots, row_controls) = fit_family::<3>(&raw, &u_params, degree, tolerance * 0.5, false)?;
