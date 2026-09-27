@@ -11,7 +11,7 @@ change its status to `done <commit>`. Re-run `tools/ogeom-stress` with
 `--check` after each performance item; a speedup that moves the baseline is
 not a pure speedup.
 
-Status keys: `open`, `done <commit>`, `dropped (reason)`.
+Status keys: `open`, `done <commit>`, `part <commit>` (the rest dropped, with the reason), `dropped (reason)`.
 
 Evidence keys:
 
@@ -37,7 +37,8 @@ These were run, not only read:
 
 ## Progress
 
-Where each item stands. Items not listed here are `open`.
+Where each item stands, as of `2e489ce`. Every item is done, part done
+with the rest dropped for the reason given, or dropped.
 
 | Item | Status | Note |
 |---|---|---|
@@ -69,6 +70,35 @@ Where each item stands. Items not listed here are `open`.
 | P40 | done `e284553` | banded Cholesky; near-singular systems report singular |
 | P41 | done `28de5f3` | stations by length, capped at 2048 |
 | (new) basis derivatives | done `e551d55` | fixed arrays below degree eight, bit-identical |
+| P3, P9, P44, P45, P46 | done `593ec96` | P3 as an edge map in `growing_edges` and type-limited `ancestors_of` |
+| P31, P32 | done `a651816` | `SolidMesh` meshes a solid once for many probes |
+| P53 | part `01d8336` | arguments borrowed from the exchange; the remaining scans are a dozen linear passes per file, cached where they sat in loops |
+| P54 | part `01d8336` | written nodes indexed by node; `write_step_to` dropped: the writer builds the file as one string either way |
+| P39, P51, P52 | done `a62a207` | |
+| P12 | done `5beb6ff` | `newton_system_fixed` for two to four unknowns |
+| P26, P42 | done `2284420` | `fuse_in_order` for pipes, evolved sections and drill tools |
+| P35, P38, P36 (part) | done `8d0916f` | self-intersection: elements and boxes once, adjacency by node |
+| P20, P22 | done `cb4c31c` | per-face split and classify through `map_ordered` |
+| M1 (part), M3, M7 (part) | done `342727c` | `native::compacted` reclaims what failed attempts leave; undo capped at 256. Rollback on failure and shared undo fields dropped: both need transactional or persistent stores |
+| P16 | done `958ea49` | seeding cells binned by box |
+| P25 | done `a04437d` | the nearest-node half of the snapping stays first-by-index (B11e) |
+| P47, P49 | done `10c6125` | edge sag memo; re-measuring only near new vertices dropped, the memo makes a re-measure a lookup |
+| P29 | done `e27e0d4` | box reject and borrowed surface; the vertex search stays linear (a section has a handful) |
+| P37 | part `1e92979` | loose edges binned apart. Rebuilding only changed edges dropped: a second round is rare and compaction reclaims the orphans |
+| M6 | part `7752940` | identities in a slot per node. Minting provenance up front dropped: it renumbers every entity id a document records |
+| P15, M4 | part `31b5a0d` | minors expanded in place, bit-identical; states stored once. The relative degeneracy test and flat state storage dropped: the first moves where walks stall, the second changes a public type for one small allocation per point |
+| P13 | done `f7670f3` | stress outcomes identical |
+| M2, P33 | done `933a252` | at most 2^20 samples held; a larger settled run is drawn again, bit-identical |
+| M5 | done `f5191a5` | edge curves shared by `Arc`; surfaces already skip identity (P6) |
+| P36 | done `2e489ce` | one walk for every type; containment names each occurrence once |
+| P4 | dropped | a node already wide enough can bound a tighter one where a reader wrote a tolerance directly; the full walk is what repairs it |
+| P17 | dropped | a step cap or relative pivot moves the roots found at near-tangencies, which the walkers read as stop signals; the halvings never showed in a profile |
+| P28 | dropped | clipping a curved face's box by its surface's extent broke the oblique corner labelling test |
+| P43 | dropped | the full-solid cut is the real test: a tool that builds can still fail it and send the corner to its next labelling |
+| P50 | dropped | whole parts mesh in 0.13 to 0.15 s at a 0.01 chord; a shared map across parallel face jobs costs a lock for little |
+| P55 | dropped | the simplifier's tie-breaking would have to be reproduced exactly through a lazy heap; it is not a bottleneck |
+| N1 | part `5910cec` | extrema verify stationarity by angle after polishing; the polish thresholds stay absolute, since the verification catches a loose stop and a fast parametrisation stops on the step |
+| P24 | part `24a3d51`, `cb4c31c` | box tests where the profile found time; the dust and hug dedupe scans never showed |
 
 New findings while fixing, all open:
 
@@ -82,6 +112,11 @@ New findings while fixing, all open:
 - Every drill into `nist_ftc_06` is refused: a boundary strand of the
   drill's wall dangles in the arrangement. The part is now in the stress
   harness (`1dc2069`) so a fix shows.
+- `OGEOM_BOOL_AUDIT_BOUNDS=1` fails on the curved-corner blends (faces
+  2/0 and 2/1): the face-pair bound filter drops a pair that meets. It
+  fails at `cf744c4` too, so it predates this work.
+- The reader cannot fuzz without a nightly toolchain; the seeded mangling
+  test (`7584668`) stands in for the `cargo fuzz` targets.
 
 ## Correctness bugs
 
@@ -420,11 +455,11 @@ with SIGINT and records every thread's stack), on release builds.
 
 | Workload | Before | After | What dominated |
 |---|---|---|---|
-| stress harness, 498 cases, 20 threads | 143 s | 9 s | 9 in 10 samples polishing curve crossings in the boolean's paving (P18) |
+| stress harness, 498 cases, 20 threads | 143 s | 9 s (37 s at 504 cases, with the ftc_06 drills) | 9 in 10 samples polishing curve crossings in the boolean's paving (P18) |
 | one ctc_01 drill, alone | 18.2 s | 1.3 s | the same |
 | ftc_06 drill (was left out of the harness) | minutes | 1 to 30 s | section-to-section crossings (P24) |
 | draft tests | 21.7 s | 7.7 s | exact volume: the chart integral evaluating whole patches per sample |
-| thread-groove tests (CPU) | 71.5 s | 47.4 s | basis derivatives, spline fitting |
+| thread-groove tests (CPU) | 71.5 s | 40 s | basis derivatives, spline fitting |
 | a remodel test, mid-change | 540 s | 6 s | a banded solve that did not report near-singular systems |
 
 `KnotVector::basis_derivatives` remains the top self-time function in
