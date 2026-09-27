@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **An exact mass integral holds at most a million samples.** Each run's
+  comparison measures are summed as its samples are drawn; a run past the
+  bound is drawn a second time into the result instead of held, the same
+  samples in the same order.
+
 - **Fewer surface evaluations per Newton step.** A march's correction
   takes the walked point and its gradient from the evaluation its system
   already made (four evaluations a step instead of six, the same values),

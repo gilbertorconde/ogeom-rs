@@ -527,6 +527,10 @@ fn fold(gap: Vector2, period: Vector2) -> Vector2 {
 /// mesh.
 const DOUBLINGS: u32 = 5;
 
+/// The most samples a run keeps to feed once it settles: 56 MB of them.
+/// A run past this is drawn a second time instead of held.
+const MOST_KEPT: usize = 1 << 20;
+
 /// Agreement asked of two runs, the second on panels twice as fine,
 /// relative to the size of what they integrate.
 const AGREE: f64 = 1e-10;
@@ -559,7 +563,19 @@ impl ChartFace {
         tol: Tolerances,
         contribute: &mut dyn FnMut(Point, Vector, f64),
     ) -> bool {
-        let Ok((mut held, _)) = self.run(1, reference, tol) else {
+        self.integrate_keeping(MOST_KEPT, reference, tol, contribute)
+    }
+
+    /// [`ChartFace::integrate`], keeping at most `most_kept` samples of a
+    /// run.
+    fn integrate_keeping(
+        &self,
+        most_kept: usize,
+        reference: Point,
+        tol: Tolerances,
+        contribute: &mut dyn FnMut(Point, Vector, f64),
+    ) -> bool {
+        let Ok(mut held) = self.run(1, reference, tol, &mut |_| {}) else {
             return false;
         };
         for doubling in 1..=DOUBLINGS {
@@ -569,13 +585,28 @@ impl ChartFace {
             if ogeom_core::progress::checkpoint().is_err() {
                 return false;
             }
-            let Ok((proxy, samples)) = self.run(1 << doubling, reference, tol) else {
+            // The run's samples are kept to feed if it settles, up to a
+            // bound; past it they are dropped, and a settled run is drawn
+            // again, the same samples in the same order, straight into the
+            // caller.
+            let mut kept: Vec<Sample> = Vec::new();
+            let mut dropped = false;
+            let Ok(proxy) = self.run(1 << doubling, reference, tol, &mut |sample| {
+                if kept.len() < most_kept {
+                    kept.push(sample);
+                } else {
+                    dropped = true;
+                }
+            }) else {
                 return false;
             };
             if settled(held, proxy) {
-                for (p, n, w) in samples {
-                    contribute(p, n * w.abs(), w.signum());
+                let mut feed = |(p, n, w): Sample| contribute(p, n * w.abs(), w.signum());
+                if dropped {
+                    drop(kept);
+                    return self.run(1 << doubling, reference, tol, &mut feed).is_ok();
                 }
+                kept.into_iter().for_each(feed);
                 return true;
             }
             held = proxy;
@@ -583,15 +614,26 @@ impl ChartFace {
         false
     }
 
-    /// The face's samples with every panel split `fine` ways, and the
-    /// integrals of a few measures over them to compare runs by.
+    /// The face's samples with every panel split `fine` ways, each handed to
+    /// `sink` in a fixed order, and the integrals of a few measures over
+    /// them to compare runs by.
     fn run(
         &self,
         fine: u32,
         reference: Point,
         tol: Tolerances,
-    ) -> OgeomResult<([f64; 5], Vec<Sample>)> {
-        let mut samples = Vec::new();
+        sink: &mut dyn FnMut(Sample),
+    ) -> OgeomResult<[f64; 5]> {
+        let mut proxy = [0.0; 5];
+        let size = self.scale.max(1.0);
+        let mut take = |(p, n, w): Sample| {
+            let e = p - reference;
+            let row = [n.magnitude(), n.x, n.y, n.z, e.dot(n) / size];
+            for (acc, x) in proxy.iter_mut().zip(row) {
+                *acc += x * w;
+            }
+            sink((p, n, w));
+        };
         for (segments, region) in &self.loops {
             for segment in segments {
                 // A straight piece along which `v` does not move adds
@@ -609,22 +651,13 @@ impl ChartFace {
                         let b = pair[0] + (pair[1] - pair[0]) * f64::from(k + 1) / f64::from(fine);
                         for (t, wt) in gauss_legendre_rule(a, b) {
                             let (at, d) = segment.at(t, tol)?;
-                            self.inner(at, region * wt * d.y, fine, tol, &mut samples)?;
+                            self.inner(at, region * wt * d.y, fine, tol, &mut take)?;
                         }
                     }
                 }
             }
         }
-        let mut proxy = [0.0; 5];
-        let size = self.scale.max(1.0);
-        for (p, n, w) in &samples {
-            let e = *p - reference;
-            let row = [n.magnitude(), n.x, n.y, n.z, e.dot(*n) / size];
-            for (acc, x) in proxy.iter_mut().zip(row) {
-                *acc += x * w;
-            }
-        }
-        Ok((proxy, samples))
+        Ok(proxy)
     }
 
     /// Where a boundary piece's panels break: its own ends, its knots, and
@@ -720,7 +753,7 @@ impl ChartFace {
         outer: f64,
         fine: u32,
         tol: Tolerances,
-        samples: &mut Vec<Sample>,
+        sink: &mut dyn FnMut(Sample),
     ) -> OgeomResult<()> {
         let (ua, ub) = (self.u_ref, at.x);
         if ua == ub || outer == 0.0 {
@@ -751,7 +784,7 @@ impl ChartFace {
                     Some(found) => found,
                     None => self.surface.point_d1_at(u, at.y, tol)?,
                 };
-                samples.push((p, du.cross(dv) * self.sign, outer * wu));
+                sink((p, du.cross(dv) * self.sign, outer * wu));
             }
         }
         Ok(())
@@ -825,4 +858,46 @@ fn settled(a: [f64; 5], b: [f64; 5]) -> bool {
         .map(|(x, y)| (x - y).abs())
         .fold(0.0, f64::max);
     miss <= AGREE * size || size == 0.0
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test code")]
+mod tests {
+    use super::*;
+    use ogeom_math::{Direction, Frame};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// A run drawn again past the bound feeds exactly what a kept run
+    /// feeds, sample for sample.
+    #[test]
+    fn a_dropped_run_feeds_the_same_samples_again() {
+        let mut model = Model::new();
+        let frame = Frame::new(Point::ORIGIN, Direction::Z, Direction::X, T).unwrap();
+        let cylinder = crate::make_cylinder(&mut model, frame, 2.0, 3.0, T)
+            .unwrap()
+            .shape;
+        let faces =
+            ogeom_topo::explore_unique(&model, &cylinder, ogeom_topo::ShapeType::Face).unwrap();
+        let mut tried = 0;
+        for face in &faces {
+            let Some(chart) = chart_face(&model, face, T) else {
+                continue;
+            };
+            tried += 1;
+            let feed = |most_kept: usize| {
+                let mut out = Vec::new();
+                let settled =
+                    chart.integrate_keeping(most_kept, Point::ORIGIN, T, &mut |p, n, w| {
+                        out.push([p.x, p.y, p.z, n.x, n.y, n.z, w].map(f64::to_bits));
+                    });
+                assert!(settled);
+                out
+            };
+            let kept = feed(MOST_KEPT);
+            assert!(!kept.is_empty());
+            assert_eq!(kept, feed(0));
+        }
+        assert!(tried > 0);
+    }
 }
