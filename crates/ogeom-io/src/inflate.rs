@@ -174,19 +174,21 @@ const CODE_LENGTH_ORDER: [usize; 19] = [
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) for a
 /// stream that is malformed, truncated, or reaches back before its start.
 pub(crate) fn inflate(bytes: &[u8], expected: usize) -> OgeomResult<Vec<u8>> {
-    let mut out: Vec<u8> = Vec::with_capacity(expected);
+    // DEFLATE expands at most 1032 to 1, so no honest entry inflates past
+    // that; a promise beyond it reserves nothing it cannot back.
+    let mut out: Vec<u8> = Vec::with_capacity(expected.min(bytes.len().saturating_mul(1032)));
     let mut bits = Bits::new(bytes);
     loop {
         let last = bits.take(1)? == 1;
         match bits.take(2)? {
-            0 => stored(&mut bits, &mut out)?,
+            0 => stored(&mut bits, &mut out, expected)?,
             1 => {
                 let (literals, distances) = fixed_codes()?;
-                compressed(&mut bits, &mut out, &literals, &distances)?;
+                compressed(&mut bits, &mut out, &literals, &distances, expected)?;
             }
             2 => {
                 let (literals, distances) = dynamic_codes(&mut bits)?;
-                compressed(&mut bits, &mut out, &literals, &distances)?;
+                compressed(&mut bits, &mut out, &literals, &distances, expected)?;
             }
             _ => ogeom_bail!(Construction, "a deflated block has the reserved type"),
         }
@@ -204,7 +206,19 @@ pub(crate) fn inflate(bytes: &[u8], expected: usize) -> OgeomResult<Vec<u8>> {
     Ok(out)
 }
 
-fn stored(bits: &mut Bits<'_>, out: &mut Vec<u8>) -> OgeomResult<()> {
+/// Refuse a stream the moment it inflates past what its archive promised,
+/// rather than after inflating all of a bomb.
+fn within(out: &[u8], expected: usize) -> OgeomResult<()> {
+    if out.len() > expected {
+        ogeom_bail!(
+            Construction,
+            "a deflated stream inflates past the {expected} bytes its archive says"
+        );
+    }
+    Ok(())
+}
+
+fn stored(bits: &mut Bits<'_>, out: &mut Vec<u8>, expected: usize) -> OgeomResult<()> {
     bits.align();
     let length = bits.take(16)?;
     let complement = bits.take(16)?;
@@ -217,7 +231,7 @@ fn stored(bits: &mut Bits<'_>, out: &mut Vec<u8>) -> OgeomResult<()> {
     for _ in 0..length {
         out.push(u8::try_from(bits.take(8)?).unwrap_or(0));
     }
-    Ok(())
+    within(out, expected)
 }
 
 fn fixed_codes() -> OgeomResult<(Code, Code)> {
@@ -274,8 +288,10 @@ fn compressed(
     out: &mut Vec<u8>,
     literals: &Code,
     distances: &Code,
+    expected: usize,
 ) -> OgeomResult<()> {
     loop {
+        within(out, expected)?;
         let symbol = literals.decode(bits)?;
         match symbol {
             0..=255 => out.push(u8::try_from(symbol).unwrap_or(0)),
@@ -343,5 +359,18 @@ mod tests {
         assert_eq!(inflate(&stream, TEXT.len()).unwrap(), TEXT);
         // Cut short, it is refused rather than padded.
         assert!(inflate(&stream[..30], TEXT.len()).is_err());
+    }
+
+    /// A stream that inflates past the size its archive promises is
+    /// refused, whatever it promised: a hundred bytes where ten were said.
+    #[test]
+    fn a_stream_longer_than_its_promise_is_refused() {
+        let mut stream = vec![0x01, 100, 0, !100, 0xFF];
+        stream.extend(std::iter::repeat_n(b'x', 100));
+        assert!(inflate(&stream, 10).is_err());
+        assert_eq!(inflate(&stream, 100).unwrap().len(), 100);
+        // A promise of more than any stream this short could inflate to
+        // reserves nothing it cannot back, and the length check refuses it.
+        assert!(inflate(&stream, usize::MAX).is_err());
     }
 }

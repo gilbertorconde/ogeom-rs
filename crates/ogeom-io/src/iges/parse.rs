@@ -96,6 +96,18 @@ impl Entity {
         static DEFAULT: Value = Value::Default;
         self.params.get(i).unwrap_or(&DEFAULT)
     }
+
+    /// Parameter `i` read as a count or a degree: zero where it is negative
+    /// or absent, and never more than the entity's own parameters. Every
+    /// counted item takes at least one parameter, so no valid count is
+    /// larger, and a count from the file cannot size an allocation past
+    /// what the file holds.
+    #[must_use]
+    pub fn count(&self, i: usize) -> usize {
+        usize::try_from(self.at(i).int())
+            .unwrap_or(0)
+            .min(self.params.len())
+    }
 }
 
 /// A parsed file: global parameters and entities by directory pointer.
@@ -174,29 +186,28 @@ pub fn parse(text: &str) -> OgeomResult<File> {
         }
         // The section letter lives in column 73. Short lines are padded: some
         // writers trim trailing blanks, and the format's fixed columns must
-        // survive that.
-        let padded;
-        let line = if line.len() < 80 {
-            padded = format!("{line:<80}");
-            &padded
-        } else {
-            line
-        };
-        let section = line.as_bytes()[72] as char;
+        // survive that. Columns are bytes: a label holding a character past
+        // ASCII takes as many columns as its encoding has bytes.
+        let mut record = line.as_bytes().to_vec();
+        if record.len() < 80 {
+            record.resize(80, b' ');
+        }
+        let columns = |from: usize, to: usize| String::from_utf8_lossy(&record[from..to]);
+        let section = record[72] as char;
         match section {
-            'S' => start.push_str(line[..72].trim_end()),
+            'S' => start.push_str(columns(0, 72).trim_end()),
             'G' => {
-                global_text.push_str(&line[..72]);
+                global_text.push_str(&columns(0, 72));
             }
-            'D' => directory.push(line[..72].to_string()),
+            'D' => directory.push(columns(0, 72).into_owned()),
             'P' => {
-                let back: i64 = line[64..72].trim().parse().map_err(|_| {
+                let back: i64 = columns(64, 72).trim().parse().map_err(|_| {
                     ogeom_core::ogeom_err!(
                         Construction,
                         "IGES parameter record carries no directory back-pointer"
                     )
                 })?;
-                params.entry(back).or_default().push_str(&line[..64]);
+                params.entry(back).or_default().push_str(&columns(0, 64));
             }
             'T' => break,
             _ => ogeom_bail!(
@@ -225,7 +236,10 @@ pub fn parse(text: &str) -> OgeomResult<File> {
     for (index, pair) in directory.chunks(2).enumerate() {
         let de_pointer = 2 * index as i64 + 1;
         let f = |line: &str, field: usize| -> String {
-            line[field * 8..(field + 1) * 8].trim().to_string()
+            line.get(field * 8..(field + 1) * 8)
+                .unwrap_or("")
+                .trim()
+                .to_string()
         };
         let int = |line: &str, field: usize| -> OgeomResult<i64> {
             let s = f(line, field);
@@ -298,14 +312,14 @@ fn parse_global(text: &str) -> OgeomResult<(char, char, Vec<Value>)> {
     let mut i = 0;
     // First parameter: the parameter delimiter, `1H,` or empty for default.
     if bytes.first() == Some(&b'1') && bytes.get(1) == Some(&b'H') {
-        param_delim = bytes[2] as char;
+        param_delim = bytes.get(2).map_or(param_delim, |b| *b as char);
         i = 4; // past "1H?" and the delimiter that follows it
     } else if bytes.first() == Some(&b',') {
         i = 1;
     }
     // Second: the record delimiter.
     if bytes.get(i) == Some(&b'1') && bytes.get(i + 1) == Some(&b'H') {
-        record_delim = bytes[i + 2] as char;
+        record_delim = bytes.get(i + 2).map_or(record_delim, |b| *b as char);
         i += 3;
         if bytes.get(i) == Some(&(param_delim as u8)) {
             i += 1;
@@ -317,7 +331,11 @@ fn parse_global(text: &str) -> OgeomResult<(char, char, Vec<Value>)> {
         Value::Text(param_delim.to_string()),
         Value::Text(record_delim.to_string()),
     ];
-    global.extend(parse_params(&text[i..], param_delim, record_delim)?);
+    global.extend(parse_params(
+        &String::from_utf8_lossy(bytes.get(i..).unwrap_or(&[])),
+        param_delim,
+        record_delim,
+    )?);
     Ok((param_delim, record_delim, global))
 }
 
@@ -342,18 +360,26 @@ fn parse_params(text: &str, param_delim: char, record_delim: char) -> OgeomResul
             while j < bytes.len() && bytes[j].is_ascii_digit() {
                 j += 1;
             }
-            if bytes.get(j) == Some(&b'H') && text[field_start..digits_start].trim().is_empty() {
-                let n: usize = text[digits_start..j].parse().map_err(|_| {
-                    ogeom_core::ogeom_err!(Construction, "IGES Hollerith count out of range")
-                })?;
-                if j + 1 + n > bytes.len() {
+            if bytes.get(j) == Some(&b'H')
+                && bytes[field_start..digits_start]
+                    .iter()
+                    .all(u8::is_ascii_whitespace)
+            {
+                let n: usize = String::from_utf8_lossy(&bytes[digits_start..j])
+                    .parse()
+                    .map_err(|_| {
+                        ogeom_core::ogeom_err!(Construction, "IGES Hollerith count out of range")
+                    })?;
+                let Some(end) = n.checked_add(j + 1).filter(|end| *end <= bytes.len()) else {
                     ogeom_bail!(
                         Construction,
                         "IGES Hollerith string runs past the end of its record"
                     );
-                }
-                out.push(Value::Text(text[j + 1..j + 1 + n].to_string()));
-                i = j + 1 + n;
+                };
+                out.push(Value::Text(
+                    String::from_utf8_lossy(&bytes[j + 1..end]).into_owned(),
+                ));
+                i = end;
                 // Skip the delimiter after the string, if present.
                 if i < bytes.len()
                     && (bytes[i] as char == param_delim || bytes[i] as char == record_delim)
@@ -367,7 +393,8 @@ fn parse_params(text: &str, param_delim: char, record_delim: char) -> OgeomResul
             continue;
         }
         if at_end || c == param_delim || c == record_delim {
-            let field = text[field_start..i].trim();
+            let field = String::from_utf8_lossy(&bytes[field_start..i]);
+            let field = field.trim();
             if !field.is_empty() || (!at_end && c == param_delim) {
                 out.push(scalar(field)?);
             }
@@ -472,6 +499,34 @@ mod tests {
                 Value::Int(2),
             ]
         );
+    }
+
+    /// Columns are bytes. A character past ASCII straddling the column a
+    /// field starts at leaves that field unreadable, which is an error to
+    /// report, not a string to slice through the middle of a character.
+    #[test]
+    fn a_character_straddling_a_column_is_an_error_not_a_panic() {
+        let mut s = tiny_file();
+        let at = s.find("110,0.,0.,0.,10.,0.,0.;").unwrap();
+        let record = format!("{:<63}\u{f8}{:>7}P{:>7}\n", "110,0.,0.,0.,10.,0.,0.;", 1, 1);
+        let end = at + s[at..].find('\n').unwrap() + 1;
+        s.replace_range(at..end, &record);
+        assert!(parse(&s).is_err());
+    }
+
+    #[test]
+    fn hollerith_counts_past_the_record_are_errors_not_panics() {
+        for field in [
+            "99999999999999999999H,1;",
+            "18446744073709551615H,1;",
+            "9Hshort;",
+        ] {
+            assert!(parse_params(field, ',', ';').is_err(), "{field}");
+        }
+        // A count that ends inside a character, and a global section cut
+        // short after its first `1H`, answer rather than panic.
+        let _ = parse_params("1H\u{f8},2;", ',', ';');
+        let _ = parse_global("1H");
     }
 
     #[test]

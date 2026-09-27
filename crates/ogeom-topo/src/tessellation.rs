@@ -202,7 +202,11 @@ impl Triangulation {
                 for dy in -1..=1 {
                     for dz in -1..=1 {
                         for &candidate in buckets
-                            .get(&(kx + dx, ky + dy, kz + dz))
+                            .get(&(
+                                kx.saturating_add(dx),
+                                ky.saturating_add(dy),
+                                kz.saturating_add(dz),
+                            ))
                             .map_or(&[][..], Vec::as_slice)
                         {
                             if self.positions[candidate as usize].distance(p) <= reach {
@@ -502,7 +506,11 @@ impl Triangulation {
                 for dy in -1..=1 {
                     for dz in -1..=1 {
                         for &candidate in buckets
-                            .get(&(kx + dx, ky + dy, kz + dz))
+                            .get(&(
+                                kx.saturating_add(dx),
+                                ky.saturating_add(dy),
+                                kz.saturating_add(dz),
+                            ))
                             .map_or(&[][..], Vec::as_slice)
                         {
                             if out.positions[candidate as usize].is_equal(*position, tol) {

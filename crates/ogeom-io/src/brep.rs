@@ -920,7 +920,7 @@ pub fn read(text: &str, tol: Tolerances) -> OgeomResult<(Model, Shape)> {
     // Records are read in file order and numbered backwards, so the record
     // just read is number `total - written`, and every child it names has
     // already been built.
-    let mut shapes: Vec<Shape> = Vec::with_capacity(total);
+    let mut shapes: Vec<Shape> = Vec::with_capacity(cursor.room(total));
     for _ in 0..total {
         let shape = cursor.record(&mut model, &built, &shapes, total, tol)?;
         shapes.push(shape);
@@ -1061,6 +1061,13 @@ impl<'a> Cursor<'a> {
         Ok(value)
     }
 
+    /// Room to reserve for `n` items read from here on: never more than the
+    /// words left, since every item takes at least one, so a count in the
+    /// file cannot size an allocation past what the file holds.
+    fn room(&self, n: usize) -> usize {
+        n.min(self.tokens.len().saturating_sub(self.at))
+    }
+
     fn count(&mut self) -> OgeomResult<usize> {
         let value = self.integer()?;
         let Ok(count) = usize::try_from(value) else {
@@ -1113,9 +1120,15 @@ impl<'a> Cursor<'a> {
         for _ in 0..count {
             let value = self.number()?;
             let multiplicity = self.count()?;
-            for _ in 0..multiplicity {
-                flat.push(value);
+            // No valid spline repeats a knot more often than its order, and
+            // no real one is of a degree past 64.
+            if multiplicity > degree.min(64) + 1 {
+                ogeom_bail!(
+                    Construction,
+                    "a knot of multiplicity {multiplicity} on a degree {degree} spline"
+                );
             }
+            flat.extend(std::iter::repeat_n(value, multiplicity));
         }
         KnotVector::new(flat, degree)
     }
@@ -1155,7 +1168,7 @@ impl<'a> Cursor<'a> {
                 let degree = self.count()?;
                 let poles = self.count()?;
                 let knot_count = self.count()?;
-                let mut control = Vec::with_capacity(poles);
+                let mut control = Vec::with_capacity(self.room(poles));
                 for _ in 0..poles {
                     let at = self.point()?;
                     let weight = if rational { self.number()? } else { 1.0 };
@@ -1209,7 +1222,7 @@ impl<'a> Cursor<'a> {
                 let degree = self.count()?;
                 let poles = self.count()?;
                 let knot_count = self.count()?;
-                let mut control = Vec::with_capacity(poles);
+                let mut control = Vec::with_capacity(self.room(poles));
                 for _ in 0..poles {
                     let at = self.point2()?;
                     let weight = if rational { self.number()? } else { 1.0 };
@@ -1290,8 +1303,11 @@ impl<'a> Cursor<'a> {
                 let u_knot_count = self.count()?;
                 let v_knot_count = self.count()?;
                 let rational = u_rational || v_rational;
-                let mut points = Vec::with_capacity(u_poles * v_poles);
-                for _ in 0..u_poles * v_poles {
+                let Some(cells) = u_poles.checked_mul(v_poles) else {
+                    ogeom_bail!(Construction, "a {u_poles} by {v_poles} pole grid");
+                };
+                let mut points = Vec::with_capacity(self.room(cells));
+                for _ in 0..cells {
                     let at = self.point()?;
                     let weight = if rational { self.number()? } else { 1.0 };
                     points.push(Weighted::new(at, weight, tol)?);

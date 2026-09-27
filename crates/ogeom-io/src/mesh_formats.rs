@@ -1382,7 +1382,21 @@ fn read_accessor(
     };
     let normalized = accessor.get("normalized") == Some(&crate::json::Json::Bool(true));
     let count = accessor.index_at("count").unwrap_or(0);
-    let mut values = vec![0.0; count * components];
+    // Every element the document holds data for takes at least a byte of
+    // its buffers per component, so no honest accessor asks for more
+    // numbers than the buffers have bytes; one that does would size an
+    // allocation from a number in the file.
+    let held: usize = buffers.iter().map(Vec::len).sum();
+    let Some(numbers) = count
+        .checked_mul(components)
+        .filter(|n| *n <= held.max(1 << 16))
+    else {
+        ogeom_bail!(
+            Construction,
+            "accessor {index} asks for {count} elements of {components} from {held} bytes"
+        );
+    };
+    let mut values = vec![0.0; numbers];
 
     if let Some(view_index) = accessor.index_at("bufferView") {
         let offset = accessor.index_at("byteOffset").unwrap_or(0);
@@ -1403,7 +1417,7 @@ fn read_accessor(
     // It comes *after* the dense read, because that is what "sparse" means:
     // a document may give a base and then override part of it.
     if let Some(sparse) = accessor.get("sparse") {
-        let sparse_count = sparse.index_at("count").unwrap_or(0);
+        let sparse_count = sparse.index_at("count").unwrap_or(0).min(count);
         let Some(indices) = sparse.get("indices") else {
             ogeom_bail!(Construction, "a sparse accessor names its indices");
         };

@@ -1302,10 +1302,10 @@ pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
                     None
                 };
                 let lines = cursor.count()?;
-                let mut polylines = Vec::with_capacity(lines);
+                let mut polylines = Vec::with_capacity(cursor.room(lines));
                 for _ in 0..lines {
                     let count = cursor.count()?;
-                    let mut line = Vec::with_capacity(count);
+                    let mut line = Vec::with_capacity(cursor.room(count));
                     for _ in 0..count {
                         line.push(cursor.point()?);
                     }
@@ -1335,7 +1335,7 @@ pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
                     None
                 };
                 let count = cursor.count()?;
-                let mut callouts = Vec::with_capacity(count);
+                let mut callouts = Vec::with_capacity(cursor.room(count));
                 for _ in 0..count {
                     callouts.push(cursor.count()?);
                 }
@@ -2082,6 +2082,13 @@ impl<'a> Cursor<'a> {
             .map_err(|_| ogeom_core::ogeom_err!(Construction, "`{word}` is not a number"))
     }
 
+    /// Room to reserve for `n` items read from here on: never more than the
+    /// words left, since every item takes at least one, so a count in the
+    /// file cannot size an allocation past what the file holds.
+    fn room(&self, n: usize) -> usize {
+        n.min(self.items.len().saturating_sub(self.at))
+    }
+
     fn count(&mut self) -> OgeomResult<usize> {
         let word = self.word()?;
         word.parse::<usize>()
@@ -2228,7 +2235,7 @@ impl<'a> Cursor<'a> {
     fn knots(&mut self) -> OgeomResult<KnotVector> {
         let degree = self.count()?;
         let n = self.count()?;
-        let mut values = Vec::with_capacity(n);
+        let mut values = Vec::with_capacity(self.room(n));
         for _ in 0..n {
             values.push(self.number()?);
         }
@@ -2299,7 +2306,7 @@ impl<'a> Cursor<'a> {
             "bspline" => {
                 let knots = self.knots()?;
                 let n = self.count()?;
-                let mut control = Vec::with_capacity(n);
+                let mut control = Vec::with_capacity(self.room(n));
                 for _ in 0..n {
                     control.push(self.weighted()?);
                 }
@@ -2308,7 +2315,7 @@ impl<'a> Cursor<'a> {
             "bspline_periodic" => {
                 let knots = self.knots()?;
                 let n = self.count()?;
-                let mut control = Vec::with_capacity(n);
+                let mut control = Vec::with_capacity(self.room(n));
                 for _ in 0..n {
                     control.push(self.weighted()?);
                 }
@@ -2357,7 +2364,7 @@ impl<'a> Cursor<'a> {
             "bspline2" => {
                 let knots = self.knots()?;
                 let n = self.count()?;
-                let mut control = Vec::with_capacity(n);
+                let mut control = Vec::with_capacity(self.room(n));
                 for _ in 0..n {
                     control.push(self.weighted2()?);
                 }
@@ -2417,8 +2424,11 @@ impl<'a> Cursor<'a> {
                 let v_knots = self.knots()?;
                 let u_count = self.count()?;
                 let v_count = self.count()?;
-                let mut points = Vec::with_capacity(u_count * v_count);
-                for _ in 0..u_count * v_count {
+                let Some(cells) = u_count.checked_mul(v_count) else {
+                    ogeom_bail!(Construction, "a {u_count} by {v_count} control grid");
+                };
+                let mut points = Vec::with_capacity(self.room(cells));
+                for _ in 0..cells {
                     points.push(self.weighted()?);
                 }
                 let grid = ControlGrid::new(points, u_count, v_count)?;
@@ -2510,7 +2520,7 @@ impl<'a> Cursor<'a> {
                 let op = OpId(self.small()?);
                 let role = Role(self.small()?);
                 let n = self.count()?;
-                let mut from = Vec::with_capacity(n);
+                let mut from = Vec::with_capacity(self.room(n));
                 for _ in 0..n {
                     let raw = self.count()?;
                     let Some(id) = EntityId::from_raw(raw as u64) else {
@@ -2583,7 +2593,7 @@ impl<'a> Cursor<'a> {
         };
 
         let n = self.count()?;
-        let mut children = Vec::with_capacity(n);
+        let mut children = Vec::with_capacity(self.room(n));
         for _ in 0..n {
             children.push(self.shape()?);
         }
@@ -2628,12 +2638,12 @@ impl<'a> Cursor<'a> {
                 let location = self.location()?;
                 let deflection = self.number()?;
                 let n = self.count()?;
-                let mut points = Vec::with_capacity(n);
+                let mut points = Vec::with_capacity(self.room(n));
                 for _ in 0..n {
                     points.push(self.point()?);
                 }
                 let n = self.count()?;
-                let mut parameters = Vec::with_capacity(n);
+                let mut parameters = Vec::with_capacity(self.room(n));
                 for _ in 0..n {
                     parameters.push(self.number()?);
                 }
@@ -2648,7 +2658,7 @@ impl<'a> Cursor<'a> {
                 let triangulation = self.handle()?;
                 let location = self.location()?;
                 let n = self.count()?;
-                let mut indices = Vec::with_capacity(n);
+                let mut indices = Vec::with_capacity(self.room(n));
                 for _ in 0..n {
                     let raw = self.count()?;
                     indices.push(u32::try_from(raw).map_err(|_| {

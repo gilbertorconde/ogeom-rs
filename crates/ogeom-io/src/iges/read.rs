@@ -102,6 +102,7 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         vertices: HashMap::new(),
         edges: HashMap::new(),
         vertex_misses: (0, 0.0),
+        depth: 0,
         tol,
     };
 
@@ -286,10 +287,34 @@ struct Reader<'a> {
     /// Vertices a curve end missed by more than the confusion tolerance
     /// and that widened to cover it: how many, and the widest miss.
     vertex_misses: (usize, f64),
+    /// How many curve, surface or shell builders are open on the stack.
+    /// Entities refer to entities of their own kind (a composite curve to
+    /// its pieces, an offset surface to its basis), so a file that refers
+    /// in a circle would otherwise recurse until the stack runs out.
+    depth: u32,
     tol: Tolerances,
 }
 
+/// How deep entities of one kind may refer to one another. Real files nest
+/// a handful of levels; a chain this long is a cycle or a hostile file.
+const MOST_NESTING: u32 = 64;
+
 impl<'a> Reader<'a> {
+    /// Run a builder one level deeper, refusing past [`MOST_NESTING`].
+    fn nested<T>(&mut self, build: impl FnOnce(&mut Self) -> OgeomResult<T>) -> OgeomResult<T> {
+        if self.depth >= MOST_NESTING {
+            ogeom_bail!(
+                Construction,
+                "entities refer to one another more than {MOST_NESTING} deep; \
+                 the file refers in a circle"
+            );
+        }
+        self.depth += 1;
+        let built = build(self);
+        self.depth -= 1;
+        built
+    }
+
     fn entity(&mut self, de: i64) -> OgeomResult<&'a Entity> {
         let Some(entity) = self.file.entity(de) else {
             ogeom_bail!(Construction, "IGES pointer D{de} names no entity");
@@ -301,8 +326,23 @@ impl<'a> Reader<'a> {
     /// The model-space transform an entity carries, identity when none. A
     /// transformation entity may itself be transformed; that composes.
     fn placement(&mut self, entity: &Entity) -> OgeomResult<Transform> {
+        self.placement_within(entity, 0)
+    }
+
+    /// [`Self::placement`], `depth` transforms in. A chain of transforms
+    /// longer than any real file writes is a cycle (a transform placed by
+    /// itself), refused rather than followed until the stack runs out.
+    fn placement_within(&mut self, entity: &Entity, depth: u32) -> OgeomResult<Transform> {
+        const MOST_CHAINED: u32 = 32;
         if entity.transform == 0 {
             return Ok(Transform::IDENTITY);
+        }
+        if depth >= MOST_CHAINED {
+            ogeom_bail!(
+                Construction,
+                "transforms chain more than {MOST_CHAINED} deep; the file places a \
+                 transform by itself"
+            );
         }
         let de = entity.transform;
         let t = self.entity(de)?;
@@ -319,7 +359,7 @@ impl<'a> Reader<'a> {
         let translation = Vector::new(v(3) * s, v(7) * s, v(11) * s);
         let m = Transform::from_parts(linear, 1.0, translation, self.tol.angular())?;
         if t.transform != 0 {
-            let outer = self.placement(t)?;
+            let outer = self.placement_within(t, depth + 1)?;
             return Ok(outer * m);
         }
         Ok(m)
@@ -336,6 +376,10 @@ impl<'a> Reader<'a> {
 
     /// A model-space curve with the range its own definition covers.
     fn curve(&mut self, de: i64) -> OgeomResult<(Curve, (f64, f64))> {
+        self.nested(|reader| reader.curve_at(de))
+    }
+
+    fn curve_at(&mut self, de: i64) -> OgeomResult<(Curve, (f64, f64))> {
         let entity = self.entity(de)?;
         let scale = self.report.scale_mm;
         let (curve, range) = match entity.kind {
@@ -777,7 +821,7 @@ impl<'a> Reader<'a> {
     }
 
     fn spline_curve(&mut self, de: i64, entity: &Entity) -> OgeomResult<(Curve, (f64, f64))> {
-        let n = usize::try_from(entity.at(3).int()).unwrap_or(0);
+        let n = entity.count(3);
         if n == 0 {
             ogeom_bail!(Construction, "D{de}: a spline curve with no segments");
         }
@@ -832,8 +876,8 @@ impl<'a> Reader<'a> {
 
     /// Rational B-spline curve, the direct translation.
     fn nurbs_curve(&mut self, de: i64, entity: &Entity) -> OgeomResult<(Curve, (f64, f64))> {
-        let k = usize::try_from(entity.at(0).int()).unwrap_or(0);
-        let degree = usize::try_from(entity.at(1).int()).unwrap_or(0);
+        let k = entity.count(0);
+        let degree = entity.count(1);
         if degree == 0 {
             ogeom_bail!(Construction, "D{de}: a B-spline curve of degree zero");
         }
@@ -863,6 +907,10 @@ impl<'a> Reader<'a> {
 
     /// A model-space surface.
     fn surface(&mut self, de: i64) -> OgeomResult<SurfaceGeometry> {
+        self.nested(|reader| reader.surface_at(de))
+    }
+
+    fn surface_at(&mut self, de: i64) -> OgeomResult<SurfaceGeometry> {
         let entity = self.entity(de)?;
         let scale = self.report.scale_mm;
         let surface: SurfaceGeometry = match entity.kind {
@@ -1093,8 +1141,8 @@ impl<'a> Reader<'a> {
     /// After each row of patches the file carries one arbitrary patch, and
     /// after the last row one arbitrary row; both are skipped.
     fn spline_surface(&mut self, de: i64, entity: &Entity) -> OgeomResult<SurfaceGeometry> {
-        let m = usize::try_from(entity.at(2).int()).unwrap_or(0);
-        let n = usize::try_from(entity.at(3).int()).unwrap_or(0);
+        let m = entity.count(2);
+        let n = entity.count(3);
         if m == 0 || n == 0 {
             ogeom_bail!(Construction, "D{de}: a spline surface with no patches");
         }
@@ -1183,14 +1231,24 @@ impl<'a> Reader<'a> {
     }
 
     fn nurbs_surface(&mut self, de: i64, entity: &Entity) -> OgeomResult<SurfaceGeometry> {
-        let k1 = usize::try_from(entity.at(0).int()).unwrap_or(0);
-        let k2 = usize::try_from(entity.at(1).int()).unwrap_or(0);
-        let m1 = usize::try_from(entity.at(2).int()).unwrap_or(0);
-        let m2 = usize::try_from(entity.at(3).int()).unwrap_or(0);
+        let k1 = entity.count(0);
+        let k2 = entity.count(1);
+        let m1 = entity.count(2);
+        let m2 = entity.count(3);
         if m1 == 0 || m2 == 0 {
             ogeom_bail!(Construction, "D{de}: a B-spline surface of degree zero");
         }
         let (nu, nv) = (k1 + 1, k2 + 1);
+        if nu
+            .checked_mul(nv)
+            .is_none_or(|cells| cells > entity.params.len())
+        {
+            ogeom_bail!(
+                Construction,
+                "D{de}: a {nu} by {nv} control grid in {} parameters",
+                entity.params.len()
+            );
+        }
         let (nku, nkv) = (nu + m1 + 1, nv + m2 + 1);
         let base = 9;
         let u_knots: Vec<f64> = (0..nku).map(|i| entity.at(base + i).real()).collect();
@@ -1304,12 +1362,12 @@ impl<'a> Reader<'a> {
                 self.lifted_segments(de, surface_de, b)
             }
             141 => {
-                let n = usize::try_from(entity.at(3).int()).unwrap_or(0);
+                let n = entity.count(3);
                 let mut out = Vec::new();
                 let mut i = 4;
                 for _ in 0..n {
                     let cptr = entity.at(i).int();
-                    let k = usize::try_from(entity.at(i + 2).int()).unwrap_or(0);
+                    let k = entity.count(i + 2);
                     i += 3 + k;
                     // The sense flag is advisory here too: the wire builder
                     // chains segments by their geometry.
@@ -1438,9 +1496,13 @@ impl<'a> Reader<'a> {
     }
 
     fn curve_segments(&mut self, de: i64) -> OgeomResult<Vec<(Curve, (f64, f64))>> {
+        self.nested(|reader| reader.curve_segments_at(de))
+    }
+
+    fn curve_segments_at(&mut self, de: i64) -> OgeomResult<Vec<(Curve, (f64, f64))>> {
         let entity = self.entity(de)?;
         if entity.kind == 102 {
-            let n = usize::try_from(entity.at(0).int()).unwrap_or(0);
+            let n = entity.count(0);
             let mut out = Vec::new();
             for i in 0..n {
                 out.extend(self.curve_segments(entity.at(1 + i).int())?);
@@ -1457,7 +1519,7 @@ impl<'a> Reader<'a> {
             144 => {
                 let s = entity.at(0).int();
                 let outer_given = entity.at(1).int() == 1;
-                let n_inner = usize::try_from(entity.at(2).int()).unwrap_or(0);
+                let n_inner = entity.count(2);
                 let mut bs = Vec::new();
                 if outer_given && entity.at(3).int() != 0 {
                     bs.push(entity.at(3).int());
@@ -1469,7 +1531,7 @@ impl<'a> Reader<'a> {
             }
             143 => {
                 let s = entity.at(1).int();
-                let n = usize::try_from(entity.at(2).int()).unwrap_or(0);
+                let n = entity.count(2);
                 (s, (0..n).map(|i| entity.at(3 + i).int()).collect())
             }
             kind => ogeom_bail!(Construction, "D{de}: type {kind} is not a trimmed surface"),
@@ -1824,7 +1886,7 @@ impl<'a> Reader<'a> {
     fn manifold_solid(&mut self, de: i64) -> OgeomResult<Shape> {
         let entity = self.entity(de)?;
         let shell = self.shell(entity.at(0).int())?;
-        let n_voids = usize::try_from(entity.at(2).int()).unwrap_or(0);
+        let n_voids = entity.count(2);
         let mut shells = vec![shell];
         for i in 0..n_voids {
             shells.push(self.shell(entity.at(3 + 2 * i).int())?);
@@ -1838,6 +1900,10 @@ impl<'a> Reader<'a> {
     }
 
     fn shell(&mut self, de: i64) -> OgeomResult<Shape> {
+        self.nested(|reader| reader.shell_at(de))
+    }
+
+    fn shell_at(&mut self, de: i64) -> OgeomResult<Shape> {
         let entity = self.entity(de)?;
         if entity.kind != 514 {
             ogeom_bail!(
@@ -1846,7 +1912,7 @@ impl<'a> Reader<'a> {
                 entity.kind
             );
         }
-        let n = usize::try_from(entity.at(0).int()).unwrap_or(0);
+        let n = entity.count(0);
         let mut faces = Vec::with_capacity(n);
         for i in 0..n {
             let face_de = entity.at(1 + 2 * i).int();
@@ -1867,7 +1933,7 @@ impl<'a> Reader<'a> {
             );
         }
         let surface = self.surface(entity.at(0).int())?;
-        let n_loops = usize::try_from(entity.at(1).int()).unwrap_or(0);
+        let n_loops = entity.count(1);
         // Parameter 2 is the outer-loop flag; the loop pointers follow.
         let mut wires = Vec::with_capacity(n_loops);
         for i in 0..n_loops {
@@ -1885,7 +1951,7 @@ impl<'a> Reader<'a> {
                 entity.kind
             );
         }
-        let n = usize::try_from(entity.at(0).int()).unwrap_or(0);
+        let n = entity.count(0);
         let mut edges = Vec::with_capacity(n);
         let mut i = 1;
         for _ in 0..n {
@@ -1893,7 +1959,7 @@ impl<'a> Reader<'a> {
             let list_de = entity.at(i + 1).int();
             let index = entity.at(i + 2).int();
             let orientation = entity.at(i + 3).int();
-            let k = usize::try_from(entity.at(i + 4).int()).unwrap_or(0);
+            let k = entity.count(i + 4);
             i += 5 + 2 * k;
             if is_vertex {
                 // A vertex entry marks a degenerate use; the face builder
@@ -1927,9 +1993,12 @@ impl<'a> Reader<'a> {
                 entity.kind
             );
         }
-        let i = usize::try_from(index - 1).map_err(|_| {
-            ogeom_core::ogeom_err!(Construction, "D{list_de}: edge index {index} out of range")
-        })?;
+        let i = index
+            .checked_sub(1)
+            .and_then(|i| usize::try_from(i).ok())
+            .ok_or_else(|| {
+                ogeom_core::ogeom_err!(Construction, "D{list_de}: edge index {index} out of range")
+            })?;
         let base = 1 + 5 * i;
         let curve_de = entity.at(base).int();
         let (sv_list, sv_index) = (entity.at(base + 1).int(), entity.at(base + 2).int());
@@ -2012,12 +2081,15 @@ impl<'a> Reader<'a> {
                 entity.kind
             );
         }
-        let i = usize::try_from(index - 1).map_err(|_| {
-            ogeom_core::ogeom_err!(
-                Construction,
-                "D{list_de}: vertex index {index} out of range"
-            )
-        })?;
+        let i = index
+            .checked_sub(1)
+            .and_then(|i| usize::try_from(i).ok())
+            .ok_or_else(|| {
+                ogeom_core::ogeom_err!(
+                    Construction,
+                    "D{list_de}: vertex index {index} out of range"
+                )
+            })?;
         let point = self.point3(entity, 1 + 3 * i);
         let vertex = make_vertex(&mut self.model, point).shape;
         self.vertices.insert(key, vertex.clone());
@@ -2041,7 +2113,7 @@ impl<'a> Reader<'a> {
             return Ok(vec![self.csg(de)?]);
         }
         // Solid assembly: items, then a placement matrix for each.
-        let n = usize::try_from(entity.at(0).int()).unwrap_or(0);
+        let n = entity.count(0);
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
             let item = entity.at(1 + i).int();
@@ -2177,7 +2249,7 @@ impl<'a> Reader<'a> {
             180 => {
                 // Post-order: operands pushed, each operation code (1 union,
                 // 2 intersection, 3 difference) combining the last two.
-                let n = usize::try_from(entity.at(0).int()).unwrap_or(0);
+                let n = entity.count(0);
                 let mut stack: Vec<Shape> = Vec::new();
                 for i in 0..n {
                     let item = entity.at(1 + i).int();
@@ -2377,7 +2449,7 @@ impl<'a> Reader<'a> {
                 entity.kind
             );
         }
-        let count = usize::try_from(entity.at(2).int()).unwrap_or(0);
+        let count = entity.count(2);
         let (mut solids, mut faces) = (Vec::new(), Vec::new());
         for i in 0..count {
             let member = entity.at(3 + i).int();
@@ -2415,9 +2487,9 @@ impl<'a> Reader<'a> {
     ) {
         let mut on_sheets: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
         for entity in self.file.entities.values().filter(|e| e.kind == 404) {
-            let views = usize::try_from(entity.at(0).int()).unwrap_or(0);
+            let views = entity.count(0);
             let at = 1 + 3 * views;
-            let count = usize::try_from(entity.at(at).int()).unwrap_or(0);
+            let count = entity.count(at);
             for i in 0..count {
                 on_sheets.insert(entity.at(at + 1 + i).int().abs());
             }
@@ -2512,7 +2584,7 @@ impl<'a> Reader<'a> {
                 // leaders; a label: its note, then its leaders.
                 let at = if entity.kind == 208 { 4 } else { 0 };
                 text = self.note_text(pointer(at))?;
-                let n = usize::try_from(pointer(at + 1)).unwrap_or(0);
+                let n = entity.count(at + 1);
                 for i in 0..n {
                     draw(self, &mut polylines, pointer(at + 2 + i))?;
                 }
@@ -2520,11 +2592,11 @@ impl<'a> Reader<'a> {
             228 => {
                 // Note, the symbol's geometry, then its leaders.
                 text = self.note_text(pointer(0))?;
-                let ng = usize::try_from(pointer(1)).unwrap_or(0);
+                let ng = entity.count(1);
                 for i in 0..ng {
                     polylines.push(self.sampled_curve(pointer(2 + i))?);
                 }
-                let nl = usize::try_from(pointer(2 + ng)).unwrap_or(0);
+                let nl = entity.count(2 + ng);
                 for i in 0..nl {
                     draw(self, &mut polylines, pointer(3 + ng + i))?;
                 }
@@ -2573,7 +2645,7 @@ impl<'a> Reader<'a> {
         if entity.kind != 212 {
             ogeom_bail!(Construction, "D{de}: type {} is not a note", entity.kind);
         }
-        let count = usize::try_from(entity.at(0).int()).unwrap_or(0);
+        let count = entity.count(0);
         let mut lines = Vec::with_capacity(count);
         for i in 0..count {
             if let super::parse::Value::Text(t) = entity.at(1 + 12 * i + 11) {
@@ -2591,7 +2663,7 @@ impl<'a> Reader<'a> {
         let mut points = Vec::new();
         match entity.kind {
             214 => {
-                let n = usize::try_from(entity.at(0).int()).unwrap_or(0);
+                let n = entity.count(0);
                 let z = entity.at(3).real();
                 points.push(Point::new(
                     entity.at(4).real() * s,
@@ -2607,7 +2679,7 @@ impl<'a> Reader<'a> {
                 }
             }
             106 => {
-                let n = usize::try_from(entity.at(1).int()).unwrap_or(0);
+                let n = entity.count(1);
                 let z = entity.at(2).real();
                 for i in 0..n {
                     points.push(Point::new(
@@ -2724,7 +2796,7 @@ fn layers(
         } else if entity.level < 0 {
             match file.entity(-entity.level) {
                 Some(p) if p.kind == 406 && p.form == 1 => {
-                    let n = usize::try_from(p.at(0).int()).unwrap_or(0);
+                    let n = p.count(0);
                     (0..n).map(|i| p.at(1 + i).int()).collect()
                 }
                 _ => {
@@ -2746,7 +2818,7 @@ fn layers(
         if group.kind != 402 || !matches!(group.form, 1 | 7 | 14 | 15) {
             continue;
         }
-        let n = usize::try_from(group.at(0).int()).unwrap_or(0);
+        let n = group.count(0);
         let members: Vec<i64> = (0..n).map(|i| group.at(1 + i).int().abs()).collect();
         let shapes: Vec<&Shape> = built_from
             .iter()
@@ -2857,8 +2929,27 @@ mod tests {
             vertices: HashMap::new(),
             edges: HashMap::new(),
             vertex_misses: (0, 0.0),
+            depth: 0,
             tol: T,
         }
+    }
+
+    /// A transform placed by itself, and a composite curve made of itself:
+    /// both are refused, not followed until the stack runs out.
+    #[test]
+    fn entities_that_refer_in_a_circle_are_refused() {
+        let mut turned = entity(124, 0, vec![Value::Real(1.0); 12]);
+        turned.transform = 1;
+        let mut line = entity(110, 0, vec![Value::Real(0.0); 6]);
+        line.transform = 1;
+        let f = file(vec![(1, turned), (3, line)]);
+        let mut r = reader(&f);
+        assert!(r.curve(3).is_err());
+
+        let composite = entity(102, 0, vec![Value::Int(1), Value::Int(1)]);
+        let f = file(vec![(1, composite)]);
+        let mut r = reader(&f);
+        assert!(r.curve(1).is_err());
     }
 
     fn reals(values: &[f64]) -> Vec<Value> {

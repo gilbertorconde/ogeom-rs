@@ -119,6 +119,7 @@ pub fn parse(text: &str) -> OgeomResult<Exchange> {
     let mut p = Parser {
         bytes: text.as_bytes(),
         at: 0,
+        depth: 0,
     };
     p.skip_noise();
     p.expect_keyword("ISO-10303-21")?;
@@ -154,7 +155,7 @@ pub fn parse(text: &str) -> OgeomResult<Exchange> {
             break;
         }
         p.expect(b'#')?;
-        let id = p.integer()?;
+        let id = p.id()?;
         p.expect(b'=')?;
         p.skip_noise();
         let parts = if p.peek(b'(') {
@@ -178,8 +179,7 @@ pub fn parse(text: &str) -> OgeomResult<Exchange> {
             vec![(keyword, args)]
         };
         p.expect(b';')?;
-        #[allow(clippy::cast_sign_loss)]
-        data.insert(id as u64, Instance { parts });
+        data.insert(id, Instance { parts });
     }
 
     p.expect_keyword("END-ISO-10303-21")?;
@@ -189,7 +189,14 @@ pub fn parse(text: &str) -> OgeomResult<Exchange> {
 struct Parser<'a> {
     bytes: &'a [u8],
     at: usize,
+    /// How many argument lists are open.
+    depth: u32,
 }
+
+/// How deep argument lists may nest. Real files nest a few levels (a list
+/// of lists of control points); past this the file is hostile, and the
+/// recursive descent would otherwise run out of stack.
+const MOST_NESTING: u32 = 256;
 
 impl Parser<'_> {
     fn skip_noise(&mut self) {
@@ -289,7 +296,34 @@ impl Parser<'_> {
         })
     }
 
+    /// An instance id: a non-negative integer.
+    fn id(&mut self) -> OgeomResult<u64> {
+        let at = self.at;
+        let id = self.integer()?;
+        u64::try_from(id).map_err(|_| {
+            ogeom_core::ogeom_err!(
+                Construction,
+                "a negative instance id at byte {at} of the exchange file"
+            )
+        })
+    }
+
     fn arguments(&mut self) -> OgeomResult<Vec<Arg>> {
+        if self.depth >= MOST_NESTING {
+            ogeom_bail!(
+                Construction,
+                "argument lists nest more than {MOST_NESTING} deep at byte {} of the \
+                 exchange file",
+                self.at
+            );
+        }
+        self.depth += 1;
+        let listed = self.argument_list();
+        self.depth -= 1;
+        listed
+    }
+
+    fn argument_list(&mut self) -> OgeomResult<Vec<Arg>> {
         self.expect(b'(')?;
         let mut out = Vec::with_capacity(4);
         loop {
@@ -323,9 +357,7 @@ impl Parser<'_> {
             }
             b'#' => {
                 self.at += 1;
-                let id = self.integer()?;
-                #[allow(clippy::cast_sign_loss)]
-                Ok(Arg::Ref(id as u64))
+                Ok(Arg::Ref(self.id()?))
             }
             b'(' => Ok(Arg::List(self.arguments()?)),
             b'\'' => self.string(),

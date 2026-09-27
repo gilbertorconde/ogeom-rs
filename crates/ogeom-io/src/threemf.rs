@@ -227,14 +227,14 @@ struct Entry {
 }
 
 fn u16_at(bytes: &[u8], at: usize) -> OgeomResult<u16> {
-    match bytes.get(at..at + 2) {
+    match at.checked_add(2).and_then(|end| bytes.get(at..end)) {
         Some(b) => Ok(u16::from_le_bytes([b[0], b[1]])),
         None => ogeom_bail!(Construction, "the archive is cut short"),
     }
 }
 
 fn u32_at(bytes: &[u8], at: usize) -> OgeomResult<u32> {
-    match bytes.get(at..at + 4) {
+    match at.checked_add(4).and_then(|end| bytes.get(at..end)) {
         Some(b) => Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]])),
         None => ogeom_bail!(Construction, "the archive is cut short"),
     }
@@ -277,7 +277,7 @@ fn directory(bytes: &[u8]) -> OgeomResult<Vec<Entry>> {
     // before the classic one, points to. Streaming writers emit it whatever
     // the archive's size.
     if zip64 {
-        let at = to_usize(u64_at(bytes, end - 20 + 8)?)?;
+        let at = offset_in(bytes, u64_at(bytes, end - 20 + 8)?)?;
         if u32_at(bytes, at)? != END64 {
             ogeom_bail!(
                 Construction,
@@ -296,7 +296,7 @@ fn directory(bytes: &[u8]) -> OgeomResult<Vec<Entry>> {
         );
     }
     let mut entries = Vec::new();
-    let mut at = to_usize(offset)?;
+    let mut at = offset_in(bytes, offset)?;
     for _ in 0..count {
         if u32_at(bytes, at)? != 0x0201_4b50 {
             ogeom_bail!(Construction, "the archive's central directory is damaged");
@@ -334,9 +334,9 @@ fn directory(bytes: &[u8]) -> OgeomResult<Vec<Entry>> {
             flags: u16_at(bytes, at + 8)?,
             method: u16_at(bytes, at + 10)?,
             crc: u32_at(bytes, at + 16)?,
-            compressed: to_usize(compressed)?,
+            compressed: offset_in(bytes, compressed)?,
             size: to_usize(size)?,
-            header: to_usize(header)?,
+            header: offset_in(bytes, header)?,
         });
         at += 46 + name_len + extra_len + comment_len;
     }
@@ -344,11 +344,20 @@ fn directory(bytes: &[u8]) -> OgeomResult<Vec<Entry>> {
 }
 
 fn u64_at(bytes: &[u8], at: usize) -> OgeomResult<u64> {
-    match bytes.get(at..at + 8) {
+    match at.checked_add(8).and_then(|end| bytes.get(at..end)) {
         Some(b) => Ok(u64::from_le_bytes([
             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
         ])),
         None => ogeom_bail!(Construction, "the archive is cut short"),
+    }
+}
+
+/// An offset or length within the archive, refused past its end: every
+/// such field names bytes the file must hold.
+fn offset_in(bytes: &[u8], value: u64) -> OgeomResult<usize> {
+    match usize::try_from(value) {
+        Ok(v) if v <= bytes.len() => Ok(v),
+        _ => ogeom_bail!(Construction, "the archive names an offset past its own end"),
     }
 }
 
@@ -395,7 +404,10 @@ fn contents(bytes: &[u8], entry: &Entry) -> OgeomResult<Vec<u8>> {
     let name_len = usize::from(u16_at(bytes, entry.header + 26)?);
     let extra_len = usize::from(u16_at(bytes, entry.header + 28)?);
     let data_at = entry.header + 30 + name_len + extra_len;
-    let Some(data) = bytes.get(data_at..data_at + entry.compressed) else {
+    let Some(data) = data_at
+        .checked_add(entry.compressed)
+        .and_then(|end| bytes.get(data_at..end))
+    else {
         ogeom_bail!(
             Construction,
             "the entry {name} runs past the end of the file"

@@ -299,16 +299,25 @@ impl Document {
     }
 
     /// Whether the tree under `haystack` reaches `needle`.
+    ///
+    /// Each product is looked into once, however many instances reach it: a
+    /// sub-assembly shared at every level would otherwise be walked once per
+    /// path to it, and the paths double with every level.
     fn contains_product(&self, haystack: ProductId, needle: ProductId) -> bool {
-        if haystack == needle {
-            return true;
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![haystack];
+        while let Some(product) = stack.pop() {
+            if product == needle {
+                return true;
+            }
+            if !seen.insert(product) {
+                continue;
+            }
+            if let Some(ProductKind::Assembly { children }) = self.get(product).map(|p| &p.kind) {
+                stack.extend(children.iter().map(|i| i.product));
+            }
         }
-        match self.get(haystack).map(|p| &p.kind) {
-            Some(ProductKind::Assembly { children }) => children
-                .iter()
-                .any(|i| self.contains_product(i.product, needle)),
-            _ => false,
-        }
+        false
     }
 
     /// The product behind an id.

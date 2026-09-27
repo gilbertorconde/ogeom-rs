@@ -145,11 +145,7 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
             ..StepReport::default()
         },
         angle_scale: 1.0,
-        visited: {
-            let top = exchange.data.keys().max().copied().unwrap_or(0);
-            let top = usize::try_from(top).unwrap_or(usize::MAX - 1);
-            vec![false; top + 1]
-        },
+        visited: Visited::for_ids(exchange.data.keys().copied()),
         vertices: HashMap::new(),
         edges: HashMap::new(),
         faces: HashMap::new(),
@@ -160,6 +156,7 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         cdsr_of_nauo: None,
         properties_of_definition: None,
         sdrs_of_property: None,
+        depth: 0,
         tol,
     };
     reader.report.scale_mm = reader.unit_scale();
@@ -244,11 +241,7 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
 
     // Everything never visited, counted by its leading keyword.
     for (id, instance) in &exchange.data {
-        if !usize::try_from(*id)
-            .ok()
-            .and_then(|i| reader.visited.get(i).copied())
-            .unwrap_or(false)
-        {
+        if !reader.visited.seen(*id) {
             *reader
                 .report
                 .skipped
@@ -296,9 +289,8 @@ struct Reader<'a> {
     report: StepReport,
     /// Radians per file angle unit; degrees are common.
     angle_scale: f64,
-    /// One slot per possible instance id: the reader touches instances
-    /// millions of times, and a direct index beats hashing every touch.
-    visited: Vec<bool>,
+    /// Which instances the reader has looked at.
+    visited: Visited,
     vertices: HashMap<u64, Shape>,
     edges: HashMap<u64, BuiltEdge>,
     faces: HashMap<u64, Shape>,
@@ -325,16 +317,37 @@ struct Reader<'a> {
     /// is the one the old scan would have reached first.
     properties_of_definition: Option<HashMap<u64, Vec<u64>>>,
     sdrs_of_property: Option<HashMap<u64, Vec<u64>>>,
+    /// How many geometry or shell builders are open on the stack. Entities
+    /// refer to entities of their own kind (an offset surface to its basis,
+    /// an oriented shell to its shell), so a file that refers in a circle
+    /// would otherwise recurse until the stack runs out.
+    depth: u32,
     tol: Tolerances,
 }
 
+/// How deep entities of one kind may refer to one another. Real files nest
+/// a handful of levels (a trimmed curve of an offset of a replica); a chain
+/// this long is a cycle or a hostile file.
+const MOST_NESTING: u32 = 64;
+
 impl Reader<'_> {
-    fn instance(&mut self, id: u64) -> OgeomResult<&'_ Instance> {
-        if let Ok(i) = usize::try_from(id)
-            && let Some(slot) = self.visited.get_mut(i)
-        {
-            *slot = true;
+    /// Run a builder one level deeper, refusing past [`MOST_NESTING`].
+    fn nested<T>(&mut self, build: impl FnOnce(&mut Self) -> OgeomResult<T>) -> OgeomResult<T> {
+        if self.depth >= MOST_NESTING {
+            ogeom_bail!(
+                Construction,
+                "entities refer to one another more than {MOST_NESTING} deep; \
+                 the file refers in a circle"
+            );
         }
+        self.depth += 1;
+        let built = build(self);
+        self.depth -= 1;
+        built
+    }
+
+    fn instance(&mut self, id: u64) -> OgeomResult<&'_ Instance> {
+        self.visited.mark(id);
         self.exchange.data.get(&id).ok_or_else(|| {
             ogeom_core::ogeom_err!(
                 Construction,
@@ -579,6 +592,10 @@ impl Reader<'_> {
     }
 
     fn surface(&mut self, id: u64) -> OgeomResult<Option<SurfaceGeometry>> {
+        self.nested(|reader| reader.surface_at(id))
+    }
+
+    fn surface_at(&mut self, id: u64) -> OgeomResult<Option<SurfaceGeometry>> {
         let (keyword, args) = {
             let instance = self.instance(id)?;
             (
@@ -682,7 +699,7 @@ impl Reader<'_> {
         }
         let out = match keyword.as_str() {
             "PLANE" => {
-                let frame = self.frame(args[1].reference().unwrap_or(0))?;
+                let frame = self.frame(ref_at(&args, 1))?;
                 Some(
                     PlaneSurface::over(
                         Plane::new(frame),
@@ -693,7 +710,7 @@ impl Reader<'_> {
                 )
             }
             "CYLINDRICAL_SURFACE" => {
-                let frame = self.frame(args[1].reference().unwrap_or(0))?;
+                let frame = self.frame(ref_at(&args, 1))?;
                 let radius = radius_arg(&args, 2).unwrap_or(0.0) * scale;
                 Some(
                     CylinderSurface::new(
@@ -704,7 +721,7 @@ impl Reader<'_> {
                 )
             }
             "CONICAL_SURFACE" => {
-                let frame = self.frame(args[1].reference().unwrap_or(0))?;
+                let frame = self.frame(ref_at(&args, 1))?;
                 let radius = radius_arg(&args, 2).unwrap_or(0.0) * scale;
                 let angle = radius_arg(&args, 3).unwrap_or(0.0) * self.angle_scale;
                 Some(
@@ -716,12 +733,12 @@ impl Reader<'_> {
                 )
             }
             "SPHERICAL_SURFACE" => {
-                let frame = self.frame(args[1].reference().unwrap_or(0))?;
+                let frame = self.frame(ref_at(&args, 1))?;
                 let radius = radius_arg(&args, 2).unwrap_or(0.0) * scale;
                 Some(SphereSurface::new(Sphere::new(frame, radius, self.tol)?).into())
             }
             "TOROIDAL_SURFACE" => {
-                let frame = self.frame(args[1].reference().unwrap_or(0))?;
+                let frame = self.frame(ref_at(&args, 1))?;
                 let major = radius_arg(&args, 2).unwrap_or(0.0) * scale;
                 let minor = radius_arg(&args, 3).unwrap_or(0.0) * scale;
                 Some(TorusSurface::new(Torus::new(frame, major, minor, self.tol)?).into())
@@ -734,13 +751,13 @@ impl Reader<'_> {
                 // plane they are, exact and known everywhere downstream.
                 // Anything else sweeps as itself, over a window the face's
                 // own edges then widen to fit.
-                let Some(curve) = self.curve(args[1].reference().unwrap_or(0))? else {
+                let Some(curve) = self.curve(ref_at(&args, 1))? else {
                     self.report.warnings.push(format!(
                         "#{id}: an extrusion's swept curve is not read; its face is skipped"
                     ));
                     return Ok(None);
                 };
-                let vector = self.args(args[2].reference().unwrap_or(0), "VECTOR")?;
+                let vector = self.args(ref_at(&args, 2), "VECTOR")?;
                 let direction = self.direction(vector[1].reference().unwrap_or(0))?;
                 // Parallel to the file's own precision in directions: a
                 // writer states an axis to nine digits, a whisker off the
@@ -783,13 +800,13 @@ impl Reader<'_> {
                 }
             }
             "SURFACE_OF_REVOLUTION" => {
-                let Some(curve) = self.curve(args[1].reference().unwrap_or(0))? else {
+                let Some(curve) = self.curve(ref_at(&args, 1))? else {
                     self.report.warnings.push(format!(
                         "#{id}: a revolution's swept curve is not read; its face is skipped"
                     ));
                     return Ok(None);
                 };
-                let placement = self.args(args[2].reference().unwrap_or(0), "AXIS1_PLACEMENT")?;
+                let placement = self.args(ref_at(&args, 2), "AXIS1_PLACEMENT")?;
                 let location = self.point(placement[1].reference().unwrap_or(0))?;
                 let direction = match placement.get(2).and_then(Arg::reference) {
                     Some(r) => self.direction(r)?,
@@ -808,7 +825,7 @@ impl Reader<'_> {
                 )
             }
             "OFFSET_SURFACE" => {
-                let Some(basis) = self.surface(args[1].reference().unwrap_or(0))? else {
+                let Some(basis) = self.surface(ref_at(&args, 1))? else {
                     return Ok(None);
                 };
                 let distance = args.get(2).and_then(Arg::number).unwrap_or(0.0) * scale;
@@ -826,20 +843,20 @@ impl Reader<'_> {
             // A face's own edges bound it; the window these name is the
             // basis's, restated.
             "RECTANGULAR_TRIMMED_SURFACE" | "CURVE_BOUNDED_SURFACE" => {
-                self.surface(args[1].reference().unwrap_or(0))?
+                self.surface(ref_at(&args, 1))?
             }
             "DEGENERATE_TOROIDAL_SURFACE" => {
-                let frame = self.frame(args[1].reference().unwrap_or(0))?;
+                let frame = self.frame(ref_at(&args, 1))?;
                 let major = radius_arg(&args, 2).unwrap_or(0.0) * scale;
                 let minor = radius_arg(&args, 3).unwrap_or(0.0) * scale;
                 Some(TorusSurface::new(Torus::new(frame, major, minor, self.tol)?).into())
             }
             "RECTANGULAR_COMPOSITE_SURFACE" => Some(self.composite_surface(id, &args)?),
             "SURFACE_REPLICA" => {
-                let Some(parent) = self.surface(args[1].reference().unwrap_or(0))? else {
+                let Some(parent) = self.surface(ref_at(&args, 1))? else {
                     return Ok(None);
                 };
-                let motion = self.transformation_operator(args[2].reference().unwrap_or(0))?;
+                let motion = self.transformation_operator(ref_at(&args, 2))?;
                 Some(parent.transformed(&motion, self.tol)?)
             }
             other => {
@@ -853,20 +870,11 @@ impl Reader<'_> {
     }
 
     /// Expand STEP's multiplicity-compressed knots.
-    fn expand_knots(mults: Option<Arg>, knots: Option<Arg>) -> Vec<f64> {
-        let mut out = Vec::new();
+    fn expand_knots(mults: Option<Arg>, knots: Option<Arg>) -> OgeomResult<Vec<f64>> {
         let (Some(Arg::List(mults)), Some(Arg::List(knots))) = (mults, knots) else {
-            return out;
+            return Ok(Vec::new());
         };
-        for (m, k) in mults.iter().zip(&knots) {
-            let count = m.number().unwrap_or(1.0);
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let count = count as usize;
-            for _ in 0..count {
-                out.push(k.number().unwrap_or(0.0));
-            }
-        }
-        out
+        expanded_knots(&mults, &knots)
     }
 
     #[allow(clippy::type_complexity)]
@@ -880,8 +888,10 @@ impl Reader<'_> {
         form: Option<&str>,
     ) -> OgeomResult<SurfaceGeometry> {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let deg = |a: Option<Arg>| a.and_then(|x| x.number()).unwrap_or(1.0) as usize;
-        let (u_degree, v_degree) = (deg(degrees.0), deg(degrees.1));
+        let (u_degree, v_degree) = (
+            file_degree(degrees.0.as_ref(), 1.0)?,
+            file_degree(degrees.1.as_ref(), 1.0)?,
+        );
         let Some(Arg::List(rows)) = grid_arg else {
             ogeom_bail!(
                 Construction,
@@ -904,8 +914,8 @@ impl Reader<'_> {
                 implied_knots(form, v_degree, v_count),
             ),
             None => (
-                Self::expand_knots(mults_knots.0, mults_knots.2),
-                Self::expand_knots(mults_knots.1, mults_knots.3),
+                Self::expand_knots(mults_knots.0, mults_knots.2)?,
+                Self::expand_knots(mults_knots.1, mults_knots.3)?,
             ),
         };
         let u_knots = KnotVector::new(u_raw, u_degree)?;
@@ -942,6 +952,10 @@ impl Reader<'_> {
     }
 
     fn curve(&mut self, id: u64) -> OgeomResult<Option<Curve>> {
+        self.nested(|reader| reader.curve_at(id))
+    }
+
+    fn curve_at(&mut self, id: u64) -> OgeomResult<Option<Curve>> {
         let (keyword, args) = {
             let instance = self.instance(id)?;
             (
@@ -980,8 +994,7 @@ impl Reader<'_> {
             if let Some(base) = base
                 && (kp.is_some() || form.is_some())
             {
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let degree = base.first().and_then(Arg::number).unwrap_or(1.0) as usize;
+                let degree = file_degree(base.first(), 1.0)?;
                 let control: Vec<Point> = base
                     .get(1)
                     .and_then(Arg::list)
@@ -991,7 +1004,7 @@ impl Reader<'_> {
                     .map(|r| self.point(r))
                     .collect::<OgeomResult<_>>()?;
                 let knots = match (&kp, form) {
-                    (Some(kp), _) => Self::expand_knots(kp.first().cloned(), kp.get(1).cloned()),
+                    (Some(kp), _) => Self::expand_knots(kp.first().cloned(), kp.get(1).cloned())?,
                     (None, Some(form)) => implied_knots(form, degree, control.len()),
                     (None, None) => unreachable!("guarded above"),
                 };
@@ -1014,11 +1027,11 @@ impl Reader<'_> {
         }
         let out: Option<Curve> = match keyword.as_str() {
             "LINE" => {
-                let through = self.point(args[1].reference().unwrap_or(0))?;
+                let through = self.point(ref_at(&args, 1))?;
                 // The vector's magnitude scales STEP's parameter; ranges here
                 // are re-derived from vertex geometry, so only the direction
                 // matters.
-                let vector = self.args(args[2].reference().unwrap_or(0), "VECTOR")?;
+                let vector = self.args(ref_at(&args, 2), "VECTOR")?;
                 let direction = self.direction(vector[1].reference().unwrap_or(0))?;
                 Some(
                     LineCurve::new(Axis {
@@ -1029,20 +1042,18 @@ impl Reader<'_> {
                 )
             }
             "CIRCLE" => {
-                let frame = self.frame(args[1].reference().unwrap_or(0))?;
+                let frame = self.frame(ref_at(&args, 1))?;
                 let radius = args.get(2).and_then(Arg::number).unwrap_or(0.0) * scale;
                 Some(CircleCurve::new(Circle::new(frame, radius, self.tol)?).into())
             }
             "ELLIPSE" => {
-                let frame = self.frame(args[1].reference().unwrap_or(0))?;
+                let frame = self.frame(ref_at(&args, 1))?;
                 let a = args.get(2).and_then(Arg::number).unwrap_or(0.0) * scale;
                 let b = args.get(3).and_then(Arg::number).unwrap_or(0.0) * scale;
                 Some(EllipseCurve::new(Ellipse::new(frame, a, b, self.tol)?).into())
             }
             "B_SPLINE_CURVE_WITH_KNOTS" => {
-                let degree = args.get(1).and_then(Arg::number).unwrap_or(0.0);
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let degree = degree as usize;
+                let degree = file_degree(args.get(1), 0.0)?;
                 let control: Vec<Point> = args
                     .get(2)
                     .and_then(Arg::list)
@@ -1053,15 +1064,7 @@ impl Reader<'_> {
                     .collect::<OgeomResult<_>>()?;
                 let mults = args.get(6).and_then(Arg::list).unwrap_or(&[]).to_vec();
                 let knots = args.get(7).and_then(Arg::list).unwrap_or(&[]).to_vec();
-                let mut expanded = Vec::new();
-                for (m, k) in mults.iter().zip(&knots) {
-                    let count = m.number().unwrap_or(1.0);
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    let count = count as usize;
-                    for _ in 0..count {
-                        expanded.push(k.number().unwrap_or(0.0));
-                    }
-                }
+                let expanded = expanded_knots(&mults, &knots)?;
                 Some(
                     BSplineCurve::new(KnotVector::new(expanded, degree)?, control, self.tol)?
                         .into(),
@@ -1076,8 +1079,7 @@ impl Reader<'_> {
                 self.curve(args.get(1).and_then(Arg::reference).unwrap_or(0))?
             }
             "BEZIER_CURVE" | "UNIFORM_CURVE" | "QUASI_UNIFORM_CURVE" => {
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let degree = args.get(1).and_then(Arg::number).unwrap_or(1.0) as usize;
+                let degree = file_degree(args.get(1), 1.0)?;
                 let control: Vec<Point> = args
                     .get(2)
                     .and_then(Arg::list)
@@ -1090,7 +1092,7 @@ impl Reader<'_> {
                 Some(BSplineCurve::new(KnotVector::new(knots, degree)?, control, self.tol)?.into())
             }
             "HYPERBOLA" => {
-                let frame = self.frame(args[1].reference().unwrap_or(0))?;
+                let frame = self.frame(ref_at(&args, 1))?;
                 let a = args.get(2).and_then(Arg::number).unwrap_or(0.0) * scale;
                 let b = args.get(3).and_then(Arg::number).unwrap_or(0.0) * scale;
                 // The branch's reach in its own parameter: cosh 20 carries a
@@ -1098,7 +1100,7 @@ impl Reader<'_> {
                 Some(HyperbolaCurve::new(Hyperbola::new(frame, a, b, self.tol)?, 20.0)?.into())
             }
             "PARABOLA" => {
-                let frame = self.frame(args[1].reference().unwrap_or(0))?;
+                let frame = self.frame(ref_at(&args, 1))?;
                 let focal = args.get(2).and_then(Arg::number).unwrap_or(0.0) * scale;
                 Some(
                     ParabolaCurve::new(Parabola::new(frame, focal, self.tol)?, SURFACE_EXTENT)?
@@ -1294,6 +1296,10 @@ impl Reader<'_> {
     /// parameter in the file's own reading of the basis), in its own sense;
     /// any other curve over its own domain, which must be bounded.
     fn bounded_curve(&mut self, id: u64) -> OgeomResult<Option<(Curve, (f64, f64))>> {
+        self.nested(|reader| reader.bounded_curve_at(id))
+    }
+
+    fn bounded_curve_at(&mut self, id: u64) -> OgeomResult<Option<(Curve, (f64, f64))>> {
         let keyword = self.instance(id)?.keyword().to_owned();
         if keyword != "TRIMMED_CURVE" {
             let Some(curve) = self.curve(id)? else {
@@ -1382,8 +1388,8 @@ impl Reader<'_> {
         match keyword {
             "LINE" => {
                 let args = self.args(basis_id, "LINE")?;
-                let through = self.point(args[1].reference().unwrap_or(0))?;
-                let vector = self.args(args[2].reference().unwrap_or(0), "VECTOR")?;
+                let through = self.point(ref_at(&args, 1))?;
+                let vector = self.args(ref_at(&args, 2), "VECTOR")?;
                 let direction = self.direction(vector[1].reference().unwrap_or(0))?;
                 let magnitude = vector.get(2).and_then(Arg::number).unwrap_or(1.0);
                 Ok(through + direction.vector() * (v * magnitude * self.report.scale_mm))
@@ -1446,7 +1452,7 @@ impl Reader<'_> {
             return Ok(shape.clone());
         }
         let args = self.args(id, "VERTEX_POINT")?;
-        let point = self.point(args[1].reference().unwrap_or(0))?;
+        let point = self.point(ref_at(&args, 1))?;
         let shape = make_vertex(&mut self.model, point).shape;
         self.vertices.insert(id, shape.clone());
         Ok(shape)
@@ -1462,20 +1468,20 @@ impl Reader<'_> {
             return Ok(Some(found.clone()));
         }
         let args = self.args(id, "EDGE_CURVE")?;
-        let v1 = args[1].reference().unwrap_or(0);
-        let v2 = args[2].reference().unwrap_or(0);
-        let Some(mut curve) = self.curve(args[3].reference().unwrap_or(0))? else {
+        let v1 = ref_at(&args, 1);
+        let v2 = ref_at(&args, 2);
+        let Some(mut curve) = self.curve(ref_at(&args, 3))? else {
             return Ok(None);
         };
         let same_sense = !args.get(4).is_some_and(|a| a.is_enum("F"));
 
         let p1 = {
             let vargs = self.args(v1, "VERTEX_POINT")?;
-            self.point(vargs[1].reference().unwrap_or(0))?
+            self.point(ref_at(&vargs, 1))?
         };
         let p2 = {
             let vargs = self.args(v2, "VERTEX_POINT")?;
-            self.point(vargs[1].reference().unwrap_or(0))?
+            self.point(ref_at(&vargs, 1))?
         };
 
         // The edge is built along the curve's own parameter; a STEP edge
@@ -1642,7 +1648,7 @@ impl Reader<'_> {
             .iter()
             .filter_map(Arg::reference)
             .collect();
-        let Some(surface) = self.surface(args[2].reference().unwrap_or(0))? else {
+        let Some(surface) = self.surface(ref_at(&args, 2))? else {
             return Ok(None);
         };
         let face_forward = !args.get(3).is_some_and(|a| a.is_enum("F"));
@@ -1691,7 +1697,7 @@ impl Reader<'_> {
                 // are built.
                 let vertex_id = vertex_loop.get(1).and_then(Arg::reference).unwrap_or(0);
                 let vargs = self.args(vertex_id, "VERTEX_POINT")?;
-                let at = self.point(vargs[1].reference().unwrap_or(0))?;
+                let at = self.point(ref_at(&vargs, 1))?;
                 let vertex = self.vertex(vertex_id)?;
                 let projection = ogeom_algo::project_on_surface(&surface, at, 32, self.tol)?;
                 let ((ua, ub), _) = surface.domain();
@@ -2517,6 +2523,10 @@ impl Reader<'_> {
     /// round (how a solid's voids are named) and resolves to that shell,
     /// reversed when the use says so.
     fn shell(&mut self, shell_id: u64) -> OgeomResult<Option<Shape>> {
+        self.nested(|reader| reader.shell_at(shell_id))
+    }
+
+    fn shell_at(&mut self, shell_id: u64) -> OgeomResult<Option<Shape>> {
         let shell_instance = self.instance(shell_id)?;
         if let Some(oriented) = shell_instance
             .part("ORIENTED_CLOSED_SHELL")
@@ -3680,21 +3690,13 @@ impl Reader<'_> {
             if let Some(args) = instance.part("PROPERTY_DEFINITION") {
                 // Read for the index is read: the skipped table should not
                 // claim the reader never looked.
-                if let Ok(i) = usize::try_from(*id)
-                    && let Some(slot) = self.visited.get_mut(i)
-                {
-                    *slot = true;
-                }
+                self.visited.mark(*id);
                 if let Some(definition) = args.get(2).and_then(Arg::reference) {
                     properties.entry(definition).or_default().push(*id);
                 }
             }
             if let Some(args) = instance.part("SHAPE_DEFINITION_REPRESENTATION") {
-                if let Ok(i) = usize::try_from(*id)
-                    && let Some(slot) = self.visited.get_mut(i)
-                {
-                    *slot = true;
-                }
+                self.visited.mark(*id);
                 if let Some(property) = args.first().and_then(Arg::reference) {
                     sdrs.entry(property).or_default().push(*id);
                 }
@@ -4168,6 +4170,96 @@ fn join_patches(mut grid: Vec<Vec<Patch>>, tol: Tolerances) -> OgeomResult<Surfa
         ogeom_geom::BSplineSurface::rational(u, v, ogeom_math::ControlGrid::new(cells, nu, nv)?)?
             .into(),
     )
+}
+
+/// The highest spline degree a file may state. The standard sets no limit;
+/// exporters stay far below this, and a degree past it would only size
+/// allocations from a number in the file.
+const MOST_DEGREE: usize = 64;
+
+/// A spline degree read from the file, `missing` where the argument is
+/// absent, refused past [`MOST_DEGREE`] or where it is not a count.
+fn file_degree(arg: Option<&Arg>, missing: f64) -> OgeomResult<usize> {
+    let degree = arg.and_then(Arg::number).unwrap_or(missing);
+    #[allow(clippy::cast_precision_loss)]
+    if !degree.is_finite() || degree < 0.0 || degree > MOST_DEGREE as f64 {
+        ogeom_bail!(Construction, "a spline of degree {degree}");
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Ok(degree as usize)
+}
+
+/// Knots written once each with their multiplicities, spelt out. A
+/// multiplicity past one more than [`MOST_DEGREE`] is refused: no valid
+/// spline repeats a knot more often than its order.
+fn expanded_knots(mults: &[Arg], knots: &[Arg]) -> OgeomResult<Vec<f64>> {
+    let mut out = Vec::new();
+    for (m, k) in mults.iter().zip(knots) {
+        let count = m.number().unwrap_or(1.0);
+        #[allow(clippy::cast_precision_loss)]
+        if !count.is_finite() || count < 0.0 || count > (MOST_DEGREE + 1) as f64 {
+            ogeom_bail!(Construction, "a knot of multiplicity {count}");
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        out.extend(std::iter::repeat_n(
+            k.number().unwrap_or(0.0),
+            count as usize,
+        ));
+    }
+    Ok(out)
+}
+
+/// Which instances the reader has looked at.
+///
+/// One slot per possible id where the ids are dense, as exporters write
+/// them: the reader touches instances millions of times, and a direct index
+/// beats hashing every touch. A file whose ids are sparse (one instance
+/// numbered in the billions) gets a set instead of a table that size.
+enum Visited {
+    Dense(Vec<bool>),
+    Sparse(std::collections::HashSet<u64>),
+}
+
+impl Visited {
+    fn for_ids(ids: impl Iterator<Item = u64> + Clone) -> Self {
+        let count = ids.clone().count();
+        let top = ids.max().unwrap_or(0);
+        match usize::try_from(top) {
+            Ok(top) if top <= count.saturating_mul(4).saturating_add(1024) => {
+                Self::Dense(vec![false; top + 1])
+            }
+            _ => Self::Sparse(std::collections::HashSet::new()),
+        }
+    }
+
+    fn mark(&mut self, id: u64) {
+        match self {
+            Self::Dense(slots) => {
+                if let Some(slot) = usize::try_from(id).ok().and_then(|i| slots.get_mut(i)) {
+                    *slot = true;
+                }
+            }
+            Self::Sparse(seen) => {
+                seen.insert(id);
+            }
+        }
+    }
+
+    fn seen(&self, id: u64) -> bool {
+        match self {
+            Self::Dense(slots) => usize::try_from(id)
+                .ok()
+                .and_then(|i| slots.get(i).copied())
+                .unwrap_or(false),
+            Self::Sparse(seen) => seen.contains(&id),
+        }
+    }
+}
+
+/// The reference in argument `i`, or 0 (which names no entity, so the lookup
+/// that follows refuses it) where the argument is missing or not a reference.
+fn ref_at(args: &[Arg], i: usize) -> u64 {
+    args.get(i).and_then(Arg::reference).unwrap_or(0)
 }
 
 #[cfg(test)]

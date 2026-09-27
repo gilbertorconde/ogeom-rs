@@ -115,7 +115,10 @@ fn looks_binary(bytes: &[u8]) -> bool {
         return false;
     };
     let claimed = u32::from_le_bytes(count) as usize;
-    bytes.len() == HEADER_BYTES + claimed * PER_TRIANGLE
+    claimed
+        .checked_mul(PER_TRIANGLE)
+        .and_then(|body| body.checked_add(HEADER_BYTES))
+        == Some(bytes.len())
 }
 
 /// Render the ASCII form.
@@ -176,16 +179,14 @@ fn read_binary(bytes: &[u8], tol: Tolerances) -> OgeomResult<Triangulation> {
     for i in 0..count {
         let at = 84 + i * 50;
         // The facet normal is read past rather than used; see the module docs.
-        let corners: Vec<Point> = (0..3)
-            .map(|k| {
-                let base = at + 12 + k * 12;
-                Point::new(
-                    f64::from(read_f32(bytes, base)),
-                    f64::from(read_f32(bytes, base + 4)),
-                    f64::from(read_f32(bytes, base + 8)),
-                )
-            })
-            .collect();
+        let corners: [Point; 3] = std::array::from_fn(|k| {
+            let base = at + 12 + k * 12;
+            Point::new(
+                f64::from(read_f32(bytes, base)),
+                f64::from(read_f32(bytes, base + 4)),
+                f64::from(read_f32(bytes, base + 8)),
+            )
+        });
         push(&mut mesh, corners[0], corners[1], corners[2]);
     }
     Ok(mesh.welded(tol))

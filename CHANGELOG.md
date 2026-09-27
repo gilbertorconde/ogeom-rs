@@ -47,6 +47,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Malformed and hostile files are refused, never aborted on.** The STEP
+  reader no longer panics on entities with too few arguments, overflows its
+  stack on entities that refer in a circle or on deeply nested argument
+  lists, or allocates by the largest entity id, a knot multiplicity or a
+  degree in the file. IGES reads its fixed columns as bytes (a label past
+  ASCII no longer panics), bounds Hollerith lengths and every count by the
+  entity's own parameters, and refuses transform and curve cycles. The
+  native, BREP and glTF readers reserve no more than the file holds; 3MF
+  archive offsets are bounded by the file and a deflated entry is refused
+  the moment it inflates past its promised size. A placement's power costs
+  its bit length, not its size.
+
 - **Sweeps sampled a placed section where it was stored, not where it
   stood.** A section wire carrying a placement was read at its unplaced
   position when a pipe or loft sampled it.

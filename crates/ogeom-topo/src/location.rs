@@ -192,7 +192,9 @@ impl Location {
         let mut chain = self.chain.clone();
         for &(datum, power) in &inner.chain {
             match chain.last_mut() {
-                Some((last, last_power)) if *last == datum => {
+                Some((last, last_power))
+                    if *last == datum && last_power.checked_add(power).is_some() =>
+                {
                     *last_power += power;
                     if *last_power == 0 {
                         chain.pop();
@@ -261,9 +263,7 @@ impl Location {
                 ogeom_bail!(Dangling, "location refers to a datum not in this store");
             };
             let step = if power >= 0 { datum } else { datum.inverse()? };
-            for _ in 0..power.unsigned_abs() {
-                result = result * step;
-            }
+            result = result * raised(step, power.unsigned_abs());
         }
         Ok(result)
     }
@@ -313,6 +313,24 @@ impl Location {
         }
         Ok(self.composed(store)?.kind())
     }
+}
+
+/// `step` applied `times` times, by repeated squaring: a power costs its
+/// bit length in products, not its size.
+fn raised(step: Transform, times: u32) -> Transform {
+    let mut result = Transform::IDENTITY;
+    let mut base = step;
+    let mut left = times;
+    while left > 0 {
+        if left & 1 == 1 {
+            result = result * base;
+        }
+        left >>= 1;
+        if left > 0 {
+            base = base * base;
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -526,6 +544,36 @@ mod tests {
         let l = Location::of(a).then(&Location::of(b));
         assert_eq!(l.depth(), 2);
         assert_eq!(l.chain(), &[(a, 1), (b, 1)]);
+    }
+
+    /// A power costs its bit length in products: the largest a chain can
+    /// hold composes at once, and lands where the arithmetic says.
+    #[test]
+    fn a_huge_power_composes_at_once() {
+        let mut s = DatumStore::new();
+        let step = s.insert(Transform::translation(Vector::new(1e-9, 0.0, 0.0)));
+        let far = Location::powered(step, i32::MAX).composed(&s).unwrap();
+        let x = far.apply(Point::ORIGIN).x;
+        let want = 1e-9 * f64::from(i32::MAX);
+        assert!((x - want).abs() < want * 1e-9, "{x} against {want}");
+        let turn = s.insert(Transform::rotation(
+            ogeom_math::Axis::new(Point::ORIGIN, ogeom_math::Direction::Z),
+            core::f64::consts::FRAC_PI_2,
+        ));
+        let four = Location::powered(turn, 4).composed(&s).unwrap();
+        assert!(
+            four.apply(Point::new(1.0, 0.0, 0.0))
+                .distance(Point::new(1.0, 0.0, 0.0))
+                < 1e-12
+        );
+    }
+
+    /// Powers that would overflow when merged stay two entries.
+    #[test]
+    fn merging_powers_never_overflows() {
+        let (_, a, _) = store();
+        let l = Location::powered(a, i32::MAX).then(&Location::powered(a, 1));
+        assert_eq!(l.chain(), &[(a, i32::MAX), (a, 1)]);
     }
 
     #[test]
