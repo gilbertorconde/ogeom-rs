@@ -35,10 +35,58 @@ These were run, not only read:
 | B2, B3 | extrema of two unit spheres 10 apart (want 8, 10, 10, 12) | 8, 9.05 (four times), 9.9999, 10; the farthest 12 is missing and 9.05 is not stationary |
 | B4 | two planes through the origin, 1e-6 rad apart | `Meeting::Same` |
 
+## Progress
+
+Where each item stands. Items not listed here are `open`.
+
+| Item | Status | Note |
+|---|---|---|
+| R1 to R5 | done `38e7a1a` | plus `7584668`: a seeded mangling test for STEP, IGES, STL and 3MF |
+| B1 | done `472c022` | voids of `assemble_result` stay unreversed: kept pieces are already the material's boundary |
+| B2, B3 | done `5910cec` | seeds are lattice extrema; every polished point is checked for stationarity by angle (also the answer to N1 for extrema) |
+| B4 | done `5910cec` | parallel across the planes' windows (angle times reach within confusion), not by angle alone: coplanar faces built by different routes differ by 1e-11 rad |
+| B5 | done `2245ed4` | |
+| B6 | done `2245ed4` | not reached by a public test: a spline bore restated to face its axis does not rebuild in `canonical_simplify` (new, open) |
+| B7 | done `2245ed4` | the cause was the rule itself: a fusing wedge's blend face also faces the ball; the station pick was hardened too |
+| B8 | done `97fcfdf` | non-manifold half dropped: the model permits a non-manifold seam (`boolean_contact` fuses edge-touching boxes) |
+| B9 | done `2245ed4` | reproduced before fixing: a tube round an XZ semicircle came out inside out |
+| B10 | done `28de5f3` | `fit_surface_grid_sections` (chord length across sections) in the section loft only; sweeps keep the old fit |
+| B11a, d, g, k, l, m, n, o | done `6a828eb` | |
+| B11b, h | done `43ffd07` | |
+| B11c, f | done `472c022` | |
+| B11e | half done `6a828eb` | the strand builder picks the nearest junction; the rebuild's first-by-index is load-bearing (the curved-corner blends fail without it) |
+| B11i, j | done `fecafca` | |
+| B11p | dropped | the write-back only widens the surface's window with the same parameters; every face on it keeps its points, and the legs must share the chart |
+| B11q | dropped | real loops come back to their start with the heading off (the curved-corner blends fail) |
+| N2 | done `5910cec` | |
+| N3 | done `25d66de` | |
+| P1, P2, P6, P7, P10, P14, P21, P27, P30, P34, P48 | done `43ffd07` | |
+| P5, P19 | done `a9912fe` | nested stages run inline on the worker they land on |
+| P8, P33 (part) | done `dd30f10` | plus an isoline evaluator for polynomial patches; samples are still stored per run |
+| P11 | done `fecafca` | |
+| P18 | done `c6fd84f`, `e551d55` | the dominant cost: seeds at local minima, shared stretches skipped, pairs culled by box |
+| P23, P24 (part) | done `24a3d51` | box tests before edge distances and section crossings |
+| P40 | done `e284553` | banded Cholesky; near-singular systems report singular |
+| P41 | done `28de5f3` | stations by length, capped at 2048 |
+| (new) basis derivatives | done `e551d55` | fixed arrays below degree eight, bit-identical |
+
+New findings while fixing, all open:
+
+- `to_nurbs` of a mirror-placed part turned its bore walls inside out
+  (fixed in `2245ed4`: the rebuild measures the normal turn).
+- The exact mass path refuses placed faces, so a mirror-placed solid is
+  measured from the mesh: at the default chord a small cylinder is 2.5%
+  out.
+- `canonical_simplify` cannot rebuild a face on a spline running against
+  its original direction ("edge 0 ends where edge 1 does not begin").
+- Every drill into `nist_ftc_06` is refused: a boundary strand of the
+  drill's wall dangles in the arrangement. The part is now in the stress
+  harness (`1dc2069`) so a fix shows.
+
 ## Correctness bugs
 
 ### B1. Shells are nested by bounding box: disjoint solids become voids
-`open` `reproduced`
+`done 472c022` `reproduced`
 
 - Where: `ogeom-bool/src/lib.rs` `assemble_result` (the "Nest" block) and
   `make_volume`.
@@ -54,7 +102,7 @@ These were run, not only read:
   island gives 2 solids.
 
 ### B2. Surface-surface extrema never polishes a farthest seed
-`open` `reproduced`
+`done 5910cec` `reproduced`
 
 - Where: `ogeom-intersect/src/extrema.rs`, the seed loops of
   surface/surface extrema and `thin`.
@@ -67,7 +115,7 @@ These were run, not only read:
 - Guard: two spheres report both nearest and farthest approach.
 
 ### B3. Extrema reports Newton results that never converged
-`open` `reproduced`
+`done 5910cec` `reproduced`
 
 - Where: `extrema.rs`, the three `newton_system(...).ok()?` sites.
 - Problem: `newton_system` returns `Ok` when it gives up (exhausted, or no
@@ -77,7 +125,7 @@ These were run, not only read:
   bound (see N1).
 
 ### B4. Plane-plane parallel test is a million times too loose
-`open` `reproduced`
+`done 5910cec` `reproduced`
 
 - Where: `ogeom-intersect/src/surface.rs` `plane_plane`; the same formula in
   `plane_cylinder`.
@@ -90,7 +138,7 @@ These were run, not only read:
   coplanar boolean tests.
 
 ### B5. Drafted faces about an oblique neutral can come out inside out
-`open` `read`
+`done 2245ed4` `read`
 
 - Where: `ogeom-offset/src/draft.rs` `general_draft`.
 - Problem: the hinge chain runs in whatever direction the mesh segments
@@ -105,7 +153,7 @@ These were run, not only read:
   positive volume.
 
 ### B6. Canonical recognition can flip concave faces
-`open` `read`
+`done 2245ed4` `read`
 
 - Where: `ogeom-heal/src/canonical.rs`, where the recognised carrier
   replaces the spline.
@@ -118,7 +166,7 @@ These were run, not only read:
   unchanged.
 
 ### B7. Marched fillet decides its side at the wrong station
-`open` `plausible`
+`done 2245ed4` `plausible`
 
 - Where: `ogeom-fillet/src/marched.rs`, the inward/outward tests of the
   closed and open bands.
@@ -133,7 +181,7 @@ These were run, not only read:
   the swept-ball estimate.
 
 ### B8. `check` misses inside-out faces and non-manifold shells
-`open` `read` (known gap)
+`done 97fcfdf` (orientation; the non-manifold half dropped) `read` (known gap)
 
 - Where: `ogeom-algo/src/check.rs`; `build.rs` `is_shell_closed`.
 - Problem: nothing in `check` looks at orientation, and shells count as
@@ -146,7 +194,7 @@ These were run, not only read:
 - Guard: flip one box face; two cubes sharing one edge; B1's output.
 
 ### B9. Skinned walls orient against the centroid of the whole skin
-`open` `read`
+`done 2245ed4` `read`
 
 - Where: `ogeom-offset/src/sweep.rs` `skinned_wall`, `skinned_solid`,
   `apex_patch`, `cornered_loft`.
@@ -159,7 +207,7 @@ These were run, not only read:
 - Guard: `make_pipe_skinned` on semicircles in XY, XZ, YZ.
 
 ### B10. Unevenly spaced loft sections lose about 20% of the volume
-`open` `plausible` (known bug, cause narrowed)
+`done 28de5f3` `plausible` (known bug, cause narrowed)
 
 - Where: `cornered_loft` > `skinned_strip` > `fit_surface_grid`
   (`ogeom-geom/src/fit.rs`), centripetal parameters.
@@ -205,7 +253,7 @@ These were run, not only read:
 ## Hostile input (a reader must never abort)
 
 ### R1. STEP reader indexes argument lists directly
-`open` `reproduced`
+`done 38e7a1a` `reproduced`
 
 - Where: `ogeom-io/src/step/read.rs`, about 25 `args[N]` sites in
   `surface`, `curve`, vertex, edge and face builders.
@@ -213,7 +261,7 @@ These were run, not only read:
 - Guard: every keyword with an empty argument list returns `Err`.
 
 ### R2. Unbounded recursion in STEP and IGES
-`open` `reproduced`
+`done 38e7a1a` `reproduced`
 
 - Where: STEP `parse.rs` `arguments`/`argument`; `read.rs` `surface`,
   `curve`, `shell` for offset, trimmed, replica and oriented entities. IGES
@@ -222,7 +270,7 @@ These were run, not only read:
   parser. `colour_in` and `datum_letter` already cap depth.
 
 ### R3. File-supplied numbers drive allocations
-`open` `reproduced` (one case)
+`done 38e7a1a` `reproduced` (one case)
 
 - STEP `visited` is sized by the largest entity id; negative ids wrap.
 - STEP knot multiplicities and implied degree; IGES counts (`n_knots`,
@@ -236,7 +284,7 @@ These were run, not only read:
   else a set.
 
 ### R4. IGES slices text by byte
-`open` `read`
+`done 38e7a1a` `read`
 
 - Where: `iges/parse.rs` fixed-column slicing; Hollerith length `j + 1 + n`.
 - Problem: a non-ASCII character near column 64 or 72 panics (not a char
@@ -367,8 +415,21 @@ bit-for-bit the same; check with the stress baseline and the test suite.
 
 ## Measured
 
-Pending: the profiling run (stress `--times`, `perf` on the slowest cases,
-peak RSS) is filled in here.
+Sampled with gdb (no `perf` on the machine; a script stops the process
+with SIGINT and records every thread's stack), on release builds.
+
+| Workload | Before | After | What dominated |
+|---|---|---|---|
+| stress harness, 498 cases, 20 threads | 143 s | 9 s | 9 in 10 samples polishing curve crossings in the boolean's paving (P18) |
+| one ctc_01 drill, alone | 18.2 s | 1.3 s | the same |
+| ftc_06 drill (was left out of the harness) | minutes | 1 to 30 s | section-to-section crossings (P24) |
+| draft tests | 21.7 s | 7.7 s | exact volume: the chart integral evaluating whole patches per sample |
+| thread-groove tests (CPU) | 71.5 s | 47.4 s | basis derivatives, spline fitting |
+| a remodel test, mid-change | 540 s | 6 s | a banded solve that did not report near-singular systems |
+
+`KnotVector::basis_derivatives` remains the top self-time function in
+most samples; what is left is how often it is called (fits, polishes,
+surface evaluation), not what each call costs.
 
 ## Plan
 
