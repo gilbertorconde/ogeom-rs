@@ -936,10 +936,16 @@ fn refind_edges(
         };
         t >= range.0.min(range.1) - slack && t <= range.0.max(range.1) + slack
     };
+    // A candidate lying on the edge's curve lies in its box: one that does
+    // not reach the box is not projected at all.
+    let reach = ogeom_algo::shape_bounds(model, edge, tol)?.expanded(tol.confusion() * 100.0);
     let mut matches: Vec<Shape> = Vec::new();
     for candidate in ogeom_topo::explore_unique(model, solid, ShapeType::Edge)? {
         if candidate.is_same(edge) {
             return Ok(vec![candidate]);
+        }
+        if !ogeom_algo::shape_bounds(model, &candidate, tol)?.intersects(&reach) {
+            continue;
         }
         let Ok((c_curve, c_range)) = edge_curve(model, &candidate, tol) else {
             continue;

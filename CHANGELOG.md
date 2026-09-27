@@ -13,6 +13,10 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **Meshing measures each chart edge's sag once** across the refinement's
+  rounds and the triangles sharing it, and a fillet chain finds its next
+  edges by projection only among edges whose boxes reach them.
+
 - **A face's arrangement has no quadratic steps left.** Strand ends snap
   through a grid, dangling chains peel through a queue, each dart's angle
   is computed once before sorting, and hole nesting reads each cycle's

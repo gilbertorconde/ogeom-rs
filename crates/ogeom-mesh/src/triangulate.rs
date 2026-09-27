@@ -2572,6 +2572,11 @@ fn triangulate_region_inner(
     // test they answer is indexed once and reused by every round below and by
     // the output pass.
     if !matches!(surface.kind(), ogeom_geom::SurfaceKind::Plane) {
+        // Whether a chart edge sags past the repair's threshold depends on
+        // its two ends alone: measured once, however many triangles share
+        // it and however many rounds it survives.
+        let mut sags: std::collections::HashMap<([u64; 2], [u64; 2]), bool> =
+            std::collections::HashMap::new();
         for _ in 0..REFINEMENT_ROUNDS {
             rounds_run += 1;
             let before = cdt.num_vertices();
@@ -2609,8 +2614,16 @@ fn triangulate_region_inner(
                 // is left untouched.
                 let sagged = (0..3).any(|i| {
                     let (a, b) = (corners[i], corners[(i + 1) % 3]);
-                    sag_between(surface, scale.from(a.0, a.1), scale.from(b.0, b.1), tol)
-                        > deflection.chord * 3.0
+                    let bits = |p: (f64, f64)| [p.0.to_bits(), p.1.to_bits()];
+                    let key = if bits(a) <= bits(b) {
+                        (bits(a), bits(b))
+                    } else {
+                        (bits(b), bits(a))
+                    };
+                    *sags.entry(key).or_insert_with(|| {
+                        sag_between(surface, scale.from(a.0, a.1), scale.from(b.0, b.1), tol)
+                            > deflection.chord * 3.0
+                    })
                 });
                 if sagged {
                     worst.push(SpadePoint::new(centre.x, centre.y));
