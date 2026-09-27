@@ -3014,7 +3014,7 @@ fn fill(
                 for t in [lo, hi] {
                     paves.entry(contact.node).or_default().push(Pave {
                         t,
-                        honesty: contact.tolerance,
+                        honesty: honest(contact.tolerance, tol),
                     });
                 }
                 if *DEBUG_WIRE {
@@ -3057,7 +3057,7 @@ fn fill(
                     if t > e.crange.0 + tol.parametric() && t < e.crange.1 - tol.parametric() {
                         paves.entry(e.node).or_default().push(Pave {
                             t,
-                            honesty: contact.tolerance,
+                            honesty: honest(contact.tolerance, tol),
                         });
                     }
                 }
@@ -6190,26 +6190,14 @@ fn assemble_result(
         }
     }
 
-    // Nest: a shell whose bound sits inside another's is that solid's void.
-    let mut bounds = Vec::new();
-    for shell in &sewn.shells {
-        bounds.push(shape_bounds(model, shell, tol)?);
-    }
+    // Nest: a shell inside another is that solid's void, and a shell inside
+    // a void is a solid of its own. The kept pieces are already oriented
+    // as the material's boundary, so a void's faces face into it as they
+    // are.
     let mut solids = Vec::new();
-    for (i, shell) in sewn.shells.iter().enumerate() {
-        let contained = bounds
-            .iter()
-            .enumerate()
-            .any(|(j, other)| j != i && other.contains_box(&bounds[i]));
-        if contained {
-            continue;
-        }
-        let mut group = vec![shell.clone()];
-        for (j, candidate) in sewn.shells.iter().enumerate() {
-            if j != i && bounds[i].contains_box(&bounds[j]) {
-                group.push(candidate.clone());
-            }
-        }
+    for (outer, voids) in nest_shells(model, &sewn.shells, tol)? {
+        let mut group = vec![sewn.shells[outer].clone()];
+        group.extend(voids.iter().map(|&j| sewn.shells[j].clone()));
         solids.push(model.add_solid(&group)?);
     }
     let result = if solids.len() == 1 {
@@ -6220,6 +6208,82 @@ fn assemble_result(
     history.modify(a, result.clone());
     history.modify(b, result.clone());
     Ok(Built::new(result, history))
+}
+
+/// Closed shells grouped into solids: each outer shell with the voids
+/// directly inside it, as indices into `shells`.
+///
+/// A shell's depth is how many others enclose it. Even depth is a solid's
+/// outer boundary (a free shell, or an island standing in another's
+/// cavity), odd depth a void, belonging to the enclosing shell one level
+/// out. Enclosure is decided by classifying the inner shell's vertices,
+/// not by bounding boxes: a part standing in another's notch sits inside
+/// its box and outside its material. A pair whose vertices all lie on the
+/// other (shells touching everywhere they could be tested) falls back to
+/// the boxes.
+fn nest_shells(
+    model: &Model,
+    shells: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<Vec<(usize, Vec<usize>)>> {
+    if shells.len() == 1 {
+        return Ok(vec![(0, Vec::new())]);
+    }
+    let mut bounds = Vec::with_capacity(shells.len());
+    for shell in shells {
+        bounds.push(shape_bounds(model, shell, tol)?);
+    }
+    let mut boundaries: Vec<Option<ogeom_algo::SolidBoundary>> =
+        (0..shells.len()).map(|_| None).collect();
+    let mut encloses = vec![vec![false; shells.len()]; shells.len()];
+    for i in 0..shells.len() {
+        for j in 0..shells.len() {
+            if i == j || !bounds[i].contains_box(&bounds[j]) {
+                continue;
+            }
+            if boundaries[i].is_none() {
+                boundaries[i] = Some(ogeom_algo::SolidBoundary::of(
+                    model,
+                    &shells[i],
+                    tol.confusion() * 1e4,
+                    tol,
+                )?);
+            }
+            let Some(boundary) = boundaries[i].as_ref() else {
+                continue;
+            };
+            let mut verdict = None;
+            for vertex in explore_unique(model, &shells[j], ShapeType::Vertex)? {
+                let Some(data) = model.node(&vertex).and_then(|n| n.data().as_vertex()) else {
+                    continue;
+                };
+                let at = vertex.transform(model.datums())?.apply(data.point);
+                match boundary.holds(model, at, tol)? {
+                    Containment::In => verdict = Some(true),
+                    Containment::Out => verdict = Some(false),
+                    Containment::On => continue,
+                }
+                break;
+            }
+            encloses[i][j] = verdict.unwrap_or(true);
+        }
+    }
+    let depth: Vec<usize> = (0..shells.len())
+        .map(|j| (0..shells.len()).filter(|&i| encloses[i][j]).count())
+        .collect();
+    let mut out: Vec<(usize, Vec<usize>)> = (0..shells.len())
+        .filter(|&i| depth[i].is_multiple_of(2))
+        .map(|i| (i, Vec::new()))
+        .collect();
+    for j in (0..shells.len()).filter(|&j| !depth[j].is_multiple_of(2)) {
+        let parent = (0..shells.len()).find(|&i| encloses[i][j] && depth[i] + 1 == depth[j]);
+        if let Some(parent) = parent
+            && let Some(slot) = out.iter_mut().find(|(i, _)| *i == parent)
+        {
+            slot.1.push(j);
+        }
+    }
+    Ok(out)
 }
 
 /// Solids from an unordered soup of faces: sew, demand closure, nest
@@ -6241,27 +6305,12 @@ pub fn make_volume(model: &mut Model, faces: &[Shape], tol: Tolerances) -> Ogeom
             );
         }
     }
-    let mut bounds = Vec::new();
-    for shell in &sewn.shells {
-        bounds.push(ogeom_algo::shape_bounds(model, shell, tol)?);
-    }
     let mut solids = Vec::new();
-    for (i, shell) in sewn.shells.iter().enumerate() {
-        let contained = bounds
-            .iter()
-            .enumerate()
-            .any(|(j, other)| j != i && other.contains_box(&bounds[i]));
-        if contained {
-            continue;
-        }
-        let mut group = vec![shell.clone()];
-        for (j, candidate) in sewn.shells.iter().enumerate() {
-            if j != i && bounds[i].contains_box(&bounds[j]) {
-                // A void bounds its solid from inside: material lies outside
-                // it, so the sewn outward orientation reverses.
-                group.push(candidate.reversed());
-            }
-        }
+    for (outer, voids) in nest_shells(model, &sewn.shells, tol)? {
+        let mut group = vec![sewn.shells[outer].clone()];
+        // A void bounds its solid from inside: material lies outside it,
+        // so the sewn outward orientation reverses.
+        group.extend(voids.iter().map(|&j| sewn.shells[j].reversed()));
         solids.push(model.add_solid(&group)?);
     }
     let mut history = History::new();
@@ -6414,8 +6463,8 @@ fn baked_if_scaled(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomRe
 
 /// Whether a shape is a half space: one shell of one face, open by
 /// construction or closed inside out.
-fn is_half_space(model: &Model, shape: &Shape) -> OgeomResult<bool> {
-    Ok(half_space::half_space_face(model, shape, Tolerances::millimetres())?.is_some())
+fn is_half_space(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<bool> {
+    Ok(half_space::half_space_face(model, shape, tol)?.is_some())
 }
 
 /// A half space resolved into the solid the operation can act on.
@@ -6507,7 +6556,7 @@ fn half_space_plane(
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) for arguments
 /// that are not closed solids.
 pub fn fuse(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
-    if is_half_space(model, a)? || is_half_space(model, b)? {
+    if is_half_space(model, a, tol)? || is_half_space(model, b, tol)? {
         ogeom_bail!(
             Construction,
             "the union with a half space is unbounded; a half space serves cut, \
