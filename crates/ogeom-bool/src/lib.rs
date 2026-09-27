@@ -619,7 +619,10 @@ fn measured_overlaps(
         #[allow(clippy::cast_precision_loss)]
         let t = crange.0 + (crange.1 - crange.0) * (i as f64) / (SAMPLES as f64);
         let p = curve.point_at(t, tol)?;
-        near.push(distance_to_edge_curve(&e.curve, e.crange, p, tol)? <= width);
+        near.push(
+            e.bound.expanded(width).contains(p)
+                && distance_to_edge_curve(&e.curve, e.crange, p, tol)? <= width,
+        );
     }
     let mut out = Vec::new();
     let mut i = 0;
@@ -646,7 +649,9 @@ fn measured_overlaps(
             for _ in 0..24 {
                 let m = f64::midpoint(a, b);
                 let p = curve.point_at(m, tol)?;
-                if distance_to_edge_curve(&e.curve, e.crange, p, tol)? <= width {
+                if e.bound.expanded(width).contains(p)
+                    && distance_to_edge_curve(&e.curve, e.crange, p, tol)? <= width
+                {
                     a = m;
                 } else {
                     b = m;
@@ -1797,6 +1802,17 @@ fn fill(
     // and the same reason: nothing about scheduling can reach the answer.
     type SectionWork = (Vec<(EdgeKey, Pave)>, Vec<SectionPiece>, Vec<Junction>);
     let mut hug_junctions: Vec<Junction> = Vec::new();
+    // Each section's box, for skipping pairs of sections too far apart to
+    // cross; a curve whose box cannot be had stands unbounded and is never
+    // skipped.
+    let section_bounds: Vec<Option<ogeom_math::Aabb>> = sections
+        .iter()
+        .map(|s| {
+            ogeom_algo::curve_bounds(&s.curve, tol)
+                .ok()
+                .map(|b| b.expanded(s.tolerance))
+        })
+        .collect();
     let paved: Vec<OgeomResult<SectionWork>> = ogeom_core::parallel::map_ordered(
         &sections,
         |si, section: &SectionRec| {
@@ -2080,6 +2096,12 @@ fn fill(
                     continue;
                 }
                 let both = reach.max(tol.confusion().max(other.tolerance * 2.0));
+                if !admit_all
+                    && let (Some(x), Some(y)) = (&section_bounds[si], &section_bounds[sj])
+                    && !x.expanded(both).intersects(y)
+                {
+                    continue;
+                }
                 // Where two sections share one face, a crossing matters only
                 // inside the faces they do not share, since a section is kept
                 // only where it lies in both its faces: one wall met by a
@@ -2362,6 +2384,11 @@ fn fill(
                         let mut near = false;
                         for (ei, e) in own.edges.iter().enumerate() {
                             let width = reach.max(floor).max(e.tolerance * 2.0);
+                            // The edge's box holds its curve: a point outside
+                            // the box grown by the width is not near it.
+                            if !e.bound.expanded(width).contains(at) {
+                                continue;
+                            }
                             let d = distance_to_edge_curve(&e.curve, e.crange, at, tol)?;
                             if d <= width {
                                 if *DEBUG_WIRE {
@@ -2717,8 +2744,9 @@ fn fill(
                     &gb.faces[section.face_b]
                 };
                 for e in &face.edges {
-                    if distance_to_edge_curve(&e.curve, e.crange, mid, tol)?
-                        <= width.max(e.tolerance * 2.0)
+                    let near = width.max(e.tolerance * 2.0);
+                    if e.bound.expanded(near).contains(mid)
+                        && distance_to_edge_curve(&e.curve, e.crange, mid, tol)? <= near
                     {
                         hugged.push(e);
                     }
