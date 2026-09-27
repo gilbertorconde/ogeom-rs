@@ -29,7 +29,7 @@
 //! two evaluated points, and the distance between them, which is the claim.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
-use ogeom_geom::{Curve, Curve3d, Surface, SurfaceGeometry};
+use ogeom_geom::{Curve, Curve3d, Surface, SurfaceGeometry, SurfaceJet};
 use ogeom_math::{Point, Vector, solve};
 
 /// One stationary approach between two geometries.
@@ -429,16 +429,15 @@ fn stationary_curve_surface(
         let t = fold_curve(curve, x[0]);
         let (u, v) = fold_surface(surface, x[1], x[2]);
         let pc = curve.point_at(t, tol).unwrap_or(Point::ORIGIN);
-        let ps = surface.point_at(u, v, tol).unwrap_or(Point::ORIGIN);
         let dc = curve.derivatives_at(t, 2, tol).unwrap_or_default();
         let zero = Vector::ZERO;
         let (ct, ctt) = (
             dc.get(1).copied().unwrap_or(zero),
             dc.get(2).copied().unwrap_or(zero),
         );
-        let (su, sv) = surface.d1_at(u, v, tol).unwrap_or((zero, zero));
-        let (suu, suv, svv) = surface.d2_at(u, v, tol).unwrap_or((zero, zero, zero));
-        let gap = pc - ps;
+        let js = jet_or_zero(surface, u, v, tol);
+        let (su, sv, suu, suv, svv) = (js.du, js.dv, js.d2u, js.duv, js.d2v);
+        let gap = pc - js.point;
         (
             [gap.dot(ct), gap.dot(su), gap.dot(sv)],
             [
@@ -591,14 +590,11 @@ fn stationary_surface_surface(
     let system = |x: &[f64; 4]| {
         let (ua, va) = fold_surface(a, x[0], x[1]);
         let (ub, vb) = fold_surface(b, x[2], x[3]);
-        let zero = Vector::ZERO;
-        let pa = a.point_at(ua, va, tol).unwrap_or(Point::ORIGIN);
-        let pb = b.point_at(ub, vb, tol).unwrap_or(Point::ORIGIN);
-        let (au, av) = a.d1_at(ua, va, tol).unwrap_or((zero, zero));
-        let (auu, auv, avv) = a.d2_at(ua, va, tol).unwrap_or((zero, zero, zero));
-        let (bu, bv) = b.d1_at(ub, vb, tol).unwrap_or((zero, zero));
-        let (buu, buv, bvv) = b.d2_at(ub, vb, tol).unwrap_or((zero, zero, zero));
-        let gap = pa - pb;
+        let ja = jet_or_zero(a, ua, va, tol);
+        let jb = jet_or_zero(b, ub, vb, tol);
+        let (au, av, auu, auv, avv) = (ja.du, ja.dv, ja.d2u, ja.duv, ja.d2v);
+        let (bu, bv, buu, buv, bvv) = (jb.du, jb.dv, jb.d2u, jb.duv, jb.d2v);
+        let gap = ja.point - jb.point;
         (
             [gap.dot(au), gap.dot(av), gap.dot(bu), gap.dot(bv)],
             [
@@ -643,6 +639,20 @@ fn stationary_surface_surface(
     let (au, av) = a.d1_at(ua, va, tol).ok()?;
     let (bu, bv) = b.d1_at(ub, vb, tol).ok()?;
     is_stationary(gap, &[au, av, bu, bv], tol).then_some((ua, va, ub, vb))
+}
+
+/// A surface's point and derivatives through second order, from one
+/// evaluation; the origin and zeros where it cannot be evaluated, which a
+/// Newton step reads as no progress rather than as a root.
+fn jet_or_zero(surface: &SurfaceGeometry, u: f64, v: f64, tol: Tolerances) -> SurfaceJet {
+    surface.jet_at(u, v, tol).unwrap_or(SurfaceJet {
+        point: Point::ORIGIN,
+        du: Vector::ZERO,
+        dv: Vector::ZERO,
+        d2u: Vector::ZERO,
+        duv: Vector::ZERO,
+        d2v: Vector::ZERO,
+    })
 }
 
 /// Whether the gap between two points is square to every tangent given:

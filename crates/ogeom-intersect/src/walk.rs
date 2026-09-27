@@ -59,6 +59,24 @@ pub trait Condition {
     /// walker reads as a stall rather than as a zero.
     fn system(&self, x: &[f64], tol: Tolerances) -> Option<(Vec<f64>, Vec<Vec<f64>>)>;
 
+    /// [`Condition::system`], [`Condition::position`] and
+    /// [`Condition::position_gradient`] at one parameter vector, as the
+    /// walker's correction asks for all three at every step. The default asks
+    /// each; a condition whose position is one of the points its system
+    /// already evaluates overrides this to evaluate it once.
+    #[allow(clippy::type_complexity, reason = "the three answers, together")]
+    fn system_at(
+        &self,
+        x: &[f64],
+        tol: Tolerances,
+    ) -> Option<((Vec<f64>, Vec<Vec<f64>>), Point, Vec<Vector>)> {
+        Some((
+            self.system(x, tol)?,
+            self.position(x, tol)?,
+            self.position_gradient(x, tol)?,
+        ))
+    }
+
     /// Bring a parameter vector back into the region the condition is posed
     /// on. Called before every evaluation, so a condition may assume it.
     fn clamp(&self, x: &mut [f64]);
@@ -349,11 +367,8 @@ fn correct<C: Condition + ?Sized>(
         condition.clamp(&mut at);
         // Where the condition cannot be evaluated the residual is infinite,
         // so the damped step backs off; a zero there would read as a root.
-        let (Some((mut residual, mut jacobian)), Some(point), Some(gradient)) = (
-            condition.system(&at, tol),
-            condition.position(&at, tol),
-            condition.position_gradient(&at, tol),
-        ) else {
+        let Some(((mut residual, mut jacobian), point, gradient)) = condition.system_at(&at, tol)
+        else {
             return (vec![f64::INFINITY; n], vec![vec![0.0; n]; n]);
         };
         residual.push((point - anchor).dot(along) - reach);

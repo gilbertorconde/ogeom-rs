@@ -530,6 +530,14 @@ impl Condition for BallContact<'_> {
     }
 
     fn system(&self, x: &[f64], tol: Tolerances) -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+        Some(self.system_at(x, tol)?.0)
+    }
+
+    fn system_at(
+        &self,
+        x: &[f64],
+        tol: Tolerances,
+    ) -> Option<((Vec<f64>, Vec<Vec<f64>>), Point, Vec<Vector>)> {
         let p1 = self.first.point_at(x[0], x[1], tol).ok()?;
         let p2 = self.second.point_at(x[2], x[3], tol).ok()?;
         let (a1, b1) = self.first.d1_at(x[0], x[1], tol).ok()?;
@@ -569,19 +577,23 @@ impl Condition for BallContact<'_> {
         let square = (p1 - g).dot(gd);
 
         Some((
-            vec![gap.x, gap.y, gap.z, square],
-            vec![
-                vec![c1u.x, c1v.x, -c2u.x, -c2v.x, 0.0],
-                vec![c1u.y, c1v.y, -c2u.y, -c2v.y, 0.0],
-                vec![c1u.z, c1v.z, -c2u.z, -c2v.z, 0.0],
+            (
+                vec![gap.x, gap.y, gap.z, square],
                 vec![
-                    a1.dot(gd),
-                    b1.dot(gd),
-                    0.0,
-                    0.0,
-                    (p1 - g).dot(gdd) - gd.dot(gd),
+                    vec![c1u.x, c1v.x, -c2u.x, -c2v.x, 0.0],
+                    vec![c1u.y, c1v.y, -c2u.y, -c2v.y, 0.0],
+                    vec![c1u.z, c1v.z, -c2u.z, -c2v.z, 0.0],
+                    vec![
+                        a1.dot(gd),
+                        b1.dot(gd),
+                        0.0,
+                        0.0,
+                        (p1 - g).dot(gdd) - gd.dot(gd),
+                    ],
                 ],
-            ],
+            ),
+            p1,
+            vec![a1, b1, Vector::ZERO, Vector::ZERO, Vector::ZERO],
         ))
     }
 

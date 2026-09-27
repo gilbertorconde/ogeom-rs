@@ -526,18 +526,30 @@ impl crate::walk::Condition for SurfacePair<'_> {
     }
 
     fn system(&self, x: &[f64], tol: Tolerances) -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+        Some(self.system_at(x, tol)?.0)
+    }
+
+    fn system_at(
+        &self,
+        x: &[f64],
+        tol: Tolerances,
+    ) -> Option<((Vec<f64>, Vec<Vec<f64>>), Point, Vec<Vector>)> {
         let pa = self.a.point_at(x[0], x[1], tol).ok()?;
         let pb = self.b.point_at(x[2], x[3], tol).ok()?;
         let (au, av) = self.a.d1_at(x[0], x[1], tol).ok()?;
         let (bu, bv) = self.b.d1_at(x[2], x[3], tol).ok()?;
         let gap = pa - pb;
         Some((
-            vec![gap.x, gap.y, gap.z],
-            vec![
-                vec![au.x, av.x, -bu.x, -bv.x],
-                vec![au.y, av.y, -bu.y, -bv.y],
-                vec![au.z, av.z, -bu.z, -bv.z],
-            ],
+            (
+                vec![gap.x, gap.y, gap.z],
+                vec![
+                    vec![au.x, av.x, -bu.x, -bv.x],
+                    vec![au.y, av.y, -bu.y, -bv.y],
+                    vec![au.z, av.z, -bu.z, -bv.z],
+                ],
+            ),
+            pa,
+            vec![au, av, Vector::ZERO, Vector::ZERO],
         ))
     }
 

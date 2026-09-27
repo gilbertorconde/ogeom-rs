@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **Fewer surface evaluations per Newton step.** A march's correction
+  takes the walked point and its gradient from the evaluation its system
+  already made (four evaluations a step instead of six, the same values),
+  and extrema read each surface's point and derivatives from one jet.
+
 - **A walk's tangent is found without allocating:** the null vector's
   minors are expanded in place, with the same arithmetic, and each accepted
   state is stored once instead of copied.
