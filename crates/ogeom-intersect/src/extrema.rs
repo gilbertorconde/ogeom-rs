@@ -218,7 +218,7 @@ pub(crate) fn stationary_curve_curve(
     seed_b: f64,
     tol: Tolerances,
 ) -> Option<(f64, f64)> {
-    let system = |x: &[f64]| {
+    let system = |x: &[f64; 2]| {
         let (t, s) = (fold_curve(a, x[0]), fold_curve(b, x[1]));
         let pa = a.point_at(t, tol).unwrap_or(Point::ORIGIN);
         let pb = b.point_at(s, tol).unwrap_or(Point::ORIGIN);
@@ -235,10 +235,10 @@ pub(crate) fn stationary_curve_curve(
         );
         let gap = pa - pb;
         (
-            vec![gap.dot(d1a), -gap.dot(d1b)],
-            vec![
-                vec![d1a.dot(d1a) + gap.dot(d2a), -d1a.dot(d1b)],
-                vec![-d1a.dot(d1b), d1b.dot(d1b) - gap.dot(d2b)],
+            [gap.dot(d1a), -gap.dot(d1b)],
+            [
+                [d1a.dot(d1a) + gap.dot(d2a), -d1a.dot(d1b)],
+                [-d1a.dot(d1b), d1b.dot(d1b) - gap.dot(d2b)],
             ],
         )
     };
@@ -249,8 +249,8 @@ pub(crate) fn stationary_curve_curve(
         step: tol.parametric(),
         max_iterations: 40,
     };
-    let found = solve::newton_system(system, &[seed_a, seed_b], criteria).ok()?;
-    let (t, s) = (fold_curve(a, found.value[0]), fold_curve(b, found.value[1]));
+    let found = solve::newton_system_fixed(system, [seed_a, seed_b], criteria).ok()?;
+    let (t, s) = (fold_curve(a, found.0[0]), fold_curve(b, found.0[1]));
     let gap = a.point_at(t, tol).ok()? - b.point_at(s, tol).ok()?;
     let ta = a.derivatives_at(t, 1, tol).ok()?.get(1).copied()?;
     let tb = b.derivatives_at(s, 1, tol).ok()?.get(1).copied()?;
@@ -425,7 +425,7 @@ fn stationary_curve_surface(
     seed_uv: (f64, f64),
     tol: Tolerances,
 ) -> Option<(f64, f64, f64)> {
-    let system = |x: &[f64]| {
+    let system = |x: &[f64; 3]| {
         let t = fold_curve(curve, x[0]);
         let (u, v) = fold_surface(surface, x[1], x[2]);
         let pc = curve.point_at(t, tol).unwrap_or(Point::ORIGIN);
@@ -440,15 +440,15 @@ fn stationary_curve_surface(
         let (suu, suv, svv) = surface.d2_at(u, v, tol).unwrap_or((zero, zero, zero));
         let gap = pc - ps;
         (
-            vec![gap.dot(ct), gap.dot(su), gap.dot(sv)],
-            vec![
-                vec![ct.dot(ct) + gap.dot(ctt), -su.dot(ct), -sv.dot(ct)],
-                vec![
+            [gap.dot(ct), gap.dot(su), gap.dot(sv)],
+            [
+                [ct.dot(ct) + gap.dot(ctt), -su.dot(ct), -sv.dot(ct)],
+                [
                     ct.dot(su),
                     -su.dot(su) + gap.dot(suu),
                     -sv.dot(su) + gap.dot(suv),
                 ],
-                vec![
+                [
                     ct.dot(sv),
                     -su.dot(sv) + gap.dot(suv),
                     -sv.dot(sv) + gap.dot(svv),
@@ -461,9 +461,10 @@ fn stationary_curve_surface(
         step: tol.parametric(),
         max_iterations: 40,
     };
-    let found = solve::newton_system(system, &[seed_t, seed_uv.0, seed_uv.1], criteria).ok()?;
-    let t = fold_curve(curve, found.value[0]);
-    let (u, v) = fold_surface(surface, found.value[1], found.value[2]);
+    let found =
+        solve::newton_system_fixed(system, [seed_t, seed_uv.0, seed_uv.1], criteria).ok()?;
+    let t = fold_curve(curve, found.0[0]);
+    let (u, v) = fold_surface(surface, found.0[1], found.0[2]);
     let gap = curve.point_at(t, tol).ok()? - surface.point_at(u, v, tol).ok()?;
     let tc = curve.derivatives_at(t, 1, tol).ok()?.get(1).copied()?;
     let (su, sv) = surface.d1_at(u, v, tol).ok()?;
@@ -587,7 +588,7 @@ fn stationary_surface_surface(
     seed_b: (f64, f64),
     tol: Tolerances,
 ) -> Option<(f64, f64, f64, f64)> {
-    let system = |x: &[f64]| {
+    let system = |x: &[f64; 4]| {
         let (ua, va) = fold_surface(a, x[0], x[1]);
         let (ub, vb) = fold_surface(b, x[2], x[3]);
         let zero = Vector::ZERO;
@@ -599,27 +600,27 @@ fn stationary_surface_surface(
         let (buu, buv, bvv) = b.d2_at(ub, vb, tol).unwrap_or((zero, zero, zero));
         let gap = pa - pb;
         (
-            vec![gap.dot(au), gap.dot(av), gap.dot(bu), gap.dot(bv)],
-            vec![
-                vec![
+            [gap.dot(au), gap.dot(av), gap.dot(bu), gap.dot(bv)],
+            [
+                [
                     au.dot(au) + gap.dot(auu),
                     au.dot(av) + gap.dot(auv),
                     -bu.dot(au),
                     -bv.dot(au),
                 ],
-                vec![
+                [
                     au.dot(av) + gap.dot(auv),
                     av.dot(av) + gap.dot(avv),
                     -bu.dot(av),
                     -bv.dot(av),
                 ],
-                vec![
+                [
                     au.dot(bu),
                     av.dot(bu),
                     -bu.dot(bu) + gap.dot(buu),
                     -bv.dot(bu) + gap.dot(buv),
                 ],
-                vec![
+                [
                     au.dot(bv),
                     av.dot(bv),
                     -bu.dot(bv) + gap.dot(buv),
@@ -634,9 +635,10 @@ fn stationary_surface_surface(
         max_iterations: 40,
     };
     let found =
-        solve::newton_system(system, &[seed_a.0, seed_a.1, seed_b.0, seed_b.1], criteria).ok()?;
-    let (ua, va) = fold_surface(a, found.value[0], found.value[1]);
-    let (ub, vb) = fold_surface(b, found.value[2], found.value[3]);
+        solve::newton_system_fixed(system, [seed_a.0, seed_a.1, seed_b.0, seed_b.1], criteria)
+            .ok()?;
+    let (ua, va) = fold_surface(a, found.0[0], found.0[1]);
+    let (ub, vb) = fold_surface(b, found.0[2], found.0[3]);
     let gap = a.point_at(ua, va, tol).ok()? - b.point_at(ub, vb, tol).ok()?;
     let (au, av) = a.d1_at(ua, va, tol).ok()?;
     let (bu, bv) = b.d1_at(ub, vb, tol).ok()?;

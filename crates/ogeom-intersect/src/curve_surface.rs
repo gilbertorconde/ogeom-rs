@@ -513,7 +513,7 @@ fn polish(
         )
     };
 
-    let system = |x: &[f64]| {
+    let system = |x: &[f64; 3]| {
         let t = clamp_t(x[0]);
         let (u, v) = clamp_uv(x[1], x[2]);
         let (Ok(pc), Ok(ps), Ok(dc), Ok((du, dv))) = (
@@ -523,15 +523,15 @@ fn polish(
             surface.d1_at(u, v, tol),
         ) else {
             // Nowhere to measure from: infinite, so the damped step backs off.
-            return (vec![f64::INFINITY; 3], vec![vec![0.0; 3]; 3]);
+            return ([f64::INFINITY; 3], [[0.0; 3]; 3]);
         };
         let gap = pc - ps;
         (
-            vec![gap.x, gap.y, gap.z],
-            vec![
-                vec![dc.x, -du.x, -dv.x],
-                vec![dc.y, -du.y, -dv.y],
-                vec![dc.z, -du.z, -dv.z],
+            [gap.x, gap.y, gap.z],
+            [
+                [dc.x, -du.x, -dv.x],
+                [dc.y, -du.y, -dv.y],
+                [dc.z, -du.z, -dv.z],
             ],
         )
     };
@@ -540,9 +540,10 @@ fn polish(
         step: tol.parametric(),
         max_iterations: 40,
     };
-    let found = solve::newton_system(system, &[seed_t, seed_uv.0, seed_uv.1], criteria).ok()?;
-    let t = clamp_t(found.value[0]);
-    let (u, v) = clamp_uv(found.value[1], found.value[2]);
+    let found =
+        solve::newton_system_fixed(system, [seed_t, seed_uv.0, seed_uv.1], criteria).ok()?;
+    let t = clamp_t(found.0[0]);
+    let (u, v) = clamp_uv(found.0[1], found.0[2]);
     let pc = curve.point_at(t, tol).ok()?;
     let ps = surface.point_at(u, v, tol).ok()?;
     Some(Piercing {

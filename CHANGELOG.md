@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **The intersectors' small Newton solves allocate nothing.** Curve
+  crossings, curve and surface extrema, curve-surface polishing and the
+  marcher's contact solve run on `newton_system_fixed`, the same damped
+  iteration on stack arrays; a curve crossing reads each point from its
+  derivative table.
+
 - **Hidden lines test each sample against the triangles and faces in
   front of it only.** The mesh drawing bins triangles by where they
   project; the exact drawing skips faces whose projected box misses the
@@ -78,6 +84,9 @@ bump may break the API and a patch bump may not.
   boolean builds each face's chart outline and trim samples once.
 
 ### Added
+
+- **`solve::newton_system_fixed`:** the damped Newton iteration for a
+  fixed number of unknowns, allocation-free.
 
 - **`SolidMesh`:** a solid's boundary meshed once, to classify many points
   against.

@@ -709,6 +709,104 @@ where
     })
 }
 
+/// A fixed-size [`newton_system`] for `N` unknowns, allocation-free.
+///
+/// The same damped iteration (halving until the residual falls, the same
+/// three verdicts), on stack arrays and a fixed-size LU: the intersectors'
+/// three- and four-unknown systems run this millions of times per model,
+/// and the general path allocates for every residual, Jacobian and step.
+///
+/// # Errors
+///
+/// [`OgeomError::Numeric`](ogeom_core::OgeomError::Numeric) if the
+/// Jacobian is singular.
+pub fn newton_system_fixed<const N: usize, F>(
+    mut f: F,
+    start: [f64; N],
+    criteria: Criteria,
+) -> OgeomResult<([f64; N], f64, Convergence, usize)>
+where
+    F: FnMut(&[f64; N]) -> ([f64; N], [[f64; N]; N]),
+{
+    let norm_of = |r: &[f64; N]| r.iter().map(|v| v * v).sum::<f64>().sqrt();
+    let mut x = start;
+    let (mut residual, mut jacobian) = f(&x);
+    let mut norm = norm_of(&residual);
+    for iteration in 1..=criteria.max_iterations {
+        if norm <= criteria.residual {
+            return Ok((x, norm, Convergence::Residual, iteration - 1));
+        }
+        let Some(delta) = solve_fixed(jacobian, residual) else {
+            ogeom_bail!(Numeric, "Jacobian is singular after {iteration} iterations");
+        };
+        let mut scale = 1.0;
+        let mut accepted = None;
+        for _ in 0..30 {
+            let mut candidate = x;
+            for (value, d) in candidate.iter_mut().zip(delta.iter()) {
+                *value -= d * scale;
+            }
+            let (r, jj) = f(&candidate);
+            let candidate_norm = norm_of(&r);
+            if candidate_norm < norm || candidate_norm <= criteria.residual {
+                accepted = Some((candidate, r, jj, candidate_norm));
+                break;
+            }
+            scale *= 0.5;
+        }
+        let Some((next, r, jj, next_norm)) = accepted else {
+            return Ok((x, norm, Convergence::Exhausted, iteration));
+        };
+        let step = next
+            .iter()
+            .zip(&x)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f64>()
+            .sqrt();
+        x = next;
+        residual = r;
+        jacobian = jj;
+        norm = next_norm;
+        if norm <= criteria.residual {
+            return Ok((x, norm, Convergence::Residual, iteration));
+        }
+        if step <= criteria.step {
+            return Ok((x, norm, Convergence::Step, iteration));
+        }
+    }
+    Ok((x, norm, Convergence::Exhausted, criteria.max_iterations))
+}
+
+/// `A x = b` by Gaussian elimination with partial pivoting; `None` at a
+/// zero pivot, as an LU factorisation refuses one.
+fn solve_fixed<const N: usize>(mut a: [[f64; N]; N], mut b: [f64; N]) -> Option<[f64; N]> {
+    for col in 0..N {
+        let pivot = (col..N).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
+        if a[pivot][col] == 0.0 || !a[pivot][col].is_finite() {
+            return None;
+        }
+        a.swap(col, pivot);
+        b.swap(col, pivot);
+        let head = a[col];
+        for row in col + 1..N {
+            let factor = a[row][col] / head[col];
+            for (entry, above) in a[row].iter_mut().zip(&head).skip(col) {
+                *entry -= factor * above;
+            }
+            b[row] -= factor * b[col];
+        }
+    }
+    let mut x = [0.0; N];
+    for row in (0..N).rev() {
+        let mut sum = b[row];
+        for (entry, known) in a[row].iter().zip(&x).skip(row + 1) {
+            sum -= entry * known;
+        }
+        x[row] = sum / a[row][row];
+    }
+    Some(x)
+}
+
 /// A two-unknown [`newton_system`], allocation-free.
 ///
 /// The foot-point projection runs this system millions of times per real

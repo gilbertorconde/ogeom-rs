@@ -698,7 +698,7 @@ fn correct(
         }
     };
 
-    let system = |x: &[f64]| {
+    let system = |x: &[f64; 4]| {
         let (ua, va) = clamp(a, x[0], x[1]);
         let (ub, vb) = clamp(b, x[2], x[3]);
         // Where either surface cannot be evaluated the residual is
@@ -710,16 +710,16 @@ fn correct(
             a.d1_at(ua, va, tol),
             b.d1_at(ub, vb, tol),
         ) else {
-            return (vec![f64::INFINITY; 4], vec![vec![0.0; 4]; 4]);
+            return ([f64::INFINITY; 4], [[0.0; 4]; 4]);
         };
 
         let gap = pa - pb;
-        let residual = vec![gap.x, gap.y, gap.z, (pa - anchor).dot(along) - reach];
-        let jacobian = vec![
-            vec![au.x, av.x, -bu.x, -bv.x],
-            vec![au.y, av.y, -bu.y, -bv.y],
-            vec![au.z, av.z, -bu.z, -bv.z],
-            vec![au.dot(along), av.dot(along), 0.0, 0.0],
+        let residual = [gap.x, gap.y, gap.z, (pa - anchor).dot(along) - reach];
+        let jacobian = [
+            [au.x, av.x, -bu.x, -bv.x],
+            [au.y, av.y, -bu.y, -bv.y],
+            [au.z, av.z, -bu.z, -bv.z],
+            [au.dot(along), av.dot(along), 0.0, 0.0],
         ];
         (residual, jacobian)
     };
@@ -729,12 +729,12 @@ fn correct(
         step: tol.parametric(),
         max_iterations: 40,
     };
-    let found = solve::newton_system(system, &start, criteria).ok()?;
-    if found.residual > tol.confusion() {
+    let found = solve::newton_system_fixed(system, start, criteria).ok()?;
+    if found.1 > tol.confusion() {
         return None;
     }
-    let (ua, va) = clamp(a, found.value[0], found.value[1]);
-    let (ub, vb) = clamp(b, found.value[2], found.value[3]);
+    let (ua, va) = clamp(a, found.0[0], found.0[1]);
+    let (ub, vb) = clamp(b, found.0[2], found.0[3]);
     Some(Contact {
         on_a: (ua, va),
         on_b: (ub, vb),

@@ -1470,7 +1470,7 @@ fn polish_2d(
     options: CurveCurveOptions,
     tol: Tolerances,
 ) -> Option<Crossing<Point2>> {
-    let system = |x: &[f64]| {
+    let system = |x: &[f64; 2]| {
         let (t, s) = (clamp_2d(a, x[0]), clamp_2d(b, x[1]));
         let pa = a.point_at(t, tol).unwrap_or(Point2::ORIGIN);
         let pb = b.point_at(s, tol).unwrap_or(Point2::ORIGIN);
@@ -1480,18 +1480,15 @@ fn polish_2d(
         let db = b
             .d1_at(s, tol)
             .unwrap_or(ogeom_math::Vector2::new(0.0, 0.0));
-        (
-            vec![pa.x - pb.x, pa.y - pb.y],
-            vec![vec![da.x, -db.x], vec![da.y, -db.y]],
-        )
+        ([pa.x - pb.x, pa.y - pb.y], [[da.x, -db.x], [da.y, -db.y]])
     };
     let criteria = solve::Criteria {
         residual: tol.confusion() * 0.01,
         step: tol.parametric(),
         max_iterations: 40,
     };
-    let found = solve::newton_system(system, &[seed_a, seed_b], criteria).ok()?;
-    let (t, s) = (clamp_2d(a, found.value[0]), clamp_2d(b, found.value[1]));
+    let found = solve::newton_system_fixed(system, [seed_a, seed_b], criteria).ok()?;
+    let (t, s) = (clamp_2d(a, found.0[0]), clamp_2d(b, found.0[1]));
     let pa = a.point_at(t, tol).ok()?;
     let pb = b.point_at(s, tol).ok()?;
     let gap = pa.distance(pb);
@@ -1521,33 +1518,25 @@ fn polish_3d(
     options: CurveCurveOptions,
     tol: Tolerances,
 ) -> Option<Crossing<Point>> {
-    let system = |x: &[f64]| {
+    // Two unknowns: the allocation-free solver, and each curve's point
+    // read from the same derivative table as its derivatives.
+    let system = |x: [f64; 2]| {
         let (t, s) = (clamp_3d(a, x[0]), clamp_3d(b, x[1]));
-        let (Ok(pa), Ok(pb), Ok(da), Ok(db)) = (
-            a.point_at(t, tol),
-            b.point_at(s, tol),
-            a.derivatives_at(t, 2, tol),
-            b.derivatives_at(s, 2, tol),
-        ) else {
+        let (Ok(da), Ok(db)) = (a.derivatives_at(t, 2, tol), b.derivatives_at(s, 2, tol)) else {
             // A zero here would read as a root; infinite, the damped step
             // backs off instead.
-            return (vec![f64::INFINITY; 2], vec![vec![0.0; 2]; 2]);
+            return ([f64::INFINITY; 2], [[0.0; 2]; 2]);
         };
         let zero = ogeom_math::Vector::ZERO;
-        let (d1a, d2a) = (
-            da.get(1).copied().unwrap_or(zero),
-            da.get(2).copied().unwrap_or(zero),
-        );
-        let (d1b, d2b) = (
-            db.get(1).copied().unwrap_or(zero),
-            db.get(2).copied().unwrap_or(zero),
-        );
+        let at = |d: &[ogeom_math::Vector], k: usize| d.get(k).copied().unwrap_or(zero);
+        let (pa, d1a, d2a) = (at(&da, 0), at(&da, 1), at(&da, 2));
+        let (pb, d1b, d2b) = (at(&db, 0), at(&db, 1), at(&db, 2));
         let gap = pa - pb;
         (
-            vec![gap.dot(d1a), -gap.dot(d1b)],
-            vec![
-                vec![d1a.dot(d1a) + gap.dot(d2a), -d1a.dot(d1b)],
-                vec![-d1a.dot(d1b), d1b.dot(d1b) - gap.dot(d2b)],
+            [gap.dot(d1a), -gap.dot(d1b)],
+            [
+                [d1a.dot(d1a) + gap.dot(d2a), -d1a.dot(d1b)],
+                [-d1a.dot(d1b), d1b.dot(d1b) - gap.dot(d2b)],
             ],
         )
     };
@@ -1556,8 +1545,8 @@ fn polish_3d(
         step: tol.parametric(),
         max_iterations: 40,
     };
-    let found = solve::newton_system(system, &[seed_a, seed_b], criteria).ok()?;
-    let (t, s) = (clamp_3d(a, found.value[0]), clamp_3d(b, found.value[1]));
+    let ([t, s], ..) = solve::newton_system_2(system, [seed_a, seed_b], criteria).ok()?;
+    let (t, s) = (clamp_3d(a, t), clamp_3d(b, s));
     let pa = a.point_at(t, tol).ok()?;
     let pb = b.point_at(s, tol).ok()?;
     let gap = pa.distance(pb);
