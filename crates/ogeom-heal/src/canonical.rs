@@ -168,11 +168,17 @@ pub fn canonical_simplify(
             }
             wires.push(edges);
         }
+        // A cylinder, cone or sphere has its own normal away from its axis
+        // or centre whichever side the material was on; a bore spelt as a
+        // spline with its normal towards the axis comes out turned. The
+        // flag carries over, and turns once more where the normals oppose.
+        let flipped = ogeom_algo::normals_oppose(&world, &carrier, tol)?;
         let rebuilt = ogeom_algo::make_face_with_pcurves(model, carrier, &wires, tol)?.shape;
-        let rebuilt = if face.orientation() == ogeom_topo::Orientation::Reversed {
-            rebuilt.reversed()
-        } else {
+        let reversed = face.orientation() == ogeom_topo::Orientation::Reversed;
+        let rebuilt = if reversed == flipped {
             rebuilt
+        } else {
+            rebuilt.reversed()
         };
         history.modify(&face, rebuilt.clone());
         replaced.push((face, rebuilt));

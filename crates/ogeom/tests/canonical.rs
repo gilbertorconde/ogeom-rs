@@ -158,3 +158,49 @@ fn a_fused_post_converts_to_patches_that_close() {
         "converted {after} against {before}"
     );
 }
+
+/// A drilled block and its mirror image, spelt out as NURBS: the mirror
+/// turns every spline's own normal, so the mirrored bore's spline has its
+/// normal towards the axis. Recognised, both bore walls are cylinders,
+/// whose normal is always away from the axis, and both parts stay the
+/// right way out.
+#[test]
+fn a_bore_spelt_either_way_round_stays_the_right_way_out() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 6.0), T)
+        .unwrap()
+        .shape;
+    let seat = Frame::new(
+        Point::new(5.0, 5.0, -1.0),
+        ogeom::math::Direction::Z,
+        ogeom::math::Direction::X,
+        T,
+    )
+    .unwrap();
+    let bore = ogeom::algo::make_cylinder(&mut model, seat, 2.0, 8.0, T)
+        .unwrap()
+        .shape;
+    let drilled = ogeom::boolean::cut(&mut model, &block, &bore, T)
+        .unwrap()
+        .shape;
+    let mirror = ogeom::math::Transform::plane_mirror(Point::ORIGIN, ogeom::math::Direction::X);
+    let mirrored = model.placed(&drilled, mirror);
+    // A mirror keeps the volume; the placed part itself is measured from a
+    // mesh, so the exact figure is read off the original.
+    let before = ogeom::algo::volume_properties(&model, &drilled, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    for part in [drilled, mirrored] {
+        let nurbsed = ogeom::algo::to_nurbs(&mut model, &part, T).unwrap().shape;
+        let (built, _) = ogeom::heal::canonical_simplify(&mut model, &nurbsed, 1e-6, T).unwrap();
+        let diagnosis = ogeom::algo::check(&model, &built.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{diagnosis}");
+        let after = ogeom::algo::volume_properties(&model, &built.shape, Deflection::default(), T)
+            .unwrap()
+            .mass;
+        assert!(
+            (after - before).abs() < before * 1e-6,
+            "{after} against {before}"
+        );
+    }
+}

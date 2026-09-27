@@ -750,23 +750,15 @@ fn skinned_wall(
         .shape;
         let face =
             ogeom_algo::make_face_on(model, surface_id, std::slice::from_ref(&wire), tol)?.shape;
-        // Outward by measurement at the middle of the skin.
+        // Outward by measurement at the middle of the skin: away from the
+        // centre of the section the point lies on. The centre of the whole
+        // skin will not do: along a bent spine it lies inside the bend,
+        // on the far side of the inner wall.
         let mid_u = f64::midpoint(u_dom.0, u_dom.1);
         let mid_v = f64::midpoint(v_dom.0, v_dom.1);
         let s_mid = surface_geo.point_at(mid_u, mid_v, tol)?;
         let (du, dv) = surface_geo.d1_at(mid_u, mid_v, tol)?;
-        let centroid = {
-            let mut c = Vector::new(0.0, 0.0, 0.0);
-            let mut n = 0.0;
-            for row in rows {
-                for p in row {
-                    c += p.to_vector();
-                    n += 1.0;
-                }
-            }
-            Point::from_vector(c / n)
-        };
-        if du.cross(dv).dot(s_mid - centroid) >= 0.0 {
+        if du.cross(dv).dot(s_mid - section_centre(rows, s_mid)) >= 0.0 {
             face
         } else {
             face.reversed()
@@ -780,6 +772,27 @@ fn skinned_wall(
         curve1,
         u_dom,
     })
+}
+
+/// The centre of the section (row) passing nearest `at`: the mean of its
+/// points.
+fn section_centre(rows: &[Vec<Point>], at: Point) -> Point {
+    let nearest = rows.iter().filter(|row| !row.is_empty()).min_by(|a, b| {
+        let d = |row: &Vec<Point>| {
+            row.iter()
+                .map(|p| p.distance(at))
+                .fold(f64::INFINITY, f64::min)
+        };
+        d(a).total_cmp(&d(b))
+    });
+    let Some(row) = nearest else {
+        return at;
+    };
+    let sum = row
+        .iter()
+        .fold(Vector::new(0.0, 0.0, 0.0), |acc, p| acc + p.to_vector());
+    #[allow(clippy::cast_precision_loss)]
+    Point::from_vector(sum / row.len() as f64)
 }
 
 /// A strip closed the *long* way: open across its own width, a smooth loop
@@ -1451,22 +1464,13 @@ fn closed_skinned_shell(
     )?
     .shape;
     let face = ogeom_algo::make_face_on(model, surface_id, std::slice::from_ref(&wire), tol)?.shape;
-    let centroid = {
-        let mut c = Vector::new(0.0, 0.0, 0.0);
-        let mut n = 0.0;
-        for row in rows {
-            for p in row {
-                c += p.to_vector();
-                n += 1.0;
-            }
-        }
-        Point::from_vector(c / n)
-    };
+    // Away from the centre of the section the point lies on; a closed
+    // skin's centre as a whole sits in its hole.
     let mid_u = f64::midpoint(u_dom.0, u_dom.1);
     let mid_v = f64::midpoint(v_dom.0, v_dom.1);
     let s_mid = surface_geo.point_at(mid_u, mid_v, tol)?;
     let (du, dv) = surface_geo.d1_at(mid_u, mid_v, tol)?;
-    let face = if du.cross(dv).dot(s_mid - centroid) >= 0.0 {
+    let face = if du.cross(dv).dot(s_mid - section_centre(rows, s_mid)) >= 0.0 {
         face
     } else {
         face.reversed()

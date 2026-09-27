@@ -822,15 +822,16 @@ pub(crate) fn marched_fillet(
         .shape;
         let face =
             ogeom_algo::make_face_on(model, blend_id, std::slice::from_ref(&wire), tol)?.shape;
-        // The wedge's outward at the blend: towards the ball's centre when
-        // cutting (the wedge is the corner material the ball displaced)
-        // and away from it when fusing.
+        // The wedge's outward at the blend: towards the ball's centre
+        // either way. Cutting, the wedge is the corner material outside
+        // the ball; fusing, it is the fill between the ball and the
+        // corner. Both lie on the far side of the blend from the ball.
         let mid_u = f64::midpoint(u_dom.0, u_dom.1);
         let mid_v = f64::midpoint(v_dom.0, v_dom.1);
         let p = blend_geo.point_at(mid_u, mid_v, tol)?;
         let (du, dv) = blend_geo.d1_at(mid_u, mid_v, tol)?;
-        let towards_centre = (blend.spine[n / 2] - p).dot(du.cross(dv)) > 0.0;
-        if towards_centre == !additive {
+        let towards_centre = (touching_ball(&blend.spine, p) - p).dot(du.cross(dv)) > 0.0;
+        if towards_centre {
             face
         } else {
             face.reversed()
@@ -1674,8 +1675,8 @@ pub(crate) fn build_open_band(
         let mid_v = f64::midpoint(v_dom.0, v_dom.1);
         let p = blend_geo.point_at(mid_u, mid_v, tol)?;
         let (du, dv) = blend_geo.d1_at(mid_u, mid_v, tol)?;
-        let towards_centre = (blend.spine[n / 2] - p).dot(du.cross(dv)) > 0.0;
-        if towards_centre == !additive {
+        let towards_centre = (touching_ball(&blend.spine, p) - p).dot(du.cross(dv)) > 0.0;
+        if towards_centre {
             face
         } else {
             face.reversed()
@@ -2821,4 +2822,19 @@ fn loop_through_neighbours(
         Curve::BSpline(ogeom_geom::BSplineCurve::rational(whole.0, whole.1)?),
         seat,
     )))
+}
+
+/// The centre of the rolling ball that touches the blend at `p`: the spine
+/// point nearest it. Every point of the blend lies on the ball of some
+/// station, a radius from its centre and further from every other, so the
+/// nearest centre is that ball's whatever the stations' spacing. A station
+/// picked by index would be the ball at a different place wherever the
+/// march bunched its steps, and on a curved rim its centre can lie on the
+/// wrong side of the point.
+fn touching_ball(spine: &[Point], p: Point) -> Point {
+    spine
+        .iter()
+        .copied()
+        .min_by(|a, b| a.distance(p).total_cmp(&b.distance(p)))
+        .unwrap_or(p)
 }

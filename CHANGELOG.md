@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`check` finds faces turned inside out.** A flipped face leaves every
+  edge used twice, so nothing topological saw it and a mesh volume repaired
+  it silently. Where the faces' flags disagree along their shared edges,
+  each face is probed a step off both sides; a face whose outside is
+  material is reported broken.
+
 - **Revolutions up to a face (#73).** `make_revolution_until` turns each
   point of a profile about its axis until its circle first meets a limit
   face's surface, refused by name where a circle never meets it or meets
@@ -46,6 +52,19 @@ bump may break the API and a patch bump may not.
   against a half space bounded by a plane.
 
 ### Fixed
+
+- **Faces built inside out, found by the new check.** A fillet that adds
+  material (a concave seat) on a marched blend faced its blend band into
+  the fill; a draft about an oblique neutral faced its wall inward whenever
+  its hinge chained against the old surface's direction; a skinned tube
+  round a bend in any plane but XY faced its wall into the bend;
+  `to_nurbs` of a mirrored part turned its bore walls; canonical
+  recognition of a spline facing its axis kept a flag the cylinder no
+  longer agreed with. Each now measures the side it builds on.
+- **Newton on an unevaluable point read as a root.** Where a surface or
+  curve could not be evaluated mid-solve, the residual fell back to zero
+  in the walker and to a made-up point elsewhere; it is now infinite, so
+  the damped step backs off.
 
 - **A part standing in another's notch was swallowed as a void.** Results
   of several shells were nested by bounding box, so a disjoint part inside

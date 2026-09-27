@@ -13,7 +13,7 @@
 
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
-use ogeom_geom::{PlaneSurface, Surface as _, SurfaceGeometry};
+use ogeom_geom::{Curve3d as _, PlaneSurface, Surface as _, SurfaceGeometry};
 use ogeom_math::{Direction, Frame, Plane, Point, Transform, Vector};
 use ogeom_topo::{Model, NodeData, Shape, ShapeType, TShapeId};
 
@@ -970,11 +970,33 @@ fn general_draft(
             "the hinge and its rulings did not share a knot vector"
         );
     }
+    // The face keeps its orientation flag, so the new surface's own normal
+    // must turn the way the old one's did; whether it does depends on which
+    // way the hinge chained. Measured at the hinge's middle, where the two
+    // surfaces meet, and the rulings run from the far end back if not.
+    let (hinge_mid, tip_mid) = (
+        hinge_curve.point_at(0.5, tol)?,
+        tip_curve.point_at(0.5, tol)?,
+    );
+    let across = hinge_curve.d1_at(0.5, tol)?;
+    let old_normal = {
+        let foot = ogeom_algo::project_on_surface(surface, hinge_mid, 16, tol)?;
+        let (u, v) = foot.parameters;
+        surface.normal_at(u, v, tol)?.vector()
+    };
+    // du x dv of the new surface at the hinge: along the hinge, crossed
+    // with up the ruling.
+    let agrees = across.cross(tip_mid - hinge_mid).dot(old_normal) >= 0.0;
+    let (first, second, v_range) = if agrees {
+        (s_lo, s_hi, (s_lo, s_hi))
+    } else {
+        (s_hi, s_lo, (-s_hi, -s_lo))
+    };
     let mut net: Vec<Point> = Vec::with_capacity(hc.len() * 2);
     for (h, t) in hc.iter().zip(tc) {
         let (h, d) = (h.point(), t.point() - h.point());
-        net.push(h + d * s_lo);
-        net.push(h + d * s_hi);
+        net.push(h + d * first);
+        net.push(h + d * second);
     }
     let grid = ogeom_math::ControlGrid::new(net, hc.len(), 2)?;
     // The chart: `u` over the old surface's own `u` domain for a closed
@@ -986,7 +1008,8 @@ fn general_draft(
     } else {
         hinge_curve.knots().clone()
     };
-    let v_knots = ogeom_math::KnotVector::clamped_uniform(1, 2)?.reparameterized(s_lo, s_hi)?;
+    let v_knots =
+        ogeom_math::KnotVector::clamped_uniform(1, 2)?.reparameterized(v_range.0, v_range.1)?;
     Ok(ogeom_geom::BSplineSurface::new(u_knots, v_knots, &grid, tol)?.into())
 }
 

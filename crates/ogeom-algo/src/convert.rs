@@ -542,7 +542,22 @@ fn rebuild(
             // and the flag must carry that flip or the baked solid comes
             // out inside-out.
             // A restated surface whose normal turned is the same flip.
-            let reflected = !face.location().preserves_handedness(model.datums())? != flipped;
+            //
+            // Whether a reflection turns a surface's natural normal depends
+            // on the surface: a mirrored cylinder is stored about a
+            // right-handed frame again and keeps its normal away from the
+            // axis. So where it can be, the turn is measured: the old
+            // normal carried through the placement against the new one at
+            // the same point. Handedness is the fallback where the
+            // measurement cannot be taken, and under an affine map, which
+            // does not carry normals as vectors.
+            let measured = if affine.is_none() {
+                turned_by_rebuild(&old_surface, &placement, old_window, &patch_surface, tol)
+            } else {
+                None
+            };
+            let reflected = measured
+                .unwrap_or(!face.location().preserves_handedness(model.datums())? != flipped);
             let built = if (face.orientation() == Orientation::Reversed) != reflected {
                 built.reversed()
             } else {
@@ -941,6 +956,30 @@ fn degenerate_row(
 /// converting the whole declared domain would spend the patch's parameter
 /// range on empty plane. Kinds whose windows are structural (a sphere's, a
 /// torus's, the closed direction of a cylinder) keep them.
+/// Whether a face's new surface has its natural normal against the old
+/// surface's carried through the placement, read in the middle of the
+/// face's own chart window; `None` where the surfaces cannot be read there.
+fn turned_by_rebuild(
+    old: &SurfaceGeometry,
+    placement: &ogeom_math::Transform,
+    window: ChartWindow,
+    new: &SurfaceGeometry,
+    tol: Tolerances,
+) -> Option<bool> {
+    let ((u0, u1), (v0, v1)) = window;
+    if !(u0.is_finite() && u1.is_finite() && v0.is_finite() && v1.is_finite()) {
+        return None;
+    }
+    // Off the exact middle: a revolution's middle can sit on its axis.
+    let (u, v) = (u0 + (u1 - u0) * 0.43, v0 + (v1 - v0) * 0.57);
+    let at = placement.apply(old.point_at(u, v, tol).ok()?);
+    let was = placement.apply_vector(old.normal_at(u, v, tol).ok()?.vector());
+    let foot = crate::measure::project_on_surface(new, at, 16, tol).ok()?;
+    let (nu, nv) = foot.parameters;
+    let now = new.normal_at(nu, nv, tol).ok()?.vector();
+    Some(was.dot(now) < 0.0)
+}
+
 fn bounded_to_face(
     model: &Model,
     face: &Shape,

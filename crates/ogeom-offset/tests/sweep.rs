@@ -2077,3 +2077,40 @@ fn a_wire_sweeps_a_skew_corner_as_the_walls_of_its_face() {
         "the caps are the 4 by 4 squares"
     );
 }
+
+/// A skinned tube round a semicircle in each coordinate plane. In the XZ
+/// plane the centre of the whole skin lies inside the bend, beyond the
+/// inner wall, and a wall oriented against it came out inside out; each
+/// wall is oriented against its own section's centre, and all three tubes
+/// are the same solid.
+#[test]
+fn a_skinned_tube_round_a_bend_is_the_right_way_out_in_every_plane() {
+    use ogeom_math::Direction;
+    let want = core::f64::consts::PI * 4.0 * 20.0 * core::f64::consts::PI;
+    for (normal, x) in [
+        (Direction::Z, Direction::X),
+        (Direction::Y, Direction::X),
+        (Direction::X, Direction::Y),
+    ] {
+        let mut model = ogeom_topo::Model::new();
+        let frame = Frame::new(Point::ORIGIN, normal, x, T).unwrap();
+        let spine = ogeom_algo::make_edge(
+            &mut model,
+            ogeom_geom::CircleCurve::new(Circle::new(frame, 20.0, T).unwrap()).into(),
+            (0.0, core::f64::consts::PI),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let tube = ogeom_offset::make_pipe_skinned(&mut model, &spine, 2.0, 1e-3, T)
+            .unwrap()
+            .shape;
+        let diagnosis = ogeom_algo::check(&model, &tube, T).unwrap();
+        assert!(diagnosis.is_valid(), "{normal:?}: {diagnosis}");
+        let v = volume(&model, &tube);
+        assert!(
+            (v - want).abs() < want * 1e-3,
+            "{normal:?}: {v} against {want}"
+        );
+    }
+}
