@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **Spline fits solve their normal equations instead of inverting them.**
+  An open curve's normal matrix is banded, and a banded Cholesky costs its
+  size times the band squared where the inverse cost its size cubed. A
+  system so near singular that the data does not decide a span's control
+  points now reports itself singular, as an exactly singular one did,
+  instead of solving to control points anywhere.
+
 - **Curve crossings seed only where the curves come nearest.** Two curves
   running near each other (a boolean's section beside the edge it was cut
   along) put hundreds of segment pairs in reach, and each was polished by

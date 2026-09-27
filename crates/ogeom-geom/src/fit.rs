@@ -1501,8 +1501,11 @@ fn least_squares<const D: usize>(
     }
 
     // The collocation rows, with the pinned ends moved to the right-hand side.
-    let mut normal = nalgebra::DMatrix::<f64>::zeros(unknown_count, unknown_count);
-    let mut rhs = vec![nalgebra::DVector::<f64>::zeros(unknown_count); D];
+    // An open curve's normal matrix is banded (each row touches `degree + 1`
+    // consecutive unknowns), so it is held as its band; a loop's eliminated
+    // column couples the far ends, and it is held whole.
+    let mut normal = NormalMatrix::new(unknown_count, degree, ratio.is_some());
+    let mut rhs = vec![vec![0.0; unknown_count]; D];
 
     let mut rows: Vec<(usize, Vec<(usize, f64)>)> = Vec::with_capacity(m);
     for (k, &u) in parameters.iter().enumerate() {
@@ -1552,7 +1555,7 @@ fn least_squares<const D: usize>(
                 if is_known(*j) {
                     continue;
                 }
-                normal[(i - 1, j - 1)] += bi * bj;
+                normal.add(i - 1, j - 1, bi * bj);
             }
             for d in 0..D {
                 rhs[d][i - 1] += bi * target[d];
@@ -1562,16 +1565,15 @@ fn least_squares<const D: usize>(
 
     // The normal matrix can be singular when a span has no parameter in it:
     // a knot was placed where there is no data to say where the curve goes.
-    let Some(inverted) = normal.clone().try_inverse() else {
+    let Some(solved) = normal.solve(&rhs) else {
         ogeom_bail!(
             NotDone,
             "the fitting system is singular: a knot span contains no data"
         );
     };
-    for d in 0..D {
-        let solved = &inverted * &rhs[d];
+    for (d, column) in solved.iter().enumerate() {
         for i in 0..unknown_count {
-            control[i + 1][d] = solved[i];
+            control[i + 1][d] = column[i];
         }
     }
     if let (Some(r), Some(e)) = (ratio, eliminated) {
@@ -1580,6 +1582,134 @@ fn least_squares<const D: usize>(
         }
     }
     Ok(control)
+}
+
+/// A least-squares normal matrix, `BᵀB`, symmetric and positive definite
+/// where the fit is well posed: held as its lower band where every row of
+/// `B` touches only `band + 1` consecutive unknowns, and whole otherwise.
+enum NormalMatrix {
+    /// `lower[i][k]` is entry `(i, i - k)`, for `k` up to the band.
+    Banded {
+        lower: Vec<Vec<f64>>,
+        band: usize,
+    },
+    Dense(nalgebra::DMatrix<f64>),
+}
+
+impl NormalMatrix {
+    fn new(size: usize, band: usize, dense: bool) -> Self {
+        if dense {
+            Self::Dense(nalgebra::DMatrix::zeros(size, size))
+        } else {
+            Self::Banded {
+                lower: vec![vec![0.0; band + 1]; size],
+                band,
+            }
+        }
+    }
+
+    fn add(&mut self, i: usize, j: usize, value: f64) {
+        match self {
+            Self::Dense(m) => m[(i, j)] += value,
+            Self::Banded { lower, band } => {
+                // Symmetric: only the lower half is kept, each pair once.
+                if j <= i && i - j <= *band {
+                    lower[i][i - j] += value;
+                }
+            }
+        }
+    }
+
+    /// The solution for each right-hand side, by Cholesky: a banded one in
+    /// the band's own storage, costing the size times the band squared
+    /// where an inverse cost the size cubed. `None` where the system is
+    /// singular, or so near it that a pivot falls a trillion times below
+    /// the largest diagonal entry: a knot span with (next to) no data in
+    /// it, whose control points the data does not decide. Solved anyway,
+    /// they come out anywhere, and the curve with them.
+    fn solve(&self, rhs: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
+        match self {
+            Self::Banded { lower, band } => {
+                let factor = banded_cholesky(lower, *band)?;
+                Some(
+                    rhs.iter()
+                        .map(|b| banded_substitute(&factor, *band, b))
+                        .collect(),
+                )
+            }
+            Self::Dense(m) => {
+                let largest = m.diagonal().iter().fold(0.0_f64, |a, d| a.max(d.abs()));
+                let factor = m.clone().cholesky()?;
+                let floor = largest * SINGULAR;
+                if factor.l_dirty().diagonal().iter().any(|d| d * d <= floor) {
+                    return None;
+                }
+                Some(
+                    rhs.iter()
+                        .map(|b| {
+                            factor
+                                .solve(&nalgebra::DVector::from_column_slice(b))
+                                .as_slice()
+                                .to_vec()
+                        })
+                        .collect(),
+                )
+            }
+        }
+    }
+}
+
+/// How far below the largest diagonal entry a Cholesky pivot may fall
+/// before the normal matrix counts as singular.
+const SINGULAR: f64 = 1e-12;
+
+/// The Cholesky factor of a banded symmetric matrix given by its lower
+/// band, in the same storage; `None` at a non-positive pivot.
+fn banded_cholesky(lower: &[Vec<f64>], band: usize) -> Option<Vec<Vec<f64>>> {
+    let n = lower.len();
+    let largest = lower.iter().fold(0.0_f64, |a, row| a.max(row[0].abs()));
+    let floor = largest * SINGULAR;
+    let mut factor = vec![vec![0.0; band + 1]; n];
+    for i in 0..n {
+        let first = i.saturating_sub(band);
+        for j in first..=i {
+            let mut sum = lower[i][i - j];
+            for k in first.max(j.saturating_sub(band))..j {
+                sum -= factor[i][i - k] * factor[j][j - k];
+            }
+            if i == j {
+                if sum <= floor || !sum.is_finite() {
+                    return None;
+                }
+                factor[i][0] = sum.sqrt();
+            } else {
+                factor[i][i - j] = sum / factor[j][0];
+            }
+        }
+    }
+    Some(factor)
+}
+
+/// Solve `L Lᵀ x = b` for a banded Cholesky factor `L`.
+fn banded_substitute(factor: &[Vec<f64>], band: usize, b: &[f64]) -> Vec<f64> {
+    let n = factor.len();
+    let mut y = vec![0.0; n];
+    for i in 0..n {
+        let mut sum = b[i];
+        for k in i.saturating_sub(band)..i {
+            sum -= factor[i][i - k] * y[k];
+        }
+        y[i] = sum / factor[i][0];
+    }
+    let mut x = vec![0.0; n];
+    for i in (0..n).rev() {
+        let mut sum = y[i];
+        for k in (i + 1)..n.min(i + band + 1) {
+            sum -= factor[k][k - i] * x[k];
+        }
+        x[i] = sum / factor[i][0];
+    }
+    x
 }
 
 /// Move each parameter to the foot of the perpendicular from its point.
