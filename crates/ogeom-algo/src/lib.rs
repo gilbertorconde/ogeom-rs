@@ -48,7 +48,7 @@ pub use check::{
     restore_containment,
 };
 pub use classify::{
-    Containment, SolidBoundary, classify_in_solid, classify_in_solid_exact,
+    Containment, SolidBoundary, SolidMesh, classify_in_solid, classify_in_solid_exact,
     classify_in_solid_exact_banded, classify_on_face,
 };
 pub use convert::{

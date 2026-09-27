@@ -173,15 +173,11 @@ pub(crate) fn ruled_fillet(
                 ..ogeom_mesh::Deflection::default()
             };
             let step = radius / 8.0;
+            let probe = ogeom_algo::SolidMesh::of(model, solid, deflection, tol)?;
             for k in 1..=32 {
                 let s = step * f64::from(k);
-                let inside = ogeom_algo::classify_in_solid(
-                    model,
-                    solid,
-                    centre_at_end + outward * s,
-                    deflection,
-                    tol,
-                )? == ogeom_algo::Containment::In;
+                let inside =
+                    probe.holds(centre_at_end + outward * s, tol)? == ogeom_algo::Containment::In;
                 if inside != convex {
                     reach[slot] = s + radius * 0.25;
                     break;

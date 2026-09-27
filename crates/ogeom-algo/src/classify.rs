@@ -166,49 +166,95 @@ pub fn classify_in_solid(
     deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<Containment> {
-    deflection.validate()?;
-    let mesh = triangulate(model, solid, deflection, tol)?;
-    if mesh.is_empty() || !mesh.is_closed() {
+    SolidMesh::of(model, solid, deflection, tol)?.holds(point, tol)
+}
+
+/// A solid's boundary meshed once, to classify many points against.
+///
+/// [`classify_in_solid`] triangulates the whole solid for every point it is
+/// asked about; a caller stepping a probe along a ray (a fillet feeling for
+/// where its ball runs out of material) asks dozens of times about one
+/// solid, and pays for dozens of meshes. This keeps the one.
+#[derive(Debug, Clone)]
+pub struct SolidMesh {
+    triangles: Vec<[Point; 3]>,
+    bound: ogeom_math::Aabb,
+    reach: f64,
+}
+
+impl SolidMesh {
+    /// Mesh `solid` at `deflection`.
+    ///
+    /// # Errors
+    ///
+    /// As [`classify_in_solid`].
+    pub fn of(
+        model: &Model,
+        solid: &Shape,
+        deflection: Deflection,
+        tol: Tolerances,
+    ) -> OgeomResult<Self> {
+        deflection.validate()?;
+        let mesh = triangulate(model, solid, deflection, tol)?;
+        if mesh.is_empty() || !mesh.is_closed() {
+            ogeom_bail!(
+                Construction,
+                "the boundary is not closed, so there is no inside to be in"
+            );
+        }
+        let triangles: Vec<[Point; 3]> = mesh
+            .triangles
+            .iter()
+            .map(|t| t.map(|i| mesh.positions[i as usize]))
+            .collect();
+        let bound = ogeom_math::Aabb::of_points(&mesh.positions);
+        Ok(Self {
+            triangles,
+            bound,
+            reach: tol.confusion() + deflection.chord,
+        })
+    }
+
+    /// Where `point` stands against the meshed boundary.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if every ray
+    /// tried hit an edge or a vertex, where the crossing count is ambiguous.
+    pub fn holds(&self, point: Point, tol: Tolerances) -> OgeomResult<Containment> {
+        // Outside the mesh's box by more than the boundary band, nothing is
+        // near enough to be on it and no ray can cross it.
+        if !self.bound.expanded(self.reach).contains(point) {
+            return Ok(Containment::Out);
+        }
+        // On the boundary beats either side, and is decided in space rather
+        // than along a ray: a point sitting on a face is on the boundary from
+        // every direction, and no crossing count says so.
+        for t in &self.triangles {
+            if distance_to_triangle(point, *t) <= self.reach {
+                return Ok(Containment::On);
+            }
+        }
+        // A ray that grazes an edge or passes through a vertex is counted
+        // once by one triangle and twice by its neighbour, or not at all.
+        // Rather than patch the count, notice the near-miss and cast again
+        // somewhere else.
+        for direction in RAY_DIRECTIONS {
+            let ray = Direction::new(Vector::new(direction[0], direction[1], direction[2]), tol)?;
+            if let Some(crossings) = count_crossings(&self.triangles, point, ray, tol) {
+                return Ok(if crossings % 2 == 1 {
+                    Containment::In
+                } else {
+                    Containment::Out
+                });
+            }
+        }
         ogeom_bail!(
-            Construction,
-            "the boundary is not closed, so there is no inside to be in"
-        );
+            NotDone,
+            "every ray tried met an edge or a vertex, where the crossing count is \
+             ambiguous"
+        )
     }
-
-    let triangles: Vec<[Point; 3]> = mesh
-        .triangles
-        .iter()
-        .map(|t| t.map(|i| mesh.positions[i as usize]))
-        .collect();
-
-    // On the boundary beats either side, and is decided in space rather than
-    // along a ray: a point sitting on a face is on the boundary from every
-    // direction, and no crossing count says so.
-    let reach = tol.confusion() + deflection.chord;
-    for t in &triangles {
-        if distance_to_triangle(point, *t) <= reach {
-            return Ok(Containment::On);
-        }
-    }
-
-    // A ray that grazes an edge or passes through a vertex is counted once by
-    // one triangle and twice by its neighbour, or not at all. Rather than
-    // patch the count, notice the near-miss and cast again somewhere else.
-    for direction in RAY_DIRECTIONS {
-        let ray = Direction::new(Vector::new(direction[0], direction[1], direction[2]), tol)?;
-        if let Some(crossings) = count_crossings(&triangles, point, ray, tol) {
-            return Ok(if crossings % 2 == 1 {
-                Containment::In
-            } else {
-                Containment::Out
-            });
-        }
-    }
-    ogeom_bail!(
-        NotDone,
-        "every ray tried met an edge or a vertex, where the crossing count is \
-         ambiguous"
-    )
 }
 
 /// Where a point sits relative to a closed shell or solid, decided against

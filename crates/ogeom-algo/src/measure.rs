@@ -1189,6 +1189,15 @@ pub fn project_on_surface(
     samples: usize,
     tol: Tolerances,
 ) -> OgeomResult<SurfaceProjection> {
+    // A plane, a cylinder and a sphere have their nearest point in closed
+    // form, unique off the axis or the centre: where it lies inside the
+    // surface's window, the grid below would find the same basin by a
+    // thousand evaluations.
+    if let Some(seed) = closed_form_foot(surface, target, tol)
+        && let Ok(found) = refine_foot(surface, target, seed, tol)
+    {
+        return Ok(found);
+    }
     let (us, vs) = seed_lines(surface, samples);
 
     let mut scan = Scan::default();
@@ -1204,6 +1213,30 @@ pub fn project_on_surface(
     }
 
     scan.finish().refine(surface, target, tol)
+}
+
+/// The parameters of the nearest point where a closed form gives it and it
+/// needs no clamping into the window: a plane's orthogonal foot, a
+/// cylinder's for a point off its axis, a sphere's for a point off its
+/// centre. `None` for any other surface, or a foot outside the window.
+fn closed_form_foot(
+    surface: &SurfaceGeometry,
+    target: Point,
+    tol: Tolerances,
+) -> Option<(f64, f64)> {
+    use ogeom_math::elementary;
+    let (u, v) = match surface {
+        SurfaceGeometry::Plane(p) => elementary::plane_parameters(&p.plane(), target),
+        SurfaceGeometry::Cylinder(c) => {
+            elementary::cylinder_parameters(&c.cylinder(), target, tol).ok()?
+        }
+        SurfaceGeometry::Sphere(s) => {
+            elementary::sphere_parameters(&s.sphere(), target, tol).ok()?
+        }
+        _ => return None,
+    };
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    (u >= u0 && u <= u1 && v >= v0 && v <= v1).then_some((u, v))
 }
 
 /// One row of a seed scan: `(u, v, square distance)` per cell, a gap where
@@ -1464,6 +1497,13 @@ impl SurfaceSeeds {
         target: Point,
         tol: Tolerances,
     ) -> OgeomResult<SurfaceProjection> {
+        // The same closed-form foot [`project_on_surface`] takes first, so
+        // the two answer alike to the bit.
+        if let Some(seed) = closed_form_foot(surface, target, tol)
+            && let Ok(found) = refine_foot(surface, target, seed, tol)
+        {
+            return Ok(found);
+        }
         let mut scan = Scan::default();
         for row in &self.rows {
             scan.push_row(

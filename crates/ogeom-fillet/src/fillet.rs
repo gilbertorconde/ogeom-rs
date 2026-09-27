@@ -677,11 +677,10 @@ fn planar_fillet(
         };
         let step = radius / 8.0;
         let mut reach: Option<f64> = None;
+        let probe = ogeom_algo::SolidMesh::of(model, solid, deflection, tol)?;
         for k in 1..=32 {
             let s = step * f64::from(k);
-            let inside =
-                ogeom_algo::classify_in_solid(model, solid, centre_at(s), deflection, tol)?
-                    == ogeom_algo::Containment::In;
+            let inside = probe.holds(centre_at(s), tol)? == ogeom_algo::Containment::In;
             if inside != seat.convex {
                 reach = Some(s + radius * 0.25);
                 break;

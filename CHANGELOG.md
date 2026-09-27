@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **Projection onto a plane, cylinder or sphere starts from its closed
+  form** where the foot lies in the window, instead of a 33 by 33 grid.
+  `SolidMesh` meshes a solid once to classify many points; the fillet's
+  run-out probes use it instead of meshing per probe.
+
 - **Smaller savings.** A surface's derivative table is filled only to the
   total order asked for, each control row summed across `v` once; the
   thick-solid edge scan maps edges to faces in one walk; `ancestors_of`
@@ -63,6 +68,9 @@ bump may break the API and a patch bump may not.
   boolean builds each face's chart outline and trim samples once.
 
 ### Added
+
+- **`SolidMesh`:** a solid's boundary meshed once, to classify many points
+  against.
 
 - **`Surface::point_d1_at`:** the point and first derivatives from one
   evaluation, for callers that need both at every sample.
