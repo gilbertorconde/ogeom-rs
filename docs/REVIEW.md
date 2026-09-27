@@ -120,11 +120,9 @@ New findings while fixing, all open:
 
 ## Where to pick up
 
-Every item above is closed. Before revisiting this document, the open
-GitHub issues come first: #85 (an auxiliary guide ending a hair short of
-the last station), #86 (pipe sections with misaligned starts twist) and
-#87 (a binormal-law pipe measured 1.5% high at the default deflection).
-Then the new findings listed under Progress, most useful first:
+Every item above is closed, and so are GitHub issues #85, #86 and #87
+(`a95ba28`, `dfe9e97`, `c40dc1d`). Next, the new findings
+listed under Progress, most useful first:
 
 1. The ftc_06 drills: a boundary strand dangles in the arrangement.
 2. The bound-filter audit on the curved-corner blends.
