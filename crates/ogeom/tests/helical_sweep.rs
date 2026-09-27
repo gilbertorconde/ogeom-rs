@@ -338,3 +338,70 @@ fn no_pitch_and_a_taper_is_a_flat_spiral() {
             .is_err()
     );
 }
+
+/// A groove swept two turns down into a blind bore that a cylinder
+/// primitive drilled. The primitive's wall is stored over exactly its own
+/// height, and the groove's sections with it must still run out across the
+/// bore's rim. The same bore made by extruding a circle is the reference.
+#[test]
+fn a_groove_cuts_into_a_bore_drilled_by_a_cylinder_primitive() {
+    let cut = |primitive: bool| {
+        let mut m = Model::new();
+        let block = ogeom::algo::make_box(&mut m, Frame::WORLD, (20.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let frame = Frame::new(Point::new(10.0, 10.0, 2.0), Direction::Z, Direction::X, T).unwrap();
+        let bore = if primitive {
+            ogeom::algo::make_cylinder(&mut m, frame, 2.5, 8.0, T)
+                .unwrap()
+                .shape
+        } else {
+            let circle = ogeom::math::Circle::new(frame, 2.5, T).unwrap();
+            let edge = ogeom::algo::make_edge(
+                &mut m,
+                ogeom::geom::CircleCurve::new(circle).into(),
+                (0.0, core::f64::consts::TAU),
+                T,
+            )
+            .unwrap()
+            .shape;
+            let wire = ogeom::algo::make_wire(&mut m, &[edge], T).unwrap().shape;
+            let disc = make_face(
+                &mut m,
+                PlaneSurface::new(Plane::new(frame)).into(),
+                &[wire],
+                T,
+            )
+            .unwrap()
+            .shape;
+            ogeom::algo::make_prism(&mut m, &disc, ogeom::math::Vector::new(0.0, 0.0, 8.0), T)
+                .unwrap()
+                .shape
+        };
+        let drilled = ogeom::boolean::cut(&mut m, &block, &bore, T).unwrap().shape;
+        let pts = [(2.4, 11.4), (3.0, 11.0625), (3.0, 10.9375), (2.4, 10.6)]
+            .map(|(d, z)| Point::new(10.0 + d, 10.0, z));
+        let wire = make_polygon(&mut m, &pts, true, T).unwrap().shape;
+        let plane = Plane::new(
+            Frame::new(Point::new(10.0, 10.0, 10.0), -Direction::Y, Direction::X, T).unwrap(),
+        );
+        let profile = make_face(&mut m, PlaneSurface::new(plane).into(), &[wire], T)
+            .unwrap()
+            .shape;
+        let axis = Axis {
+            location: Point::new(10.0, 10.0, 10.0),
+            direction: -Direction::Z,
+        };
+        let groove =
+            ogeom::offset::make_helical_sweep(&mut m, &profile, axis, 1.0, 2.0, false, 0.0, T)
+                .unwrap()
+                .shape;
+        let result = ogeom::boolean::cut(&mut m, &drilled, &groove, T)
+            .unwrap_or_else(|e| panic!("primitive {primitive}: {e}"))
+            .shape;
+        assert!(check(&m, &result, T).unwrap().is_valid());
+        volume(&m, &result)
+    };
+    let (a, b) = (cut(true), cut(false));
+    assert!((a - b).abs() < 1e-3, "{a} against {b}");
+}

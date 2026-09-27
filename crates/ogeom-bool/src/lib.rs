@@ -1357,7 +1357,19 @@ fn fill(
             {
                 SurfaceIntersection::Same
             } else {
-                intersect_surfaces(&fa.surface, &fb.surface, options, tol)?
+                let met = intersect_surfaces(&fa.surface, &fb.surface, options, tol)?;
+                let wide_a = reaching(&fa.surface, &fb.surface, &met, tol)?;
+                let wide_b = reaching(&fb.surface, &fa.surface, &met, tol)?;
+                if wide_a.is_some() || wide_b.is_some() {
+                    intersect_surfaces(
+                        wide_a.as_ref().unwrap_or(&fa.surface),
+                        wide_b.as_ref().unwrap_or(&fb.surface),
+                        options,
+                        tol,
+                    )?
+                } else {
+                    met
+                }
             };
             match met {
                 SurfaceIntersection::Apart => {}
@@ -3244,6 +3256,59 @@ fn windowed_to(surface: &SurfaceGeometry, bound: &ogeom_math::Aabb) -> SurfaceGe
         }
         other => other.clone(),
     }
+}
+
+/// A cylinder whose marched sections with a patch stop short of an end of
+/// its window, the window stretched along its axis to carry them past it.
+///
+/// A primitive's wall is stored over exactly its own height, so a section
+/// crossing the rim is walked to the window's edge and stops there, a step
+/// short of the rim, and the rim is never crossed. Stretched a fiftieth of
+/// its height at that end, the walk carries on past the rim, crosses it like
+/// any other boundary edge, and the face's trim cuts it there. The chart is
+/// untouched, only the window grows. `None` where every section ends on the
+/// window's ends or clear of them, for any other surface, and against an
+/// analytic surface, whose sections are closed forms already exact to the
+/// window.
+fn reaching(
+    surface: &SurfaceGeometry,
+    other: &SurfaceGeometry,
+    met: &ogeom_intersect::SurfaceIntersection,
+    tol: Tolerances,
+) -> OgeomResult<Option<SurfaceGeometry>> {
+    let SurfaceGeometry::Cylinder(c) = surface else {
+        return Ok(None);
+    };
+    if !matches!(other, SurfaceGeometry::BSpline(_)) {
+        return Ok(None);
+    }
+    let ogeom_intersect::SurfaceIntersection::Along(curves) = met else {
+        return Ok(None);
+    };
+    let frame = c.cylinder().frame();
+    let have = ogeom_geom::Surface::domain(c).1;
+    let past = (have.1 - have.0) * 0.02;
+    let short = |gap: f64| gap > tol.confusion() && gap <= past;
+    let (mut low, mut high) = (false, false);
+    for section in curves {
+        let (t0, t1) = section.curve.domain();
+        for t in [t0, t1] {
+            let at = section.curve.point_at(t, tol)?;
+            let h = (at - frame.origin()).dot(frame.z().vector());
+            low |= short(h - have.0);
+            high |= short(have.1 - h);
+        }
+    }
+    if !low && !high {
+        return Ok(None);
+    }
+    let want = (
+        if low { have.0 - past } else { have.0 },
+        if high { have.1 + past } else { have.1 },
+    );
+    Ok(ogeom_geom::CylinderSurface::new(c.cylinder(), want)
+        .ok()
+        .map(Into::into))
 }
 
 /// March a pair whose exact section has no closed-form pcurve.

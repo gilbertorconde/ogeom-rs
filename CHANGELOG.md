@@ -64,6 +64,11 @@ bump may break the API and a patch bump may not.
   a millionth of the chart, falling back to a coarse mesh. Chart loops now
   close, and pcurves lie on their edges, within those tolerances, so the
   common and the cut measure their closed forms at the default deflection.
+- **A groove cut into a bore drilled by a cylinder primitive failed
+  (#74).** The primitive's wall is stored over exactly its own height, so a
+  section crossing its rim stopped a hair short of it and the cut refused to
+  close. The boolean now stretches a cylinder's window a little past an end
+  the other face reaches beyond.
 - **A half space clear of a solid sectioned it anyway (#83).** The box
   standing in for a planar half space reached twice the other shape's
   diagonal from the plane, so a plane further off than that put the box's
