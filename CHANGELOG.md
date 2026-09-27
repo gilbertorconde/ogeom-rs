@@ -13,6 +13,9 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **`check` walks the shape once** for every type it examines, instead of
+  once per type.
+
 - **A boolean places each edge's curve once,** shared by the faces on
   either side of it, instead of copying and transforming it per face.
 
@@ -202,6 +205,9 @@ bump may break the API and a patch bump may not.
   against a half space bounded by a plane.
 
 ### Fixed
+
+- **`check` names each part too tight for its bound once.** A vertex
+  reached through both of a face's edges was reported twice.
 
 - **STEP names past ASCII round-trip.** The writer spells them in `\X2\`
   escapes and doubles a backslash; the reader decodes `\X2\`, `\X4\`,

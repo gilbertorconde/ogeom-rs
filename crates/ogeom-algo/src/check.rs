@@ -26,7 +26,7 @@
 //! input because they would produce nonsense from it; they proceed on
 //! `Suspect` because refusing would reject most real imported geometry.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -142,22 +142,41 @@ pub fn check(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Diagn
     }
     let mut found = Diagnosis::default();
 
-    for edge in explore_unique(model, shape, ShapeType::Edge)? {
-        check_edge(model, &edge, tol, &mut found)?;
+    // Every distinct sub-shape from one walk, by type. The walk is
+    // pre-order, so each type's shapes come in the order a walk for that
+    // type alone would give.
+    let mut distinct: HashMap<ShapeType, Vec<Shape>> = HashMap::new();
+    let mut seen = HashSet::new();
+    for sub in explore(model, shape, Filter::All)? {
+        if seen.insert(ogeom_topo::SameKey(sub.clone())) {
+            distinct.entry(model.kind_of(&sub)?).or_default().push(sub);
+        }
     }
-    for wire in explore_unique(model, shape, ShapeType::Wire)? {
-        check_wire(model, &wire, tol, &mut found)?;
+    let of = |kind: ShapeType| distinct.get(&kind).map_or(&[][..], Vec::as_slice);
+
+    for edge in of(ShapeType::Edge) {
+        check_edge(model, edge, tol, &mut found)?;
     }
-    for face in explore_unique(model, shape, ShapeType::Face)? {
-        check_face(model, &face, tol, &mut found)?;
+    for wire in of(ShapeType::Wire) {
+        check_wire(model, wire, tol, &mut found)?;
     }
-    for shell in explore_unique(model, shape, ShapeType::Shell)? {
-        check_shell(model, &shell, &mut found)?;
+    for face in of(ShapeType::Face) {
+        check_face(model, face, tol, &mut found)?;
     }
-    for solid in explore_unique(model, shape, ShapeType::Solid)? {
-        check_orientation(model, &solid, tol, &mut found)?;
+    for shell in of(ShapeType::Shell) {
+        check_shell(model, shell, &mut found)?;
     }
-    check_containment(model, shape, &mut found)?;
+    for solid in of(ShapeType::Solid) {
+        check_orientation(model, solid, tol, &mut found)?;
+    }
+    // Tolerance containment: a face is no looser than its edges, an edge no
+    // looser than its vertices, checked through every level below each.
+    for face in of(ShapeType::Face) {
+        compare(model, face, ShapeType::Face, &mut found)?;
+    }
+    for edge in of(ShapeType::Edge) {
+        compare(model, edge, ShapeType::Edge, &mut found)?;
+    }
     Ok(found)
 }
 
@@ -659,22 +678,6 @@ fn check_shell(model: &Model, shell: &Shape, found: &mut Diagnosis) -> OgeomResu
     Ok(())
 }
 
-/// Tolerance containment: a face is no looser than its edges, an edge no looser
-/// than its vertices.
-///
-/// The rule is transitive and the check has to be too. Checking one level would
-/// pass a face whose edge is fine and whose *vertex* is tighter than the face,
-/// and the containment claim is about the face reaching the vertex.
-fn check_containment(model: &Model, shape: &Shape, found: &mut Diagnosis) -> OgeomResult<()> {
-    for face in explore_unique(model, shape, ShapeType::Face)? {
-        compare(model, &face, ShapeType::Face, found)?;
-    }
-    for edge in explore_unique(model, shape, ShapeType::Edge)? {
-        compare(model, &edge, ShapeType::Edge, found)?;
-    }
-    Ok(())
-}
-
 /// Restore tolerance containment below `shape`: every edge widened to at
 /// least the faces it bounds, every vertex to at least the edges it bounds.
 ///
@@ -727,8 +730,11 @@ fn compare(
     let Some(bounding) = model.tolerance_of(shape)? else {
         return Ok(());
     };
+    // Each occurrence once: a vertex reached through both its edges is one
+    // containment claim, not two.
+    let mut seen = HashSet::new();
     for below in explore(model, shape, Filter::All)? {
-        if below.is_same(shape) {
+        if below.is_same(shape) || !seen.insert(ogeom_topo::SameKey(below.clone())) {
             continue;
         }
         let Some(bounded) = model.tolerance_of(&below)? else {
@@ -906,6 +912,23 @@ mod tests {
         let broken = found.of(Severity::Broken);
         assert!(!broken.is_empty());
         assert!(broken.iter().all(|p| p.kind == ShapeType::Vertex));
+    }
+
+    #[test]
+    fn a_face_too_loose_for_its_boundary_names_each_part_once() {
+        let mut model = Model::new();
+        let solid = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
+            .unwrap()
+            .shape;
+        let face = explore_unique(&model, &solid, ShapeType::Face).unwrap()[0].clone();
+        if let Some(NodeData::Face(data)) = model.node_mut(&face).map(ogeom_topo::TShape::data_mut)
+        {
+            data.tolerance = Tolerance::new(1e-3).unwrap();
+        }
+        // Four edges and four corners, each reached through two edges and
+        // named once.
+        let broken = check(&model, &face, T).unwrap().of(Severity::Broken).len();
+        assert_eq!(broken, 8);
     }
 
     #[test]
