@@ -36,9 +36,39 @@ pub struct Model {
     datums: DatumStore,
     geometry: GeometryStore,
     provenance: ProvenanceTable,
-    identity: HashMap<TShapeId, EntityId>,
+    identity: Identities,
     current_op: OpId,
     tolerances: Tolerances,
+}
+
+/// Which identity each node carries, in a slot per node index. Nodes are
+/// never removed, so a slot holds at most one node's key; the key is kept
+/// to answer only the handle it was recorded for.
+#[derive(Debug, Clone, Default)]
+struct Identities {
+    slots: Vec<Option<(TShapeId, EntityId)>>,
+}
+
+impl Identities {
+    fn get(&self, node: TShapeId) -> Option<EntityId> {
+        match self.slots.get(node.index() as usize) {
+            Some(Some((key, entity))) if *key == node => Some(*entity),
+            _ => None,
+        }
+    }
+
+    fn insert(&mut self, node: TShapeId, entity: EntityId) {
+        let at = node.index() as usize;
+        if self.slots.len() <= at {
+            self.slots.resize(at + 1, None);
+        }
+        self.slots[at] = Some((node, entity));
+    }
+
+    /// Every recorded identity, in node order.
+    fn iter(&self) -> impl Iterator<Item = (TShapeId, EntityId)> + '_ {
+        self.slots.iter().filter_map(|slot| *slot)
+    }
 }
 
 impl Model {
@@ -64,7 +94,7 @@ impl Model {
             datums: DatumStore::new(),
             geometry: GeometryStore::new(),
             provenance: ProvenanceTable::new(),
-            identity: HashMap::new(),
+            identity: Identities::default(),
             current_op: OpId(0),
             tolerances,
         }
@@ -562,7 +592,7 @@ impl Model {
     /// survives.
     #[must_use]
     pub fn identity_of(&self, shape: &Shape) -> Option<EntityId> {
-        self.identity.get(&shape.node()).copied()
+        self.identity.get(shape.node())
     }
 
     /// Where a shape's node came from.
@@ -604,8 +634,8 @@ impl Model {
     pub fn shape_of(&self, id: EntityId) -> Option<Shape> {
         self.identity
             .iter()
-            .find(|(_, entity)| **entity == id)
-            .map(|(node, _)| Shape::of(*node))
+            .find(|(_, entity)| *entity == id)
+            .map(|(node, _)| Shape::of(node))
     }
 
     /// Record that a node was derived from other entities.
@@ -734,7 +764,7 @@ impl Model {
     pub fn identities(&self) -> impl Iterator<Item = (TShapeId, EntityId)> {
         self.nodes
             .iter()
-            .filter_map(|(id, _)| self.identity.get(&id).map(|entity| (id, *entity)))
+            .filter_map(|(id, _)| self.identity.get(id).map(|entity| (id, entity)))
     }
 
     /// Add a vertex.

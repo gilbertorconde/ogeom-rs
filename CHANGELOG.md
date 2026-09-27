@@ -13,6 +13,10 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **A node's identity is a slot lookup,** not a hash: the table is a
+  vector indexed by node, cheaper to copy for undo, and `shape_of` answers
+  in node order.
+
 - **Sewing bins its few loose edges apart,** so one edge with a wide
   stated tolerance no longer coarsens the twin search for every other.
 
