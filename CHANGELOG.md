@@ -13,6 +13,10 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **A walk's tangent is found without allocating:** the null vector's
+  minors are expanded in place, with the same arithmetic, and each accepted
+  state is stored once instead of copied.
+
 - **A node's identity is a slot lookup,** not a hash: the table is a
   vector indexed by node, cheaper to copy for undo, and `shape_of` answers
   in node order.

@@ -32,6 +32,7 @@
 use crate::march::{Marching, Stopped};
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_math::{Point, Vector, solve};
+use smallvec::SmallVec;
 
 /// A curve stated as what it satisfies, and everything needed to follow it.
 ///
@@ -290,9 +291,9 @@ pub fn walk_one_way<C: Condition + ?Sized>(
         }
 
         heading = Some(direction);
-        states.push(next_state.clone());
+        states.push(next_state);
         points.push(next_point);
-        at = next_state;
+        at.clone_from(&states[states.len() - 1]);
         step = following;
         ahead = Some(there);
     }
@@ -382,23 +383,15 @@ fn correct<C: Condition + ?Sized>(
 /// `None` where the matrix has full rank, which means the "curve" is a point
 /// and there is nothing to follow.
 fn null_vector(jacobian: &[Vec<f64>], n: usize) -> Option<Vec<f64>> {
-    if n == 0 || jacobian.len() + 1 != n {
+    if n == 0 || jacobian.len() + 1 != n || jacobian.iter().any(|row| row.len() < n) {
         return None;
     }
+    let all: Columns = (0..n).collect();
     let mut out = Vec::with_capacity(n);
     for column in 0..n {
-        let minor: Vec<Vec<f64>> = jacobian
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .enumerate()
-                    .filter(|(k, _)| *k != column)
-                    .map(|(_, v)| *v)
-                    .collect()
-            })
-            .collect();
+        let kept = without(&all, column);
         let sign = if column % 2 == 0 { 1.0 } else { -1.0 };
-        out.push(sign * determinant(&minor));
+        out.push(sign * determinant(jacobian, &kept));
     }
     let length = out.iter().map(|v| v * v).sum::<f64>().sqrt();
     if length <= f64::MIN_POSITIVE {
@@ -410,27 +403,38 @@ fn null_vector(jacobian: &[Vec<f64>], n: usize) -> Option<Vec<f64>> {
     Some(out)
 }
 
-/// A small square determinant, by expansion. The sizes here are at most four.
-fn determinant(matrix: &[Vec<f64>]) -> f64 {
-    match matrix.len() {
+/// Column indices of a minor, on the stack for the sizes walked here.
+type Columns = SmallVec<[usize; 8]>;
+
+/// `columns` with the entry at `position` struck out.
+fn without(columns: &[usize], position: usize) -> Columns {
+    columns
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| *k != position)
+        .map(|(_, c)| *c)
+        .collect()
+}
+
+/// The determinant of the square minor of `rows` (from the last
+/// `columns.len()` rows up) on `columns`, by expansion along its first row.
+/// The sizes here are at most five.
+fn determinant(rows: &[Vec<f64>], columns: &[usize]) -> f64 {
+    let rows = &rows[rows.len() - columns.len()..];
+    match columns.len() {
         0 => 1.0,
-        1 => matrix[0][0],
-        2 => matrix[0][0].mul_add(matrix[1][1], -(matrix[0][1] * matrix[1][0])),
+        1 => rows[0][columns[0]],
+        2 => {
+            let (a, b) = (&rows[0], &rows[1]);
+            a[columns[0]].mul_add(b[columns[1]], -(a[columns[1]] * b[columns[0]]))
+        }
         n => {
             let mut total = 0.0;
-            for column in 0..n {
-                let minor: Vec<Vec<f64>> = matrix[1..]
-                    .iter()
-                    .map(|row| {
-                        row.iter()
-                            .enumerate()
-                            .filter(|(k, _)| *k != column)
-                            .map(|(_, v)| *v)
-                            .collect()
-                    })
-                    .collect();
-                let sign = if column % 2 == 0 { 1.0 } else { -1.0 };
-                total += sign * matrix[0][column] * determinant(&minor);
+            for position in 0..n {
+                let sign = if position % 2 == 0 { 1.0 } else { -1.0 };
+                total += sign
+                    * rows[0][columns[position]]
+                    * determinant(&rows[1..], &without(columns, position));
             }
             total
         }
@@ -443,6 +447,68 @@ mod tests {
     use super::*;
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// The null vector by cofactors, computed on owned minors: what the
+    /// stack version must reproduce bit for bit.
+    fn cofactor_null(jacobian: &[Vec<f64>], n: usize) -> Vec<f64> {
+        fn det(m: &[Vec<f64>]) -> f64 {
+            match m.len() {
+                0 => 1.0,
+                1 => m[0][0],
+                2 => m[0][0].mul_add(m[1][1], -(m[0][1] * m[1][0])),
+                n => (0..n)
+                    .map(|c| {
+                        let minor: Vec<Vec<f64>> = m[1..]
+                            .iter()
+                            .map(|r| (0..n).filter(|&k| k != c).map(|k| r[k]).collect())
+                            .collect();
+                        let sign = if c % 2 == 0 { 1.0 } else { -1.0 };
+                        sign * m[0][c] * det(&minor)
+                    })
+                    .fold(0.0, |a, b| a + b),
+            }
+        }
+        let mut out: Vec<f64> = (0..n)
+            .map(|c| {
+                let minor: Vec<Vec<f64>> = jacobian
+                    .iter()
+                    .map(|r| (0..n).filter(|&k| k != c).map(|k| r[k]).collect())
+                    .collect();
+                let sign = if c % 2 == 0 { 1.0 } else { -1.0 };
+                sign * det(&minor)
+            })
+            .collect();
+        let length = out.iter().map(|v| v * v).sum::<f64>().sqrt();
+        for v in &mut out {
+            *v /= length;
+        }
+        out
+    }
+
+    #[test]
+    fn the_null_vector_matches_plain_cofactors_exactly() {
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            // The top 32 bits, exact in an `f64`, in [-0.5, 0.5).
+            f64::from((seed >> 32) as u32) / f64::from(u32::MAX) - 0.5
+        };
+        for n in 2..=5 {
+            for _ in 0..50 {
+                let jacobian: Vec<Vec<f64>> = (0..n - 1)
+                    .map(|_| (0..n).map(|_| next()).collect())
+                    .collect();
+                let got = null_vector(&jacobian, n).unwrap();
+                let want = cofactor_null(&jacobian, n);
+                assert_eq!(
+                    got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    want.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
 
     /// A circle of radius `r` about the origin in the `z = h` plane, posed in
     /// three unknowns (the point's own coordinates) with two equations. A

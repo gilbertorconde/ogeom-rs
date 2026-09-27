@@ -431,6 +431,7 @@ dependencies = [
  "ogeom-geom",
  "ogeom-math",
  "proptest",
+ "smallvec",
 ]
 
 [[package]]
