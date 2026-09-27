@@ -181,6 +181,11 @@ fn line_plane(
     }
 }
 
+/// How far rounding can move a discriminant `p - q` from its true value.
+fn rounding(p: f64, q: f64) -> f64 {
+    8.0 * f64::EPSILON * p.abs().max(q.abs())
+}
+
 /// The line parameters at which a line meets a sphere.
 fn sphere_roots(line: &ogeom_geom::LineCurve, sphere: ogeom_math::Sphere) -> Vec<f64> {
     let axis = line.axis();
@@ -190,10 +195,13 @@ fn sphere_roots(line: &ogeom_geom::LineCurve, sphere: ogeom_math::Sphere) -> Vec
     let b = m.dot(d);
     let c = sphere.radius().mul_add(-sphere.radius(), m.dot(m));
     let discriminant = b.mul_add(b, -c);
-    if discriminant < 0.0 {
+    // A tangent line has a discriminant of exactly zero, which rounding
+    // leaves a few ulps either side; below zero by no more than that is the
+    // tangency, and the polish that follows rejects a false one by its gap.
+    if discriminant < -rounding(b * b, c) {
         return Vec::new();
     }
-    let root = discriminant.sqrt();
+    let root = discriminant.max(0.0).sqrt();
     if root == 0.0 {
         vec![-b]
     } else {
@@ -222,10 +230,10 @@ fn cylinder_roots(line: &ogeom_geom::LineCurve, cylinder: ogeom_math::Cylinder) 
         .radius()
         .mul_add(-cylinder.radius(), m_perp.dot(m_perp));
     let discriminant = b.mul_add(b, -(a * c));
-    if discriminant < 0.0 {
+    if discriminant < -rounding(b * b, a * c) {
         return Vec::new();
     }
-    let root = discriminant.sqrt();
+    let root = discriminant.max(0.0).sqrt();
     if root == 0.0 {
         vec![-b / a]
     } else {

@@ -1344,7 +1344,7 @@ fn on_cylinder(
             // Parallel to the axis, on the surface.
             let direction = line.axis().direction;
             let along = direction.dot(axis.direction);
-            if (along.abs() - 1.0).abs() > tol.angular() {
+            if !direction.is_parallel(axis.direction, tol) {
                 return None;
             }
             let through = line.axis().location;

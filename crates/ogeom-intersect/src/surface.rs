@@ -72,7 +72,12 @@ pub fn surface_surface(
 ) -> OgeomResult<Meeting> {
     use SurfaceGeometry as S;
     match (a, b) {
-        (S::Plane(p), S::Plane(q)) => Ok(plane_plane(p.plane(), q.plane(), tol)),
+        (S::Plane(p), S::Plane(q)) => Ok(plane_plane(
+            p.plane(),
+            q.plane(),
+            window_reach(p).min(window_reach(q)),
+            tol,
+        )),
         (S::Plane(p), S::Sphere(s)) => Ok(plane_sphere(p.plane(), s.sphere(), tol)),
         (S::Sphere(s), S::Plane(p)) => Ok(plane_sphere(p.plane(), s.sphere(), tol)),
         (S::Plane(p), S::Cylinder(c)) => plane_cylinder(p.plane(), c.cylinder(), tol),
@@ -100,10 +105,46 @@ pub fn surface_surface(
     }
 }
 
+/// How far across a plane surface's window reaches: its diagonal, or a
+/// billion units for one stated unbounded, which leaves the angle alone to
+/// decide.
+fn window_reach(plane: &ogeom_geom::PlaneSurface) -> f64 {
+    let ((u0, u1), (v0, v1)) = ogeom_geom::Surface::domain(plane);
+    let reach = (u1 - u0).hypot(v1 - v0);
+    if reach.is_finite() && reach > 0.0 {
+        reach.min(1e9)
+    } else {
+        1e9
+    }
+}
+
+/// Whether a plane whose normal meets an axis at cosine `along` stands
+/// square to it, for a section of a surface of revolution about that axis.
+///
+/// Looser than an angle test on purpose. Tilted by an angle t, the section
+/// taken as square is off by the radius times t squared over two: a
+/// micro-radian tilt costs a millionth of a micron on a unit radius, while
+/// a plane a composed placement left a rounding error off square would
+/// otherwise have no closed form at all. Two planes are the opposite case,
+/// where the error grows with the extent, and [`plane_plane`] tests the
+/// angle itself.
+fn square_to_axis(along: f64, tol: Tolerances) -> bool {
+    (along.abs() - 1.0).abs() <= tol.angular()
+}
+
 /// Two planes: apart, the same, or a line.
-fn plane_plane(a: ogeom_math::Plane, b: ogeom_math::Plane, tol: Tolerances) -> Meeting {
-    let along = a.normal().dot(b.normal());
-    if (along.abs() - 1.0).abs() <= tol.angular() {
+///
+/// Parallel is decided across `reach`, the size of the region the two
+/// stand over: planes whose normals differ by an angle t part by t times
+/// the distance, so across the region they are one plane (or two parallel
+/// ones) when that stays within the confusion distance. Planes built by
+/// different routes to be coplanar differ by rounding, a hundred-billionth
+/// of a radian, and across a part that is nothing; a microradian across a
+/// hundred millimetres is a thousand times the confusion, and a line.
+fn plane_plane(a: ogeom_math::Plane, b: ogeom_math::Plane, reach: f64, tol: Tolerances) -> Meeting {
+    let turn = a.normal().angle(b.normal());
+    let turn = turn.min(core::f64::consts::PI - turn);
+    if turn <= tol.angular().max(tol.confusion() / reach) {
         // Parallel. Either the same plane or two that never meet, decided by
         // whether one contains the other's origin.
         return if a.distance_to(b.origin()) <= tol.confusion() {
@@ -123,8 +164,10 @@ fn plane_plane(a: ogeom_math::Plane, b: ogeom_math::Plane, tol: Tolerances) -> M
     );
     let (na, nb) = (a.normal().vector(), b.normal().vector());
     let dot = na.dot(nb);
-    let denominator = dot.mul_add(-dot, 1.0);
-    if denominator.abs() <= tol.angular() {
+    // sin² of the angle between the normals, from the cross product: one
+    // minus the dot squared loses every digit of a small angle.
+    let denominator = na.cross(nb).square_magnitude();
+    if denominator <= 0.0 {
         return Meeting::Apart;
     }
     let ca = da.mul_add(1.0, -(db * dot)) / denominator;
@@ -199,7 +242,7 @@ fn plane_cylinder(
 
     // Perpendicular to the axis: a circle of the cylinder's own radius.
     let centre = intersect_axis_plane(axis, plane, tol)?;
-    if (along.abs() - 1.0).abs() <= tol.angular() {
+    if square_to_axis(along, tol) {
         return Ok(
             match circle_on(centre, plane.normal(), cylinder.radius(), tol) {
                 Some(circle) => Meeting::Along(vec![circle]),
@@ -394,7 +437,7 @@ fn axial_plane_torus(
     {
         return Ok(meridians(plane, torus, tol));
     }
-    if (along.abs() - 1.0).abs() > tol.angular() {
+    if !square_to_axis(along, tol) {
         ogeom_bail!(
             NotDone,
             "a plane oblique to a torus's axis, or parallel to it and off it, \
@@ -517,7 +560,7 @@ fn plane_cone(
 ) -> OgeomResult<Meeting> {
     let axis = cone.axis();
     let along = plane.normal().dot(axis.direction);
-    if (along.abs() - 1.0).abs() > tol.angular() {
+    if !square_to_axis(along, tol) {
         ogeom_bail!(
             NotDone,
             "a plane oblique to a cone's axis meets it in a conic, which \

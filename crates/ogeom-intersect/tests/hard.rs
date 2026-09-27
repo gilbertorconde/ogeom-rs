@@ -370,3 +370,51 @@ fn a_sphere_strictly_inside_another_is_apart_however_close() {
     assert!(branches(&outer, &inner, options(), T).unwrap().is_empty());
     assert_eq!(surface_surface(&outer, &inner, T).unwrap(), Meeting::Apart);
 }
+
+/// Two planes through one point, a microradian apart, meet in a line. At
+/// a hundred millimetres they stand a tenth of a micron apart, a thousand
+/// times the confusion, so calling them one plane would be wrong.
+#[test]
+fn planes_a_microradian_apart_meet_in_a_line() {
+    let a = 1e-6_f64;
+    let plane = |n: Vector| -> SurfaceGeometry {
+        PlaneSurface::new(Plane::through(Point::ORIGIN, Direction::new(n, T).unwrap())).into()
+    };
+    let flat = plane(Vector::new(0.0, 0.0, 1.0));
+    let tilted = plane(Vector::new(0.0, a.sin(), a.cos()));
+    assert!(matches!(
+        surface_surface(&flat, &tilted, T).unwrap(),
+        Meeting::Along(_)
+    ));
+    assert!(matches!(
+        surface_surface(&flat, &flat, T).unwrap(),
+        Meeting::Same
+    ));
+}
+
+/// A line touching a sphere: the discriminant is zero, and rounding leaves
+/// it a few ulps either side. Every scale and offset finds the touch.
+#[test]
+fn a_line_touching_a_sphere_is_found_at_every_scale() {
+    use ogeom_geom::{Curve, LineCurve};
+    use ogeom_intersect::{CurveSurfaceOptions, intersect_curve_surface};
+    for radius in [1e-3, 0.7, 1.0, 7.3, 123.456, 1e3] {
+        for shift in [0.0, 0.1, 1.0 / 3.0, 2.9] {
+            let centre = Point::new(shift * radius, -shift, 0.3 * radius);
+            let ball: SurfaceGeometry =
+                SphereSurface::new(Sphere::new(frame(centre, Vector::Z), radius, T).unwrap())
+                    .into();
+            let touch = centre + Vector::new(0.0, radius, 0.0);
+            let line: Curve = LineCurve::over(
+                ogeom_math::Axis::new(touch - Vector::X * (3.0 * radius), Direction::X),
+                0.0,
+                6.0 * radius,
+            )
+            .unwrap()
+            .into();
+            let met =
+                intersect_curve_surface(&line, &ball, CurveSurfaceOptions::default(), T).unwrap();
+            assert!(!met.crossings.is_empty(), "radius {radius}, shift {shift}");
+        }
+    }
+}

@@ -250,7 +250,11 @@ pub(crate) fn stationary_curve_curve(
         max_iterations: 40,
     };
     let found = solve::newton_system(system, &[seed_a, seed_b], criteria).ok()?;
-    Some((fold_curve(a, found.value[0]), fold_curve(b, found.value[1])))
+    let (t, s) = (fold_curve(a, found.value[0]), fold_curve(b, found.value[1]));
+    let gap = a.point_at(t, tol).ok()? - b.point_at(s, tol).ok()?;
+    let ta = a.derivatives_at(t, 1, tol).ok()?.get(1).copied()?;
+    let tb = b.derivatives_at(s, 1, tol).ok()?.get(1).copied()?;
+    is_stationary(gap, &[ta, tb], tol).then_some((t, s))
 }
 
 /// Closed-form extrema between two lines.
@@ -460,7 +464,10 @@ fn stationary_curve_surface(
     let found = solve::newton_system(system, &[seed_t, seed_uv.0, seed_uv.1], criteria).ok()?;
     let t = fold_curve(curve, found.value[0]);
     let (u, v) = fold_surface(surface, found.value[1], found.value[2]);
-    Some((t, u, v))
+    let gap = curve.point_at(t, tol).ok()? - surface.point_at(u, v, tol).ok()?;
+    let tc = curve.derivatives_at(t, 1, tol).ok()?.get(1).copied()?;
+    let (su, sv) = surface.d1_at(u, v, tol).ok()?;
+    is_stationary(gap, &[tc, su, sv], tol).then_some((t, u, v))
 }
 
 // --- surface / surface -------------------------------------------------------
@@ -482,41 +489,73 @@ pub fn extrema_surface_surface(
     wide_surface_check(a)?;
     wide_surface_check(b)?;
 
-    let sa = sample_surface(a, options.grid, tol);
-    let sb = sample_surface(b, options.grid, tol);
+    let ga = sample_grid(a, options.grid, tol);
+    let gb = sample_grid(b, options.grid, tol);
+    let sa: Vec<((f64, f64), Point)> = ga.iter().flatten().copied().collect();
+    let sb: Vec<((f64, f64), Point)> = gb.iter().flatten().copied().collect();
     if sa.is_empty() || sb.is_empty() {
         ogeom_bail!(Construction, "a surface failed to evaluate over its domain");
     }
 
-    // Each side seeds from its own best-facing view of the other; the union
-    // covers approaches either sampling would resolve.
-    let mut seeds = Vec::new();
-    for (uv_a, p) in &sa {
-        let mut near = (f64::INFINITY, (0.0, 0.0));
-        let mut far = (f64::NEG_INFINITY, (0.0, 0.0));
-        for (uv_b, q) in &sb {
-            let d = p.square_distance(*q);
-            if d < near.0 {
-                near = (d, *uv_b);
+    // For each sample of one side, its nearest and farthest sample on the
+    // other: two fields over that side's lattice. Their local minima and
+    // maxima, from both sides, seed the polish; near and far are thinned
+    // apart, so neither crowds the other out.
+    let fields = |mine: &[Option<((f64, f64), Point)>], theirs: &[((f64, f64), Point)]| {
+        let mut near = Vec::with_capacity(mine.len());
+        let mut far = Vec::with_capacity(mine.len());
+        for cell in mine {
+            let Some((_, p)) = cell else {
+                near.push(None);
+                far.push(None);
+                continue;
+            };
+            let mut best = (f64::INFINITY, (0.0, 0.0));
+            let mut worst = (f64::NEG_INFINITY, (0.0, 0.0));
+            for (uv, q) in theirs {
+                let d = p.square_distance(*q);
+                if d < best.0 {
+                    best = (d, *uv);
+                }
+                if d > worst.0 {
+                    worst = (d, *uv);
+                }
             }
-            if d > far.0 {
-                far = (d, *uv_b);
-            }
+            near.push(Some(best));
+            far.push(Some(worst));
         }
-        seeds.push((*uv_a, near.1));
-        seeds.push((*uv_a, far.1));
-    }
-    for (uv_b, q) in &sb {
-        let mut near = (f64::INFINITY, (0.0, 0.0));
-        for (uv_a, p) in &sa {
-            let d = q.square_distance(*p);
-            if d < near.0 {
-                near = (d, *uv_a);
-            }
+        (near, far)
+    };
+    let (a_near, a_far) = fields(&ga, &sb);
+    let (b_near, b_far) = fields(&gb, &sa);
+    let distances = |field: &[Option<(f64, (f64, f64))>]| -> Vec<Option<f64>> {
+        field.iter().map(|c| c.map(|(d, _)| d)).collect()
+    };
+    let mut near_seeds = Vec::new();
+    let mut far_seeds = Vec::new();
+    for i in lattice_extrema(&distances(&a_near), options.grid, |x, y| x <= y) {
+        if let (Some((uv, _)), Some((_, other))) = (ga[i], a_near[i]) {
+            near_seeds.push((uv, other));
         }
-        seeds.push((near.1, *uv_b));
     }
-    thin(&mut seeds);
+    for i in lattice_extrema(&distances(&b_near), options.grid, |x, y| x <= y) {
+        if let (Some((uv, _)), Some((_, other))) = (gb[i], b_near[i]) {
+            near_seeds.push((other, uv));
+        }
+    }
+    for i in lattice_extrema(&distances(&a_far), options.grid, |x, y| x >= y) {
+        if let (Some((uv, _)), Some((_, other))) = (ga[i], a_far[i]) {
+            far_seeds.push((uv, other));
+        }
+    }
+    for i in lattice_extrema(&distances(&b_far), options.grid, |x, y| x >= y) {
+        if let (Some((uv, _)), Some((_, other))) = (gb[i], b_far[i]) {
+            far_seeds.push((other, uv));
+        }
+    }
+    thin_to(&mut near_seeds, MOST_SEEDS / 2);
+    thin_to(&mut far_seeds, MOST_SEEDS / 2);
+    let seeds = near_seeds.into_iter().chain(far_seeds);
 
     let mut approaches: Vec<Approach<(f64, f64), (f64, f64)>> = Vec::new();
     for (seed_a, seed_b) in seeds {
@@ -598,7 +637,25 @@ fn stationary_surface_surface(
         solve::newton_system(system, &[seed_a.0, seed_a.1, seed_b.0, seed_b.1], criteria).ok()?;
     let (ua, va) = fold_surface(a, found.value[0], found.value[1]);
     let (ub, vb) = fold_surface(b, found.value[2], found.value[3]);
-    Some((ua, va, ub, vb))
+    let gap = a.point_at(ua, va, tol).ok()? - b.point_at(ub, vb, tol).ok()?;
+    let (au, av) = a.d1_at(ua, va, tol).ok()?;
+    let (bu, bv) = b.d1_at(ub, vb, tol).ok()?;
+    is_stationary(gap, &[au, av, bu, bv], tol).then_some((ua, va, ub, vb))
+}
+
+/// Whether the gap between two points is square to every tangent given:
+/// the distance is stationary there. Newton reports where it stopped
+/// whether or not that was a root (a stall on a slope ends on a tiny step,
+/// not a small residual), so the claim is checked where it is made. The
+/// test is on the angle, so it holds at any scale and any speed of
+/// parametrisation, with the confusion distance as the floor where the two
+/// points meet.
+fn is_stationary(gap: Vector, tangents: &[Vector], tol: Tolerances) -> bool {
+    const SQUARE: f64 = 1e-6;
+    let reach = gap.magnitude();
+    tangents
+        .iter()
+        .all(|t| gap.dot(*t).abs() <= reach.mul_add(SQUARE, tol.confusion()) * t.magnitude())
 }
 
 // --- shared machinery --------------------------------------------------------
@@ -633,6 +690,19 @@ fn sample_surface(
     grid: usize,
     tol: Tolerances,
 ) -> Vec<((f64, f64), Point)> {
+    sample_grid(surface, grid, tol)
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// A surface sampled on a `(grid + 1)` square lattice, row by row in `u`,
+/// with `None` where it failed to evaluate, so neighbours stay findable.
+fn sample_grid(
+    surface: &SurfaceGeometry,
+    grid: usize,
+    tol: Tolerances,
+) -> Vec<Option<((f64, f64), Point)>> {
     let ((ua, ub), (va, vb)) = surface.domain();
     let mut out = Vec::with_capacity((grid + 1) * (grid + 1));
     for i in 0..=grid {
@@ -641,8 +711,51 @@ fn sample_surface(
             let u = ua + (ub - ua) * i as f64 / grid as f64;
             #[allow(clippy::cast_precision_loss)]
             let v = va + (vb - va) * j as f64 / grid as f64;
-            if let Ok(p) = surface.point_at(u, v, tol) {
-                out.push(((u, v), p));
+            out.push(surface.point_at(u, v, tol).ok().map(|p| ((u, v), p)));
+        }
+    }
+    out
+}
+
+/// The lattice cells whose value is no worse than any neighbour's: the
+/// local minima of `value` over a `(grid + 1)` square lattice, where
+/// `better(x, y)` says `x` is at least as good as `y`. Cells with no value
+/// are skipped, and do not count as neighbours.
+fn lattice_extrema(
+    values: &[Option<f64>],
+    grid: usize,
+    better: impl Fn(f64, f64) -> bool,
+) -> Vec<usize> {
+    let side = grid + 1;
+    let mut out = Vec::new();
+    for i in 0..side {
+        for j in 0..side {
+            let Some(here) = values[i * side + j] else {
+                continue;
+            };
+            let mut extreme = true;
+            'around: for di in -1_isize..=1 {
+                for dj in -1_isize..=1 {
+                    if di == 0 && dj == 0 {
+                        continue;
+                    }
+                    let (Some(ni), Some(nj)) = (i.checked_add_signed(di), j.checked_add_signed(dj))
+                    else {
+                        continue;
+                    };
+                    if ni >= side || nj >= side {
+                        continue;
+                    }
+                    if let Some(there) = values[ni * side + nj]
+                        && !better(here, there)
+                    {
+                        extreme = false;
+                        break 'around;
+                    }
+                }
+            }
+            if extreme {
+                out.push(i * side + j);
             }
         }
     }
@@ -651,10 +764,15 @@ fn sample_surface(
 
 /// Cap the seed list, keeping an even spread.
 fn thin<T>(seeds: &mut Vec<T>) {
-    if seeds.len() <= MOST_SEEDS {
+    thin_to(seeds, MOST_SEEDS);
+}
+
+/// Cap a seed list at `most`, keeping an even spread.
+fn thin_to<T>(seeds: &mut Vec<T>, most: usize) {
+    if seeds.len() <= most {
         return;
     }
-    let step = seeds.len().div_ceil(MOST_SEEDS);
+    let step = seeds.len().div_ceil(most.max(1));
     let mut index = 0;
     seeds.retain(|_| {
         let kept = index % step == 0;
@@ -917,5 +1035,35 @@ mod tests {
         })
         .into();
         assert!(extrema_curve_curve(&endless, &other, ExtremaOptions::default(), T).is_ok());
+    }
+
+    /// Two unit spheres ten apart: nearest at 8 and farthest at 12, and
+    /// nothing reported that is not stationary.
+    #[test]
+    fn two_spheres_meet_nearest_and_farthest() {
+        let ball = |x: f64| -> SurfaceGeometry {
+            SphereSurface::new(
+                Sphere::new(
+                    Frame::new(Point::new(x, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap(),
+                    1.0,
+                    T,
+                )
+                .unwrap(),
+            )
+            .into()
+        };
+        let found =
+            extrema_surface_surface(&ball(0.0), &ball(10.0), ExtremaOptions::default(), T).unwrap();
+        let d: Vec<f64> = found.approaches.iter().map(|a| a.distance).collect();
+        assert!((d[0] - 8.0).abs() < 1e-9, "{d:?}");
+        assert!((d[d.len() - 1] - 12.0).abs() < 1e-9, "{d:?}");
+        for a in &found.approaches {
+            assert!(
+                [8.0, 10.0, 12.0]
+                    .iter()
+                    .any(|w| (a.distance - w).abs() < 1e-9),
+                "{d:?}"
+            );
+        }
     }
 }
