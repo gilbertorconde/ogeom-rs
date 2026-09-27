@@ -1373,13 +1373,28 @@ fn fill(
     // tolerance so a fitted curve meets edges, vertices and the mesh welder
     // on the same terms as an exact one. The budget each still carries is
     // recorded per section and widens the crossing filters.
-    for (ia, fa) in ga.faces.iter().enumerate() {
-        for (ib, fb) in gb.faces.iter().enumerate() {
+    // Every pair of faces is its own question: each reads the two solids
+    // and writes only its own findings, so the pairs are asked in parallel
+    // and their findings joined in pair order, the order a single thread
+    // would have produced them in.
+    #[derive(Default)]
+    struct PairFound {
+        sections: Vec<SectionRec>,
+        contacts: Vec<ContactRec>,
+        tangents: Vec<TangentRec>,
+        same_pairs: Vec<(usize, usize)>,
+    }
+    let pairs: Vec<(usize, usize)> = (0..ga.faces.len())
+        .flat_map(|ia| (0..gb.faces.len()).map(move |ib| (ia, ib)))
+        .filter(|&(ia, ib)| admit_all || ga.faces[ia].bound.intersects(&gb.faces[ib].bound))
+        .collect();
+    let found = ogeom_core::parallel::map_ordered(
+        &pairs,
+        |_, &(ia, ib)| -> OgeomResult<PairFound> {
+            ogeom_core::progress::checkpoint()?;
+            let (fa, fb) = (&ga.faces[ia], &gb.faces[ib]);
             let admitted = fa.bound.intersects(&fb.bound);
-            if !admitted && !admit_all {
-                // The faces cannot meet, whatever their surfaces do.
-                continue;
-            }
+            let mut out = PairFound::default();
             let scale = fa.chord_scale.min(fb.chord_scale);
             let chord = (scale * 1e-7).max(tol.confusion() * 0.5);
             let options = IntersectOptions {
@@ -1426,7 +1441,7 @@ fn fill(
                     // projection carries an edge into the other chart, and
                     // planes always have one; a curved same-domain pair whose
                     // edges do not project in closed form is still refused.
-                    same_pairs.push((ia, ib));
+                    out.same_pairs.push((ia, ib));
                     for (owner_from_a, owner, target_from_a, target, target_face) in
                         [(false, fb, true, fa, ia), (true, fa, false, fb, ib)]
                     {
@@ -1488,7 +1503,7 @@ fn fill(
                                     (pcurve, e.crange)
                                 }
                             };
-                            contacts.push(ContactRec {
+                            out.contacts.push(ContactRec {
                                 curve: e.curve.clone(),
                                 crange: e.crange,
                                 pcurve,
@@ -1517,7 +1532,7 @@ fn fill(
                         // that draw contact rather than classify by it.
                         if sc.tangential {
                             if let (Some(pa), Some(pb)) = (sc.on_a, sc.on_b) {
-                                tangents.push(TangentRec {
+                                out.tangents.push(TangentRec {
                                     curve: sc.curve,
                                     pc_a: pa,
                                     pc_b: pb,
@@ -1560,13 +1575,13 @@ fn fill(
                                 ogeom_bail!(
                                     NotDone,
                                     "a marched section of length {length} runs beyond a turn \
-                                     round the faces it cuts ({turn}); its trace wandered \
-                                     beside a chart's pole; see docs/PARITY.md, bool.booleans"
+                                 round the faces it cuts ({turn}); its trace wandered \
+                                 beside a chart's pole; see docs/PARITY.md, bool.booleans"
                                 );
                             }
                         }
                         match (sc.on_a.clone(), sc.on_b.clone()) {
-                            (Some(pa), Some(pb)) => sections.push(SectionRec {
+                            (Some(pa), Some(pb)) => out.sections.push(SectionRec {
                                 curve: sc.curve,
                                 pc_a: pa,
                                 pc_b: pb,
@@ -1587,7 +1602,7 @@ fn fill(
                                 if let Some(split) = split_at_degeneracies(&sc.curve, fa, fb, tol)?
                                 {
                                     for (curve, pa, pb) in split {
-                                        sections.push(SectionRec {
+                                        out.sections.push(SectionRec {
                                             curve,
                                             pc_a: pa,
                                             pc_b: pb,
@@ -1610,18 +1625,18 @@ fn fill(
                                 // Marching the pair, which follows, wandered
                                 // beside the pole in both ways there are.
                                 let image = |surface: &SurfaceGeometry,
-                                             have: Option<&PlanarCurve>|
-                                 -> OgeomResult<Option<(PlanarCurve, f64)>> {
-                                    if let Some(pc) = have {
-                                        return Ok(Some((pc.clone(), 0.0)));
-                                    }
-                                    fitted_image(&sc.curve, surface, options.tolerance, tol)
-                                };
+                                         have: Option<&PlanarCurve>|
+                             -> OgeomResult<Option<(PlanarCurve, f64)>> {
+                                if let Some(pc) = have {
+                                    return Ok(Some((pc.clone(), 0.0)));
+                                }
+                                fitted_image(&sc.curve, surface, options.tolerance, tol)
+                            };
                                 if let (Some((pa, ea)), Some((pb, eb))) = (
                                     image(&fa.surface, sc.on_a.as_ref())?,
                                     image(&fb.surface, sc.on_b.as_ref())?,
                                 ) {
-                                    sections.push(SectionRec {
+                                    out.sections.push(SectionRec {
                                         curve: sc.curve,
                                         pc_a: pa,
                                         pc_b: pb,
@@ -1671,9 +1686,9 @@ fn fill(
                                         ogeom_bail!(
                                             NotDone,
                                             "a marched section's fit misses its trace by {} \
-                                             against a chord of {}; a branch passing beside a \
-                                             chart's pole fits nothing yet; see docs/PARITY.md, \
-                                             boolean.general",
+                                         against a chord of {}; a branch passing beside a \
+                                         chart's pole fits nothing yet; see docs/PARITY.md, \
+                                         boolean.general",
                                             fitted.fit_error,
                                             options.marching.chord
                                         );
@@ -1703,12 +1718,12 @@ fn fill(
                                         ogeom_bail!(
                                             NotDone,
                                             "a marched section of length {length} runs beyond a \
-                                             turn round the faces it cuts ({turn}); its trace \
-                                             wandered beside a chart's pole; see docs/PARITY.md, \
-                                             boolean.general"
+                                         turn round the faces it cuts ({turn}); its trace \
+                                         wandered beside a chart's pole; see docs/PARITY.md, \
+                                         boolean.general"
                                         );
                                     }
-                                    sections.push(SectionRec {
+                                    out.sections.push(SectionRec {
                                         closed: curve.is_closed(tol),
                                         tolerance: options.marching.chord + fitted.fit_error,
                                         curve,
@@ -1724,7 +1739,16 @@ fn fill(
                     }
                 }
             }
-        }
+
+            Ok(out)
+        },
+    );
+    for pair in found {
+        let pair = pair?;
+        sections.extend(pair.sections);
+        contacts.extend(pair.contacts);
+        tangents.extend(pair.tangents);
+        same_pairs.extend(pair.same_pairs);
     }
 
     // Boundary polylines per face, for the trim tests.

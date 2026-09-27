@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **A boolean intersects its face pairs in parallel,** each pair's
+  findings joined in pair order so the result is the same at any thread
+  count. A parallel stage inside another now runs on the worker it lands
+  on instead of spawning threads per outer item, and the machine's thread
+  count is read once.
+
 - **Spline fits solve their normal equations instead of inverting them.**
   An open curve's normal matrix is banded, and a banded Cholesky costs its
   size times the band squared where the inverse cost its size cubed. A

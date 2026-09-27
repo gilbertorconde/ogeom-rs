@@ -27,7 +27,18 @@ pub fn threads() -> usize {
     if configured != 0 {
         return configured;
     }
-    std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+    // Asked once: the query reads the scheduler's affinity and quota, and
+    // every parallel stage asks.
+    static MACHINE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MACHINE.get_or_init(|| std::thread::available_parallelism().map_or(1, std::num::NonZero::get))
+}
+
+std::thread_local! {
+    /// Set on a worker thread for the life of its stage: a parallel stage
+    /// inside another (a boolean's face pairs each classifying points in
+    /// parallel) runs on the worker it lands on, rather than spawning a
+    /// machine's worth of threads per outer item.
+    static INSIDE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
 }
 
 /// Set the process-wide thread count for parallel stages. `0` restores the
@@ -50,7 +61,7 @@ where
     R: Send,
 {
     let workers = threads().clamp(1, items.len().max(1));
-    if workers <= 1 || items.len() <= 1 {
+    if workers <= 1 || items.len() <= 1 || INSIDE.with(core::cell::Cell::get) {
         return items.iter().enumerate().map(|(i, t)| f(i, t)).collect();
     }
 
@@ -72,6 +83,7 @@ where
             let next = &next;
             let snapshot = snapshot.clone();
             handles.push(scope.spawn(move || {
+                INSIDE.with(|inside| inside.set(true));
                 progress::with_snapshot(snapshot.as_ref(), || {
                     let mut mine = Vec::new();
                     loop {
