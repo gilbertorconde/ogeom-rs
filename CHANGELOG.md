@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Performance
 
+- **Exact volumes of spline faces cost a third of what they did.** The
+  chart integral reads a polynomial patch along each inner integral's own
+  `v` from the net summed across `v` once, and a polynomial patch's first
+  and second derivatives skip the rational quotient. `Surface::point_d1_at`
+  gives the point with its first derivatives from one evaluation.
+
 - **A boolean intersects its face pairs in parallel,** each pair's
   findings joined in pair order so the result is the same at any thread
   count. A parallel stage inside another now runs on the worker it lands
@@ -44,6 +50,9 @@ bump may break the API and a patch bump may not.
   boolean builds each face's chart outline and trim samples once.
 
 ### Added
+
+- **`Surface::point_d1_at`:** the point and first derivatives from one
+  evaluation, for callers that need both at every sample.
 
 - **`fit_surface_grid_sections`:** a grid fit with rows placed across by
   chord length, for sections lofted at spacings of their own.

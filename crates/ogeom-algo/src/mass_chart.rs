@@ -59,6 +59,9 @@ pub(crate) struct ChartFace {
     u_ref: f64,
     /// The chart's size, for weighing a miss against it.
     scale: f64,
+    /// The surface's own knot lines in `u` and in `v`, where panels break:
+    /// read once, not once per inner integral.
+    knot_lines: (Vec<f64>, Vec<f64>),
 }
 
 /// A face's chart loops, or `None` where they cannot be had exactly: a
@@ -143,7 +146,9 @@ fn loops_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<
     } else {
         walked.lo.x.clamp(u0, u1)
     };
+    let knot_lines = knot_lines(&walked.placed);
     Ok(Some(ChartFace {
+        knot_lines,
         surface: walked.placed,
         loops: walked.loops,
         sign: if face.orientation() == Orientation::Reversed {
@@ -558,6 +563,12 @@ impl ChartFace {
             return false;
         };
         for doubling in 1..=DOUBLINGS {
+            // Each doubling costs twice the last: a cancelled watch is
+            // honoured between them, and the caller's own checkpoint then
+            // reports it.
+            if ogeom_core::progress::checkpoint().is_err() {
+                return false;
+            }
             let Ok((proxy, samples)) = self.run(1 << doubling, reference, tol) else {
                 return false;
             };
@@ -634,7 +645,7 @@ impl ChartFace {
         breaks.extend(knots.into_iter().filter(|k| *k > lo && *k < hi));
         // Where the piece crosses the surface's own knot lines, found on a
         // sampling and settled by bisection.
-        let (u_knots, v_knots) = knot_lines(&self.surface);
+        let (u_knots, v_knots) = &self.knot_lines;
         if !u_knots.is_empty() || !v_knots.is_empty() {
             const N: usize = 32;
             let mut prev: Option<(f64, Point2)> = None;
@@ -721,26 +732,87 @@ impl ChartFace {
         } else {
             ((ub - ua).abs() / QUARTER).ceil().clamp(1.0, 64.0) as u32
         } * fine;
-        let (u_knots, _) = knot_lines(&self.surface);
+        let u_knots = &self.knot_lines.0;
         let (lo, hi) = (ua.min(ub), ua.max(ub));
         let mut cuts: Vec<f64> = (0..=pieces)
             .map(|k| ua + (ub - ua) * f64::from(k) / f64::from(pieces))
             .collect();
-        cuts.extend(u_knots.into_iter().filter(|k| *k > lo && *k < hi));
+        cuts.extend(u_knots.iter().copied().filter(|k| *k > lo && *k < hi));
         cuts.sort_by(f64::total_cmp);
         if ub < ua {
             cuts.reverse();
         }
         cuts.dedup();
+        let isoline = Isoline::of(&self.surface, at.y, tol);
         for pair in cuts.windows(2) {
             let (a, b) = (pair[0], pair[1]);
             for (u, wu) in gauss_legendre_rule(a, b) {
-                let p = self.surface.point_at(u, at.y, tol)?;
-                let (du, dv) = self.surface.d1_at(u, at.y, tol)?;
+                let (p, du, dv) = match isoline.as_ref().and_then(|line| line.at(u, tol)) {
+                    Some(found) => found,
+                    None => self.surface.point_d1_at(u, at.y, tol)?,
+                };
                 samples.push((p, du.cross(dv) * self.sign, outer * wu));
             }
         }
         Ok(())
+    }
+}
+
+/// A polynomial spline patch read along one `v`: its control net summed
+/// across `v` once, into the control points of the row at `v` and of its
+/// `v` derivative. Every sample of an inner integral shares that `v`, so a
+/// sample costs one row's worth of basis functions instead of the grid's.
+struct Isoline<'a> {
+    knots: &'a ogeom_math::KnotVector,
+    row: Vec<Point>,
+    across: Vec<Vector>,
+}
+
+impl<'a> Isoline<'a> {
+    fn of(surface: &'a SurfaceGeometry, v: f64, tol: Tolerances) -> Option<Self> {
+        let SurfaceGeometry::BSpline(patch) = surface else {
+            return None;
+        };
+        if patch.is_rational() {
+            return None;
+        }
+        let v_knots = patch.v_knots();
+        let span = v_knots.span(v, tol).ok()?;
+        let q = v_knots.degree();
+        let basis = v_knots.basis_derivatives(span, v, 1);
+        let grid = patch.grid();
+        let mut row = Vec::with_capacity(grid.u_count());
+        let mut across = Vec::with_capacity(grid.u_count());
+        for i in 0..grid.u_count() {
+            let (mut p, mut d) = (Vector::ZERO, Vector::ZERO);
+            for k in 0..=q {
+                let c = grid.get(i, span - q + k)?.scaled.to_vector();
+                p += c * basis[0][k];
+                d += c * basis[1][k];
+            }
+            row.push(Point::ORIGIN + p);
+            across.push(d);
+        }
+        Some(Self {
+            knots: patch.u_knots(),
+            row,
+            across,
+        })
+    }
+
+    /// The point, `du` and `dv` at `u`; `None` off the knots' domain.
+    fn at(&self, u: f64, tol: Tolerances) -> Option<(Point, Vector, Vector)> {
+        let span = self.knots.span(u, tol).ok()?;
+        let p = self.knots.degree();
+        let basis = self.knots.basis_derivatives(span, u, 1);
+        let (mut point, mut du, mut dv) = (Vector::ZERO, Vector::ZERO, Vector::ZERO);
+        for k in 0..=p {
+            let c = self.row[span - p + k].to_vector();
+            point += c * basis[0][k];
+            du += c * basis[1][k];
+            dv += self.across[span - p + k] * basis[0][k];
+        }
+        Some((Point::ORIGIN + point, du, dv))
     }
 }
 

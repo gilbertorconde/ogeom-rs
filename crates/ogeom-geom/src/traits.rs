@@ -410,6 +410,22 @@ pub trait Surface {
     /// As [`Surface::point_at`].
     fn d2_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<(Vector, Vector, Vector)>;
 
+    /// The point and first derivatives together: `(point, du, dv)`.
+    ///
+    /// For a caller that needs both at every sample (an integral over the
+    /// surface): a patch has the point in the same derivative table, and
+    /// asking for it separately sums the control grid twice. Agreement with
+    /// the separate accessors is to rounding, as for [`Surface::jet_at`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Surface::point_at`].
+    fn point_d1_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<(Point, Vector, Vector)> {
+        let point = self.point_at(u, v, tol)?;
+        let (du, dv) = self.d1_at(u, v, tol)?;
+        Ok((point, du, dv))
+    }
+
     /// The point and every derivative through second order, together.
     ///
     /// The default asks the three accessors above, which is right for a

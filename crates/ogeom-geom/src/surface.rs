@@ -1195,6 +1195,21 @@ impl Surface for BSplineSurface {
 
     fn d1_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<(Vector, Vector)> {
         let (u, v) = self.normalize_parameters(u, v, tol)?;
+        // A polynomial patch has no weights to divide through: the plain
+        // table, without the quotient rule's second table and its loops.
+        // Every normal of every spline face comes through here.
+        if !self.rational {
+            let d = bspline::surface_derivatives(
+                &self.u_knots,
+                &self.v_knots,
+                &self.grid,
+                u,
+                v,
+                1,
+                tol,
+            )?;
+            return Ok((d[1][0].scaled.to_vector(), d[0][1].scaled.to_vector()));
+        }
         let d = bspline::rational_surface_derivatives(
             &self.u_knots,
             &self.v_knots,
@@ -1209,6 +1224,22 @@ impl Surface for BSplineSurface {
 
     fn d2_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<(Vector, Vector, Vector)> {
         let (u, v) = self.normalize_parameters(u, v, tol)?;
+        if !self.rational {
+            let d = bspline::surface_derivatives(
+                &self.u_knots,
+                &self.v_knots,
+                &self.grid,
+                u,
+                v,
+                2,
+                tol,
+            )?;
+            return Ok((
+                d[2][0].scaled.to_vector(),
+                d[1][1].scaled.to_vector(),
+                d[0][2].scaled.to_vector(),
+            ));
+        }
         let d = bspline::rational_surface_derivatives(
             &self.u_knots,
             &self.v_knots,
@@ -1222,6 +1253,33 @@ impl Surface for BSplineSurface {
             d[2][0].to_vector(),
             d[1][1].to_vector(),
             d[0][2].to_vector(),
+        ))
+    }
+
+    fn point_d1_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<(Point, Vector, Vector)> {
+        let (u, v) = self.normalize_parameters(u, v, tol)?;
+        if self.rational {
+            let d = bspline::rational_surface_derivatives(
+                &self.u_knots,
+                &self.v_knots,
+                &self.grid,
+                u,
+                v,
+                1,
+                tol,
+            )?;
+            return Ok((
+                Point::ORIGIN + d[0][0].to_vector(),
+                d[1][0].to_vector(),
+                d[0][1].to_vector(),
+            ));
+        }
+        let d =
+            bspline::surface_derivatives(&self.u_knots, &self.v_knots, &self.grid, u, v, 1, tol)?;
+        Ok((
+            Point::ORIGIN + d[0][0].scaled.to_vector(),
+            d[1][0].scaled.to_vector(),
+            d[0][1].scaled.to_vector(),
         ))
     }
 
@@ -1499,6 +1557,10 @@ impl Surface for SurfaceGeometry {
     // default, which asks the three accessors, so the variant that overrides
     // `jet_at` to avoid exactly that would never be reached through a
     // `SurfaceGeometry`, which is how every caller holds a surface.
+    fn point_d1_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<(Point, Vector, Vector)> {
+        dispatch!(self, s => s.point_d1_at(u, v, tol))
+    }
+
     fn jet_at(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<crate::SurfaceJet> {
         dispatch!(self, s => s.jet_at(u, v, tol))
     }
