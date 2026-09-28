@@ -311,7 +311,9 @@ impl Wedge {
         edge: &Shape,
         tol: Tolerances,
     ) -> OgeomResult<Built> {
-        apply_wedge(model, solid, Some(edge), &self.faces, self.additive, tol)
+        let mut built = apply_wedge(model, solid, Some(edge), &self.faces, self.additive, tol)?;
+        crate::support::credit_new_faces(model, solid, edge, &mut built)?;
+        Ok(built)
     }
 }
 

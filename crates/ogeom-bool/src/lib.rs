@@ -6278,6 +6278,9 @@ fn assemble_result(
 
     let model = rebuild.model;
     let sewn = sew(model, &faces, tol)?;
+    // Sewing rebuilds the pieces onto shared edges: the result's faces are
+    // its faces, reached from the inputs through both steps.
+    history = history.then(&sewn.history);
     for shell in &sewn.shells {
         if !is_shell_closed(model, shell)? {
             // Env-gated forensics: the open shell's unshared edges, the

@@ -105,6 +105,21 @@ fn fillet_edge_meeting(
     mates: Option<(usize, &[Mate])>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    let mut built = fillet_edge_seat(model, solid, edge, radius, mates, tol)?;
+    crate::support::credit_new_faces(model, solid, edge, &mut built)?;
+    Ok(built)
+}
+
+/// [`fillet_edge_meeting`] by seat, before the blend is credited to the
+/// edge.
+fn fillet_edge_seat(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius: f64,
+    mates: Option<(usize, &[Mate])>,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
     }

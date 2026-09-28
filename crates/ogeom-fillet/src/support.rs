@@ -604,6 +604,33 @@ pub(crate) fn face_from_edges(
     Ok(ogeom_algo::make_face_with_pcurves(model, surface, &[edges.to_vec()], tol)?.shape)
 }
 
+/// Record every face of `built`'s result that no face of `solid` reaches
+/// through its history as generated from `edge`: a blend or bevel face
+/// comes from the tool the boolean took it from, and the edge it replaces
+/// is where a caller naming faces through the operation finds it.
+pub(crate) fn credit_new_faces(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    built: &mut ogeom_algo::Built,
+) -> OgeomResult<()> {
+    let inputs = ogeom_topo::explore_unique(model, solid, ShapeType::Face)?;
+    for face in ogeom_topo::explore_unique(model, &built.shape, ShapeType::Face)? {
+        let reached = inputs.iter().any(|g| {
+            built
+                .history
+                .modified(g)
+                .iter()
+                .chain(built.history.generated(g))
+                .any(|x| x.is_same(&face))
+        });
+        if !reached {
+            built.history.generate(edge, face);
+        }
+    }
+    Ok(())
+}
+
 /// Sew the wedge's faces, demand a closed shell, and apply it to the solid:
 /// subtracted on a convex edge, fused on a concave one. Either way the
 /// history reads the same truth: the edge the blend replaces is gone.

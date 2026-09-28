@@ -11,6 +11,14 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A boolean's history reaches every face of its result (#88).** The
+  pieces were recorded, but sewing rebuilds them onto shared edges and
+  its record was not carried on, so only faces the sew left alone were
+  reached. A fillet or chamfer also records its blend or bevel face as
+  generated from the edge it replaces.
+
 ## [0.4.0] - 2026-09-28
 
 A minor release, since two public types change shape; `cargo
