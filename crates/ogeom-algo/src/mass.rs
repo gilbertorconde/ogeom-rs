@@ -728,20 +728,17 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
     // The chart rectangle comes from the pcurves, whose windows are the
     // *unscaled* surface's; a scaling placement changes the chart's metric
     // and the windows with it, so only rigid placements take the exact path.
-    if !matches!(
-        placement.kind(),
-        ogeom_math::TransformKind::Identity
-            | ogeom_math::TransformKind::Translation
-            | ogeom_math::TransformKind::Rotation
-    ) {
+    // A reflecting one turns the placed chart's normal against the face's.
+    let Some(handedness) = crate::mass_chart::rigid_handedness(&placement) else {
         return Ok(None);
-    }
-    let placed = surface.clone().transformed(&placement, tol)?;
-    let sign = if face.orientation() == ogeom_topo::Orientation::Reversed {
-        -1.0
-    } else {
-        1.0
     };
+    let placed = surface.clone().transformed(&placement, tol)?;
+    let sign = handedness
+        * if face.orientation() == ogeom_topo::Orientation::Reversed {
+            -1.0
+        } else {
+            1.0
+        };
 
     let wires = model.ordered_children_of(face)?;
     // One region per wire, and the integral is their sum: a face's outer
@@ -1265,7 +1262,10 @@ fn exact_wire(
         let centre2 = arc.circle().centre();
         let centre = placed.point_at(centre2.x, centre2.y, tol)?;
         let radius = arc.circle().radius();
-        let normal = frame.z().vector();
+        // The chart's own normal, as every other region takes it: under a
+        // reflection the frame's `z` is the image of the unplaced normal,
+        // and the sign already carries the turn.
+        let normal = frame.x().vector().cross(frame.y().vector());
         return Ok(Some(ExactFace::Disc {
             centre,
             e1: frame.x().vector(),

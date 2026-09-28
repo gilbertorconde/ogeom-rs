@@ -151,20 +151,40 @@ fn loops_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<
         knot_lines,
         surface: walked.placed,
         loops: walked.loops,
-        sign: if face.orientation() == Orientation::Reversed {
-            -1.0
-        } else {
-            1.0
-        },
+        sign: walked.handedness
+            * if face.orientation() == Orientation::Reversed {
+                -1.0
+            } else {
+                1.0
+            },
         u_ref,
         scale: walked.scale,
     }))
+}
+
+/// `1` for a placement that keeps a chart's metric and handedness, `-1` for
+/// one that keeps its metric and reflects it, `None` for one that scales:
+/// the pcurves are the unplaced surface's, and a scale changes the metric
+/// under them.
+pub(crate) fn rigid_handedness(placement: &ogeom_math::Transform) -> Option<f64> {
+    match placement.kind() {
+        ogeom_math::TransformKind::Identity
+        | ogeom_math::TransformKind::Translation
+        | ogeom_math::TransformKind::Rotation => Some(1.0),
+        ogeom_math::TransformKind::PlaneMirror | ogeom_math::TransformKind::PointMirror => {
+            Some(-1.0)
+        }
+        _ => None,
+    }
 }
 
 /// A face's boundary walked into closed chart loops.
 struct Walked {
     /// The surface, placed as the face is.
     placed: SurfaceGeometry,
+    /// `-1` where the placement reflects: the placed chart's own normal
+    /// then points against the face's.
+    handedness: f64,
     /// Each loop, with the sign that turns it round its region: `1` where
     /// the face lies to the left of the walk, `-1` where to the right.
     loops: Vec<(Vec<Segment>, f64)>,
@@ -215,14 +235,9 @@ fn walked(
     // The pcurves are the unplaced surface's; a rigid placement keeps its
     // chart, a scaling one would change the metric under them.
     let placement = face.transform(model.datums())?;
-    if !matches!(
-        placement.kind(),
-        ogeom_math::TransformKind::Identity
-            | ogeom_math::TransformKind::Translation
-            | ogeom_math::TransformKind::Rotation
-    ) {
+    let Some(handedness) = rigid_handedness(&placement) else {
         return Ok(None);
-    }
+    };
     let placed = surface.clone().transformed(&placement, tol)?;
     let ((u0, u1), (v0, v1)) = surface.domain();
     let period = Vector2::new(
@@ -336,6 +351,7 @@ fn walked(
         .collect();
     Ok(Some(Walked {
         placed,
+        handedness,
         loops,
         lo,
         scale,

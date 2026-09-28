@@ -191,3 +191,61 @@ fn a_prism_fuses_with_its_mirrored_copy() {
     assert!(bounds.low().unwrap().x <= -10.0 + 1e-6);
     assert!(bounds.high().unwrap().x >= 10.0 - 1e-6);
 }
+
+/// Mirrored bodies measure exactly, as their originals do: at the default
+/// chord a mesh would read a drum a percent or more out, and the exact
+/// integrals do not, reflected or not. A block with an oblique bore puts
+/// trimmed spline-free charts through the exact path as well.
+#[test]
+fn mirrored_bodies_measure_exactly_at_the_default_chord() {
+    let at_default = |model: &ogeom_topo::Model, s: &ogeom_topo::Shape| {
+        ogeom_algo::volume_properties(model, s, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let mut model = ogeom_topo::Model::new();
+    let drum = ogeom_algo::make_cylinder(
+        &mut model,
+        Frame::new(
+            Point::new(3.0, 0.0, 0.0),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap(),
+        2.0,
+        6.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let mirror = ogeom_math::Transform::plane_mirror(Point::ORIGIN, ogeom_math::Direction::X);
+    let mirrored = model.placed(&drum, mirror);
+    let want = core::f64::consts::PI * 4.0 * 6.0;
+    let v = at_default(&model, &mirrored);
+    assert!((v - want).abs() < want * 1e-9, "{v} against {want}");
+
+    let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let axis = ogeom_math::Direction::new(ogeom_math::Vector::new(0.3, 0.2, 1.0), T).unwrap();
+    let bore = ogeom_algo::make_cylinder(
+        &mut model,
+        Frame::new(
+            Point::new(4.0, 5.0, -3.0),
+            axis,
+            ogeom_math::Direction::new(ogeom_math::Vector::new(1.0, 0.0, -0.3), T).unwrap(),
+            T,
+        )
+        .unwrap(),
+        2.0,
+        20.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let bored = ogeom_bool::cut(&mut model, &block, &bore, T).unwrap().shape;
+    let mirrored = model.placed(&bored, mirror);
+    let (a, b) = (at_default(&model, &bored), at_default(&model, &mirrored));
+    assert!((a - b).abs() < a * 1e-9, "{b} against {a}");
+}

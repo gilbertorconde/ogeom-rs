@@ -4549,12 +4549,18 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     // substitutes, and a filtered run *is* replayed exactly. Zero cost with
     // the variable unset.
     if *AUDIT_BOUNDS {
-        let (audit_sections, audit_pieces, ..) = fill(&ga, &gb, true, tol)?;
-        audit_fill_equivalence(
-            (&sections, &section_pieces),
-            (&audit_sections, &audit_pieces),
-            tol,
-        );
+        // A pair only the unfiltered fill tries may refuse (a march beside a
+        // pole the filter never sends it), which says nothing of the
+        // filter; the audit says so and compares nothing.
+        match fill(&ga, &gb, true, tol) {
+            Ok((audit_sections, audit_pieces, ..)) => audit_fill_equivalence(
+                (&sections, &section_pieces),
+                (&audit_sections, &audit_pieces),
+                tol,
+            ),
+            Err(e @ ogeom_core::OgeomError::Cancelled) => return Err(e),
+            Err(e) => eprintln!("bound-filter audit skipped: the unfiltered fill refused: {e}"),
+        }
     }
 
     ogeom_core::progress::stage("boolean: split");

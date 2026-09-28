@@ -215,6 +215,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Mirror-placed bodies measure exactly.** The exact mass path refused
+  every reflecting placement, so a mirrored part was measured from its
+  mesh (a small drum 2.5% out at the default chord); a reflection is now
+  taken with the chart's normal turned back. The bound-filter audit
+  reports an unfiltered fill that refuses instead of failing the boolean.
+
 - **A face's chart outline closes across the openings its edges' ends
   leave**, so a point level with one no longer reads inside the face. The
   boolean's paving kept a section piece off a narrow torus wedge that way;
