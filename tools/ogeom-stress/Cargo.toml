@@ -15,7 +15,7 @@ name = "ogeom-stress"
 path = "src/main.rs"
 
 [dependencies]
-ogeom = { path = "../../crates/ogeom", version = "0.4.0" }
+ogeom = { path = "../../crates/ogeom", version = "0.4.1" }
 
 [lints]
 workspace = true

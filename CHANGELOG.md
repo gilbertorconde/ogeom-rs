@@ -11,6 +11,12 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-28
+
+A patch release with no API change needing a bump; `cargo semver-checks`
+finds nothing against 0.4.0. A boolean's history now reaches every face of
+its result, and a fillet's or chamfer's history its blend or bevel face.
+
 ### Fixed
 
 - **A boolean's history reaches every face of its result (#88).** The
@@ -1568,7 +1574,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.4...v0.4.0
 [0.3.4]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.2...v0.3.3
