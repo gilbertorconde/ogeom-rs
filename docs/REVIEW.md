@@ -128,19 +128,31 @@ Every item above is closed, and so are GitHub issues #85, #86 and #87
 (`a95ba28`, `dfe9e97`, `c40dc1d`) and the findings listed under
 Progress. Open, most useful first:
 
-1. **A face imported against its loop.** A spherical pocket in
-   `nist_ftc_06` arrives flagged to face out of the sphere while its loop
-   runs the way that faces in; `check` passes it, and measures and
-   booleans then read it inside out. `seam_periodic_faces` sets the faces
-   it seams right from their loops; any other face imported that way stays
-   wrong. Wanted: the reader orients a face from its bound's direction,
-   and `check` compares the two.
-2. **Three `nist_ftc_06` drills refused.** Drill 4 runs along y with its
-   axis on the part's planes at z = -31.75 (the drill-through-a-vertex
-   class): "the kept pieces did not close into a shell". Drills 0 and 3
-   are oblique: "arrangement left no piece of the face". Replay with
-   `ogeom-stress --case drill/nist_ftc_06_asme1_rd/<n>`; refusals now
-   print the drill's placement.
+1. **A face imported against its loop**: done `c2254d7`, `3dc8c25`. A
+   spherical pocket in `nist_ftc_06` arrives flagged to face out of the
+   sphere while its loop and its neighbours say in. `check` sees such a
+   face wherever its chart can be walked (the flags disagree along every
+   shared edge, and a probe confirms); this one could not be walked until
+   `seam_periodic_faces` seamed it, and the seam takes the face's side
+   from its loop. `fix_shape` now turns any face `check` finds inside out.
+   The reader keeps the file's flag: a repair belongs in healing, where it
+   is reported.
+2. **Three `nist_ftc_06` drills refused**, open, diagnosed. Replay with
+   `ogeom-stress --case drill/nist_ftc_06_asme1_rd/<n>`; refusals print
+   the drill's placement.
+   - Drill 4 ("the kept pieces did not close into a shell"): face 89 is a
+     hemisphere bounded by one great circle through both poles. Its stored
+     pcurve is a fit that strays far from the meridian (u = -0.30 where
+     the circle is at u = 0, v = -0.65), so the drill's section ends 0.3
+     from where the boundary is paved and the strands do not join. Wanted:
+     such a circle split at the poles into two exact half-meridians, the
+     neighbour rebuilt on the halves.
+   - Drills 0 and 3 ("arrangement left no piece of the face"): faces 4 and
+     86 are part-cylinders whose chart window lies at negative `u`
+     (-3.016 to -1.571). Their side edges are paved where the drill's
+     section crosses them, but no section strand reaches the face, and the
+     arrangement finds no cycle. Wanted: the section's pieces folded into
+     the face's own window before they are kept or dropped.
 
 ## Correctness bugs
 
