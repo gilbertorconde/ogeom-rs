@@ -1480,6 +1480,272 @@ pub fn make_revolution_band(
     Ok(make_face_on(model, surface_id, &[wire], tol)?.shape)
 }
 
+/// Build the face of a band between two closed rings of edges on a periodic
+/// analytic surface, joined by a synthesised seam.
+///
+/// [`make_revolution_band`] for rings of any number of edges, each edge a
+/// curve with a closed-form pcurve on the surface: a notched rim of arcs and
+/// rulings, not only a whole circle. Each ring is the edge occurrences of a
+/// closed wire in order, the first starting on the seam's column; a ring of
+/// one degenerate edge stands for a pole or an apex. The first ring is
+/// walked as given and fixes the seam's column and which way round the band
+/// runs; the second is walked back the other way, reversed if it was given
+/// winding the same way, and the seam joins the two start vertices along the
+/// surface's iso-curve. The face is built on a fresh copy of the surface.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// surface is not a periodic analytic surface, a ring does not go once round
+/// it, the rings' start vertices do not share a column, an edge has no
+/// closed-form pcurve, or the iso-curve has no closed form.
+pub fn make_band_of_rings(
+    model: &mut Model,
+    surface: &SurfaceGeometry,
+    ring_a: &[Shape],
+    ring_b: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    use ogeom_geom::Curve2d as _;
+    use ogeom_geom::Surface as _;
+    use ogeom_math::{Axis2, Direction2, Point2, Transform2, Vector2};
+
+    let ((ua_dom, ub_dom), _) = surface.domain();
+    let span = ub_dom - ua_dom;
+    if !surface.is_periodic_u() || span <= 0.0 || ring_a.is_empty() || ring_b.is_empty() {
+        ogeom_bail!(
+            Construction,
+            "a band needs two rings on a surface closing in u"
+        );
+    }
+    let point_of = |model: &Model, vertex: &Shape| -> OgeomResult<Point> {
+        let Some(data) = model.node(vertex).and_then(|n| n.data().as_vertex()) else {
+            ogeom_bail!(Dangling, "vertex is not in this model");
+        };
+        Ok(vertex.transform(model.datums())?.apply(data.point))
+    };
+    let start_of = |model: &Model, ring: &[Shape]| -> OgeomResult<Shape> {
+        let Some((start, _)) = edge_vertices(model, &ring[0])? else {
+            ogeom_bail!(Construction, "a band ring's edge has no vertex");
+        };
+        Ok(start)
+    };
+    let (start_a, start_b) = (start_of(model, ring_a)?, start_of(model, ring_b)?);
+    // The face's copy of the surface is turned about its axis so the seam
+    // stands at the start of its window: the band then lies in the
+    // surface's own period, as a primitive's does.
+    let surface = {
+        let Some(at) = analytic_chart_of(surface, point_of(model, &start_a)?) else {
+            ogeom_bail!(Construction, "the band's surface has no closed-form chart");
+        };
+        let (Some(origin), Some(axis)) = (surface_axis_origin(surface), surface_iso_axis(surface))
+        else {
+            ogeom_bail!(Construction, "the band's surface has no axis");
+        };
+        let turn = ogeom_math::Transform::rotation(
+            ogeom_math::Axis::new(origin, ogeom_math::Direction::new(axis, tol)?),
+            at.x - ua_dom,
+        );
+        ogeom_geom::Transformable::transformed(surface, &turn, tol)?
+    };
+    let surface = &surface;
+    let (Some(chart_a), Some(chart_b)) = (
+        analytic_chart_of(surface, point_of(model, &start_a)?),
+        analytic_chart_of(surface, point_of(model, &start_b)?),
+    ) else {
+        ogeom_bail!(Construction, "the band's surface has no closed-form chart");
+    };
+    // At the window's start, give or take a rounding either side of it.
+    let column = if (chart_a.x - ub_dom).abs() <= 1e-9 * span {
+        ua_dom
+    } else {
+        chart_a.x
+    };
+    let degenerate_b = ring_b.len() == 1
+        && model
+            .node(&ring_b[0])
+            .and_then(|n| n.data().as_edge())
+            .is_some_and(|d| d.degenerate);
+    // A pole's column is any column; a rim's start must stand on the seam.
+    let apart = (chart_b.x - column).rem_euclid(span);
+    if !degenerate_b && apart.min(span - apart) > 1e-6 * span {
+        ogeom_bail!(
+            Construction,
+            "the band rings' start vertices are not on one column"
+        );
+    }
+
+    // A ring's pcurves, each moved by whole periods to continue the walk
+    // from `from`, and where the walk ends.
+    type Walk = (Vec<(Shape, ogeom_geom::PlanarCurve, (f64, f64))>, Point2);
+    let walk = |model: &Model, ring: &[Shape], from: Point2| -> OgeomResult<Walk> {
+        let mut out = Vec::with_capacity(ring.len());
+        let mut at = from;
+        for occurrence in ring {
+            let Some(data) = model.node(occurrence).and_then(|n| n.data().as_edge()) else {
+                ogeom_bail!(Dangling, "edge is not in this model");
+            };
+            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+                ogeom_bail!(Construction, "a band ring's edge has no curve");
+            };
+            let Some(geometry) = model.geometry().curve(*curve) else {
+                ogeom_bail!(Dangling, "curve is not in this model");
+            };
+            let geometry = ogeom_geom::Transformable::transformed(
+                geometry,
+                &occurrence.transform(model.datums())?,
+                tol,
+            )?;
+            let Some(pcurve) = ogeom_intersect::exact_pcurve_over(&geometry, *range, surface, tol)
+            else {
+                ogeom_bail!(Construction, "a band ring's edge has no closed-form pcurve");
+            };
+            // A line pcurve's stated domain must cover the edge's range,
+            // which for a circle anchored anywhere runs past one period.
+            let pcurve = match &pcurve {
+                ogeom_geom::PlanarCurve::Line(l) => {
+                    let (lo, hi) = (l.domain().0.min(range.0), l.domain().1.max(range.1));
+                    ogeom_geom::Line2d::over(l.axis(), lo, hi)?.into()
+                }
+                _ => pcurve,
+            };
+            let reversed = occurrence.orientation() == ogeom_topo::Orientation::Reversed;
+            let (t0, t1) = if reversed {
+                (range.1, range.0)
+            } else {
+                (range.0, range.1)
+            };
+            let start = pcurve.point_at(t0, tol)?;
+            let turns = ((at.x - start.x) / span).round();
+            let pcurve = pcurve.transformed(
+                &Transform2::translation(Vector2::new(turns * span, 0.0)),
+                tol,
+            )?;
+            at = pcurve.point_at(t1, tol)?;
+            out.push((occurrence.clone(), pcurve, *range));
+        }
+        Ok((out, at))
+    };
+    let once_round = |from: f64, to: f64| ((to - from).abs() - span).abs() <= 1e-6 * span;
+
+    // The band stands in the period from the column up, the surface's own
+    // window's way round: a ring winding backward starts a period on.
+    let (mut walked_a, mut end_a) = walk(model, ring_a, Point2::new(column, chart_a.y))?;
+    let column = if end_a.x < column {
+        (walked_a, end_a) = walk(model, ring_a, Point2::new(column + span, chart_a.y))?;
+        column + span
+    } else {
+        column
+    };
+    if !once_round(column, end_a.x) {
+        ogeom_bail!(Construction, "the first band ring does not go once round");
+    }
+    let end_column = end_a.x;
+
+    // The second ring runs back from where the first ended.
+    let mut ring_b: Vec<Shape> = ring_b.to_vec();
+    let walked_b = if degenerate_b {
+        let toward = (column - end_column).signum();
+        let pole: ogeom_geom::PlanarCurve = ogeom_geom::Line2d::over(
+            Axis2::new(
+                Point2::new(end_column, chart_b.y),
+                Direction2::new(Vector2::new(toward, 0.0), tol)?,
+            ),
+            0.0,
+            span,
+        )?
+        .into();
+        vec![(ring_b[0].clone(), pole, (0.0, span))]
+    } else {
+        let mut walked = walk(model, &ring_b, Point2::new(end_column, chart_b.y))?;
+        if !once_round(end_column, walked.1.x) {
+            ogeom_bail!(Construction, "the second band ring does not go once round");
+        }
+        if (walked.1.x - column).abs() > 1e-6 * span {
+            ring_b = ring_b.iter().rev().map(Shape::reversed).collect();
+            walked = walk(model, &ring_b, Point2::new(end_column, chart_b.y))?;
+        }
+        walked.0
+    };
+
+    let surface_id = model.geometry_mut().add_surface(surface.clone());
+    for (edge, pcurve, range) in walked_a.into_iter().chain(walked_b) {
+        attach_pcurve(
+            model,
+            &edge,
+            pcurve,
+            surface_id,
+            Location::identity(),
+            range,
+        )?;
+    }
+
+    // The seam along the iso-curve at the column, built upward in `v`; the
+    // occurrence climbing from the first ring to the second stands on the
+    // column the first ring's walk ended at.
+    let (va, vb) = (chart_a.y, chart_b.y);
+    let Some(seam_curve) = surface_iso_u_curve(surface, column, tol) else {
+        ogeom_bail!(
+            Construction,
+            "the surface's iso-curve has no closed form; no seam can be built"
+        );
+    };
+    let (rows, from, to, downward) = if va <= vb {
+        ((va, vb), start_a.clone(), start_b.clone(), false)
+    } else {
+        ((vb, va), start_b.clone(), start_a.clone(), true)
+    };
+    let curve_range = (
+        iso_curve_parameter_at(surface, rows.0),
+        iso_curve_parameter_at(surface, rows.1),
+    );
+    let seam = make_edge_between(model, seam_curve, curve_range, &from, &to, tol)?.shape;
+    let side = |u: f64| -> OgeomResult<ogeom_geom::PlanarCurve> {
+        Ok(ogeom_geom::Line2d::over(
+            Axis2::new(
+                Point2::new(u, 0.0),
+                Direction2::new(Vector2::new(0.0, 1.0), tol)?,
+            ),
+            rows.0 - 1.0,
+            rows.1 + 1.0,
+        )?
+        .into())
+    };
+    let (forward_side, reversed_side) = if downward {
+        (column, end_column)
+    } else {
+        (end_column, column)
+    };
+    attach_seam(
+        model,
+        &seam,
+        side(forward_side)?,
+        side(reversed_side)?,
+        surface_id,
+        Location::identity(),
+        rows,
+    )?;
+    let up = if downward {
+        seam.reversed()
+    } else {
+        seam.clone()
+    };
+    let mut edges: Vec<Shape> = ring_a.to_vec();
+    edges.push(up.clone());
+    edges.extend(ring_b);
+    edges.push(up.reversed());
+    let wire = make_wire(model, &edges, tol)?.shape;
+    let face = make_face_on(model, surface_id, &[wire], tol)?.shape;
+    // The rings run as given, so the face's neighbours still meet them
+    // the other way; which way the loop then goes round the chart says
+    // which side the face faces. Clockwise, it faces against the surface.
+    Ok(if (end_column - column) * (vb - va) < 0.0 {
+        face.reversed()
+    } else {
+        face
+    })
+}
+
 /// Build the face of a band between two closed rings that need not be
 /// circles, each with a caller-supplied chart image.
 ///

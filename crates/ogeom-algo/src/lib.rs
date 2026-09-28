@@ -38,10 +38,10 @@ pub mod tight;
 
 pub use build::{
     attach_pcurve, attach_seam, chain_wire_branches, edge_vertices, find_plane, is_shell_closed,
-    is_wire_closed, make_apex_band, make_band_between, make_compound, make_compsolid, make_edge,
-    make_edge_between, make_face, make_face_on, make_face_with_pcurves, make_natural_face,
-    make_polygon, make_revolution_band, make_shell, make_solid, make_vertex, make_wire,
-    rings_are_parallels, surface_iso_u_curve,
+    is_wire_closed, make_apex_band, make_band_between, make_band_of_rings, make_compound,
+    make_compsolid, make_edge, make_edge_between, make_face, make_face_on, make_face_with_pcurves,
+    make_natural_face, make_polygon, make_revolution_band, make_shell, make_solid, make_vertex,
+    make_wire, rings_are_parallels, surface_iso_u_curve,
 };
 pub use check::{
     Diagnosis, Problem, Severity, check, check_self_intersection, check_tessellation,

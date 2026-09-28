@@ -148,6 +148,15 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`seam_periodic_faces`** gives imported periodic faces the seam or pole
+  edge their chart needs: a band between rings that each go round once
+  (the whole circle re-anchored and the other ring's crossing edge split
+  where needed), a sphere's cap bounded by one ring, and a sphere's face
+  reaching a pole with no edge along the pole's row. Each faces the way
+  its loop runs round the chart. `reanchor_periodic_rings` runs it after
+  the rings. `make_band_of_rings` builds a band from rings of any number
+  of edges.
+
 - **`native::compacted`:** a fresh model holding only what given roots
   reach, for reclaiming what a long session's discarded and failed
   operations left in the model.
@@ -205,6 +214,11 @@ bump may break the API and a patch bump may not.
   against a half space bounded by a plane.
 
 ### Fixed
+
+- **Booleans on parts with seamless periodic faces.** Every face of a
+  part is arranged, so one such face refused any boolean on it; three of
+  the six stress drills into `nist_ftc_06` now cut. A spherical pocket
+  imported facing out of the sphere comes out of healing facing in.
 
 - **Spline walls whose pcurves stray past the chart's border by rounding
   are measured exactly.** The exact volume path and its orientation check

@@ -14,6 +14,7 @@ pub mod fix_shape;
 pub mod reanchor;
 pub mod remodel;
 pub mod same_parameter;
+pub mod seam;
 pub mod small;
 
 pub mod canonical;
@@ -30,5 +31,6 @@ pub use reanchor::reanchor_periodic_rings;
 pub use remodel::{restrict_degree, swept_to_elementary};
 pub use reshape::Reshape;
 pub use same_parameter::{SameParameterReport, repair_same_parameter};
+pub use seam::seam_periodic_faces;
 pub use small::{SmallFaces, fix_small_faces, remove_small_solids};
 pub use upgrade::{merge_edges, reduce_tolerances, unify_same_domain};

@@ -385,9 +385,10 @@ fn generated_parts() -> Vec<Part> {
 fn corpus_parts() -> Vec<Part> {
     let dir = format!("{}/../../tests/corpus", env!("CARGO_MANIFEST_DIR"));
     let mut parts = Vec::new();
-    // Every part here drills in seconds. nist_ftc_06's drills are all
-    // refused today (a boundary strand of the drill's wall dangles), and
-    // the baseline says so, so a fix shows as an improvement.
+    // Every part here drills in seconds. Half of nist_ftc_06's drills are
+    // refused today (the arrangement leaves a face no piece, or the kept
+    // pieces do not close), and the baseline says so, so a fix shows as an
+    // improvement.
     for file in [
         "nist_ftc_11_asme1_rb.stp",
         "nist_ctc_01_asme1_rd.stp",

@@ -47,7 +47,10 @@ struct Chain {
 /// Re-anchor misaligned ring vertices so every periodic face can carry a seam.
 ///
 /// Faces already whole pass through untouched; a shape with nothing to heal
-/// comes back as itself with an empty history.
+/// comes back as itself with an empty history. After the rings, faces still
+/// without a seam or pole edge their chart needs get one through
+/// [`crate::seam_periodic_faces`]. The count is the rings moved and the
+/// faces seamed.
 ///
 /// # Errors
 ///
@@ -55,6 +58,26 @@ struct Chain {
 /// not a solid, or a broken face's structure resists the repair, in which
 /// case nothing is modified.
 pub fn reanchor_periodic_rings(
+    model: &mut Model,
+    shape: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<(Built, usize)> {
+    let (rings, moved) = reanchor_rings(model, shape, tol)?;
+    // A shape the seaming resists keeps its re-anchored rings.
+    let (seamed, count) = match crate::seam_periodic_faces(model, &rings.shape, tol) {
+        Ok(done) => done,
+        Err(e @ ogeom_core::OgeomError::Cancelled) => return Err(e),
+        Err(_) => return Ok((rings, moved)),
+    };
+    if count == 0 {
+        return Ok((rings, moved));
+    }
+    let history = rings.history.then(&seamed.history);
+    Ok((Built::new(seamed.shape, history), moved + count))
+}
+
+/// The ring re-anchoring alone.
+fn reanchor_rings(
     model: &mut Model,
     shape: &Shape,
     tol: Tolerances,
@@ -401,7 +424,7 @@ fn anchor_chain(
 }
 
 /// The circle parameter of a point on a circle curve.
-fn circle_parameter(curve: &Curve, p: Point) -> Option<f64> {
+pub(crate) fn circle_parameter(curve: &Curve, p: Point) -> Option<f64> {
     let Curve::Circle(c) = curve else {
         return None;
     };
@@ -429,7 +452,7 @@ fn rebuild_broken_face(
 }
 
 /// Rebuild an ordinary face around a substituted edge, pcurves recomputed.
-fn rebuild_plain_face(
+pub(crate) fn rebuild_plain_face(
     model: &mut Model,
     face: &Shape,
     substitution: &HashMap<TShapeId, Shape>,
@@ -473,7 +496,7 @@ fn rebuild_plain_face(
 
 /// Attach this face's pcurves to freshly rebuilt edges, where the projection
 /// has a closed form.
-fn attach_face_pcurves(
+pub(crate) fn attach_face_pcurves(
     model: &mut Model,
     surface: &SurfaceGeometry,
     surface_id: ogeom_topo::SurfaceId,
