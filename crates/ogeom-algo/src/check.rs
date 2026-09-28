@@ -180,7 +180,27 @@ pub fn check(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Diagn
     Ok(found)
 }
 
-/// Faces of a solid that face into its material.
+/// Report every face of a solid that faces into its material.
+fn check_orientation(
+    model: &Model,
+    solid: &Shape,
+    tol: Tolerances,
+    found: &mut Diagnosis,
+) -> OgeomResult<()> {
+    for face in inside_out_faces(model, solid, tol)? {
+        found.note(
+            Severity::Broken,
+            &face,
+            ShapeType::Face,
+            "the face's outward normal points into the material: its \
+             orientation is reversed"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// The faces of a solid that face into its material.
 ///
 /// A face's flag is the only thing that says which side of its surface the
 /// material is on, and a flipped one leaves every edge used twice and the
@@ -189,23 +209,25 @@ pub fn check(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Diagn
 /// opposite ways, see [`crate::mass`]); only where they disagree is each
 /// face probed, by stepping a little off it along its outward normal both
 /// ways and asking which side is material. A face whose outside is inside
-/// is reported; a probe that cannot tell (a step landing on the boundary,
-/// or both sides alike on a sliver) reports nothing, so a disagreement
-/// the probe cannot confirm stays silent rather than crying wolf.
-fn check_orientation(
-    model: &Model,
-    solid: &Shape,
-    tol: Tolerances,
-    found: &mut Diagnosis,
-) -> OgeomResult<()> {
+/// is named; a probe that cannot tell (a step landing on the boundary, or
+/// both sides alike on a sliver) names nothing, so a disagreement the probe
+/// cannot confirm stays silent rather than crying wolf. A face whose chart
+/// cannot be walked is not asked at all.
+///
+/// # Errors
+///
+/// [`OgeomError::Cancelled`](ogeom_core::OgeomError::Cancelled) and
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) only; a
+/// question the geometry cannot answer names no face.
+pub fn inside_out_faces(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<Vec<Shape>> {
     // A question the geometry cannot answer (a chart walk off its domain)
     // is no finding; only cancellation and a broken model are errors.
     let unsure = |e: ogeom_core::OgeomError| match e {
         ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_) => Err(e),
-        _ => Ok(()),
+        _ => Ok(Vec::new()),
     };
     match crate::mass::flags_agree(model, solid, tol) {
-        Ok(true) => return Ok(()),
+        Ok(true) => return Ok(Vec::new()),
         Ok(false) => {}
         Err(e) => return unsure(e),
     }
@@ -213,19 +235,13 @@ fn check_orientation(
         Ok(boundary) => boundary,
         Err(e) => return unsure(e),
     };
+    let mut out = Vec::new();
     for face in explore_unique(model, solid, ShapeType::Face)? {
         if faces_inward(model, &face, &boundary, tol)? == Some(true) {
-            found.note(
-                Severity::Broken,
-                &face,
-                ShapeType::Face,
-                "the face's outward normal points into the material: its \
-                 orientation is reversed"
-                    .into(),
-            );
+            out.push(face);
         }
     }
-    Ok(())
+    Ok(out)
 }
 
 /// Whether a face's outward normal points into the solid's material, probed

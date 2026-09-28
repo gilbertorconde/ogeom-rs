@@ -19,6 +19,7 @@
 //!   projection can honestly fit, as the readers do;
 //! - loose faces (a compound of them, or an open shell) are sewn where
 //!   they share edges;
+//! - a face facing into its solid's material is turned;
 //! - tolerances are tightened to what the geometry needs.
 //!
 //! What is not, and where it lives: small faces and small solids stay
@@ -58,6 +59,9 @@ pub struct FixReport {
     /// Tolerances widened so that every vertex is at least as loose as the
     /// edges it bounds and every edge as the faces it bounds.
     pub tolerances_widened: usize,
+    /// Faces turned the right way out: each faced into its solid's
+    /// material.
+    pub faces_turned: usize,
 }
 
 /// A fixed shape: the result, its history, and the report.
@@ -130,6 +134,23 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
         }
     }
 
+    // Faces facing into their solid's material, turned: their loops and
+    // their neighbours already agree about which way is out, and the flag
+    // is the one that says otherwise.
+    let mut faces_turned = 0;
+    let mut turn = Reshape::new();
+    for solid in explore_unique(model, &current, ShapeType::Solid)? {
+        for face in ogeom_algo::inside_out_faces(model, &solid, tol)? {
+            turn.replace(&face, turned_face(model, &face)?.reversed());
+            faces_turned += 1;
+        }
+    }
+    if !turn.is_empty() {
+        let built = turn.apply(model, &current)?;
+        history = history.then(&built.history);
+        current = built.shape;
+    }
+
     let tolerances_reduced = reduce_tolerances(model, &current, tol)?;
     // Last, because every step above may leave a vertex tighter than an
     // edge it bounds (a reduction tightens edges and faces, never below
@@ -149,6 +170,7 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
             sewn,
             tolerances_reduced,
             tolerances_widened,
+            faces_turned,
         },
     })
 }
@@ -289,4 +311,23 @@ fn collapse_small_edges(
         ogeom_bail!(Construction, "a collapse staged nothing");
     }
     Ok(count)
+}
+
+/// A new face node holding the same surface and wires as `face`'s, for
+/// replacing it turned: a replacement by the node itself is no change.
+fn turned_face(model: &mut Model, face: &Shape) -> OgeomResult<Shape> {
+    let stored = if face.orientation() == ogeom_topo::Orientation::Reversed {
+        face.reversed()
+    } else {
+        face.clone()
+    };
+    let Some(data) = model
+        .node(&stored)
+        .and_then(|n| n.data().as_face())
+        .cloned()
+    else {
+        ogeom_bail!(Dangling, "face is not in this model");
+    };
+    let wires = model.children_of(&Shape::of(stored.node()))?;
+    model.add_face(data, &wires)
 }

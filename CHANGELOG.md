@@ -148,6 +148,9 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fix_shape` turns faces that face into their solid's material,** and
+  reports how many (`faces_turned`); `inside_out_faces` names them.
+
 - **`seam_periodic_faces`** gives imported periodic faces the seam or pole
   edge their chart needs: a band between rings that each go round once
   (the whole circle re-anchored and the other ring's crossing edge split

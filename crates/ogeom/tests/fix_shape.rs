@@ -369,3 +369,34 @@ fn a_small_solid_beside_a_part_is_removed() {
     assert_eq!(solids[0].node(), part.node());
     assert!(built.history.is_deleted(&speck));
 }
+
+/// A box with one face flagged the wrong way: its loops and its
+/// neighbours agree about which way is out, the flag does not, and `check`
+/// says so. The fix turns that face and no other, and the box measures
+/// right again.
+#[test]
+fn a_face_facing_into_the_material_is_turned() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let face = explore_unique(&model, &block, ShapeType::Face).unwrap()[2].clone();
+    // A fresh node with the face's data, flagged the other way.
+    let data = model.node(&face).unwrap().data().as_face().unwrap().clone();
+    let wires = model.children_of(&Shape::of(face.node())).unwrap();
+    let copy = model.add_face(data, &wires).unwrap();
+    // The replacement takes the occurrence's own direction on top.
+    let mut reshape = ogeom::heal::Reshape::new();
+    reshape.replace(&face, copy.reversed());
+    let turned = reshape.apply(&mut model, &block).unwrap().shape;
+    let broken = ogeom::algo::check(&model, &turned, T).unwrap();
+    assert!(!broken.is_valid());
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &turned, T).unwrap();
+    assert_eq!(fixed.report.faces_turned, 1);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let v = ogeom::algo::volume_properties(&model, &fixed.shape, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((v - 1000.0).abs() < 1e-9, "{v}");
+}
