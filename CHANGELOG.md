@@ -11,6 +11,30 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-28
+
+A minor release, since two public types change shape; `cargo
+semver-checks` against 0.3.4 finds those two and nothing else. It follows
+an adversarial review of the kernel (`docs/REVIEW.md`): hostile files are
+refused instead of aborting the process, results of several shells nest
+by where they are, faces built inside out are found by `check` and
+turned by `fix_shape`, and most of the time went out of booleans,
+meshing, mass and fitting (the stress harness runs in 20 s where it took
+143 s, every outcome the same or better). It adds revolutions up to a
+face, arc joins for thick solids, pipe frame laws, corner styles and
+multisection pipes, flat spirals, sections of faces and open shells, and
+seams for imported periodic faces, with which booleans cut parts they
+refused before.
+
+### Changed
+
+- **`FixReport` has a `faces_turned` field**, so a literal building one
+  needs it.
+- **`step::parse::Arg::Typed` holds its keyword and arguments boxed
+  together,** `Typed(Box<(String, Vec<Arg>)>)` instead of
+  `Typed(String, Vec<Arg>)`, which makes every argument 32 bytes instead
+  of 56.
+
 ### Performance
 
 - **`check` walks the shape once** for every type it examines, instead of
@@ -1536,7 +1560,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.4...v0.4.0
 [0.3.4]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.1...v0.3.2
