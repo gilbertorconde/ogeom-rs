@@ -2,6 +2,12 @@ name: Release
 
 # A tag `vX.Y.Z` publishes every crate in the workspace to crates.io, once
 # the tag names the workspace's own version and the full check passes.
+# Run by hand with a tag, it publishes that tag from this workflow as it
+# stands on the branch it is run from: how a release whose run stopped
+# part-way is finished once the cause is mended.
+#
+# A crate whose version is already on crates.io is skipped, so a second run
+# publishes what the first did not.
 #
 # Authentication is crates.io trusted publishing: the job trades its GitHub
 # OIDC token for a short-lived crates.io token, so no API token is stored in
@@ -11,6 +17,11 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The version tag to publish, as vX.Y.Z"
+        required: true
 
 permissions:
   contents: read
@@ -30,13 +41,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: The tag names the workspace version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${TAG#v}"
           echo "workspace $version, tag $tag"
-          test "$version" = "$tag" || { echo "tag $GITHUB_REF_NAME does not match version $version"; exit 1; }
+          test "$version" = "$tag" || { echo "tag $TAG does not match version $version"; exit 1; }
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -55,8 +70,20 @@ jobs:
         id: auth
 
       # Publishes in dependency order, waiting for each crate to reach the
-      # index before the ones that depend on it.
+      # index before the ones that depend on it. Crates already published at
+      # this version are left out.
       - name: Publish
-        run: cargo publish --workspace
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          skip=()
+          for name in $(cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.publish == null) | .name'); do
+            if curl -sf -o /dev/null -A "ogeom-rs release (github.com/gilbertorconde/ogeom-rs)" \
+                "https://crates.io/api/v1/crates/$name/$version"; then
+              echo "$name $version is already published"
+              skip+=(--exclude "$name")
+            fi
+          done
+          cargo publish --workspace "${skip[@]}"
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
