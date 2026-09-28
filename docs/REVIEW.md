@@ -37,7 +37,7 @@ These were run, not only read:
 
 ## Progress
 
-Where each item stands, as of `2e489ce`. Every item is done, part done
+Where each item stands, as of `31dc6b1`. Every item is done, part done
 with the rest dropped for the reason given, or dropped.
 
 | Item | Status | Note |
@@ -47,7 +47,7 @@ with the rest dropped for the reason given, or dropped.
 | B2, B3 | done `5910cec` | seeds are lattice extrema; every polished point is checked for stationarity by angle (also the answer to N1 for extrema) |
 | B4 | done `5910cec` | parallel across the planes' windows (angle times reach within confusion), not by angle alone: coplanar faces built by different routes differ by 1e-11 rad |
 | B5 | done `2245ed4` | |
-| B6 | done `2245ed4` | not reached by a public test: a spline bore restated to face its axis does not rebuild in `canonical_simplify` (new, open) |
+| B6 | done `2245ed4`, `31dc6b1` | a spline bore restated to face its axis rebuilds and is tested since `31dc6b1` |
 | B7 | done `2245ed4` | the cause was the rule itself: a fusing wedge's blend face also faces the ball; the station pick was hardened too |
 | B8 | done `97fcfdf` | non-manifold half dropped: the model permits a non-manifold seam (`boolean_contact` fuses edge-touching boxes) |
 | B9 | done `2245ed4` | reproduced before fixing: a tube round an XZ semicircle came out inside out |
@@ -100,34 +100,47 @@ with the rest dropped for the reason given, or dropped.
 | N1 | part `5910cec` | extrema verify stationarity by angle after polishing; the polish thresholds stay absolute, since the verification catches a loose stop and a fast parametrisation stops on the step |
 | P24 | part `24a3d51`, `cb4c31c` | box tests where the profile found time; the dust and hug dedupe scans never showed |
 
-New findings while fixing, all open:
+New findings while fixing, and where each stands:
 
-- `to_nurbs` of a mirror-placed part turned its bore walls inside out
-  (fixed in `2245ed4`: the rebuild measures the normal turn).
-- The exact mass path refuses placed faces, so a mirror-placed solid is
-  measured from the mesh: at the default chord a small cylinder is 2.5%
-  out.
-- `canonical_simplify` cannot rebuild a face on a spline running against
-  its original direction ("edge 0 ends where edge 1 does not begin").
-- Every drill into `nist_ftc_06` is refused: a boundary strand of the
-  drill's wall dangles in the arrangement. The part is now in the stress
-  harness (`1dc2069`) so a fix shows.
-- `OGEOM_BOOL_AUDIT_BOUNDS=1` fails on the curved-corner blends (faces
-  2/0 and 2/1): the face-pair bound filter drops a pair that meets. It
-  fails at `cf744c4` too, so it predates this work.
+- `to_nurbs` of a mirror-placed part turned its bore walls inside out:
+  done `2245ed4` (the rebuild measures the normal turn).
+- The exact mass path refused placed faces, so a mirror-placed solid was
+  measured from the mesh (a small cylinder 2.5% out at the default
+  chord): done `364ddc6` (a reflection is taken with its handedness in
+  the sign).
+- `canonical_simplify` could not rebuild a face on a spline running
+  against its original direction: done `31dc6b1` (an unchanged edge's
+  direction was applied twice).
+- Every drill into `nist_ftc_06` was refused: done in part `c2254d7`.
+  The cause was seamless periodic faces (bands, caps, pole corners the
+  chart could not close); `seam_periodic_faces` seams them and three of
+  the six drills cut. The other three are open, below.
+- `OGEOM_BOOL_AUDIT_BOUNDS=1` failed on the curved-corner blends: done
+  `b360f60`. The filter was right; the unfiltered paving kept a section
+  piece off a torus wedge because the wedge's chart outline had an
+  opening. The audit now passes across the integration suite.
 - The reader cannot fuzz without a nightly toolchain; the seeded mangling
   test (`7584668`) stands in for the `cargo fuzz` targets.
 
 ## Where to pick up
 
 Every item above is closed, and so are GitHub issues #85, #86 and #87
-(`a95ba28`, `dfe9e97`, `c40dc1d`). Next, the new findings
-listed under Progress, most useful first:
+(`a95ba28`, `dfe9e97`, `c40dc1d`) and the findings listed under
+Progress. Open, most useful first:
 
-1. The ftc_06 drills: a boundary strand dangles in the arrangement.
-2. The bound-filter audit on the curved-corner blends.
-3. The exact mass path for placed faces (mirrored solids).
-4. `canonical_simplify` on a reversed spline.
+1. **A face imported against its loop.** A spherical pocket in
+   `nist_ftc_06` arrives flagged to face out of the sphere while its loop
+   runs the way that faces in; `check` passes it, and measures and
+   booleans then read it inside out. `seam_periodic_faces` sets the faces
+   it seams right from their loops; any other face imported that way stays
+   wrong. Wanted: the reader orients a face from its bound's direction,
+   and `check` compares the two.
+2. **Three `nist_ftc_06` drills refused.** Drill 4 runs along y with its
+   axis on the part's planes at z = -31.75 (the drill-through-a-vertex
+   class): "the kept pieces did not close into a shell". Drills 0 and 3
+   are oblique: "arrangement left no piece of the face". Replay with
+   `ogeom-stress --case drill/nist_ftc_06_asme1_rd/<n>`; refusals now
+   print the drill's placement.
 
 ## Correctness bugs
 
