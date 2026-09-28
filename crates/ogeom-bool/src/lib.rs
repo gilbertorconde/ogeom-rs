@@ -208,6 +208,7 @@ impl GFace {
                     }
                 }
                 weld_outline_ends(&mut lines, outline_snap(self, tol));
+                bridge_outline_gaps(&mut lines);
                 Some(lines)
             })
             .as_deref()
@@ -1807,6 +1808,7 @@ fn fill(
             }
         }
         weld_outline_ends(&mut lines, outline_snap(face, tol));
+        bridge_outline_gaps(&mut lines);
         Ok(lines)
     };
     let mut outlines_a = Vec::new();
@@ -3826,6 +3828,75 @@ fn outline_snap(face: &GFace, tol: Tolerances) -> f64 {
                 0.0
             },
         )
+}
+
+/// Join the outline's ends the weld left apart, each to the unmatched end
+/// nearest it where that end is nearest it too and the opening is small
+/// against the outline.
+///
+/// The topology says a face's boundary closes; where two edges' pcurves end
+/// further apart in the chart than their tolerances reach (a fitted blend
+/// edge meeting a column on a narrow torus wedge, a pole's row with no edge
+/// along it), a ray cast for containment passes through the opening, counts
+/// one crossing, and a point level with it reads inside. A short segment
+/// across each opening closes the outline as the topology does.
+fn bridge_outline_gaps(lines: &mut Vec<Vec<Point2>>) {
+    let ends: Vec<(usize, bool, Point2)> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.len() >= 2)
+        .flat_map(|(i, line)| [(i, false, line[0]), (i, true, line[line.len() - 1])])
+        .collect();
+    // Ends that meet within the parametric snap but not exactly are joined
+    // where they stand: the weld leaves them, since moving one by rounding
+    // noise takes a probe on a seam off it, but a ray level with the sliver
+    // between them still slips through.
+    let mut joins: Vec<Vec<Point2>> = Vec::new();
+    for (k, &(i, end_i, p)) in ends.iter().enumerate() {
+        for &(j, end_j, q) in &ends[k + 1..] {
+            let d = p.distance(q);
+            if (j, end_j) != (i, end_i) && d > 0.0 && d <= PARAM_SNAP {
+                joins.push(vec![p, q]);
+            }
+        }
+    }
+    let open: Vec<Point2> = ends
+        .iter()
+        .filter(|&&(i, end_i, p)| {
+            !ends
+                .iter()
+                .any(|&(j, end_j, q)| (j, end_j) != (i, end_i) && p.distance(q) <= PARAM_SNAP)
+        })
+        .map(|&(_, _, p)| p)
+        .collect();
+    // Only an opening small against the outline itself: a pole's row
+    // spans the chart and is the pole's to bound, not a gap.
+    let (mut lo, mut hi) = (
+        Point2::new(f64::INFINITY, f64::INFINITY),
+        Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+    );
+    for p in lines.iter().flatten() {
+        lo = Point2::new(lo.x.min(p.x), lo.y.min(p.y));
+        hi = Point2::new(hi.x.max(p.x), hi.y.max(p.y));
+    }
+    let reach = lo.distance(hi) * 1e-3;
+    let nearest = |k: usize| {
+        (0..open.len()).filter(|&m| m != k).min_by(|&a, &b| {
+            open[k]
+                .distance(open[a])
+                .total_cmp(&open[k].distance(open[b]))
+        })
+    };
+    for k in 0..open.len() {
+        if let Some(m) = nearest(k)
+            && k < m
+            && nearest(m) == Some(k)
+            && open[k].distance(open[m]) <= reach
+        {
+            lines.push(vec![open[k], open[m]]);
+        }
+    }
+    lines.extend(joins);
 }
 
 /// Close the gaps between a face's outline polylines.
@@ -6932,6 +7003,32 @@ mod tests {
 
     const T: Tolerances = Tolerances::millimetres();
     const PI: f64 = core::f64::consts::PI;
+
+    /// A narrow wedge whose last edge stops short of the column it meets,
+    /// once by more than the weld and once by less than the snap: closed,
+    /// a point level with the opening and outside the wedge reads outside,
+    /// and one inside still reads inside.
+    #[test]
+    fn an_outline_closes_across_the_openings_its_ends_leave() {
+        let top = PI / 2.0;
+        for short in [4e-4, 2.6e-8] {
+            let mut lines = vec![
+                vec![Point2::new(0.0, 0.0), Point2::new(0.06, 0.0)],
+                vec![Point2::new(0.06, 0.0), Point2::new(0.06, top)],
+                vec![Point2::new(0.06, top - short), Point2::new(0.0, 0.0)],
+            ];
+            bridge_outline_gaps(&mut lines);
+            let lines: Vec<&[Point2]> = lines.iter().map(Vec::as_slice).collect();
+            // Level with the opening, a turn round from the wedge, so its
+            // ray runs across the wedge.
+            let level = Point2::new(-5.298, top - short / 2.0);
+            assert!(!arrange::inside_many(&lines, level), "{short}");
+            assert!(
+                arrange::inside_many(&lines, Point2::new(0.05, 0.5)),
+                "{short}"
+            );
+        }
+    }
 
     #[test]
     fn coincidence_is_measured_over_the_overlap_and_nowhere_else() {

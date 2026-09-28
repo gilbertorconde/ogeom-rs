@@ -215,6 +215,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A face's chart outline closes across the openings its edges' ends
+  leave**, so a point level with one no longer reads inside the face. The
+  boolean's paving kept a section piece off a narrow torus wedge that way;
+  the bound-filter audit (`OGEOM_BOOL_AUDIT_BOUNDS`) now passes on the
+  curved-corner blends.
+
 - **Booleans on parts with seamless periodic faces.** Every face of a
   part is arranged, so one such face refused any boolean on it; three of
   the six stress drills into `nist_ftc_06` now cut. A spherical pocket

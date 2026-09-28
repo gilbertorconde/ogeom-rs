@@ -531,10 +531,11 @@ fn drill_case(part: &Part, rng: &mut Rng) -> Verdict {
         }
         Verdict::ok()
     })();
-    if verdict.outcome.is_bad() {
-        Verdict::of(verdict.outcome, format!("{}; {placed}", verdict.note))
-    } else {
+    // Anything short of ok carries where the drill went, to replay it.
+    if verdict.outcome == Outcome::Ok {
         verdict
+    } else {
+        Verdict::of(verdict.outcome, format!("{}; {placed}", verdict.note))
     }
 }
 
