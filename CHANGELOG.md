@@ -215,6 +215,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`canonical_simplify` rebuilds faces whose edges are used reversed.**
+  An edge it left unchanged kept its occurrence's direction and had it
+  applied again, so a bore spelt as a spline running the other way round
+  failed with "edge 0 ends where edge 1 does not begin".
+
 - **Mirror-placed bodies measure exactly.** The exact mass path refused
   every reflecting placement, so a mirrored part was measured from its
   mesh (a small drum 2.5% out at the default chord); a reflection is now

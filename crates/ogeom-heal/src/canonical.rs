@@ -159,7 +159,14 @@ pub fn canonical_simplify(
         for wire in model.ordered_children_of(&face)? {
             let mut edges = Vec::new();
             for edge in model.ordered_children_of(&wire)? {
-                let mapped = simplified_edge(model, &edge, tolerance, &mut edge_map, tol)?;
+                // Mapped in its stored direction; the occurrence's own
+                // direction goes back on below, once.
+                let stored = if edge.orientation() == ogeom_topo::Orientation::Reversed {
+                    edge.reversed()
+                } else {
+                    edge.clone()
+                };
+                let mapped = simplified_edge(model, &stored, tolerance, &mut edge_map, tol)?;
                 edges.push(if edge.orientation() == ogeom_topo::Orientation::Reversed {
                     mapped.reversed()
                 } else {

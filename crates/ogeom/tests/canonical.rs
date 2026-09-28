@@ -185,8 +185,7 @@ fn a_bore_spelt_either_way_round_stays_the_right_way_out() {
         .shape;
     let mirror = ogeom::math::Transform::plane_mirror(Point::ORIGIN, ogeom::math::Direction::X);
     let mirrored = model.placed(&drilled, mirror);
-    // A mirror keeps the volume; the placed part itself is measured from a
-    // mesh, so the exact figure is read off the original.
+    // A mirror keeps the volume: both parts are held to the original's.
     let before = ogeom::algo::volume_properties(&model, &drilled, Deflection::default(), T)
         .unwrap()
         .mass;
@@ -203,4 +202,75 @@ fn a_bore_spelt_either_way_round_stays_the_right_way_out() {
             "{after} against {before}"
         );
     }
+}
+
+/// A bore restated as a spline running the other way round, so its own
+/// normal points at the axis: recognised as a cylinder, whose normal points
+/// away, the face turns with it and the part stays the right way out.
+#[test]
+fn a_bore_spline_facing_its_axis_is_recognised_the_right_way_out() {
+    use ogeom::geom::BSplineSurface;
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 6.0), T)
+        .unwrap()
+        .shape;
+    let seat = Frame::new(
+        Point::new(5.0, 5.0, -1.0),
+        ogeom::math::Direction::Z,
+        ogeom::math::Direction::X,
+        T,
+    )
+    .unwrap();
+    let bore = ogeom::algo::make_cylinder(&mut model, seat, 2.0, 8.0, T)
+        .unwrap()
+        .shape;
+    let drilled = ogeom::boolean::cut(&mut model, &block, &bore, T)
+        .unwrap()
+        .shape;
+    let before = ogeom::algo::volume_properties(&model, &drilled, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    let backwards =
+        |s: &SurfaceGeometry| -> ogeom::core::OgeomResult<Option<(SurfaceGeometry, bool)>> {
+            let SurfaceGeometry::Cylinder(_) = s else {
+                return Ok(None);
+            };
+            let spline = s.to_bspline(T)?;
+            let grid = spline.grid();
+            let (nu, nv) = (grid.u_count(), grid.v_count());
+            let mut points = Vec::with_capacity(nu * nv);
+            for i in (0..nu).rev() {
+                for j in 0..nv {
+                    points.push(grid.get(i, j).unwrap());
+                }
+            }
+            let turned = BSplineSurface::rational(
+                spline.u_knots().reversed(),
+                spline.v_knots().clone(),
+                ogeom::math::ControlGrid::new(points, nu, nv)?,
+            )?;
+            Ok(Some((turned.into(), true)))
+        };
+    let keep = |_: &ogeom::geom::Curve, _: (f64, f64)| Ok(None);
+    let restated = ogeom::algo::restate_geometry(&mut model, &drilled, &backwards, &keep, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &restated, T).unwrap().is_valid());
+    let (built, report) = ogeom::heal::canonical_simplify(&mut model, &restated, 1e-6, T).unwrap();
+    assert!(
+        report
+            .simplified
+            .iter()
+            .any(|s| matches!(s, ogeom::heal::Simplified::Cylinder { .. })),
+        "{report:?}"
+    );
+    let diagnosis = ogeom::algo::check(&model, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let after = ogeom::algo::volume_properties(&model, &built.shape, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!(
+        (after - before).abs() < before * 1e-6,
+        "{after} against {before}"
+    );
 }
