@@ -63,6 +63,12 @@ bump may break the API and a patch bump may not.
   the axis at either of its two places in the chart, so the half of the
   profile a face does not use no longer reads interior points as outside.
 
+- **`check` finds a solid inside out as a whole.** Faces whose flags all
+  agree with each other were taken as facing out, so a shell turned
+  inside out everywhere read as valid. Where the flags agree, one face of
+  each shell is now probed against the material; a shell found inside out
+  is reported face by face, and `fix_shape` turns it back.
+
 - **A fillet chain holding closed edges rounds each (#94).** A piece of a
   rim the solid holds in parts is rounded the whole turn round, so the
   rim's other pieces (a second half passed in, or a whole rim a boolean

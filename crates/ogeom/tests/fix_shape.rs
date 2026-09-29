@@ -400,3 +400,32 @@ fn a_face_facing_into_the_material_is_turned() {
         .mass;
     assert!((v - 1000.0).abs() < 1e-9, "{v}");
 }
+
+/// A box with every face flagged the wrong way: the faces agree with each
+/// other along every edge, so only the material says it is inside out.
+/// `check` names every face, and the fix turns them all back.
+#[test]
+fn a_solid_inside_out_as_a_whole_is_turned() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let faces: Vec<Shape> = explore_unique(&model, &block, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .map(|f| f.reversed())
+        .collect();
+    let shell = ogeom::algo::make_shell(&mut model, &faces).unwrap().shape;
+    let inside_out = ogeom::algo::make_solid(&mut model, &[shell]).unwrap().shape;
+    let broken = ogeom::algo::check(&model, &inside_out, T).unwrap();
+    assert!(!broken.is_valid());
+    assert_eq!(broken.problems.len(), 6, "{broken}");
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &inside_out, T).unwrap();
+    assert_eq!(fixed.report.faces_turned, 6);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let v = ogeom::algo::volume_properties(&model, &fixed.shape, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((v - 1000.0).abs() < 1e-9, "{v}");
+}

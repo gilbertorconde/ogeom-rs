@@ -214,6 +214,11 @@ fn check_orientation(
 /// cannot confirm stays silent rather than crying wolf. A face whose chart
 /// cannot be walked is not asked at all.
 ///
+/// Flags that all agree may all be wrong: a shell turned inside out as a
+/// whole walks every edge consistently. So where they agree, one face of
+/// each shell is probed, and a shell whose probe finds material outside is
+/// named face by face.
+///
 /// # Errors
 ///
 /// [`OgeomError::Cancelled`](ogeom_core::OgeomError::Cancelled) and
@@ -226,16 +231,34 @@ pub fn inside_out_faces(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomR
         ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_) => Err(e),
         _ => Ok(Vec::new()),
     };
-    match crate::mass::flags_agree(model, solid, tol) {
-        Ok(true) => return Ok(Vec::new()),
-        Ok(false) => {}
+    let agree = match crate::mass::flags_agree(model, solid, tol) {
+        Ok(agree) => agree,
         Err(e) => return unsure(e),
-    }
+    };
     let boundary = match crate::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol) {
         Ok(boundary) => boundary,
         Err(e) => return unsure(e),
     };
     let mut out = Vec::new();
+    if agree {
+        // The first face of a shell that can answer answers for the shell;
+        // a few are tried, since a probe landing on the boundary says
+        // nothing.
+        for shell in explore_unique(model, solid, ShapeType::Shell)? {
+            let faces = explore_unique(model, &shell, ShapeType::Face)?;
+            for face in faces.iter().take(3) {
+                match faces_inward(model, face, &boundary, tol)? {
+                    Some(true) => {
+                        out.extend(faces.iter().cloned());
+                        break;
+                    }
+                    Some(false) => break,
+                    None => {}
+                }
+            }
+        }
+        return Ok(out);
+    }
     for face in explore_unique(model, solid, ShapeType::Face)? {
         if faces_inward(model, &face, &boundary, tol)? == Some(true) {
             out.push(face);
