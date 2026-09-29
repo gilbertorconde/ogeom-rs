@@ -36,6 +36,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A fillet chain holding closed edges rounds each (#94).** A piece of a
+  rim the solid holds in parts is rounded the whole turn round, so the
+  rim's other pieces (a second half passed in, or a whole rim a boolean
+  split in two on an earlier step) were gone when their turn came and the
+  chain refused as though its members interfered. A member lying on a
+  circle the chain has already rounded now counts as done. Eleven fillet
+  stress cases refused before now round.
+
 - **Booleans of whole revolutions whose seams coincide off the profile
   plane (#95).** A piece of a face was classified at a probe placed by the
   widest scanline interval across it; a scanline in the thin gap just past

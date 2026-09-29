@@ -310,6 +310,14 @@ pub fn fillet_edges(
             Ok(Mate { ends, settled })
         })
         .collect::<OgeomResult<_>>()?;
+    // The circles this chain has rounded. A piece of a rim the solid holds
+    // in parts is blended the whole turn round, so the rim's other pieces,
+    // asked for later or split off by the boolean, are rounded already:
+    // done, not consumed.
+    let mut round_rims: Vec<ogeom_math::Circle> = Vec::new();
+    let on_round_rim = |model: &Model, edge: &Shape, rims: &[ogeom_math::Circle]| {
+        rim_circle(model, edge, tol).is_some_and(|c| rims.iter().any(|r| same_circle(r, &c, tol)))
+    };
     for (index, edge) in edges.iter().enumerate() {
         // The edge as it stands on the current solid: itself on the first
         // step, and afterwards whatever the earlier blends left of it: one
@@ -329,7 +337,11 @@ pub fn fillet_edges(
                 }
                 let mut found = Vec::with_capacity(traced.len());
                 for one in traced {
-                    found.extend(refind_edges(model, &b.shape, one, tol)?);
+                    match refind_edges(model, &b.shape, one, tol) {
+                        Ok(live) => found.extend(live),
+                        Err(_) if on_round_rim(model, one, &round_rims) => {}
+                        Err(e) => return Err(e),
+                    }
                 }
                 (b.shape.clone(), found)
             }
@@ -338,7 +350,11 @@ pub fn fillet_edges(
         for target in &targets {
             // Each piece's blend replaces the solid; the next piece is
             // re-found on what that blend left.
-            let live = refind_edges(model, &current, target, tol)?;
+            let live = match refind_edges(model, &current, target, tol) {
+                Ok(live) => live,
+                Err(_) if on_round_rim(model, target, &round_rims) => continue,
+                Err(e) => return Err(e),
+            };
             let [target] = live.as_slice() else {
                 ogeom_bail!(
                     Construction,
@@ -348,6 +364,9 @@ pub fn fillet_edges(
             };
             let mut step =
                 fillet_edge_meeting(model, &current, target, radius, Some((index, &mates)), tol)?;
+            if let Some(rim) = rim_circle(model, target, tol) {
+                round_rims.push(rim);
+            }
             // The blend consumed the re-found stand-in; the caller's edge is
             // the same fact under its original name.
             if !target.is_same(edge) {
@@ -907,6 +926,27 @@ fn revolved_fillet(
 
     let faces = [flanks.wall_band, flanks.annulus, blend_band];
     apply_wedge(model, solid, Some(edge), &faces, seat.additive(), tol)
+}
+
+/// The circle an edge runs on, where it runs on one.
+fn rim_circle(model: &Model, edge: &Shape, tol: Tolerances) -> Option<ogeom_math::Circle> {
+    match edge_curve(model, edge, tol).ok()?.0 {
+        Curve::Circle(c) => Some(c.circle()),
+        _ => None,
+    }
+}
+
+/// Whether two circles are one: the same centre, radius and plane.
+fn same_circle(a: &ogeom_math::Circle, b: &ogeom_math::Circle, tol: Tolerances) -> bool {
+    let reach = tol.confusion() * 100.0;
+    a.centre().distance(b.centre()) <= reach
+        && (a.radius() - b.radius()).abs() <= reach
+        && a.frame()
+            .z()
+            .vector()
+            .cross(b.frame().z().vector())
+            .magnitude()
+            <= tol.angular()
 }
 
 /// The edge of `solid` standing where `edge` stood.

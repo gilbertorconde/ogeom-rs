@@ -1,5 +1,5 @@
 {
   "drill": { "ok": 202, "refused": 22, "invalid": 0, "wrong": 0, "panic": 0 },
-  "fillet": { "ok": 124, "refused": 36, "invalid": 0, "wrong": 0, "panic": 0 },
+  "fillet": { "ok": 134, "refused": 26, "invalid": 0, "wrong": 0, "panic": 0 },
   "pairs": { "ok": 119, "refused": 1, "invalid": 0, "wrong": 0, "panic": 0 }
 }
