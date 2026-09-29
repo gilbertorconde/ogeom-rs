@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A multisection pipe closes to a point (#92).** `make_pipe_sections`
+  takes a vertex as its first or last section where the spine starts or
+  ends: the section shrinks onto the spine and the skin closes on the
+  point, uncapped there. Down a straight spine it is the exact pyramid or
+  cone over the section.
+
 - **`PipeLaw::Fixed` (#90):** the section keeps the frame it has at the
   spine's start, carried along the spine by translation and never turned.
   Each section edge sweeps the exact B-spline `edge(u) + spine(v)` (the
@@ -21,6 +27,10 @@ bump may break the API and a patch bump may not.
   refused, as is one running in the plane.
 
 ### Fixed
+
+- **A skin narrowing to a point along a bend was built inside out.** Its
+  wall was turned away from the centroid of every row, which a bent skin
+  puts outside itself; it is turned away from its own section instead.
 
 - **A skinned loft through several sections closes to a point (#91).** A
   family fit refining past one control point per datum left spans with no

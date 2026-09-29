@@ -1038,7 +1038,6 @@ fn skinned_solid(
 ) -> OgeomResult<Built> {
     let wall = skinned_wall(model, rows, (None, None), tolerance, tol)?;
     let u_dom = wall.u_dom;
-    let inside = centroid_of(rows);
 
     let cap = |model: &mut Model,
                ring: &Shape,
@@ -1094,7 +1093,7 @@ fn skinned_solid(
                         .map(|p| Point::from_vector((p.to_vector() + apex.to_vector()) * 0.5))
                         .collect();
                     let rows = [row.to_vec(), half, vec![apex; row.len()]];
-                    Ok(apex_patch(model, &rows, Some(ring), inside, tolerance, tol)?.0)
+                    Ok(apex_patch(model, &rows, Some(ring), tolerance, tol)?.0)
                 }
             }
         };
@@ -1120,12 +1119,12 @@ fn skinned_solid(
 /// edge on one vertex, bounding the chart's whole top row the way a cone's
 /// apex bounds a countersink. The ring edge is adopted from `shared`
 /// where a neighbour already built it, and the face is turned to point
-/// away from `inside`. Returns the face and its ring edge.
+/// away from the section it passes through. Returns the face and its ring
+/// edge.
 fn apex_patch(
     model: &mut Model,
     rows: &[Vec<Point>],
     shared: Option<&Shape>,
-    inside: Point,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<(Shape, Shape)> {
@@ -1260,7 +1259,18 @@ fn apex_patch(
     let mid_v = f64::midpoint(v_dom.0, v_dom.1);
     let s_mid = surface_geo.point_at(mid_u, mid_v, tol)?;
     let (du, dv) = surface_geo.d1_at(mid_u, mid_v, tol)?;
-    let face = if du.cross(dv).dot(s_mid - inside) >= 0.0 {
+    // Inside is judged from the section the patch passes through at that
+    // row, not from the whole skin's centroid: a skin that bends puts that
+    // centroid outside itself, in the crook of the bend.
+    let local = {
+        let mut sum = Vector::ZERO;
+        for k in 0..16 {
+            let u = u_dom.0 + (u_dom.1 - u_dom.0) * f64::from(k) / 16.0;
+            sum += surface_geo.point_at(u, mid_v, tol)?.to_vector();
+        }
+        Point::from_vector(sum / 16.0)
+    };
+    let face = if du.cross(dv).dot(s_mid - local) >= 0.0 {
         face
     } else {
         face.reversed()
@@ -1291,8 +1301,7 @@ fn skinned_solid_to_apex(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     use ogeom_geom::Curve3d as _;
-    let inside = centroid_of(rows);
-    let (wall, ring0) = apex_patch(model, rows, None, inside, tolerance, tol)?;
+    let (wall, ring0) = apex_patch(model, rows, None, tolerance, tol)?;
     let (ring_curve, u_dom) = {
         let (curve, range) = spine_curve_of(model, &ring0)?;
         (curve, range)
@@ -4509,7 +4518,9 @@ fn law_loft(
 /// frame by the length run along the spine, matched point to point from
 /// each section's own start, so the result follows the spine rather than
 /// the chord between the sections. The sections are closed wires, or
-/// faces without holes; the ends are capped.
+/// faces without holes; the ends are capped. The first or last section may
+/// be a vertex where the spine starts or ends: the pipe closes to that
+/// point, uncapped there.
 ///
 /// # Errors
 ///
@@ -4551,7 +4562,38 @@ pub fn make_pipe_sections(
     // Each section: where along the spine it stands, and its samples in
     // the frame there.
     let mut placed: Vec<(f64, Vec<Point>)> = Vec::with_capacity(sections.len());
-    for section in sections {
+    // A point section: where it stands, and whether at the spine's end.
+    let mut apex: Option<(Point, bool)> = None;
+    // The last section's ring read, for the straight pipe to a point.
+    let mut last_ring: Option<Shape> = None;
+    for (index, section) in sections.iter().enumerate() {
+        if model.kind_of(section)? == ShapeType::Vertex {
+            let Some(data) = model.node(section).and_then(|n| n.data().as_vertex()) else {
+                ogeom_bail!(Dangling, "vertex is not in this model");
+            };
+            let point = section.transform(model.datums())?.apply(data.point);
+            let reach = tolerance.max(tol.confusion() * 1e3);
+            let (Some(head), Some(tail)) = (stations.first(), stations.last()) else {
+                ogeom_bail!(Construction, "the spine has no stations");
+            };
+            let at_end = if index + 1 == sections.len() && point.distance(tail.at) <= reach {
+                true
+            } else if index == 0 && point.distance(head.at) <= reach {
+                false
+            } else {
+                ogeom_bail!(
+                    Construction,
+                    "a point section stands first or last, where the spine \
+                     starts or ends"
+                );
+            };
+            apex = Some((point, at_end));
+            // Every sample at the frame's origin: the section shrinks onto
+            // the spine there.
+            let along = if at_end { run[run.len() - 1] } else { 0.0 };
+            placed.push((along, vec![Point::ORIGIN; AROUND]));
+            continue;
+        }
         let ring = match model.kind_of(section)? {
             ShapeType::Face => {
                 let rings = model.ordered_children_of(section)?;
@@ -4561,11 +4603,15 @@ pub fn make_pipe_sections(
                 rings[0].clone()
             }
             ShapeType::Wire => section.clone(),
-            _ => ogeom_bail!(Construction, "a section is a planar face or wire"),
+            _ => ogeom_bail!(
+                Construction,
+                "a section is a planar face or wire, or a point at an end"
+            ),
         };
         let Some(plane) = ogeom_algo::find_plane(model, &ring, tol)? else {
             ogeom_bail!(Construction, "a section is not planar");
         };
+        last_ring = Some(ring.clone());
         let side = |p: Point| (p - plane.origin()).dot(plane.normal().vector());
         let mut found: Option<(f64, usize, f64)> = None;
         for i in 0..stations.len() {
@@ -4620,6 +4666,20 @@ pub fn make_pipe_sections(
             );
         }
     }
+    // One section closing to a point down a straight spine: every sample
+    // runs straight to the point, which is the exact pyramid or cone over
+    // the section.
+    if let (Some((point, _)), Some(ring), 2) = (apex, &last_ring, sections.len())
+        && straight_legs(model, spine, tol)?.is_some_and(|legs| legs.len() == 1)
+    {
+        let tip = model.add_vertex(VertexData::new(point));
+        let mut built = make_loft(model, ring, &tip, tol)?;
+        built.history.generate(spine, built.shape.clone());
+        for section in sections {
+            built.history.generate(section, built.shape.clone());
+        }
+        return Ok(built);
+    }
     // A ring at every station from the first section's to the last's, the
     // two sections either side blended by the length between them.
     let (first, last) = (placed[0].0, placed[placed.len() - 1].0);
@@ -4665,13 +4725,25 @@ pub fn make_pipe_sections(
             tol,
         )
     };
-    ring_at(model, first, &at_along(first)?)?;
+    // The end a point section stands at has no ring: the skin closes on the
+    // point itself, which the loft takes last.
+    if apex.is_none_or(|(_, at_end)| at_end) {
+        ring_at(model, first, &at_along(first)?)?;
+    }
     for (i, &along) in run.iter().enumerate() {
         if along > first + tol.confusion() && along < last - tol.confusion() {
             ring_at(model, along, &frame_at(i)?)?;
         }
     }
-    ring_at(model, last, &at_along(last)?)?;
+    if apex.is_none_or(|(_, at_end)| !at_end) {
+        ring_at(model, last, &at_along(last)?)?;
+    }
+    if let Some((point, at_end)) = apex {
+        if !at_end {
+            rings.reverse();
+        }
+        rings.push(model.add_vertex(VertexData::new(point)));
+    }
     let mut built = make_loft_skinned(model, &rings, tolerance, tol)?;
     built.history.generate(spine, built.shape.clone());
     for section in sections {

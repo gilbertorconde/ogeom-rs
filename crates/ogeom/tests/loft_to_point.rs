@@ -107,3 +107,86 @@ fn a_skinned_loft_of_circles_closes_to_a_point_on_the_axis() {
     let v = volume(&model, &loft);
     assert!((v - swept).abs() < swept * 1e-3, "{v} against {swept}");
 }
+
+/// A 2 x 2 square face centred on the origin in the XY plane.
+fn square_face(model: &mut Model) -> Shape {
+    let wire = rectangle(model, (-1.0, -1.0), (1.0, 1.0), 0.0);
+    let plane = ogeom::math::Plane::new(Frame::WORLD);
+    ogeom::algo::make_face(
+        model,
+        ogeom::geom::PlaneSurface::new(plane).into(),
+        &[wire],
+        T,
+    )
+    .unwrap()
+    .shape
+}
+
+/// A pipe through a square and the point where its straight spine ends:
+/// the pyramid, from either end.
+#[test]
+fn a_pipe_closes_to_a_point_at_either_end() {
+    let want = 4.0 * 10.0 / 3.0;
+    for point_first in [false, true] {
+        let mut model = Model::new();
+        let square = square_face(&mut model);
+        let apex = model.add_vertex(VertexData::new(Point::new(0.0, 0.0, 10.0)));
+        let spine = make_polygon(
+            &mut model,
+            &[Point::ORIGIN, Point::new(0.0, 0.0, 10.0)],
+            false,
+            T,
+        )
+        .unwrap()
+        .shape;
+        // The point first: the spine runs from it to the square.
+        let (sections, spine) = if point_first {
+            let reversed = make_polygon(
+                &mut model,
+                &[Point::new(0.0, 0.0, 10.0), Point::ORIGIN],
+                false,
+                T,
+            )
+            .unwrap()
+            .shape;
+            (vec![apex, square], reversed)
+        } else {
+            (vec![square, apex], spine)
+        };
+        let pipe = ogeom::offset::make_pipe_sections(&mut model, &sections, &spine, false, 1e-3, T)
+            .unwrap()
+            .shape;
+        assert!(ogeom::algo::check(&model, &pipe, T).unwrap().is_valid());
+        assert!(has_vertex_at(&model, &pipe, Point::new(0.0, 0.0, 10.0)));
+        let v = volume(&model, &pipe);
+        assert!((v - want).abs() < want * 1e-3, "{v} against {want}");
+    }
+}
+
+/// Along a quarter circle the pipe closes exactly where the spine ends; its
+/// squares shrink about the spine, so it holds each square's area along the
+/// arc: 4 L / 3 by Pappus.
+#[test]
+fn a_bent_pipe_closes_to_the_spine_s_end() {
+    let mut model = Model::new();
+    let square = square_face(&mut model);
+    // About (10, 0, 0) in the XZ plane, from the origin heading up Z round
+    // to (10, 0, 10).
+    let frame = Frame::new(Point::new(10.0, 0.0, 0.0), Direction::Y, -Direction::X, T).unwrap();
+    let curve = CircleCurve::new(Circle::new(frame, 10.0, T).unwrap());
+    let edge = make_edge(&mut model, curve.into(), (0.0, PI / 2.0), T)
+        .unwrap()
+        .shape;
+    let spine = make_wire(&mut model, &[edge], T).unwrap().shape;
+    let end = Point::new(10.0, 0.0, 10.0);
+    let apex = model.add_vertex(VertexData::new(end));
+    let pipe =
+        ogeom::offset::make_pipe_sections(&mut model, &[square, apex], &spine, false, 1e-3, T)
+            .unwrap()
+            .shape;
+    assert!(ogeom::algo::check(&model, &pipe, T).unwrap().is_valid());
+    assert!(has_vertex_at(&model, &pipe, end));
+    let want = 4.0 * (10.0 * PI / 2.0) / 3.0;
+    let v = volume(&model, &pipe);
+    assert!((v - want).abs() < want * 5e-3, "{v} against {want}");
+}
