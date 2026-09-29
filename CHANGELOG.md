@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Helical sweeps of a profile off the axis (#89).**
+  `make_helical_sweep` takes a planar face in any plane clear of the axis,
+  not only one through it: a level profile square to the axis climbs as a
+  ramp or a coil of a flat section. The caps are the profile's plane and
+  that plane turned with it. A taper is taken for a profile through the
+  axis or square to it; a profile the axis runs through, or one the screw
+  carries partly forward through its plane and partly back, is refused.
+
 - **A multisection pipe closes to a point (#92).** `make_pipe_sections`
   takes a vertex as its first or last section where the spine starts or
   ends: the section shrinks onto the spine and the skin closes on the

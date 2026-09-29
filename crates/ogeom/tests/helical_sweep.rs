@@ -1,7 +1,7 @@
-//! The screw sweep: a profile in a plane through the axis, every point of
-//! it running its own helix. Its volume is what Pappus says (the profile's
-//! area times the path of its centroid round the axis) and it reaches
-//! exactly as far as the profile does.
+//! The screw sweep: a planar profile, every point of it running its own
+//! helix. Its volume is what Pappus says (the profile's area times the path
+//! of its centroid round the axis) and it reaches exactly as far as the
+//! profile does.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{check, make_face, make_polygon, shape_bounds, volume_properties};
@@ -404,4 +404,90 @@ fn a_groove_cuts_into_a_bore_drilled_by_a_cylinder_primitive() {
     };
     let (a, b) = (cut(true), cut(false));
     assert!((a - b).abs() < 1e-3, "{a} against {b}");
+}
+
+/// A disc lying level, square to the axis, climbing one pitch as it turns:
+/// every level cut is the disc, so the solid holds the disc's area times
+/// the rise, runs from 0 to the pitch along the axis, and reaches as far
+/// out as the disc does.
+#[test]
+fn a_level_profile_climbs_the_helix() {
+    use ogeom::algo::{make_edge, make_wire};
+    use ogeom::geom::CircleCurve;
+    use ogeom::math::Circle;
+    let mut model = Model::new();
+    let frame = Frame::new(Point::new(10.0, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let circle = CircleCurve::new(Circle::new(frame, 1.0, T).unwrap());
+    let edge = make_edge(
+        &mut model,
+        circle.into(),
+        (0.0, 2.0 * core::f64::consts::PI),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let wire = make_wire(&mut model, &[edge], T).unwrap().shape;
+    let disc = make_face(
+        &mut model,
+        PlaneSurface::new(Plane::new(frame)).into(),
+        &[wire],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let sweep =
+        ogeom::offset::make_helical_sweep(&mut model, &disc, z_axis(), 10.0, 1.0, false, 0.0, T)
+            .unwrap()
+            .shape;
+    let diagnosis = check(&model, &sweep, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let want = core::f64::consts::PI * 10.0;
+    let v = volume(&model, &sweep);
+    assert!((v - want).abs() < want * 1e-3, "{v} against {want}");
+    let mesh =
+        ogeom::mesh::triangulate(&model, &sweep, Deflection::with_chord(1e-3).unwrap(), T).unwrap();
+    let (low, high, reach) = mesh.positions.iter().fold(
+        (f64::INFINITY, f64::NEG_INFINITY, 0.0_f64),
+        |(lo, hi, r), p| (lo.min(p.z), hi.max(p.z), r.max(p.x.hypot(p.y))),
+    );
+    assert!(
+        low.abs() < 1e-6 && (high - 10.0).abs() < 1e-6,
+        "z {low} .. {high}"
+    );
+    assert!((reach - 11.0).abs() < 1e-3, "reaches {reach}");
+}
+
+/// A level disc the axis runs through has points with no helix to follow,
+/// and is refused rather than swept through itself.
+#[test]
+fn a_level_profile_on_the_axis_is_refused() {
+    use ogeom::algo::{make_edge, make_wire};
+    use ogeom::geom::CircleCurve;
+    use ogeom::math::Circle;
+    let mut model = Model::new();
+    let frame = Frame::new(Point::new(0.5, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let circle = CircleCurve::new(Circle::new(frame, 1.0, T).unwrap());
+    let edge = make_edge(
+        &mut model,
+        circle.into(),
+        (0.0, 2.0 * core::f64::consts::PI),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let wire = make_wire(&mut model, &[edge], T).unwrap().shape;
+    let disc = make_face(
+        &mut model,
+        PlaneSurface::new(Plane::new(frame)).into(),
+        &[wire],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let refused =
+        ogeom::offset::make_helical_sweep(&mut model, &disc, z_axis(), 10.0, 1.0, false, 0.0, T);
+    assert!(
+        matches!(refused, Err(ogeom::core::OgeomError::Construction(_))),
+        "{refused:?}"
+    );
 }

@@ -3172,10 +3172,11 @@ impl SpineWalk<'_> {
     }
 }
 
-/// Sweep a planar profile lying in a plane through `axis` along a helix
-/// about `axis`: a screw motion, the profile keeping its plane through the
-/// axis the whole way, every point of it running its own helix. The
-/// thread and spring operation.
+/// Sweep a planar profile along a helix about `axis`: a screw motion,
+/// every point of the profile running its own helix. The thread and spring
+/// operation, with the profile in a plane through the axis; a profile in
+/// any other plane clear of the axis (square to it, a ramp or a stair's
+/// tread) climbs the same way.
 ///
 /// `pitch` is the advance per turn along `axis`, `turns` how far the
 /// profile turns, `left_handed` turns it the other way about the axis for
@@ -3189,12 +3190,13 @@ impl SpineWalk<'_> {
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
-/// the profile is not a planar face whose plane holds the axis, reaches
-/// the axis, would meet itself one turn on (its extent along the axis is
-/// not less than the pitch, or for a flat spiral its extent away from the
-/// axis not less than the taper), or tapers onto the axis; if `turns` is
-/// not positive, `pitch` is negative, or both `pitch` and the taper are
-/// zero.
+/// the profile is not a planar face, meets the axis, would meet itself one
+/// turn on (its extent along the axis is not less than the pitch, or for a
+/// flat spiral its extent away from the axis not less than the taper), is
+/// carried partly forward through its own plane and partly back, or tapers
+/// onto the axis; if a taper is asked of a profile whose plane neither
+/// holds the axis nor stands square to it; if `turns` is not positive,
+/// `pitch` is negative, or both `pitch` and the taper are zero.
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if a wall
 /// cannot be fitted.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -3232,17 +3234,69 @@ pub fn make_helical_sweep(
         ogeom_bail!(Construction, "a helical sweep sweeps a planar face");
     };
     let z = axis.direction.vector();
-    if plane.normal().vector().dot(z).abs() > tol.angular()
-        || plane.distance_to(axis.location) > tol.confusion() * 100.0
-    {
+    let n = plane.normal().vector();
+    let holds_axis = n.dot(z).abs() <= tol.angular()
+        && plane.distance_to(axis.location) <= tol.confusion() * 100.0;
+    let level = (n.dot(z).abs() - 1.0).abs() <= tol.angular();
+    // A taper moves every point away from the axis by the same amount, which
+    // keeps a profile in a plane only where that plane holds the axis or
+    // stands square to it.
+    if taper_per_turn.abs() > tol.confusion() && !holds_axis && !level {
         ogeom_bail!(
             Construction,
-            "the profile's plane does not hold the axis; a helical sweep \
-             turns a profile about an axis in its own plane"
+            "a tapered helical sweep carries a profile in a plane through the \
+             axis or square to it; an oblique profile would leave its plane"
         );
+    }
+    // A profile the axis runs through has points with no helix to follow:
+    // where the axis pierces the plane is asked of the profile's rings,
+    // read in the plane.
+    if !holds_axis && n.dot(z).abs() > tol.angular() {
+        let reach = (plane.origin() - axis.location).dot(n) / z.dot(n);
+        let pierce = axis.location + z * reach;
+        let frame = plane.frame();
+        let flat = |p: Point| {
+            let l = frame.to_local(p);
+            Point2::new(l.x, l.y)
+        };
+        let at = flat(pierce);
+        let mut inside = false;
+        let mut touches = false;
+        for wire in explore(model, profile, Filter::OfType(ShapeType::Wire))? {
+            let ring: Vec<Point2> = sample_wire(model, &wire, 256, tol)?
+                .into_iter()
+                .map(flat)
+                .collect();
+            for (k, a) in ring.iter().enumerate() {
+                let b = ring[(k + 1) % ring.len()];
+                let (ab, ap) = (b - *a, at - *a);
+                let t = (ap.dot(ab) / ab.dot(ab).max(f64::MIN_POSITIVE)).clamp(0.0, 1.0);
+                touches |= (*a + ab * t).distance(at) <= tol.confusion() * 100.0;
+                if (a.y > at.y) != (b.y > at.y) && at.x < a.x + (at.y - a.y) / (b.y - a.y) * ab.x {
+                    inside = !inside;
+                }
+            }
+        }
+        if inside || touches {
+            ogeom_bail!(
+                Construction,
+                "the profile meets the axis, where a helical sweep has no helix \
+                 to follow"
+            );
+        }
     }
     let total = core::f64::consts::TAU * turns;
     let sense = if left_handed { -1.0 } else { 1.0 };
+    // How a point sets off at the start of the turn: up the axis by the
+    // pitch, round it, and out by the taper, each per radian.
+    let travel = |p: Point| -> Vector {
+        let foot = axis.project(p);
+        let out = p - foot;
+        let rho = out.magnitude().max(f64::MIN_POSITIVE);
+        let radial = out / rho;
+        (z * pitch + radial * taper_per_turn) / core::f64::consts::TAU
+            + z.cross(radial) * (rho * sense)
+    };
     // The screw image of a point after turning through `theta`.
     let screw = |p: Point, theta: f64| -> OgeomResult<Point> {
         let foot = axis.project(p);
@@ -3267,6 +3321,34 @@ pub fn make_helical_sweep(
     let loops = explore(model, profile, Filter::OfType(ShapeType::Wire))?;
     if loops.is_empty() {
         ogeom_bail!(Construction, "the profile has no loop to sweep");
+    }
+    // Every point leaves the profile's plane the same way, or the profile
+    // sweeps back through where it has been; a plane the motion runs
+    // along everywhere (a level profile with no pitch) sweeps nothing.
+    {
+        let (mut ahead, mut behind) = (0.0_f64, 0.0_f64);
+        for wire in &loops {
+            for p in sample_wire(model, wire, 64, tol)? {
+                let t = travel(p);
+                let across = t.dot(n) / t.magnitude().max(f64::MIN_POSITIVE);
+                ahead = ahead.max(across);
+                behind = behind.max(-across);
+            }
+        }
+        if ahead > tol.angular() && behind > tol.angular() {
+            ogeom_bail!(
+                Construction,
+                "the screw carries part of the profile forward through its plane \
+                 and part back; the sweep runs into itself"
+            );
+        }
+        if ahead <= tol.angular() && behind <= tol.angular() {
+            ogeom_bail!(
+                Construction,
+                "the screw carries the profile along its own plane; it sweeps \
+                 no volume"
+            );
+        }
     }
     // One turn on, the profile must clear itself: along the axis by the
     // pitch, or for a flat spiral away from it by the taper.
@@ -3454,13 +3536,21 @@ pub fn make_helical_sweep(
     // screwed on to where it ends.
     for (end, loops) in cap_loops.iter().enumerate() {
         let theta = if end == 0 { 0.0 } else { total };
-        let at = screw(centre_of(model, profile, tol)?, theta)?;
-        // Square to the way the profile turns there: out of the solid,
-        // back at the start and on at the end.
+        let centre = centre_of(model, profile, tol)?;
+        let at = screw(centre, theta)?;
+        // The profile's plane, turned with it: out of the solid, back
+        // against the motion at the start and on with it at the end.
         let normal = {
-            let out = at - axis.project(at);
-            let travel = z.cross(out / out.magnitude()) * sense;
-            if end == 0 { -travel } else { travel }
+            let (sin, cos) = (sense * theta).sin_cos();
+            let along = z * n.dot(z);
+            let square = n - along;
+            let turned = along + square * cos + z.cross(square) * sin;
+            let forward = if turned.dot(travel(centre)) >= 0.0 {
+                turned
+            } else {
+                -turned
+            };
+            if end == 0 { -forward } else { forward }
         };
         let cap_plane = Plane::through(at, Direction::new(normal, tol)?);
         let mut reach = 1.0_f64;
