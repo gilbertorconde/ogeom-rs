@@ -11,6 +11,23 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-29
+
+A minor release, since one public enum gains a variant: `cargo
+semver-checks` against 0.4.1 finds `PipeLaw::Fixed` added to an exhaustive
+enum, and nothing else in the fifteen crates. It adds helical sweeps of a
+profile off the axis, pipes and skinned lofts that close to a point, and a
+pipe law that carries its section by translation. Unevenly scaled spheres
+and revolved solids now mesh, measure and cut as the ellipsoids they are,
+through their axis and on their seam's plane included; a profile turned
+past a quarter turn revolves outward; and `check` finds a solid inside out
+as a whole.
+
+### Changed
+
+- **`PipeLaw` has a new variant, `Fixed` (#90).** A `match` over
+  `PipeLaw` needs an arm for it.
+
 ### Added
 
 - **Helical sweeps of a profile off the axis (#89).**
@@ -1670,7 +1687,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.4...v0.4.0
 [0.3.4]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.3...v0.3.4
