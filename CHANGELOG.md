@@ -23,6 +23,13 @@ bump may break the API and a patch bump may not.
   one. A piece whose probe no ray can read is also asked at its next probe
   before the boolean gives up.
 
+- **A traced section round a whole loop is no longer taken for a wandering
+  trace.** Two surfaces meeting all the way round (a near-coaxial cone and
+  cylinder), whose faces hold only an arc of the loop, gave a section
+  longer than four times the faces' extent, and the guard against traces
+  lapping beside a chart's pole refused it. The guard now allows a turn
+  round the section's own extent as well.
+
 ## [0.5.1] - 2026-09-29
 
 A patch release: `cargo semver-checks` against 0.5.0 finds no change

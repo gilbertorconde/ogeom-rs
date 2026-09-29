@@ -1578,28 +1578,17 @@ fn fill(
                             continue;
                         }
                         // A section can be no longer than a turn round the
-                        // faces it cuts: a marched trace that wandered off
-                        // beside a chart's pole came back twenty-five times
-                        // the circle it stood for, faithfully fitted. That
-                        // is no section, and is refused by name.
+                        // faces it cuts or round its own extent: a marched
+                        // trace that wandered off beside a chart's pole came
+                        // back twenty-five times the circle it stood for,
+                        // faithfully fitted. That is no section, and is
+                        // refused by name. A whole loop of two surfaces
+                        // meeting all the way round, faces cutting only an
+                        // arc of it, is one turn round its own extent.
                         if !sc.exact {
-                            use ogeom_geom::Curve3d as _;
-                            let (lo, hi) = sc.curve.domain();
-                            let mut length = 0.0_f64;
-                            let mut last: Option<Point> = None;
-                            for k in 0..=64 {
-                                let t = if k == 64 {
-                                    hi
-                                } else {
-                                    lo + (hi - lo) * f64::from(k) / 64.0
-                                };
-                                let p = sc.curve.point_at(t, tol)?;
-                                if let Some(q) = last {
-                                    length += q.distance(p);
-                                }
-                                last = Some(p);
-                            }
-                            let turn = 4.0 * fa.bound.diagonal().max(fb.bound.diagonal());
+                            let (length, reach) = length_and_reach(&sc.curve, tol)?;
+                            let turn =
+                                4.0 * fa.bound.diagonal().max(fb.bound.diagonal()).max(reach);
                             if *DEBUG_WIRE {
                                 eprintln!(
                                     "SECTION CHECK faces {ia}/{ib} exact {} closed {} length {length:.4} turn {turn:.4} tol {:.2e}",
@@ -1731,26 +1720,9 @@ fn fill(
                                         );
                                     }
                                     let curve: Curve = fitted.curve.into();
-                                    let length = {
-                                        use ogeom_geom::Curve3d as _;
-                                        let (lo, hi) = curve.domain();
-                                        let mut length = 0.0_f64;
-                                        let mut last: Option<Point> = None;
-                                        for k in 0..=64 {
-                                            let t = if k == 64 {
-                                                hi
-                                            } else {
-                                                lo + (hi - lo) * f64::from(k) / 64.0
-                                            };
-                                            let p = curve.point_at(t, tol)?;
-                                            if let Some(q) = last {
-                                                length += q.distance(p);
-                                            }
-                                            last = Some(p);
-                                        }
-                                        length
-                                    };
-                                    let turn = 4.0 * fa.bound.diagonal().max(fb.bound.diagonal());
+                                    let (length, reach) = length_and_reach(&curve, tol)?;
+                                    let turn = 4.0
+                                        * fa.bound.diagonal().max(fb.bound.diagonal()).max(reach);
                                     if length > turn {
                                         ogeom_bail!(
                                             NotDone,
@@ -3958,6 +3930,31 @@ fn weld_outline_ends(lines: &mut [Vec<Point2>], snap: f64) {
             *p = q;
         }
     }
+}
+
+/// A curve's length and the diagonal of the box its points span, both from
+/// the same 64 samples: a trace lapping one place many times is far longer
+/// than its box, and a loop is about a turn round it.
+fn length_and_reach(curve: &Curve, tol: Tolerances) -> OgeomResult<(f64, f64)> {
+    use ogeom_geom::Curve3d as _;
+    let (lo, hi) = curve.domain();
+    let mut length = 0.0_f64;
+    let mut last: Option<Point> = None;
+    let mut span = ogeom_math::Aabb::default();
+    for k in 0..=64 {
+        let t = if k == 64 {
+            hi
+        } else {
+            lo + (hi - lo) * f64::from(k) / 64.0
+        };
+        let p = curve.point_at(t, tol)?;
+        if let Some(q) = last {
+            length += q.distance(p);
+        }
+        last = Some(p);
+        span = span.with_point(p);
+    }
+    Ok((length, span.diagonal()))
 }
 
 fn chart_point_of(face: &GFace, p: Point, tol: Tolerances) -> Option<Point2> {
