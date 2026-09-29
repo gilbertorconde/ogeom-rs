@@ -11,6 +11,14 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-29
+
+A patch release: `cargo semver-checks` against 0.5.0 finds no change
+needing a bump in any of the fifteen crates, and every crate packages and
+verifies in a publish dry run. It adds direct editing of a solid's faces
+(`offset_faces`, `move_faces`), and a mesh converted with recognition
+keeps its recognized faces on the triangles they replace.
+
 ### Added
 
 - **Direct editing of a solid's faces (#98).** `offset_faces` offsets the
@@ -1720,7 +1728,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.3.4...v0.4.0
