@@ -1,4 +1,4 @@
-//! §H of `docs/PLAN.md`: removing a set of faces, the wound closed from the
+//! Removing a set of faces, the wound closed from the
 //! neighbours' own geometry, measured against the solids the features were
 //! cut from, not against plausibility.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]

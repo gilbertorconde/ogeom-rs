@@ -125,7 +125,7 @@ its result, and a fillet's or chamfer's history its blend or bevel face.
 
 A minor release, since two public types change shape; `cargo
 semver-checks` against 0.3.4 finds those two and nothing else. It follows
-an adversarial review of the kernel (`docs/REVIEW.md`): hostile files are
+an adversarial review of the kernel: hostile files are
 refused instead of aborting the process, results of several shells nest
 by where they are, faces built inside out are found by `check` and
 turned by `fix_shape`, and most of the time went out of booleans,

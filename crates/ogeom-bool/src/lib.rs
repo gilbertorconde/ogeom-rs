@@ -5433,7 +5433,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                              with no coincident partner face to compare \
                              sides against; edge or vertex contact is \
                              refused rather than resolved; see the \
-                             remaining work in docs/PLAN.md"
+                             open items in docs/PLAN.md"
                             );
                         };
                         state

@@ -1,4 +1,4 @@
-//! §C1 of `docs/PLAN.md`: a profile swept along a planar spine, the way a
+//! A profile swept along a planar spine, the way a
 //! moulding runs round a frame.
 //!
 //! Every claim is a closed form. A square spine with a square profile is

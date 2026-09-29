@@ -25,8 +25,7 @@ use crate::recognize::Feature;
 /// tolerances.
 ///
 /// Not zero: a tool flush with the faces it meets is a coincidence at every
-/// opening at once, and the boolean does not assemble it. The kernel's
-/// `docs/PLAN.md` §H carries this, with this constant as its reproduction.
+/// opening at once, and the boolean does not assemble it.
 ///
 /// Not small, either, and this is the part that is not obvious. A margin
 /// leaves a sliver band standing past the opening, and that band's own
@@ -101,7 +100,7 @@ pub fn remove_feature(
             Construction,
             "undoing a blend or a bevel means restoring the corner it eased, \
              which is the wedge construction run backwards and belongs with \
-             the blends; see docs/PLAN.md"
+             the blends"
         ),
     }
 }

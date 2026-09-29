@@ -6,8 +6,7 @@
 //! fit, measure where the fit is worst, refine the knots exactly there, and
 //! repeat until the error target is met.
 //!
-//! `docs/PLAN.md` carries this with a warning worth repeating: a fit that
-//! silently picks its own resolution and reports success is the shape of answer
+//! A fit that silently picks its own resolution and reports success is the shape of answer
 //! that gets trusted. So the result here carries the error actually reached and
 //! whether the target was met, and a fit that ran out of room says so rather
 //! than rounding "close" up to "done".

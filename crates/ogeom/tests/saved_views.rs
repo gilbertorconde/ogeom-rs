@@ -1,4 +1,4 @@
-//! §E3 of `docs/PLAN.md`: saved views and notes. An annotated part organises
+//! Saved views and notes. An annotated part organises
 //! its PMI presentation into named views; the views survive the native
 //! document format and STEP, and notes survive the document.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]

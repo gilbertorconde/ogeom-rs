@@ -1,4 +1,4 @@
-//! §F3 of `docs/PLAN.md`: glTF read back.
+//! glTF read back.
 //!
 //! What this crate writes it reads, and what *another* writer might have
 //! written it also reads: the indirection is the format, so the tests give the

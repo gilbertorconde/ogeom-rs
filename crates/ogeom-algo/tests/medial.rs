@@ -1,4 +1,4 @@
-//! §J of `docs/PLAN.md`: the medial axis, held to closed forms: the
+//! The medial axis, held to closed forms: the
 //! rectangle's roof line and the triangle's incenter.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 

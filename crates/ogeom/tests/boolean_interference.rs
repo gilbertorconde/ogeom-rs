@@ -1,5 +1,5 @@
-//! The five configurations §A of `docs/PLAN.md` names, each measured against
-//! a closed form.
+//! Five configurations of tangency and coincidence in the boolean, each
+//! measured against a closed form.
 //!
 //! They are one family: every one of them is the classifier being asked where
 //! a piece stands at a place where the question has no answer: on a

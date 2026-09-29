@@ -179,8 +179,8 @@ fn tangency_along_a_circle_produces_fragments_not_a_curve() {
     // contact circle: on both surfaces to rounding, describing nothing.
     //
     // Pinned as the documented limit it is. The honest answer needs
-    // tangential contact traced as its own kind of curve, which is recorded
-    // in the remaining work in docs/PLAN.md.
+    // tangential contact traced as its own kind of curve, which is listed
+    // as open in docs/PLAN.md.
     let torus: SurfaceGeometry =
         TorusSurface::new(Torus::new(Frame::WORLD, 3.0, 1.0, T).unwrap()).into();
     let resting = pln(Point::new(0.0, 0.0, 1.0), Vector::Z);

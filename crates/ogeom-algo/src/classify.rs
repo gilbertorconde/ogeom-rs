@@ -359,8 +359,6 @@ impl PreparedFace {
 /// redone from scratch every time, which for a boolean means once per face
 /// piece. Measured on a four-hole cut, preparing took 3.5 ms against 5.6 µs
 /// of ray casting: six hundred times the work of the question being asked.
-///
-/// `docs/PLAN.md` §A named this as owed and said what it was worth.
 #[derive(Debug)]
 pub struct SolidBoundary {
     faces: Vec<PreparedFace>,

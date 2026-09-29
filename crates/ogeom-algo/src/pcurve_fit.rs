@@ -195,9 +195,8 @@ pub fn fit_projected_pcurve_capped(
     // periodicity, is the right test: a skinned loft's wall is a clamped
     // B-spline that closes on itself without being periodic, and its
     // projections near the joining column land in either copy: both
-    // answers are right pointwise, and only continuity chooses. This is
-    // the docs/PLAN.md F5 case, and it is decided here for both exchange
-    // readers at once.
+    // answers are right pointwise, and only continuity chooses. It is
+    // decided here for both exchange readers at once.
     let ((ua, ub), (va, vb)) = surface.domain();
     let spans = (
         if surface.is_periodic_u() || surface.is_closed_u(tol) {

@@ -16,8 +16,8 @@
 //! and no amount of placement makes a circle record that. The type system says
 //! so: [`transformed`] takes a [`Transform`], which is a similarity by
 //! construction, and a general affine transform is a different type it will not
-//! accept. Applying one means rebuilding the geometry, which is not written
-//! yet; see the deferred list in `docs/PLAN.md`.
+//! accept. Applying one means rebuilding the geometry, which is what
+//! `general_transformed_shape` does.
 //!
 //! # A copy is for editing, not for moving
 //!

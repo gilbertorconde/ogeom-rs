@@ -1,4 +1,4 @@
-//! §I of `docs/PLAN.md`: exact geometry that is secretly analytic becomes
+//! Exact geometry that is secretly analytic becomes
 //! the analytic thing, and geometry that is not, stays what it is.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 

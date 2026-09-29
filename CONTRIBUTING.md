@@ -21,8 +21,7 @@ exist, what a format's records mean. The design itself is worked out here.
 **Use the field's vocabulary.** A boundary representation is a b-rep, a point
 in the plane is a `Point2`, a curve in a surface's parameters is a pcurve, a
 blend is a fillet. Private jargon would make the kernel harder to read for no
-gain. `docs/PLAN.md` and `docs/DATA_MODEL.md` use conventional names on
-purpose. Naming a *concept* is not naming a dependency.
+gain. `docs/DATA_MODEL.md` uses conventional names on purpose. Naming a *concept* is not naming a dependency.
 
 **Do not name another kernel in anything committed.** The vocabulary belongs to
 the field; product names do not belong to us. Where a format needs its own

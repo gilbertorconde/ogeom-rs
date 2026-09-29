@@ -1,9 +1,8 @@
 # The corpus
 
-Outside-authored input for the verification strategy (`docs/PLAN.md`,
-*Verification*): files chosen by people who were not us, so the tests stop
-measuring the authors' imagination. Consumed by the STEP importer when §17
-lands; until then this directory holds the files and their provenance, ready.
+Outside-authored input: files chosen by people who were not us, so the tests
+stop measuring the authors' imagination. The exchange tests, the stress
+harness and the benchmarks read them.
 
 ## Rules
 

@@ -1,4 +1,4 @@
-//! §B1 of `docs/PLAN.md`: the rolling ball solved for rather than projected.
+//! The rolling ball solved for rather than projected.
 //!
 //! The property under test is the ball's own definition, and it is checked at
 //! every station rather than at the ends: the centre is exactly the radius

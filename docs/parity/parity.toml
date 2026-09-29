@@ -1072,7 +1072,7 @@ crate = "ogeom-fillet"
 verdict = "partial"
 restriction = """Single edges, tangent chains and full rims blend, constant \
 and variable radius, and the corner where three blends meet is closed: \
-docs/PLAN.md §B (B2) with §A (A6) behind it. The marched fillet carries the \
+a corner blend applied through the boolean's tangency at a face's own vertex. The marched fillet carries the \
 rolling ball to topology on seats no closed form speaks (a fitted seam \
 between two analytic walls, a conic seat re-opened to its full loop), with \
 the blend fitted through the ball's own arcs and the legs melting on the \
