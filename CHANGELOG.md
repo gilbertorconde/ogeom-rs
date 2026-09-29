@@ -36,6 +36,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Booleans of whole revolutions whose seams coincide off the profile
+  plane (#95).** A piece of a face was classified at a probe placed by the
+  widest scanline interval across it; a scanline in the thin gap just past
+  an arc's chords, and inside the arc, crosses no chord of it and reports
+  an interval as wide as the piece, with its midpoint in a hole. Room is now
+  the lesser of the interval's width and its scanline's gap. Four fillet
+  stress cases refused before now round.
+
 - **A skin narrowing to a point along a bend was built inside out.** Its
   wall was turned away from the centroid of every row, which a bent skin
   puts outside itself; it is turned away from its own section instead.

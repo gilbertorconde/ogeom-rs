@@ -614,7 +614,12 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
         for pair in crossings.as_chunks::<2>().0 {
             let width = pair[1] - pair[0];
             if width > snap {
-                candidates.push((width, Point2::new(f64::midpoint(pair[0], pair[1]), level)));
+                // Room is the lesser of the interval's width and its
+                // scanline's gap: a level in a thin gap may pass just beyond
+                // an arc's chords and inside the arc itself, where the
+                // chords report an interval as wide as the whole piece.
+                let room = width.min(gap);
+                candidates.push((room, Point2::new(f64::midpoint(pair[0], pair[1]), level)));
                 // And its quarter positions, ranked below the midpoint. Moving
                 // the scanline is not enough on its own: a piece symmetric
                 // about a chart-vertical line (a cylinder band, a revolved
@@ -623,14 +628,8 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
                 // every one of these "different" probes at once. The quarter
                 // heights above exist for the same reason in the other
                 // direction; this is that rule, applied to the width.
-                candidates.push((
-                    width * 0.5,
-                    Point2::new(width.mul_add(0.25, pair[0]), level),
-                ));
-                candidates.push((
-                    width * 0.5,
-                    Point2::new(width.mul_add(0.75, pair[0]), level),
-                ));
+                candidates.push((room * 0.5, Point2::new(width.mul_add(0.25, pair[0]), level)));
+                candidates.push((room * 0.5, Point2::new(width.mul_add(0.75, pair[0]), level)));
             }
         }
     }
