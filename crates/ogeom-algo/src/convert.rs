@@ -281,10 +281,18 @@ fn rebuild(
                 tol,
             )?;
             let mut flipped = false;
+            // Under an affine map the turn is measured on the spline before
+            // the map moves it, where the old surface's normal still means
+            // something, and the map's own reflection goes on top.
+            let mut turned_before_affine = None;
             let patch_surface: SurfaceGeometry = match restate {
                 Restate::Nurbs => {
-                    let mut patch = placed.to_bspline(tol)?;
+                    let mut patch = profile_held(&placed, old_window, tol).to_bspline(tol)?;
                     if let Some(t) = affine {
+                        let unmapped: SurfaceGeometry = patch.clone().into();
+                        turned_before_affine =
+                            turned_by_rebuild(&old_surface, &placement, old_window, &unmapped, tol)
+                                .map(|turned| turned != (t.linear.determinant() < 0.0));
                         patch = transformed_patch(&patch, t)?;
                     }
                     patch.into()
@@ -361,8 +369,28 @@ fn rebuild(
                         continue;
                     }
 
-                    let (new_edge, new_curve, new_range) = match new_edges.get(&key) {
-                        Some(found) => found.clone(),
+                    // An occurrence placed differently may still lie where
+                    // one already converted lies (a rotated copy of a profile
+                    // shares its edge on the axis of the turn), and is then
+                    // that edge.
+                    let found = match new_edges.get(&key) {
+                        Some(found) => Some(found.clone()),
+                        None => {
+                            let at = occurrence_points(model, &edge, &data, &map, tol)?;
+                            let same = new_edges
+                                .iter()
+                                .filter(|((node, _), _)| *node == edge.node())
+                                .find(|(_, (_, curve, range))| lies_at(curve, *range, at, tol))
+                                .map(|(_, found)| found.clone());
+                            if let Some(same) = &same {
+                                history.modify(&edge, same.0.clone());
+                                new_edges.insert(key, same.clone());
+                            }
+                            same
+                        }
+                    };
+                    let (new_edge, new_curve, new_range) = match found {
+                        Some(found) => found,
                         None => {
                             let built = convert_edge(
                                 model,
@@ -554,7 +582,7 @@ fn rebuild(
             let measured = if affine.is_none() {
                 turned_by_rebuild(&old_surface, &placement, old_window, &patch_surface, tol)
             } else {
-                None
+                turned_before_affine
             };
             let reflected = measured
                 .unwrap_or(!face.location().preserves_handedness(model.datums())? != flipped);
@@ -571,6 +599,45 @@ fn rebuild(
     let solid = make_solid(model, &shells)?.shape;
     history.modify(shape, solid.clone());
     Ok(Built::new(solid, history))
+}
+
+/// An edge occurrence's start, middle and end, placed and mapped.
+fn occurrence_points(
+    model: &Model,
+    edge: &Shape,
+    data: &ogeom_topo::EdgeData,
+    map: &dyn Fn(Point) -> Point,
+    tol: Tolerances,
+) -> OgeomResult<Option<[Point; 3]>> {
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        return Ok(None);
+    };
+    let Some(geometry) = model.geometry().curve(*curve) else {
+        return Ok(None);
+    };
+    let placement = edge.transform(model.datums())?;
+    let mut out = [Point::ORIGIN; 3];
+    for (slot, t) in out
+        .iter_mut()
+        .zip([range.0, f64::midpoint(range.0, range.1), range.1])
+    {
+        *slot = map(placement.apply(geometry.point_at(t, tol)?));
+    }
+    Ok(Some(out))
+}
+
+/// Whether a converted curve over `range` runs through `at`'s start,
+/// middle and end.
+fn lies_at(curve: &Curve, range: (f64, f64), at: Option<[Point; 3]>, tol: Tolerances) -> bool {
+    let Some([a, m, b]) = at else {
+        return false;
+    };
+    let near = |t: f64, p: Point| {
+        curve
+            .point_at(t, tol)
+            .is_ok_and(|q| q.distance(p) <= tol.confusion() * 1e2)
+    };
+    near(range.0, a) && near(f64::midpoint(range.0, range.1), m) && near(range.1, b)
 }
 
 /// One edge converted: exact B-spline over its range, vertices carried.
@@ -939,15 +1006,50 @@ fn degenerate_row(
         ogeom_bail!(Dangling, "pcurve is not in this model");
     };
     let (lo, hi) = row.domain();
-    let v_old = f64::midpoint(row.point_at(lo, tol)?.y, row.point_at(hi, tol)?.y);
+    let at = row.point_at(f64::midpoint(lo, hi), tol)?;
+    let v_old = at.y;
     let (_, (va_old, vb_old)) = old.domain();
     let ((nu0, nu1), (nv0, nv1)) = new.domain();
-    let v_new = if (v_old - va_old).abs() <= (v_old - vb_old).abs() {
-        nv0
-    } else {
-        nv1
-    };
+    // The row where the new surface reaches the pole: a profile running
+    // past its pole (a whole circle revolved) puts the pole inside the
+    // chart, not at an end. Where the rows never reach it, conversion
+    // preserves ends, and the old row's nearer end is the new one's.
+    let pole = old.point_at(at.x, v_old, tol)?;
+    let v_new =
+        pole_row(new, pole, tol).unwrap_or(if (v_old - va_old).abs() <= (v_old - vb_old).abs() {
+            nv0
+        } else {
+            nv1
+        });
     ogeom_geom::Line2d::segment(Point2::new(nu0, v_new), Point2::new(nu1, v_new), tol)
+}
+
+/// The `v` at which a surface's middle column reaches `pole`, to the
+/// confusion distance, or `None` where it does not come that close: the
+/// column sampled, the nearest sample narrowed by golden sections.
+fn pole_row(surface: &SurfaceGeometry, pole: Point, tol: Tolerances) -> Option<f64> {
+    const SAMPLES: u32 = 256;
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let u = f64::midpoint(u0, u1);
+    let gap = |v: f64| {
+        surface
+            .point_at(u, v, tol)
+            .map_or(f64::INFINITY, |p| p.distance(pole))
+    };
+    let at = |k: u32| v0 + (v1 - v0) * f64::from(k) / f64::from(SAMPLES);
+    let best = (0..=SAMPLES).min_by(|&a, &b| gap(at(a)).total_cmp(&gap(at(b))))?;
+    let (mut lo, mut hi) = (at(best.saturating_sub(1)), at((best + 1).min(SAMPLES)));
+    let golden = (5.0_f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..80 {
+        let (a, b) = (hi - golden * (hi - lo), lo + golden * (hi - lo));
+        if gap(a) <= gap(b) {
+            hi = b;
+        } else {
+            lo = a;
+        }
+    }
+    let v = f64::midpoint(lo, hi);
+    (gap(v) <= tol.confusion()).then_some(v)
 }
 
 /// The surface shrunk to the face's own chart region, with a margin.
@@ -978,6 +1080,30 @@ fn turned_by_rebuild(
     let (nu, nv) = foot.parameters;
     let now = new.normal_at(nu, nv, tol).ok()?.vector();
     Some(was.dot(now) < 0.0)
+}
+
+/// A revolution's profile held to the rows the face uses, exactly, for
+/// converting: a profile running on past a pole (a whole circle turned)
+/// would put the pole inside the converted chart, where no row of it is an
+/// end. The turn stays whole. Any other surface is itself.
+fn profile_held(
+    surface: &SurfaceGeometry,
+    window: ChartWindow,
+    tol: Tolerances,
+) -> SurfaceGeometry {
+    let SurfaceGeometry::Revolution(_) = surface else {
+        return surface.clone();
+    };
+    let ((du0, du1), (dv0, dv1)) = surface.domain();
+    let (_, (v0, v1)) = window;
+    if !(v0.is_finite() && v1.is_finite()) || v1 - v0 <= tol.parametric() {
+        return surface.clone();
+    }
+    ogeom_geom::TrimmedSurface::new(surface.clone(), (du0, du1), (v0.max(dv0), v1.min(dv1)), tol)
+        .map_or_else(
+            |_| surface.clone(),
+            |t| SurfaceGeometry::Trimmed(Box::new(t)),
+        )
 }
 
 fn bounded_to_face(
@@ -1064,6 +1190,13 @@ fn bounded_to_face(
                 |_| placed.clone(),
                 |t| SurfaceGeometry::Trimmed(Box::new(t)),
             )
+        }
+        // A revolution keeps its whole surface for the restatements that
+        // recognise it, and reports the rows the face uses, which is what
+        // its conversion is held to.
+        SurfaceGeometry::Revolution(_) => {
+            let ((du0, du1), _) = placed.domain();
+            return Ok((placed.clone(), ((du0, du1), (v0, v1))));
         }
         other => other.clone(),
     };

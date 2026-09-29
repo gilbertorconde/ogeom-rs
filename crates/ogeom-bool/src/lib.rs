@@ -1287,15 +1287,18 @@ fn face_trim_lines(face: &GFace, tol: Tolerances) -> Vec<Vec<Point2>> {
 }
 
 /// Remove period tears from a sampled polyline, axis by axis.
-fn unwrap_polyline(line: &mut [Point2], surface: &SurfaceGeometry) {
+fn unwrap_polyline(line: &mut [Point2], surface: &SurfaceGeometry, tol: Tolerances) {
     let ((ua, ub), (va, vb)) = surface.domain();
+    // A surface closed without being periodic (a sphere spelt as a spline)
+    // tears the same way: a closed section's sample at its end folds back to
+    // its start, one column across the chart from where the strand arrives.
     let spans = (
-        if surface.is_periodic_u() {
+        if surface.is_periodic_u() || surface.is_closed_u(tol) {
             ub - ua
         } else {
             0.0
         },
-        if surface.is_periodic_v() {
+        if surface.is_periodic_v() || surface.is_closed_v(tol) {
             vb - va
         } else {
             0.0
@@ -4677,7 +4680,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             // Folding the parameter can tear the sampled polyline at the
             // period; unwrap it pointwise, then bring the whole strand
             // into the chart with one shift.
-            unwrap_polyline(&mut line, &face.surface);
+            unwrap_polyline(&mut line, &face.surface, tol);
             {
                 let trim: Vec<&[Point2]> = strands
                     .iter()
@@ -4793,7 +4796,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     &face.surface,
                     tol,
                 )?;
-                unwrap_polyline(&mut line, &face.surface);
+                unwrap_polyline(&mut line, &face.surface, tol);
                 let boundary_lines: Vec<&[Point2]> = strands
                     .iter()
                     .filter(|st| st.boundary)

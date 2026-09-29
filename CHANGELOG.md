@@ -11,6 +11,19 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Unevenly scaled spheres and revolved solids are what they look like
+  (#93).** A revolution whose profile runs on past its pole (a whole circle
+  turned) was converted to a spline over the whole profile, and its pole
+  put at the chart's end instead of where the surface reaches it; each
+  face is now converted over the rows it uses, a pole is placed where the
+  surface reaches it, and under an affine map whether the conversion
+  turned the normal is measured before the map. A partial sweep's two
+  sides share their edge on the axis through the conversion. A boolean
+  with a sphere spelt as a spline no longer tears a closed section at the
+  seam, so a scaled sphere cuts as the ellipsoid it is.
+
 ## [0.4.1] - 2026-09-28
 
 A patch release with no API change needing a bump; `cargo semver-checks`
