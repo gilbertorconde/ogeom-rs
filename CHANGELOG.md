@@ -11,6 +11,18 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A pad within a converted solid fuses (#99).** A pad sketched on a
+  converted part's own outline and sunk into it runs along the part's
+  walls and touches its recognized ones at every vertex, within the
+  tolerance the conversion states; the boolean read that contact as
+  ambiguous or as edge contact and refused. Where it refuses, `fuse` and
+  `common` now ask whether one solid lies within the other at the
+  looseness the solids state, and answer with the outer one or the inner
+  one. A piece whose probe no ray can read is also asked at its next probe
+  before the boolean gives up.
+
 ## [0.5.1] - 2026-09-29
 
 A patch release: `cargo semver-checks` against 0.5.0 finds no change

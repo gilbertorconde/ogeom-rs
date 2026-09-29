@@ -1110,3 +1110,93 @@ fn recognized_faces_stay_on_the_triangles_they_replace() {
         }
     }
 }
+
+/// A slab over a rounded outline whose points are rounded to single
+/// precision, as an STL stores them, from z = 0 to `top`.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the rounding to single precision is the point"
+)]
+fn stl_slab(r: f64, n: u32, top: f64) -> (Vec<(f64, f64)>, Triangulation) {
+    let ring: Vec<(f64, f64)> = rounded_outline(47.0, 21.5, r, n, 0.0)
+        .into_iter()
+        .map(|(x, y)| (f64::from(x as f32), f64::from(y as f32)))
+        .collect();
+    let count = u32::try_from(ring.len()).unwrap();
+    let mut t = Triangulation::new();
+    for z in [0.0, top] {
+        for &(x, y) in &ring {
+            t.positions.push(Point::new(x, y, z));
+        }
+    }
+    t.positions.push(Point::new(23.5, 10.75, 0.0));
+    t.positions.push(Point::new(23.5, 10.75, top));
+    let (bottom, cap) = (2 * count, 2 * count + 1);
+    for i in 0..count {
+        let j = (i + 1) % count;
+        t.triangles.push([i, j, count + j]);
+        t.triangles.push([i, count + j, count + i]);
+        t.triangles.push([bottom, j, i]);
+        t.triangles.push([cap, count + i, count + j]);
+    }
+    (ring, t)
+}
+
+/// A pad sketched on a converted slab's own outline and sunk into it: its
+/// sides run along the slab's flat walls and are chords of its recognized
+/// corners, touching them at every vertex. The union is the slab and the
+/// intersection the pad; a pad standing out through the top is never taken
+/// for either.
+#[test]
+fn a_pad_within_a_converted_solid_fuses_to_the_solid() {
+    for (r, n) in [(8.0, 20), (2.0, 12), (3.0, 7)] {
+        let at = format!("corner {r} in {n} steps");
+        let mut model = Model::new();
+        let (ring, mesh) = stl_slab(r, n, 4.0);
+        let base = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T)
+            .unwrap()
+            .shape;
+        let pad = |model: &mut Model, height: f64| {
+            let points: Vec<Point> = ring.iter().map(|&(x, y)| Point::new(x, y, 1.0)).collect();
+            let wire = ogeom::algo::make_polygon(model, &points, true, T)
+                .unwrap()
+                .shape;
+            let plane = ogeom::math::Plane::new(
+                Frame::new(Point::new(0.0, 0.0, 1.0), Direction::Z, Direction::X, T).unwrap(),
+            );
+            let face = ogeom::algo::make_face(
+                model,
+                ogeom::geom::PlaneSurface::new(plane).into(),
+                &[wire],
+                T,
+            )
+            .unwrap()
+            .shape;
+            ogeom::algo::make_prism(model, &face, Vector::new(0.0, 0.0, height), T)
+                .unwrap()
+                .shape
+        };
+        let inside = pad(&mut model, 3.0);
+        let (whole, sunk) = (volume(&model, &base), volume(&model, &inside));
+        let fused = ogeom::boolean::fuse(&mut model, &base, &inside, T)
+            .unwrap_or_else(|e| panic!("{at}: {e}"))
+            .shape;
+        assert!(check(&model, &fused, T).unwrap().is_valid(), "{at}");
+        let v = volume(&model, &fused);
+        assert!(
+            (v - whole).abs() < whole * 1e-9,
+            "{at}: {v} against {whole}"
+        );
+        let common = ogeom::boolean::common(&mut model, &base, &inside, T)
+            .unwrap_or_else(|e| panic!("{at}: {e}"))
+            .shape;
+        let v = volume(&model, &common);
+        assert!((v - sunk).abs() < sunk * 1e-9, "{at}: {v} against {sunk}");
+
+        let proud = pad(&mut model, 3.5);
+        if let Ok(fused) = ogeom::boolean::fuse(&mut model, &base, &proud, T) {
+            let v = volume(&model, &fused.shape);
+            assert!(v > whole * (1.0 + 1e-3), "{at}: a proud pad fused to {v}");
+        }
+    }
+}

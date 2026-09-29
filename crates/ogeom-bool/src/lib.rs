@@ -5333,8 +5333,14 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 // reports the On the partner list already knew. On a part
                 // whose bore is refilled by its own cylinder that is the
                 // difference between a tenth of a second and a minute.
+                //
+                // A probe every ray from which is ambiguous (one a hair off
+                // the other solid's faces, where they run along this one)
+                // says nothing either way, and the next is asked; only a
+                // piece none of whose probes can be read is refused.
                 let partners = if from_a { &same_a[fi] } else { &same_b[fi] };
                 let mut chosen = None;
+                let mut unread = None;
                 for candidate in &piece.interiors {
                     let at = face.surface.point_at(candidate.x, candidate.y, tol)?;
                     let shared = !partners.is_empty()
@@ -5345,7 +5351,14 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     let says = if shared {
                         Containment::On
                     } else {
-                        boundary.holds(model, at, tol)?
+                        match boundary.holds(model, at, tol) {
+                            Ok(says) => says,
+                            Err(e @ ogeom_core::OgeomError::NotDone(_)) => {
+                                unread = Some(e);
+                                continue;
+                            }
+                            Err(e) => return Err(e),
+                        }
                     };
                     if chosen.is_none() || !matches!(says, Containment::On) {
                         chosen = Some((*candidate, at, says));
@@ -5355,6 +5368,9 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     }
                 }
                 let Some((interior, probe, said)) = chosen else {
+                    if let Some(e) = unread {
+                        return Err(e);
+                    }
                     ogeom_bail!(
                         Construction,
                         "a piece of a face has no interior point to classify at"
@@ -6839,20 +6855,158 @@ pub fn fuse(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         &baked_if_scaled(model, a, tol)?,
         &baked_if_scaled(model, b, tol)?,
     );
-    let fused = general_fuse(model, a, b, tol)?;
-    // Outward pieces bound the union; a same-domain pair with aligned
-    // material keeps one copy, and one with opposed material is interior to
-    // the union and vanishes.
-    let kept: Vec<(usize, bool)> = fused
-        .pieces
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| {
-            p.state == PieceState::Out || (p.state == PieceState::OnAligned && !p.covered)
-        })
-        .map(|(i, _)| (i, false))
-        .collect();
-    assemble_result(model, &fused, &kept, a, b, tol)
+    let built = (|| {
+        let fused = general_fuse(model, a, b, tol)?;
+        // Outward pieces bound the union; a same-domain pair with aligned
+        // material keeps one copy, and one with opposed material is interior
+        // to the union and vanishes.
+        let kept: Vec<(usize, bool)> = fused
+            .pieces
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| {
+                p.state == PieceState::Out || (p.state == PieceState::OnAligned && !p.covered)
+            })
+            .map(|(i, _)| (i, false))
+            .collect();
+        assemble_result(model, &fused, &kept, a, b, tol)
+    })();
+    // The union of a solid and one lying within it is the outer one,
+    // whatever contact their boundaries make.
+    or_nested(model, built, a, b, true, tol)
+}
+
+/// Which of two solids lies within the other, where one does: every sample
+/// of the inner one's boundary in or on the outer, none of the outer's
+/// strictly inside the inner. `Some(true)` for `b` within `a`, `Some(false)`
+/// for `a` within `b`.
+///
+/// Asked only once the general boolean has refused: boundaries that run
+/// along each other within their tolerances (a pad sketched on a converted
+/// part's own outline, its sides chords of the part's walls) defeat the
+/// arrangement, and a solid within the other is what they usually are.
+fn nested(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Option<bool>> {
+    // The boundary's samples, each on its face's exact surface: the face
+    // mesh's vertices, and its triangles' middles taken in the chart and
+    // lifted, since a middle taken in space stands off a curved face by the
+    // mesh's own sag.
+    let samples = |shape: &Shape| -> OgeomResult<Vec<Point>> {
+        let mut out = Vec::new();
+        for face in explore_unique(model, shape, ShapeType::Face)? {
+            let Some(NodeData::Face(data)) = model.node(&face).map(|n| n.data()) else {
+                continue;
+            };
+            let Some(surface) = model.geometry().surface(data.surface) else {
+                ogeom_bail!(Dangling, "surface is not in this model");
+            };
+            let placement = face.transform(model.datums())?;
+            let mesh =
+                ogeom_mesh::triangulate_face(model, &face, ogeom_mesh::Deflection::default(), tol)?;
+            out.extend(mesh.positions.iter().copied());
+            if mesh.parameters.len() != mesh.positions.len() {
+                continue;
+            }
+            for t in &mesh.triangles {
+                let [p, q, r] = t.map(|i| mesh.parameters[i as usize]);
+                let (u, v) = ((p.0 + q.0 + r.0) / 3.0, (p.1 + q.1 + r.1) / 3.0);
+                out.push(placement.apply(surface.point_at(u, v, tol)?));
+            }
+        }
+        Ok(out)
+    };
+    // Every sample on the right side: `allowed` names the containments that
+    // fit. An ambiguous sample says nothing; a boundary most of whose
+    // samples say nothing is not settled.
+    let all_read = |points: &[Point],
+                    boundary: &ogeom_algo::SolidBoundary,
+                    allowed: &dyn Fn(Containment) -> bool|
+     -> OgeomResult<bool> {
+        let mut unread = 0_usize;
+        for p in points {
+            ogeom_core::progress::checkpoint()?;
+            match boundary.holds(model, *p, tol) {
+                Ok(says) if allowed(says) => {}
+                Ok(_) => return Ok(false),
+                Err(ogeom_core::OgeomError::NotDone(_)) => unread += 1,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(unread * 10 <= points.len())
+    };
+    // Read at the looseness the solids state: a converted part's walls are
+    // fits standing off its mesh's points, and a solid drawn on those
+    // points lies on the walls only to that.
+    let mut loosest = tol.confusion();
+    for shape in [a, b] {
+        for kind in [ShapeType::Edge, ShapeType::Vertex] {
+            for sub in explore_unique(model, shape, kind)? {
+                let stated = match model.node(&sub).map(|n| n.data()) {
+                    Some(NodeData::Edge(d)) => d.tolerance.get(),
+                    Some(NodeData::Vertex(d)) => d.tolerance.get(),
+                    _ => continue,
+                };
+                loosest = loosest.max(stated);
+            }
+        }
+    }
+    let tol = if loosest > tol.confusion() {
+        fuzzed(loosest, tol)?
+    } else {
+        tol
+    };
+    let band = tol.confusion() * 1e4;
+    let (of_a, of_b) = (
+        ogeom_algo::SolidBoundary::of(model, a, band, tol)?,
+        ogeom_algo::SolidBoundary::of(model, b, band, tol)?,
+    );
+    let (on_a, on_b) = (samples(a)?, samples(b)?);
+    let within = |inner: &[Point],
+                  outer_boundary: &ogeom_algo::SolidBoundary,
+                  outer: &[Point],
+                  inner_boundary: &ogeom_algo::SolidBoundary|
+     -> OgeomResult<bool> {
+        Ok(all_read(inner, outer_boundary, &|c| c != Containment::Out)?
+            && all_read(outer, inner_boundary, &|c| c != Containment::In)?)
+    };
+    if within(&on_b, &of_a, &on_a, &of_b)? {
+        return Ok(Some(true));
+    }
+    if within(&on_a, &of_b, &on_b, &of_a)? {
+        return Ok(Some(false));
+    }
+    Ok(None)
+}
+
+/// A boolean's result, or where the general boolean refused and one solid
+/// lies within the other, the answer that nesting gives: the outer one for
+/// a union (`outer` true), the inner one for an intersection. The solid
+/// returned is that argument itself, the other's faces deleted.
+fn or_nested(
+    model: &mut Model,
+    built: OgeomResult<Built>,
+    a: &Shape,
+    b: &Shape,
+    outer: bool,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let refusal = match built {
+        Ok(built) => return Ok(built),
+        Err(e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_))) => {
+            return Err(e);
+        }
+        Err(e) => e,
+    };
+    let Some(b_in_a) = nested(model, a, b, tol)? else {
+        return Err(refusal);
+    };
+    // For the union the container stands; for the intersection, what it
+    // contains.
+    let (kept, gone) = if b_in_a == outer { (a, b) } else { (b, a) };
+    let mut history = ogeom_algo::History::new();
+    for face in explore_unique(model, gone, ShapeType::Face)? {
+        history.delete(&face);
+    }
+    Ok(Built::new(kept.clone(), history))
 }
 
 /// The intersection of two solids.
@@ -6869,19 +7023,24 @@ pub fn common(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeom
         &baked_if_scaled(model, a, tol)?,
         &baked_if_scaled(model, b, tol)?,
     );
-    let fused = general_fuse(model, a, b, tol)?;
-    // Inward pieces bound the intersection; an aligned same-domain pair
-    // bounds it too, once. An opposed pair encloses no volume between them.
-    let kept: Vec<(usize, bool)> = fused
-        .pieces
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| {
-            p.state == PieceState::In || (p.state == PieceState::OnAligned && !p.covered)
-        })
-        .map(|(i, _)| (i, false))
-        .collect();
-    assemble_result(model, &fused, &kept, a, b, tol)
+    let built = (|| {
+        let fused = general_fuse(model, a, b, tol)?;
+        // Inward pieces bound the intersection; an aligned same-domain pair
+        // bounds it too, once. An opposed pair encloses no volume between
+        // them.
+        let kept: Vec<(usize, bool)> = fused
+            .pieces
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| {
+                p.state == PieceState::In || (p.state == PieceState::OnAligned && !p.covered)
+            })
+            .map(|(i, _)| (i, false))
+            .collect();
+        assemble_result(model, &fused, &kept, a, b, tol)
+    })();
+    // The intersection of a solid and one lying within it is the inner one.
+    or_nested(model, built, a, b, false, tol)
 }
 
 /// The first solid with the second removed.
