@@ -11,6 +11,15 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **`PipeLaw::Fixed` (#90):** the section keeps the frame it has at the
+  spine's start, carried along the spine by translation and never turned.
+  Each section edge sweeps the exact B-spline `edge(u) + spine(v)` (the
+  control points summed, the weights multiplied), so nothing is fitted. A
+  spine that crosses the section's plane one way and back the other is
+  refused, as is one running in the plane.
+
 ### Fixed
 
 - **Unevenly scaled spheres and revolved solids are what they look like

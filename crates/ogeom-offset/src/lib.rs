@@ -9,6 +9,7 @@
 pub mod draft;
 pub mod feature;
 pub mod fill;
+pub(crate) mod fixed;
 pub mod middle;
 pub mod project;
 pub mod shape;

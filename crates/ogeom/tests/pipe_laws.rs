@@ -398,3 +398,96 @@ fn two_equal_sections_round_an_arc_are_the_plain_pipe() {
     let want = PI * 4.0 * 10.0 * PI;
     assert!((v - want).abs() < want * 5e-3, "{v} against {want}");
 }
+
+/// A square carried along a quarter circle without turning: every level
+/// cut is the band a 2-long segment sweeps along the arc, so the solid is
+/// 2 x 20 x 2, and the section at the end still stands square to Y, where
+/// the arc runs along X. Along a straight spine it is the plain pipe.
+#[test]
+fn a_fixed_section_is_carried_without_turning() {
+    let mut model = Model::new();
+    let profile = square(&mut model);
+    // About (20, 0, 0), from the origin heading +Y round to (20, 20, 0).
+    let frame = Frame::new(Point::new(20.0, 0.0, 0.0), -Direction::Z, -Direction::X, T).unwrap();
+    let circle = Circle::new(frame, 20.0, T).unwrap();
+    let edge = make_edge(
+        &mut model,
+        CircleCurve::new(circle).into(),
+        (0.0, PI / 2.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let spine = make_wire(&mut model, &[edge], T).unwrap().shape;
+    let pipe = make_pipe_shell_with(
+        &mut model,
+        &profile,
+        &spine,
+        &PipeLaw::Fixed,
+        PipeCorners::Mitre,
+        1e-3,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let diagnosis = ogeom::algo::check(&model, &pipe, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let v = volume(&model, &pipe);
+    assert!((v - 80.0).abs() < 80.0 * 1e-3, "{v}");
+    // The far end: the section at y = 20, from x = 19 to 21, not turned.
+    let mesh =
+        ogeom::mesh::triangulate(&model, &pipe, Deflection::with_chord(1e-3).unwrap(), T).unwrap();
+    let far: Vec<Point> = mesh
+        .positions
+        .iter()
+        .copied()
+        .filter(|p| (p.y - 20.0).abs() < 1e-9)
+        .collect();
+    let (lo, hi) = far
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+            (lo.min(p.x), hi.max(p.x))
+        });
+    assert!(
+        (lo - 19.0).abs() < 1e-6 && (hi - 21.0).abs() < 1e-6,
+        "{lo} .. {hi}"
+    );
+    let top = mesh
+        .positions
+        .iter()
+        .map(|p| p.y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(top < 20.0 + 1e-9, "reaches y {top}");
+
+    // Straight, it is the plain pipe: the same prism.
+    let line = make_polygon(
+        &mut model,
+        &[Point::ORIGIN, Point::new(0.0, 10.0, 0.0)],
+        false,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let (fixed, plain) = (
+        make_pipe_shell_with(
+            &mut model,
+            &profile,
+            &line,
+            &PipeLaw::Fixed,
+            PipeCorners::Mitre,
+            1e-3,
+            T,
+        )
+        .unwrap()
+        .shape,
+        ogeom::offset::make_pipe_shell(&mut model, &profile, &line, false, 1e-3, T)
+            .unwrap()
+            .shape,
+    );
+    assert!(ogeom::algo::check(&model, &fixed, T).unwrap().is_valid());
+    let (a, b) = (volume(&model, &fixed), volume(&model, &plain));
+    assert!(
+        (a - b).abs() < 1e-9 && (a - 40.0).abs() < 1e-9,
+        "{a} against {b}"
+    );
+}

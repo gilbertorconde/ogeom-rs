@@ -3969,6 +3969,9 @@ pub enum PipeLaw<'a> {
     /// The section keeps this direction as its binormal, square to the
     /// spine's tangent.
     Binormal(Direction),
+    /// The section keeps the frame it has at the spine's start all the
+    /// way: carried by translation along the spine, never turned.
+    Fixed,
 }
 
 /// How a pipe turns a sharp corner of its spine.
@@ -4038,6 +4041,11 @@ pub fn make_pipe_shell_with(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    // A section carried by translation turns no corner: every way of
+    // turning one is the same solid.
+    if matches!(law, PipeLaw::Fixed) {
+        return crate::fixed::fixed_pipe(model, profile, spine, tol);
+    }
     if corners != PipeCorners::Mitre
         && let Some(legs) = straight_legs(model, spine, tol)?
         && legs.len() > 1
@@ -4725,6 +4733,12 @@ fn law_normals(
     tol: Tolerances,
 ) -> OgeomResult<Vec<Vector>> {
     match law {
+        // Carried by translation, the section has no frame turning with the
+        // spine; the fixed pipe is built without stations.
+        PipeLaw::Fixed => ogeom_bail!(
+            Construction,
+            "a fixed section keeps its own frame; it has no frame normals"
+        ),
         PipeLaw::RotationMinimizing => Ok(rmf_normals(stations)),
         PipeLaw::Frenet => frenet_normals(stations, tol),
         PipeLaw::Binormal(b) => stations
