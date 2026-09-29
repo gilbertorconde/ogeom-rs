@@ -44,8 +44,8 @@ pub use build::{
     make_wire, rings_are_parallels, surface_iso_u_curve,
 };
 pub use check::{
-    Diagnosis, Problem, Severity, check, check_self_intersection, check_tessellation,
-    inside_out_faces, restore_containment,
+    Diagnosis, Problem, Severity, check, check_self_intersection, check_self_intersection_near,
+    check_tessellation, inside_out_faces, restore_containment,
 };
 pub use classify::{
     Containment, SolidBoundary, SolidMesh, classify_in_solid, classify_in_solid_exact,

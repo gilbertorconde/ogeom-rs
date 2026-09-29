@@ -123,6 +123,187 @@ pub fn offset_shape(
     rebuilt(model, solid, &|_| offset, &|_| None, tol)
 }
 
+/// Offset some faces of a solid by `distance` along their outward normals
+/// (negative moves them into the material), the faces around them
+/// following: a plane moves parallel, a cylinder, cone, sphere or torus
+/// changes radius about its own axis or centre, and each neighbour stays on
+/// its own surface, its edges re-derived where the moved faces now meet it.
+/// The topology is kept one for one, so the history maps every face to the
+/// face it became.
+///
+/// # Errors
+///
+/// As [`offset_shape`], and additionally if `distance` moves nothing or a
+/// face is not a face of `solid`. A move that would need a face the solid
+/// does not have (a step where a moved face runs past a neighbour) or would
+/// collapse one fails by name, as the rebuild's vertices and edges do.
+pub fn offset_faces(
+    model: &mut Model,
+    solid: &Shape,
+    faces: &[Shape],
+    distance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if !distance.is_finite() || distance.abs() <= tol.confusion() {
+        ogeom_bail!(Construction, "an offset of {distance} moves nothing");
+    }
+    let (canonical, mapped, prefix) = canonical_input(model, solid, faces, tol)?;
+    if let Some(prefix) = prefix {
+        let mut out = offset_faces(model, &canonical, &mapped, distance, tol)?;
+        out.history = prefix.then(&out.history);
+        return Ok(out);
+    }
+    let chosen = chosen_faces(model, solid, faces)?;
+    let built = rebuilt(
+        model,
+        solid,
+        &|face| {
+            if chosen.contains(&face.node()) {
+                distance
+            } else {
+                0.0
+            }
+        },
+        &|_| None,
+        tol,
+    )?;
+    still_sound(model, solid, &chosen, built, tol)
+}
+
+/// Move some faces of a solid rigidly by `transform` (a translation or a
+/// rotation), the faces around them following as in [`offset_faces`]:
+/// each moved face keeps its surface, carried by the transform, and each
+/// neighbour stays on its own.
+///
+/// # Errors
+///
+/// As [`offset_faces`], and if `transform` is not a rigid motion: a scale
+/// or a reflection changes the faces themselves, not where they stand.
+pub fn move_faces(
+    model: &mut Model,
+    solid: &Shape,
+    faces: &[Shape],
+    transform: &ogeom_math::Transform,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    use ogeom_geom::Transformable as _;
+    use ogeom_math::TransformKind;
+    if !matches!(
+        transform.kind(),
+        TransformKind::Identity | TransformKind::Translation | TransformKind::Rotation
+    ) {
+        ogeom_bail!(
+            Construction,
+            "moving faces takes a translation or a rotation; a scale or a \
+             reflection reshapes them"
+        );
+    }
+    if transform.kind() == TransformKind::Identity {
+        ogeom_bail!(Construction, "the identity moves nothing");
+    }
+    let (canonical, mapped, prefix) = canonical_input(model, solid, faces, tol)?;
+    if let Some(prefix) = prefix {
+        let mut out = move_faces(model, &canonical, &mapped, transform, tol)?;
+        out.history = prefix.then(&out.history);
+        return Ok(out);
+    }
+    let chosen = chosen_faces(model, solid, faces)?;
+    // Each surface is stated in its face's own frame: the motion is taken
+    // into that frame, so the placed surface moves as the world one would.
+    let mut moved: HashMap<TShapeId, SurfaceGeometry> = HashMap::new();
+    for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+        if !chosen.contains(&face.node()) || moved.contains_key(&face.node()) {
+            continue;
+        }
+        let Some(NodeData::Face(data)) = model.node(&face).map(ogeom_topo::TShape::data) else {
+            ogeom_bail!(Construction, "face node holds no face data");
+        };
+        let Some(surface) = model.geometry().surface(data.surface) else {
+            ogeom_bail!(Dangling, "face refers to a surface not in this model");
+        };
+        let placement = face.transform(model.datums())?;
+        let local = placement.inverse()? * *transform * placement;
+        moved.insert(face.node(), surface.transformed(&local, tol)?);
+    }
+    let built = rebuilt(
+        model,
+        solid,
+        &|_| 0.0,
+        &|face| moved.get(&face.node()).cloned(),
+        tol,
+    )?;
+    still_sound(model, solid, &chosen, built, tol)
+}
+
+/// The edited solid, unless the edit ran a face through the rest of it.
+///
+/// Only the faces the edit touched can have gone wrong: the ones it moved
+/// and every face sharing a vertex with them, whose boundaries followed.
+/// Driven past the faces across from it, a moved face turns the solid
+/// inside out there; driven into them, it crosses them.
+fn still_sound(
+    model: &Model,
+    solid: &Shape,
+    chosen: &std::collections::HashSet<TShapeId>,
+    built: Built,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let faces = explore_unique(model, solid, ShapeType::Face)?;
+    let mut corners: std::collections::HashSet<TShapeId> = std::collections::HashSet::new();
+    for face in faces.iter().filter(|f| chosen.contains(&f.node())) {
+        for v in explore_unique(model, face, ShapeType::Vertex)? {
+            corners.insert(v.node());
+        }
+    }
+    let mut touched: Vec<Shape> = Vec::new();
+    for face in &faces {
+        let near = chosen.contains(&face.node())
+            || explore_unique(model, face, ShapeType::Vertex)?
+                .iter()
+                .any(|v| corners.contains(&v.node()));
+        if near {
+            touched.extend(built.history.trace(face).iter().cloned());
+        }
+    }
+    if !ogeom_algo::inside_out_faces(model, &built.shape, tol)?.is_empty() {
+        ogeom_bail!(
+            Construction,
+            "the moved faces run past the faces across from them and turn \
+             the solid inside out"
+        );
+    }
+    if !ogeom_algo::check_self_intersection_near(model, &built.shape, &touched, tol)?.is_empty() {
+        ogeom_bail!(
+            Construction,
+            "the moved faces run into the rest of the solid; the edit would \
+             make it cross itself"
+        );
+    }
+    Ok(built)
+}
+
+/// The faces named, each checked to be one of the solid's.
+fn chosen_faces(
+    model: &Model,
+    solid: &Shape,
+    faces: &[Shape],
+) -> OgeomResult<std::collections::HashSet<TShapeId>> {
+    if faces.is_empty() {
+        ogeom_bail!(Construction, "no face was named to move");
+    }
+    let own: std::collections::HashSet<TShapeId> =
+        explore(model, solid, Filter::OfType(ShapeType::Face))?
+            .iter()
+            .map(Shape::node)
+            .collect();
+    for face in faces {
+        if !own.contains(&face.node()) {
+            ogeom_bail!(Construction, "a named face is not a face of the solid");
+        }
+    }
+    Ok(faces.iter().map(Shape::node).collect())
+}
+
 /// Hollow a solid into a shell of the given wall `thickness`, opening it at
 /// the `removed` faces.
 ///
@@ -427,6 +608,7 @@ pub(crate) fn rebuilt(
     let faces = explore(model, solid, Filter::OfType(ShapeType::Face))?;
 
     // Move every surface.
+    let span = ogeom_algo::shape_bounds(model, solid, tol)?.diagonal();
     let mut prepared: Vec<Prepared> = Vec::with_capacity(faces.len());
     for face in &faces {
         let amount = amount_of(face);
@@ -461,6 +643,13 @@ pub(crate) fn rebuilt(
             .cloned()
             .collect();
 
+        let both_poles = closed_rings.len() == 2
+            && closed_rings.iter().all(|ring| {
+                model
+                    .node(ring)
+                    .and_then(|n| n.data().as_edge())
+                    .is_some_and(|d| d.degenerate)
+            });
         let grow = amount.abs() * 4.0 + 1.0;
         let replacement = instead_of(face);
         let moved: SurfaceGeometry = if let Some(given) = replacement {
@@ -468,8 +657,34 @@ pub(crate) fn rebuilt(
         } else if amount == 0.0 {
             // A face a draft or a partial offset leaves alone stays on its
             // own surface, whatever family that is: moving by nothing is
-            // identity, not a construction the family has to support.
-            surface.clone()
+            // identity, not a construction the family has to support. Its
+            // window opens by the solid's own size, so a neighbour moved
+            // beyond the face's edge still meets it; the face's trim, not
+            // the window, says what is kept.
+            match surface {
+                SurfaceGeometry::Plane(p) => {
+                    let ((u0, u1), (v0, v1)) = surface.domain();
+                    PlaneSurface::over(p.plane(), (u0 - span, u1 + span), (v0 - span, v1 + span))?
+                        .into()
+                }
+                SurfaceGeometry::Cylinder(c) => {
+                    let (_, (v0, v1)) = surface.domain();
+                    CylinderSurface::new(c.cylinder(), (v0 - span, v1 + span))?.into()
+                }
+                SurfaceGeometry::Cone(co) => {
+                    // Up to the apex and no farther: past it is the other
+                    // nappe.
+                    let (_, (v0, v1)) = surface.domain();
+                    let apex = co.apex_height();
+                    let (lo, hi) = if apex <= v0 {
+                        ((v0 - span).max(apex), v1 + span)
+                    } else {
+                        (v0 - span, (v1 + span).min(apex))
+                    };
+                    ogeom_geom::ConeSurface::new(co.cone(), (lo, hi))?.into()
+                }
+                _ => surface.clone(),
+            }
         } else {
             match surface {
                 SurfaceGeometry::Plane(p) => {
@@ -556,7 +771,10 @@ pub(crate) fn rebuilt(
             surface: moved,
             amount,
             sign,
-            rings: if has_seam && closed_rings.len() == 2 && !fitted_support {
+            // A band needs a ring with an angle to anchor its chart; a whole
+            // sphere, bounded by its two poles alone, is assembled wire by
+            // wire like any other seamed face.
+            rings: if has_seam && closed_rings.len() == 2 && !fitted_support && !both_poles {
                 Some([closed_rings[0].clone(), closed_rings[1].clone()])
             } else {
                 None
@@ -671,6 +889,35 @@ pub(crate) fn rebuilt(
                 }
                 if let SurfaceGeometry::Cone(moved_cone) = &prepared[*fi].surface {
                     apex = Some(moved_cone.cone().apex());
+                    break;
+                }
+            }
+            // A sphere's pole has no normal to offer either, and a moved
+            // sphere keeps its chart (concentric under an offset, carried
+            // along under a rigid move): the pole is where the moved surface
+            // stands at the old one's parameters there.
+            if apex.is_none() {
+                for fi in &seats {
+                    let Some(NodeData::Face(data)) = model.node(&faces[*fi]).map(|n| n.data())
+                    else {
+                        continue;
+                    };
+                    let Some(old @ SurfaceGeometry::Sphere(_)) =
+                        model.geometry().surface(data.surface)
+                    else {
+                        continue;
+                    };
+                    if !matches!(prepared[*fi].surface, SurfaceGeometry::Sphere(_)) {
+                        continue;
+                    }
+                    let local = faces[*fi].transform(model.datums())?;
+                    let found =
+                        ogeom_algo::project_on_surface(old, local.inverse()?.apply(at), 32, tol)?;
+                    if found.distance > tol.confusion() * 100.0 {
+                        continue;
+                    }
+                    let (u, v) = found.parameters;
+                    apex = Some(local.apply(prepared[*fi].surface.point_at(u, v, tol)?));
                     break;
                 }
             }
@@ -1323,7 +1570,15 @@ fn rebuilt_seam_edge(
     let Some(column) = found else {
         return Ok(None);
     };
-    let Some((sv, ev)) = edge_vertices(model, edge)? else {
+    // Rebuilt edges are kept in their node's own direction, each wire
+    // turning its use of them as it did the old one's, so the ends are read
+    // off the node's forward occurrence, however the seam was reached.
+    let forward = if edge.orientation() == Orientation::Reversed {
+        edge.reversed()
+    } else {
+        edge.clone()
+    };
+    let Some((sv, ev)) = edge_vertices(model, &forward)? else {
         ogeom_bail!(Construction, "a seam has no vertices");
     };
     let (Some((v_from, p_from)), Some((v_to, p_to))) = (
@@ -1439,6 +1694,34 @@ fn assembled_with_seam(
         let Some(fresh) = new_edges.get(&used.node()).cloned() else {
             ogeom_bail!(Construction, "a face edge was not rebuilt");
         };
+        // A pole has no curve, only its row, and the moved surface keeps
+        // its chart: the old row carries over as it is.
+        if model
+            .node(&fresh)
+            .and_then(|n| n.data().as_edge())
+            .is_some_and(|d| d.degenerate)
+        {
+            let Some(EdgeRepr::PCurve { curve, range, .. }) = model
+                .node(&used)
+                .and_then(|n| n.data().as_edge())
+                .and_then(|d| d.pcurve_for(old_surface, used.location()))
+                .cloned()
+            else {
+                ogeom_bail!(Construction, "a pole has no row on its face");
+            };
+            let Some(row) = model.geometry().pcurve(curve).cloned() else {
+                ogeom_bail!(Dangling, "a pole's row is not in this model");
+            };
+            ogeom_algo::attach_pcurve(
+                model,
+                &fresh,
+                row,
+                new_surface,
+                ogeom_topo::Location::identity(),
+                range,
+            )?;
+            continue;
+        }
         let (fresh_curve, fresh_range) = {
             let Some(data) = model.node(&fresh).and_then(|n| n.data().as_edge()) else {
                 ogeom_bail!(Construction, "a rebuilt edge holds no edge data");

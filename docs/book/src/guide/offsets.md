@@ -7,6 +7,8 @@ Everything here is in `ogeom::offset`.
 | Function | What it does |
 |---|---|
 | `offset_shape` | Moves a solid's boundary along its normals (outward, or inward with a negative distance) and rebuilds the intersections where offset surfaces collide. |
+| `offset_faces` | Offsets only the named faces, and the faces around them follow: pull a wall out, grow a bore, raise a boss. The topology stays the same, and the history maps each face to its result. |
+| `move_faces` | Moves the named faces by a translation or rotation, the faces around them following, as `offset_faces` does. |
 | `make_thick_solid` | Shelling: removes the named faces, offsets the rest inward and joins them. Gives a hollow part with an opening. |
 | `offset_wire` | 2D offset of a planar wire. The caller picks the `Join` style (arcs or intersections). Useful for tool-path-like outlines. |
 | `apply_draft` | Tilts faces by a draft angle about a neutral plane, for moulded parts. |

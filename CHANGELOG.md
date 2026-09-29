@@ -11,7 +11,26 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Direct editing of a solid's faces (#98).** `offset_faces` offsets the
+  named faces along their outward normals and `move_faces` moves them by a
+  translation or a rotation; the faces around them follow, each staying on
+  its own surface with its edges re-derived where the moved faces now meet
+  it. A plane moves parallel, a cylinder, cone, sphere or torus changes
+  radius; several faces move together; the history maps every face to the
+  face it became. An edit that runs a face past the faces across from it
+  or into the rest of the solid is refused by name.
+
+- **`check_self_intersection_near`** tests only the face pairs holding one
+  of the faces named: after an edit, the pairs it left alone cannot have
+  begun to cross.
+
 ### Fixed
+
+- **`offset_shape` of a bored block and of a ball.** A seam reached
+  reversed (a bore a boolean cut) was rebuilt the wrong way round, and a
+  sphere's poles and two-pole band had no rebuild; both now offset.
 
 - **A surface recognized in a mesh stays on the triangles it replaces
   (#97).** A region was accepted when its vertices lay on the fitted

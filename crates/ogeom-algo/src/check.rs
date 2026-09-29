@@ -814,8 +814,35 @@ pub fn check_self_intersection(
     shape: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<Vec<(Shape, Shape)>> {
+    crossings_among(model, shape, None, tol)
+}
+
+/// [`check_self_intersection`] over the pairs holding at least one of
+/// `near`: after an edit that moved some faces, the pairs of faces it left
+/// alone cannot have begun to cross.
+///
+/// # Errors
+///
+/// As [`check_self_intersection`].
+pub fn check_self_intersection_near(
+    model: &Model,
+    shape: &Shape,
+    near: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<Vec<(Shape, Shape)>> {
+    let near: std::collections::HashSet<TShapeId> = near.iter().map(Shape::node).collect();
+    crossings_among(model, shape, Some(&near), tol)
+}
+
+fn crossings_among(
+    model: &Model,
+    shape: &Shape,
+    near: Option<&std::collections::HashSet<TShapeId>>,
+    tol: Tolerances,
+) -> OgeomResult<Vec<(Shape, Shape)>> {
     use ogeom_topo::explore_unique;
     let faces = explore_unique(model, shape, ShapeType::Face)?;
+    let asked = |i: usize| near.is_none_or(|n| n.contains(&faces[i].node()));
     // The topology below each face, for the adjacency exclusion; each face
     // gathered and bounded once, not once per pair it is in.
     let mut below: Vec<std::collections::HashSet<TShapeId>> = Vec::with_capacity(faces.len());
@@ -837,7 +864,10 @@ pub fn check_self_intersection(
     for i in 0..faces.len() {
         for j in i + 1..faces.len() {
             ogeom_core::progress::checkpoint()?;
-            if !bounds[i].intersects(&bounds[j]) || !below[i].is_disjoint(&below[j]) {
+            if !(asked(i) || asked(j))
+                || !bounds[i].intersects(&bounds[j])
+                || !below[i].is_disjoint(&below[j])
+            {
                 continue;
             }
             let reach = crate::proximity::distance_between_prepared(
