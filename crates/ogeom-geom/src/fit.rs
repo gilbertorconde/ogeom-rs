@@ -1396,12 +1396,35 @@ fn fit_family<const D: usize>(
         let Some(refined) = refined_where_bad(&knots, &merged, tolerance)? else {
             break;
         };
-        knots = refined;
+        // A refinement past one control point per datum leaves spans with
+        // no data and cannot be solved; the last step there is the
+        // interpolating spline, which meets every datum exactly.
+        knots = if refined.control_point_count() > parameters.len() && !closed {
+            interpolating_knots(degree, parameters)?
+        } else {
+            refined
+        };
     }
     let Some((knots, controls, _)) = best else {
         ogeom_bail!(NotDone, "the family fit solved no round at all");
     };
     Ok((knots, controls))
+}
+
+/// The knot vector a spline through every one of `parameters` stands on:
+/// clamped at the ends, each interior knot the average of `degree`
+/// consecutive parameters, so every span holds data.
+fn interpolating_knots(degree: usize, parameters: &[f64]) -> OgeomResult<KnotVector> {
+    let n = parameters.len();
+    let (a, b) = (parameters[0], parameters[n - 1]);
+    let mut knots = vec![a; degree + 1];
+    for j in 1..n.saturating_sub(degree) {
+        #[allow(clippy::cast_precision_loss, reason = "a small count")]
+        let mean = parameters[j..j + degree].iter().sum::<f64>() / degree as f64;
+        knots.push(mean);
+    }
+    knots.extend(std::iter::repeat_n(b, degree + 1));
+    KnotVector::new(knots, degree)
 }
 
 /// Chord-length parameters, normalized to `[0, 1]`.

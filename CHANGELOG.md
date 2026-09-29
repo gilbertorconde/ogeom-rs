@@ -22,6 +22,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A skinned loft through several sections closes to a point (#91).** A
+  family fit refining past one control point per datum left spans with no
+  data and gave up on its best earlier round, which missed the tolerance;
+  it now takes the interpolating spline there. A loft's sections are read
+  off chords kept within a micron of their curves instead of 64 per edge,
+  so a loft of circles is a solid of revolution to its tolerance.
+
 - **Unevenly scaled spheres and revolved solids are what they look like
   (#93).** A revolution whose profile runs on past its pole (a whole circle
   turned) was converted to a spline over the whole profile, and its pole

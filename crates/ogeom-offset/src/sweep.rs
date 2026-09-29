@@ -2620,14 +2620,43 @@ fn dense_wire(model: &Model, wire: &Shape, tol: Tolerances) -> OgeomResult<Vec<P
         let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
         // Where the edge stands: a placed wire's edges carry its placement.
         let placement = edge.transform(model.datums())?;
-        for i in 0..64 {
-            let f = f64::from(i) / 64.0;
+        let at = |f: f64| -> OgeomResult<Point> {
             let t = if reversed {
                 range.1 - (range.1 - range.0) * f
             } else {
                 range.0 + (range.1 - range.0) * f
             };
-            dense.push(placement.apply(geometry.point_at(t, tol)?));
+            Ok(placement.apply(geometry.point_at(t, tol)?))
+        };
+        // Samples are read along the chords between these points, so the
+        // chords keep within a micron of the curve: the sag measured over a
+        // first pass, and the count raised by its square root (the sag
+        // falls with the square of the count).
+        const FIRST: u32 = 64;
+        const MOST: u32 = 8192;
+        let mut sag = 0.0_f64;
+        for i in 0..FIRST {
+            let (f0, f1) = (
+                f64::from(i) / f64::from(FIRST),
+                f64::from(i + 1) / f64::from(FIRST),
+            );
+            let (a, b) = (at(f0)?, at(f1)?);
+            let mid = at(f64::midpoint(f0, f1))?;
+            sag = sag.max(mid.distance(a.midpoint(b)));
+        }
+        let allowed = tol.confusion() * 10.0;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a sample count, bounded"
+        )]
+        let count = if sag <= allowed {
+            FIRST
+        } else {
+            ((f64::from(FIRST) * (sag / allowed).sqrt()).ceil() as u32).clamp(FIRST, MOST)
+        };
+        for i in 0..count {
+            dense.push(at(f64::from(i) / f64::from(count))?);
         }
     }
     if dense.is_empty() {
