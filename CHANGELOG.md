@@ -42,7 +42,10 @@ bump may break the API and a patch bump may not.
   pole put its degenerate edge on the wrong end of the chart and the face
   enclosed nothing. The row is now found at the pole's mapped place: a
   hemisphere scaled to radii 8, 5, 3 meshes and measures as half the
-  ellipsoid.
+  ellipsoid. A pcurve refitted by the conversion now holds its target in
+  space, through the chart's stretch and between its samples, so a quarter
+  turn scaled that way is integrated exactly instead of falling back to a
+  mesh 4% light.
 
 - **A fillet chain holding closed edges rounds each (#94).** A piece of a
   rim the solid holds in parts is rounded the whole turn round, so the

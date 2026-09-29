@@ -87,44 +87,49 @@ fn a_revolved_solid_scales_to_the_ellipsoid_s_volume() {
     }
 }
 
-/// A revolved hemisphere scaled by three different factors, its seam in
-/// the profile's plane or turned a radian off it: half the ellipsoid, and
-/// on it.
+/// A revolved hemisphere and a quarter turn of it scaled by three
+/// different factors, the seam in the profile's plane or turned a radian
+/// off it: their shares of the ellipsoid, and on it.
 #[test]
 fn a_hemisphere_scaled_on_every_axis_is_half_an_ellipsoid() {
     for (rx, ry, rz) in [(2.0, 1.0, 1.0), (8.0, 5.0, 3.0)] {
-        for seam in [0.0, 1.0] {
-            let mut model = Model::new();
-            let quarter = quarter_disc(&mut model);
-            let axis = Axis::new(Point::ORIGIN, Direction::Z);
-            let quarter = ogeom::algo::transformed(
-                &mut model,
-                &quarter,
-                ogeom::math::Transform::rotation(axis, seam),
-            )
-            .unwrap()
-            .shape;
-            let solid = make_revolution(&mut model, &quarter, axis, 2.0 * PI, T)
+        for (angle, share) in [(2.0 * PI, 0.5), (PI / 2.0, 0.125)] {
+            for seam in [0.0_f64, 1.0] {
+                let mut model = Model::new();
+                let quarter = quarter_disc(&mut model);
+                let axis = Axis::new(Point::ORIGIN, Direction::Z);
+                let quarter = ogeom::algo::transformed(
+                    &mut model,
+                    &quarter,
+                    ogeom::math::Transform::rotation(axis, seam),
+                )
                 .unwrap()
                 .shape;
-            let stretch = GeneralTransform::scaling_xyz(rx, ry, rz);
-            let scaled = general_transformed_shape(&mut model, &solid, &stretch, T)
-                .unwrap()
-                .shape;
-            let at = format!("radii {rx} {ry} {rz}, seam {seam}");
-            let diagnosis = ogeom::algo::check(&model, &scaled, T).unwrap();
-            assert!(diagnosis.is_valid(), "{at}: {diagnosis}");
-            let want = 2.0 / 3.0 * PI * rx * ry * rz;
-            let v = volume(&model, &scaled);
-            assert!((v - want).abs() < want * 1e-3, "{at}: {v} against {want}");
-            let mesh = ogeom::mesh::triangulate(&model, &scaled, Deflection::default(), T)
-                .unwrap_or_else(|e| panic!("{at}: {e}"));
-            for p in &mesh.positions {
-                let on = (p.x / rx).powi(2) + (p.y / ry).powi(2) + (p.z / rz).powi(2);
-                assert!(
-                    p.z.abs() < 1e-9 || (on - 1.0).abs() < 1e-3,
-                    "{at}: {p:?} off"
-                );
+                let solid = make_revolution(&mut model, &quarter, axis, angle, T)
+                    .unwrap()
+                    .shape;
+                let stretch = GeneralTransform::scaling_xyz(rx, ry, rz);
+                let scaled = general_transformed_shape(&mut model, &solid, &stretch, T)
+                    .unwrap()
+                    .shape;
+                let at = format!("radii {rx} {ry} {rz}, turn {angle}, seam {seam}");
+                let diagnosis = ogeom::algo::check(&model, &scaled, T).unwrap();
+                assert!(diagnosis.is_valid(), "{at}: {diagnosis}");
+                let want = 4.0 / 3.0 * PI * rx * ry * rz * share;
+                let v = volume(&model, &scaled);
+                assert!((v - want).abs() < want * 1e-6, "{at}: {v} against {want}");
+                let mesh = ogeom::mesh::triangulate(&model, &scaled, Deflection::default(), T)
+                    .unwrap_or_else(|e| panic!("{at}: {e}"));
+                // Every point on the ellipsoid, the flat faces aside: the
+                // base, and a quarter turn's sides through the axis.
+                for p in &mesh.positions {
+                    let q = (p.x / rx, p.y / ry, p.z / rz);
+                    let on = q.0 * q.0 + q.1 * q.1 + q.2 * q.2;
+                    let side = |a: f64| (q.0 * a.sin() - q.1 * a.cos()).abs() < 1e-9;
+                    let flat =
+                        q.2.abs() < 1e-9 || (angle < PI && (side(seam) || side(seam + angle)));
+                    assert!(flat || (on - 1.0).abs() < 1e-3, "{at}: {p:?} off");
+                }
             }
         }
     }

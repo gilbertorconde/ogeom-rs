@@ -740,7 +740,9 @@ fn convert_edge(
 }
 
 /// A pcurve refit at the edge's own parameters, optionally biased toward one
-/// side of the chart's `u` seam.
+/// side of the chart's `u` seam: sampled more densely until its image lies
+/// within `target` of the edge halfway between the samples too, which a fit
+/// held only at them need not.
 #[allow(clippy::too_many_arguments)]
 fn fit_pcurve(
     curve: &Curve,
@@ -751,13 +753,53 @@ fn fit_pcurve(
     target: f64,
     tol: Tolerances,
 ) -> OgeomResult<ogeom_geom::PlanarCurve> {
-    const SAMPLES: usize = 48;
+    use ogeom_geom::Curve2d as _;
+    let mut samples = 48;
+    loop {
+        let fitted = fit_pcurve_at(curve, range, surface, side, ends, target, samples, tol)?;
+        if samples >= 384 {
+            return Ok(fitted);
+        }
+        let mut held = true;
+        for i in 0..samples {
+            #[allow(clippy::cast_precision_loss)]
+            let t = range.0 + (range.1 - range.0) * (i as f64 + 0.5) / samples as f64;
+            let at = fitted.point_at(t, tol)?;
+            // Where the fit overhangs the chart at a closure there is no
+            // surface to lift it to; its samples there hold it.
+            let Ok(lifted) = surface.point_at(at.x, at.y, tol) else {
+                continue;
+            };
+            if lifted.distance(curve.point_at(t, tol)?) > target {
+                held = false;
+                break;
+            }
+        }
+        if held {
+            return Ok(fitted);
+        }
+        samples *= 2;
+    }
+}
+
+/// [`fit_pcurve`] through `samples` spans of the edge.
+#[allow(clippy::too_many_arguments)]
+fn fit_pcurve_at(
+    curve: &Curve,
+    range: (f64, f64),
+    surface: &SurfaceGeometry,
+    side: Option<f64>,
+    ends: (Option<Point2>, Option<Point2>),
+    target: f64,
+    samples: usize,
+    tol: Tolerances,
+) -> OgeomResult<ogeom_geom::PlanarCurve> {
     let ((u0, u1), _) = surface.domain();
-    let mut parameters = Vec::with_capacity(SAMPLES + 1);
-    let mut trace = Vec::with_capacity(SAMPLES + 1);
-    for i in 0..=SAMPLES {
+    let mut parameters = Vec::with_capacity(samples + 1);
+    let mut trace = Vec::with_capacity(samples + 1);
+    for i in 0..=samples {
         #[allow(clippy::cast_precision_loss)]
-        let t = range.0 + (range.1 - range.0) * i as f64 / SAMPLES as f64;
+        let t = range.0 + (range.1 - range.0) * i as f64 / samples as f64;
         let p = curve.point_at(t, tol)?;
         let projection = crate::measure::project_on_surface(surface, p, 24, tol)?;
         let (mut u, v) = projection.parameters;
@@ -800,7 +842,17 @@ fn fit_pcurve(
     {
         *last = end;
     }
-    let fitted = ogeom_geom::fit::fit_points_2d_at(&parameters, &trace, 3, target, tol)?;
+    // The target holds in space, where the edge is compared with its
+    // pcurve's image; the chart stretches a step in `u` or `v` by up to its
+    // largest partial along the trace, so the fit answers to that in the
+    // chart, with half again for the stretch between samples.
+    let mut stretch: f64 = 1.0;
+    for p in &trace {
+        let (du, dv) = surface.d1_at(p.x, p.y, tol)?;
+        stretch = stretch.max(du.magnitude()).max(dv.magnitude());
+    }
+    let fitted =
+        ogeom_geom::fit::fit_points_2d_at(&parameters, &trace, 3, target / (2.0 * stretch), tol)?;
     Ok(fitted.curve.into())
 }
 
