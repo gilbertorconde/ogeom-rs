@@ -13,6 +13,20 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`solid_from_mesh` recognizes one-row chamfers and exporter noise.**
+  - A chamfer meshed as a single row of triangles has its corners on two
+    circles, which a sphere and a torus fit as well as a cone. The cone
+    is now taken, and a cone fit reads its lean from radius against
+    height.
+  - Coaxial surfaces now share the axis of the best determined one: a
+    cylinder's before a cone's, and a larger region before a smaller. A
+    fit that does not hold on the shared axis is fitted again about it.
+    Neighbouring rims then meet on one circle.
+  - When no `coplanar_distance` is given and the curved fits press
+    against the default, the distance widens (up to four times). A mesh
+    whose exporter moved its vertices a little further no longer leaves
+    thin planar slivers at the foot of each fillet.
+
 - **A pad within a converted solid fuses (#99).** A pad sketched on a
   converted part's own outline and sunk into it runs along the part's
   walls and touches its recognized ones at every vertex, within the

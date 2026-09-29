@@ -226,6 +226,10 @@ fn split_across_slivers(points: &[Point], triangles: &mut Vec<[u32; 3]>, slivers
     }
 }
 
+/// How near its distance a recognized fit must come for the distance, not
+/// the surface, to be what bounds it.
+const PRESSED: f64 = 0.8;
+
 /// Build a B-rep from a triangle mesh.
 ///
 /// See the module documentation for the construction. A closed piece
@@ -326,11 +330,34 @@ pub fn solid_from_mesh(
     report.shells = pieces.len();
 
     let diagonal = diagonal(&points);
-    let flat = options
+    let mut flat = options
         .coplanar_distance
         .unwrap_or(1e-6 * diagonal)
         .max(weld);
     let mut groups = segment(&points, &triangles, &adjacency, options, flat, tol)?;
+    // The default distance is what single precision resolves, and some
+    // exporters place their vertices a few times farther off their own
+    // surfaces than that. The recognized surfaces say so: where their fits
+    // press against the distance, it is the distance that stops them, and
+    // their rims' last triangles stay facets. Unless the caller chose the
+    // distance, it widens while that holds, twice at most.
+    if options.coplanar_distance.is_none() && options.recognize {
+        for _ in 0..2 {
+            let pressed = groups
+                .carriers
+                .iter()
+                .filter_map(|c| match c {
+                    Carrier::Curved(curved) => Some(curved.fitted),
+                    _ => None,
+                })
+                .fold(0.0_f64, f64::max);
+            if pressed <= flat * PRESSED {
+                break;
+            }
+            flat *= 2.0;
+            groups = segment(&points, &triangles, &adjacency, options, flat, tol)?;
+        }
+    }
     // Plan until every curved face's boundary is exact, faceting the ones
     // whose boundary is not.
     let mut pinned: std::collections::HashSet<u32> = std::collections::HashSet::new();
@@ -711,6 +738,10 @@ struct Curved {
     shape: Canonical,
     /// How far the region's vertices stand off it.
     deviation: f64,
+    /// How far they stood off the region's own fit, before a shared axis
+    /// or a sphere's frame moved it: how hard the fit pressed against the
+    /// distance it was grown within.
+    fitted: f64,
     /// The chart point every pcurve on it is unwrapped around, so they all
     /// read on one branch.
     centre: (f64, f64),
@@ -1565,6 +1596,7 @@ fn recognized_regions(
             groups.carriers.push(Carrier::Curved(Curved {
                 shape,
                 deviation,
+                fitted: deviation,
                 centre: (0.0, 0.0),
                 wraps: false,
                 wraps_v: false,
@@ -1965,8 +1997,24 @@ fn spread_directions(count: usize) -> Vec<Vector> {
 /// region's chart branch and whether it wraps.
 fn align_axes(points: &[Point], groups: &mut Groups, flat: f64, tol: Tolerances) {
     let mut leaders: Vec<Frame> = Vec::new();
-    for carrier in &mut groups.carriers {
-        let Carrier::Curved(curved) = carrier else {
+    // The best determined axis leads: a cylinder's before a cone's, whose
+    // lean trades against its axis on a short band, and a larger region
+    // before a smaller.
+    let rank = |c: &Carrier| match c {
+        Carrier::Curved(curved) => (
+            match curved.shape {
+                Canonical::Cylinder(_) => 0,
+                Canonical::Cone(_) => 1,
+                _ => 2,
+            },
+            usize::MAX - curved.vertices.len(),
+        ),
+        _ => (3, 0),
+    };
+    let mut order: Vec<usize> = (0..groups.carriers.len()).collect();
+    order.sort_by_key(|&i| rank(&groups.carriers[i]));
+    for i in order {
+        let Carrier::Curved(curved) = &mut groups.carriers[i] else {
             continue;
         };
         let Some(frame) = axis_frame(&curved.shape) else {
@@ -2000,6 +2048,19 @@ fn align_axes(points: &[Point], groups: &mut Groups, flat: f64, tol: Tolerances)
                 if deviation <= flat {
                     curved.shape = shape;
                     curved.deviation = deviation;
+                } else if matches!(curved.shape, Canonical::Cylinder(_) | Canonical::Cone(_))
+                    && let Some(refitted) =
+                        crate::recognize::ruled_about(&pts, origin, axis, flat, tol)
+                    && let Some(refitted) = on_frame(&refitted, snapped, tol)
+                {
+                    // The fit's own axis stood a few slops off the shared one,
+                    // and its radius and lean with it: fitted again about the
+                    // shared axis, the two meet on one circle.
+                    let deviation = worst_deviation(&refitted, &pts);
+                    if deviation <= flat {
+                        curved.shape = refitted;
+                        curved.deviation = deviation;
+                    }
                 }
             }
         } else if !sphere {

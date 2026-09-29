@@ -1200,3 +1200,54 @@ fn a_pad_within_a_converted_solid_fuses_to_the_solid() {
         }
     }
 }
+
+/// A slab's points rounded to single precision, and moved by up to `noise`
+/// along each axis in a fixed pseudo-random pattern, as an exporter that
+/// rounds its own vertices leaves them.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "the rounding to single precision is the point"
+)]
+fn exported(mut mesh: Triangulation, noise: f64) -> Triangulation {
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((state >> 11) as f64 / (1u64 << 53) as f64).mul_add(2.0, -1.0) * noise
+    };
+    for p in &mut mesh.positions {
+        let moved = Point::new(p.x + next(), p.y + next(), p.z + next());
+        *p = Point::new(
+            f64::from(moved.x as f32),
+            f64::from(moved.y as f32),
+            f64::from(moved.z as f32),
+        );
+    }
+    mesh
+}
+
+/// A rounded slab whose rims are chamfered by a single row of triangles:
+/// each row's corners lie on two circles, which a sphere and a torus fit as
+/// well as the cone. The cone is the one taken, and meets the corner's
+/// cylinder on one circle; exported points, up to a little over the default
+/// distance off their surfaces, still come back the same faces.
+#[test]
+fn one_row_chamfers_come_back_cones() {
+    for (r, n, noise) in [
+        (8.0, 20, 0.0),
+        (3.0, 12, 0.0),
+        (8.0, 40, 0.0),
+        (8.0, 20, 7.5e-5),
+    ] {
+        let at = format!("corner {r} in {n} steps, noise {noise}");
+        let mesh = exported(rounded_slab(r, n, 0.5, 5.0), noise);
+        let mut model = Model::new();
+        let built = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T)
+            .unwrap_or_else(|e| panic!("{at}: {e}"));
+        let diagnosis = check(&model, &built.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{at}: {diagnosis}");
+        assert_eq!(kinds(&model, &built.shape), [14, 4, 8, 0, 0], "{at}");
+    }
+}

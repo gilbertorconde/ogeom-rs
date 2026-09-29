@@ -203,6 +203,13 @@ fn curved_fits(
             deviation: worst_deviation(&refined, points),
         });
     }
+    // Samples on a band's two rims fit a whole family of spheres and tori,
+    // each as closely as the cone the band's rungs draw: the round fits say
+    // nothing the mesh does, and give way to the ruled one.
+    if let Some(band) = two_row_band(&fits, points, hopeless, tol) {
+        fits.retain(|f| !matches!(f.surface, Canonical::Sphere(_) | Canonical::Torus(_)));
+        fits.push(band);
+    }
     fits
 }
 
@@ -231,7 +238,19 @@ fn choose(fits: &[Recognized], chords: &[(Point, Point)], tolerance: f64) -> Opt
         .iter()
         .map(|f| f.deviation)
         .fold(f64::INFINITY, f64::min);
-    within
+    // Among fits the samples cannot tell apart, the ruled kinds first: two
+    // rows of samples fix a cylinder or a cone, and lie on a whole family
+    // of spheres and tori besides. A round patch the samples do fix leaves
+    // no ruled fit that close.
+    let rank = |f: &Recognized| match f.surface {
+        Canonical::Cylinder(_) => 0,
+        Canonical::Cone(_) => 1,
+        Canonical::Sphere(_) => 2,
+        _ => 3,
+    };
+    let mut ranked = within;
+    ranked.sort_by_key(|f| rank(f));
+    ranked
         .into_iter()
         .find(|f| f.deviation <= (2.0 * best).max(tolerance * 1e-3))
         .copied()
@@ -294,6 +313,154 @@ pub(crate) fn recognize_trimmed(
         }
     }
     Err(closest)
+}
+
+/// The ruled surface of a band whose samples lie on two rows: a sphere's
+/// or a torus's profile is a circle, fixed only by three rows, and two rows
+/// (the rims of a band one triangle high) lie on a whole family of both.
+/// The torus fit passes through both rims, and its tube angle sorts the
+/// samples onto them; each rim's circle then gives the axis, square to
+/// its plane through its centre, and the cone or cylinder about that axis
+/// through the samples is the band. A few stray samples beyond the rows (a
+/// corner of the next facet taken in) are left for trimming to drop.
+/// `None` where no torus fits or the samples stand on more than two rows.
+fn two_row_band(
+    fits: &[Recognized],
+    points: &[Point],
+    hopeless: f64,
+    tol: Tolerances,
+) -> Option<Recognized> {
+    let round = fits.iter().any(|f| {
+        matches!(f.surface, Canonical::Sphere(_) | Canonical::Torus(_)) && f.deviation <= hopeless
+    });
+    if !round {
+        return None;
+    }
+    let rows = match fits.iter().find_map(|f| match f.surface {
+        Canonical::Torus(t) if f.deviation <= hopeless => Some(t),
+        _ => None,
+    }) {
+        Some(torus) => rows_by_tube(&torus, points, hopeless)?,
+        None => rows_by_planes(points, hopeless)?,
+    };
+    let stray = points.len() - rows[0].len() - rows[1].len();
+    if stray >= 3_usize.max(points.len() / 10) {
+        return None;
+    }
+    let rim = |row: &[usize]| -> Option<(Point, Direction)> {
+        if row.len() < 3 {
+            return None;
+        }
+        let at: Vec<Point> = row.iter().map(|&i| points[i]).collect();
+        let (centre, normal, _, _) = circle_through(&at, tol)?;
+        Some((centre, normal))
+    };
+    let (centre, a) = rim(&rows[0])?;
+    let (_, b) = rim(&rows[1])?;
+    let b = if a.vector().dot(b.vector()) < 0.0 {
+        -b
+    } else {
+        b
+    };
+    let axis = Direction::new(a.vector() + b.vector(), tol).ok()?;
+    let on_rows: Vec<Point> = rows[..2].iter().flatten().map(|&i| points[i]).collect();
+    let seed = ruled_about(&on_rows, centre, axis, hopeless, tol)?;
+    let band = refine(seed, &on_rows, hopeless, tol).unwrap_or(seed);
+    Some(Recognized {
+        surface: band,
+        deviation: worst_deviation(&band, points),
+    })
+}
+
+/// The samples' two largest rows by a torus's tube angle, the largest
+/// first.
+fn rows_by_tube(torus: &Torus, points: &[Point], hopeless: f64) -> Option<[Vec<usize>; 2]> {
+    let frame = torus.frame();
+    let (z, x, y) = (frame.z().vector(), frame.x().vector(), frame.y().vector());
+    let mut angles: Vec<(f64, usize)> = points
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let d = *p - frame.origin();
+            let radial = d.dot(x).hypot(d.dot(y)) - torus.major_radius();
+            (d.dot(z).atan2(radial), i)
+        })
+        .collect();
+    angles.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let gap = hopeless * 10.0 / torus.minor_radius();
+    let mut rows: Vec<Vec<usize>> = vec![vec![angles.first()?.1]];
+    for w in angles.windows(2) {
+        if w[1].0 - w[0].0 > gap {
+            rows.push(vec![w[1].1]);
+        } else if let Some(last) = rows.last_mut() {
+            last.push(w[1].1);
+        }
+    }
+    rows.sort_by_key(|r| core::cmp::Reverse(r.len()));
+    if rows.len() < 2 {
+        return None;
+    }
+    let second = rows.swap_remove(1);
+    let first = rows.swap_remove(0);
+    Some([first, second])
+}
+
+/// The samples' two largest rows as the two parallel planes holding the
+/// most of them: a sphere through a band's rims has no axis of its own to
+/// sort by, but each rim is a circle, and a circle lies in a plane. Planes
+/// through triples of samples: every triple of a small sample, and of a
+/// larger one a fixed spread of triples, a quarter of which fall on one
+/// rim and give its plane.
+fn rows_by_planes(points: &[Point], hopeless: f64) -> Option<[Vec<usize>; 2]> {
+    const EVERY: usize = 24;
+    const TRIES: usize = 400;
+    let n = points.len();
+    if n < 6 {
+        return None;
+    }
+    let triples: Vec<(usize, usize, usize)> = if n <= EVERY {
+        (0..n)
+            .flat_map(|i| (i + 1..n).flat_map(move |j| (j + 1..n).map(move |k| (i, j, k))))
+            .collect()
+    } else {
+        // A fixed sequence, so the same samples always give the same rows.
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            #[allow(clippy::cast_possible_truncation)]
+            let at = (state >> 33) as usize % n;
+            at
+        };
+        (0..TRIES).map(|_| (next(), next(), next())).collect()
+    };
+    let within = |normal: Vector, at: Point, skip: &[usize]| -> Vec<usize> {
+        (0..n)
+            .filter(|i| !skip.contains(i) && (points[*i] - at).dot(normal).abs() <= hopeless)
+            .collect()
+    };
+    let mut best: Option<(Vec<usize>, Vector)> = None;
+    for (i, j, k) in triples {
+        let normal = (points[j] - points[i]).cross(points[k] - points[i]);
+        let m = normal.magnitude();
+        if m <= f64::MIN_POSITIVE {
+            continue;
+        }
+        let normal = normal / m;
+        let row = within(normal, points[i], &[]);
+        if best.as_ref().is_none_or(|(held, _)| row.len() > held.len()) {
+            best = Some((row, normal));
+        }
+    }
+    let (first, normal) = best?;
+    // The other rim: the plane parallel to the first through the most of
+    // the rest.
+    let second = (0..n)
+        .filter(|i| !first.contains(i))
+        .map(|i| within(normal, points[i], &first))
+        .max_by_key(Vec::len)?;
+    (first.len() >= 3 && second.len() >= 3).then_some([first, second])
 }
 
 /// The worst distance from any sample to the candidate.
@@ -501,6 +668,23 @@ fn fit_cylinder(points: &[Point], normals: &[Vector], tol: Tolerances) -> Option
 
 fn fit_cone(points: &[Point], normals: &[Vector], tol: Tolerances) -> Option<Canonical> {
     let (through, axis) = revolution_axis(points, normals, tol)?;
+    match ruled_about(points, through, axis, 0.0, tol)? {
+        cone @ Canonical::Cone(_) => Some(cone),
+        _ => None,
+    }
+}
+
+/// The ruled surface of revolution about a known axis through the samples:
+/// radius against height fitted as a line, a cone where it leans and a
+/// cylinder where it does not, or where its lean changes the radius by no
+/// more than `flat` over the samples' own height.
+pub(crate) fn ruled_about(
+    points: &[Point],
+    through: Point,
+    axis: Direction,
+    flat: f64,
+    tol: Tolerances,
+) -> Option<Canonical> {
     let origin = centred_on(points, through, axis);
     // Radius against height is a line: ρ = k·h + ρ₀.
     let (mut sh, mut shh, mut sr, mut shr, mut count) = (0.0, 0.0, 0.0, 0.0, 0.0);
@@ -517,9 +701,18 @@ fn fit_cone(points: &[Point], normals: &[Vector], tol: Tolerances) -> Option<Can
     }
     let k = f64::mul_add(count, shr, -(sh * sr)) / det;
     let rho0 = f64::mul_add(shh, sr, -(sh * shr)) / det;
-    if k.abs() <= tol.angular() {
+    let heights: Vec<f64> = profile(points, origin, axis)
+        .into_iter()
+        .map(|(_, h)| h)
+        .collect();
+    let span = heights.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+        - heights.iter().copied().fold(f64::INFINITY, f64::min);
+    if k.abs() <= tol.angular() || k.abs() * span <= flat {
         // No taper is a cylinder.
-        return None;
+        let radius = sr / count;
+        return Some(Canonical::Cylinder(
+            Cylinder::new(Frame::about(origin, axis), radius, tol).ok()?,
+        ));
     }
     // A negative taper is the same cone seen from its other end.
     let (axis, k) = if k < 0.0 { (-axis, -k) } else { (axis, k) };
