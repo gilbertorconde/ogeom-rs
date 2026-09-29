@@ -124,6 +124,35 @@ pub fn tight_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResul
         if !(upper[0] > lower[0] && upper[1] > lower[1]) {
             continue;
         }
+        // The chart triangles' own border: the sides only one triangle has.
+        // It runs on chords of the face's boundary, and where that boundary
+        // curves in the chart the chords stand outside it. A descent that
+        // ends against the border was stopped by the chords, not by the
+        // surface, and an extreme on the boundary is the edges' to find.
+        let mut sides: std::collections::HashMap<(u32, u32), usize> =
+            std::collections::HashMap::new();
+        for t in &mesh.triangles {
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                *sides.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        let border: Vec<(Point2, Point2)> = sides
+            .into_iter()
+            .filter(|(_, n)| *n == 1)
+            .map(|((a, b), _)| {
+                let at = |i: u32| {
+                    let (u, v) = mesh.parameters[i as usize];
+                    Point2::new(u, v)
+                };
+                (at(a), at(b))
+            })
+            .collect();
+        let against = ((upper[0] - lower[0]).min(upper[1] - lower[1])) * 1e-6;
+        let on_border = |p: Point2| {
+            border
+                .iter()
+                .any(|(a, b)| distance_to_segment(p, *a, *b) <= against)
+        };
         for axis in AXES {
             for sense in [1.0, -1.0] {
                 let score = |p: Point| p.to_vector().dot(axis) * sense;
@@ -148,7 +177,9 @@ pub fn tight_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResul
                     lower,
                     upper,
                 )?;
-                if let Some([u, v]) = refined {
+                if let Some([u, v]) = refined
+                    && !on_border(Point2::new(u, v))
+                {
                     points.push(placement.apply(surface.point_at(u, v, tol)?));
                 }
             }
@@ -175,6 +206,17 @@ fn solve_on_face(
         .value
         .is_finite()
         .then(|| [found.point[0], found.point[1]]))
+}
+
+fn distance_to_segment(p: Point2, a: Point2, b: Point2) -> f64 {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let squared = dx * dx + dy * dy;
+    let t = if squared > 0.0 {
+        (((p.x - a.x) * dx + (p.y - a.y) * dy) / squared).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p.x - a.x - dx * t).hypot(p.y - a.y - dy * t)
 }
 
 fn in_triangle(t: [Point2; 3], p: Point2) -> bool {

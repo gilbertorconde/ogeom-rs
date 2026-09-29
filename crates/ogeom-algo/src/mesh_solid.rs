@@ -1542,7 +1542,15 @@ fn recognized_regions(
             let pts: Vec<Point> = vertices.iter().map(|&v| points[v as usize]).collect();
             let deviation = worst_deviation(&shape, &pts);
             let flat_too = crate::recognize::is_flat(&pts, flat, tol);
-            if deviation > flat || flat_too || region.len() < 2 {
+            // The vertices on the surface do not put the triangles on it: a
+            // long facet across a flat stretch has its corners where a
+            // surface through both ends of the stretch passes, and its
+            // middle far from it. Every triangle stands off the surface no
+            // more than its own turn allows.
+            let spans_off = region.iter().any(|&t| {
+                !sags_as_the_surface(&shape, triangles[t].map(|v| points[v as usize]), flat)
+            });
+            if deviation > flat || flat_too || spans_off || region.len() < 2 {
                 for &t in &region {
                     tried[t] = true;
                     changed[t] = batch;
@@ -2951,11 +2959,25 @@ impl Planner<'_> {
         // its shape, not every vertex.
         let stride = steps.div_ceil(SECTION_SPANS).max(1);
         let split = count.div_ceil(steps.div_ceil(stride)).max(SECTION_SPLIT);
+        // A chord of the mesh lies across a face recognized from it, and a
+        // face recognized from a mesh turns through well under a right
+        // angle from one end of one of its chords to the other. Where the
+        // fitted surface turns farther, it is not the surface the chord
+        // lies on, and the curve solved on it runs where the mesh does not.
+        let turns_away = |p: Point, q: Point| {
+            faces.iter().filter_map(|&g| self.curved(g)).any(|curved| {
+                let (gp, gq) = (gradient(&curved.shape, p), gradient(&curved.shape, q));
+                gp.dot(gq) <= 0.0
+            })
+        };
         let mut on = Vec::new();
         let mut i = 0;
         while i < steps {
             let next = (i + stride).min(steps);
             let (p, q) = (pts[i], pts[next % pts.len()]);
+            if turns_away(p, q) {
+                return None;
+            }
             for k in 0..split {
                 #[allow(clippy::cast_precision_loss, reason = "a handful of splits")]
                 let f = k as f64 / split as f64;

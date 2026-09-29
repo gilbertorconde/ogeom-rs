@@ -4,7 +4,9 @@
 
 use std::time::{Duration, Instant};
 
-use ogeom::algo::{MeshSolidOptions, check, solid_from_mesh, volume_properties};
+use ogeom::algo::{
+    MeshSolidOptions, Severity, check, solid_from_mesh, tight_bounds, volume_properties,
+};
 use ogeom::core::Tolerances;
 use ogeom::math::{Direction, Frame, Point, Vector};
 use ogeom::mesh::Deflection;
@@ -1009,4 +1011,102 @@ fn a_large_mesh_converts_in_seconds() {
     assert_eq!(out.report.triangles, 200_000);
     assert_eq!(out.report.faces, 1);
     assert!(took < Duration::from_secs(10), "{took:?}");
+}
+
+/// A rounded rectangle `w` by `h`, corner radius `r` in `n` steps per
+/// corner, drawn in by `inset` with its corners' centres kept.
+fn rounded_outline(w: f64, h: f64, r: f64, n: u32, inset: f64) -> Vec<(f64, f64)> {
+    let r = r - inset;
+    let mut out = Vec::new();
+    for (cx, cy, start) in [
+        (w - r - inset, r + inset, -0.5),
+        (w - r - inset, h - r - inset, 0.0),
+        (r + inset, h - r - inset, 0.5),
+        (r + inset, r + inset, 1.0),
+    ] {
+        for k in 0..=n {
+            let a = core::f64::consts::PI * (start + 0.5 * f64::from(k) / f64::from(n));
+            out.push((cx + r * a.cos(), cy + r * a.sin()));
+        }
+    }
+    out
+}
+
+/// A rounded-rectangle slab from z = 0 to `top`: its walls stand between
+/// z = `fillet` and `top - fillet`, each turned into its cap by a single
+/// row of triangles, and its long sides are one quad each.
+fn rounded_slab(r: f64, n: u32, fillet: f64, top: f64) -> Triangulation {
+    let (w, h) = (47.0, 21.5);
+    let rings = [
+        (rounded_outline(w, h, r, n, fillet), 0.0),
+        (rounded_outline(w, h, r, n, 0.0), fillet),
+        (rounded_outline(w, h, r, n, 0.0), top - fillet),
+        (rounded_outline(w, h, r, n, fillet), top),
+    ];
+    let m = u32::try_from(rings[0].0.len()).unwrap();
+    let mut t = Triangulation::new();
+    for (ring, z) in &rings {
+        for &(x, y) in ring {
+            t.positions.push(Point::new(x, y, *z));
+        }
+    }
+    for k in 0..3 {
+        for i in 0..m {
+            let j = (i + 1) % m;
+            let (a, b, c, d) = (k * m + i, k * m + j, (k + 1) * m + j, (k + 1) * m + i);
+            t.triangles.push([a, b, c]);
+            t.triangles.push([a, c, d]);
+        }
+    }
+    let (bottom, cap) = (4 * m, 4 * m + 1);
+    t.positions.push(Point::new(w / 2.0, h / 2.0, 0.0));
+    t.positions.push(Point::new(w / 2.0, h / 2.0, top));
+    for i in 0..m {
+        let j = (i + 1) % m;
+        t.triangles.push([bottom, j, i]);
+        t.triangles.push([cap, 3 * m + i, 3 * m + j]);
+    }
+    t
+}
+
+/// A slab whose long walls are single facets between its rounded corners:
+/// a surface through both corners' vertices passes through the long
+/// facets' corners too, and must still not be taken for them. Every face
+/// recognized stays on the triangles it replaced, the solid facing out and
+/// bounded as the mesh is.
+#[test]
+fn recognized_faces_stay_on_the_triangles_they_replace() {
+    for (r, n, fillet) in [
+        (8.0, 19, 0.5),
+        (8.0, 26, 0.3),
+        (8.0, 32, 0.5),
+        (8.0, 8, 0.5),
+        (2.0, 3, 0.5),
+    ] {
+        let top = 5.0;
+        let mesh = rounded_slab(r, n, fillet, top);
+        let mut model = Model::new();
+        let built = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+        let at = format!("corner {r} in {n} steps, fillet {fillet}");
+        let diagnosis = check(&model, &built.shape, T).unwrap();
+        assert!(
+            diagnosis.of(Severity::Broken).is_empty(),
+            "{at}: {diagnosis}"
+        );
+        let fine = ogeom::mesh::triangulate(
+            &model,
+            &built.shape,
+            Deflection::with_chord(0.01).unwrap(),
+            T,
+        )
+        .unwrap();
+        let bounds = tight_bounds(&model, &built.shape, T).unwrap();
+        let (lo, hi) = (bounds.low().unwrap(), bounds.high().unwrap());
+        for p in fine.positions.iter().chain([&lo, &hi]) {
+            assert!(
+                p.z > -1e-4 && p.z < top + 1e-4 && p.y > -1e-4 && p.y < 21.5 + 1e-4,
+                "{at}: {p:?} outside the slab"
+            );
+        }
+    }
 }

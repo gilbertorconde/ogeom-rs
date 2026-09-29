@@ -11,6 +11,20 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A surface recognized in a mesh stays on the triangles it replaces
+  (#97).** A region was accepted when its vertices lay on the fitted
+  surface, so long facets across a flat stretch between two rounded
+  corners could be taken for a torus through the corners, whose face then
+  stood far outside the part and turned the classifier's rays: the solid
+  checked inside out. Every triangle of a region must now stay on the
+  surface as closely as its own turn allows, and an edge between two
+  recognized faces is not traced where either surface turns through a
+  right angle along the mesh chord it replaces. `tight_bounds` no longer
+  counts a face's surface beyond the chords its chart triangulation runs
+  on, which put a dome a few hundredths below the edge that bounds it.
+
 ## [0.5.0] - 2026-09-29
 
 A minor release, since one public enum gains a variant: `cargo
