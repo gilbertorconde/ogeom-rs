@@ -87,6 +87,49 @@ fn a_revolved_solid_scales_to_the_ellipsoid_s_volume() {
     }
 }
 
+/// A revolved hemisphere scaled by three different factors, its seam in
+/// the profile's plane or turned a radian off it: half the ellipsoid, and
+/// on it.
+#[test]
+fn a_hemisphere_scaled_on_every_axis_is_half_an_ellipsoid() {
+    for (rx, ry, rz) in [(2.0, 1.0, 1.0), (8.0, 5.0, 3.0)] {
+        for seam in [0.0, 1.0] {
+            let mut model = Model::new();
+            let quarter = quarter_disc(&mut model);
+            let axis = Axis::new(Point::ORIGIN, Direction::Z);
+            let quarter = ogeom::algo::transformed(
+                &mut model,
+                &quarter,
+                ogeom::math::Transform::rotation(axis, seam),
+            )
+            .unwrap()
+            .shape;
+            let solid = make_revolution(&mut model, &quarter, axis, 2.0 * PI, T)
+                .unwrap()
+                .shape;
+            let stretch = GeneralTransform::scaling_xyz(rx, ry, rz);
+            let scaled = general_transformed_shape(&mut model, &solid, &stretch, T)
+                .unwrap()
+                .shape;
+            let at = format!("radii {rx} {ry} {rz}, seam {seam}");
+            let diagnosis = ogeom::algo::check(&model, &scaled, T).unwrap();
+            assert!(diagnosis.is_valid(), "{at}: {diagnosis}");
+            let want = 2.0 / 3.0 * PI * rx * ry * rz;
+            let v = volume(&model, &scaled);
+            assert!((v - want).abs() < want * 1e-3, "{at}: {v} against {want}");
+            let mesh = ogeom::mesh::triangulate(&model, &scaled, Deflection::default(), T)
+                .unwrap_or_else(|e| panic!("{at}: {e}"));
+            for p in &mesh.positions {
+                let on = (p.x / rx).powi(2) + (p.y / ry).powi(2) + (p.z / rz).powi(2);
+                assert!(
+                    p.z.abs() < 1e-9 || (on - 1.0).abs() < 1e-3,
+                    "{at}: {p:?} off"
+                );
+            }
+        }
+    }
+}
+
 /// An ellipsoid from a scaled sphere, cut by a slab over its upper half:
 /// the upper half, and nothing below the slab.
 #[test]

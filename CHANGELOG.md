@@ -36,6 +36,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A revolved solid scaled on every axis meshes (#96).** Converting a
+  face with a pole under a general transform looked for the pole's row on
+  the new surface at the pole's old place, so a scaling that moved the
+  pole put its degenerate edge on the wrong end of the chart and the face
+  enclosed nothing. The row is now found at the pole's mapped place: a
+  hemisphere scaled to radii 8, 5, 3 meshes and measures as half the
+  ellipsoid.
+
 - **A fillet chain holding closed edges rounds each (#94).** A piece of a
   rim the solid holds in parts is rounded the whole turn round, so the
   rim's other pieces (a second half passed in, or a whole rim a boolean

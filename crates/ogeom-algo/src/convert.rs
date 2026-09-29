@@ -351,6 +351,7 @@ fn rebuild(
                             &edge,
                             &placed,
                             &patch_surface,
+                            at,
                             tol,
                         )?;
                         attach_pcurve(
@@ -987,7 +988,12 @@ fn seam_pcurves(
     Ok((forward, reversed))
 }
 
-/// The pole row of a degenerate edge, restated in the new chart.
+/// The pole row of a degenerate edge, restated in the new chart; `pole` is
+/// its vertex where the new surface holds it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the old and new charts of one edge"
+)]
 fn degenerate_row(
     model: &Model,
     data: &ogeom_topo::EdgeData,
@@ -995,6 +1001,7 @@ fn degenerate_row(
     edge: &Shape,
     old: &SurfaceGeometry,
     new: &SurfaceGeometry,
+    pole: Point,
     tol: Tolerances,
 ) -> OgeomResult<ogeom_geom::Line2d> {
     // Which end of the old chart the pole row sat at decides which end of
@@ -1014,7 +1021,6 @@ fn degenerate_row(
     // past its pole (a whole circle revolved) puts the pole inside the
     // chart, not at an end. Where the rows never reach it, conversion
     // preserves ends, and the old row's nearer end is the new one's.
-    let pole = old.point_at(at.x, v_old, tol)?;
     let v_new =
         pole_row(new, pole, tol).unwrap_or(if (v_old - va_old).abs() <= (v_old - vb_old).abs() {
             nv0
