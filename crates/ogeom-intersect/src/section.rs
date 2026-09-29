@@ -163,12 +163,392 @@ pub fn intersect_surfaces(
         }
         // No closed form for this pair: the statement that sends us marching,
         // unless the pair is two drums all but parallel.
-        Err(_) => match near_parallel_drums(a, b, tol).or_else(|| ball_through_drum(a, b, tol)) {
+        Err(_) => match near_parallel_drums(a, b, tol)
+            .or_else(|| ball_through_drum(a, b, tol))
+            .or_else(|| axial_plane_revolution(a, b, tol))
+            .or_else(|| plane_along_spline_lines(a, b, tol))
+        {
             Some(sections) if sections.is_empty() => Ok(SurfaceIntersection::Apart),
             Some(sections) => Ok(SurfaceIntersection::Along(sections)),
             None => marched(a, b, options, tol),
         },
     }
+}
+
+/// A plane through the axis of a surface of revolution whose profile lies
+/// in a plane through that axis: the profile turned to each angle that sets
+/// its plane on the cut, a column of the revolution's chart.
+///
+/// Marched, such a section runs through the pole wherever the profile meets
+/// the axis, where the chart pinches to a point and the march stalls. Here
+/// the profile is cut where it crosses the axis, and each piece is turned to
+/// both angles, the one setting its side of the axis on each half of the
+/// cut: a revolution whose profile crosses the axis covers the section
+/// twice, once from each column, and a face on either column finds its own
+/// piece. `None` for any other plane or profile, and where the turns fall
+/// outside the sweep the answer is empty.
+fn axial_plane_revolution(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    tol: Tolerances,
+) -> Option<Vec<SectionCurve>> {
+    const SAMPLES: u32 = 64;
+    let (plane, revolution, plane_first) = match (a, b) {
+        (SurfaceGeometry::Plane(p), SurfaceGeometry::Revolution(r)) => (p, r, true),
+        (SurfaceGeometry::Revolution(r), SurfaceGeometry::Plane(p)) => (p, r, false),
+        _ => return None,
+    };
+    let cut = plane.plane();
+    let axis = revolution.axis();
+    let normal = cut.normal();
+    if normal.dot(axis.direction).abs() > tol.angular()
+        || cut.signed_distance_to(axis.location).abs() > tol.confusion()
+    {
+        return None;
+    }
+    let profile = revolution.curve();
+    let (v0, v1) = profile.domain();
+    let at = |k: u32| v0 + (v1 - v0) * f64::from(k) / f64::from(SAMPLES);
+    let radial = |v: f64| {
+        let p = profile.point_at(v, tol).ok()?;
+        Some(p - axis.project(p))
+    };
+    // The profile's own side of the axis, from its point furthest off it.
+    let mut widest = ogeom_math::Vector::ZERO;
+    for k in 0..=SAMPLES {
+        let r = radial(at(k))?;
+        if r.magnitude() > widest.magnitude() {
+            widest = r;
+        }
+    }
+    let side = ogeom_math::Direction::new(widest, tol).ok()?;
+    let across = axis.direction.cross_with(side.vector());
+    // Every point of the profile in the plane of the axis and that side.
+    let offset = |v: f64| radial(v).map(|r| (r.dot(side.vector()), r.dot(across)));
+    for k in 0..=SAMPLES {
+        let (_, off) = offset(at(k))?;
+        if off.abs() > tol.confusion() {
+            return None;
+        }
+    }
+    // The pieces between the profile's crossings of the axis, each crossing
+    // narrowed by bisection.
+    let mut cuts = vec![v0];
+    for k in 0..SAMPLES {
+        let (mut lo, mut hi) = (at(k), at(k + 1));
+        let (s_lo, s_hi) = (offset(lo)?.0, offset(hi)?.0);
+        if s_lo.abs() <= tol.confusion() || s_lo * s_hi >= 0.0 {
+            continue;
+        }
+        for _ in 0..80 {
+            let mid = f64::midpoint(lo, hi);
+            if offset(mid)?.0 * s_lo > 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        cuts.push(f64::midpoint(lo, hi));
+    }
+    cuts.push(v1);
+    // The turns setting the profile's side on the cut's two halves.
+    let out = axis.direction.cross_with(normal.vector());
+    let first = across.dot(out).atan2(side.vector().dot(out));
+    let (u0, u1) = revolution.domain().0;
+    let turns: Vec<f64> = [first, first + core::f64::consts::PI]
+        .into_iter()
+        .filter_map(|u| {
+            let u = u0 + (u - u0).rem_euclid(core::f64::consts::TAU);
+            let u = if (u - u0 - core::f64::consts::TAU).abs() <= tol.angular() {
+                u0
+            } else {
+                u
+            };
+            (u <= u1 + tol.angular()).then_some(u.min(u1))
+        })
+        .collect();
+    let mut sections = Vec::new();
+    for &u in &turns {
+        let turned = ogeom_geom::Transformable::transformed(
+            profile,
+            &ogeom_math::Transform::rotation(axis, u),
+            tol,
+        )
+        .ok()?;
+        for piece in cuts.windows(2) {
+            let (va, vb) = (piece[0], piece[1]);
+            if vb - va <= tol.parametric() {
+                continue;
+            }
+            let curve: Curve = ogeom_geom::TrimmedCurve::new(turned.clone(), va, vb, tol)
+                .ok()?
+                .into();
+            let column: PlanarCurve = Line2d::over(
+                ogeom_math::Axis2::new(Point2::new(u, 0.0), ogeom_math::Direction2::Y),
+                va,
+                vb,
+            )
+            .ok()?
+            .into();
+            let flat = exact_pcurve(&curve, (va, vb), a_or_b(plane_first, a, b), tol);
+            let (on_a, on_b) = if plane_first {
+                (flat, Some(column))
+            } else {
+                (Some(column), flat)
+            };
+            sections.push(SectionCurve {
+                on_a,
+                on_b,
+                tolerance: 0.0,
+                exact: true,
+                closed: false,
+                tangential: false,
+                curve,
+            });
+        }
+    }
+    Some(sections)
+}
+
+/// A plane holding whole columns or rows of a spline surface, and meeting
+/// it nowhere else: those iso lines, exactly.
+///
+/// A surface of revolution converted to a spline and scaled keeps its
+/// meridians as columns, and a plane through its axis holds two of them,
+/// one often the seam along the chart's border. Marched, such a section
+/// runs along the chart's edge or through its poles and is not found. An
+/// iso line lies in the plane where every control point of it does, which
+/// is a root of each control point's weighted distance to the plane, found
+/// along the chart. The answer stands only where a grid over the chart
+/// finds the surface on one side of the plane between the lines found;
+/// anything else meets the plane elsewhere too and is marched.
+fn plane_along_spline_lines(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    tol: Tolerances,
+) -> Option<Vec<SectionCurve>> {
+    const SAMPLES: u32 = 96;
+    let (plane, spline, plane_first) = match (a, b) {
+        (SurfaceGeometry::Plane(p), SurfaceGeometry::BSpline(s)) => (p.plane(), s, true),
+        (SurfaceGeometry::BSpline(s), SurfaceGeometry::Plane(p)) => (p.plane(), s, false),
+        _ => return None,
+    };
+    let distance = |p: Point| plane.signed_distance_to(p);
+    let ((u0, u1), (v0, v1)) = spline.domain();
+    // An iso line's control points' weighted distances to the plane, and
+    // whether the line has any length.
+    let line_at = |along_u: bool, t: f64| -> Option<ogeom_geom::BSplineCurve> {
+        if along_u {
+            spline.iso_u_curve(t, tol).ok()
+        } else {
+            spline.iso_v_curve(t, tol).ok()
+        }
+    };
+    let weighted = |curve: &ogeom_geom::BSplineCurve| -> Vec<f64> {
+        curve
+            .control_points()
+            .iter()
+            .map(|w| w.weight * distance(w.point()))
+            .collect()
+    };
+    let lies_in = |curve: &ogeom_geom::BSplineCurve| {
+        curve
+            .control_points()
+            .iter()
+            .all(|w| distance(w.point()).abs() <= tol.confusion())
+    };
+    let has_length = |curve: &ogeom_geom::BSplineCurve| {
+        let first = curve.control_points()[0].point();
+        curve
+            .control_points()
+            .iter()
+            .any(|w| w.point().distance(first) > tol.confusion())
+    };
+    // The iso lines of one family lying in the plane: the chart's borders,
+    // and every root of the control point that strays furthest.
+    let found = |along_u: bool| -> Option<Vec<f64>> {
+        let (lo, hi) = if along_u { (u0, u1) } else { (v0, v1) };
+        let at = |k: u32| lo + (hi - lo) * f64::from(k) / f64::from(SAMPLES);
+        let rows: Vec<Vec<f64>> = (0..=SAMPLES)
+            .map(|k| line_at(along_u, at(k)).map(|c| weighted(&c)))
+            .collect::<Option<_>>()?;
+        let count = rows[0].len();
+        if rows.iter().any(|r| r.len() != count) {
+            return None;
+        }
+        let widest = (0..count).max_by(|&i, &j| {
+            let spread = |i: usize| rows.iter().fold(0.0_f64, |m, r| m.max(r[i].abs()));
+            spread(i).total_cmp(&spread(j))
+        })?;
+        let mut roots = vec![lo, hi];
+        for k in 0..SAMPLES {
+            let (mut a, mut b) = (at(k), at(k + 1));
+            let (da, db) = (rows[k as usize][widest], rows[k as usize + 1][widest]);
+            if da == 0.0 {
+                roots.push(a);
+                continue;
+            }
+            if da * db > 0.0 {
+                continue;
+            }
+            let sign = da.signum();
+            for _ in 0..80 {
+                let mid = f64::midpoint(a, b);
+                let d = weighted(&line_at(along_u, mid)?)[widest];
+                if d * sign > 0.0 {
+                    a = mid;
+                } else {
+                    b = mid;
+                }
+            }
+            roots.push(f64::midpoint(a, b));
+        }
+        roots.sort_by(f64::total_cmp);
+        roots.dedup_by(|x, y| (*x - *y).abs() <= tol.parametric());
+        Some(
+            roots
+                .into_iter()
+                .filter(|&t| line_at(along_u, t).is_some_and(|c| lies_in(&c) && has_length(&c)))
+                .collect(),
+        )
+    };
+    let columns = found(true)?;
+    let rows = found(false)?;
+    if columns.is_empty() && rows.is_empty() {
+        return None;
+    }
+    // The chart cut by the lines found into cells: the surface keeps to one
+    // side of the plane within each, or it meets the plane elsewhere too.
+    let strip = |lines: &[f64], t: f64| lines.iter().filter(|&&x| x < t).count();
+    let near_line = |lines: &[f64], t: f64, span: f64| {
+        lines
+            .iter()
+            .any(|&x| (x - t).abs() <= span / f64::from(SAMPLES) * 0.25)
+    };
+    let mut sides: std::collections::HashMap<(usize, usize), f64> =
+        std::collections::HashMap::new();
+    let band = tol.confusion() * 10.0;
+    for i in 0..=SAMPLES {
+        let u = u0 + (u1 - u0) * (f64::from(i) + 0.5) / f64::from(SAMPLES + 1);
+        if near_line(&columns, u, u1 - u0) {
+            continue;
+        }
+        for j in 0..=SAMPLES {
+            let v = v0 + (v1 - v0) * (f64::from(j) + 0.5) / f64::from(SAMPLES + 1);
+            if near_line(&rows, v, v1 - v0) {
+                continue;
+            }
+            let d = distance(spline.point_at(u, v, tol).ok()?);
+            if d.abs() <= band {
+                continue;
+            }
+            let cell = (strip(&columns, u), strip(&rows, v));
+            match sides.get(&cell) {
+                Some(side) if side * d < 0.0 => return None,
+                Some(_) => {}
+                None => {
+                    sides.insert(cell, d.signum());
+                }
+            }
+        }
+    }
+    // Each line must be a crossing, the cells either side of it on
+    // opposite sides of the plane (across the border of a closed chart,
+    // the cells at its two ends). A line the surface only touches, or with
+    // no cell beside it to say, is a tangency the marcher and the contact
+    // handling answer, and so is the whole pair.
+    let closed_u = spline.is_closed_u(tol);
+    let closed_v = spline.is_closed_v(tol);
+    let side_of = |cu: Option<usize>, cv: Option<usize>| -> Option<f64> {
+        let mut found = sides
+            .iter()
+            .filter(|((u, v), _)| cu.is_none_or(|c| c == *u) && cv.is_none_or(|c| c == *v))
+            .map(|(_, s)| *s);
+        let first = found.next()?;
+        found.all(|s| s == first).then_some(first)
+    };
+    let crosses = |k: usize, count: usize, closed: bool, cell: &dyn Fn(usize) -> Option<f64>| {
+        let below = cell(k).or_else(|| closed.then(|| (0..=count).rev().find_map(cell)).flatten());
+        let above = cell(k + 1).or_else(|| closed.then(|| (0..=count).find_map(cell)).flatten());
+        matches!((below, above), (Some(x), Some(y)) if x * y < 0.0)
+    };
+    for k in 0..columns.len() {
+        if !crosses(k, columns.len(), closed_u, &|c| side_of(Some(c), None)) {
+            return None;
+        }
+    }
+    for k in 0..rows.len() {
+        if !crosses(k, rows.len(), closed_v, &|c| side_of(None, Some(c))) {
+            return None;
+        }
+    }
+    let mut sections = Vec::new();
+    let mut emit = |along_u: bool, t: f64| -> Option<()> {
+        let iso = line_at(along_u, t)?;
+        let curve: Curve = iso.into();
+        let range = curve.domain();
+        let chart: PlanarCurve = if along_u {
+            Line2d::over(
+                ogeom_math::Axis2::new(Point2::new(t, 0.0), ogeom_math::Direction2::Y),
+                range.0,
+                range.1,
+            )
+        } else {
+            Line2d::over(
+                ogeom_math::Axis2::new(Point2::new(0.0, t), ogeom_math::Direction2::X),
+                range.0,
+                range.1,
+            )
+        }
+        .ok()?
+        .into();
+        let flat = exact_pcurve(&curve, range, a_or_b(plane_first, a, b), tol)?;
+        let (on_a, on_b) = if plane_first {
+            (Some(flat), Some(chart))
+        } else {
+            (Some(chart), Some(flat))
+        };
+        sections.push(SectionCurve {
+            on_a,
+            on_b,
+            tolerance: 0.0,
+            exact: true,
+            closed: curve.is_closed(tol),
+            tangential: false,
+            curve,
+        });
+        Some(())
+    };
+    // Every line found: the chart's two borders across a closed surface
+    // are one line in space, stated once.
+    for (k, &u) in columns.iter().enumerate() {
+        if closed_u
+            && k + 1 == columns.len()
+            && k > 0
+            && columns[0] == u0
+            && (u - u1).abs() <= tol.parametric()
+        {
+            continue;
+        }
+        emit(true, u)?;
+    }
+    for (k, &v) in rows.iter().enumerate() {
+        if closed_v
+            && k + 1 == rows.len()
+            && k > 0
+            && rows[0] == v0
+            && (v - v1).abs() <= tol.parametric()
+        {
+            continue;
+        }
+        emit(false, v)?;
+    }
+    Some(sections)
+}
+
+/// The first surface where `first` holds, else the second.
+fn a_or_b<'s>(first: bool, a: &'s SurfaceGeometry, b: &'s SurfaceGeometry) -> &'s SurfaceGeometry {
+    if first { a } else { b }
 }
 
 /// Two drums whose axes are all but parallel, over the height they share.

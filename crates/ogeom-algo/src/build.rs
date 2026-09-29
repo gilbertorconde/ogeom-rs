@@ -994,6 +994,10 @@ pub fn trimmed_where_bare(model: &mut Model, face: &Shape, tol: Tolerances) -> O
     let Some(surface) = model.geometry().surface(data.surface).cloned() else {
         ogeom_bail!(Dangling, "face refers to a surface not in this model");
     };
+    // The edges are reached through the face, carrying its placement; the
+    // surface is stated unplaced, so each curve is taken into the surface's
+    // own frame before it is read in the chart.
+    let unplace = face.transform(model.datums())?.inverse()?;
     for edge in ogeom_topo::explore_unique(model, face, ShapeType::Edge)? {
         let Some(edge_data) = model.node(&edge).and_then(|n| n.data().as_edge().cloned()) else {
             continue;
@@ -1011,7 +1015,7 @@ pub fn trimmed_where_bare(model: &mut Model, face: &Shape, tol: Tolerances) -> O
             continue;
         };
         use ogeom_geom::Transformable as _;
-        let placed = geometry.transformed(&edge.transform(model.datums())?, tol)?;
+        let placed = geometry.transformed(&(unplace * edge.transform(model.datums())?), tol)?;
         if let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&placed, &surface, tol) {
             attach_pcurve(
                 model,

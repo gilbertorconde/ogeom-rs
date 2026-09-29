@@ -1,5 +1,5 @@
-//! Spheres and revolved solids scaled unevenly: ellipsoids and parts of
-//! them, measured and cut as what they are.
+//! Spheres and revolved solids, whole and scaled unevenly: ellipsoids and
+//! parts of them, measured and cut as what they are.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{
@@ -8,7 +8,7 @@ use ogeom::algo::{
 };
 use ogeom::core::Tolerances;
 use ogeom::geom::{CircleCurve, LineCurve, PlaneSurface};
-use ogeom::math::{Axis, Circle, Direction, Frame, GeneralTransform, Plane, Point};
+use ogeom::math::{Axis, Circle, Direction, Frame, GeneralTransform, Plane, Point, Transform};
 use ogeom::mesh::Deflection;
 use ogeom::topo::{Model, Shape};
 
@@ -165,4 +165,104 @@ fn a_scaled_sphere_cuts_as_the_ellipsoid_it_is() {
             (lo.min(p.z), hi.max(p.z))
         });
     assert!(lo > -1e-6 && hi < 3.0 + 1e-6, "z runs {lo} .. {hi}");
+}
+
+/// The quarter disc turned about Z by `seam` and revolved through `angle`,
+/// then scaled by `radii` where they are not all one.
+fn revolved_quarter(model: &mut Model, seam: f64, angle: f64, radii: (f64, f64, f64)) -> Shape {
+    let quarter = quarter_disc(model);
+    let axis = Axis::new(Point::ORIGIN, Direction::Z);
+    let quarter = ogeom::algo::transformed(model, &quarter, Transform::rotation(axis, seam))
+        .unwrap()
+        .shape;
+    let solid = make_revolution(model, &quarter, axis, angle, T)
+        .unwrap()
+        .shape;
+    if radii == (1.0, 1.0, 1.0) {
+        return solid;
+    }
+    let stretch = GeneralTransform::scaling_xyz(radii.0, radii.1, radii.2);
+    general_transformed_shape(model, &solid, &stretch, T)
+        .unwrap()
+        .shape
+}
+
+/// A profile turned any way about the axis revolves into material, never
+/// inside out: a half turn or more included, where its plane faces back.
+#[test]
+fn a_profile_turned_any_way_about_the_axis_revolves_outward() {
+    for k in 0..12 {
+        let seam = f64::from(k) * PI / 6.0;
+        for (angle, want) in [(2.0 * PI, 2.0 * PI / 3.0), (PI / 2.0, PI / 6.0)] {
+            let mut model = Model::new();
+            let solid = revolved_quarter(&mut model, seam, angle, (1.0, 1.0, 1.0));
+            let v = volume(&model, &solid);
+            assert!(
+                (v - want).abs() < want * 1e-9,
+                "seam {seam}, turn {angle}: {v} against {want}"
+            );
+        }
+    }
+}
+
+/// A revolved hemisphere, whole and scaled, cut by a box whose face holds
+/// its axis: half of it, the seam kept or taken away, or lying in the cut.
+#[test]
+fn a_hemisphere_cut_through_its_axis_keeps_half() {
+    for radii in [(1.0, 1.0, 1.0), (2.0, 1.0, 1.0), (8.0, 5.0, 3.0)] {
+        for seam in [0.0, 1.0, PI / 2.0, 2.0, 3.0 * PI / 2.0] {
+            let mut model = Model::new();
+            let solid = revolved_quarter(&mut model, seam, 2.0 * PI, radii);
+            let frame =
+                Frame::new(Point::new(0.0, -10.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+            let block = make_box(&mut model, frame, (10.0, 20.0, 10.0), T)
+                .unwrap()
+                .shape;
+            let at = format!("radii {radii:?}, seam {seam}");
+            let cut = ogeom::boolean::cut(&mut model, &solid, &block, T)
+                .unwrap_or_else(|e| panic!("{at}: {e}"))
+                .shape;
+            let diagnosis = ogeom::algo::check(&model, &cut, T).unwrap();
+            assert!(diagnosis.is_valid(), "{at}: {diagnosis}");
+            let want = PI / 3.0 * radii.0 * radii.1 * radii.2;
+            let v = volume(&model, &cut);
+            assert!((v - want).abs() < want * 1e-6, "{at}: {v} against {want}");
+            ogeom::mesh::triangulate(&model, &cut, Deflection::default(), T)
+                .unwrap_or_else(|e| panic!("{at}: {e}"));
+        }
+    }
+}
+
+/// An ellipsoid from a scaled sphere, halved by a box on each principal
+/// plane, the one holding the sphere's seam included.
+#[test]
+fn a_scaled_sphere_halves_on_every_principal_plane() {
+    let want = 2.0 / 3.0 * PI * 120.0;
+    for corner in [
+        Point::new(0.0, -20.0, -20.0),
+        Point::new(-20.0, 0.0, -20.0),
+        Point::new(-20.0, -20.0, 0.0),
+        Point::new(-40.0, -20.0, -20.0),
+        Point::new(-20.0, -40.0, -20.0),
+    ] {
+        let mut model = Model::new();
+        let unit = make_sphere(&mut model, Frame::WORLD, 1.0, T).unwrap().shape;
+        let stretch = GeneralTransform::scaling_xyz(8.0, 5.0, 3.0);
+        let whole = general_transformed_shape(&mut model, &unit, &stretch, T)
+            .unwrap()
+            .shape;
+        let frame = Frame::new(corner, Direction::Z, Direction::X, T).unwrap();
+        let block = make_box(&mut model, frame, (40.0, 40.0, 40.0), T)
+            .unwrap()
+            .shape;
+        let half = ogeom::boolean::cut(&mut model, &whole, &block, T)
+            .unwrap_or_else(|e| panic!("box at {corner:?}: {e}"))
+            .shape;
+        assert!(ogeom::algo::check(&model, &half, T).unwrap().is_valid());
+        let v = volume(&model, &half);
+        assert!(
+            (v - want).abs() < want * 1e-6,
+            "box at {corner:?}: {v} against {want}"
+        );
+    }
 }

@@ -47,6 +47,22 @@ bump may break the API and a patch bump may not.
   turn scaled that way is integrated exactly instead of falling back to a
   mesh 4% light.
 
+- **A profile turned past a quarter turn about the axis revolves
+  outward.** A profile placed by a rotation had its missing pcurves read
+  from its curves as placed on its surface as stated, so past a quarter
+  turn `make_revolution` built its solid inside out, and at exactly a
+  quarter turn refused it as lying on the axis. The curves are now read in
+  the surface's own frame.
+
+- **Cutting a solid of revolution or an ellipsoid through its axis.** A
+  plane through a revolution's axis now meets it in the profile turned
+  onto the plane, exactly, where marching stalled at the poles. A plane
+  holding whole columns or rows of a spline surface meets it in those iso
+  lines, so an ellipsoid from a scaled sphere halves on the plane of its
+  seam. A point is classified against a revolution whose profile crosses
+  the axis at either of its two places in the chart, so the half of the
+  profile a face does not use no longer reads interior points as outside.
+
 - **A fillet chain holding closed edges rounds each (#94).** A piece of a
   rim the solid holds in parts is rounded the whole turn round, so the
   rim's other pieces (a second half passed in, or a whole rim a boolean

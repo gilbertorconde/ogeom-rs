@@ -127,7 +127,7 @@ fn against_rings(
     chord: f64,
     tol: Tolerances,
 ) -> Containment {
-    let at = fold_toward_rings(surface, rings, Point2::new(u, v));
+    let at = place_on_rings(surface, rings, Point2::new(u, v), tol);
 
     // The uncertain band, converted from a distance in space into one in
     // parameter units through the surface's own scale. A fixed parameter
@@ -534,7 +534,7 @@ impl SolidBoundary {
                         // rings is the unbounded surface talking, not the face,
                         // and it neither counts nor poisons the ray.
                         let (u, v) = hit.on_surface;
-                        let at = fold_toward_rings(surface, rings, Point2::new(u, v));
+                        let at = place_on_rings(surface, rings, Point2::new(u, v), tol);
                         let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
                         if distance_to_rings(rings, at) <= band || inside_boundary(rings, at) {
                             continue 'directions;
@@ -557,7 +557,7 @@ impl SolidBoundary {
                         // needs zero or two; abandon the ray rather than guess.
                         continue 'directions;
                     }
-                    let at = fold_toward_rings(surface, rings, Point2::new(u, v));
+                    let at = place_on_rings(surface, rings, Point2::new(u, v), tol);
                     let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
                     if distance_to_rings(rings, at) <= band {
                         // Too near the face's boundary to know which side of the
@@ -857,6 +857,44 @@ pub(crate) fn fold_toward_rings(
         }
     }
     at
+}
+
+/// [`fold_toward_rings`], and where the point folds outside them on a
+/// revolution, its other place in the chart.
+///
+/// A profile crossing the axis (a whole circle revolved) covers its surface
+/// twice: the point at `(u, v)` is also at `u` a half turn over, on the
+/// profile's far side. A projection or a crossing answers either, and a face
+/// using one half of the profile holds only one of them.
+fn place_on_rings(
+    surface: &ogeom_geom::SurfaceGeometry,
+    rings: &[Vec<Point2>],
+    at: Point2,
+    tol: Tolerances,
+) -> Point2 {
+    let folded = fold_toward_rings(surface, rings, at);
+    if inside_boundary(rings, folded) {
+        return folded;
+    }
+    let ogeom_geom::SurfaceGeometry::Revolution(revolution) = surface else {
+        return folded;
+    };
+    let other = (|| -> Option<Point2> {
+        use ogeom_geom::Surface as _;
+        let point = surface.point_at(at.x, at.y, tol).ok()?;
+        let ((u0, u1), _) = surface.domain();
+        let half = core::f64::consts::PI;
+        let u = [at.x + half, at.x - half]
+            .into_iter()
+            .find(|u| *u >= u0 - tol.angular() && *u <= u1 + tol.angular())?;
+        let back = ogeom_math::Transform::rotation(revolution.axis(), -u).apply(point);
+        let found = crate::measure::project_on_curve(revolution.curve(), back, 64, tol).ok()?;
+        (found.distance <= tol.confusion()).then(|| Point2::new(u, found.parameter))
+    })();
+    other
+        .map(|q| fold_toward_rings(surface, rings, q))
+        .filter(|q| inside_boundary(rings, *q))
+        .unwrap_or(folded)
 }
 
 pub(crate) fn parametric_band(
