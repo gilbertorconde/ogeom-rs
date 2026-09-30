@@ -682,6 +682,28 @@ fn measured_overlaps(
         } else {
             refine(at(end), at(end + 1))?
         };
+        // A stretch ending at one of the edge's own ends ends at that end's
+        // vertex, not a measuring width past it: within the width of the
+        // vertex the curve is still near the edge's end, and read as along
+        // the edge there the contact splits a hair beyond the vertex the
+        // face across it keeps.
+        let at_vertex = |t: f64| -> OgeomResult<f64> {
+            let p = curve.point_at(t, tol)?;
+            for end in [e.crange.0, e.crange.1] {
+                let vertex = e.curve.point_at(end, tol)?;
+                if vertex.distance(p) > width * 2.0 {
+                    continue;
+                }
+                let foot = ogeom_algo::project_on_curve(curve, vertex, 64, tol)?;
+                let (clo, chi) = (crange.0.min(crange.1), crange.0.max(crange.1));
+                if foot.distance <= width && foot.parameter >= clo && foot.parameter <= chi {
+                    return Ok(foot.parameter);
+                }
+            }
+            Ok(t)
+        };
+        let lo = if start == 0 { lo } else { at_vertex(lo)? };
+        let hi = if end == SAMPLES { hi } else { at_vertex(hi)? };
         if hi - lo <= tol.parametric() {
             continue;
         }
@@ -1076,6 +1098,76 @@ fn projected_into_shared_chart(
     Ok(Some(on_owner.0))
 }
 
+/// The map from one cylinder's chart to another's where both are one
+/// cylinder on two frames: the same axis line, within `slop`, and the same
+/// radius. The frames differ by a turn about the axis, a slide along it, or
+/// the axis reversed, so the map is exact: `(u, v)` goes to
+/// `(s·u + φ, s·v + c)`, `s` the sign between the axes, `φ` the owner's
+/// angle zero read in the target's frame, and `c` the owner's origin's
+/// height on the target's axis. A reversed axis is a half turn of the chart,
+/// not a mirror, so the map is a rigid motion of the plane.
+fn coaxial_chart_map(
+    owner: &SurfaceGeometry,
+    target: &SurfaceGeometry,
+    slop: f64,
+    tol: Tolerances,
+) -> Option<ogeom_math::Transform2> {
+    let (SurfaceGeometry::Cylinder(a), SurfaceGeometry::Cylinder(b)) = (owner, target) else {
+        return None;
+    };
+    let (a, b) = (a.cylinder(), b.cylinder());
+    let (fa, fb) = (a.frame(), b.frame());
+    let (za, zb) = (fa.z().vector(), fb.z().vector());
+    let reach = slop.max(tol.confusion());
+    if za.cross(zb).magnitude() > tol.angular()
+        || b.axis().distance_to(fa.origin()) > reach
+        || (a.radius() - b.radius()).abs() > reach
+    {
+        return None;
+    }
+    let s = if za.dot(zb) >= 0.0 { 1.0 } else { -1.0 };
+    let x = fa.x().vector();
+    let phi = x.dot(fb.y().vector()).atan2(x.dot(fb.x().vector()));
+    let c = (fa.origin() - fb.origin()).dot(zb);
+    let slide = ogeom_math::Transform2::translation(ogeom_math::Vector2::new(phi, c));
+    Some(if s > 0.0 {
+        slide
+    } else {
+        ogeom_math::Transform2::rotation(Point2::new(phi / 2.0, c / 2.0), core::f64::consts::PI)
+    })
+}
+
+/// An owner face's pcurve carried into the target's chart by
+/// [`coaxial_chart_map`], on the branch of the target's `u` window its middle
+/// falls in.
+fn carried_across(
+    pcurve: &PlanarCurve,
+    prange: (f64, f64),
+    owner: &SurfaceGeometry,
+    target: &SurfaceGeometry,
+    slop: f64,
+    tol: Tolerances,
+) -> Option<PlanarCurve> {
+    let map = coaxial_chart_map(owner, target, slop, tol)?;
+    let carried = pcurve.transformed(&map, tol).ok()?;
+    let middle = carried.point_at(0.5 * (prange.0 + prange.1), tol).ok()?;
+    let ((ua, ub), _) = target.domain();
+    let turn = core::f64::consts::TAU;
+    let turns = if middle.x < ua {
+        ((ua - middle.x) / turn).ceil()
+    } else if middle.x > ub {
+        -((middle.x - ub) / turn).ceil()
+    } else {
+        return Some(carried);
+    };
+    carried
+        .transformed(
+            &ogeom_math::Transform2::translation(ogeom_math::Vector2::new(turns * turn, 0.0)),
+            tol,
+        )
+        .ok()
+}
+
 /// Whether two surfaces are the *identical chart*: the same
 /// parameterization, frame and all, not merely the same point set.
 ///
@@ -1252,10 +1344,13 @@ fn fold_line_inside(line: &mut [Point2], surface: &SurfaceGeometry, trim: &[&[Po
     if line.is_empty() || trim.is_empty() {
         return;
     }
+    // The strand's middle can sit level with the boundary's own vertices
+    // (a contact running across the chart ends where it paved the trim),
+    // where the level ray passes through them; the leaning ray cannot.
     let mid = interior_of(line);
     if let Some((du, dv)) = period_shifts(surface)
         .into_iter()
-        .find(|(du, dv)| inside_many(trim, Point2::new(mid.x + du, mid.y + dv)))
+        .find(|(du, dv)| inside_many_slanted(trim, Point2::new(mid.x + du, mid.y + dv)))
     {
         for p in line.iter_mut() {
             p.x += du;
@@ -1471,11 +1566,35 @@ fn fill(
                     {
                         let _ = owner_from_a;
                         for e in &owner.edges {
-                            let (pcurve, prange) = match ogeom_intersect::exact_pcurve_of(
-                                &e.curve,
-                                &target.surface,
-                                tol,
-                            ) {
+                            // An edge off the target's surface by no more
+                            // than the two faces' stated tolerances lies on
+                            // it, as the contact itself says: its closed-form
+                            // image is read at that looseness when the strict
+                            // one finds it a hair off (a line an edge's slop
+                            // from a cylinder it runs along). The target's
+                            // looseness is its edges' widest.
+                            let slop = target
+                                .edges
+                                .iter()
+                                .map(|t| t.tolerance)
+                                .fold(e.tolerance, f64::max);
+                            let exact =
+                                ogeom_intersect::exact_pcurve_of(&e.curve, &target.surface, tol)
+                                    .or_else(|| {
+                                        if slop <= tol.confusion() {
+                                            return None;
+                                        }
+                                        let loose = Tolerances::with_scale(
+                                            tol.scale() * tol.confusion() / slop,
+                                        )
+                                        .ok()?;
+                                        ogeom_intersect::exact_pcurve_of(
+                                            &e.curve,
+                                            &target.surface,
+                                            loose,
+                                        )
+                                    });
+                            let (pcurve, prange) = match exact {
                                 Some(exact) => (exact, e.crange),
                                 // A fitted edge has no closed-form projection,
                                 // but when the two faces sit on the
@@ -1498,6 +1617,32 @@ fn fill(
                                 // target's chart, same-parameter with the
                                 // edge, the way every reader derives a
                                 // pcurve it was not given.
+                                // One cylinder on two frames whose fit the
+                                // target's window cannot hold (a converted
+                                // part's short wall against a pad's long
+                                // one): the owner's own pcurve carried
+                                // across the charts exactly.
+                                None if let Some(carried) = carried_across(
+                                    &e.pcurve,
+                                    e.prange,
+                                    &owner.surface,
+                                    &target.surface,
+                                    slop,
+                                    tol,
+                                )
+                                .filter(|_| {
+                                    projected_into_shared_chart(
+                                        &e.curve,
+                                        e.crange,
+                                        &owner.surface,
+                                        &target.surface,
+                                        tol,
+                                    )
+                                    .is_err()
+                                }) =>
+                                {
+                                    (carried, e.prange)
+                                }
                                 None => {
                                     let Some(pcurve) = projected_into_shared_chart(
                                         &e.curve,
@@ -1866,18 +2011,27 @@ fn fill(
                     if !admit_all && !e.bound.expanded(reach).intersects(&across.bound) {
                         continue;
                     }
-                    // On a plane, an edge within its own radius of the face
-                    // (the boundary of a merged group of near-coplanar facets)
-                    // stands off the plane the section lies in by as much, and
-                    // meets the section only that near; it departs from the
-                    // face no other way, so a near miss there is the crossing.
-                    // A curved face's fitted rail can pass that near a section
-                    // without crossing it, and keeps the section's reach.
-                    let edge_reach = if matches!(own.surface, SurfaceGeometry::Plane(_)) {
-                        reach + e.tolerance
-                    } else {
-                        reach
-                    };
+                    // An edge within its own radius of the face (the boundary
+                    // of a merged group of near-coplanar facets, a ruling of a
+                    // fitted cone) stands off the surface the section lies on
+                    // by as much, and meets the section only that near; a near
+                    // miss there is the crossing. On a plane that is always
+                    // so. A curved face's fitted rail can pass that near a
+                    // section without crossing it, running beside it, so on a
+                    // curved face the edge's radius counts only for a line or
+                    // a conic meeting an exact section across it; a fitted
+                    // section's own reach already stands for both.
+                    let planar = matches!(own.surface, SurfaceGeometry::Plane(_));
+                    let analytic = matches!(
+                        *e.curve,
+                        Curve::Line(_)
+                            | Curve::Circle(_)
+                            | Curve::Ellipse(_)
+                            | Curve::Hyperbola(_)
+                            | Curve::Parabola(_)
+                    );
+                    let widened = planar || (analytic && section.tolerance <= 0.0);
+                    let edge_reach = if widened { reach + e.tolerance } else { reach };
                     let cc = CurveCurveOptions {
                         gap: cc.gap.max(edge_reach),
                         ..cc
@@ -1885,6 +2039,19 @@ fn fill(
                     let found = intersect_curves(&section.curve, &e.curve, cc, tol)?;
                     for crossing in &found.crossings {
                         if crossing.gap > edge_reach {
+                            continue;
+                        }
+                        if !planar
+                            && crossing.gap > reach
+                            && (crossing.reach > 0.0
+                                || tangential(
+                                    &section.curve,
+                                    crossing.on_a,
+                                    &e.curve,
+                                    crossing.on_b,
+                                    tol,
+                                )?)
+                        {
                             continue;
                         }
                         let mut on_b = onto_range(crossing.on_b, &e.curve, e.crange, tol);

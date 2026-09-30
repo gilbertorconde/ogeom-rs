@@ -1285,3 +1285,143 @@ fn one_row_chamfers_come_back_cones() {
         }
     }
 }
+
+/// The edges of `shape` whose bounds pass `pick`.
+fn edges_where(model: &Model, shape: &Shape, pick: impl Fn(Point, Point) -> bool) -> Vec<Shape> {
+    explore_unique(model, shape, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let b = tight_bounds(model, e, T).unwrap();
+            pick(b.low().unwrap(), b.high().unwrap())
+        })
+        .collect()
+}
+
+/// The upward planar face at height `z` lying left of `x`.
+fn cap_at(model: &Model, shape: &Shape, z: f64, x: f64) -> Shape {
+    explore_unique(model, shape, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let (p, n) = ogeom::algo::face_normal(model, f, T).unwrap();
+            let b = tight_bounds(model, f, T).unwrap();
+            (p.z - z).abs() < 1e-4 && n.z > 0.5 && b.high().unwrap().x < x
+        })
+        .unwrap()
+}
+
+/// A block with corners rounded to 4 and its bottom rim chamfered, carrying
+/// a raised end 2 wide whose inner corners are rounded to 0.5 against the
+/// big corners' walls.
+fn stepped_part(model: &mut Model) -> Shape {
+    let block = ogeom::algo::make_box(model, Frame::WORLD, (20.0, 10.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let upright = edges_where(model, &block, |lo, hi| hi.z - lo.z > 4.0);
+    let block = ogeom::fillet::fillet_edges(model, &block, &upright, 4.0, T)
+        .unwrap()
+        .shape;
+    let rim = edges_where(model, &block, |lo, hi| hi.z < 1e-9 && lo.z > -1e-9);
+    let block = ogeom::fillet::chamfer_edges(model, &block, &rim, 0.5, T)
+        .unwrap()
+        .shape;
+    let top = cap_at(model, &block, 5.0, 100.0);
+    let column = ogeom::algo::make_prism(model, &top, Vector::new(0.0, 0.0, 3.0), T)
+        .unwrap()
+        .shape;
+    let end = ogeom::algo::make_box(
+        model,
+        Frame::new(Point::new(-1.0, -1.0, 4.0), Direction::Z, Direction::X, T).unwrap(),
+        (3.0, 12.0, 5.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let raised = ogeom::boolean::common(model, &column, &end, T)
+        .unwrap()
+        .shape;
+    let inner = edges_where(model, &raised, |lo, hi| {
+        hi.z - lo.z > 2.0 && (lo.x - 2.0).abs() < 1e-6 && (hi.x - 2.0).abs() < 1e-6
+    });
+    let raised = ogeom::fillet::fillet_edges(model, &raised, &inner, 0.5, T)
+        .unwrap()
+        .shape;
+    ogeom::boolean::fuse(model, &block, &raised, T)
+        .unwrap()
+        .shape
+}
+
+/// A pad sketched on a converted part's raised end and pushed down through
+/// it: its walls run along the part's own walls, round its corners, and out
+/// through the chamfered bottom, where the chamfer's rims lie on them. The
+/// converted part's surfaces sit a few single-precision roundings off the
+/// exact part's, and every boolean with the pad matches the exact part's
+/// own, including a pad a micron below the top and one out through the
+/// bottom.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the rounding to single precision is the point"
+)]
+#[test]
+fn a_pad_through_a_converted_part_matches_the_exact_part() {
+    let mut model = Model::new();
+    let exact = stepped_part(&mut model);
+    let mut mesh =
+        ogeom::mesh::triangulate(&model, &exact, Deflection::with_chord(0.05).unwrap(), T).unwrap();
+    for p in &mut mesh.positions {
+        *p = Point::new(
+            f64::from(p.x as f32),
+            f64::from(p.y as f32),
+            f64::from(p.z as f32),
+        );
+    }
+    let converted = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T)
+        .unwrap()
+        .shape;
+    let fine = |model: &Model, shape: &Shape| {
+        volume_properties(model, shape, Deflection::with_chord(0.001).unwrap(), T)
+            .unwrap()
+            .mass
+    };
+    for (lift, depth) in [(0.0, 3.0), (0.0, 8.0), (0.0, 9.5), (0.001, 9.5)] {
+        let mut volumes = Vec::new();
+        for base in [&exact, &converted] {
+            let cap = cap_at(&model, base, 8.0, 2.5);
+            let lowered = ogeom::algo::transformed(
+                &mut model,
+                &cap,
+                ogeom::math::Transform::translation(Vector::new(0.0, 0.0, -lift)),
+            )
+            .unwrap()
+            .shape;
+            let pad =
+                ogeom::algo::make_prism(&mut model, &lowered, Vector::new(0.0, 0.0, -depth), T)
+                    .unwrap()
+                    .shape;
+            let mut three = Vec::new();
+            for op in 0..3 {
+                let at = format!("lift {lift}, depth {depth}, op {op}");
+                let built = match op {
+                    0 => ogeom::boolean::fuse(&mut model, base, &pad, T),
+                    1 => ogeom::boolean::cut(&mut model, base, &pad, T),
+                    _ => ogeom::boolean::common(&mut model, base, &pad, T),
+                }
+                .unwrap_or_else(|e| panic!("{at}: {e}"));
+                let diagnosis = check(&model, &built.shape, T).unwrap();
+                assert!(diagnosis.is_valid(), "{at}: {diagnosis}");
+                three.push(fine(&model, &built.shape));
+            }
+            volumes.push(three);
+        }
+        // The conversion's own slop: surfaces a few roundings of a
+        // single-precision coordinate off the exact ones, over walls of a
+        // few hundred square millimetres.
+        for (op, (e, c)) in volumes[0].iter().zip(&volumes[1]).enumerate() {
+            assert!(
+                (e - c).abs() < 1e-3,
+                "lift {lift}, depth {depth}, op {op}: converted {c} against exact {e}"
+            );
+        }
+    }
+}

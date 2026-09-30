@@ -1807,6 +1807,10 @@ fn rail(
         ogeom_bail!(Construction, "vertex node holds no point");
     };
     let from = base.transform(model.datums())?.apply(data.point);
+    // The rail is where the vertex travels, and holds its doubt: a vertex
+    // standing off the profile's curves by its tolerance stands off the
+    // walls they sweep by as much, all along the rail.
+    let doubt = data.tolerance;
 
     let line = ogeom_geom::LineCurve::segment(from, from + vector, tol)?;
     let built = crate::build::make_edge_between(
@@ -1817,6 +1821,11 @@ fn rail(
         &raised,
         tol,
     )?;
+    if let Some(node) = model.node_mut(&built.shape)
+        && let ogeom_topo::NodeData::Edge(edge) = node.data_mut()
+    {
+        edge.tolerance = edge.tolerance.widen(doubt);
+    }
     model.set_derived(&built.shape, std::slice::from_ref(&base), roles::SWEEP_RAIL)?;
     rails.insert(base.node(), built.shape.clone());
     Ok(built.shape)

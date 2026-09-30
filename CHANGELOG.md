@@ -13,6 +13,25 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A pad through a converted part (#100, in part).** A pad cut from a
+  converted part's own face and pushed through its walls and chamfered
+  bottom now fuses, cuts and intersects, matching the same booleans on the
+  exact part. Six causes, each where the converted part's single-precision
+  slop met a rule written for exact geometry:
+  - An edge lying on the other solid's surface within the two faces'
+    stated tolerances takes its closed-form image at that looseness.
+  - One cylinder on two frames, where the fitted image refuses, has the
+    owner's pcurve carried across the charts exactly.
+  - An exact section meeting a line or conic boundary edge on a curved
+    face counts a near miss within that edge's tolerance as a crossing.
+  - A contact measured along an edge ends at the edge's vertex, not a
+    measuring width past it; the overshoot left one face a sliver its
+    neighbour did not have.
+  - A contact strand is folded onto the face's branch with the leaning
+    ray: its middle sits level with the vertices it paved, where the level
+    ray's parity is wrong.
+  - A prism's rails take the tolerance of the vertex they sweep.
+
 - **A chamfer along a rounded rim removed too much; a fillet refused it.**
   A chamfer on an arc of a rim (a rounded corner's quarter) cut a wedge
   turned the whole way round the corner's axis, taking material on the
