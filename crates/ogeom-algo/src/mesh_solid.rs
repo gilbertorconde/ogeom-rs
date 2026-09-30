@@ -326,8 +326,14 @@ pub fn solid_from_mesh(
         }
     }
     // Flipping renumbers every triangle's edges; the twins are found again.
-    let adjacency = Adjacency::new(&triangles);
+    let mut adjacency = Adjacency::new(&triangles);
     report.shells = pieces.len();
+    for _ in 0..3 {
+        if unfold(&points, &mut triangles, &adjacency) == 0 {
+            break;
+        }
+        adjacency = Adjacency::new(&triangles);
+    }
 
     let diagonal = diagonal(&points);
     let mut flat = options
@@ -539,6 +545,112 @@ fn diagonal(points: &[Point]) -> f64 {
 /// A half-edge: side `k` of triangle `t`, as `3 t + k`, running from the
 /// triangle's corner `k` to corner `k + 1`.
 type Half = usize;
+
+/// One way to unfold a sliver: the neighbour across the swapped edge, the
+/// two triangles that replace the pair, the edge given up and the one taken,
+/// and how well shaped the smaller of the two is.
+struct Unfolding {
+    shape: f64,
+    neighbour: usize,
+    pair: [[u32; 3]; 2],
+    old: (u32, u32),
+    new: (u32, u32),
+}
+
+/// Swap the diagonal under each fold of the mesh: a sliver facing against
+/// all three of its neighbours, which agree among themselves, is the
+/// surface folded back over itself, as an exporter leaves where it moved a
+/// vertex across a thin triangle. Consistently wound, the fold survives
+/// orientation and becomes a face pointing into the material. Across one
+/// of its edges the sliver and its neighbour make a quadrilateral whose
+/// other diagonal gives two triangles facing with the neighbours; of the
+/// diagonals that do and are not already edges of the mesh, the one whose
+/// smaller triangle is largest is taken. Returns how many folds were
+/// swapped.
+fn unfold(points: &[Point], triangles: &mut [[u32; 3]], adjacency: &Adjacency) -> usize {
+    let normal = |t: [u32; 3]| -> Vector {
+        let [a, b, c] = t.map(|v| points[v as usize]);
+        (b - a).cross(c - a)
+    };
+    let unit = |v: Vector| {
+        let m = v.magnitude();
+        if m > 0.0 { v / m } else { v }
+    };
+    let mut edges: std::collections::HashSet<(u32, u32)> = triangles
+        .iter()
+        .flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])])
+        .map(|(a, b)| (a.min(b), a.max(b)))
+        .collect();
+    let mut touched = vec![false; triangles.len()];
+    let mut swapped = 0;
+    for t in 0..triangles.len() {
+        if touched[t] {
+            continue;
+        }
+        let Some(twins) = (0..3)
+            .map(|k| adjacency.twin[3 * t + k])
+            .collect::<Option<Vec<Half>>>()
+        else {
+            continue;
+        };
+        if twins.iter().any(|g| touched[g / 3]) {
+            continue;
+        }
+        let own = unit(normal(triangles[t]));
+        let around: Vec<Vector> = twins
+            .iter()
+            .map(|g| unit(normal(triangles[g / 3])))
+            .collect();
+        let folded = around.iter().all(|n| n.dot(own) < -0.5)
+            && around
+                .iter()
+                .enumerate()
+                .all(|(i, n)| around[i + 1..].iter().all(|m| m.dot(*n) > 0.5));
+        if !folded {
+            continue;
+        }
+        let facing = around
+            .iter()
+            .fold(Vector::new(0.0, 0.0, 0.0), |acc, n| acc + *n);
+        // Of the diagonals that unfold it, the one whose smaller triangle
+        // is the larger: the best-shaped pair.
+        let mut best: Option<Unfolding> = None;
+        for (k, &g) in twins.iter().enumerate() {
+            let u = g / 3;
+            let (a, b) = from_to(triangles, 3 * t + k);
+            let c = triangles[t][(k + 2) % 3];
+            let d = triangles[u][(g % 3 + 2) % 3];
+            if c == d || edges.contains(&(c.min(d), c.max(d))) {
+                continue;
+            }
+            let (first, second) = ([c, a, d], [d, b, c]);
+            let (n1, n2) = (normal(first), normal(second));
+            if n1.dot(facing) <= 0.0 || n2.dot(facing) <= 0.0 {
+                continue;
+            }
+            let shape = n1.magnitude().min(n2.magnitude());
+            if best.as_ref().is_none_or(|b| shape > b.shape) {
+                best = Some(Unfolding {
+                    shape,
+                    neighbour: u,
+                    pair: [first, second],
+                    old: (a.min(b), a.max(b)),
+                    new: (c.min(d), c.max(d)),
+                });
+            }
+        }
+        if let Some(swap) = best {
+            edges.remove(&swap.old);
+            edges.insert(swap.new);
+            triangles[t] = swap.pair[0];
+            triangles[swap.neighbour] = swap.pair[1];
+            touched[t] = true;
+            touched[swap.neighbour] = true;
+            swapped += 1;
+        }
+    }
+    swapped
+}
 
 fn from_to(triangles: &[[u32; 3]], h: Half) -> (u32, u32) {
     let t = triangles[h / 3];

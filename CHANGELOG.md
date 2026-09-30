@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`solid_from_mesh` unfolds slivers folded under their neighbours.** An
+  exporter that moves a vertex across a thin triangle leaves it facing
+  against all three of its neighbours while its winding agrees with
+  theirs; it became a face pointing into the material, and the solid
+  failed the checker. The diagonal it shares with a neighbour is now
+  swapped, choosing the best-shaped pair that faces with the rest.
+
 - **A pad through a converted part (#100, in part).** A pad cut from a
   converted part's own face and pushed through its walls and chamfered
   bottom now fuses, cuts and intersects, matching the same booleans on the

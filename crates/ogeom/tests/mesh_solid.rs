@@ -1425,3 +1425,51 @@ fn a_pad_through_a_converted_part_matches_the_exact_part() {
         }
     }
 }
+
+/// A sliver folded back under its three neighbours, as an exporter leaves
+/// where it moved a vertex across a thin triangle, closed below by a
+/// pyramid. The sliver faces against every neighbour while its winding
+/// agrees with theirs; the diagonal it shares with its largest neighbour
+/// is swapped, and the solid comes back valid and bounded by the unfolded
+/// surface.
+#[test]
+fn a_folded_sliver_is_unfolded() {
+    let at = |x: f64, y: f64, z: f64| {
+        Point::new((x - 133.3) * 10.0, (y - 131.0) * 10.0, (z - 5.0) * 10.0)
+    };
+    let [a, b, c, d, e, f] = [
+        at(133.3513, 130.9648, 4.9962),
+        at(133.9104, 130.7647, 4.9981),
+        at(133.0158, 131.0467, 4.9987),
+        at(133.1917, 131.7724, 4.9975),
+        at(132.8242, 130.9111, 4.9741),
+        at(133.2858, 130.8868, 4.9726),
+    ];
+    let apex = Point::new(0.0, 0.0, -5.0);
+    let mut triangles = vec![[a, b, c], [b, d, c], [e, a, c], [f, b, a]];
+    for (u, v) in [(b, d), (d, c), (c, e), (e, a), (a, f), (f, b)] {
+        triangles.push([v, u, apex]);
+    }
+    let mesh = soup(triangles.iter().copied());
+    let mut model = Model::new();
+    let options = MeshSolidOptions {
+        recognize: false,
+        ..MeshSolidOptions::default()
+    };
+    let built = solid_from_mesh(&mut model, &mesh, &options, T).unwrap();
+    let diagnosis = check(&model, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    // The unfolded surface: the sliver and its neighbour across B C become
+    // A B D and D C A, and the divergence theorem gives the volume.
+    triangles[0] = [a, b, d];
+    triangles[1] = [d, c, a];
+    let want: f64 = triangles
+        .iter()
+        .map(|[p, q, r]| {
+            let (p, q, r) = (*p - Point::ORIGIN, *q - Point::ORIGIN, *r - Point::ORIGIN);
+            p.dot(q.cross(r)) / 6.0
+        })
+        .sum();
+    let v = volume(&model, &built.shape);
+    assert!((v - want).abs() < want * 1e-9, "{v} against {want}");
+}
