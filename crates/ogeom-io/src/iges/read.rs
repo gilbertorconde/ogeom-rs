@@ -1657,8 +1657,18 @@ impl<'a> Reader<'a> {
         let mut wire_shapes = Vec::with_capacity(wires.len());
         for edges in &wires {
             self.chart_wire(edges, &surface, surface_id)?;
-            let edges = ogeom_algo::closed_at_poles(&mut self.model, surface_id, edges, self.tol)?;
-            wire_shapes.push(ogeom_algo::make_wire(&mut self.model, &edges, self.tol)?.shape);
+            wire_shapes.push(ogeom_algo::make_wire(&mut self.model, edges, self.tol)?.shape);
+        }
+        // Every image on one branch, then a boundary meeting a pole from two
+        // sides of the chart closed across the pole row.
+        ogeom_algo::chain_wire_branches(&mut self.model, surface_id, &wire_shapes, self.tol)?;
+        for wire in &mut wire_shapes {
+            let edges = self.model.ordered_children_of(wire)?;
+            let closed =
+                ogeom_algo::closed_at_poles(&mut self.model, surface_id, &edges, self.tol)?;
+            if closed.len() != edges.len() {
+                *wire = ogeom_algo::make_wire(&mut self.model, &closed, self.tol)?.shape;
+            }
         }
         Ok(ogeom_algo::make_face_on(&mut self.model, surface_id, &wire_shapes, self.tol)?.shape)
     }

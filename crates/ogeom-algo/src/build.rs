@@ -821,8 +821,10 @@ pub fn chain_wire_branches(
 /// file has no edge for that stretch, and without one the boundary does not
 /// close in the chart. Between consecutive uses that share a vertex and
 /// whose images sit apart on a stretch the surface maps to that one point, a
-/// degenerate edge is put in, its pcurve the straight run across. Uses
-/// without an image on `surface` leave the wire as it is.
+/// degenerate edge is put in, its pcurve the straight run across. A wire
+/// whose images break anywhere else (an image a period off its neighbours,
+/// which the mesher folds back) has no run to trust, and comes back as it
+/// is, as does one with a use that has no image on `surface`.
 ///
 /// # Errors
 ///
@@ -880,36 +882,45 @@ pub fn closed_at_poles(
                 .is_ok_and(|q| q.distance(at) <= tol.confusion())
         })
     };
-    let mut out = Vec::with_capacity(edges.len() + 2);
+    // Each junction: whether the images meet there, or which pole run
+    // closes it.
+    let mut runs: Vec<Option<(Shape, Point2, Point2)>> = Vec::with_capacity(edges.len());
     for (i, edge) in edges.iter().enumerate() {
-        out.push(edge.clone());
         let j = (i + 1) % edges.len();
         // A miss that small is fitting slop between images that meet, and
         // collapses to a point on any surface.
         let (from, to) = (ends[i].1, ends[j].0);
         if from.distance(to) <= span * 1e-6 {
+            runs.push(None);
             continue;
         }
         let (Some((_, arriving)), Some((leaving, _))) = (
             edge_vertices(model, edge)?,
             edge_vertices(model, &edges[j])?,
         ) else {
-            continue;
+            return Ok(edges.to_vec());
         };
         if arriving.node() != leaving.node() || !collapses(from, to) {
-            continue;
+            return Ok(edges.to_vec());
         }
+        runs.push(Some((arriving, from, to)));
+    }
+    let mut out = Vec::with_capacity(edges.len() + 2);
+    for (edge, run) in edges.iter().zip(runs) {
+        out.push(edge.clone());
+        let Some((at, from, to)) = run else {
+            continue;
+        };
         let mut data = EdgeData::new();
         data.degenerate = true;
-        let pole = model.add_edge(data, &[arriving.clone(), arriving])?;
-        let length = from.distance(to);
+        let pole = model.add_edge(data, &[at.clone(), at])?;
         attach_pcurve(
             model,
             &pole,
             ogeom_geom::Line2d::segment(from, to, tol)?.into(),
             surface,
             Location::identity(),
-            (0.0, length),
+            (0.0, from.distance(to)),
         )?;
         out.push(pole);
     }

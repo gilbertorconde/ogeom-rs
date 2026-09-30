@@ -1763,7 +1763,6 @@ impl<'a> Reader<'a> {
             if edges.is_empty() {
                 continue;
             }
-            let edges = ogeom_algo::closed_at_poles(&mut self.model, surface_id, &edges, self.tol)?;
             wires.push(make_wire(&mut self.model, &edges, self.tol)?.shape);
         }
         if wires.is_empty() {
@@ -1862,6 +1861,16 @@ impl<'a> Reader<'a> {
         // pcurves, or fits of them, answer in whatever phase they like, and
         // a hole loop straddling a drum's seam arrives half on each branch.
         ogeom_algo::chain_wire_branches(&mut self.model, surface_id, &wires, self.tol)?;
+        // With every image on one branch, a boundary meeting a pole from two
+        // sides of the chart is closed across the pole row.
+        for wire in &mut wires {
+            let edges = self.model.ordered_children_of(wire)?;
+            let closed =
+                ogeom_algo::closed_at_poles(&mut self.model, surface_id, &edges, self.tol)?;
+            if closed.len() != edges.len() {
+                *wire = make_wire(&mut self.model, &closed, self.tol)?.shape;
+            }
+        }
         let built = make_face_on(&mut self.model, surface_id, &wires, self.tol)?.shape;
         let shape = if face_forward {
             built
