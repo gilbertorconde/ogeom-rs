@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A fillet the faces cannot hold is refused.** `fillet_edge` never
+  checked that the ball fits: a radius of 100 on a 2 mm box deleted the
+  solid and reported success. It now checks each face reaches the ball's
+  contact, as `fillet_edges` did, and the check itself no longer skips a
+  radius so large its side test stepped off the face.
+
 - **An offset through the part is refused.** `offset_shape` and
   `make_thick_solid` returned inside-out solids when the offset or the wall
   ran a part's faces through each other; they now refuse, as `offset_faces`

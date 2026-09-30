@@ -859,7 +859,9 @@ pub(crate) fn ball_fits(
                 return Ok(None);
             }
             let d = d / l;
-            let hair = (setback * 1e-3).max(tol.confusion() * 10.0);
+            // A hair's step, and a hair whatever the radius: a step scaled
+            // by a huge setback lands off the face on both sides.
+            let hair = (setback * 1e-3).clamp(tol.confusion() * 10.0, tol.confusion() * 1e5);
             for side in [d, -d] {
                 let (u, v) =
                     ogeom_algo::project_on_surface(surface, p + side * hair, 16, tol)?.parameters;

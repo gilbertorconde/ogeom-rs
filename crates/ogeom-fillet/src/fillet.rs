@@ -38,7 +38,7 @@ use ogeom_topo::{Model, Shape};
 ///
 /// [`OgeomError::Construction`] if the edge is
 /// neither of the seats above, is concave, or `radius` is not a usable
-/// length.
+/// length, or the ball sets back past the far side of a face.
 pub fn fillet_edge(
     model: &mut Model,
     solid: &Shape,
@@ -46,6 +46,12 @@ pub fn fillet_edge(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    if !radius.is_finite() || radius <= tol.confusion() {
+        ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
+    }
+    // The ball touches each face a setback back from the edge; set back
+    // past a face's far side, the band would cut through the face.
+    crate::support::ball_fits(model, solid, edge, radius, tol)?;
     fillet_edge_meeting(model, solid, edge, radius, None, tol)
 }
 

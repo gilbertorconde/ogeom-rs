@@ -371,3 +371,18 @@ fn edge_with_midpoint(
     }
     best.unwrap().1
 }
+
+/// A ball too big for the faces it would sit on is refused, however big:
+/// its band would run past the far side of a face.
+#[test]
+fn a_fillet_the_faces_cannot_hold_is_refused() {
+    for radius in [2.5, 1e6] {
+        let mut model = ogeom_topo::Model::new();
+        let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
+        let edge = top_edge(&model, &block.shape);
+        assert!(
+            ogeom_fillet::fillet_edge(&mut model, &block.shape, &edge, radius, T).is_err(),
+            "radius {radius}"
+        );
+    }
+}
