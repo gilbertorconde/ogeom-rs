@@ -1763,6 +1763,7 @@ impl<'a> Reader<'a> {
             if edges.is_empty() {
                 continue;
             }
+            let edges = ogeom_algo::closed_at_poles(&mut self.model, surface_id, &edges, self.tol)?;
             wires.push(make_wire(&mut self.model, &edges, self.tol)?.shape);
         }
         if wires.is_empty() {

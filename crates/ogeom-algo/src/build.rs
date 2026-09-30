@@ -18,7 +18,7 @@ use std::collections::HashMap;
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve3d, SurfaceGeometry};
-use ogeom_math::Point;
+use ogeom_math::{Point, Point2};
 use ogeom_topo::{EdgeData, EdgeRepr, FaceData, Location, Model, Shape, ShapeType, VertexData};
 
 use crate::history::{Built, History};
@@ -809,6 +809,111 @@ pub fn chain_wire_branches(
         }
     }
     Ok(())
+}
+
+/// A wire's edge uses with the chart closed where the surface collapses.
+///
+/// A face whose boundary passes through a pole or an apex meets it in space
+/// at one vertex, but in the chart the use arriving there and the use
+/// leaving it sit apart along the row (or column) that collapses to that
+/// point: a sphere bounded by its seam walked both ways arrives at the north
+/// pole on one side of the chart and leaves it on the other. An exchange
+/// file has no edge for that stretch, and without one the boundary does not
+/// close in the chart. Between consecutive uses that share a vertex and
+/// whose images sit apart on a stretch the surface maps to that one point, a
+/// degenerate edge is put in, its pcurve the straight run across. Uses
+/// without an image on `surface` leave the wire as it is.
+///
+/// # Errors
+///
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the surface,
+/// an edge or a pcurve is not in this model.
+pub fn closed_at_poles(
+    model: &mut Model,
+    surface: ogeom_topo::SurfaceId,
+    edges: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<Vec<Shape>> {
+    use ogeom_geom::Curve2d as _;
+    use ogeom_geom::Surface as _;
+    let Some(geometry) = model.geometry().surface(surface).cloned() else {
+        ogeom_bail!(Dangling, "surface is not in this model");
+    };
+    let ((ua, ub), (va, vb)) = geometry.domain();
+    let span = (ub - ua).abs().max((vb - va).abs());
+    // Each use's chart start and end, in the direction it is walked.
+    let mut ends = Vec::with_capacity(edges.len());
+    for edge in edges {
+        let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
+            ogeom_bail!(Dangling, "edge is not in this model");
+        };
+        let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+        let (id, range) = match data.pcurve_for(surface, edge.location()) {
+            Some(EdgeRepr::PCurve { curve, range, .. }) => (*curve, *range),
+            Some(EdgeRepr::Seam {
+                forward,
+                reversed: back,
+                range,
+                ..
+            }) => (if reversed { *back } else { *forward }, *range),
+            _ => return Ok(edges.to_vec()),
+        };
+        let Some(planar) = model.geometry().pcurve(id) else {
+            ogeom_bail!(Dangling, "pcurve is not in this model");
+        };
+        let (t_start, t_end) = if reversed {
+            (range.1, range.0)
+        } else {
+            (range.0, range.1)
+        };
+        ends.push((planar.point_at(t_start, tol)?, planar.point_at(t_end, tol)?));
+    }
+    let collapses = |from: Point2, to: Point2| -> bool {
+        let Ok(at) = geometry.point_at(from.x, from.y, tol) else {
+            return false;
+        };
+        (1..=4).all(|k| {
+            let s = f64::from(k) / 4.0;
+            let p = Point2::new(from.x + (to.x - from.x) * s, from.y + (to.y - from.y) * s);
+            geometry
+                .point_at(p.x, p.y, tol)
+                .is_ok_and(|q| q.distance(at) <= tol.confusion())
+        })
+    };
+    let mut out = Vec::with_capacity(edges.len() + 2);
+    for (i, edge) in edges.iter().enumerate() {
+        out.push(edge.clone());
+        let j = (i + 1) % edges.len();
+        // A miss that small is fitting slop between images that meet, and
+        // collapses to a point on any surface.
+        let (from, to) = (ends[i].1, ends[j].0);
+        if from.distance(to) <= span * 1e-6 {
+            continue;
+        }
+        let (Some((_, arriving)), Some((leaving, _))) = (
+            edge_vertices(model, edge)?,
+            edge_vertices(model, &edges[j])?,
+        ) else {
+            continue;
+        };
+        if arriving.node() != leaving.node() || !collapses(from, to) {
+            continue;
+        }
+        let mut data = EdgeData::new();
+        data.degenerate = true;
+        let pole = model.add_edge(data, &[arriving.clone(), arriving])?;
+        let length = from.distance(to);
+        attach_pcurve(
+            model,
+            &pole,
+            ogeom_geom::Line2d::segment(from, to, tol)?.into(),
+            surface,
+            Location::identity(),
+            (0.0, length),
+        )?;
+        out.push(pole);
+    }
+    Ok(out)
 }
 
 /// Build a face covering the whole of `surface`, with no trimming.

@@ -317,13 +317,41 @@ impl Writer<'_> {
         Ok(out)
     }
 
+    /// A solid, with its voids when it has any: the first shell is the
+    /// outer boundary, and each further shell bounds a cavity. A void is
+    /// written as the standard names it, a closed shell facing out of the
+    /// cavity used the other way round, which leaves every face of the
+    /// solid facing away from the material.
     fn solid(&mut self, solid: &Shape) -> OgeomResult<u64> {
         let shells = explore(self.model, solid, Filter::OfType(ShapeType::Shell))?;
-        let Some(shell) = shells.first() else {
+        let Some((outer, voids)) = shells.split_first() else {
             ogeom_bail!(Construction, "a solid with no shell cannot be written");
         };
+        let shell_id = self.closed_shell(outer, false)?;
+        let msb = if voids.is_empty() {
+            self.entity(format!("MANIFOLD_SOLID_BREP('',#{shell_id})"))
+        } else {
+            let mut uses = Vec::with_capacity(voids.len());
+            for void in voids {
+                let own = self.closed_shell(void, true)?;
+                uses.push(self.entity(format!("ORIENTED_CLOSED_SHELL('',*,#{own},.F.)")));
+            }
+            let list = uses
+                .iter()
+                .map(|i| format!("#{i}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            self.entity(format!("BREP_WITH_VOIDS('',#{shell_id},({list}))"))
+        };
+        self.written_nodes.push((solid.node(), msb));
+        Ok(msb)
+    }
+
+    /// A shell's faces as a `CLOSED_SHELL`, each turned when `turned`.
+    fn closed_shell(&mut self, shell: &Shape, turned: bool) -> OgeomResult<u64> {
         let mut faces = Vec::new();
         for face in self.model.ordered_children_of(shell)? {
+            let face = if turned { face.reversed() } else { face };
             faces.push(self.face(&face)?);
         }
         let list = faces
@@ -331,10 +359,7 @@ impl Writer<'_> {
             .map(|i| format!("#{i}"))
             .collect::<Vec<_>>()
             .join(",");
-        let shell_id = self.entity(format!("CLOSED_SHELL('',({list}))"));
-        let msb = self.entity(format!("MANIFOLD_SOLID_BREP('',#{shell_id})"));
-        self.written_nodes.push((solid.node(), msb));
-        Ok(msb)
+        Ok(self.entity(format!("CLOSED_SHELL('',({list}))")))
     }
 
     fn face(&mut self, face: &Shape) -> OgeomResult<u64> {

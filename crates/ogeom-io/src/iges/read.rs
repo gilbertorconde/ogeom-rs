@@ -1653,32 +1653,14 @@ impl<'a> Reader<'a> {
         surface: SurfaceGeometry,
         wires: Vec<Vec<Shape>>,
     ) -> OgeomResult<Shape> {
-        // A single wire that is one edge used twice on a periodic surface is
-        // a seam and nothing else, and a boundary that is nothing but the
-        // seam encloses the whole chart: the face is the surface, and the
-        // natural face carries its own degenerate boundary (a sphere's
-        // poles), which the file had no edges for.
-        if let [edges] = wires.as_slice()
-            && let [a, b] = edges.as_slice()
-            && a.node() == b.node()
-        {
-            use ogeom_geom::Surface as _;
-            if surface.is_periodic_u() || surface.is_periodic_v() {
-                return Ok(ogeom_algo::make_natural_face(&mut self.model, surface)?.shape);
-            }
-        }
         let surface_id = self.model.geometry_mut().add_surface(surface.clone());
         let mut wire_shapes = Vec::with_capacity(wires.len());
         for edges in &wires {
-            wire_shapes.push(ogeom_algo::make_wire(&mut self.model, edges, self.tol)?.shape);
-        }
-        let face =
-            ogeom_algo::make_face_on(&mut self.model, surface_id, &wire_shapes, self.tol)?.shape;
-
-        for edges in &wires {
             self.chart_wire(edges, &surface, surface_id)?;
+            let edges = ogeom_algo::closed_at_poles(&mut self.model, surface_id, edges, self.tol)?;
+            wire_shapes.push(ogeom_algo::make_wire(&mut self.model, &edges, self.tol)?.shape);
         }
-        Ok(face)
+        Ok(ogeom_algo::make_face_on(&mut self.model, surface_id, &wire_shapes, self.tol)?.shape)
     }
 
     /// One wire's pcurves, chained around the face's chart.
@@ -1885,11 +1867,20 @@ impl<'a> Reader<'a> {
     /// A manifold solid B-rep object: shell of faces of loops of edges.
     fn manifold_solid(&mut self, de: i64) -> OgeomResult<Shape> {
         let entity = self.entity(de)?;
-        let shell = self.shell(entity.at(0).int())?;
+        // Each shell comes with a flag saying whether it faces as its faces
+        // do; a void's shell faces out of the cavity and is used the other
+        // way round, so every face of the solid faces away from the material.
+        // An absent flag agrees.
+        let agrees = |flag: &crate::iges::parse::Value| {
+            matches!(flag, crate::iges::parse::Value::Default) || flag.int() != 0
+        };
+        let used = |shell: Shape, agrees: bool| if agrees { shell } else { shell.reversed() };
+        let shell = used(self.shell(entity.at(0).int())?, agrees(entity.at(1)));
         let n_voids = entity.count(2);
         let mut shells = vec![shell];
         for i in 0..n_voids {
-            shells.push(self.shell(entity.at(3 + 2 * i).int())?);
+            let void = self.shell(entity.at(3 + 2 * i).int())?;
+            shells.push(used(void, agrees(entity.at(4 + 2 * i))));
         }
         let solid = make_solid(&mut self.model, &shells)?.shape;
         // A fitted trim widens its edge to the offset it measured; the

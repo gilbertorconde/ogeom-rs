@@ -107,13 +107,22 @@ impl Writer<'_> {
         self.vertex_coords.clear();
         self.edge_records.clear();
 
+        // The first shell is the outer boundary and each further one bounds
+        // a cavity. A void is written as the standard names it, a shell
+        // facing out of the cavity used the other way round, which leaves
+        // every face of the solid facing away from the material.
         let shells = explore(self.model, solid, Filter::OfType(ShapeType::Shell))?;
-        let Some(shell) = shells.first() else {
+        if shells.is_empty() {
             ogeom_bail!(Construction, "a solid with no shell cannot be written");
-        };
-        let mut face_entities = Vec::new();
-        for face in self.model.ordered_children_of(shell)? {
-            face_entities.push((self.face(&face)?, face.orientation()));
+        }
+        let mut shell_faces = Vec::with_capacity(shells.len());
+        for (k, shell) in shells.iter().enumerate() {
+            let mut face_entities = Vec::new();
+            for face in self.model.ordered_children_of(shell)? {
+                let face = if k == 0 { face } else { face.reversed() };
+                face_entities.push((self.face(&face)?, face.orientation()));
+            }
+            shell_faces.push(face_entities);
         }
 
         // Now the lists exist in full.
@@ -159,29 +168,34 @@ impl Writer<'_> {
             }
         }
 
-        let shell_entity = {
+        let mut shell_des = Vec::with_capacity(shell_faces.len());
+        for face_entities in &shell_faces {
             let mut params = format!("{}", face_entities.len());
-            for (face, orientation) in &face_entities {
+            for (face, orientation) in face_entities {
                 let flag = i32::from(*orientation != ogeom_topo::Orientation::Reversed);
                 params.push_str(&format!(",{},{flag}", self.de(*face)));
             }
-            self.push(Pending {
+            let shell_entity = self.push(Pending {
                 kind: 514,
                 form: 1,
                 transform: None,
                 independent: false,
                 label: String::new(),
                 params,
-            })
-        };
-        let shell_de = self.de(shell_entity);
+            });
+            shell_des.push(self.de(shell_entity));
+        }
+        let mut params = format!("{},1,{}", shell_des[0], shell_des.len() - 1);
+        for void in &shell_des[1..] {
+            params.push_str(&format!(",{void},0"));
+        }
         self.push(Pending {
             kind: 186,
             form: 0,
             transform: None,
             independent: true,
             label: label.chars().take(8).collect(),
-            params: format!("{shell_de},1,0"),
+            params,
         });
         Ok(())
     }

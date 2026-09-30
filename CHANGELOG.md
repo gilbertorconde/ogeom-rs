@@ -13,6 +13,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Spheres come back whole through STEP and IGES.** A sphere face bounded
+  by its seam walked both ways, as an exchange file states it, read back
+  with no region to mesh: whole spheres came back empty, and a sphere cut
+  on its side or fused with another lost most of its face. Where a
+  boundary meets a pole at one vertex from two sides of the chart, the
+  readers now close it with an edge across the pole row
+  (`closed_at_poles`). Both writers also dropped a solid's voids; they now
+  write them (`BREP_WITH_VOIDS`, and the void shells of IGES entity 186),
+  and the IGES reader honours the shells' orientation flags.
+
 - **glTF read under a mirroring node stays right side out.** A node whose
   transform reflects (a negative scale, or a matrix with a negative
   determinant) left the triangles wound inside out and turned every normal

@@ -23,7 +23,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 
 ### S. Spheres through STEP and IGES
 
-- [ ] **S1.** A sphere face bounded only by its seam walked both ways (what our own writer emits) reads back with no triangulable region: whole spheres come back empty, spherical voids are lost, cut spheres keep the wrong side (`ogeom-io/src/step/read.rs` `face`; IGES the same).
+- [x] **S1.** A sphere face bounded only by its seam walked both ways (what our own writer emits) reads back with no triangulable region: whole spheres come back empty, spherical voids are lost, cut spheres keep the wrong side (`ogeom-io/src/step/read.rs` `face`; IGES the same).
 
 ### I. Intersections
 
