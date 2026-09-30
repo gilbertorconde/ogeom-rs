@@ -1786,3 +1786,24 @@ fn a_dome_on_a_cylinder_shares_its_seam() {
         );
     }
 }
+
+/// A drilled block exported with noise a few times the default distance:
+/// the coplanar distance follows how far the flat faces' own vertices stand
+/// off them, and the block comes back its seven faces.
+#[test]
+fn a_noisy_drilled_block_keeps_its_faces_whole() {
+    let mut model = Model::new();
+    let drilled = drilled_block(&mut model);
+    let mesh = ogeom::mesh::triangulate(&model, &drilled, Deflection::with_chord(0.05).unwrap(), T)
+        .unwrap();
+    let mesh = exported(mesh, 5e-5);
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert_eq!(
+        kinds(&back, &out.shape),
+        [6, 1, 0, 0, 0],
+        "{:?}",
+        out.report
+    );
+    holds((&model, &drilled), (&back, &out.shape));
+}

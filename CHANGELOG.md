@@ -24,6 +24,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Noisy flat faces come back whole from a mesh.** The mesh converter's
+  default coplanar distance also follows how far the mesh's vertices stand
+  off the flat faces they lie on (measured across nearly coplanar edges),
+  and a flat face is grown against a plane refitted to what it has
+  gathered rather than its first triangle's, whose lean carried a large
+  face's far side past the distance. A drilled block exported with noise
+  came back with its top split in two; it now comes back its seven faces.
+
 - **Rounds met by flat faces along a tangent come back exact.** A flat
   face's facets drawn across the tangent circle it shares with a round have
   their corners on the round; they are now peeled from the round's region

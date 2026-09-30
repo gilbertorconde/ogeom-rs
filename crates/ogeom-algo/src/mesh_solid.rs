@@ -369,7 +369,11 @@ pub fn solid_from_mesh(
     let diagonal = diagonal(&points);
     let mut flat = options
         .coplanar_distance
-        .unwrap_or_else(|| (1e-6 * diagonal).max(2.0 * options.quantum.unwrap_or(0.0)))
+        .unwrap_or_else(|| {
+            (1e-6 * diagonal)
+                .max(2.0 * options.quantum.unwrap_or(0.0))
+                .max(1.5 * flat_noise(&points, &triangles, &adjacency))
+        })
         .max(weld);
     let mut groups = segment(&points, &triangles, &adjacency, options, flat, tol)?;
     // The default distance is what single precision resolves, and some
@@ -1494,7 +1498,8 @@ fn unit_normal(points: &[Point], [a, b, c]: [u32; 3]) -> Vector {
 /// is within the angle of the face's and whose corners all lie within the
 /// distance of its plane. Measured against the face's own plane, not the
 /// last triangle's, so a gently curved surface does not drift into one
-/// face.
+/// face: the seed's plane at first, then the plane fitted to what the face
+/// has gathered.
 fn coplanar_groups(
     points: &[Point],
     triangles: &[[u32; 3]],
@@ -1519,34 +1524,73 @@ fn coplanar_groups(
             continue;
         }
         let g = groups.carriers.len();
-        let plane = plane_of(points, triangles[seed], tol)?;
-        let (origin, normal) = (plane.frame().origin(), plane.frame().z().vector());
-        groups.carriers.push(Carrier::Plane(plane));
+        let mut plane = plane_of(points, triangles[seed], tol)?;
         groups.of[seed] = g;
-        stack.push(seed);
-        while let Some(t) = stack.pop() {
-            for h in 3 * t..3 * t + 3 {
-                let Some(twin) = adjacency.twin[h] else {
-                    continue;
-                };
-                let other = twin / 3;
-                if groups.of[other] != usize::MAX {
-                    continue;
-                }
-                let [a, b, c] = triangles[other].map(|i| points[i as usize]);
-                let n = (b - a).cross(c - a);
-                if n.dot(normal) < cos * n.magnitude() {
-                    continue;
-                }
-                if [a, b, c]
-                    .iter()
-                    .all(|p| (*p - origin).dot(normal).abs() <= flat)
-                {
+        let mut members = vec![seed];
+        let mut vertices: Vec<u32> = triangles[seed].to_vec();
+        let mut rim = vec![seed];
+        loop {
+            let (origin, normal) = (plane.frame().origin(), plane.frame().z().vector());
+            stack.clone_from(&rim);
+            rim.clear();
+            let grown = members.len();
+            while let Some(t) = stack.pop() {
+                for h in 3 * t..3 * t + 3 {
+                    let Some(twin) = adjacency.twin[h] else {
+                        continue;
+                    };
+                    let other = twin / 3;
+                    if groups.of[other] != usize::MAX {
+                        continue;
+                    }
+                    let [a, b, c] = triangles[other].map(|i| points[i as usize]);
+                    let n = (b - a).cross(c - a);
+                    if n.dot(normal) < cos * n.magnitude()
+                        || [a, b, c]
+                            .iter()
+                            .any(|p| (*p - origin).dot(normal).abs() > flat)
+                    {
+                        rim.push(t);
+                        continue;
+                    }
                     groups.of[other] = g;
+                    members.push(other);
+                    vertices.extend(triangles[other]);
                     stack.push(other);
                 }
             }
+            // A plane through one triangle leans with its corners' slop, and
+            // across a large face that lean carries the far side past the
+            // distance. Refitted to everything gathered, where the fit still
+            // holds it all, the face grows again from its rim.
+            if members.len() == grown || rim.is_empty() {
+                break;
+            }
+            vertices.sort_unstable();
+            vertices.dedup();
+            let at: Vec<Point> = vertices.iter().map(|&v| points[v as usize]).collect();
+            let Some((centre, fitted)) = plane_through(&at, tol) else {
+                break;
+            };
+            let fitted = if fitted.vector().dot(normal) < 0.0 {
+                fitted.reversed()
+            } else {
+                fitted
+            };
+            if at
+                .iter()
+                .any(|p| (*p - centre).dot(fitted.vector()).abs() > flat)
+            {
+                break;
+            }
+            let x = plane.frame().x().vector();
+            let x = x - fitted.vector() * x.dot(fitted.vector());
+            plane = Plane::new(Frame::new(centre, fitted, Direction::new(x, tol)?, tol)?);
+            rim.sort_unstable();
+            rim.dedup();
         }
+        rim.clear();
+        groups.carriers.push(Carrier::Plane(plane));
     }
     Ok(())
 }
@@ -1932,6 +1976,39 @@ impl FlatPatches {
             facet,
         }
     }
+}
+
+/// How far the mesh's vertices stand off the flat faces they lie on: across
+/// every edge between two triangles as good as coplanar (a turn of under a
+/// twentieth of a degree, finer than any curve is drawn), the height of the
+/// one's far corner over the other's plane, at the ninetieth percentile.
+/// Zero where the mesh has no such edges.
+fn flat_noise(points: &[Point], triangles: &[[u32; 3]], adjacency: &Adjacency) -> f64 {
+    let cos_level = 0.05_f64.to_radians().cos();
+    let mut heights: Vec<f64> = Vec::new();
+    for (h, twin) in adjacency.twin.iter().enumerate() {
+        let Some(g) = *twin else {
+            continue;
+        };
+        if g < h {
+            continue;
+        }
+        let (t, u) = (h / 3, g / 3);
+        let a = unit_normal(points, triangles[t]);
+        let b = unit_normal(points, triangles[u]);
+        if a.dot(b) < cos_level {
+            continue;
+        }
+        let far = triangles[u][(g % 3 + 2) % 3];
+        let base = points[triangles[t][0] as usize];
+        heights.push((points[far as usize] - base).dot(a).abs());
+    }
+    if heights.is_empty() {
+        return 0.0;
+    }
+    let at = (heights.len() * 9 / 10).min(heights.len() - 1);
+    let (_, value, _) = heights.select_nth_unstable_by(at, f64::total_cmp);
+    *value
 }
 
 /// Keep only the largest edge-connected piece of a set of triangles.
