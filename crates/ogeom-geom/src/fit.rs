@@ -331,7 +331,7 @@ pub fn fit_points_joint(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<(Fitted<BSplineCurve>, BSpline2d, BSpline2d)> {
-    fit_points_joint_inner(points, on_a, on_b, degree, tolerance, false, tol)
+    fit_points_joint_inner(points, on_a, on_b, degree, tolerance, None, tol)
 }
 
 /// As [`fit_points_joint`], with a closed loop's join made C1.
@@ -355,7 +355,28 @@ pub fn fit_points_joint_closed(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<(Fitted<BSplineCurve>, BSpline2d, BSpline2d)> {
-    fit_points_joint_inner(points, on_a, on_b, degree, tolerance, true, tol)
+    fit_points_joint_inner(points, on_a, on_b, degree, tolerance, Some(7), tol)
+}
+
+/// As [`fit_points_joint_closed`], for a loop closed in space whose pcurves
+/// may end a whole period from where they began: a section winding once
+/// round a periodic surface. The join is C1 in every coordinate, which is
+/// right where the chart runs at one speed across its seam, as a periodic
+/// surface's does; a patch that merely meets itself need not.
+///
+/// # Errors
+///
+/// As [`fit_points_joint`].
+#[allow(clippy::type_complexity)]
+pub fn fit_points_joint_winding(
+    points: &[Point],
+    on_a: &[Point2],
+    on_b: &[Point2],
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<(Fitted<BSplineCurve>, BSpline2d, BSpline2d)> {
+    fit_points_joint_inner(points, on_a, on_b, degree, tolerance, Some(3), tol)
 }
 
 #[allow(clippy::type_complexity)]
@@ -365,7 +386,7 @@ fn fit_points_joint_inner(
     on_b: &[Point2],
     degree: usize,
     tolerance: f64,
-    smooth_loop: bool,
+    smooth_loop: Option<usize>,
     tol: Tolerances,
 ) -> OgeomResult<(Fitted<BSplineCurve>, BSpline2d, BSpline2d)> {
     if points.len() != on_a.len() || points.len() != on_b.len() {
@@ -692,7 +713,7 @@ fn fit<const D: usize>(
         points,
         degree,
         tolerance,
-        smooth_loop,
+        smooth_loop.then_some(D),
         Spacing::Centripetal,
         tol,
     )
@@ -702,7 +723,7 @@ fn fit_spaced<const D: usize>(
     points: &[[f64; D]],
     degree: usize,
     tolerance: f64,
-    smooth_loop: bool,
+    smooth_loop: Option<usize>,
     spacing: Spacing,
     tol: Tolerances,
 ) -> OgeomResult<(KnotVector, Vec<[f64; D]>, f64, bool)> {
@@ -724,9 +745,20 @@ fn fit_spaced<const D: usize>(
     // A loop the caller asked to close smoothly: the first point repeated at
     // the end, and the join constrained to matching *tangents*; a surface
     // built over a C0 loop shows the crease. Opt-in, because the constraint
-    // spends shape freedom at the join that an open fit keeps.
-    let closed =
-        smooth_loop && distance::<D>(&points[0], &points[points.len() - 1]) <= tol.confusion();
+    // spends shape freedom at the join that an open fit keeps. The caller
+    // names how many leading coordinates must meet: a section closes in
+    // space while its chart images may end a period from where they began,
+    // which the join holds just as well.
+    let closed = smooth_loop.is_some_and(|meeting| {
+        let (first, last) = (&points[0], &points[points.len() - 1]);
+        first[..meeting]
+            .iter()
+            .zip(&last[..meeting])
+            .map(|(x, y)| (x - y) * (x - y))
+            .sum::<f64>()
+            .sqrt()
+            <= tol.confusion()
+    });
     let parameters = match spacing {
         Spacing::Centripetal => centripetal::<D>(&points),
         Spacing::ChordLength => chord_length::<D>(&points),

@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Sections winding round a periodic surface fit.** The closed sections of
+  two crossing cylinders at an angle (an oblique pipe tee) came back
+  millimetres off both surfaces with a stated tolerance in the hundreds:
+  each loop's image on the branch pipe ends a period from where it
+  begins, so the loop fitted as an open trace and stalled. Such a loop is
+  now fitted closed in space with its images' join smooth across the seam
+  (`fit::fit_points_joint_winding`) wherever the plain fit misses.
+
 - **Spheres come back whole through STEP and IGES.** A sphere face bounded
   by its seam walked both ways, as an exchange file states it, read back
   with no region to mesh: whole spheres came back empty, and a sphere cut

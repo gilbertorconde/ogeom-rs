@@ -418,3 +418,61 @@ fn a_line_touching_a_sphere_is_found_at_every_scale() {
         }
     }
 }
+
+/// An oblique pipe tee: each closed section winds once round the branch
+/// pipe, a loop in space whose chart image on the branch moves a period.
+/// Its curve lies on both pipes within the tolerance it states, and that
+/// tolerance is a fit's, not a pipe's size.
+#[test]
+fn an_oblique_pipe_tee_s_sections_lie_on_both_pipes() {
+    use ogeom_intersect::{IntersectOptions, SurfaceIntersection, intersect_surfaces};
+    let pipe = |origin: Point, axis: Vector, r: f64, reach: f64| -> SurfaceGeometry {
+        CylinderSurface::new(
+            Cylinder::new(frame(origin, axis), r, T).unwrap(),
+            (-reach, reach),
+        )
+        .unwrap()
+        .into()
+    };
+    for (ra, rb, tilt, offset) in [
+        (10.0, 5.0, 1.0_f64, 0.0),
+        (10.0, 7.0, 0.7, 1.0),
+        (25.0, 12.5, 1.0, 0.0),
+        (5.0, 3.0, 0.7, 0.0),
+    ] {
+        let centre = Point::new(100.0, 200.0, 300.0);
+        let a = pipe(centre, Vector::Z, ra, 4.0 * ra);
+        let b = pipe(
+            centre + Vector::new(0.0, offset, 0.0),
+            Vector::new(tilt.cos(), 0.0, tilt.sin()),
+            rb,
+            4.0 * ra,
+        );
+        let SurfaceIntersection::Along(curves) =
+            intersect_surfaces(&a, &b, IntersectOptions::default(), T).unwrap()
+        else {
+            panic!("the pipes cross");
+        };
+        assert_eq!(curves.len(), 2, "{ra} {rb} {tilt} {offset}");
+        for c in &curves {
+            assert!(
+                c.tolerance < 1e-3,
+                "{ra} {rb} {tilt} {offset}: {}",
+                c.tolerance
+            );
+            let (lo, hi) = c.curve.domain();
+            for k in 0..=1000 {
+                let p = c
+                    .curve
+                    .point_at(lo + (hi - lo) * f64::from(k) / 1000.0, T)
+                    .unwrap();
+                let miss = off(&a, p).abs().max(off(&b, p).abs());
+                assert!(
+                    miss <= c.tolerance,
+                    "{ra} {rb} {tilt} {offset}: {miss} off, stated {}",
+                    c.tolerance
+                );
+            }
+        }
+    }
+}

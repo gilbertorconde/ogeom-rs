@@ -130,16 +130,48 @@ pub fn approximate_branch(
     let unwrapped_b = unwrap_periodic(b, &kept_b, tol);
     // A closed branch takes the loop-smoothing fit: the join's tangents are
     // constrained to agree in all seven coordinates, so the section curve and
-    // both pcurves cross their own seam without a crease.
+    // both pcurves cross their own seam without a crease. A loop winding
+    // once round a periodic surface ends its image there a period from where
+    // it began, and that fit, closing only where every image does, takes it
+    // as an open trace whose ends lie close together, which can stall far
+    // from the trace. Where it does, the loop is fitted closed in space with
+    // the images' join C1 across the seam, right where the chart runs at one
+    // speed across it, as a periodic surface's does (a patch that merely
+    // meets itself at its seam need not), and the closer of the two stands.
+    let winds_periodically = |surface: &SurfaceGeometry, image: &[Point2]| {
+        let (first, last) = (image[0], image[image.len() - 1]);
+        ((last.x - first.x).abs() <= tol.parametric() || surface.is_periodic_u())
+            && ((last.y - first.y).abs() <= tol.parametric() || surface.is_periodic_v())
+    };
     let (space, on_a, on_b) = if branch.closed() {
-        ogeom_geom::fit::fit_points_joint_closed(
+        let closed = ogeom_geom::fit::fit_points_joint_closed(
             &points,
             &unwrapped_a,
             &unwrapped_b,
             3,
             tolerance,
             tol,
-        )?
+        )?;
+        if !closed.0.met
+            && winds_periodically(a, &unwrapped_a)
+            && winds_periodically(b, &unwrapped_b)
+        {
+            let winding = ogeom_geom::fit::fit_points_joint_winding(
+                &points,
+                &unwrapped_a,
+                &unwrapped_b,
+                3,
+                tolerance,
+                tol,
+            )?;
+            if winding.0.error < closed.0.error {
+                winding
+            } else {
+                closed
+            }
+        } else {
+            closed
+        }
     } else {
         ogeom_geom::fit::fit_points_joint(&points, &unwrapped_a, &unwrapped_b, 3, tolerance, tol)?
     };
