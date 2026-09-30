@@ -1951,3 +1951,82 @@ fn a_marched_blend_takes_a_cone_host() {
         .shape;
     assert_marched_blend(&model, &drilled, &blended, "cone host");
 }
+
+/// A block whose vertical edges are rounded, its bottom rim (four lines and
+/// four quarter arcs, tangent in turn) chamfered or rounded: each arc's
+/// blend turns about its corner's axis through its quarter alone, meeting
+/// the neighbouring straight blends at their tangent sections, and the
+/// volume removed is Pappus's: the blend's cross-section along the lines,
+/// and turned through a quarter about each corner's axis.
+#[test]
+fn blends_along_a_rounded_rim_turn_each_arc_by_its_quarter() {
+    use ogeom::algo::{check, make_box, tight_bounds, volume_properties};
+    use ogeom::mesh::Deflection;
+    let pi = core::f64::consts::PI;
+    for (r, c, round) in [
+        (1.0, 0.5, false),
+        (2.0, 0.5, false),
+        (3.0, 1.0, false),
+        (1.0, 0.5, true),
+        (2.0, 0.5, true),
+    ] {
+        let mut model = Model::new();
+        let block = make_box(&mut model, Frame::WORLD, (20.0, 10.0, 5.0), T)
+            .unwrap()
+            .shape;
+        let edges_where = |model: &Model, shape: &Shape, pick: &dyn Fn(Point, Point) -> bool| {
+            explore_unique(model, shape, ShapeType::Edge)
+                .unwrap()
+                .into_iter()
+                .filter(|e| {
+                    let b = tight_bounds(model, e, T).unwrap();
+                    pick(b.low().unwrap(), b.high().unwrap())
+                })
+                .collect::<Vec<_>>()
+        };
+        let upright = edges_where(&model, &block, &|lo, hi| hi.z - lo.z > 4.0);
+        let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &upright, r, T)
+            .unwrap()
+            .shape;
+        let rim = edges_where(&model, &rounded, &|lo, hi| hi.z < 1e-9 && lo.z > -1e-9);
+        assert_eq!(rim.len(), 8);
+        let at = format!("corner {r}, blend {c}, rounded {round}");
+        let blended = if round {
+            ogeom::fillet::fillet_edges(&mut model, &rounded, &rim, c, T)
+        } else {
+            ogeom::fillet::chamfer_edges(&mut model, &rounded, &rim, c, T)
+        }
+        .unwrap_or_else(|e| panic!("{at}: {e}"))
+        .shape;
+        let diagnosis = check(&model, &blended, T).unwrap();
+        assert!(diagnosis.is_valid(), "{at}: {diagnosis}");
+        // The cross-section removed and its centroid's distance in from the
+        // wall: a right triangle for the chamfer, the spandrel outside a
+        // quarter circle for the fillet.
+        let (section, inset) = if round {
+            (
+                c * c * (1.0 - pi / 4.0),
+                c * 3.0f64.mul_add(-pi, 10.0) / 3.0f64.mul_add(-pi, 12.0),
+            )
+        } else {
+            (c * c / 2.0, c / 3.0)
+        };
+        let lines = 2.0 * ((20.0 - 2.0 * r) + (10.0 - 2.0 * r));
+        let corners = 4.0 * section * (r - inset) * pi / 2.0;
+        let want =
+            5.0f64.mul_add(-4.0 * r * r * (1.0 - pi / 4.0), 1000.0) - lines * section - corners;
+        let v = volume_properties(&model, &blended, Deflection::default(), T)
+            .unwrap()
+            .mass;
+        assert!((v - want).abs() < want * 1e-9, "{at}: {v} against {want}");
+        // Top, bottom, four walls, four corners, four straight blends and
+        // four turned ones.
+        assert_eq!(
+            explore_unique(&model, &blended, ShapeType::Face)
+                .unwrap()
+                .len(),
+            18,
+            "{at}"
+        );
+    }
+}

@@ -468,6 +468,43 @@ pub(crate) fn revolved_seat(
     })
 }
 
+/// Whether a blend along an open arc of a rim must run the whole turn.
+///
+/// An open arc is two different seats: a piece a boolean split off a full
+/// rim, whose blend must run the whole turn, or a rim that genuinely stops,
+/// a stadium's rounded end or a rounded corner. The wall itself answers:
+/// probe it just below the arc's complement.
+pub(crate) fn runs_whole_turn(
+    model: &Model,
+    seat: &RevolvedSeat,
+    arc: &CircleCurve,
+    range: (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    use ogeom_geom::Curve3d as _;
+    let frame = seat.frame_at(seat.centre, tol)?;
+    let angle_of = |t: f64| -> OgeomResult<f64> {
+        let local = frame.to_local(arc.point_at(t, tol)?);
+        Ok(local.y.atan2(local.x))
+    };
+    // The arc's own middle: which way round it runs about the seat's axis
+    // depends on whether the cap faces along the circle's normal or against
+    // it, and the parameter's middle is the arc's middle either way.
+    let mid = angle_of(f64::midpoint(range.0, range.1))?;
+    let complement = mid + core::f64::consts::PI;
+    let dir = frame.x().vector() * complement.cos() + frame.y().vector() * complement.sin();
+    let eps = seat.radius * 1e-2;
+    let probe = seat.centre + dir * seat.radius - seat.up * (seat.tau * eps);
+    let deflection = ogeom_mesh::Deflection {
+        chord: eps * 0.1,
+        ..ogeom_mesh::Deflection::default()
+    };
+    Ok(
+        ogeom_algo::classify_on_face(model, &seat.wall_face, probe, deflection, tol)?
+            == ogeom_algo::Containment::In,
+    )
+}
+
 /// The flanks every revolved wedge shares: the band of the wall down to the
 /// tangency ring, the annulus of the cap out to its own, and the three rings
 /// bounding them. Only the face between the two tangency rings differs:

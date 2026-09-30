@@ -149,33 +149,7 @@ fn fillet_edge_seat(
             if closed {
                 return revolved_fillet(model, solid, edge, &c, radius, tol);
             }
-            // An open arc is two different seats: a piece a boolean split
-            // off a full rim, whose blend must run the whole turn, or a rim
-            // that genuinely stops: a stadium's rounded end. The wall
-            // itself answers: probe it just below the arc's complement.
-            let frame = seat.frame_at(seat.centre, tol)?;
-            let angle_of = |t: f64| -> OgeomResult<f64> {
-                use ogeom_geom::Curve3d as _;
-                let local = frame.to_local(c.point_at(t, tol)?);
-                Ok(local.y.atan2(local.x))
-            };
-            let mid = f64::midpoint(
-                angle_of(crange.0)?,
-                angle_of(crange.0)?
-                    + (angle_of(crange.1)? - angle_of(crange.0)?)
-                        .rem_euclid(core::f64::consts::TAU),
-            );
-            let complement = mid + core::f64::consts::PI;
-            let dir = frame.x().vector() * complement.cos() + frame.y().vector() * complement.sin();
-            let eps = seat.radius * 1e-2;
-            let probe = seat.centre + dir * seat.radius - seat.up * (seat.tau * eps);
-            let deflection = ogeom_mesh::Deflection {
-                chord: eps * 0.1,
-                ..ogeom_mesh::Deflection::default()
-            };
-            let whole_turn =
-                ogeom_algo::classify_on_face(model, &seat.wall_face, probe, deflection, tol)?
-                    == ogeom_algo::Containment::In;
+            let whole_turn = crate::support::runs_whole_turn(model, &seat, &c, crange, tol)?;
             if whole_turn {
                 revolved_fillet(model, solid, edge, &c, radius, tol)
             } else {

@@ -215,7 +215,7 @@ fn wedge_for(
             }
             SeatKind::Rim(rim) => {
                 let seat = revolved_seat(model, solid, edge, &rim, tol)?;
-                revolved_bevel(model, &seat, *distance, *distance, tol)
+                revolved_bevel(model, edge, &seat, *distance, *distance, tol)
             }
         },
         Chamfer::Distances {
@@ -234,7 +234,7 @@ fn wedge_for(
             SeatKind::Rim(rim) => {
                 let seat = revolved_seat(model, solid, edge, &rim, tol)?;
                 let (on_wall, on_cap) = revolved_side(&seat, face, *on_face, *on_other)?;
-                revolved_bevel(model, &seat, on_wall, on_cap, tol)
+                revolved_bevel(model, edge, &seat, on_wall, on_cap, tol)
             }
         },
         Chamfer::Angle {
@@ -289,7 +289,7 @@ fn wedge_for(
                     let seat = revolved_seat(model, solid, edge, &rim, tol)?;
                     let derived = distance * angle.tan();
                     let (on_wall, on_cap) = revolved_side(&seat, face, distance, derived)?;
-                    revolved_bevel(model, &seat, on_wall, on_cap, tol)
+                    revolved_bevel(model, edge, &seat, on_wall, on_cap, tol)
                 }
             }
         }
@@ -300,6 +300,8 @@ fn wedge_for(
 /// fuses (a concave edge) or cuts (a convex one).
 struct Wedge {
     faces: Vec<Shape>,
+    /// The wedge already closed into a solid, where it was built as one.
+    solid: Option<Shape>,
     additive: bool,
 }
 
@@ -311,7 +313,18 @@ impl Wedge {
         edge: &Shape,
         tol: Tolerances,
     ) -> OgeomResult<Built> {
-        let mut built = apply_wedge(model, solid, Some(edge), &self.faces, self.additive, tol)?;
+        let mut built = match self.solid {
+            Some(wedge) => {
+                let mut result = if self.additive {
+                    ogeom_bool::fuse(model, solid, &wedge, tol)?
+                } else {
+                    ogeom_bool::cut(model, solid, &wedge, tol)?
+                };
+                result.history.delete(edge);
+                result
+            }
+            None => apply_wedge(model, solid, Some(edge), &self.faces, self.additive, tol)?,
+        };
         crate::support::credit_new_faces(model, solid, edge, &mut built)?;
         Ok(built)
     }
@@ -365,6 +378,7 @@ fn revolved_side(
 /// the cone between the two tangency rings as the bevel.
 fn revolved_bevel(
     model: &mut Model,
+    edge: &Shape,
     seat: &RevolvedSeat,
     on_wall: f64,
     on_cap: f64,
@@ -383,6 +397,9 @@ fn revolved_bevel(
              of radius {}",
             seat.radius
         );
+    }
+    if let Some((start, sweep)) = arc_span(model, edge, seat, tol)? {
+        return sector_bevel(model, seat, on_wall, cap_rho, start, sweep, tol);
     }
     let flanks = revolved_flanks(model, seat, on_wall, cap_rho, tol)?;
 
@@ -414,6 +431,80 @@ fn revolved_bevel(
 
     Ok(Wedge {
         faces: vec![flanks.wall_band, flanks.annulus, bevel_band],
+        solid: None,
+        additive: seat.additive(),
+    })
+}
+
+/// Where a rim that is only an arc of its circle starts, and how far it
+/// turns, as angles about the seat's axis from its `x_ref`, turning
+/// positively about `up`. `None` for a whole circle, or an arc of one whose
+/// wall runs on round the rest of the turn.
+fn arc_span(
+    model: &Model,
+    edge: &Shape,
+    seat: &RevolvedSeat,
+    tol: Tolerances,
+) -> OgeomResult<Option<(f64, f64)>> {
+    use ogeom_geom::Curve3d as _;
+    let (curve, range) = edge_curve(model, edge, tol)?;
+    let closed = ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
+    let Curve::Circle(arc) = &curve else {
+        return Ok(None);
+    };
+    if closed || crate::support::runs_whole_turn(model, seat, arc, range, tol)? {
+        return Ok(None);
+    }
+    let frame = seat.frame_at(seat.centre, tol)?;
+    let angle = |t: f64| -> OgeomResult<f64> {
+        let d = curve.point_at(t, tol)? - seat.centre;
+        Ok(d.dot(frame.y().vector()).atan2(d.dot(frame.x().vector())))
+    };
+    let turn = core::f64::consts::TAU;
+    let (a, b, m) = (
+        angle(range.0)?,
+        angle(range.1)?,
+        angle(0.5 * (range.0 + range.1))?,
+    );
+    // The arc runs from `a` to `b` one way round or the other: the way
+    // that passes through its middle.
+    let forward = (b - a).rem_euclid(turn);
+    let start = if (m - a).rem_euclid(turn) <= forward {
+        a
+    } else {
+        b
+    };
+    let sweep = if start == a { forward } else { turn - forward };
+    Ok(Some((start, sweep)))
+}
+
+/// The wedge of a chamfer along an arc of a rim: the bevel's cross-section,
+/// the triangle between the rim and the two tangency rings, turned about the
+/// rim's axis through the arc alone. Its ends are the triangles a straight
+/// bevel meeting the arc at a tangent ends in, so the bevels of a chain of
+/// lines and arcs abut exactly; a whole ring would cut the material on the
+/// far side of the axis as well.
+fn sector_bevel(
+    model: &mut Model,
+    seat: &RevolvedSeat,
+    on_wall: f64,
+    cap_rho: f64,
+    start: f64,
+    sweep: f64,
+    tol: Tolerances,
+) -> OgeomResult<Wedge> {
+    let frame = seat.frame_at(seat.centre, tol)?;
+    let radial = frame.x().vector() * start.cos() + frame.y().vector() * start.sin();
+    let rim = seat.centre + radial * seat.radius;
+    let wall = rim - seat.up * (seat.tau * on_wall);
+    let cap = seat.centre + radial * cap_rho;
+    let across = seat.up.cross(radial);
+    let profile = crate::support::planar_face(model, &[rim, wall, cap], across, tol)?;
+    let axis = ogeom_math::Axis::new(seat.centre, frame.z());
+    let solid = ogeom_algo::make_revolution(model, &profile, axis, sweep, tol)?.shape;
+    Ok(Wedge {
+        faces: Vec::new(),
+        solid: Some(solid),
         additive: seat.additive(),
     })
 }
@@ -510,6 +601,7 @@ fn bevel(
     ];
     Ok(Wedge {
         faces: faces.to_vec(),
+        solid: None,
         additive: !seat.convex,
     })
 }

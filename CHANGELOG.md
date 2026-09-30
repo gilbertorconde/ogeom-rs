@@ -13,6 +13,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A chamfer along a rounded rim removed too much; a fillet refused it.**
+  A chamfer on an arc of a rim (a rounded corner's quarter) cut a wedge
+  turned the whole way round the corner's axis, taking material on the
+  far side too: the solid passed the checker with the wrong volume. It
+  now turns through the arc alone, as the fillet's does. The probe that
+  tells a rim that stops from an arc split off a whole rim read the arc
+  the wrong way round when the cap faced against the circle's normal, so
+  a fillet along the bottom rim of a rounded block was refused; it now
+  reads the arc's own middle. Both blends along a chain of lines and
+  quarter arcs now match the closed-form volume.
+
 - **`solid_from_mesh` recognizes one-row chamfers and exporter noise.**
   - A chamfer meshed as a single row of triangles has its corners on two
     circles, which a sphere and a torus fit as well as a cone. The cone
