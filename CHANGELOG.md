@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A fuzzy boolean takes its fuzz as the faces' coincidence.** Two faces
+  lying within the fuzz of one another over what they share are one
+  surface to `fuse_fuzzy` and `cut_fuzzy`, as they are within the
+  tolerances the faces state: a prism of a converted part's top face along
+  its rounds, left as facets each leaning a few microns, fuses and cuts at
+  a fuzz wider than the lean.
+
 - **A pad beside a wall leaning a few microns off it is sound.** Where
   two exact edges (lines, circles) come within a measuring width of one
   another, the boolean now holds them to their own tolerances, and takes

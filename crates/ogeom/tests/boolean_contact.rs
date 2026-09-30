@@ -855,3 +855,108 @@ fn a_prism_beside_a_leaning_wall_parts_from_it() {
         }
     }
 }
+
+/// A block with rounded upright edges, meshed, its points moved a couple
+/// of microns and stored in single precision a hundred millimetres out (as
+/// an exported mesh holds them), and converted as it is: its rounds are
+/// strips of facets, each leaning its own few microns. A prism of its top
+/// face pushed down into it and through it runs along those facets, and
+/// at a fuzz wider than the lean the three operations come out sound and
+/// hold what the two inputs do.
+#[test]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "the rounding to single precision is the point"
+)]
+fn a_prism_along_a_faceted_round_combines_at_a_fuzz() {
+    let mut source = Model::with_tolerances(T);
+    let block = ogeom::algo::make_box(&mut source, Frame::WORLD, (2.0, 14.0, 8.5), T)
+        .unwrap()
+        .shape;
+    let upright: Vec<_> = explore_unique(&source, &block, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let b = ogeom::algo::tight_bounds(&source, e, T).unwrap();
+            b.high().unwrap().z - b.low().unwrap().z > 1.0
+        })
+        .collect();
+    let rounded = ogeom::fillet::fillet_edges(&mut source, &block, &upright, 0.5, T)
+        .unwrap()
+        .shape;
+    let mut mesh =
+        ogeom::mesh::triangulate(&source, &rounded, Deflection::with_chord(0.05).unwrap(), T)
+            .unwrap();
+    let mut state: u64 = 1;
+    let mut nudge = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((state >> 11) as f64 / (1u64 << 53) as f64).mul_add(2.0, -1.0) * 2e-6
+    };
+    for p in &mut mesh.positions {
+        let (dx, dy, dz) = (nudge(), nudge(), nudge());
+        *p = Point::new(
+            f64::from((p.x + 100.0 + dx) as f32),
+            f64::from((p.y + 100.0 + dy) as f32),
+            f64::from((p.z + dz) as f32),
+        );
+    }
+    let mut model = Model::with_tolerances(T);
+    let options = ogeom::algo::MeshSolidOptions {
+        recognize: false,
+        keep_vertices: true,
+        quantum: Some(ogeom::algo::single_precision_quantum(&mesh)),
+        ..ogeom::algo::MeshSolidOptions::default()
+    };
+    let part = ogeom::algo::solid_from_mesh(&mut model, &mesh, &options, T)
+        .unwrap()
+        .shape;
+    let top = explore_unique(&model, &part, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let (q, n) = ogeom::algo::face_normal(&model, f, T).unwrap();
+            n.z > 0.999_999 && (q.z - 8.5).abs() < 1e-5
+        })
+        .unwrap();
+    let fuzz = 1e-5;
+    let loose = Tolerances::with_scale(1e-7 / fuzz).unwrap();
+    for depth in [3.0, 10.0] {
+        let pad = ogeom::algo::make_prism(
+            &mut model,
+            &top,
+            ogeom::math::Vector::new(0.0, 0.0, -depth),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let (v_part, v_pad) = (volume(&model, &part), volume(&model, &pad));
+        let fused = ogeom::boolean::fuse_fuzzy(&mut model, &part, &pad, fuzz, T)
+            .unwrap_or_else(|e| panic!("fuse at depth {depth}: {e}"));
+        let cut = ogeom::boolean::cut_fuzzy(&mut model, &part, &pad, fuzz, T)
+            .unwrap_or_else(|e| panic!("cut at depth {depth}: {e}"));
+        let common = ogeom::boolean::common(&mut model, &part, &pad, loose)
+            .unwrap_or_else(|e| panic!("common at depth {depth}: {e}"));
+        let mut got = Vec::new();
+        for (name, out) in [("fuse", &fused), ("cut", &cut), ("common", &common)] {
+            let diagnosis = ogeom::algo::check(&model, &out.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{name} at depth {depth}: {diagnosis}");
+            got.push(volume(&model, &out.shape));
+        }
+        let scale = v_part + v_pad;
+        assert!(
+            (got[0] + got[2] - scale).abs() < 1e-5 * scale,
+            "depth {depth}: fuse {} + common {} against {scale}",
+            got[0],
+            got[2]
+        );
+        assert!(
+            (got[1] + got[2] - v_part).abs() < 1e-5 * scale,
+            "depth {depth}: cut {} + common {} against {v_part}",
+            got[1],
+            got[2]
+        );
+    }
+}

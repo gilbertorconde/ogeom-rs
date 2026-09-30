@@ -3883,8 +3883,9 @@ fn surfaces_stand_apart(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerance
 /// arc through the rounded points has another centre and radius and the
 /// closed form, held to the confusion distance, sees two.
 ///
-/// Asked only where the faces state more than the confusion distance's
-/// few. The smaller face is sampled on a grid over its chart, inside its
+/// Asked only where the faces, or a fuzzy boolean's widened confusion,
+/// allow more than the default confusion distance's few. The smaller face
+/// is sampled on a grid over its chart, inside its
 /// trim; every sample inside the other face's trim must lie within the
 /// stated tolerance of the other's surface, and a few must, for the answer
 /// to mean anything. A pair that crosses fails at its first sample off the
@@ -3892,8 +3893,11 @@ fn surfaces_stand_apart(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerance
 fn coincide_as_stated(fa: &GFace, fb: &GFace, tol: Tolerances) -> bool {
     const GRID: usize = 8;
     const EVIDENCE: usize = 4;
-    let reach = fa.tolerance + fb.tolerance;
-    if reach <= tol.confusion() * 10.0 {
+    // What the faces state, or the run's own confusion where a fuzzy
+    // boolean has widened it past theirs: a fuzz is a statement of how far
+    // the two solids' geometry may disagree and still be one.
+    let reach = (fa.tolerance + fb.tolerance).max(tol.confusion() * 2.0);
+    if reach <= ogeom_core::tolerance::CONFUSION * 10.0 {
         return false;
     }
     // Two closed forms of different kinds share no patch: a plane is no
