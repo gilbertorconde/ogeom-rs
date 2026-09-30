@@ -850,9 +850,11 @@ impl PlanarCurve {
                     .collect::<OgeomResult<Vec<_>>>()?,
                 ..c.clone()
             }),
+            // The offset runs along the tangent turned a quarter, which a
+            // reflection turns the other way: the distance goes with it.
             Self::Offset(c) => Self::Offset(Box::new(Offset2d {
                 basis: c.basis.transformed(t, tol)?,
-                distance: c.distance * scale,
+                distance: c.distance * scale * if t.preserves_handedness() { 1.0 } else { -1.0 },
             })),
             Self::Trig(c) => Self::Trig(Trig2d {
                 c: t.apply(c.c),
@@ -968,6 +970,33 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
     use ogeom_math::Frame2;
+
+    /// A planar offset carried by a reflection, a half turn (a negative
+    /// scale) or a rotation names, at every parameter, the image of the
+    /// point it named.
+    #[test]
+    fn a_moved_offset_2d_is_the_image_of_the_original() {
+        use ogeom_math::{Circle2, Transform2};
+        let frame = Frame2::new(Point2::new(1.0, -2.0), Direction2::X);
+        let circle = PlanarCurve::Circle(Circle2d::new(Circle2::new(frame, 2.0, T).unwrap()));
+        let offset = PlanarCurve::Offset(Box::new(Offset2d::new(circle, 0.5).unwrap()));
+        let mirror = Transform2::line_mirror(Point2::ORIGIN, Direction2::X);
+        for t in [
+            mirror,
+            Transform2::scaling(Point2::new(3.0, 1.0), -2.0, T).unwrap(),
+            Transform2::rotation(Point2::ORIGIN, 0.7),
+        ] {
+            let moved = offset.transformed(&t, T).unwrap();
+            for u in [0.0, 1.0, 2.5, 4.0] {
+                let want = t.apply(offset.point_at(u, T).unwrap());
+                let got = moved.point_at(u, T).unwrap();
+                assert!(
+                    got.distance(want) < 1e-9,
+                    "{t:?} at {u}: {got:?} against {want:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn an_offset_2d_circle_is_the_larger_circle() {

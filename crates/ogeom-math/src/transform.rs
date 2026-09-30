@@ -547,10 +547,12 @@ impl Transform2 {
         self.translation
     }
 
-    /// Whether this transform preserves handedness.
+    /// Whether this transform preserves handedness. In the plane a
+    /// negative scale is a half turn, which does: only the linear part's
+    /// reflection decides.
     #[must_use]
     pub fn preserves_handedness(&self) -> bool {
-        self.linear.determinant() * self.scale.signum() > 0.0
+        self.linear.determinant() > 0.0
     }
 
     /// Apply to a point.

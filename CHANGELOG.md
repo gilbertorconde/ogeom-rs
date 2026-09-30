@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Mirrored revolutions and offsets are the images of the originals.** A
+  surface of revolution carried by a reflection turned the other way round
+  its axis, and offset curves and surfaces landed on the other side of
+  their basis; each now names, at every parameter, the image of the point
+  it named. `Transform2::preserves_handedness` no longer reads a negative
+  scale, a half turn in the plane, as a reflection.
+
 - **A negative scale reverses directions.** `Transform::apply_direction`
   (and `Transform2`'s) left a direction unchanged under any uniform scale;
   a negative one is a point mirror with a scale, and reverses it, so

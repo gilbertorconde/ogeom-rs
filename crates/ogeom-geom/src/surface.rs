@@ -1610,9 +1610,11 @@ impl Transformable for SurfaceGeometry {
                 cylinder: s.cylinder.transformed(t, tol)?,
                 height: (s.height.0 * scale, s.height.1 * scale),
             }),
+            // The basis's normal is the cross of its two tangents, which a
+            // reflection turns to the other side: the offset goes with it.
             Self::Offset(s) => Self::Offset(Box::new(OffsetSurface {
                 basis: s.basis.transformed(t, tol)?,
-                distance: s.distance * scale,
+                distance: s.distance * scale * if t.preserves_handedness() { 1.0 } else { -1.0 },
             })),
             Self::Cone(s) => Self::Cone(ConeSurface {
                 cone: s.cone.transformed(t, tol)?,
@@ -1642,14 +1644,23 @@ impl Transformable for SurfaceGeometry {
                     closed: s.closed,
                 })
             }
-            Self::Revolution(s) => Self::Revolution(Box::new(RevolutionSurface {
-                curve: s.curve.transformed(t, tol)?,
-                axis: Axis::new(
-                    t.apply(s.axis.location),
-                    t.apply_direction(s.axis.direction, tol)?,
-                ),
-                angle: s.angle,
-            })),
+            Self::Revolution(s) => {
+                // A reflection turns a rotation the other way round its
+                // image axis (`M·R(a, u) = R(-M·a, u)·M`), so under one the
+                // axis is carried reversed and every `(u, v)` still names
+                // the image of the point it named.
+                let direction = t.apply_direction(s.axis.direction, tol)?;
+                let direction = if t.preserves_handedness() {
+                    direction
+                } else {
+                    direction.reversed()
+                };
+                Self::Revolution(Box::new(RevolutionSurface {
+                    curve: s.curve.transformed(t, tol)?,
+                    axis: Axis::new(t.apply(s.axis.location), direction),
+                    angle: s.angle,
+                }))
+            }
             Self::Extrusion(s) => Self::Extrusion(Box::new(ExtrusionSurface {
                 curve: s.curve.transformed(t, tol)?,
                 direction: t.apply_direction(s.direction, tol)?,
@@ -1763,6 +1774,63 @@ mod tests {
     /// some of it lies past the end, and refusing there stopped three real
     /// bodies from meshing. A parameter a period past the end names a point
     /// the surface has, and is answered with it.
+    /// An offset sphere carried by a mirror, a point mirror or a negative
+    /// scale names, at every `(u, v)`, the image of the point it named.
+    #[test]
+    fn a_mirrored_offset_surface_is_the_image_of_the_original() {
+        use crate::Surface as _;
+        use ogeom_math::{Direction, Point, Sphere, Transform};
+        let sphere: SurfaceGeometry =
+            SphereSurface::new(Sphere::new(Frame::WORLD, 20.0, T).unwrap()).into();
+        let offset = SurfaceGeometry::Offset(Box::new(OffsetSurface::new(sphere, 3.0).unwrap()));
+        for t in [
+            Transform::plane_mirror(Point::ORIGIN, Direction::X),
+            Transform::point_mirror(Point::new(1.0, 2.0, 3.0)),
+            Transform::scaling(Point::ORIGIN, -2.0, T).unwrap(),
+        ] {
+            let moved = offset.transformed(&t, T).unwrap();
+            for (u, v) in [(0.0, 0.0), (0.5, 0.3), (2.0, -1.0), (4.0, 1.2)] {
+                let want = t.apply(offset.point_at(u, v, T).unwrap());
+                let got = moved.point_at(u, v, T).unwrap();
+                assert!(
+                    got.distance(want) < 1e-9,
+                    "{t:?} at ({u}, {v}): {got:?} against {want:?}"
+                );
+            }
+        }
+    }
+
+    /// A mirrored or point-mirrored surface of revolution names, at every
+    /// `(u, v)`, the image of the point the original named there.
+    #[test]
+    fn a_mirrored_revolution_is_the_image_of_the_original() {
+        use crate::Surface as _;
+        use crate::curve::LineCurve;
+        use ogeom_math::{Direction, Point, Transform};
+        let profile: Curve =
+            LineCurve::segment(Point::new(10.0, 0.0, 0.0), Point::new(20.0, 0.0, 5.0), T)
+                .unwrap()
+                .into();
+        let original: SurfaceGeometry = RevolutionSurface::new(profile, Axis::Z, 1.5)
+            .unwrap()
+            .into();
+        for t in [
+            Transform::plane_mirror(Point::ORIGIN, Direction::X),
+            Transform::point_mirror(Point::new(1.0, 2.0, 3.0)),
+            Transform::rotation(ogeom_math::Axis::new(Point::ORIGIN, Direction::Y), 0.7),
+        ] {
+            let moved = original.transformed(&t, T).unwrap();
+            for (u, v) in [(0.0, 0.0), (0.5, 3.0), (1.2, 7.5), (1.5, 11.0)] {
+                let want = t.apply(original.point_at(u, v, T).unwrap());
+                let got = moved.point_at(u, v, T).unwrap();
+                assert!(
+                    got.distance(want) < 1e-9,
+                    "{t:?} at ({u}, {v}): {got:?} against {want:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_closed_surface_wraps_a_parameter_past_its_join() {
         use crate::Surface as _;

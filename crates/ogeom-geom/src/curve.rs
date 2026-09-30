@@ -1755,9 +1755,13 @@ impl Transformable for Curve {
                 taper: c.taper * t.scale_factor().abs(),
                 ..*c
             }),
+            // The offset runs along `tangent x reference`, which a
+            // reflection carries to the other side: the distance goes with it.
             Self::Offset(c) => Self::Offset(Box::new(OffsetCurve {
                 basis: c.basis.transformed(t, tol)?,
-                distance: c.distance * t.scale_factor().abs(),
+                distance: c.distance
+                    * t.scale_factor().abs()
+                    * if t.preserves_handedness() { 1.0 } else { -1.0 },
                 reference: t.apply_direction(c.reference, tol)?,
             })),
             Self::OnSurface(c) => Self::OnSurface(Box::new(CurveOnSurface {
@@ -1939,6 +1943,32 @@ mod tests {
     use ogeom_math::{Direction, Frame};
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// An offset curve carried by a mirror or a point mirror names, at every
+    /// parameter, the image of the point it named.
+    #[test]
+    fn a_mirrored_offset_curve_is_the_image_of_the_original() {
+        use ogeom_math::{Circle, Transform};
+        let circle: Curve = CircleCurve::new(Circle::new(Frame::WORLD, 20.0, T).unwrap()).into();
+        let offset: Curve = Curve::Offset(Box::new(
+            OffsetCurve::new(circle, 3.0, Direction::Z).unwrap(),
+        ));
+        for t in [
+            Transform::plane_mirror(Point::ORIGIN, Direction::X),
+            Transform::point_mirror(Point::new(1.0, 2.0, 3.0)),
+            Transform::scaling(Point::ORIGIN, -2.0, T).unwrap(),
+        ] {
+            let moved = offset.transformed(&t, T).unwrap();
+            for u in [0.0, 1.0, 2.5, 4.0] {
+                let want = t.apply(offset.point_at(u, T).unwrap());
+                let got = moved.point_at(u, T).unwrap();
+                assert!(
+                    got.distance(want) < 1e-9,
+                    "{t:?} at {u}: {got:?} against {want:?}"
+                );
+            }
+        }
+    }
 
     fn tilted() -> Frame {
         Frame::new(
