@@ -38,7 +38,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 ### O. Offsets and shells
 
 - [x] **O1.** `offset_shape`, `offset_faces`, `move_faces` and `make_thick_solid` ignore a solid's Location: wrong geometry that passes `check`, or refusals (`ogeom-offset/src/shape.rs`). (572f441)
-- [x] **O2.** `offset_shape` and `make_thick_solid` return inside-out solids when the offset passes through the part, instead of refusing (`shape.rs`).
+- [x] **O2.** `offset_shape` and `make_thick_solid` return inside-out solids when the offset passes through the part, instead of refusing (`shape.rs`). (2396893)
 
 ### F. Fillets
 
