@@ -51,8 +51,10 @@ pub struct MeshSolidOptions {
     pub coplanar_angle: f64,
     /// How far a triangle's corner may sit off a face's plane, or a
     /// merged edge's intermediate vertex off its line, and still be merged.
-    /// `None` takes twice the mesh's `quantum`, and never less than a
-    /// millionth of its bounding box's diagonal or the weld distance. The
+    /// `None` takes the largest of twice the mesh's `quantum`, a millionth
+    /// of its bounding box's diagonal, one and a half times how far its
+    /// vertices stand off the flat faces they lie on (measured across
+    /// nearly coplanar edges), and the weld distance. The
     /// vertices and edges of a merged face widen their tolerances to cover
     /// what they stand off it.
     pub coplanar_distance: Option<f64>,
@@ -74,6 +76,12 @@ pub struct MeshSolidOptions {
     /// thirty degrees by default. A mesh drawn coarser than this round a
     /// curve reads as facets.
     pub crease: f64,
+    /// Keep every mesh vertex a vertex of the solid: collinear boundary
+    /// segments stay edges of their own. A solid built without recognition
+    /// to be refined later ([`refine_solid`]) keeps the samples that
+    /// recognition reads, where merged edges along a curved stretch's
+    /// facets would have dropped all but their ends.
+    pub keep_vertices: bool,
 }
 
 impl Default for MeshSolidOptions {
@@ -86,6 +94,7 @@ impl Default for MeshSolidOptions {
             weld: None,
             recognize: true,
             crease: core::f64::consts::FRAC_PI_6,
+            keep_vertices: false,
         }
     }
 }
@@ -257,6 +266,48 @@ fn split_across_slivers(points: &[Point], triangles: &mut Vec<[u32; 3]>, slivers
     }
 }
 
+/// Rebuild a solid's faceted stretches on the surfaces they approximate.
+///
+/// The second of two steps: [`solid_from_mesh`] without recognition keeps
+/// a mesh as it is, every flat stretch one face and every curved one its
+/// facets; this finds the cylinders, cones, spheres and tori among the
+/// facets of such a solid (or of any solid) and builds them anew as
+/// `solid_from_mesh` with recognition would. The solid is triangulated,
+/// its flat faces exactly and any curved ones to a chord of a
+/// ten-thousandth of its size, and the triangles read as a mesh. The first
+/// step reads best with [`MeshSolidOptions::keep_vertices`], so the
+/// solid's edges keep the mesh's samples along curved stretches; pass its
+/// `quantum` in `options` where the mesh came from a file.
+///
+/// # Errors
+///
+/// As [`solid_from_mesh`], and where the solid cannot be triangulated.
+pub fn refine_solid(
+    model: &mut Model,
+    shape: &Shape,
+    options: &MeshSolidOptions,
+    tol: Tolerances,
+) -> OgeomResult<MeshSolid> {
+    let bounds = crate::tight_bounds(model, shape, tol)?;
+    let size = match (bounds.low(), bounds.high()) {
+        (Some(lo), Some(hi)) => lo.distance(hi),
+        _ => ogeom_bail!(Construction, "the shape has no extent to refine"),
+    };
+    let chord = (size * 1e-4).max(tol.confusion() * 10.0);
+    let mesh = ogeom_mesh::triangulate(
+        model,
+        shape,
+        ogeom_mesh::Deflection::with_chord(chord)?,
+        tol,
+    )?;
+    let options = MeshSolidOptions {
+        recognize: true,
+        keep_vertices: false,
+        ..*options
+    };
+    solid_from_mesh(model, &mesh, &options, tol)
+}
+
 /// How near its distance a recognized fit must come for the distance, not
 /// the surface, to be what bounds it.
 const PRESSED: f64 = 0.8;
@@ -410,7 +461,7 @@ pub fn solid_from_mesh(
             triangles: &triangles,
             adjacency: &adjacency,
             groups: &groups,
-            merge: options.merge_coplanar,
+            merge: options.merge_coplanar && !options.keep_vertices,
             pinned: &pinned,
             flat,
             tol,
@@ -2185,9 +2236,11 @@ fn keep_largest_piece(region: &mut Vec<usize>, adjacency: &Adjacency) {
     region.retain(|t| piece.get(t) == Some(&largest));
 }
 
-/// Recognized regions sharing a mesh edge and lying on one surface, each
-/// within twice the distance of the other's, are one region: a band peeled of a
-/// flat face's facets can leave its two ends to be fitted apart.
+/// Recognized regions of one kind sharing a mesh edge and lying on one
+/// surface are one region: each within twice the distance of the other's
+/// (a band peeled of a flat face's facets can leave its two ends to be
+/// fitted apart), or the smaller within the distance of the larger's, whose
+/// surface the merged region keeps.
 fn merge_same_surface(
     points: &[Point],
     triangles: &[[u32; 3]],
@@ -2218,13 +2271,26 @@ fn merge_same_surface(
                 }
                 // Each was fitted to its own vertices within the distance,
                 // so the other's lie within twice it where the two are one.
-                let on = |shape: &Canonical, vertices: &[u32]| {
+                let on = |shape: &Canonical, vertices: &[u32], within: f64| {
                     vertices
                         .iter()
-                        .all(|&v| shape.distance_to(points[v as usize]) <= flat * 2.0)
+                        .all(|&v| shape.distance_to(points[v as usize]) <= within)
                 };
-                if on(&a.shape, &b.vertices) && on(&b.shape, &a.vertices) {
+                if on(&a.shape, &b.vertices, flat * 2.0) && on(&b.shape, &a.vertices, flat * 2.0) {
                     pair = Some((g.min(o), g.max(o)));
+                    break 'find;
+                }
+                // A small piece fitted on its own leans with its few
+                // vertices' slop, and the larger's fit may miss it by more;
+                // where its vertices lie on the larger's surface, it is part
+                // of the larger.
+                let (large, small) = if a.vertices.len() >= b.vertices.len() {
+                    ((g, a), (o, b))
+                } else {
+                    ((o, b), (g, a))
+                };
+                if on(&large.1.shape, &small.1.vertices, flat) {
+                    pair = Some((large.0, small.0));
                     break 'find;
                 }
             }
@@ -2244,10 +2310,18 @@ fn merge_same_surface(
             }
         }
         if let Carrier::Curved(kept) = &mut groups.carriers[keep] {
+            let pts: Vec<Point> = absorbed
+                .vertices
+                .iter()
+                .map(|&v| points[v as usize])
+                .collect();
             kept.vertices.extend(absorbed.vertices);
             kept.vertices.sort_unstable();
             kept.vertices.dedup();
-            kept.deviation = kept.deviation.max(absorbed.deviation);
+            kept.deviation = kept
+                .deviation
+                .max(absorbed.deviation)
+                .max(worst_deviation(&kept.shape, &pts));
             kept.fitted = kept.fitted.max(absorbed.fitted);
         }
     }

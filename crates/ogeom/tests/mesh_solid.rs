@@ -1816,15 +1816,7 @@ fn a_noisy_drilled_block_keeps_its_faces_whole() {
 fn a_narrow_round_comes_back_tangent_to_its_faces() {
     use ogeom::geom::SurfaceGeometry as S;
     let mut model = Model::new();
-    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 10.0, 5.0), T)
-        .unwrap()
-        .shape;
-    let edge = edges_where(&model, &block, |lo, hi| {
-        lo.x > 20.0 - 1e-6 && lo.z > 5.0 - 1e-6 && hi.y - lo.y > 9.0
-    });
-    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edge, 0.5, T)
-        .unwrap()
-        .shape;
+    let rounded = narrow_round(&mut model);
     let mesh = ogeom::mesh::triangulate(&model, &rounded, Deflection::with_chord(0.05).unwrap(), T)
         .unwrap();
     let mesh = exported(mesh, 0.0);
@@ -1907,4 +1899,53 @@ fn a_rounded_rim_s_crest_is_a_circle() {
         out.report
     );
     holds((&model, &rounded), (&back, &out.shape));
+}
+
+/// A block with one edge rounded 0.5, meshed two facets across the round.
+fn narrow_round(model: &mut Model) -> Shape {
+    let block = ogeom::algo::make_box(model, Frame::WORLD, (20.0, 10.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let edge = edges_where(model, &block, |lo, hi| {
+        lo.x > 20.0 - 1e-6 && lo.z > 5.0 - 1e-6 && hi.y - lo.y > 9.0
+    });
+    ogeom::fillet::fillet_edges(model, &block, &edge, 0.5, T)
+        .unwrap()
+        .shape
+}
+
+/// Converted without recognition, keeping every vertex, a block rounded on
+/// every edge keeps its rounds' facets; refined, the facets are the
+/// cylinders and the corners' spheres again, as converting with
+/// recognition gives in one step.
+#[test]
+fn a_verbatim_conversion_refines_to_its_surfaces() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (30.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    let mesh = ogeom::mesh::triangulate(&model, &rounded, Deflection::with_chord(0.05).unwrap(), T)
+        .unwrap();
+    let mut back = Model::new();
+    let verbatim = MeshSolidOptions {
+        recognize: false,
+        keep_vertices: true,
+        ..MeshSolidOptions::default()
+    };
+    let first = solid_from_mesh(&mut back, &mesh, &verbatim, T).unwrap();
+    assert_eq!(kinds(&back, &first.shape)[1], 0, "{:?}", first.report);
+    let refined =
+        ogeom::algo::refine_solid(&mut back, &first.shape, &MeshSolidOptions::default(), T)
+            .unwrap();
+    assert_eq!(
+        kinds(&back, &refined.shape),
+        [6, 12, 0, 8, 0],
+        "{:?}",
+        refined.report
+    );
+    holds((&model, &rounded), (&back, &refined.shape));
 }

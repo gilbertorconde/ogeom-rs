@@ -13,6 +13,16 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A converted solid refines in a second step.** `refine_solid` finds
+  the cylinders, cones, spheres and tori among a solid's facets and
+  rebuilds them, as `solid_from_mesh` with recognition would: a mesh can
+  be converted as it is first (`recognize: false`) and refined on top.
+  `MeshSolidOptions::keep_vertices` keeps every mesh vertex a vertex of
+  the solid, so the first step keeps the samples along curved stretches
+  that merged edges would drop. A recognized region lying on a larger
+  neighbour's surface of its own kind now joins it, where two fits of one
+  cone parted over their few vertices' slop.
+
 - **STL precision reaches the mesh converter.** `ogeom::io::stl::read_with_quantum`
   returns the mesh with its encoding's rounding: single precision at the
   largest coordinate for binary files, the finest printed digit for ASCII.
