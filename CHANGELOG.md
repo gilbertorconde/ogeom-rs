@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Unclamped splines split into Bezier segments and elevate unchanged.**
+  `to_bezier_segments` and `elevate_degree` assumed clamped ends and moved
+  an unclamped or periodic curve by millimetres. The domain's ends are now
+  raised to full multiplicity like every interior knot, and each segment
+  takes the control points its span reads.
+
 - **Unclamped and periodic splines reverse and rescale unchanged.**
   `KnotVector::reversed` and `reparameterized` clamped every knot into the
   domain, changing a spline whose outer knots lie beyond it by up to

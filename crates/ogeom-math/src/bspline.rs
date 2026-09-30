@@ -589,17 +589,30 @@ pub fn to_bezier_segments<P: Blend>(
 ) -> OgeomResult<Vec<BezierSegment<P>>> {
     check_shape(knots, control)?;
     let p = knots.degree();
-    let (start, end) = knots.domain();
+    let end = knots.domain().1;
 
-    // Raise every interior knot to full multiplicity; the control points then
-    // partition directly into segments.
-    let mut current_knots = knots.clone();
-    let mut current_points = control.to_vec();
-    for (value, multiplicity) in knots.distinct() {
+    // Raise every knot of the domain to full multiplicity, its ends too: an
+    // unclamped vector's curve starts and ends inside its first and last
+    // spans' hulls, and only a clamped end makes a segment's first control
+    // point its first point. The start is raised in place; the end is the
+    // start of the reversed curve.
+    let clamp_start = |knots: &KnotVector, control: &[P]| -> OgeomResult<Spline<P>> {
+        let (start, _) = knots.domain();
+        let needed = p.saturating_sub(knots.multiplicity_of(start));
+        insert_knot(knots, control, start, needed, tol)
+    };
+    let (mut current_knots, mut current_points) = clamp_start(knots, control)?;
+    if current_knots.multiplicity_of(end) < p {
+        let (reversed_knots, reversed_points) = reverse(&current_knots, &current_points);
+        let (reversed_knots, reversed_points) = clamp_start(&reversed_knots, &reversed_points)?;
+        (current_knots, current_points) = reverse(&reversed_knots, &reversed_points);
+    }
+    let (start, end) = current_knots.domain();
+    for (value, multiplicity) in current_knots.clone().distinct() {
         if value <= start || value >= end {
             continue;
         }
-        let needed = p - multiplicity;
+        let needed = p.saturating_sub(multiplicity);
         if needed > 0 {
             let (k, c) = insert_knot(&current_knots, &current_points, value, needed, tol)?;
             current_knots = k;
@@ -618,11 +631,13 @@ pub fn to_bezier_segments<P: Blend>(
         .chain(core::iter::once(end))
         .collect();
 
-    Ok(breaks
-        .windows(2)
-        .enumerate()
-        .map(|(i, w)| ((w[0], w[1]), current_points[i * p..i * p + p + 1].to_vec()))
-        .collect())
+    // Each segment's points are the `p + 1` its span reads.
+    let mut out = Vec::with_capacity(breaks.len() - 1);
+    for w in breaks.windows(2) {
+        let span = current_knots.span(f64::midpoint(w[0], w[1]), tol)?;
+        out.push(((w[0], w[1]), current_points[span - p..=span].to_vec()));
+    }
+    Ok(out)
 }
 
 /// Raise the degree by one, leaving the curve unchanged.
@@ -1005,6 +1020,39 @@ mod tests {
         let (k, c) = cubic_curve();
         assert!(split(&k, &c, 0.0, T).is_err());
         assert!(split(&k, &c, 1.0, T).is_err());
+    }
+
+    #[test]
+    fn an_unclamped_curve_decomposes_and_elevates_unchanged() {
+        // A uniform cubic whose outer knots lie beyond its domain [3, 6].
+        let knots = KnotVector::new((0..10).map(f64::from).collect(), 3).unwrap();
+        let control = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(5.0, 1.0, 0.0),
+            Point::new(-2.0, 3.0, 1.0),
+            Point::new(7.0, 2.0, 2.0),
+            Point::new(1.0, -1.0, 1.0),
+            Point::new(3.0, 0.0, 0.0),
+        ];
+        let segments = to_bezier_segments(&knots, &control, T).unwrap();
+        assert_eq!(segments.len(), 3);
+        for ((a, b), points) in &segments {
+            let bezier = KnotVector::clamped_uniform(3, points.len()).unwrap();
+            for s in [0.0, 0.25, 0.5, 1.0] {
+                let on_segment = evaluate(&bezier, points, s, T).unwrap();
+                let on_curve = evaluate(&knots, &control, a + (b - a) * s, T).unwrap();
+                assert!(on_segment.distance(on_curve) < 1e-12, "[{a}, {b}] at {s}");
+            }
+        }
+        let (raised, points) = elevate_degree(&knots, &control, T).unwrap();
+        assert_eq!(raised.domain(), knots.domain());
+        for i in 0..=30 {
+            let u = 3.0 + f64::from(i) / 10.0;
+            let moved = evaluate(&raised, &points, u, T)
+                .unwrap()
+                .distance(evaluate(&knots, &control, u, T).unwrap());
+            assert!(moved < 1e-12, "elevation moved the curve {moved} at {u}");
+        }
     }
 
     #[test]
