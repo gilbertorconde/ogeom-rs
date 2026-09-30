@@ -546,30 +546,29 @@ impl KnotVector {
         }
         let (a, b) = self.domain();
         let scale = (end - start) / (b - a);
-        // Map, then overwrite the repeated end knots with the exact endpoints:
-        // the arithmetic would otherwise give each copy a slightly different
-        // value and silently destroy the clamping.
-        let mut knots: Vec<f64> = self
+        // Map, then overwrite the knots at the domain's ends with the exact
+        // endpoints: the arithmetic would otherwise give each copy a slightly
+        // different value and silently destroy the clamping. Knots outside
+        // the domain (an unclamped or periodic vector's) map like any other,
+        // each held on its own side of the ends it lies beyond.
+        let knots: Vec<f64> = self
             .knots
             .iter()
-            .map(|k| (k - a).mul_add(scale, start))
+            .map(|&k| {
+                let mapped = (k - a).mul_add(scale, start);
+                if k == a {
+                    start
+                } else if k == b {
+                    end
+                } else if k < a {
+                    mapped.min(start)
+                } else if k > b {
+                    mapped.max(end)
+                } else {
+                    mapped.clamp(start, end)
+                }
+            })
             .collect();
-        for k in &mut knots {
-            if *k <= start {
-                *k = start;
-            } else if *k >= end {
-                *k = end;
-            }
-        }
-        let last = knots.len() - 1;
-        for i in 0..self.knots.len() {
-            if self.knots[i] == a {
-                knots[i] = start;
-            }
-            if self.knots[last - i] == b {
-                knots[last - i] = end;
-            }
-        }
         Self::new(knots, self.degree)
     }
 
@@ -588,17 +587,26 @@ impl KnotVector {
     pub fn reversed(&self) -> Self {
         let (a, b) = self.domain();
         let sum = a + b;
-        let mut knots: Vec<f64> = self.knots.iter().rev().map(|k| sum - k).collect();
-        // Same reasoning as `reparameterized`: restore the endpoints exactly.
-        let last = knots.len() - 1;
-        for i in 0..knots.len() {
-            if knots[i] <= a {
-                knots[i] = a;
-            }
-            if knots[last - i] >= b {
-                knots[last - i] = b;
-            }
-        }
+        // Same reasoning as `reparameterized`: the domain's ends exchange
+        // exactly, and every other knot mirrors, inside the domain or out.
+        let knots: Vec<f64> = self
+            .knots
+            .iter()
+            .rev()
+            .map(|&k| {
+                if k == a {
+                    b
+                } else if k == b {
+                    a
+                } else if k < a {
+                    (sum - k).max(b)
+                } else if k > b {
+                    (sum - k).min(a)
+                } else {
+                    (sum - k).clamp(a, b)
+                }
+            })
+            .collect();
         Self {
             knots,
             degree: self.degree,
@@ -792,6 +800,24 @@ mod tests {
         assert_eq!(inserted.domain(), k.domain());
         // Beyond the degree it would disconnect the curve.
         assert!(k.with_knot_inserted(0.5, 3).is_err());
+    }
+
+    #[test]
+    fn an_unclamped_vector_reverses_and_rescales_without_changing_its_basis() {
+        // A uniform cubic over [3, 4] with its outer knots beyond the domain.
+        let kv = KnotVector::new((0..8).map(f64::from).collect(), 3).unwrap();
+        let at = |kv: &KnotVector, u: f64| kv.basis(kv.span(u, T).unwrap(), u);
+        let rescaled = kv.reparameterized(0.0, 1.0).unwrap();
+        let reversed = kv.reversed();
+        for (u, s) in [(3.1, 0.1), (3.5, 0.5), (3.9, 0.9)] {
+            let original = at(&kv, u);
+            for (x, y) in original.iter().zip(at(&rescaled, s)) {
+                assert_relative_eq!(*x, y, epsilon = 1e-12);
+            }
+            for (x, y) in original.iter().zip(at(&reversed, 7.0 - u).iter().rev()) {
+                assert_relative_eq!(*x, *y, epsilon = 1e-12);
+            }
+        }
     }
 
     #[test]

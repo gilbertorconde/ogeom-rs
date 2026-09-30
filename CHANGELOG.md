@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Unclamped and periodic splines reverse and rescale unchanged.**
+  `KnotVector::reversed` and `reparameterized` clamped every knot into the
+  domain, changing a spline whose outer knots lie beyond it by up to
+  millimetres. Only the knots at the domain's ends are snapped now.
+
 - **Sections winding round a periodic surface fit.** The closed sections of
   two crossing cylinders at an angle (an oblique pipe tee) came back
   millimetres off both surfaces with a stated tolerance in the hundreds:
