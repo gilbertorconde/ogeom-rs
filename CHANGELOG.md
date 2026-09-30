@@ -22,6 +22,10 @@ bump may break the API and a patch bump may not.
     cylinder's before a cone's, and a larger region before a smaller. A
     fit that does not hold on the shared axis is fitted again about it.
     Neighbouring rims then meet on one circle.
+  - An axis within 1e-3 of square to a plane of the solid is made square
+    to the largest such plane, where the region still fits. Rims on that
+    plane are then exact circles, not fitted splines, and a feature
+    sketched on it extrudes into exact cylinders.
   - When no `coplanar_distance` is given and the curved fits press
     against the default, the distance widens (up to four times). A mesh
     whose exporter moved its vertices a little further no longer leaves

@@ -782,6 +782,7 @@ enum Layout {
 
 /// Triangles gathered into faces: which face each triangle is in, and what
 /// each face is built on.
+#[derive(Clone)]
 struct Groups {
     of: Vec<usize>,
     carriers: Vec<Carrier>,
@@ -1106,7 +1107,16 @@ fn segment(
             tol,
         );
         sphere_axes(points, triangles, adjacency, &mut groups, flat, tol);
-        align_axes(points, &mut groups, flat, tol);
+        let normals = plane_normals(
+            points,
+            triangles,
+            adjacency,
+            options.coplanar_angle,
+            flat,
+            &groups,
+            tol,
+        )?;
+        align_axes(points, &mut groups, &normals, flat, tol);
         hole_frames(points, triangles, adjacency, &mut groups, tol);
         slit_bands(points, triangles, adjacency, &mut groups, tol);
     }
@@ -1120,6 +1130,39 @@ fn segment(
         tol,
     )?;
     Ok(groups)
+}
+
+/// The normals of the planes the triangles left over from recognition
+/// gather into, the largest plane first: a small plane's fit leans with its
+/// few vertices' slop.
+fn plane_normals(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    angle: f64,
+    flat: f64,
+    groups: &Groups,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Direction>> {
+    let mut trial = groups.clone();
+    coplanar_groups(points, triangles, adjacency, angle, flat, &mut trial, tol)?;
+    let mut size = vec![0_usize; trial.carriers.len()];
+    for &g in &trial.of {
+        if let Some(n) = size.get_mut(g) {
+            *n += 1;
+        }
+    }
+    let mut planes: Vec<(usize, Direction)> = trial
+        .carriers
+        .iter()
+        .zip(&size)
+        .filter_map(|(c, &n)| match c {
+            Carrier::Plane(plane) => Some((n, plane.frame().z())),
+            _ => None,
+        })
+        .collect();
+    planes.sort_by_key(|&(n, _)| core::cmp::Reverse(n));
+    Ok(planes.into_iter().map(|(_, d)| d).collect())
 }
 
 /// What a seed's first samples came to: the triangles and vertices
@@ -1992,10 +2035,50 @@ fn spread_directions(count: usize) -> Vec<Vector> {
         .collect()
 }
 
+/// A curved region put on `frame`, whose axis is nearly its own: its
+/// surface carried there if it still holds the region's vertices within
+/// `flat`, or a cylinder or cone fitted again about the new axis if that
+/// does. Otherwise the region keeps its own fit.
+fn onto_axis(curved: &mut Curved, points: &[Point], frame: Frame, flat: f64, tol: Tolerances) {
+    let Some(shape) = on_frame(&curved.shape, frame, tol) else {
+        return;
+    };
+    let pts: Vec<Point> = curved
+        .vertices
+        .iter()
+        .map(|&v| points[v as usize])
+        .collect();
+    let deviation = worst_deviation(&shape, &pts);
+    if deviation <= flat {
+        curved.shape = shape;
+        curved.deviation = deviation;
+    } else if matches!(curved.shape, Canonical::Cylinder(_) | Canonical::Cone(_))
+        && let Some(refitted) =
+            crate::recognize::ruled_about(&pts, frame.origin(), frame.z(), flat, tol)
+        && let Some(refitted) = on_frame(&refitted, frame, tol)
+    {
+        // The fit's own axis stood a few slops off this one, and its
+        // radius and lean with it: fitted again about this axis, it meets
+        // its neighbours on their circles.
+        let deviation = worst_deviation(&refitted, &pts);
+        if deviation <= flat {
+            curved.shape = refitted;
+            curved.deviation = deviation;
+        }
+    }
+}
+
 /// Put coaxial surfaces on one axis and one angular origin, so bands that
-/// meet along a circle meet at their seams too; then fix each curved
-/// region's chart branch and whether it wraps.
-fn align_axes(points: &[Point], groups: &mut Groups, flat: f64, tol: Tolerances) {
+/// meet along a circle meet at their seams too, and an axis all but square
+/// to a plane square to it; then fix each curved region's chart branch and
+/// whether it wraps.
+fn align_axes(
+    points: &[Point],
+    groups: &mut Groups,
+    normals: &[Direction],
+    flat: f64,
+    tol: Tolerances,
+) {
     let mut leaders: Vec<Frame> = Vec::new();
     // The best determined axis leads: a cylinder's before a cone's, whose
     // lean trades against its axis on a short band, and a larger region
@@ -2021,6 +2104,26 @@ fn align_axes(points: &[Point], groups: &mut Groups, flat: f64, tol: Tolerances)
             continue;
         };
         let sphere = matches!(curved.shape, Canonical::Sphere(_));
+        // An axis all but square to a plane of the solid is square to it:
+        // the mesh's slop leans the fit by a few millionths, and a leaning
+        // axis meets the plane in an ellipse where the part has a circle.
+        let frame = match normals.iter().find(|n| {
+            let lean = n.vector().cross(frame.z().vector()).magnitude();
+            lean > 0.0 && lean <= 1e-3
+        }) {
+            Some(&normal) if !sphere => {
+                let axis = if normal.vector().dot(frame.z().vector()) >= 0.0 {
+                    normal
+                } else {
+                    -normal
+                };
+                if let Ok(square) = Frame::new(frame.origin(), axis, frame.x(), tol) {
+                    onto_axis(curved, points, square, flat, tol);
+                }
+                axis_frame(&curved.shape).unwrap_or(frame)
+            }
+            _ => frame,
+        };
         let lead = leaders.iter().find(|l| {
             let parallel = l.z().vector().cross(frame.z().vector()).magnitude() <= 1e-3;
             let w = frame.origin() - l.origin();
@@ -2036,32 +2139,8 @@ fn align_axes(points: &[Point], groups: &mut Groups, flat: f64, tol: Tolerances)
             } else {
                 -lead.z()
             };
-            if let Ok(snapped) = Frame::new(origin, axis, lead.x(), tol)
-                && let Some(shape) = on_frame(&curved.shape, snapped, tol)
-            {
-                let pts: Vec<Point> = curved
-                    .vertices
-                    .iter()
-                    .map(|&v| points[v as usize])
-                    .collect();
-                let deviation = worst_deviation(&shape, &pts);
-                if deviation <= flat {
-                    curved.shape = shape;
-                    curved.deviation = deviation;
-                } else if matches!(curved.shape, Canonical::Cylinder(_) | Canonical::Cone(_))
-                    && let Some(refitted) =
-                        crate::recognize::ruled_about(&pts, origin, axis, flat, tol)
-                    && let Some(refitted) = on_frame(&refitted, snapped, tol)
-                {
-                    // The fit's own axis stood a few slops off the shared one,
-                    // and its radius and lean with it: fitted again about the
-                    // shared axis, the two meet on one circle.
-                    let deviation = worst_deviation(&refitted, &pts);
-                    if deviation <= flat {
-                        curved.shape = refitted;
-                        curved.deviation = deviation;
-                    }
-                }
+            if let Ok(snapped) = Frame::new(origin, axis, lead.x(), tol) {
+                onto_axis(curved, points, snapped, flat, tol);
             }
         } else if !sphere {
             leaders.push(frame);

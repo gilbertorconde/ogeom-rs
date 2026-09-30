@@ -1232,7 +1232,8 @@ fn exported(mut mesh: Triangulation, noise: f64) -> Triangulation {
 /// each row's corners lie on two circles, which a sphere and a torus fit as
 /// well as the cone. The cone is the one taken, and meets the corner's
 /// cylinder on one circle; exported points, up to a little over the default
-/// distance off their surfaces, still come back the same faces.
+/// distance off their surfaces, still come back the same faces, on axes
+/// square to a cap.
 #[test]
 fn one_row_chamfers_come_back_cones() {
     for (r, n, noise) in [
@@ -1249,5 +1250,38 @@ fn one_row_chamfers_come_back_cones() {
         let diagnosis = check(&model, &built.shape, T).unwrap();
         assert!(diagnosis.is_valid(), "{at}: {diagnosis}");
         assert_eq!(kinds(&model, &built.shape), [14, 4, 8, 0, 0], "{at}");
+        // Every axis square to a cap: a lean of the fit's slop would meet
+        // the cap in an ellipse where the part has a circle. The caps are
+        // fitted too, so square to one of them, not to the world's `z`.
+        use ogeom::geom::SurfaceGeometry as S;
+        let faces = explore_unique(&model, &built.shape, ShapeType::Face).unwrap();
+        let surfaces: Vec<&S> = faces
+            .iter()
+            .map(|f| {
+                let data = model.node(f).unwrap().data().as_face().unwrap();
+                model.geometry().surface(data.surface).unwrap()
+            })
+            .collect();
+        let caps: Vec<Vector> = surfaces
+            .iter()
+            .filter_map(|s| match s {
+                S::Plane(p) if p.plane().frame().z().vector().z.abs() > 0.99 => {
+                    Some(p.plane().frame().z().vector())
+                }
+                _ => None,
+            })
+            .collect();
+        for s in &surfaces {
+            let axis = match s {
+                S::Cylinder(c) => c.cylinder().frame().z().vector(),
+                S::Cone(c) => c.cone().frame().z().vector(),
+                _ => continue,
+            };
+            let lean = caps
+                .iter()
+                .map(|n| axis.cross(*n).magnitude())
+                .fold(f64::INFINITY, f64::min);
+            assert!(lean < 1e-12, "{at}: an axis leans {lean:e} off the caps");
+        }
     }
 }
