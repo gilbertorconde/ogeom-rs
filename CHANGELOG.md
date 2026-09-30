@@ -24,6 +24,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A recognized region stays one connected piece.** Dropping the triangles
+  of vertices a fit refused could leave a region in pieces joined by
+  nothing, each then built as a face on the first fit's surface. The
+  largest piece is now the claim, and the others stay free to seed regions
+  of their own or fall to the planes. A perforated cup's conversion lost
+  three spheres its mesh does not hold, and came to within 0.02% of its
+  volume from 0.17%.
+
 - **The mesh converter checks each body it builds, and gives up only what
   fails.**
   - A recognized face pointing against the triangles it replaces, or

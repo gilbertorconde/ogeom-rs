@@ -1784,6 +1784,40 @@ fn plane_normals(
     Ok(planes.into_iter().map(|(_, d)| d).collect())
 }
 
+/// Keep only the largest edge-connected piece of a set of triangles.
+fn keep_largest_piece(region: &mut Vec<usize>, adjacency: &Adjacency) {
+    let members: std::collections::HashSet<usize> = region.iter().copied().collect();
+    let mut piece: HashMap<usize, usize> = HashMap::with_capacity(region.len());
+    let mut sizes: Vec<usize> = Vec::new();
+    for &start in region.iter() {
+        if piece.contains_key(&start) {
+            continue;
+        }
+        let id = sizes.len();
+        piece.insert(start, id);
+        let mut stack = vec![start];
+        let mut size = 0;
+        while let Some(t) = stack.pop() {
+            size += 1;
+            for h in 3 * t..3 * t + 3 {
+                if let Some(twin) = adjacency.twin[h] {
+                    let other = twin / 3;
+                    if members.contains(&other) && !piece.contains_key(&other) {
+                        piece.insert(other, id);
+                        stack.push(other);
+                    }
+                }
+            }
+        }
+        sizes.push(size);
+    }
+    if sizes.len() < 2 {
+        return;
+    }
+    let largest = (0..sizes.len()).max_by_key(|&i| sizes[i]).unwrap_or(0);
+    region.retain(|t| piece.get(t) == Some(&largest));
+}
+
 /// One recognized region per connected patch. Triangles dropped from a
 /// region for touching a vertex its fit refused can take with them the only
 /// triangles joining the rest, and a face is built from one region's
@@ -2175,6 +2209,11 @@ fn recognized_regions(
                     }
                     continue;
                 }
+                // What is left may have come apart where the dropped
+                // triangles joined it. The largest piece is the claim; the
+                // others stay free, to seed regions of their own or fall to
+                // the planes.
+                keep_largest_piece(&mut region, adjacency);
                 let mut seen = std::collections::HashSet::new();
                 vertices.clear();
                 for &t in &region {
