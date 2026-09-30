@@ -13,6 +13,10 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Over-repeated end knots are refused.** `KnotVector::new` accepted a
+  domain end repeated `degree + 2` times, where evaluation gave NaN; it is
+  refused as a malformed vector.
+
 - **Unclamped splines split into Bezier segments and elevate unchanged.**
   `to_bezier_segments` and `elevate_degree` assumed clamped ends and moved
   an unclamped or periodic curve by millimetres. The domain's ends are now

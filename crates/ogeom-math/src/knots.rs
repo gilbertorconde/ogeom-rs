@@ -81,6 +81,19 @@ impl KnotVector {
             ogeom_bail!(Construction, "knot vector spans an empty domain");
         }
 
+        // A domain end repeated more than `degree + 1` times leaves a basis
+        // function over an empty span, which evaluates to nothing there.
+        for end in [this.domain_start(), this.domain_end()] {
+            let count = this.multiplicity_of(end);
+            if count > this.degree + 1 {
+                ogeom_bail!(
+                    Construction,
+                    "end knot {end} has multiplicity {count}, above degree + 1 = {}",
+                    this.degree + 1
+                );
+            }
+        }
+
         // Interior multiplicity above the degree splits the curve in two.
         let (first, last) = (this.degree, this.knots.len() - this.degree - 1);
         let mut index = first;
@@ -634,6 +647,14 @@ mod tests {
     #[test]
     fn malformed_vectors_are_refused() {
         assert!(KnotVector::new(vec![0.0, 1.0], 3).is_err(), "too short");
+        assert!(
+            KnotVector::new(vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 3).is_err(),
+            "a start repeated degree + 2 times"
+        );
+        assert!(
+            KnotVector::new(vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0], 3).is_err(),
+            "an end repeated degree + 2 times"
+        );
         assert!(
             KnotVector::new(vec![0.0, 0.0, 1.0, 0.5, 1.0, 1.0], 2).is_err(),
             "not non-decreasing"
