@@ -11,6 +11,28 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-30
+
+A minor release: `cargo semver-checks` against 0.5.1 finds one breaking
+change, a field added to `MeshSolidOptions`, and every crate packages and
+verifies in a publish dry run. A mesh now converts in two steps if wanted,
+as it is and then refined (`refine_solid`), and recognition is sounder
+throughout: noisy flat faces, rounds tangent to their faces, thin rims,
+crests and single-precision input. The boolean holds faces to the
+tolerances they state, so a pad sketched from a converted part's face
+fuses, cuts and commons with it (#99, #100).
+
+A known limit: a pad whose sides run along a solid's walls at a tiny angle
+(a converted solid's facets, tilted by the mesh's rounding, under a pad
+sketched from them) leaves a sliver the boolean does not yet close; a
+refined solid's walls are not facets, and pads along them fuse.
+
+### Changed
+
+- **`MeshSolidOptions` has a new field, `keep_vertices`.** Code building
+  the options with a struct literal names it, or takes the rest from
+  `MeshSolidOptions::default()`.
+
 ### Added
 
 - **A converted solid refines in a second step.** `refine_solid` finds
@@ -1947,7 +1969,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.4.0...v0.4.1
