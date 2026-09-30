@@ -504,3 +504,19 @@ fn a_located_solid_is_edited_where_it_stands() {
     let raised = ogeom_offset::move_faces(&mut model, &block, &[top], &lift, T).unwrap();
     holds(&model, &raised, 10.0);
 }
+
+/// An offset or a wall that passes through the part is refused, not built
+/// inside out.
+#[test]
+fn an_offset_through_the_part_is_refused() {
+    for depth in [1.05, 1.2, 1.49] {
+        let mut model = ogeom_topo::Model::new();
+        let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (2.0, 3.0, 4.0), T)
+            .unwrap()
+            .shape;
+        assert!(ogeom_offset::offset_shape(&mut model, &block, -depth, T).is_err());
+        let top = face_at(&model, &block, Point::new(1.0, 1.5, 4.0));
+        assert!(ogeom_offset::make_thick_solid(&mut model, &block, &[top], depth, T).is_err());
+        assert!(ogeom_offset::make_thick_solid(&mut model, &block, &[], depth, T).is_err());
+    }
+}

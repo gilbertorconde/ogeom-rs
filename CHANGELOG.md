@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **An offset through the part is refused.** `offset_shape` and
+  `make_thick_solid` returned inside-out solids when the offset or the wall
+  ran a part's faces through each other; they now refuse, as `offset_faces`
+  and `move_faces` did.
+
 - **Located solids offset where they stand.** `offset_shape`,
   `offset_faces`, `move_faces` and `make_thick_solid` rebuilt a solid
   moved by a location in its nodes' own frame: wrong geometry that passed

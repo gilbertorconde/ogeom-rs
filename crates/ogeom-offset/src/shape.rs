@@ -127,7 +127,24 @@ pub fn offset_shape(
         out.history = prefix.then(&out.history);
         return Ok(out);
     }
-    rebuilt(model, solid, &|_| offset, &|_| None, tol)
+    let built = rebuilt(model, solid, &|_| offset, &|_| None, tol)?;
+    right_side_out(model, built, tol)
+}
+
+/// The offset solid, unless the offset ran its faces through each other.
+///
+/// Driven inward past half the solid's thickness, opposite faces cross and
+/// the rebuild closes a body turned inside out there, which the boolean and
+/// every measure downstream would read as material.
+fn right_side_out(model: &Model, built: Built, tol: Tolerances) -> OgeomResult<Built> {
+    if !ogeom_algo::inside_out_faces(model, &built.shape, tol)?.is_empty() {
+        ogeom_bail!(
+            Construction,
+            "the offset runs the solid's faces through each other and \
+             collapses it"
+        );
+    }
+    Ok(built)
 }
 
 /// Offset some faces of a solid by `distance` along their outward normals
@@ -410,6 +427,7 @@ pub fn make_thick_solid_with(
             &|_| None,
             tol,
         )?;
+        let moved = right_side_out(model, moved, tol)?;
         // The arc join rounds the moved copy about every edge between two
         // moved faces that is convex on the growing side: a ball of the
         // wall's thickness touching both moved walls stands on the old edge.
@@ -461,6 +479,7 @@ pub fn make_thick_solid_with(
     // extruding its opening image through where the wall now stands.
     let displaced = if outward_walls { reach } else { -reach };
     let moved = rebuilt(model, solid, &|_| displaced, &|_| None, tol)?;
+    let moved = right_side_out(model, moved, tol)?;
     let opening_normal = |model: &Model, face: &Shape| -> OgeomResult<Vector> {
         let Some(NodeData::Face(data)) = model.node(face).map(ogeom_topo::TShape::data) else {
             ogeom_bail!(Construction, "face node holds no face data");
