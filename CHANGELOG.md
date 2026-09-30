@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Located solids offset where they stand.** `offset_shape`,
+  `offset_faces`, `move_faces` and `make_thick_solid` rebuilt a solid
+  moved by a location in its nodes' own frame: wrong geometry that passed
+  `check`, or refusals. Such a solid is baked into world coordinates
+  first, as an instanced one already was.
+
 - **Over-repeated end knots are refused.** `KnotVector::new` accepted a
   domain end repeated `degree + 2` times, where evaluation gave NaN; it is
   refused as a malformed vector.

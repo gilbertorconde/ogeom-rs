@@ -45,14 +45,17 @@ use std::collections::HashMap;
 /// The displacement constraint one face puts on a point of itself.
 type Displacement<'a> = dyn Fn(&Model, usize, Point) -> OgeomResult<Option<(Vector, f64)>> + 'a;
 
-/// Canonicalize a solid whose topology is *instanced*: the same node placed
-/// twice: a prism's far cap reusing the profile's nodes under the travel.
+/// Canonicalize a solid whose topology is *placed*: a node placed twice (a
+/// prism's far cap reusing the profile's nodes under the travel), or any
+/// occurrence standing away from its node under a location (a solid moved
+/// as a whole).
 ///
-/// The rebuild below resolves everything by node, which is one name for two
-/// places on such a solid. Baking restates every occurrence as its own node
+/// The rebuild below resolves everything by node, in the node's own frame,
+/// which is one name for two places on an instanced solid and the wrong
+/// place on a moved one. Baking restates every occurrence as its own node
 /// in world coordinates, and the caller's face handles ride the bake's
-/// history. A solid whose nodes are each placed once passes through
-/// untouched.
+/// history. A solid whose nodes each stand where they are placed passes
+/// through untouched.
 pub(crate) fn canonical_input(
     model: &mut Model,
     solid: &Shape,
@@ -62,9 +65,13 @@ pub(crate) fn canonical_input(
     let probe = Point::new(0.123_456_789, 9.87, -3.21);
     let mut seen: HashMap<TShapeId, Point> = HashMap::new();
     let mut instanced = false;
-    'outer: for kind in [ShapeType::Vertex, ShapeType::Edge] {
+    'outer: for kind in [ShapeType::Vertex, ShapeType::Edge, ShapeType::Face] {
         for occurrence in explore(model, solid, Filter::OfType(kind))? {
             let at = occurrence.transform(model.datums())?.apply(probe);
+            if at.distance(probe) > tol.confusion() {
+                instanced = true;
+                break 'outer;
+            }
             match seen.entry(occurrence.node()) {
                 std::collections::hash_map::Entry::Occupied(held) => {
                     if held.get().distance(at) > tol.confusion() {

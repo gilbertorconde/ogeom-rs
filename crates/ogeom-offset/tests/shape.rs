@@ -461,3 +461,46 @@ fn a_thickness_joins_its_walls_by_intersection_or_arc() {
         );
     }
 }
+
+/// A solid moved by a location offsets, shells and moves its faces where
+/// it stands, as the same solid built there does.
+#[test]
+fn a_located_solid_is_edited_where_it_stands() {
+    let located = |model: &mut ogeom_topo::Model| {
+        let block = ogeom_algo::make_box(model, Frame::WORLD, (2.0, 2.0, 2.0), T)
+            .unwrap()
+            .shape;
+        model.placed(
+            &block,
+            ogeom_math::Transform::translation(ogeom_math::Vector::new(5.0, 0.0, 0.0)),
+        )
+    };
+    let holds = |model: &ogeom_topo::Model, built: &ogeom_algo::Built, want: f64| {
+        assert!(
+            ogeom_algo::check(model, &built.shape, T)
+                .unwrap()
+                .is_valid()
+        );
+        let got = volume(model, &built.shape);
+        assert!((got - want).abs() < 1e-9, "{got} against {want}");
+        let bounds = ogeom_algo::shape_bounds(model, &built.shape, T).unwrap();
+        assert!(bounds.low().unwrap().x > 4.0, "{bounds:?}");
+    };
+    let mut model = ogeom_topo::Model::new();
+    let block = located(&mut model);
+    let grown = ogeom_offset::offset_shape(&mut model, &block, 0.2, T).unwrap();
+    holds(&model, &grown, 2.4_f64.powi(3));
+
+    let mut model = ogeom_topo::Model::new();
+    let block = located(&mut model);
+    let top = face_at(&model, &block, Point::new(6.0, 1.0, 2.0));
+    let shell = ogeom_offset::make_thick_solid(&mut model, &block, &[top], 0.2, T).unwrap();
+    holds(&model, &shell, 8.0 - 1.6 * 1.6 * 1.8);
+
+    let mut model = ogeom_topo::Model::new();
+    let block = located(&mut model);
+    let top = face_at(&model, &block, Point::new(6.0, 1.0, 2.0));
+    let lift = ogeom_math::Transform::translation(ogeom_math::Vector::new(0.0, 0.0, 0.5));
+    let raised = ogeom_offset::move_faces(&mut model, &block, &[top], &lift, T).unwrap();
+    holds(&model, &raised, 10.0);
+}
