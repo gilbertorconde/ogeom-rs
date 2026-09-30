@@ -429,3 +429,52 @@ fn a_solid_inside_out_as_a_whole_is_turned() {
         .mass;
     assert!((v - 1000.0).abs() < 1e-9, "{v}");
 }
+
+/// A void whose faces are placed by a location, and read inside out (its
+/// faces turned into the solid and its shell reversed as well): the faces
+/// are turned right way out where they are, the void stays inside its
+/// solid, and the repaired solid checks clean.
+#[test]
+fn a_located_void_turned_right_way_out_stays_in_place() {
+    use ogeom::topo::{Filter, explore};
+    let mut model = Model::new();
+    let outer = make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let outer_shell = explore(&model, &outer, Filter::OfType(ShapeType::Shell)).unwrap()[0].clone();
+    let local = make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let local_shell = explore(&model, &local, Filter::OfType(ShapeType::Shell)).unwrap()[0].clone();
+    let place = Location::of(model.add_datum(ogeom::math::Transform::translation(
+        ogeom::math::Vector::new(4.0, 4.0, 4.0),
+    )));
+    let faces: Vec<Shape> = explore(&model, &local_shell, Filter::OfType(ShapeType::Face))
+        .unwrap()
+        .into_iter()
+        .map(|f| f.reversed().moved(&place))
+        .collect();
+    let void = model.add_shell(&faces).unwrap().reversed();
+    let solid = ogeom::algo::make_solid(&mut model, &[outer_shell, void])
+        .unwrap()
+        .shape;
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &solid, T).unwrap();
+    assert_eq!(fixed.report.faces_turned, 6, "{:?}", fixed.report);
+    let shells = explore(&model, &fixed.shape, Filter::OfType(ShapeType::Shell)).unwrap();
+    assert_eq!(shells.len(), 2);
+    let bounds = ogeom::algo::tight_bounds(&model, &shells[1], T).unwrap();
+    let (lo, hi) = (bounds.low().unwrap(), bounds.high().unwrap());
+    for (got, want) in [
+        (lo, Point::new(4.0, 4.0, 4.0)),
+        (hi, Point::new(6.0, 6.0, 6.0)),
+    ] {
+        assert!(got.distance(want) < 1e-6, "void bounds {lo:?}..{hi:?}");
+    }
+    let volume = ogeom::algo::volume_properties(&model, &fixed.shape, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((volume - 992.0).abs() < 1e-6, "{volume}");
+    let diagnosis = check(&model, &fixed.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+}

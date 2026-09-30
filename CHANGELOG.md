@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`fix_shape` turns a located face in place (#101).** A face turned right
+  way out was rebuilt on a new node without its location, so a void whose
+  faces are placed by one (an assembly part read from STEP) moved out of its
+  solid and still checked broken. The turned face keeps its location.
+
 - **A fuzzy boolean takes its fuzz as the faces' coincidence.** Two faces
   lying within the fuzz of one another over what they share are one
   surface to `fuse_fuzzy` and `cut_fuzzy`, as they are within the

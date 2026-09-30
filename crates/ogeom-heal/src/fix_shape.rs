@@ -314,7 +314,10 @@ fn collapse_small_edges(
 }
 
 /// A new face node holding the same surface and wires as `face`'s, for
-/// replacing it turned: a replacement by the node itself is no change.
+/// replacing it turned: a replacement by the node itself is no change. It
+/// stands where `face` does: a face placed by a location (an assembly
+/// part's, read from a file) keeps it, or the void it bounds would move out
+/// of its solid.
 fn turned_face(model: &mut Model, face: &Shape) -> OgeomResult<Shape> {
     let stored = if face.orientation() == ogeom_topo::Orientation::Reversed {
         face.reversed()
@@ -329,5 +332,7 @@ fn turned_face(model: &mut Model, face: &Shape) -> OgeomResult<Shape> {
         ogeom_bail!(Dangling, "face is not in this model");
     };
     let wires = model.children_of(&Shape::of(stored.node()))?;
-    model.add_face(data, &wires)
+    Ok(model
+        .add_face(data, &wires)?
+        .located(face.location().clone()))
 }

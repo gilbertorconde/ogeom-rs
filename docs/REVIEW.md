@@ -4,6 +4,10 @@ An adversarial review of the kernel at `ed3b155`, eight areas in parallel. Every
 
 Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 
+## Issues
+
+- [x] **#101.** `fix_shape` turned a located face right way out on a new node with no location, so a void placed by a location (an assembly part read from STEP) moved out of its solid. The turned face now keeps its location. (commit: fix(heal): a face turned right way out keeps its location)
+
 ## Tier 1: wrong results in everyday use
 
 ### M. Mirrors and negative scales
