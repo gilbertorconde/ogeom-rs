@@ -3047,7 +3047,11 @@ fn align_axes(
             let parallel = l.z().vector().cross(frame.z().vector()).magnitude() <= 1e-3;
             let w = frame.origin() - l.origin();
             let off = (w - l.z().vector() * w.dot(l.z().vector())).magnitude();
-            !sphere && parallel && off <= flat * 10.0
+            // A sphere centred on the axis takes its frame too: any frame
+            // through its centre is exact, and seams meeting on the circle
+            // it shares with the axis's other surfaces must start from one
+            // angle.
+            parallel && off <= flat * 10.0
         });
         if let Some(lead) = lead {
             let z = lead.z().vector();

@@ -1734,3 +1734,50 @@ fn a_round_does_not_take_a_flat_face_s_facets() {
     .mass;
     assert!((v - exact).abs() < exact * 1e-4, "{v} against {exact}");
 }
+
+/// A hemisphere on a cylinder of its radius, meshed finely and coarsely:
+/// the cylinder's seam and the cap's run from the circle they share, and
+/// the sphere takes the cylinder's frame so both start at one angle. Three
+/// faces, sound, holding the exact volume.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the rounding to single precision is the point"
+)]
+#[test]
+fn a_dome_on_a_cylinder_shares_its_seam() {
+    for chord in [0.01, 0.05] {
+        let mut model = Model::new();
+        let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 10.0, 10.0, T)
+            .unwrap()
+            .shape;
+        let top = Frame::new(Point::new(0.0, 0.0, 10.0), Direction::Z, Direction::X, T).unwrap();
+        let ball = ogeom::algo::make_sphere(&mut model, top, 10.0, T)
+            .unwrap()
+            .shape;
+        let dome = ogeom::boolean::fuse(&mut model, &drum, &ball, T)
+            .unwrap()
+            .shape;
+        let pi = core::f64::consts::PI;
+        let exact = pi * 100.0 * 10.0 + 2.0 / 3.0 * pi * 1000.0;
+        let mut mesh =
+            ogeom::mesh::triangulate(&model, &dome, Deflection::with_chord(chord).unwrap(), T)
+                .unwrap();
+        for p in &mut mesh.positions {
+            *p = Point::new(
+                f64::from(p.x as f32),
+                f64::from(p.y as f32),
+                f64::from(p.z as f32),
+            );
+        }
+        let built = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+        let at = format!("chord {chord}");
+        let diagnosis = check(&model, &built.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{at}: {diagnosis}");
+        assert_eq!(kinds(&model, &built.shape), [1, 1, 0, 1, 0], "{at}");
+        let v = volume(&model, &built.shape);
+        assert!(
+            (v - exact).abs() < exact * 1e-5,
+            "{at}: {v} against {exact}"
+        );
+    }
+}

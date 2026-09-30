@@ -24,6 +24,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A converted dome on a cylinder is sound.** A sphere centred on the axis
+  of the cylinders and cones beside it kept its own angular origin, so the
+  cap's seam and the cylinder's started a quarter turn apart on the circle
+  they share; the solid failed the checker, and on a coarser mesh the
+  sphere was not built at all. The sphere now takes the axis's frame.
+
 - **A curved region no longer takes a flat face's facets.** The mesh is
   first cut into flat patches, and a curved region may take a patch much
   larger than its own facets only whole, with every corner on its surface.
