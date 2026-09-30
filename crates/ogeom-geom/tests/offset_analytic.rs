@@ -83,9 +83,11 @@ fn offsets_of_the_analytics_are_analytics() {
         0.25,
         |s, p| match s {
             SurfaceGeometry::Cone(c) => {
-                // Distance from the cone's surface, square to its rulings.
+                // Distance from the cone's surface, square to its rulings,
+                // at the height along its own axis.
                 let cone = c.cone();
-                (axis_distance(p) - cone.radius_at(p.z)) * cone.half_angle().cos()
+                let height = (p - cone.frame().origin()).dot(cone.frame().z().vector());
+                (axis_distance(p) - cone.radius_at(height)) * cone.half_angle().cos()
             }
             _ => f64::NAN,
         },
