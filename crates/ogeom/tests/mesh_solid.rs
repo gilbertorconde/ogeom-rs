@@ -1856,3 +1856,30 @@ fn a_narrow_round_comes_back_tangent_to_its_faces() {
     assert!((5.0 - o.z - r).abs() < 1e-12, "{o:?} against radius {r}");
     holds((&model, &rounded), (&back, &out.shape));
 }
+
+/// A thin disc's rounded rim, four rows of facets round a tube much
+/// narrower than the rim: the round takes the flat top's facets in with it
+/// (their corners are all on the rim circle), and without them its top
+/// row's normals lean to one side and the fit finds nothing. The torus
+/// already found still holds, and the rim comes back one face.
+#[test]
+fn a_thin_disc_s_rounded_rim_comes_back_a_torus() {
+    let mut model = Model::new();
+    let disc = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 12.7, 0.8, T)
+        .unwrap()
+        .shape;
+    let top = edges_where(&model, &disc, |lo, _| lo.z > 0.8 - 1e-6);
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &disc, &top, 0.3, T)
+        .unwrap()
+        .shape;
+    let mesh = meshed(&model, &rounded);
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert_eq!(
+        kinds(&back, &out.shape),
+        [2, 1, 0, 0, 1],
+        "{:?}",
+        out.report
+    );
+    holds((&model, &rounded), (&back, &out.shape));
+}

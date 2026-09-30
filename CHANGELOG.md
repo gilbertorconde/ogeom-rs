@@ -24,6 +24,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A thin disc's rounded rim comes back a torus from a mesh.** When a
+  curved region shed the flat face's facets it had taken in and the refit
+  of what was left found nothing, the whole region went back to facets;
+  its rim's normals, one-sided once those facets were gone, misled the
+  fit. The surface already held now stands where it still holds the rest.
+
 - **A round between two flat faces comes back tangent to them.** The mesh
   converter puts a curved region that meets two non-parallel planes across
   smooth edges on the cylinder tangent to both, its axis along their line

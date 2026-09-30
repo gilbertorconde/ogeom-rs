@@ -2853,9 +2853,14 @@ fn recognized_regions(
                 // What is left is asked again what it is: a band a row or
                 // two high lies on a whole family of surfaces, and the one
                 // chosen with the flat facets in is not the one without.
+                // Where nothing is found, the surface held so far stands if
+                // it still holds what is left: the flat facets gone, the
+                // normals at the rim they shared lean to one side, and can
+                // mislead the fit that the surface already answers.
                 let (pts, nrm) = mesh.samples(&vertices, &region);
                 match recognize_curved(&pts, &nrm, &mesh.chords(&region), flat, tol) {
                     Some(better) => shape = better.surface,
+                    None if worst_deviation(&shape, &pts) <= flat => {}
                     None => {
                         for &t in &region {
                             tried[t] = true;
