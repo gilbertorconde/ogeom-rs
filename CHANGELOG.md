@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **glTF read under a mirroring node stays right side out.** A node whose
+  transform reflects (a negative scale, or a matrix with a negative
+  determinant) left the triangles wound inside out and turned every normal
+  inward; the winding is turned back and the normals follow the map.
+
 - **Booleans with mirrored curved solids.** A mirrored cone gave wrong
   results that passed `check`, and mirrored cylinders, spheres and tori
   were refused. Baking a reflected placement restates each analytic surface

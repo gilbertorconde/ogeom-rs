@@ -792,8 +792,7 @@ fn placed(mut mesh: Triangulation, placement: Placement) -> Triangulation {
     for p in &mut mesh.positions {
         *p = placement.point(*p);
     }
-    let [a, b, c] = placement.columns;
-    if a.cross(b).dot(c) < 0.0 {
+    if placement.mirrors() {
         // A mirroring map turns the winding inside out; turn it back.
         for t in &mut mesh.triangles {
             t.swap(1, 2);

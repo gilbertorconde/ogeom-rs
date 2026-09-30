@@ -1064,18 +1064,31 @@ impl Placement {
             + self.translation
     }
 
+    /// Whether the map is a reflection: it turns a triangle's winding
+    /// against its normal.
+    pub(crate) fn mirrors(self) -> bool {
+        let [a, b, c] = self.columns;
+        a.cross(b).dot(c) < 0.0
+    }
+
     /// A normal carried through: the inverse transpose, which is what keeps a
     /// normal normal to a surface an uneven scale has stretched.
     ///
-    /// Built from the cofactors, which *is* the inverse transpose up to the
-    /// determinant, and a normal is renormalized anyway, so the factor does
-    /// not matter and the singular case does not divide.
+    /// Built from the cofactors, which *is* the inverse transpose times the
+    /// determinant. A normal is renormalized anyway, so only the
+    /// determinant's sign matters, and the singular case does not divide.
     fn normal(self, n: Vector) -> Vector {
         let [a, b, c] = self.columns;
         let cofactors = [b.cross(c), c.cross(a), a.cross(b)];
         let out = cofactors[0] * n.x + cofactors[1] * n.y + cofactors[2] * n.z;
         let magnitude = out.magnitude();
-        if magnitude > 0.0 { out / magnitude } else { n }
+        if magnitude == 0.0 {
+            n
+        } else if self.mirrors() {
+            -out / magnitude
+        } else {
+            out / magnitude
+        }
     }
 }
 
@@ -1272,11 +1285,19 @@ fn read_primitive(
             out
         }
     };
+    // A mirroring node turns the winding inside out; turn it back.
+    let mirrored = placement.mirrors();
     let triangles: Vec<[u32; 3]> = indices
         .as_chunks::<3>()
         .0
         .iter()
-        .map(|c| [c[0], c[1], c[2]])
+        .map(|c| {
+            if mirrored {
+                [c[0], c[2], c[1]]
+            } else {
+                [c[0], c[1], c[2]]
+            }
+        })
         .collect();
     if triangles.is_empty() {
         return Ok(None);

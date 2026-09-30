@@ -18,8 +18,8 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [x] **M4.** `OffsetSurface::analytic` rebuilds a plane on a right-handed frame, flipping a mirrored plane's normal; the cone case shifts the parameterization (`surface.rs`). (8d9ee48)
 - [x] **M5.** Converting a mirrored cylinder or cone to a B-spline flips its normals: `section_at` rebuilds right-handed frames (`ogeom-geom/src/convert.rs`). (bd8e604)
 - [x] **M6.** Primitives in a left-handed frame (`Frame::mirrored`) come out inside out; `make_sphere` fails (`ogeom-algo/src/primitive.rs`: box, cylinder, torus, cone, wedge, sphere). (3c9ee72)
-- [x] **M7.** Booleans with mirrored curved solids: a mirrored cone gives wrong fuse, cut and common that pass `check`; mirrored cylinders, spheres and tori are refused (`ogeom-bool`).
-- [ ] **M8.** glTF reader ignores a mirroring node transform: winding is not swapped (`ogeom-io/src/mesh_formats.rs`).
+- [x] **M7.** Booleans with mirrored curved solids: a mirrored cone gives wrong fuse, cut and common that pass `check`; mirrored cylinders, spheres and tori are refused (`ogeom-bool`). (46b2484)
+- [x] **M8.** glTF reader ignores a mirroring node transform: winding is not swapped (`ogeom-io/src/mesh_formats.rs`).
 
 ### S. Spheres through STEP and IGES
 

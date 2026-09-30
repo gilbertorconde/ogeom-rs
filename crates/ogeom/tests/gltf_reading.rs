@@ -255,6 +255,30 @@ fn a_sparse_accessor_overrides_the_base_it_sits_on() {
     }
 }
 
+/// A GLB's one mesh node placed under a new root node: the GLB's own JSON
+/// re-framed, with the geometry the same and the placement not.
+fn under_parent(base: &[u8], parent: &str) -> Vec<ImportedMesh> {
+    let json_length = u32::from_le_bytes([base[12], base[13], base[14], base[15]]) as usize;
+    let json = core::str::from_utf8(&base[20..20 + json_length]).unwrap();
+    let rewritten = json.replace(r#""nodes":[0]"#, r#""nodes":[1]"#).replace(
+        r#""nodes":[{"mesh":0}]"#,
+        &format!(r#""nodes":[{{"mesh":0}},{parent}]"#),
+    );
+    assert!(rewritten.contains("children"), "the rewrite took: {json}");
+    let mut out = base[..12].to_vec();
+    let mut bytes = rewritten.into_bytes();
+    while !bytes.len().is_multiple_of(4) {
+        bytes.push(b' ');
+    }
+    out.extend_from_slice(&u32::try_from(bytes.len()).unwrap().to_le_bytes());
+    out.extend_from_slice(&base[16..20]);
+    out.extend_from_slice(&bytes);
+    out.extend_from_slice(&base[20 + json_length..]);
+    let total = u32::try_from(out.len()).unwrap();
+    out[8..12].copy_from_slice(&total.to_le_bytes());
+    read_glb(&out).unwrap()
+}
+
 /// The node hierarchy places what it holds, stated either way, and an uneven
 /// scale carries normals through the inverse transpose rather than through
 /// the scale itself.
@@ -271,29 +295,10 @@ fn nodes_place_their_meshes_and_normals_survive_an_uneven_scale() {
         ogeom::mesh::triangulate(&model, &ball, Deflection::with_chord(0.2).unwrap(), T).unwrap()
     };
     let base = write_glb(&[ExportMesh::plain(&mesh)]);
-    let placed: Vec<ImportedMesh> = {
-        // Re-frame the GLB's own JSON with a parent node that scales and
-        // translates: the geometry is the same, the placement is not.
-        let json_length = u32::from_le_bytes([base[12], base[13], base[14], base[15]]) as usize;
-        let json = core::str::from_utf8(&base[20..20 + json_length]).unwrap();
-        let rewritten = json.replace(r#""nodes":[0]"#, r#""nodes":[1]"#).replace(
-            r#""nodes":[{"mesh":0}]"#,
-            r#""nodes":[{"mesh":0},{"children":[0],"scale":[2,1,0.5],"translation":[100,0,0]}]"#,
-        );
-        assert!(rewritten.contains("children"), "the rewrite took: {json}");
-        let mut out = base[..12].to_vec();
-        let mut bytes = rewritten.into_bytes();
-        while !bytes.len().is_multiple_of(4) {
-            bytes.push(b' ');
-        }
-        out.extend_from_slice(&u32::try_from(bytes.len()).unwrap().to_le_bytes());
-        out.extend_from_slice(&base[16..20]);
-        out.extend_from_slice(&bytes);
-        out.extend_from_slice(&base[20 + json_length..]);
-        let total = u32::try_from(out.len()).unwrap();
-        out[8..12].copy_from_slice(&total.to_le_bytes());
-        read_glb(&out).unwrap()
-    };
+    let placed = under_parent(
+        &base,
+        r#"{"children":[0],"scale":[2,1,0.5],"translation":[100,0,0]}"#,
+    );
     assert_eq!(placed.len(), 1);
     let back = &placed[0].mesh;
     assert_eq!(back.positions.len(), mesh.positions.len());
@@ -353,6 +358,43 @@ fn nodes_place_their_meshes_and_normals_survive_an_uneven_scale() {
         "the scale itself would have been visibly wrong: {differed} of {}",
         mesh.normals.len()
     );
+}
+
+/// A mirroring node keeps the mesh right side out: the winding is turned
+/// back, and every normal still points away from the ball's centre.
+#[test]
+fn a_mirroring_node_keeps_the_mesh_right_side_out() {
+    let mesh = {
+        let mut model = Model::new();
+        let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 5.0, T)
+            .unwrap()
+            .shape;
+        ogeom::mesh::triangulate(&model, &ball, Deflection::with_chord(0.2).unwrap(), T).unwrap()
+    };
+    let base = write_glb(&[ExportMesh::plain(&mesh)]);
+    for parent in [
+        r#"{"children":[0],"scale":[-1,1,1],"translation":[20,0,0]}"#,
+        r#"{"children":[0],"matrix":[1,0,0,0,0,1,0,0,0,0,-2,0,20,0,0,1]}"#,
+    ] {
+        let placed = under_parent(&base, parent);
+        let back = &placed[0].mesh;
+        let signed: f64 = back
+            .triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|i| back.positions[i as usize].to_vector());
+                a.dot(b.cross(c))
+            })
+            .sum();
+        assert!(signed > 0.0, "{parent}: inside out");
+        let centre = Point::new(20.0, 0.0, 0.0);
+        for (p, n) in back.positions.iter().zip(&back.normals) {
+            if (n.magnitude() - 1.0).abs() > 1e-6 {
+                continue;
+            }
+            assert!(n.dot(*p - centre) > 0.0, "{parent}: {n:?} at {p:?}");
+        }
+    }
 }
 
 /// What the reader does not do, it says. Each refusal names the thing.
