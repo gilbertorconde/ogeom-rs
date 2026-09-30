@@ -114,6 +114,9 @@ pub struct MeshSolidReport {
     pub orientation_conflicts: usize,
     /// Connected pieces, each one shell.
     pub shells: usize,
+    /// Whether recognition was withdrawn because the solid it built did not
+    /// hold the mesh's volume, and the mesh was built faceted instead.
+    pub recognition_withdrawn: bool,
 }
 
 /// The result of [`solid_from_mesh`].
@@ -365,9 +368,11 @@ pub fn solid_from_mesh(
         }
     }
     // Plan until every curved face's boundary is exact, faceting the ones
-    // whose boundary is not.
+    // whose boundary is not; then build, and facet any recognized face that
+    // reaches past the triangles it replaces (a boundary placed on the wrong
+    // turn of its surface closes a face of the wrong extent) and build again.
     let mut pinned: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    let plan = loop {
+    let built = loop {
         let planner = Planner {
             points: &points,
             triangles: &triangles,
@@ -378,44 +383,49 @@ pub fn solid_from_mesh(
             flat,
             tol,
         };
-        let planned = planner.plan()?;
-
-        match planned {
-            Ok(plan) => break plan,
-            Err(Replan::Pin(vertices)) => pinned.extend(vertices),
-            Err(Replan::Facet(failed)) => {
-                for g in failed {
-                    groups.carriers[g] = Carrier::Gone;
-                    report.curved_faceted += 1;
-                    for of in &mut groups.of {
-                        if *of == g {
-                            *of = usize::MAX;
-                        }
-                    }
-                }
-                coplanar_groups(
-                    &points,
-                    &triangles,
-                    &adjacency,
-                    options.coplanar_angle,
-                    flat,
-                    &mut groups,
+        let failed = match planner.plan()? {
+            Err(Replan::Pin(vertices)) => {
+                pinned.extend(vertices);
+                continue;
+            }
+            Err(Replan::Facet(failed)) => failed,
+            Ok(plan) => {
+                model.begin_operation();
+                let built = Builder {
+                    model,
+                    points: &points,
+                    triangles: &triangles,
+                    groups: &groups,
+                    plan: &plan,
                     tol,
-                )?;
+                }
+                .build()?;
+                let astray = astray_faces(model, &points, &triangles, &groups, &built, flat, tol)?;
+                if astray.is_empty() {
+                    break built;
+                }
+                astray
+            }
+        };
+        for g in failed {
+            groups.carriers[g] = Carrier::Gone;
+            report.curved_faceted += 1;
+            for of in &mut groups.of {
+                if *of == g {
+                    *of = usize::MAX;
+                }
             }
         }
+        coplanar_groups(
+            &points,
+            &triangles,
+            &adjacency,
+            options.coplanar_angle,
+            flat,
+            &mut groups,
+            tol,
+        )?;
     };
-
-    model.begin_operation();
-    let built = Builder {
-        model,
-        points: &points,
-        triangles: &triangles,
-        groups: &groups,
-        plan: &plan,
-        tol,
-    }
-    .build()?;
     report.faces = built.iter().flatten().count();
     report.curved_faces = groups
         .carriers
@@ -465,11 +475,134 @@ pub fn solid_from_mesh(
     } else {
         model.add_compound(&shells)?
     };
+    // The solid must hold the mesh's volume, up to what the recognized
+    // surfaces stand off the triangles they replace: a region whose faces
+    // closed a shell of the wrong extent passes every local test and is
+    // caught only here. Past that allowance recognition is withdrawn, and
+    // the mesh comes back faceted, exactly as it is.
+    if all_closed && options.recognize && report.curved_faces > 0 {
+        let (mesh_volume, allowance, area) = volume_allowance(&points, &triangles, &groups, flat);
+        let chord = flat.max(diagonal * 1e-6);
+        let deflection = ogeom_mesh::Deflection::with_chord(chord)?;
+        let measured = crate::volume_properties(model, &shape, deflection, tol)?.mass;
+        // Measured at the facets' corners and edge middles, the allowance
+        // misses the surface's rise inside a facet and a fitted boundary's
+        // wander between the rows; twice over covers both.
+        let slack = allowance * 2.0 + area * chord * 2.0 + diagonal.powi(3) * 1e-12;
+        if (measured - mesh_volume).abs() > slack {
+            let faceted = MeshSolidOptions {
+                recognize: false,
+                ..*options
+            };
+            let mut plain = solid_from_mesh(model, mesh, &faceted, tol)?;
+            plain.report.recognition_withdrawn = true;
+            return Ok(plain);
+        }
+    }
     Ok(MeshSolid {
         shape,
         closed: all_closed,
         report,
     })
+}
+
+/// The recognized regions whose built face reaches well past the triangles
+/// it replaces: its bounds stand beyond theirs by more than the surface
+/// bulges past its facets and its boundary can run on to meet its
+/// neighbours.
+fn astray_faces(
+    model: &Model,
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    groups: &Groups,
+    built: &[Option<Shape>],
+    flat: f64,
+    tol: Tolerances,
+) -> OgeomResult<Vec<usize>> {
+    let mut reach: Vec<Option<(Point, Point)>> = vec![None; groups.carriers.len()];
+    let mut bulge = vec![0.0_f64; groups.carriers.len()];
+    for (t, tri) in triangles.iter().enumerate() {
+        let g = groups.of[t];
+        let Some(Carrier::Curved(curved)) = groups.carriers.get(g) else {
+            continue;
+        };
+        // The surface stands off a facet's edges by the sagitta, and the
+        // face bulges past the facets' corners by as much.
+        let [a, b, c] = tri.map(|v| points[v as usize]);
+        for (p, q) in [(a, b), (b, c), (c, a)] {
+            bulge[g] = bulge[g].max(curved.shape.distance_to(p + (q - p) * 0.5));
+        }
+        for &v in tri {
+            let p = points[v as usize];
+            let (lo, hi) = reach[g].get_or_insert((p, p));
+            *lo = Point::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+            *hi = Point::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+        }
+    }
+    let mut astray = Vec::new();
+    for (g, face) in built.iter().enumerate() {
+        let (Some(face), Some((lo, hi))) = (face, reach[g]) else {
+            continue;
+        };
+        // Its boundary follows its neighbours' surfaces, which may meet it a
+        // little past the last row of the mesh; a face closed the wrong way
+        // round reaches a fair fraction of the region's size past it.
+        let margin = bulge[g] * 2.0 + flat * 20.0 + lo.distance(hi) * 0.1;
+        let bounds = crate::tight_bounds(model, face, tol)?;
+        let (Some(flo), Some(fhi)) = (bounds.low(), bounds.high()) else {
+            continue;
+        };
+        if flo.x < lo.x - margin
+            || flo.y < lo.y - margin
+            || flo.z < lo.z - margin
+            || fhi.x > hi.x + margin
+            || fhi.y > hi.y + margin
+            || fhi.z > hi.z + margin
+        {
+            astray.push(g);
+        }
+    }
+    Ok(astray)
+}
+
+/// The mesh's own volume, how far the solid built on its groups may differ
+/// from it, and the mesh's area. Each triangle on a recognized surface may
+/// stand off it by its worst corner or edge middle, over its whole area; a
+/// triangle on a plane by the coplanar distance.
+fn volume_allowance(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    groups: &Groups,
+    flat: f64,
+) -> (f64, f64, f64) {
+    let (mut volume, mut allowance, mut area) = (0.0, 0.0, 0.0);
+    for (t, tri) in triangles.iter().enumerate() {
+        let [a, b, c] = tri.map(|v| points[v as usize]);
+        let (va, vb, vc) = (a - Point::ORIGIN, b - Point::ORIGIN, c - Point::ORIGIN);
+        volume += va.dot(vb.cross(vc)) / 6.0;
+        let size = (b - a).cross(c - a).magnitude() / 2.0;
+        area += size;
+        let off = match groups.carriers.get(groups.of[t]) {
+            Some(Carrier::Curved(curved)) => {
+                let middle = |p: Point, q: Point| p + (q - p) * 0.5;
+                [
+                    a,
+                    b,
+                    c,
+                    middle(a, b),
+                    middle(b, c),
+                    middle(c, a),
+                    middle(a, middle(b, c)),
+                ]
+                .into_iter()
+                .map(|p| curved.shape.distance_to(p))
+                .fold(0.0_f64, f64::max)
+            }
+            _ => flat,
+        };
+        allowance += size * off;
+    }
+    (volume, allowance, area)
 }
 
 /// Weld points on a grid of the weld distance, looking in the neighbouring
@@ -1218,6 +1351,7 @@ fn segment(
             &mut groups,
             tol,
         );
+        split_disconnected(triangles, adjacency, &mut groups);
         sphere_axes(points, triangles, adjacency, &mut groups, flat, tol);
         let normals = plane_normals(
             points,
@@ -1275,6 +1409,83 @@ fn plane_normals(
         .collect();
     planes.sort_by_key(|&(n, _)| core::cmp::Reverse(n));
     Ok(planes.into_iter().map(|(_, d)| d).collect())
+}
+
+/// One recognized region per connected patch. Triangles dropped from a
+/// region for touching a vertex its fit refused can take with them the only
+/// triangles joining the rest, and a face is built from one region's
+/// boundary: the patches past the first would be lost from the shell. Each
+/// patch past the first becomes a region of its own on the same surface.
+fn split_disconnected(triangles: &[[u32; 3]], adjacency: &Adjacency, groups: &mut Groups) {
+    let count = groups.carriers.len();
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for (t, &g) in groups.of.iter().enumerate() {
+        if g < count && matches!(groups.carriers[g], Carrier::Curved(_)) {
+            members[g].push(t);
+        }
+    }
+    for (g, tris) in members.into_iter().enumerate() {
+        if tris.len() < 2 {
+            continue;
+        }
+        let mut patch = vec![usize::MAX; triangles.len()];
+        let mut patches = 0_usize;
+        for &start in &tris {
+            if patch[start] != usize::MAX {
+                continue;
+            }
+            patch[start] = patches;
+            let mut stack = vec![start];
+            while let Some(t) = stack.pop() {
+                for h in 3 * t..3 * t + 3 {
+                    if let Some(twin) = adjacency.twin[h] {
+                        let other = twin / 3;
+                        if groups.of[other] == g && patch[other] == usize::MAX {
+                            patch[other] = patches;
+                            stack.push(other);
+                        }
+                    }
+                }
+            }
+            patches += 1;
+        }
+        if patches < 2 {
+            continue;
+        }
+        let Carrier::Curved(template) = &groups.carriers[g] else {
+            continue;
+        };
+        let template = template.clone();
+        let base = groups.carriers.len();
+        for k in 1..patches {
+            let mut vertices: Vec<u32> = tris
+                .iter()
+                .filter(|&&t| patch[t] == k)
+                .flat_map(|&t| triangles[t])
+                .collect();
+            vertices.sort_unstable();
+            vertices.dedup();
+            groups.carriers.push(Carrier::Curved(Curved {
+                vertices,
+                ..template.clone()
+            }));
+        }
+        let mut first: Vec<u32> = tris
+            .iter()
+            .filter(|&&t| patch[t] == 0)
+            .flat_map(|&t| triangles[t])
+            .collect();
+        first.sort_unstable();
+        first.dedup();
+        if let Carrier::Curved(curved) = &mut groups.carriers[g] {
+            curved.vertices = first;
+        }
+        for &t in &tris {
+            if patch[t] > 0 {
+                groups.of[t] = base + patch[t] - 1;
+            }
+        }
+    }
 }
 
 /// What a seed's first samples came to: the triangles and vertices

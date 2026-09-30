@@ -1473,3 +1473,88 @@ fn a_folded_sliver_is_unfolded() {
     let v = volume(&model, &built.shape);
     assert!((v - want).abs() < want * 1e-9, "{v} against {want}");
 }
+
+/// A tube with windows cut through its wall, meshed and moved by an
+/// exporter's noise: the fits refuse a few vertices, and dropping the
+/// triangles that bring them can cut one wall's region into patches joined
+/// by nothing. Each patch is a face of its own, and the solid holds the
+/// exact part's volume.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "the rounding to single precision is the point"
+)]
+#[test]
+fn a_windowed_tube_s_wall_patches_each_become_a_face() {
+    let mut model = Model::new();
+    let outer = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 16.0, 30.0, T)
+        .unwrap()
+        .shape;
+    let bore = Frame::new(Point::new(0.0, 0.0, 3.0), Direction::Z, Direction::X, T).unwrap();
+    let inner = ogeom::algo::make_cylinder(&mut model, bore, 14.0, 30.0, T)
+        .unwrap()
+        .shape;
+    let mut part = ogeom::boolean::cut(&mut model, &outer, &inner, T)
+        .unwrap()
+        .shape;
+    for (angle, z0, z1, width) in [
+        (0.3_f64, 6.0, 20.0, 6.0),
+        (1.5, 6.0, 26.0, 5.0),
+        (2.9, 22.0, 26.0, 8.0),
+        (4.2, 8.0, 14.0, 4.0),
+    ] {
+        let x = Direction::new(Vector::new(angle.cos(), angle.sin(), 0.0), T).unwrap();
+        let at = Frame::new(Point::new(0.0, 0.0, z0), Direction::Z, x, T).unwrap();
+        let local = Frame::new(
+            Point::new(10.0, -width / 2.0, 0.0),
+            Direction::Z,
+            Direction::X,
+            T,
+        )
+        .unwrap();
+        let window = ogeom::algo::make_box(&mut model, local, (10.0, width, z1 - z0), T)
+            .unwrap()
+            .shape;
+        let window =
+            ogeom::algo::transformed(&mut model, &window, ogeom::math::Transform::from_frame(&at))
+                .unwrap()
+                .shape;
+        part = ogeom::boolean::cut(&mut model, &part, &window, T)
+            .unwrap()
+            .shape;
+    }
+    let exact = volume_properties(&model, &part, Deflection::with_chord(0.001).unwrap(), T)
+        .unwrap()
+        .mass;
+    let mut mesh =
+        ogeom::mesh::triangulate(&model, &part, Deflection::with_chord(0.05).unwrap(), T).unwrap();
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut noise = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((state >> 11) as f64 / (1u64 << 53) as f64).mul_add(2.0, -1.0) * 1e-4
+    };
+    for p in &mut mesh.positions {
+        let moved = Point::new(p.x + 128.0 + noise(), p.y + 128.0 + noise(), p.z + noise());
+        *p = Point::new(
+            f64::from(moved.x as f32) - 128.0,
+            f64::from(moved.y as f32) - 128.0,
+            f64::from(moved.z as f32),
+        );
+    }
+    let built = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(!built.report.recognition_withdrawn);
+    assert!(built.report.curved_faces >= 2);
+    let diagnosis = check(&model, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let v = volume_properties(
+        &model,
+        &built.shape,
+        Deflection::with_chord(0.001).unwrap(),
+        T,
+    )
+    .unwrap()
+    .mass;
+    assert!((v - exact).abs() < exact * 1e-3, "{v} against {exact}");
+}

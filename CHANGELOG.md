@@ -13,6 +13,19 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`solid_from_mesh` no longer builds faces over the wrong part of their
+  surface.** A recognized region whose fit refused a few vertices lost the
+  triangles bringing them, which could leave it in patches joined by
+  nothing; its face was built from one patch's boundary and the solid
+  passed the checker with the wrong volume (0.85% on a perforated cup).
+  - Each patch of a region is now a face of its own.
+  - A face whose bounds reach well past its triangles is faceted and the
+    part rebuilt.
+  - The finished solid must hold the mesh's volume within what its
+    recognized surfaces may add over their facets; past that recognition
+    is withdrawn and the mesh comes back faceted, flagged by the new
+    `MeshSolidReport::recognition_withdrawn`.
+
 - **`solid_from_mesh` unfolds slivers folded under their neighbours.** An
   exporter that moves a vertex across a thin triangle leaves it facing
   against all three of its neighbours while its winding agrees with
