@@ -631,7 +631,28 @@ fn measured_overlaps(
     tol: Tolerances,
 ) -> OgeomResult<Vec<ogeom_intersect::Overlap>> {
     const SAMPLES: usize = 48;
-    let width = (tolerance.max(e.tolerance) * 2.0).max(tol.confusion() * 1e3);
+    // A fitted curve wobbles about the edge it runs along by far more than
+    // its stated budget, and is measured loosely; two exact curves are held
+    // to their own tolerances, as an exact section is: an edge that parts
+    // from another by a few microns over its length (a wall leaning off a
+    // pad's side) runs beside it, not along it, and read as along it the
+    // strands that meet it are left a few microns short.
+    let exact = |c: &Curve| {
+        matches!(
+            c,
+            Curve::Line(_)
+                | Curve::Circle(_)
+                | Curve::Ellipse(_)
+                | Curve::Hyperbola(_)
+                | Curve::Parabola(_)
+        )
+    };
+    let floor = if exact(curve) && exact(&e.curve) {
+        tol.confusion() * 10.0
+    } else {
+        tol.confusion() * 1e3
+    };
+    let width = (tolerance.max(e.tolerance) * 2.0).max(floor);
     let mut near: Vec<bool> = Vec::with_capacity(SAMPLES + 1);
     for i in 0..=SAMPLES {
         #[allow(clippy::cast_precision_loss)]
@@ -711,6 +732,28 @@ fn measured_overlaps(
         let hi = if end == SAMPLES { hi } else { at_vertex(hi)? };
         if hi - lo <= tol.parametric() {
             continue;
+        }
+        // Two exact curves that lie on one another do so over the whole of
+        // what they share, so a stretch of them ends where one of them
+        // does. One that ends inside both is two curves converging and
+        // parting (lines meeting at a vertex at a tiny angle), near each
+        // other there only by the measuring width, and is no overlap.
+        if exact(curve) && exact(&e.curve) {
+            let ends_there = |t: f64, own_end: bool| -> OgeomResult<bool> {
+                if own_end {
+                    return Ok(true);
+                }
+                let p = curve.point_at(t, tol)?;
+                for end in [e.crange.0, e.crange.1] {
+                    if e.curve.point_at(end, tol)?.distance(p) <= width * 2.0 {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            };
+            if !(ends_there(lo, start == 0)? && ends_there(hi, end == SAMPLES)?) {
+                continue;
+            }
         }
         let on_edge = |t: f64| -> OgeomResult<f64> {
             let p = curve.point_at(t, tol)?;

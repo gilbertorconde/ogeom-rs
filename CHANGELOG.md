@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A pad beside a wall leaning a few microns off it is sound.** Where
+  two exact edges (lines, circles) come within a measuring width of one
+  another, the boolean now holds them to their own tolerances, and takes
+  them for one curve only over a stretch ending where one of them ends:
+  a pad's side meeting a wall along its top edge and parting from it by
+  a lean was read as running along the wall's edge for a tenth of a
+  millimetre, and the pad's bottom edge was left short of the wall.
+
 - **The kernel builds on its declared minimum Rust, 1.90, again.**
   `ogeom-bool` used an `if let` guard on a match arm, which Rust 1.90
   refuses; 0.6.0 built only on newer compilers.

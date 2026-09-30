@@ -773,3 +773,85 @@ fn a_prism_through_a_chamfered_slot_splits_its_walls_once() {
         }
     }
 }
+
+/// A block whose one wall leans a few microns off the vertical, and a
+/// prism of its top face pushed down into it and through it: the prism's
+/// side meets the wall along their shared top edge and parts from it by the
+/// lean. The side's edges run beside the wall's, not along them, and the
+/// three operations come out sound at a lean of a micron, ten, and a
+/// hundred, either way.
+#[test]
+fn a_prism_beside_a_leaning_wall_parts_from_it() {
+    let p = Point::new;
+    for delta in [1e-6, -1e-6, 1e-5, -1e-5, 1e-4, -1e-4] {
+        let mut model = Model::with_tolerances(T);
+        let corners = [
+            p(0.0, 0.0, 0.0),
+            p(10.0 + delta, 0.0, 0.0),
+            p(10.0 + delta, 10.0, 0.0),
+            p(0.0, 10.0, 0.0),
+            p(0.0, 0.0, 5.0),
+            p(10.0, 0.0, 5.0),
+            p(10.0, 10.0, 5.0),
+            p(0.0, 10.0, 5.0),
+        ];
+        let part = ogeom::algo::make_hexahedron(&mut model, corners, T)
+            .unwrap()
+            .shape;
+        let top = explore_unique(&model, &part, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                let (q, n) = ogeom::algo::face_normal(&model, f, T).unwrap();
+                n.z > 0.999 && (q.z - 5.0).abs() < 1e-9
+            })
+            .unwrap();
+        for depth in [3.0, 10.0] {
+            let pad = ogeom::algo::make_prism(
+                &mut model,
+                &top,
+                ogeom::math::Vector::new(0.0, 0.0, -depth),
+                T,
+            )
+            .unwrap()
+            .shape;
+            let (v_part, v_pad) = (volume(&model, &part), volume(&model, &pad));
+            let mut got = Vec::new();
+            for (name, op) in [
+                (
+                    "fuse",
+                    ogeom::boolean::fuse
+                        as fn(
+                            &mut Model,
+                            &ogeom::topo::Shape,
+                            &ogeom::topo::Shape,
+                            Tolerances,
+                        ) -> _,
+                ),
+                ("cut", ogeom::boolean::cut),
+                ("common", ogeom::boolean::common),
+            ] {
+                let out = op(&mut model, &part, &pad, T)
+                    .unwrap_or_else(|e| panic!("{name}, lean {delta}, depth {depth}: {e}"));
+                let diagnosis = ogeom::algo::check(&model, &out.shape, T).unwrap();
+                assert!(
+                    diagnosis.is_valid(),
+                    "{name}, lean {delta}, depth {depth}: {diagnosis}"
+                );
+                got.push(volume(&model, &out.shape));
+            }
+            let [fused, cut, common] = got[..] else {
+                unreachable!()
+            };
+            let scale = v_part + v_pad;
+            assert!(
+                (fused + common - scale).abs() < 1e-6 * scale,
+                "lean {delta}, depth {depth}: fuse {fused} + common {common} against {scale}"
+            );
+            assert!(
+                (cut + common - v_part).abs() < 1e-6 * scale,
+                "lean {delta}, depth {depth}: cut {cut} + common {common} against {v_part}"
+            );
+        }
+    }
+}
