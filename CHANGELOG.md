@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A mirrored cylinder or cone converts to a spline turning its way.** The
+  section circles were built on a right-handed frame, so a mirrored
+  cylinder's or cone's spline turned the other way and its normals
+  pointed in; they are built on the surface's own frame.
+
 - **An offset surface's closed form is the offset.** `OffsetSurface::analytic`
   rebuilt an offset plane on a right-handed frame, turning a mirrored
   plane's normal over, and an offset cone on its basis's frame, naming

@@ -1166,7 +1166,15 @@ impl crate::surface::SurfaceGeometry {
             S::Cone(c) => (c.cone().frame(), c.cone().radius_at(v).abs()),
             _ => ogeom_bail!(Construction, "this surface has no circular section"),
         };
-        let at = Frame::new(frame.origin() + frame.z() * v, frame.z(), frame.x(), tol)?;
+        // The surface's own frame raised, of whichever hand it is: a
+        // mirrored cylinder's section turns its way, and its normals stay.
+        let at = Frame::from_axes(
+            frame.origin() + frame.z() * v,
+            frame.x(),
+            frame.y(),
+            frame.z(),
+            tol,
+        )?;
         conic_arc(at, radius, radius, u_range.0, u_range.1, tol)
     }
 }
@@ -1283,6 +1291,55 @@ mod surface_tests {
     use ogeom_math::{Circle, Cone, Cylinder, Direction, Plane, Sphere, Torus};
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// A mirrored cylinder or cone converts to a spline that turns the way
+    /// the original does: the normal at each of its points agrees with the
+    /// original's there.
+    #[test]
+    fn a_mirrored_cylinder_or_cone_converts_turning_its_way() {
+        use crate::traits::Transformable as _;
+        use ogeom_math::{Transform, elementary};
+        let mirror = Transform::plane_mirror(Point::ORIGIN, Direction::X);
+        let surfaces: Vec<SurfaceGeometry> = vec![
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, 5.0, T).unwrap(), (0.0, 10.0))
+                .unwrap()
+                .into(),
+            ConeSurface::new(Cone::new(Frame::WORLD, 5.0, 0.3, T).unwrap(), (0.0, 10.0))
+                .unwrap()
+                .into(),
+        ];
+        for original in surfaces {
+            let mirrored = original.transformed(&mirror, T).unwrap();
+            let spline = mirrored.to_bspline(T).unwrap();
+            let ((pa, pb), (qa, qb)) = spline.domain();
+            for i in 1..8 {
+                for j in 1..8 {
+                    let (u, v) = (
+                        pa + (pb - pa) * f64::from(i) / 8.0,
+                        qa + (qb - qa) * f64::from(j) / 8.0,
+                    );
+                    let p = spline.point_at(u, v, T).unwrap();
+                    let (au, av) = match &mirrored {
+                        SurfaceGeometry::Cylinder(c) => {
+                            elementary::cylinder_parameters(&c.cylinder(), p, T).unwrap()
+                        }
+                        SurfaceGeometry::Cone(c) => {
+                            elementary::cone_parameters(&c.cone(), p, T).unwrap()
+                        }
+                        _ => unreachable!(),
+                    };
+                    let (a, b) = (
+                        spline.normal_at(u, v, T).unwrap(),
+                        mirrored.normal_at(au, av, T).unwrap(),
+                    );
+                    assert!(
+                        a.vector().dot(b.vector()) > 0.99,
+                        "{mirrored:?}: {a:?} against {b:?}"
+                    );
+                }
+            }
+        }
+    }
 
     /// How far the converted patch strays from the surface it came from.
     ///
