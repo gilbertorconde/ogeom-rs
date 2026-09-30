@@ -2770,6 +2770,24 @@ fn fill(
                 // twice.
                 let mut hug_key: Option<(EdgeKey, bool, usize)> = None;
                 let admitted = if held[0] && held[1] {
+                    // Inside both by a hair while running along one face's
+                    // own edge, it is that edge's split of the other face,
+                    // as a hug-admitted piece is: another face meeting the
+                    // other along the same edge (a chamfer beside the face
+                    // it bevels) lays the same split, and the two must be
+                    // told apart below, or the other face is cut twice
+                    // along one line.
+                    if hugs[0] != hugs[1] {
+                        let hugging = usize::from(hugs[1]);
+                        let (own, other_from_a, other_face) = if hugging == 0 {
+                            (&ga.faces[section.face_a], false, section.face_b)
+                        } else {
+                            (&gb.faces[section.face_b], true, section.face_a)
+                        };
+                        hug_key = hugged[hugging]
+                            .first()
+                            .map(|&ei| (own.edges[ei].node, other_from_a, other_face));
+                    }
                     true
                 } else if hugs[0] != hugs[1] {
                     let hugging = usize::from(hugs[1]);

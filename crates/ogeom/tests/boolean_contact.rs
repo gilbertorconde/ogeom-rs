@@ -690,3 +690,86 @@ fn a_countersink_whose_bore_is_its_narrow_end_cuts_clean() {
         assert!((got - want).abs() < want * 1e-9, "{got} against {want}");
     }
 }
+
+/// A plate with a through slot chamfered at both openings, and a prism of
+/// its top face pushed down through it. The prism's slot walls run through
+/// the chamfers' outer rims, and at the bottom rim two of the plate's faces
+/// (the underside and the chamfer) meet the wall along one line: the wall
+/// is split there once, whichever face's section says so. Short of the
+/// bottom, at it and through it, the three operations come out exact.
+#[test]
+fn a_prism_through_a_chamfered_slot_splits_its_walls_once() {
+    let at = |x: f64, y: f64, z: f64| {
+        Frame::new(Point::new(x, y, z), Direction::Z, Direction::X, T).unwrap()
+    };
+    let mut model = Model::with_tolerances(T);
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let slot = ogeom::algo::make_box(&mut model, at(3.0, 4.0, -1.0), (4.0, 2.0, 7.0), T)
+        .unwrap()
+        .shape;
+    let plate = ogeom::boolean::cut(&mut model, &block, &slot, T)
+        .unwrap()
+        .shape;
+    let rims: Vec<_> = explore_unique(&model, &plate, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let b = ogeom::algo::tight_bounds(&model, e, T).unwrap();
+            let (lo, hi) = (b.low().unwrap(), b.high().unwrap());
+            (hi.z - lo.z).abs() < 1e-9
+                && (lo.z.abs() < 1e-9 || (lo.z - 5.0).abs() < 1e-9)
+                && lo.x > 2.9
+                && hi.x < 7.1
+                && lo.y > 3.9
+                && hi.y < 6.1
+        })
+        .collect();
+    assert_eq!(rims.len(), 8);
+    let part = ogeom::fillet::chamfer_edges(&mut model, &plate, &rims, 0.8, T)
+        .unwrap()
+        .shape;
+    let top = explore_unique(&model, &part, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let (p, n) = ogeom::algo::face_normal(&model, f, T).unwrap();
+            n.z > 0.999 && (p.z - 5.0).abs() < 1e-9
+        })
+        .unwrap();
+    let v_part = volume(&model, &part);
+    for depth in [3.0, 5.0, 10.0] {
+        let pad = ogeom::algo::make_prism(
+            &mut model,
+            &top,
+            ogeom::math::Vector::new(0.0, 0.0, -depth),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let v_pad = volume(&model, &pad);
+        // Inside the part: the top face's area down to the bottom at most.
+        let v_common = v_pad * depth.min(5.0) / depth;
+        for (name, op, expected) in [
+            (
+                "fuse",
+                ogeom::boolean::fuse
+                    as fn(&mut Model, &ogeom::topo::Shape, &ogeom::topo::Shape, Tolerances) -> _,
+                v_part + v_pad - v_common,
+            ),
+            ("cut", ogeom::boolean::cut, v_part - v_common),
+            ("common", ogeom::boolean::common, v_common),
+        ] {
+            let out = op(&mut model, &part, &pad, T)
+                .unwrap_or_else(|e| panic!("{name} at depth {depth}: {e}"));
+            let diagnosis = ogeom::algo::check(&model, &out.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{name} at depth {depth}: {diagnosis}");
+            let measured = volume(&model, &out.shape);
+            assert!(
+                (measured - expected).abs() < expected.max(1.0) * 1e-6,
+                "{name} at depth {depth}: {measured} against {expected}"
+            );
+        }
+    }
+}

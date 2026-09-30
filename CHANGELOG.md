@@ -34,6 +34,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A face met along one line by two faces of the other solid is split
+  there once.** Where a section runs along one face's own edge while
+  reading inside both faces by a hair, it now counts as that edge's split
+  of the other face, as one reading outside does, and a second face
+  meeting the other along the same edge (a chamfer beside the face it
+  bevels) gives way to it. A prism of a chamfered slot plate's top face
+  pushed through its bottom had its slot walls cut twice along the bottom
+  rim, and the boolean left an open shell.
+
 - **A pad sketched from a converted part's face fuses, cuts and commons
   with the part.** A face states how far it may stand off its surface (a
   face fitted to a mesh, by its fit's deviation), and the boolean now
