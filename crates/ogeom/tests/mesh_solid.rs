@@ -1641,3 +1641,44 @@ fn blocks_glued_along_an_edge_come_back_two_solids() {
     let v = volume(&model, &built.shape);
     assert!((v - 2000.0).abs() < 1e-9, "{v}");
 }
+
+/// A thin disc whose top rim is rounded, meshed coarsely: the rim's round
+/// takes in the disc's own flat facets along the tangent, and the face
+/// built on it strays from them. The stray face is faceted and the part
+/// rebuilt, and the disc comes back a sound solid holding the mesh's
+/// volume.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the rounding to single precision is the point"
+)]
+#[test]
+fn a_face_straying_from_its_triangles_is_faceted() {
+    let mut model = Model::new();
+    let disc = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 12.7, 0.4, T)
+        .unwrap()
+        .shape;
+    let rim = edges_where(&model, &disc, |lo, _| lo.z > 0.4 - 1e-6);
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &disc, &rim, 0.2, T)
+        .unwrap()
+        .shape;
+    let mut mesh =
+        ogeom::mesh::triangulate(&model, &rounded, Deflection::with_chord(0.1).unwrap(), T)
+            .unwrap();
+    for p in &mut mesh.positions {
+        *p = Point::new(
+            f64::from(p.x as f32),
+            f64::from(p.y as f32),
+            f64::from(p.z as f32),
+        );
+    }
+    let built = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(built.closed);
+    let diagnosis = check(&model, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let v = volume(&model, &built.shape);
+    assert!(
+        (v - mesh.volume()).abs() < mesh.volume() * 1e-6,
+        "{v} against {}",
+        mesh.volume()
+    );
+}

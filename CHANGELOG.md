@@ -24,6 +24,19 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **The mesh converter checks each body it builds, and gives up only what
+  fails.**
+  - A recognized face pointing against the triangles it replaces, or
+    covering a part of its surface they do not (sampled on the face, each
+    point within the rise of the triangles near it), is faceted and the
+    part rebuilt.
+  - A body that does not hold its mesh volume gives up its own recognized
+    regions; other bodies keep theirs.
+  - The volume is measured at the facets' mean offset rather than a
+    millionth of the part: a converted part of four thousand faces took
+    55 s and takes 5 s. A thin disc with a rounded rim, meshed coarsely,
+    made the conversion fail outright; it now comes back a sound solid.
+
 - **A mesh of bodies glued along an edge converts to closed solids.** An
   edge four triangles use (two blocks touching along it, as exporters
   write glued parts) paired nothing, and both bodies came back open

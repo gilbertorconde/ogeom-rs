@@ -141,8 +141,9 @@ pub struct MeshSolidReport {
     pub orientation_conflicts: usize,
     /// Connected pieces, each one shell.
     pub shells: usize,
-    /// Whether recognition was withdrawn because the solid it built did not
-    /// hold the mesh's volume, and the mesh was built faceted instead.
+    /// Whether recognition was withdrawn from a body because the solid it
+    /// built did not hold that body's mesh volume, and the body was built
+    /// faceted instead.
     pub recognition_withdrawn: bool,
 }
 
@@ -399,7 +400,7 @@ pub fn solid_from_mesh(
     // reaches past the triangles it replaces (a boundary placed on the wrong
     // turn of its surface closes a face of the wrong extent) and build again.
     let mut pinned: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    let built = loop {
+    let shape = loop {
         let planner = Planner {
             points: &points,
             triangles: &triangles,
@@ -429,9 +430,38 @@ pub fn solid_from_mesh(
                 .build()?;
                 let astray = astray_faces(model, &points, &triangles, &groups, &built, flat, tol)?;
                 if astray.is_empty() {
-                    break built;
+                    let (shape, bodies) = assemble(
+                        model, &points, &triangles, &pieces, &depth, all_closed, &groups, &built,
+                    )?;
+                    let culprits = if options.recognize && all_closed {
+                        body_culprits(
+                            model,
+                            &points,
+                            &triangles,
+                            &groups,
+                            &built,
+                            &bodies,
+                            flat,
+                            tol,
+                            &mut report,
+                        )?
+                    } else {
+                        Vec::new()
+                    };
+                    if culprits.is_empty() {
+                        report.faces = built.iter().flatten().count();
+                        report.curved_faces = groups
+                            .carriers
+                            .iter()
+                            .zip(&built)
+                            .filter(|(c, b)| matches!(c, Carrier::Curved(_)) && b.is_some())
+                            .count();
+                        break shape;
+                    }
+                    culprits
+                } else {
+                    astray
                 }
-                astray
             }
         };
         for g in failed {
@@ -453,79 +483,6 @@ pub fn solid_from_mesh(
             tol,
         )?;
     };
-    report.faces = built.iter().flatten().count();
-    report.curved_faces = groups
-        .carriers
-        .iter()
-        .zip(&built)
-        .filter(|(c, b)| matches!(c, Carrier::Curved(_)) && b.is_some())
-        .count();
-
-    // Faces into one shell per piece; closed pieces into solids, a piece
-    // nested an odd number of times deep being a void of the one around it.
-    let mut shells = Vec::with_capacity(pieces.len());
-    for piece in &pieces {
-        let mut faces: Vec<Shape> = Vec::new();
-        let mut taken = vec![false; groups.carriers.len()];
-        for &t in &piece.triangles {
-            let g = groups.of[t as usize];
-            if !taken[g] {
-                taken[g] = true;
-                if let Some(face) = &built[g] {
-                    faces.push(face.clone());
-                }
-            }
-        }
-        shells.push(model.add_shell(&faces)?);
-    }
-    let shape = if all_closed {
-        let mut solids = Vec::new();
-        for (i, shell) in shells.iter().enumerate() {
-            if depth[i] % 2 == 1 {
-                continue;
-            }
-            let mut members = vec![shell.clone()];
-            for (j, void) in shells.iter().enumerate() {
-                if depth[j] == depth[i] + 1 && inside(&points, &triangles, &pieces[i], &pieces[j]) {
-                    members.push(void.clone());
-                }
-            }
-            solids.push(model.add_solid(&members)?);
-        }
-        if solids.len() == 1 {
-            solids.swap_remove(0)
-        } else {
-            model.add_compound(&solids)?
-        }
-    } else if shells.len() == 1 {
-        shells.swap_remove(0)
-    } else {
-        model.add_compound(&shells)?
-    };
-    // The solid must hold the mesh's volume, up to what the recognized
-    // surfaces stand off the triangles they replace: a region whose faces
-    // closed a shell of the wrong extent passes every local test and is
-    // caught only here. Past that allowance recognition is withdrawn, and
-    // the mesh comes back faceted, exactly as it is.
-    if all_closed && options.recognize && report.curved_faces > 0 {
-        let (mesh_volume, allowance, area) = volume_allowance(&points, &triangles, &groups, flat);
-        let chord = flat.max(diagonal * 1e-6);
-        let deflection = ogeom_mesh::Deflection::with_chord(chord)?;
-        let measured = crate::volume_properties(model, &shape, deflection, tol)?.mass;
-        // Measured at the facets' corners and edge middles, the allowance
-        // misses the surface's rise inside a facet and a fitted boundary's
-        // wander between the rows; twice over covers both.
-        let slack = allowance * 2.0 + area * chord * 2.0 + diagonal.powi(3) * 1e-12;
-        if (measured - mesh_volume).abs() > slack {
-            let faceted = MeshSolidOptions {
-                recognize: false,
-                ..*options
-            };
-            let mut plain = solid_from_mesh(model, mesh, &faceted, tol)?;
-            plain.report.recognition_withdrawn = true;
-            return Ok(plain);
-        }
-    }
     Ok(MeshSolid {
         shape,
         closed: all_closed,
@@ -533,10 +490,10 @@ pub fn solid_from_mesh(
     })
 }
 
-/// The recognized regions whose built face reaches well past the triangles
-/// it replaces: its bounds stand beyond theirs by more than the surface
-/// bulges past its facets and its boundary can run on to meet its
-/// neighbours.
+/// The recognized regions whose built face strays from the triangles it
+/// replaces: its bounds stand beyond theirs by more than the surface bulges
+/// past its facets and its boundary can run on to meet its neighbours, or
+/// some point of it lies away from all of them.
 fn astray_faces(
     model: &Model,
     points: &[Point],
@@ -548,11 +505,13 @@ fn astray_faces(
 ) -> OgeomResult<Vec<usize>> {
     let mut reach: Vec<Option<(Point, Point)>> = vec![None; groups.carriers.len()];
     let mut bulge = vec![0.0_f64; groups.carriers.len()];
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); groups.carriers.len()];
     for (t, tri) in triangles.iter().enumerate() {
         let g = groups.of[t];
         let Some(Carrier::Curved(curved)) = groups.carriers.get(g) else {
             continue;
         };
+        members[g].push(t);
         // The surface stands off a facet's edges by the sagitta, and the
         // face bulges past the facets' corners by as much.
         let [a, b, c] = tri.map(|v| points[v as usize]);
@@ -564,6 +523,12 @@ fn astray_faces(
             let (lo, hi) = reach[g].get_or_insert((p, p));
             *lo = Point::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
             *hi = Point::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+        }
+    }
+    let mut around: Vec<Vec<usize>> = vec![Vec::new(); points.len()];
+    for (t, tri) in triangles.iter().enumerate() {
+        for &v in tri {
+            around[v as usize].push(t);
         }
     }
     let mut astray = Vec::new();
@@ -587,23 +552,363 @@ fn astray_faces(
             || fhi.z > hi.z + margin
         {
             astray.push(g);
+            continue;
+        }
+        // Nor may it cover another part of its surface than they do: every
+        // point of the face lies near one of them, by the surface's bulge
+        // over them and the chord it is sampled at.
+        let chord = (bulge[g] * 2.0).max(flat * 10.0);
+        // A face that cannot be drawn cannot be vouched for either.
+        let drawn = ogeom_mesh::triangulate_face(
+            model,
+            face,
+            ogeom_mesh::Deflection::with_chord(chord)?,
+            tol,
+        )
+        .or_else(|_| {
+            ogeom_mesh::triangulate_face(model, face, ogeom_mesh::Deflection::default(), tol)
+        });
+        let Ok(mesh) = drawn else {
+            astray.push(g);
+            continue;
+        };
+        if mesh.triangles.is_empty() {
+            astray.push(g);
+            continue;
+        }
+        // Each triangle allows what the surface rises over it: a large facet
+        // on a gentle curve lets the face stand well off its middle, and
+        // lends nothing to the face anywhere else.
+        let Some(Carrier::Curved(curved)) = groups.carriers.get(g) else {
+            continue;
+        };
+        // The region's triangles and those touching them: the face's
+        // boundary runs on to meet its neighbours' surfaces, a little past
+        // its own last row.
+        let near: Vec<usize> = {
+            let mut near: Vec<usize> = members[g]
+                .iter()
+                .flat_map(|&t| triangles[t])
+                .flat_map(|v| around[v as usize].iter().copied())
+                .collect();
+            near.sort_unstable();
+            near.dedup();
+            near
+        };
+        let rise: Vec<f64> = near
+            .iter()
+            .map(|&t| {
+                let [a, b, c] = triangles[t].map(|v| points[v as usize]);
+                [(a, b), (b, c), (c, a)]
+                    .into_iter()
+                    .map(|(p, q)| curved.shape.distance_to(p + (q - p) * 0.5))
+                    .fold(0.0_f64, f64::max)
+            })
+            .collect();
+        // A triangle standing far off the surface (a flat neighbour's facet
+        // the region took in along a tangent) lends no more than a typical
+        // one of the region does.
+        let typical = {
+            let mut own: Vec<f64> = near
+                .iter()
+                .zip(&rise)
+                .filter(|(t, _)| groups.of[**t] == g)
+                .map(|(_, &r)| r)
+                .collect();
+            own.sort_by(f64::total_cmp);
+            own.get(own.len() / 2).copied().unwrap_or(0.0)
+        };
+        let rise: Vec<f64> = rise.iter().map(|&r| r.min(typical * 4.0)).collect();
+        let count = mesh.triangles.len();
+        let samples = count.min(32);
+        // A face running on past its last row where it meets a neighbour
+        // strays at a few points by its end; one covering another part of
+        // its surface strays over much of it.
+        let wandering = (0..samples)
+            .filter(|&k| {
+                let [a, b, c] =
+                    mesh.triangles[k * count / samples].map(|i| mesh.positions[i as usize]);
+                let middle =
+                    Point::from_vector((a.to_vector() + b.to_vector() + c.to_vector()) / 3.0);
+                near.iter().zip(&rise).all(|(&t, &rise)| {
+                    let [p, q, r] = triangles[t].map(|v| points[v as usize]);
+                    distance_to_triangle(middle, p, q, r) > rise * 2.0 + chord * 2.0 + flat * 20.0
+                })
+            })
+            .count();
+        if wandering * 4 > samples {
+            astray.push(g);
         }
     }
     Ok(astray)
 }
 
-/// The mesh's own volume, how far the solid built on its groups may differ
-/// from it, and the mesh's area. Each triangle on a recognized surface may
+/// The distance from `x` to the triangle `a b c`.
+fn distance_to_triangle(x: Point, a: Point, b: Point, c: Point) -> f64 {
+    let (ab, ac, ax) = (b - a, c - a, x - a);
+    let n = ab.cross(ac);
+    let area = n.magnitude();
+    if area <= f64::MIN_POSITIVE {
+        return x.distance(a).min(x.distance(b)).min(x.distance(c));
+    }
+    // Inside the prism over the triangle, the distance is the height above
+    // its plane; outside, it is to the nearest side.
+    let inside = [(a, b), (b, c), (c, a)]
+        .iter()
+        .all(|&(p, q)| (q - p).cross(x - p).dot(n) >= 0.0);
+    if inside {
+        return (ax.dot(n) / area).abs();
+    }
+    [(a, b), (b, c), (c, a)]
+        .into_iter()
+        .map(|(p, q)| {
+            let d = q - p;
+            let t = ((x - p).dot(d) / d.dot(d).max(f64::MIN_POSITIVE)).clamp(0.0, 1.0);
+            x.distance(p + d * t)
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// One closed body of the result: the solid, and the mesh triangles of its
+/// shell and of the voids inside it.
+struct Body {
+    solid: Shape,
+    triangles: Vec<u32>,
+}
+
+/// Faces into one shell per piece; closed pieces into solids, a piece
+/// nested an odd number of times deep being a void of the one around it.
+/// The result, and each solid with its triangles.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the build's own state, passed through"
+)]
+fn assemble(
+    model: &mut Model,
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    pieces: &[Piece],
+    depth: &[usize],
+    all_closed: bool,
+    groups: &Groups,
+    built: &[Option<Shape>],
+) -> OgeomResult<(Shape, Vec<Body>)> {
+    let mut shells = Vec::with_capacity(pieces.len());
+    for piece in pieces {
+        let mut faces: Vec<Shape> = Vec::new();
+        let mut taken = vec![false; groups.carriers.len()];
+        for &t in &piece.triangles {
+            let g = groups.of[t as usize];
+            if !taken[g] {
+                taken[g] = true;
+                if let Some(face) = &built[g] {
+                    faces.push(face.clone());
+                }
+            }
+        }
+        shells.push(model.add_shell(&faces)?);
+    }
+    if !all_closed {
+        let shape = if shells.len() == 1 {
+            shells.swap_remove(0)
+        } else {
+            model.add_compound(&shells)?
+        };
+        return Ok((shape, Vec::new()));
+    }
+    let mut bodies = Vec::new();
+    for (i, shell) in shells.iter().enumerate() {
+        if depth[i] % 2 == 1 {
+            continue;
+        }
+        let mut members = vec![shell.clone()];
+        let mut mine = pieces[i].triangles.clone();
+        for (j, void) in shells.iter().enumerate() {
+            if depth[j] == depth[i] + 1 && inside(points, triangles, &pieces[i], &pieces[j]) {
+                members.push(void.clone());
+                mine.extend(&pieces[j].triangles);
+            }
+        }
+        bodies.push(Body {
+            solid: model.add_solid(&members)?,
+            triangles: mine,
+        });
+    }
+    let shape = if bodies.len() == 1 {
+        bodies[0].solid.clone()
+    } else {
+        let solids: Vec<Shape> = bodies.iter().map(|b| b.solid.clone()).collect();
+        model.add_compound(&solids)?
+    };
+    Ok((shape, bodies))
+}
+
+/// The recognized regions to facet so every body of the result is sound: a
+/// recognized face turned into the material gives up its region, and a
+/// body whose volume is not
+/// the mesh's, within what its recognized surfaces may add over their
+/// facets, gives up all of its recognized regions (a face closed over the
+/// wrong part of its surface passes every local test and is caught only
+/// there). Other bodies keep theirs.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the build's own state, passed through"
+)]
+fn body_culprits(
+    model: &Model,
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    groups: &Groups,
+    built: &[Option<Shape>],
+    bodies: &[Body],
+    flat: f64,
+    tol: Tolerances,
+    report: &mut MeshSolidReport,
+) -> OgeomResult<Vec<usize>> {
+    let curved = |g: usize| matches!(groups.carriers.get(g), Some(Carrier::Curved(_)));
+    let own = |body: &Body| -> Vec<usize> {
+        let mut own: Vec<usize> = body
+            .triangles
+            .iter()
+            .map(|&t| groups.of[t as usize])
+            .filter(|&g| curved(g))
+            .collect();
+        own.sort_unstable();
+        own.dedup();
+        own
+    };
+    // Orientation first: a recognized face turned against the triangles it
+    // replaces faces into the material, and is facetted whatever the
+    // volumes say.
+    let culprits = inverted_faces(model, points, triangles, groups, built, tol)?;
+    if !culprits.is_empty() {
+        return Ok(culprits);
+    }
+    let mut culprits: Vec<usize> = Vec::new();
+    for body in bodies {
+        let own = own(body);
+        if own.is_empty() {
+            continue;
+        }
+        let (mesh_volume, allowance, area) =
+            volume_allowance(points, triangles, &body.triangles, groups, flat);
+        let diagonal = body_diagonal(points, triangles, &body.triangles);
+        // Measured no finer than the allowance needs: at the facets' mean
+        // offset from their surfaces, whose error over the area is the
+        // allowance again, counted in the slack.
+        let chord = (allowance / area.max(f64::MIN_POSITIVE)).max(flat);
+        let deflection = ogeom_mesh::Deflection::with_chord(chord)?;
+        let measured = crate::volume_properties(model, &body.solid, deflection, tol)?.mass;
+        // Measured at the facets' corners and edge middles, the allowance
+        // misses the surface's rise inside a facet and a fitted boundary's
+        // wander between the rows; twice over covers both.
+        let slack = allowance * 2.0 + area * chord * 2.0 + diagonal.powi(3) * 1e-12;
+        if (measured - mesh_volume).abs() > slack {
+            report.recognition_withdrawn = true;
+            culprits.extend(own);
+        }
+    }
+    culprits.sort_unstable();
+    culprits.dedup();
+    Ok(culprits)
+}
+
+/// The recognized regions whose built face points against the triangles it
+/// replaces. The mesh is oriented outward before anything is built, so each
+/// triangle's normal is the side the material is not on; the face's own
+/// outward normal, at the foot of the triangle's middle on its surface,
+/// must agree with it. A few triangles vote, and the face is turned only
+/// where most of them say so.
+fn inverted_faces(
+    model: &Model,
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    groups: &Groups,
+    built: &[Option<Shape>],
+    tol: Tolerances,
+) -> OgeomResult<Vec<usize>> {
+    use ogeom_geom::Surface as _;
+    const VOTES: usize = 9;
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); groups.carriers.len()];
+    for (t, &g) in groups.of.iter().enumerate() {
+        if matches!(groups.carriers.get(g), Some(Carrier::Curved(_))) {
+            members[g].push(t);
+        }
+    }
+    let mut inverted = Vec::new();
+    for (g, tris) in members.iter().enumerate() {
+        let Some(face) = built.get(g).and_then(Option::as_ref) else {
+            continue;
+        };
+        if tris.is_empty() {
+            continue;
+        }
+        let Some(surface) = model
+            .node(face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|data| model.geometry().surface(data.surface))
+        else {
+            continue;
+        };
+        let turned = face.orientation() == ogeom_topo::Orientation::Reversed;
+        let votes = VOTES.min(tris.len());
+        let (mut against, mut asked) = (0, 0);
+        for k in 0..votes {
+            let [a, b, c] = triangles[tris[k * tris.len() / votes]].map(|v| points[v as usize]);
+            let normal = (b - a).cross(c - a);
+            let middle = Point::from_vector((a.to_vector() + b.to_vector() + c.to_vector()) / 3.0);
+            let Ok(foot) = crate::measure::project_on_surface(surface, middle, 8, tol) else {
+                continue;
+            };
+            let Ok(outward) = surface.normal_at(foot.parameters.0, foot.parameters.1, tol) else {
+                continue;
+            };
+            let outward = if turned {
+                -outward.vector()
+            } else {
+                outward.vector()
+            };
+            asked += 1;
+            if outward.dot(normal) < 0.0 {
+                against += 1;
+            }
+        }
+        if asked > 0 && against * 2 > asked {
+            inverted.push(g);
+        }
+    }
+    Ok(inverted)
+}
+
+/// The diagonal of the box around some of the mesh's triangles.
+fn body_diagonal(points: &[Point], triangles: &[[u32; 3]], mine: &[u32]) -> f64 {
+    let mut lo = Point::new(f64::MAX, f64::MAX, f64::MAX);
+    let mut hi = Point::new(f64::MIN, f64::MIN, f64::MIN);
+    for &t in mine {
+        for &v in &triangles[t as usize] {
+            let p = points[v as usize];
+            lo = Point::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+            hi = Point::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+        }
+    }
+    lo.distance(hi)
+}
+
+/// Some triangles' own volume, how far the solid built on their groups may
+/// differ from it, and their area. Each triangle on a recognized surface may
 /// stand off it by its worst corner or edge middle, over its whole area; a
 /// triangle on a plane by the coplanar distance.
 fn volume_allowance(
     points: &[Point],
     triangles: &[[u32; 3]],
+    mine: &[u32],
     groups: &Groups,
     flat: f64,
 ) -> (f64, f64, f64) {
     let (mut volume, mut allowance, mut area) = (0.0, 0.0, 0.0);
-    for (t, tri) in triangles.iter().enumerate() {
+    for &t in mine {
+        let t = t as usize;
+        let tri = &triangles[t];
         let [a, b, c] = tri.map(|v| points[v as usize]);
         let (va, vb, vc) = (a - Point::ORIGIN, b - Point::ORIGIN, c - Point::ORIGIN);
         volume += va.dot(vb.cross(vc)) / 6.0;
