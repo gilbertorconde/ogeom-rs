@@ -24,6 +24,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A curved region no longer takes a flat face's facets.** The mesh is
+  first cut into flat patches, and a curved region may take a patch much
+  larger than its own facets only whole, with every corner on its surface.
+  A round met along a tangent by a long flat wall took the wall's facets
+  whose near corners lay on it; a finely meshed plate with rounded rims
+  came back in a thousand faces and now in five hundred. A plane beside a
+  recognized face takes its boundary from it, so the face must also keep
+  its flat neighbours on their own triangles, or it is faceted.
+
 - **A recognized region stays one connected piece.** Dropping the triangles
   of vertices a fit refused could leave a region in pieces joined by
   nothing, each then built as a face on the first fit's surface. The

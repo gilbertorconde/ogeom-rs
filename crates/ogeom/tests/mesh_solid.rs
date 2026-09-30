@@ -1682,3 +1682,55 @@ fn a_face_straying_from_its_triangles_is_faceted() {
         mesh.volume()
     );
 }
+
+/// A plate with rounded corners and a rounded bottom rim, meshed finely: the
+/// rim's rounds meet the plate's flat walls and bottom along tangents, and
+/// the walls' long facets lie on a round's surface at their near corners.
+/// A flat facet much larger than a round's own comes with its whole flat
+/// face or not at all, so the rounds stop where the walls begin, the walls
+/// stay planes, and the plate comes back in a few hundred faces where it
+/// took a thousand.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the rounding to single precision is the point"
+)]
+#[test]
+fn a_round_does_not_take_a_flat_face_s_facets() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (47.0, 21.5, 5.0), T)
+        .unwrap()
+        .shape;
+    let upright = edges_where(&model, &block, |lo, hi| hi.z - lo.z > 4.0);
+    let plate = ogeom::fillet::fillet_edges(&mut model, &block, &upright, 8.0, T)
+        .unwrap()
+        .shape;
+    let rim = edges_where(&model, &plate, |lo, hi| hi.z < 1e-9 && lo.z > -1e-9);
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &plate, &rim, 0.5, T)
+        .unwrap()
+        .shape;
+    let exact = volume_properties(&model, &rounded, Deflection::with_chord(0.001).unwrap(), T)
+        .unwrap()
+        .mass;
+    let mut mesh =
+        ogeom::mesh::triangulate(&model, &rounded, Deflection::with_chord(0.005).unwrap(), T)
+            .unwrap();
+    for p in &mut mesh.positions {
+        *p = Point::new(
+            f64::from(p.x as f32),
+            f64::from(p.y as f32),
+            f64::from(p.z as f32),
+        );
+    }
+    let built = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(check(&model, &built.shape, T).unwrap().is_valid());
+    assert!(built.report.faces <= 600, "{} faces", built.report.faces);
+    let v = volume_properties(
+        &model,
+        &built.shape,
+        Deflection::with_chord(0.001).unwrap(),
+        T,
+    )
+    .unwrap()
+    .mass;
+    assert!((v - exact).abs() < exact * 1e-4, "{v} against {exact}");
+}

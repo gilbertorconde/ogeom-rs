@@ -638,6 +638,70 @@ fn astray_faces(
             .count();
         if wandering * 4 > samples {
             astray.push(g);
+            continue;
+        }
+        // A plane beside the face takes its boundary from it, and a face a
+        // little off its triangles carries that plane off its own: sampled
+        // where it meets this region, each plane must lie on the triangles
+        // too.
+        let mut planes: Vec<usize> = near
+            .iter()
+            .map(|&t| groups.of[t])
+            .filter(|&o| matches!(groups.carriers.get(o), Some(Carrier::Plane(_))))
+            .collect();
+        planes.sort_unstable();
+        planes.dedup();
+        // A gross check: a plane carried off by a face placed a little
+        // wrong stands off by a fair part of the region's size, while one
+        // meeting a rough neighbour a little past the last row stands off
+        // by the roughness.
+        let allowance = typical * 8.0 + chord * 2.0 + flat * 20.0 + lo.distance(hi) * 0.01;
+        let reaches = |p: Point| {
+            p.x >= lo.x - margin
+                && p.y >= lo.y - margin
+                && p.z >= lo.z - margin
+                && p.x <= hi.x + margin
+                && p.y <= hi.y + margin
+                && p.z <= hi.z + margin
+        };
+        for plane in planes {
+            let Some(beside) = built.get(plane).and_then(Option::as_ref) else {
+                continue;
+            };
+            let Ok(drawn) =
+                ogeom_mesh::triangulate_face(model, beside, ogeom_mesh::Deflection::default(), tol)
+            else {
+                continue;
+            };
+            let middles: Vec<Point> = drawn
+                .triangles
+                .iter()
+                .map(|t| {
+                    let [a, b, c] = t.map(|i| drawn.positions[i as usize]);
+                    Point::from_vector((a.to_vector() + b.to_vector() + c.to_vector()) / 3.0)
+                })
+                .filter(|&m| reaches(m))
+                .collect();
+            if middles.is_empty() {
+                continue;
+            }
+            let own: Vec<usize> = (0..triangles.len())
+                .filter(|&t| groups.of[t] == plane)
+                .collect();
+            let samples = middles.len().min(32);
+            let off = (0..samples)
+                .filter(|&k| {
+                    let m = middles[k * middles.len() / samples];
+                    near.iter().chain(&own).all(|&t| {
+                        let [p, q, r] = triangles[t].map(|v| points[v as usize]);
+                        distance_to_triangle(m, p, q, r) > allowance
+                    })
+                })
+                .count();
+            if off * 4 > samples {
+                astray.push(g);
+                break;
+            }
         }
     }
     Ok(astray)
@@ -1784,6 +1848,91 @@ fn plane_normals(
     Ok(planes.into_iter().map(|(_, d)| d).collect())
 }
 
+/// How much larger than a curved region's own facets a flat patch must be
+/// to be a face of its own rather than facets of the curve.
+const PATCH_SCALE: f64 = 20.0;
+
+/// The mesh cut into flat patches: each grown from its largest facet across
+/// edges to neighbours whose normals stay within a couple of degrees of
+/// that facet's and whose corners stay on its plane. A curved region takes
+/// a large patch whole or not at all.
+struct FlatPatches {
+    /// The patch each triangle is in.
+    of: Vec<usize>,
+    /// Each patch's triangles.
+    members: Vec<Vec<usize>>,
+    /// Each patch's area.
+    area: Vec<f64>,
+    /// Each triangle's area.
+    facet: Vec<f64>,
+}
+
+impl FlatPatches {
+    fn of(
+        points: &[Point],
+        triangles: &[[u32; 3]],
+        adjacency: &Adjacency,
+        normals: &[Vector],
+        flat: f64,
+    ) -> Self {
+        // Two degrees: the folds a curve's facets make are larger except on
+        // a very finely drawn one, whose facets' corners then leave the seed's
+        // plane within a few rows.
+        let cos_fold = 2.0_f64.to_radians().cos();
+        let n = triangles.len();
+        let facet: Vec<f64> = triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|v| points[v as usize]);
+                (b - a).cross(c - a).magnitude() / 2.0
+            })
+            .collect();
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&x, &y| facet[y].total_cmp(&facet[x]).then(x.cmp(&y)));
+        let mut of = vec![usize::MAX; n];
+        let (mut members, mut area) = (Vec::new(), Vec::new());
+        for seed in order {
+            if of[seed] != usize::MAX {
+                continue;
+            }
+            let id = members.len();
+            let normal = normals[seed];
+            let origin = points[triangles[seed][0] as usize];
+            let mut patch = vec![seed];
+            of[seed] = id;
+            let mut i = 0;
+            while i < patch.len() {
+                let t = patch[i];
+                i += 1;
+                for h in 3 * t..3 * t + 3 {
+                    let Some(g) = adjacency.twin[h] else {
+                        continue;
+                    };
+                    let u = g / 3;
+                    if of[u] != usize::MAX || normals[u].dot(normal) < cos_fold {
+                        continue;
+                    }
+                    if triangles[u]
+                        .iter()
+                        .all(|&v| (points[v as usize] - origin).dot(normal).abs() <= flat)
+                    {
+                        of[u] = id;
+                        patch.push(u);
+                    }
+                }
+            }
+            area.push(patch.iter().map(|&t| facet[t]).sum());
+            members.push(patch);
+        }
+        Self {
+            of,
+            members,
+            area,
+            facet,
+        }
+    }
+}
+
 /// Keep only the largest edge-connected piece of a set of triangles.
 fn keep_largest_piece(region: &mut Vec<usize>, adjacency: &Adjacency) {
     let members: std::collections::HashSet<usize> = region.iter().copied().collect();
@@ -2122,6 +2271,7 @@ fn recognized_regions(
     // A facet of a coarse mesh leans from the surface at its centre by up
     // to half the turn between facets, which the crease bounds.
     let agree = options.crease.cos();
+    let patches = FlatPatches::of(points, triangles, adjacency, &mesh.normals, flat);
     let mut tried = vec![false; n];
     // The batch in which each triangle's standing last changed.
     let mut changed = vec![0_u32; n];
@@ -2225,6 +2375,13 @@ fn recognized_regions(
                 }
             }
             let mut shape = found.surface;
+            // A facet of the region as it was first fitted, for telling a
+            // flat face's facets from its own.
+            let typical = {
+                let mut areas: Vec<f64> = region.iter().map(|&t| patches.facet[t]).collect();
+                areas.sort_by(f64::total_cmp);
+                areas.get(areas.len() / 2).copied().unwrap_or(0.0)
+            };
             let mut mine: std::collections::HashSet<usize> = region.iter().copied().collect();
             let mut seen: std::collections::HashSet<u32> = vertices.iter().copied().collect();
 
@@ -2272,11 +2429,38 @@ fn recognized_regions(
                         {
                             continue;
                         }
-                        mine.insert(other);
-                        region.push(other);
-                        for &v in &triangles[other] {
-                            if seen.insert(v) {
-                                vertices.push(v);
+                        // A facet of a flat face much larger than the
+                        // region's own (a plane tangent to it) comes with its
+                        // whole face or not at all: its corners by the
+                        // tangent line lie on the surface, its far ones not.
+                        let patch = patches.of[other];
+                        let taken: Vec<usize> = if patches.area[patch] > typical * PATCH_SCALE {
+                            let whole = &patches.members[patch];
+                            let on = whole.iter().all(|&t| {
+                                mine.contains(&t)
+                                    || (groups.of[t] == usize::MAX
+                                        && triangles[t].iter().all(|&v| {
+                                            shape.distance_to(points[v as usize]) <= flat
+                                        }))
+                            });
+                            if !on {
+                                continue;
+                            }
+                            whole
+                                .iter()
+                                .copied()
+                                .filter(|t| !mine.contains(t))
+                                .collect()
+                        } else {
+                            vec![other]
+                        };
+                        for other in taken {
+                            mine.insert(other);
+                            region.push(other);
+                            for &v in &triangles[other] {
+                                if seen.insert(v) {
+                                    vertices.push(v);
+                                }
                             }
                         }
                     }
