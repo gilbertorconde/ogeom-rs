@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Primitives in a mirrored frame are sound.** A box, cylinder, cone,
+  torus or wedge laid out in a left-handed frame came out inside out, and a
+  sphere failed to build. A round primitive is built on the frame's
+  right-handed twin about the same axis, and a box or a wedge on the frame
+  with `x` and `y` exchanged, which spans the same corner; the box's faces
+  keep the names the caller's frame gives them.
+
 - **A mirrored cylinder or cone converts to a spline turning its way.** The
   section circles were built on a right-handed frame, so a mirrored
   cylinder's or cone's spline turned the other way and its normals

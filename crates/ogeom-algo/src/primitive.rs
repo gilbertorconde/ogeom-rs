@@ -87,6 +87,34 @@ const FACES: [([usize; 4], Role); 6] = [
     ([1, 2, 6, 5], roles::FACE_MAX_X),
 ];
 
+/// A right-handed frame on `frame`'s origin and `z`, its `x` kept: the
+/// same axis for a solid round it, turning the other way. A mirrored
+/// (left-handed) frame is built on this one, and the solid is the same
+/// point set with its faces looking out.
+fn right_handed_about_z(frame: Frame, tol: Tolerances) -> OgeomResult<Frame> {
+    if frame.handedness() == ogeom_math::Handedness::Right {
+        return Ok(frame);
+    }
+    Frame::new(frame.origin(), frame.z(), frame.x(), tol)
+}
+
+/// For a mirrored (left-handed) frame, the same frame with `x` and `y`
+/// exchanged, which is right-handed and spans the same corner: a box or a
+/// wedge laid out on it, with its `x` and `y` sizes exchanged, is the same
+/// solid. `None` for a right-handed frame.
+fn exchanged_xy(frame: Frame, tol: Tolerances) -> OgeomResult<Option<Frame>> {
+    if frame.handedness() == ogeom_math::Handedness::Right {
+        return Ok(None);
+    }
+    Ok(Some(Frame::from_axes(
+        frame.origin(),
+        frame.y(),
+        frame.x(),
+        frame.z(),
+        tol,
+    )?))
+}
+
 /// Build an axis-aligned box in `frame`, spanning `size` along each of its
 /// axes from the frame's origin.
 ///
@@ -108,6 +136,18 @@ pub fn make_box(
                 "box {name} size {value} must be finite and positive"
             );
         }
+    }
+    if let Some(exchanged) = exchanged_xy(frame, tol)? {
+        let corner_points: Vec<Point> = CORNERS
+            .iter()
+            .map(|&(i, j, k)| {
+                #[allow(clippy::cast_precision_loss)]
+                let local = Point::new(i as f64 * dy, j as f64 * dx, k as f64 * dz);
+                exchanged.to_world(local)
+            })
+            .collect();
+        model.begin_operation();
+        return box_like_named(model, &corner_points, true, tol);
     }
     model.begin_operation();
 
@@ -360,6 +400,18 @@ pub fn make_polyhedron(
 /// construction is not just less code; it is what keeps the two from drifting
 /// apart in their winding, their roles or their pcurves.
 fn box_like(model: &mut Model, corner_points: &[Point], tol: Tolerances) -> OgeomResult<Built> {
+    box_like_named(model, corner_points, false, tol)
+}
+
+/// [`box_like`], its `x` and `y` faces' roles swapped where `swap_xy`: a
+/// box laid out in a mirrored frame is built with the frame's `x` and `y`
+/// exchanged, and its faces keep the names the caller's frame gives them.
+fn box_like_named(
+    model: &mut Model,
+    corner_points: &[Point],
+    swap_xy: bool,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     let vertices: Vec<Shape> = corner_points
         .iter()
         .map(|p| model.add_vertex(ogeom_topo::VertexData::new(*p)))
@@ -422,6 +474,17 @@ fn box_like(model: &mut Model, corner_points: &[Point], tol: Tolerances) -> Ogeo
 
         let wire = make_wire(model, &ring, tol)?.shape;
         let face = make_face_on(model, surface, std::slice::from_ref(&wire), tol)?.shape;
+        let role = if swap_xy {
+            match role {
+                r if r == roles::FACE_MIN_X => roles::FACE_MIN_Y,
+                r if r == roles::FACE_MAX_X => roles::FACE_MAX_Y,
+                r if r == roles::FACE_MIN_Y => roles::FACE_MIN_X,
+                r if r == roles::FACE_MAX_Y => roles::FACE_MAX_X,
+                r => r,
+            }
+        } else {
+            role
+        };
         model.set_derived(&face, &[], role)?;
         faces.push(face);
     }
@@ -582,6 +645,7 @@ pub fn make_cylinder(
 ) -> OgeomResult<Built> {
     check_size("cylinder radius", radius, tol)?;
     check_size("cylinder height", height, tol)?;
+    let frame = right_handed_about_z(frame, tol)?;
     model.begin_operation();
 
     let top_frame = raised(frame, height, tol)?;
@@ -641,6 +705,7 @@ pub fn make_sphere(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     check_size("sphere radius", radius, tol)?;
+    let frame = right_handed_about_z(frame, tol)?;
     model.begin_operation();
 
     let centre = frame.origin();
@@ -951,6 +1016,7 @@ pub fn make_cone(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     check_size("cone height", height, tol)?;
+    let frame = right_handed_about_z(frame, tol)?;
     for (what, r) in [("base radius", base_radius), ("top radius", top_radius)] {
         if !r.is_finite() || r < 0.0 {
             ogeom_bail!(
@@ -1077,6 +1143,7 @@ pub fn make_torus(
 ) -> OgeomResult<Built> {
     check_size("torus major radius", major, tol)?;
     check_size("torus minor radius", minor, tol)?;
+    let frame = right_handed_about_z(frame, tol)?;
     model.begin_operation();
 
     // Closed in *both* directions, so the face has a seam on all four sides of
@@ -1144,6 +1211,24 @@ pub fn make_wedge(
             );
         }
     }
+    if let Some(exchanged) = exchanged_xy(frame, tol)? {
+        return wedge_in(model, exchanged, (dy, dx, dz), (top.1, top.0), true, tol);
+    }
+    wedge_in(model, frame, size, top, false, tol)
+}
+
+/// [`make_wedge`] on a right-handed frame, its `x` and `y` faces' roles
+/// swapped where `swap_xy` (the frame is the caller's mirrored one with
+/// `x` and `y` exchanged).
+fn wedge_in(
+    model: &mut Model,
+    frame: Frame,
+    size: (f64, f64, f64),
+    top: (f64, f64),
+    swap_xy: bool,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let (dx, dy, dz) = size;
     model.begin_operation();
 
     // A zero top extent is a different topology, not a box with a flat face
@@ -1225,7 +1310,7 @@ pub fn make_wedge(
             frame.to_world(Point::new(fi * ex, fj * ey, k as f64 * dz))
         })
         .collect();
-    box_like(model, &corners, tol)
+    box_like_named(model, &corners, swap_xy, tol)
 }
 
 /// Build the unbounded solid on one side of a face.
@@ -1558,6 +1643,69 @@ mod tests {
                 "a box edge borders exactly two faces"
             );
             assert!(data.curve3d().is_some());
+        }
+    }
+
+    /// Every primitive laid out in a mirrored (left-handed) frame is a sound
+    /// solid, looking outward: a round one fills what it fills in the
+    /// frame's right-handed twin (the same origin and axis), a box or a
+    /// wedge the reflection of it across the twin's `x`-`z` plane.
+    #[test]
+    fn primitives_in_a_mirrored_frame_are_sound() {
+        let twin = Frame::new(
+            Point::new(3.0, -2.0, 5.0),
+            ogeom_math::Direction::from_coords(1.0, 2.0, 2.0, T).unwrap(),
+            ogeom_math::Direction::from_coords(2.0, -1.0, 0.0, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let mirrored = twin.mirrored();
+        type Make = fn(&mut Model, Frame) -> OgeomResult<Built>;
+        let round: [(&str, Make); 6] = [
+            ("cylinder", |m, f| make_cylinder(m, f, 2.0, 5.0, T)),
+            ("widening cone", |m, f| make_cone(m, f, 1.0, 3.0, 4.0, T)),
+            ("narrowing cone", |m, f| make_cone(m, f, 3.0, 1.0, 4.0, T)),
+            ("pointed cone", |m, f| make_cone(m, f, 3.0, 0.0, 4.0, T)),
+            ("sphere", |m, f| make_sphere(m, f, 2.5, T)),
+            ("torus", |m, f| make_torus(m, f, 4.0, 1.0, T)),
+        ];
+        let boxy: [(&str, Make); 3] = [
+            ("box", |m, f| make_box(m, f, (4.0, 2.0, 3.0), T)),
+            ("wedge", |m, f| {
+                make_wedge(m, f, (4.0, 2.0, 3.0), (1.5, 0.5), T)
+            }),
+            ("ridge wedge", |m, f| {
+                make_wedge(m, f, (4.0, 2.0, 3.0), (0.0, 1.0), T)
+            }),
+        ];
+        let fine = ogeom_mesh::Deflection::with_chord(1e-3).unwrap();
+        let measure = |make: Make, frame: Frame, name: &str| {
+            let mut model = Model::new();
+            let solid = make(&mut model, frame)
+                .unwrap_or_else(|e| panic!("{name}: {e}"))
+                .shape;
+            let diagnosis = crate::check(&model, &solid, T).unwrap();
+            assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+            let props = crate::volume_properties(&model, &solid, fine, T)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            (props.mass, props.centre)
+        };
+        for (name, make) in round {
+            let (v, c) = measure(make, twin, name);
+            let (vm, cm) = measure(make, mirrored, name);
+            assert!((v - vm).abs() < 1e-6 * v, "{name}: {vm} against {v}");
+            assert!(c.distance(cm) < 1e-6, "{name}: {cm:?} against {c:?}");
+        }
+        for (name, make) in boxy {
+            let (v, c) = measure(make, twin, name);
+            let (vm, cm) = measure(make, mirrored, name);
+            assert!((v - vm).abs() < 1e-6 * v, "{name}: {vm} against {v}");
+            let local = twin.to_local(c);
+            let reflected = twin.to_world(Point::new(local.x, -local.y, local.z));
+            assert!(
+                cm.distance(reflected) < 1e-6,
+                "{name}: {cm:?} against {reflected:?}"
+            );
         }
     }
 
