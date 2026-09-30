@@ -31,7 +31,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 
 ### B. Splines
 
-- [x] **B1.** `KnotVector::reversed` and `reparameterized` clamp knots outside the domain, changing unclamped and periodic splines by up to 9 mm (`ogeom-math/src/knots.rs`).
+- [x] **B1.** `KnotVector::reversed` and `reparameterized` clamp knots outside the domain, changing unclamped and periodic splines by up to 9 mm (`ogeom-math/src/knots.rs`). (e2b4149)
 - [ ] **B2.** `to_bezier_segments` and `elevate_degree` assume clamped ends; wrong for unclamped splines (`ogeom-math/src/bspline.rs`).
 - [ ] **B3.** `KnotVector::new` accepts end knots repeated `degree + 2` times; evaluation there gives NaN (`knots.rs`).
 
