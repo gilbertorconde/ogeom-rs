@@ -1857,6 +1857,17 @@ fn a_narrow_round_comes_back_tangent_to_its_faces() {
     holds((&model, &rounded), (&back, &out.shape));
 }
 
+/// A disc 0.8 thick with its top rim rounded 0.3.
+fn rounded_disc(model: &mut Model) -> Shape {
+    let disc = ogeom::algo::make_cylinder(model, Frame::WORLD, 12.7, 0.8, T)
+        .unwrap()
+        .shape;
+    let top = edges_where(model, &disc, |lo, _| lo.z > 0.8 - 1e-6);
+    ogeom::fillet::fillet_edges(model, &disc, &top, 0.3, T)
+        .unwrap()
+        .shape
+}
+
 /// A thin disc's rounded rim, four rows of facets round a tube much
 /// narrower than the rim: the round takes the flat top's facets in with it
 /// (their corners are all on the rim circle), and without them its top
@@ -1865,14 +1876,28 @@ fn a_narrow_round_comes_back_tangent_to_its_faces() {
 #[test]
 fn a_thin_disc_s_rounded_rim_comes_back_a_torus() {
     let mut model = Model::new();
-    let disc = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 12.7, 0.8, T)
-        .unwrap()
-        .shape;
-    let top = edges_where(&model, &disc, |lo, _| lo.z > 0.8 - 1e-6);
-    let rounded = ogeom::fillet::fillet_edges(&mut model, &disc, &top, 0.3, T)
-        .unwrap()
-        .shape;
+    let rounded = rounded_disc(&mut model);
     let mesh = meshed(&model, &rounded);
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert_eq!(
+        kinds(&back, &out.shape),
+        [2, 1, 0, 0, 1],
+        "{:?}",
+        out.report
+    );
+    holds((&model, &rounded), (&back, &out.shape));
+}
+
+/// The same disc in single precision: the torus fitted to the rounded
+/// points has its tube's crest a few slops off the flat top, and the top's
+/// rim, level at the crest, is still the crest's circle, which bounds the
+/// torus as a band between two circles.
+#[test]
+fn a_rounded_rim_s_crest_is_a_circle() {
+    let mut model = Model::new();
+    let rounded = rounded_disc(&mut model);
+    let mesh = exported(meshed(&model, &rounded), 0.0);
     let mut back = Model::new();
     let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
     assert_eq!(

@@ -4769,7 +4769,12 @@ fn candidates(
             Canonical::Torus(t) => {
                 let (big, small) = (t.major_radius(), t.minor_radius());
                 let off = (small * small - mean_h * mean_h).max(0.0).sqrt();
-                if (big + off - mean_r).abs() <= (big - off - mean_r).abs() {
+                // At the tube's crest the circle's radius turns infinitely
+                // fast with its height, and a few slops of height move it by
+                // many: a ring within the reach of the crest is the crest.
+                if (small - mean_h.abs()).abs() <= reach {
+                    big
+                } else if (big + off - mean_r).abs() <= (big - off - mean_r).abs() {
                     big + off
                 } else {
                     big - off

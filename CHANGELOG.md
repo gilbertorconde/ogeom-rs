@@ -24,6 +24,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A round's crest meeting a flat face is a circle.** A mesh's rim where
+  a torus meets a flat face along its tube's crest, a few slops off the
+  crest after rounding, was taken for a free curve: the circle's radius
+  turns infinitely fast with its height there. A ring within the reach of
+  the crest is now the crest circle, and the torus is built as a band
+  between two circles rather than falling to facets.
+
 - **A thin disc's rounded rim comes back a torus from a mesh.** When a
   curved region shed the flat face's facets it had taken in and the refit
   of what was left found nothing, the whole region went back to facets;
