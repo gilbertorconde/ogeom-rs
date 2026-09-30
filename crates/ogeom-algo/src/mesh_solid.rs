@@ -1789,6 +1789,7 @@ fn segment(
             tol,
         );
         split_disconnected(triangles, adjacency, &mut groups);
+        merge_same_surface(points, triangles, adjacency, &mut groups, flat);
         sphere_axes(points, triangles, adjacency, &mut groups, flat, tol);
         let normals = plane_normals(
             points,
@@ -1965,6 +1966,74 @@ fn keep_largest_piece(region: &mut Vec<usize>, adjacency: &Adjacency) {
     }
     let largest = (0..sizes.len()).max_by_key(|&i| sizes[i]).unwrap_or(0);
     region.retain(|t| piece.get(t) == Some(&largest));
+}
+
+/// Recognized regions sharing a mesh edge and lying on one surface, each
+/// within twice the distance of the other's, are one region: a band peeled of a
+/// flat face's facets can leave its two ends to be fitted apart.
+fn merge_same_surface(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    groups: &mut Groups,
+    flat: f64,
+) {
+    loop {
+        let mut pair: Option<(usize, usize)> = None;
+        'find: for (t, tri) in triangles.iter().enumerate() {
+            let g = groups.of[t];
+            let Some(Carrier::Curved(a)) = groups.carriers.get(g) else {
+                continue;
+            };
+            for h in 3 * t..3 * t + 3 {
+                let Some(twin) = adjacency.twin[h] else {
+                    continue;
+                };
+                let o = groups.of[twin / 3];
+                if o == g {
+                    continue;
+                }
+                let Some(Carrier::Curved(b)) = groups.carriers.get(o) else {
+                    continue;
+                };
+                if core::mem::discriminant(&a.shape) != core::mem::discriminant(&b.shape) {
+                    continue;
+                }
+                // Each was fitted to its own vertices within the distance,
+                // so the other's lie within twice it where the two are one.
+                let on = |shape: &Canonical, vertices: &[u32]| {
+                    vertices
+                        .iter()
+                        .all(|&v| shape.distance_to(points[v as usize]) <= flat * 2.0)
+                };
+                if on(&a.shape, &b.vertices) && on(&b.shape, &a.vertices) {
+                    pair = Some((g.min(o), g.max(o)));
+                    break 'find;
+                }
+            }
+            let _ = tri;
+        }
+        let Some((keep, gone)) = pair else {
+            return;
+        };
+        let Carrier::Curved(absorbed) =
+            core::mem::replace(&mut groups.carriers[gone], Carrier::Gone)
+        else {
+            return;
+        };
+        for of in &mut groups.of {
+            if *of == gone {
+                *of = keep;
+            }
+        }
+        if let Carrier::Curved(kept) = &mut groups.carriers[keep] {
+            kept.vertices.extend(absorbed.vertices);
+            kept.vertices.sort_unstable();
+            kept.vertices.dedup();
+            kept.deviation = kept.deviation.max(absorbed.deviation);
+            kept.fitted = kept.fitted.max(absorbed.fitted);
+        }
+    }
 }
 
 /// One recognized region per connected patch. Triangles dropped from a
@@ -2532,17 +2601,60 @@ fn recognized_regions(
                     }
                 }
             }
-            let pts: Vec<Point> = vertices.iter().map(|&v| points[v as usize]).collect();
-            let deviation = worst_deviation(&shape, &pts);
-            let flat_too = crate::recognize::is_flat(&pts, flat, tol);
             // The vertices on the surface do not put the triangles on it: a
             // long facet across a flat stretch has its corners where a
             // surface through both ends of the stretch passes, and its
-            // middle far from it. Every triangle stands off the surface no
-            // more than its own turn allows.
-            let spans_off = region.iter().any(|&t| {
+            // middle far from it. Where that facet is a large flat face's (a
+            // plane meeting the surface along a tangent circle, triangulated
+            // across it), it is the face's and is peeled off, the largest
+            // piece left being the region; any other such facet says the
+            // surface is wrong.
+            let peel: Vec<usize> = region
+                .iter()
+                .copied()
+                .filter(|&t| {
+                    patches.area[patches.of[t]] > typical * PATCH_SCALE
+                        && !sags_as_the_surface(
+                            &shape,
+                            triangles[t].map(|v| points[v as usize]),
+                            flat,
+                        )
+                })
+                .collect();
+            if !peel.is_empty() {
+                region.retain(|t| !peel.contains(t));
+                keep_largest_piece(&mut region, adjacency);
+                let mut seen = std::collections::HashSet::new();
+                vertices.clear();
+                for &t in &region {
+                    for &v in &triangles[t] {
+                        if seen.insert(v) {
+                            vertices.push(v);
+                        }
+                    }
+                }
+                // What is left is asked again what it is: a band a row or
+                // two high lies on a whole family of surfaces, and the one
+                // chosen with the flat facets in is not the one without.
+                let (pts, nrm) = mesh.samples(&vertices, &region);
+                match recognize_curved(&pts, &nrm, &mesh.chords(&region), flat, tol) {
+                    Some(better) => shape = better.surface,
+                    None => {
+                        for &t in &region {
+                            tried[t] = true;
+                            changed[t] = batch;
+                        }
+                        continue;
+                    }
+                }
+            }
+            let spans = |t: usize| {
                 !sags_as_the_surface(&shape, triangles[t].map(|v| points[v as usize]), flat)
-            });
+            };
+            let spans_off = region.iter().any(|&t| spans(t));
+            let pts: Vec<Point> = vertices.iter().map(|&v| points[v as usize]).collect();
+            let deviation = worst_deviation(&shape, &pts);
+            let flat_too = crate::recognize::is_flat(&pts, flat, tol);
             if deviation > flat || flat_too || spans_off || region.len() < 2 {
                 for &t in &region {
                     tried[t] = true;

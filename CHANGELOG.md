@@ -24,6 +24,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Rounds met by flat faces along a tangent come back exact.** A flat
+  face's facets drawn across the tangent circle it shares with a round have
+  their corners on the round; they are now peeled from the round's region
+  (which is fitted again without them) instead of making the whole region
+  fail. Two regions left on one surface and sharing an edge are one. A
+  plate with rounded corners and a rounded bottom rim comes back on its
+  eighteen exact surfaces, four tori among them, where it took a thousand
+  faces; a thin disc with a rounded rim on its four.
+
 - **A converted dome on a cylinder is sound.** A sphere centred on the axis
   of the cylinders and cones beside it kept its own angular origin, so the
   cap's seam and the cylinder's started a quarter turn apart on the circle

@@ -1643,16 +1643,16 @@ fn blocks_glued_along_an_edge_come_back_two_solids() {
 }
 
 /// A thin disc whose top rim is rounded, meshed coarsely: the rim's round
-/// takes in the disc's own flat facets along the tangent, and the face
-/// built on it strays from them. The stray face is faceted and the part
-/// rebuilt, and the disc comes back a sound solid holding the mesh's
-/// volume.
+/// meets the disc's flat top along a tangent circle, and the top's facets
+/// across that circle have their corners on the round. They are the top's,
+/// peeled from the round's region, and the disc comes back a sound solid on
+/// its exact surfaces.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "the rounding to single precision is the point"
 )]
 #[test]
-fn a_face_straying_from_its_triangles_is_faceted() {
+fn a_rounded_rim_leaves_the_flat_top_its_facets() {
     let mut model = Model::new();
     let disc = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 12.7, 0.4, T)
         .unwrap()
@@ -1671,25 +1671,28 @@ fn a_face_straying_from_its_triangles_is_faceted() {
             f64::from(p.z as f32),
         );
     }
+    let exact = volume(&model, &rounded);
     let built = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
     assert!(built.closed);
     let diagnosis = check(&model, &built.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{diagnosis}");
-    let v = volume(&model, &built.shape);
-    assert!(
-        (v - mesh.volume()).abs() < mesh.volume() * 1e-6,
-        "{v} against {}",
-        mesh.volume()
+    assert_eq!(
+        kinds(&model, &built.shape)[0],
+        2,
+        "the top and bottom stay planes"
     );
+    let v = volume(&model, &built.shape);
+    assert!((v - exact).abs() < exact * 1e-5, "{v} against {exact}");
 }
 
 /// A plate with rounded corners and a rounded bottom rim, meshed finely: the
 /// rim's rounds meet the plate's flat walls and bottom along tangents, and
 /// the walls' long facets lie on a round's surface at their near corners.
 /// A flat facet much larger than a round's own comes with its whole flat
-/// face or not at all, so the rounds stop where the walls begin, the walls
-/// stay planes, and the plate comes back in a few hundred faces where it
-/// took a thousand.
+/// face or not at all, and a flat face's facets across a tangent circle are
+/// peeled from a round's region: the rounds stop where the walls begin, and
+/// the plate comes back on its eighteen exact surfaces where it took a
+/// thousand faces.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "the rounding to single precision is the point"
@@ -1723,7 +1726,9 @@ fn a_round_does_not_take_a_flat_face_s_facets() {
     }
     let built = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
     assert!(check(&model, &built.shape, T).unwrap().is_valid());
-    assert!(built.report.faces <= 600, "{} faces", built.report.faces);
+    // Top, bottom, four walls, four corners, four rounds along the walls
+    // and four at the corners.
+    assert_eq!(kinds(&model, &built.shape), [6, 8, 0, 0, 4]);
     let v = volume_properties(
         &model,
         &built.shape,
