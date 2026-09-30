@@ -48,6 +48,48 @@ fn parallel_tessellation_is_bit_identical() {
     );
 }
 
+/// A mesh converted at one thread and at four serializes to the same bytes:
+/// recognition fits its seeds a batch at a time, the batch sized by the
+/// thread count, and the regions come out as seed-by-seed order gives them.
+#[test]
+fn parallel_mesh_conversion_is_bit_identical() {
+    let mut source = Model::new();
+    let block = ogeom::algo::make_box(&mut source, Frame::WORLD, (30.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = ogeom::topo::explore_unique(&source, &block, ogeom::topo::ShapeType::Edge).unwrap();
+    let rounded = ogeom::fillet::fillet_edges(&mut source, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    let mesh =
+        ogeom::mesh::triangulate(&source, &rounded, Deflection::with_chord(0.05).unwrap(), T)
+            .unwrap();
+    let write = |threads: usize| {
+        parallel::set_threads(threads);
+        let mut model = Model::new();
+        let out = ogeom::algo::solid_from_mesh(
+            &mut model,
+            &mesh,
+            &ogeom::algo::MeshSolidOptions::default(),
+            T,
+        )
+        .unwrap();
+        parallel::set_threads(0);
+        ogeom::io::native::write(
+            &model,
+            &[out.shape],
+            ogeom::io::native::WriteOptions::default(),
+        )
+        .unwrap()
+    };
+    let serial = write(1);
+    let threaded = write(4);
+    assert_eq!(
+        serial, threaded,
+        "the converted solid must not depend on the thread count"
+    );
+}
+
 /// A pre-cancelled watch stops the tessellation at its first checkpoint,
 /// and the error says cancelled, not a partial result, not a stall.
 #[test]
