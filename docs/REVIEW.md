@@ -27,7 +27,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 
 ### I. Intersections
 
-- [x] **I1.** Closed sections of two crossing cylinders (an oblique pipe tee) come back 1 to 9 mm off both surfaces with a stated tolerance of 25 to 1200: the loop's fit fails (`ogeom-intersect/src/section.rs` `marched`, `approx.rs`).
+- [x] **I1.** Closed sections of two crossing cylinders (an oblique pipe tee) come back 1 to 9 mm off both surfaces with a stated tolerance of 25 to 1200: the loop's fit fails (`ogeom-intersect/src/section.rs` `marched`, `approx.rs`). (c7eaa49)
 
 ### B. Splines
 
