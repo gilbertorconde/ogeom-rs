@@ -539,19 +539,18 @@ fn a_cylinder_seated_on_the_face_it_pierces_shares_only_the_segment_between_them
 /// A shear is the transform a placement cannot express, so the body is
 /// restated as patches, correctly; there is no other way to carry a box's
 /// planes under one. What the patches lose is the *word* plane, and
-/// coincidence is decided on what the geometry says: nothing answers `Same`
-/// for two patches, so the pair went to the marcher, which documents that it
-/// is not a coincidence detector and has no crossing to trace here. It came
-/// back with a section made of noise, and the boolean refused some stages
-/// later for edge or vertex contact, which this is not.
+/// coincidence is decided on what the geometry says: the two faces on the
+/// z = 0 plane are one surface, and each's edges are carried into the
+/// other's chart over the stretch that lies on its window. The union, the
+/// difference and the intersection come out at their exact volumes.
 #[test]
-fn a_sheared_copy_sharing_a_plane_is_refused_as_the_same_domain_contact_it_is() {
+fn a_sheared_copy_sharing_a_plane_combines_to_its_exact_volumes() {
     let mut model = Model::with_tolerances(T);
     let a = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
         .unwrap()
         .shape;
-    // Unit determinant, so the copy keeps its volume, and slid clear along
-    // the z = 0 plane the two go on sharing.
+    // Unit determinant, so the copy keeps its volume, and slid along the
+    // z = 0 plane the two go on sharing, overlapping by a wedge.
     let shear = ogeom::math::GeneralTransform {
         linear: ogeom::math::Matrix3 {
             rows: [[1.0, 0.5, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -562,18 +561,27 @@ fn a_sheared_copy_sharing_a_plane_is_refused_as_the_same_domain_contact_it_is() 
         .unwrap()
         .shape;
 
-    let refused = ogeom::boolean::fuse(&mut model, &a, &b, T)
-        .expect_err("a same-domain pair with no closed-form pcurve is not resolved yet");
-
-    let said = refused.to_string();
-    assert!(
-        said.contains("same-domain contact"),
-        "refused as something else: {said}"
-    );
-    assert!(
-        !said.contains("edge or vertex contact"),
-        "still refusing by the name of a different configuration: {said}"
-    );
+    // The overlap: over y in 0..10 the copy starts at x = 5 + y / 2, so the
+    // shared section is 25 and the wedge 250.
+    for (name, op, expected) in [
+        (
+            "fuse",
+            ogeom::boolean::fuse
+                as fn(&mut Model, &ogeom::topo::Shape, &ogeom::topo::Shape, Tolerances) -> _,
+            1750.0,
+        ),
+        ("cut", ogeom::boolean::cut, 750.0),
+        ("common", ogeom::boolean::common, 250.0),
+    ] {
+        let out = op(&mut model, &a, &b, T).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let diagnosis = ogeom::algo::check(&model, &out.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+        let measured = volume(&model, &out.shape);
+        assert!(
+            (measured - expected).abs() < expected * 1e-6,
+            "{name} volume {measured} against {expected}"
+        );
+    }
 }
 
 /// A box cut from an L-bracket flush with the bracket's wall: the box's

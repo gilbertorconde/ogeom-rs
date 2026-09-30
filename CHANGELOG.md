@@ -34,6 +34,22 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A pad sketched from a converted part's face fuses, cuts and commons
+  with the part.** A face states how far it may stand off its surface (a
+  face fitted to a mesh, by its fit's deviation), and the boolean now
+  holds two faces to that: they lie on one surface where every point of
+  the one over the other stands within what the two state, though their
+  surfaces differ (a sketch keeping its points in single precision draws
+  an arc through them on another centre and radius, a few microns off the
+  wall it was taken from). The edges carried between the two, the
+  pieces' partners on the shared surface and the pieces one stands in for
+  are all read at that tolerance, and an edge running past the other
+  surface's window is carried over the stretch it has on it. A pad from
+  such a sketch along a converted part's walls was refused, a piece on the
+  other's boundary with no partner face. A box and a sheared copy sharing
+  a plane with it, refused as unresolved same-domain contact, now fuse,
+  cut and common to their exact volumes.
+
 - **A section leaving a face's boundary all but along it splits the face.**
   The boolean orders the strands round each junction of a face's
   arrangement by where they leave a small circle about it, not by their

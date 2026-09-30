@@ -163,10 +163,13 @@ struct GFace {
     /// filter box's diagonal, so the filter can tighten without silently
     /// tightening the marcher.
     chord_scale: f64,
+    /// How far the face may stand off its surface, as it states: a face
+    /// fitted to a mesh lies within its fit's deviation of it.
+    tolerance: f64,
     edges: Vec<BoundaryEdge>,
     poles: Vec<PoleEdge>,
     /// The face's boundary polylined in its chart, both seam columns, ends
-    /// welded: the trim [`chart_point_of`] tests against. Built the first
+    /// welded: the trim [`chart_point_within`] tests against. Built the first
     /// time a probe asks and kept, since the same face is asked about once
     /// per piece that might lie on it; `None` where a pcurve would not
     /// polyline.
@@ -258,6 +261,7 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
         }
         let surface = stored.transformed(&placement, tol)?;
         let surface_id = data.surface;
+        let tolerance = data.tolerance.get();
 
         let mut edges = Vec::new();
         let mut poles = Vec::new();
@@ -517,6 +521,7 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
             surface,
             bound,
             chord_scale,
+            tolerance,
             edges,
             outline: std::sync::OnceLock::new(),
             trim_lines: std::sync::OnceLock::new(),
@@ -1098,6 +1103,93 @@ fn projected_into_shared_chart(
     Ok(Some(on_owner.0))
 }
 
+/// The stretch of an edge that lies on a coincident surface's window, and
+/// its image in that surface's chart, where the edge as a whole cannot be
+/// imaged there: it runs on past the window (a converted part's wall edge
+/// against a pad's shorter side swept from the part's own outline), and
+/// only what lies within it can split the face on that surface.
+///
+/// The edge is sampled, and the samples whose foot on the surface is
+/// within `reach` and clear of the window's rim make one run; its ends
+/// are narrowed onto the rim by bisection, and the image fitted over the
+/// run alone. `Ok(None)` where no sample lands on the window; an error
+/// where the samples that do make more than one run, or the fit fails.
+fn clipped_into_chart(
+    curve: &Curve,
+    range: (f64, f64),
+    target: &SurfaceGeometry,
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<(PlanarCurve, (f64, f64))>> {
+    const SAMPLES: u32 = 64;
+    let ((ua, ub), (va, vb)) = target.domain();
+    // A foot the search pinned to the rim is past the window, not on it.
+    let (mu, mv) = ((ub - ua).abs() * 1e-9, (vb - va).abs() * 1e-9);
+    let on = |t: f64| -> OgeomResult<bool> {
+        let p = curve.point_at(t, tol)?;
+        let Ok(foot) = ogeom_algo::project_on_surface(target, p, 16, tol) else {
+            return Ok(false);
+        };
+        let (u, v) = foot.parameters;
+        Ok(foot.distance <= reach
+            && (!u.is_finite() || !ua.is_finite() || (u > ua + mu && u < ub - mu))
+            && (!v.is_finite() || !va.is_finite() || (v > va + mv && v < vb - mv)))
+    };
+    let at = |i: u32| range.0 + (range.1 - range.0) * f64::from(i) / f64::from(SAMPLES);
+    let mut inside = Vec::with_capacity(SAMPLES as usize + 1);
+    for i in 0..=SAMPLES {
+        inside.push(on(at(i))?);
+    }
+    let Some(first) = inside.iter().position(|&x| x) else {
+        return Ok(None);
+    };
+    let last = inside.iter().rposition(|&x| x).unwrap_or(first);
+    if inside[first..=last].iter().any(|&x| !x) {
+        ogeom_bail!(
+            NotDone,
+            "same-domain contact whose edge leaves and re-enters the shared \
+             surface's window"
+        );
+    }
+    // Each end narrowed between the last sample on the window and the
+    // first past it.
+    let narrow = |mut good: f64, mut bad: f64| -> OgeomResult<f64> {
+        for _ in 0..40 {
+            let mid = f64::midpoint(good, bad);
+            if on(mid)? {
+                good = mid;
+            } else {
+                bad = mid;
+            }
+        }
+        Ok(good)
+    };
+    #[allow(clippy::cast_possible_truncation, reason = "sample indices")]
+    let lo = if first == 0 {
+        range.0
+    } else {
+        narrow(at(first as u32), at(first as u32 - 1))?
+    };
+    #[allow(clippy::cast_possible_truncation, reason = "sample indices")]
+    let hi = if last == SAMPLES as usize {
+        range.1
+    } else {
+        narrow(at(last as u32), at(last as u32 + 1))?
+    };
+    if hi - lo <= tol.parametric() {
+        return Ok(None);
+    }
+    let fitted = ogeom_algo::pcurve_fit::fit_projected_pcurve(curve, (lo, hi), target, tol)?;
+    if !fitted.2 {
+        ogeom_bail!(
+            NotDone,
+            "same-domain contact whose edge's stretch on the shared surface's \
+             window has no image in its chart"
+        );
+    }
+    Ok(Some((fitted.0, (lo, hi))))
+}
+
 /// The map from one cylinder's chart to another's where both are one
 /// cylinder on two frames: the same axis line, within `slop`, and the same
 /// radius. The frames differ by a turn about the axis, a slide along it, or
@@ -1533,8 +1625,9 @@ fn fill(
             // sign changes, and a pair that never separates has none), so
             // what it traces over a coincident pair is noise wearing a
             // section's name, and it costs seconds to produce.
-            let met = if ogeom_intersect::surface_surface(&fa.surface, &fb.surface, tol).is_err()
-                && surfaces_coincide(&fa.surface, &fb.surface, options.tolerance, tol)
+            let met = if (ogeom_intersect::surface_surface(&fa.surface, &fb.surface, tol).is_err()
+                && surfaces_coincide(&fa.surface, &fb.surface, options.tolerance, tol))
+                || coincide_as_stated(fa, fb, tol)
             {
                 SurfaceIntersection::Same
             } else {
@@ -1577,7 +1670,8 @@ fn fill(
                                 .edges
                                 .iter()
                                 .map(|t| t.tolerance)
-                                .fold(e.tolerance, f64::max);
+                                .fold(e.tolerance, f64::max)
+                                .max(owner.tolerance + target.tolerance);
                             let exact =
                                 ogeom_intersect::exact_pcurve_of(&e.curve, &target.surface, tol)
                                     .or_else(|| {
@@ -1594,8 +1688,51 @@ fn fill(
                                             loose,
                                         )
                                     });
+                            let mut clipped_contact = if exact.is_none()
+                                && !same_chart(&owner.surface, &target.surface, tol)
+                                && carried_across(
+                                    &e.pcurve,
+                                    e.prange,
+                                    &owner.surface,
+                                    &target.surface,
+                                    slop,
+                                    tol,
+                                )
+                                .is_none()
+                                && projected_into_shared_chart(
+                                    &e.curve,
+                                    e.crange,
+                                    &owner.surface,
+                                    &target.surface,
+                                    tol,
+                                )
+                                .is_err()
+                            {
+                                let reach = slop
+                                    .max(owner.tolerance + target.tolerance)
+                                    .max(tol.confusion() * 1e2);
+                                match clipped_into_chart(
+                                    &e.curve,
+                                    e.crange,
+                                    &target.surface,
+                                    reach,
+                                    tol,
+                                )? {
+                                    Some(clipped) => Some(clipped),
+                                    // Wholly off the target's window is
+                                    // wholly off the target.
+                                    None => continue,
+                                }
+                            } else {
+                                None
+                            };
+                            let crange = clipped_contact.as_ref().map_or(e.crange, |c| c.1);
                             let (pcurve, prange) = match exact {
                                 Some(exact) => (exact, e.crange),
+                                // What the other branches cannot image whole
+                                // but only runs on past the target's window
+                                // is imaged over its stretch on the window.
+                                None if let Some(clipped) = clipped_contact.take() => clipped,
                                 // A fitted edge has no closed-form projection,
                                 // but when the two faces sit on the
                                 // *identical chart*, which is exactly the
@@ -1674,11 +1811,14 @@ fn fill(
                             };
                             out.contacts.push(ContactRec {
                                 curve: (*e.curve).clone(),
-                                crange: e.crange,
+                                crange,
                                 pcurve,
                                 prange,
                                 node: e.node,
-                                tolerance: e.tolerance,
+                                // The contact stands off the target as far
+                                // as the two faces say they may stand off
+                                // their own surfaces, not only its edge.
+                                tolerance: e.tolerance.max(owner.tolerance + target.tolerance),
                                 target_from_a,
                                 target_face,
                                 bound: e.bound,
@@ -3671,6 +3811,107 @@ fn surfaces_stand_apart(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerance
     clearance > tol.confusion() * 1e3
 }
 
+/// Whether two faces lie on one surface where they overlap, to within what
+/// they state they may stand off their own: a face fitted to a mesh, and a
+/// face swept from a sketch of its outline whose points a float's rounding
+/// moved a few microns, are one wall by the fit's own measure, though the
+/// arc through the rounded points has another centre and radius and the
+/// closed form, held to the confusion distance, sees two.
+///
+/// Asked only where the faces state more than the confusion distance's
+/// few. The smaller face is sampled on a grid over its chart, inside its
+/// trim; every sample inside the other face's trim must lie within the
+/// stated tolerance of the other's surface, and a few must, for the answer
+/// to mean anything. A pair that crosses fails at its first sample off the
+/// other.
+fn coincide_as_stated(fa: &GFace, fb: &GFace, tol: Tolerances) -> bool {
+    const GRID: usize = 8;
+    const EVIDENCE: usize = 4;
+    let reach = fa.tolerance + fb.tolerance;
+    if reach <= tol.confusion() * 10.0 {
+        return false;
+    }
+    // Two closed forms of different kinds share no patch: a plane is no
+    // cylinder anywhere, however close they pass.
+    let kind = |s: &SurfaceGeometry| match s {
+        SurfaceGeometry::Plane(_) => Some(0),
+        SurfaceGeometry::Cylinder(_) => Some(1),
+        SurfaceGeometry::Cone(_) => Some(2),
+        SurfaceGeometry::Sphere(_) => Some(3),
+        SurfaceGeometry::Torus(_) => Some(4),
+        _ => None,
+    };
+    if let (Some(a), Some(b)) = (kind(&fa.surface), kind(&fb.surface))
+        && a != b
+    {
+        return false;
+    }
+    let (sampled, against) = if fa.bound.diagonal() <= fb.bound.diagonal() {
+        (fa, fb)
+    } else {
+        (fb, fa)
+    };
+    let Some(lines) = sampled.outline(tol) else {
+        return false;
+    };
+    let borrowed: Vec<&[Point2]> = lines.iter().map(Vec::as_slice).collect();
+    let (lo, hi) = lines.iter().flatten().fold(
+        (
+            Point2::new(f64::INFINITY, f64::INFINITY),
+            Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+        ),
+        |(lo, hi), p| {
+            (
+                Point2::new(lo.x.min(p.x), lo.y.min(p.y)),
+                Point2::new(hi.x.max(p.x), hi.y.max(p.y)),
+            )
+        },
+    );
+    if !(lo.x.is_finite() && hi.x.is_finite() && lo.y.is_finite() && hi.y.is_finite()) {
+        return false;
+    }
+    // Wide enough to find the other face's trim about a sample standing
+    // off its surface, so a sample off it is caught rather than skipped.
+    let search = reach.max(sampled.bound.diagonal().max(against.bound.diagonal()) * 1e-3);
+    let mut evidence = 0_usize;
+    for i in 0..GRID {
+        for j in 0..GRID {
+            #[allow(clippy::cast_precision_loss)]
+            let at = Point2::new(
+                lo.x + (hi.x - lo.x) * ((i as f64 + 0.5) / GRID as f64),
+                lo.y + (hi.y - lo.y) * ((j as f64 + 0.5) / GRID as f64),
+            );
+            if !arrange::inside_many(&borrowed, at) {
+                continue;
+            }
+            let Ok(p) = sampled.surface.point_at(at.x, at.y, tol) else {
+                return false;
+            };
+            if !against.bound.expanded(search).contains(p) {
+                continue;
+            }
+            let Some(uv) = chart_point_within(against, p, search, tol) else {
+                continue;
+            };
+            let Ok(foot) = against.surface.point_at(uv.x, uv.y, tol) else {
+                return false;
+            };
+            if foot.distance(p) > reach {
+                return false;
+            }
+            evidence += 1;
+        }
+    }
+    evidence >= EVIDENCE
+}
+
+/// How far off a partner's surface a probe of `face` may stand and still
+/// be read on it: what the two faces state, or the confusion distance's
+/// few.
+fn partner_reach(face: &GFace, partner: &GFace, tol: Tolerances) -> f64 {
+    (face.tolerance + partner.tolerance).max(tol.confusion() * 10.0)
+}
+
 /// Whether two surfaces are one surface wherever they overlap, measured.
 ///
 /// The closed forms answer this for the pairs they know. Where there is no
@@ -4124,7 +4365,9 @@ fn length_and_reach(curve: &Curve, tol: Tolerances) -> OgeomResult<(f64, f64)> {
     Ok((length, span.diagonal()))
 }
 
-fn chart_point_of(face: &GFace, p: Point, tol: Tolerances) -> Option<Point2> {
+/// Where a point sits in a face's chart, for a point up to `reach` off the
+/// face's surface and inside its trim; `None` elsewhere.
+fn chart_point_within(face: &GFace, p: Point, reach: f64, tol: Tolerances) -> Option<Point2> {
     // Closed-form inversion for the analytic surfaces: the same-domain
     // resolution asks "where does this probe sit in the partner's chart", and
     // the partner may be any surface a face melts along: a plane against a
@@ -4132,7 +4375,6 @@ fn chart_point_of(face: &GFace, p: Point, tol: Tolerances) -> Option<Point2> {
     // reach check keeps the answer honest: a point off the surface has no
     // chart position, whatever the inversion returns.
     use ogeom_math::elementary;
-    let reach = tol.confusion() * 10.0;
     let raw = match &face.surface {
         SurfaceGeometry::Plane(x) => {
             let local = x.plane().frame().to_local(p);
@@ -4472,7 +4714,7 @@ fn distance_to_edge_curve(
 /// `a` has nothing there (a bore refilled by the cylinder that cut it, whose
 /// caps fill holes the part no longer has faces for), nothing stands in, and
 /// `b`'s piece is the only description of that patch there is.
-fn mark_covered_coincidences(ga: &GSolid, pieces: &mut [FacePiece], tol: Tolerances) {
+fn mark_covered_coincidences(ga: &GSolid, gb: &GSolid, pieces: &mut [FacePiece], tol: Tolerances) {
     // Which pieces of the first argument stand on a shared surface.
     let from_a: Vec<(usize, usize)> = pieces
         .iter()
@@ -4490,10 +4732,11 @@ fn mark_covered_coincidences(ga: &GSolid, pieces: &mut [FacePiece], tol: Toleran
         }
         for &(other, face_a) in &from_a {
             let host = &ga.faces[face_a];
-            // The point `b`'s piece stands at, read in `a`'s face's chart. A
-            // point that is not on that surface at all has no chart position,
-            // and `chart_point_of` says so.
-            let Some(at) = chart_point_of(host, piece.probe, tol) else {
+            // The point `b`'s piece stands at, read in `a`'s face's chart,
+            // as far off it as the two faces say they may stand. A point
+            // that is not on that surface at all has no chart position.
+            let reach = partner_reach(&gb.faces[piece.face], host, tol);
+            let Some(at) = chart_point_within(host, piece.probe, reach, tol) else {
                 continue;
             };
             // The host piece's rings, not its boundary strands: a ring is a
@@ -5510,7 +5753,8 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     let shared = !partners.is_empty()
                         && partners.iter().any(|&pi| {
                             let partner = if from_a { &gb.faces[pi] } else { &ga.faces[pi] };
-                            chart_point_of(partner, at, tol).is_some()
+                            chart_point_within(partner, at, partner_reach(face, partner, tol), tol)
+                                .is_some()
                         });
                     let says = if shared {
                         Containment::On
@@ -5551,7 +5795,12 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                         let mut resolved = None;
                         for &pi in partners {
                             let partner = if from_a { &gb.faces[pi] } else { &ga.faces[pi] };
-                            let Some(uv) = chart_point_of(partner, probe, tol) else {
+                            let Some(uv) = chart_point_within(
+                                partner,
+                                probe,
+                                partner_reach(face, partner, tol),
+                                tol,
+                            ) else {
                                 continue;
                             };
                             let theirs = outward_normal(partner, uv, tol)?;
@@ -5638,7 +5887,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         pieces.extend(face_pieces);
         junctions.extend(face_junctions);
     }
-    mark_covered_coincidences(&ga, &mut pieces, tol);
+    mark_covered_coincidences(&ga, &gb, &mut pieces, tol);
     if *ARRANGE_DEBUG {
         for (fi, partners) in same_a.iter().enumerate() {
             if !partners.is_empty() {

@@ -1980,16 +1980,138 @@ fn top_face_over(model: &Model, shape: &Shape, x: f64, y: f64) -> Shape {
         .expect("a top face over the point")
 }
 
+/// A flat face's outline as a sketch holding its points in single precision
+/// draws it: each line between its ends, each arc through its ends and its
+/// middle, every point rounded to `f32`. The arcs come back on other
+/// centres and radii, the sides swept from them a few microns off the
+/// walls they were drawn from.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the rounding to single precision is the point"
+)]
+fn outline_in_single_precision(model: &mut Model, face: &Shape) -> Shape {
+    use ogeom::geom::{Curve, Curve3d as _, LineCurve};
+    let round = |p: Point| {
+        Point::new(
+            f64::from(p.x as f32),
+            f64::from(p.y as f32),
+            f64::from(p.z as f32),
+        )
+    };
+    // Each edge's ends (its vertices) and middle, and whether it is an arc.
+    let vertex = |model: &Model, v: &Shape| {
+        (
+            v.node().index(),
+            model.node(v).unwrap().data().as_vertex().unwrap().point,
+        )
+    };
+    let mut spans: Vec<([u32; 2], [Point; 3], bool)> = Vec::new();
+    for edge in explore_unique(model, face, ShapeType::Edge).unwrap() {
+        let (first, last) = ogeom::algo::edge_vertices(model, &edge).unwrap().unwrap();
+        let ((ia, a), (ib, b)) = (vertex(model, &first), vertex(model, &last));
+        let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+        let Some(ogeom::topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            panic!("an edge with no curve");
+        };
+        let curve = model.geometry().curve(*curve).unwrap();
+        let middle = curve.point_at(f64::midpoint(range.0, range.1), T).unwrap();
+        spans.push((
+            [ia, ib],
+            [a, middle, b].map(round),
+            matches!(curve, Curve::Circle(_)),
+        ));
+    }
+    // Chained end to start.
+    let first = spans.remove(0);
+    let mut end = first.0[1];
+    let mut chain = vec![(first.1, first.2)];
+    while !spans.is_empty() {
+        let next = spans
+            .iter()
+            .position(|(ends, _, _)| ends.contains(&end))
+            .expect("the outline closes");
+        let (ends, mut points, arc) = spans.remove(next);
+        if ends[1] == end {
+            points.reverse();
+            end = ends[0];
+        } else {
+            end = ends[1];
+        }
+        chain.push((points, arc));
+    }
+    // Anticlockwise seen from above, as the face's own outline runs.
+    let area: f64 = chain
+        .iter()
+        .map(|(p, _)| p[0].x * p[2].y - p[2].x * p[0].y)
+        .sum();
+    if area < 0.0 {
+        chain.reverse();
+        for (points, _) in &mut chain {
+            points.reverse();
+        }
+    }
+    let corners: Vec<Shape> = chain
+        .iter()
+        .map(|(p, _)| model.add_vertex(ogeom::topo::VertexData::new(p[0])))
+        .collect();
+    let mut edges = Vec::new();
+    for (i, (p, arc)) in chain.iter().enumerate() {
+        let (from, to) = (&corners[i], &corners[(i + 1) % corners.len()]);
+        let edge = if *arc {
+            let circle = ogeom::math::Circle::through(p[0], p[1], p[2], T).unwrap();
+            let param =
+                |q: Point| ogeom::math::elementary::circle_parameter(&circle, q, T).unwrap();
+            let tau = core::f64::consts::TAU;
+            let (a, b, c) = (param(p[0]), param(p[1]), param(p[2]));
+            let ahead = |t: f64| (t - a).rem_euclid(tau);
+            let curve: Curve = ogeom::geom::CircleCurve::new(circle).into();
+            if ahead(b) < ahead(c) {
+                ogeom::algo::make_edge_between(model, curve, (a, a + ahead(c)), from, to, T)
+                    .unwrap()
+                    .shape
+            } else {
+                let back = (c - a).rem_euclid(tau) - tau;
+                ogeom::algo::make_edge_between(model, curve, (a + back, a), to, from, T)
+                    .unwrap()
+                    .shape
+                    .reversed()
+            }
+        } else {
+            let line: Curve = LineCurve::segment(p[0], p[2], T).unwrap().into();
+            ogeom::algo::make_edge_between(model, line, (0.0, p[0].distance(p[2])), from, to, T)
+                .unwrap()
+                .shape
+        };
+        edges.push(edge);
+    }
+    let wire = ogeom::algo::make_wire(model, &edges, T).unwrap().shape;
+    let (at, _) = ogeom::algo::face_normal(model, face, T).unwrap();
+    let plane = ogeom::math::Plane::new(
+        Frame::new(Point::new(0.0, 0.0, at.z), Direction::Z, Direction::X, T).unwrap(),
+    );
+    let surface = ogeom::geom::PlaneSurface::new(plane).into();
+    ogeom::algo::make_face(model, surface, &[wire], T)
+        .unwrap()
+        .shape
+}
+
 /// A converted part and a prism of one of its own top faces pushed `depth`
 /// straight down: the prism's sides lie on the part's walls (a flat one and
-/// recognized rounds) over their height. Fuse, cut and common each give a
-/// sound solid, and the fuse and the common hold what the two inputs do.
-fn pad_along_a_converted_part_s_walls(depth: f64) {
+/// recognized rounds) over their height, exactly or, where `rounded`, as a
+/// single-precision sketch of the face's outline leaves them. Fuse, cut and
+/// common each give a sound solid, and the fuse and the common hold what
+/// the two inputs do.
+fn pad_along_a_converted_part_s_walls(depth: f64, rounded: bool) {
     let mut model = Model::new();
     let Some(part) = converted_part(&mut model) else {
         return;
     };
     let face = top_face_over(&model, &part, 105.157, 89.76);
+    let face = if rounded {
+        outline_in_single_precision(&mut model, &face)
+    } else {
+        face
+    };
     let pad = ogeom::algo::make_prism(&mut model, &face, Vector::new(0.0, 0.0, -depth), T)
         .unwrap()
         .shape;
@@ -2041,11 +2163,24 @@ fn pad_along_a_converted_part_s_walls(depth: f64) {
 /// The pad 3 mm deep, within the part.
 #[test]
 fn a_pad_along_a_converted_part_s_walls_within_it() {
-    pad_along_a_converted_part_s_walls(3.0);
+    pad_along_a_converted_part_s_walls(3.0, false);
 }
 
 /// The pad 10 mm deep, out through the part's bottom.
 #[test]
 fn a_pad_along_a_converted_part_s_walls_out_through_its_bottom() {
-    pad_along_a_converted_part_s_walls(10.0);
+    pad_along_a_converted_part_s_walls(10.0, false);
+}
+
+/// The pad 3 mm deep, from a single-precision sketch of the face.
+#[test]
+fn a_sketched_pad_along_a_converted_part_s_walls_within_it() {
+    pad_along_a_converted_part_s_walls(3.0, true);
+}
+
+/// The pad 10 mm deep, from a single-precision sketch of the face, out
+/// through the part's bottom.
+#[test]
+fn a_sketched_pad_along_a_converted_part_s_walls_out_through_its_bottom() {
+    pad_along_a_converted_part_s_walls(10.0, true);
 }

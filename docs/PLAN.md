@@ -25,9 +25,10 @@ find a partner in, and no pair of normals to compare. Resolving it needs the
 contact classified from the neighbouring pieces instead of the piece itself.
 
 **Coincident spline patches.** Two B-spline surfaces lying on one another (a
-sheared copy sharing a plane with its original) are detected by sampling and
-refused. Resolving them needs same-domain contact whose edges project into a
-fitted chart.
+sheared copy sharing a plane with its original) are detected by sampling, and
+each edge is carried into the other's chart over its stretch on the other's
+window. An edge that leaves that window and comes back onto it is still
+refused.
 
 **Tangential contact as its own curve.** Two surfaces touching along a curve
 without crossing it, where no closed form names the curve (a torus resting in
