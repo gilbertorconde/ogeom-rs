@@ -24,6 +24,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A round between two flat faces comes back tangent to them.** The mesh
+  converter puts a curved region that meets two non-parallel planes across
+  smooth edges on the cylinder tangent to both, its axis along their line
+  of meeting and its radius the median of the vertices' own, wherever that
+  holds every vertex within the coplanar distance. A narrow round's few
+  rows of vertices fitted a cylinder standing a micron off its faces.
+
 - **Noisy flat faces come back whole from a mesh.** The mesh converter's
   default coplanar distance also follows how far the mesh's vertices stand
   off the flat faces they lie on (measured across nearly coplanar edges),

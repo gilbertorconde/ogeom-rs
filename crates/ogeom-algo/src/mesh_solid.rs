@@ -1835,15 +1835,27 @@ fn segment(
         split_disconnected(triangles, adjacency, &mut groups);
         merge_same_surface(points, triangles, adjacency, &mut groups, flat);
         sphere_axes(points, triangles, adjacency, &mut groups, flat, tol);
-        let normals = plane_normals(
+        let mut planes = groups.clone();
+        coplanar_groups(
             points,
             triangles,
             adjacency,
             options.coplanar_angle,
             flat,
-            &groups,
+            &mut planes,
             tol,
         )?;
+        tangent_rounds(
+            points,
+            triangles,
+            adjacency,
+            &mut groups,
+            &planes,
+            options.crease.cos(),
+            flat,
+            tol,
+        );
+        let normals = plane_normals(&planes);
         align_axes(points, &mut groups, &normals, flat, tol);
         hole_frames(points, triangles, adjacency, &mut groups, tol);
         slit_bands(points, triangles, adjacency, &mut groups, tol);
@@ -1861,26 +1873,16 @@ fn segment(
 }
 
 /// The normals of the planes the triangles left over from recognition
-/// gather into, the largest plane first: a small plane's fit leans with its
-/// few vertices' slop.
-fn plane_normals(
-    points: &[Point],
-    triangles: &[[u32; 3]],
-    adjacency: &Adjacency,
-    angle: f64,
-    flat: f64,
-    groups: &Groups,
-    tol: Tolerances,
-) -> OgeomResult<Vec<Direction>> {
-    let mut trial = groups.clone();
-    coplanar_groups(points, triangles, adjacency, angle, flat, &mut trial, tol)?;
-    let mut size = vec![0_usize; trial.carriers.len()];
-    for &g in &trial.of {
+/// gather into (`planes`, the groups with those planes grown), the largest
+/// plane first: a small plane's fit leans with its few vertices' slop.
+fn plane_normals(planes: &Groups) -> Vec<Direction> {
+    let mut size = vec![0_usize; planes.carriers.len()];
+    for &g in &planes.of {
         if let Some(n) = size.get_mut(g) {
             *n += 1;
         }
     }
-    let mut planes: Vec<(usize, Direction)> = trial
+    let mut normals: Vec<(usize, Direction)> = planes
         .carriers
         .iter()
         .zip(&size)
@@ -1889,8 +1891,146 @@ fn plane_normals(
             _ => None,
         })
         .collect();
-    planes.sort_by_key(|&(n, _)| core::cmp::Reverse(n));
-    Ok(planes.into_iter().map(|(_, d)| d).collect())
+    normals.sort_by_key(|&(n, _)| core::cmp::Reverse(n));
+    normals.into_iter().map(|(_, d)| d).collect()
+}
+
+/// Put a round between two flat faces on the cylinder tangent to both.
+///
+/// A round only a row or two of facets across has its vertices on a few
+/// lines, which a cone, or a cylinder leaning from the faces, fits as well
+/// as the round's own cylinder; the one fitted then meets the faces along
+/// lines that are not where the facets end. The two faces fix the round's
+/// axis (along their line of meeting) and leave only the radius, which each
+/// vertex gives: the circle through it tangent to both faces. A curved
+/// region meeting two non-parallel planes (of `planes`, the groups with the
+/// planes grown) across smooth edges, and no other plane so, takes the
+/// cylinder at the vertices' median radius where it holds every vertex
+/// within the distance.
+#[allow(clippy::too_many_arguments, reason = "the segmentation's inputs")]
+fn tangent_rounds(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    groups: &mut Groups,
+    planes: &Groups,
+    cos_crease: f64,
+    flat: f64,
+    tol: Tolerances,
+) {
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); groups.carriers.len()];
+    for (t, &g) in groups.of.iter().enumerate() {
+        if let Some(list) = members.get_mut(g) {
+            list.push(t);
+        }
+    }
+    for (i, region) in members.iter().enumerate() {
+        let Carrier::Curved(curved) = &groups.carriers[i] else {
+            continue;
+        };
+        if matches!(curved.shape, Canonical::Sphere(_) | Canonical::Torus(_)) {
+            continue;
+        }
+        let mut beside: Vec<usize> = Vec::new();
+        for &t in region {
+            for h in 3 * t..3 * t + 3 {
+                let Some(g) = adjacency.twin[h] else {
+                    continue;
+                };
+                let other = g / 3;
+                if groups.of[other] == i
+                    || unit_normal(points, triangles[t]).dot(unit_normal(points, triangles[other]))
+                        < cos_crease
+                {
+                    continue;
+                }
+                beside.push(planes.of[other]);
+            }
+        }
+        beside.sort_unstable();
+        beside.dedup();
+        let flanks: Vec<&Plane> = beside
+            .iter()
+            .filter_map(|&j| match planes.carriers.get(j) {
+                Some(Carrier::Plane(plane)) => Some(plane),
+                _ => None,
+            })
+            .collect();
+        if flanks.len() != 2 {
+            continue;
+        }
+        let pts: Vec<Point> = curved
+            .vertices
+            .iter()
+            .map(|&v| points[v as usize])
+            .collect();
+        let Some(shape) = tangent_cylinder(flanks[0], flanks[1], &pts, tol) else {
+            continue;
+        };
+        let deviation = worst_deviation(&shape, &pts);
+        if deviation > flat {
+            continue;
+        }
+        if let Carrier::Curved(curved) = &mut groups.carriers[i] {
+            curved.shape = shape;
+            curved.deviation = deviation;
+        }
+    }
+}
+
+/// The cylinder tangent to two planes, on the side of them the points are
+/// on, through the points at their median radius.
+///
+/// With the planes' unit normals `a` and `b` and `w = (a + b) / (1 + a·b)`,
+/// the axis of a circle of radius `r` tangent to both runs through
+/// `c0 + s·r·w`, `c0` on both planes and `s` the side (-1 within both, +1
+/// beyond both). A point `q` from `c0` (square to the axis) is on that
+/// circle where `r²(|w|² - 1) - 2s(q·w)r + |q|² = 0`, the larger root.
+fn tangent_cylinder(a: &Plane, b: &Plane, pts: &[Point], tol: Tolerances) -> Option<Canonical> {
+    let (na, nb) = (a.frame().z().vector(), b.frame().z().vector());
+    let g = na.dot(nb);
+    // Nearly parallel planes leave the axis to their slop; nearly opposite
+    // ones a radius the points barely fix.
+    if g.abs() > 5.0_f64.to_radians().cos() {
+        return None;
+    }
+    let axis = Direction::new(na.cross(nb), tol).ok()?;
+    let (pa, pb) = (
+        a.frame().origin().to_vector(),
+        b.frame().origin().to_vector(),
+    );
+    // The point on both planes nearest the origin of the axis's normal
+    // plane: solve c·na = pa·na, c·nb = pb·nb, c·axis = 0.
+    let (ha, hb) = (pa.dot(na), pb.dot(nb));
+    let c0 = (nb.cross(axis.vector()) * ha + axis.vector().cross(na) * hb)
+        / na.cross(nb).dot(axis.vector());
+    let w = (na + nb) / (1.0 + g);
+    let side = pts
+        .iter()
+        .map(|p| (p.to_vector() - c0).dot(na) + (p.to_vector() - c0).dot(nb))
+        .sum::<f64>()
+        .signum();
+    let k = w.dot(w) - 1.0;
+    let mut radii: Vec<f64> = pts
+        .iter()
+        .filter_map(|p| {
+            let d = p.to_vector() - c0;
+            let q = d - axis.vector() * d.dot(axis.vector());
+            let qw = side * q.dot(w);
+            let disc = qw * qw - k * q.dot(q);
+            (qw > 0.0).then(|| (qw + disc.max(0.0).sqrt()) / k)
+        })
+        .collect();
+    if radii.len() < pts.len() / 2 + 1 {
+        return None;
+    }
+    let at = radii.len() / 2;
+    let (_, radius, _) = radii.select_nth_unstable_by(at, f64::total_cmp);
+    let radius = *radius;
+    let through = Point::from_vector(c0 + w * (side * radius));
+    Some(Canonical::Cylinder(
+        Cylinder::new(Frame::about(through, axis), radius, tol).ok()?,
+    ))
 }
 
 /// How much larger than a curved region's own facets a flat patch must be

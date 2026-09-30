@@ -1807,3 +1807,52 @@ fn a_noisy_drilled_block_keeps_its_faces_whole() {
     );
     holds((&model, &drilled), (&back, &out.shape));
 }
+
+/// A round two facets across fits many surfaces through its three rows of
+/// vertices; the one it comes back on is the cylinder tangent to the two
+/// faces it joins, on their line of meeting's direction, at the round's
+/// radius.
+#[test]
+fn a_narrow_round_comes_back_tangent_to_its_faces() {
+    use ogeom::geom::SurfaceGeometry as S;
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 10.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let edge = edges_where(&model, &block, |lo, hi| {
+        lo.x > 20.0 - 1e-6 && lo.z > 5.0 - 1e-6 && hi.y - lo.y > 9.0
+    });
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edge, 0.5, T)
+        .unwrap()
+        .shape;
+    let mesh = ogeom::mesh::triangulate(&model, &rounded, Deflection::with_chord(0.05).unwrap(), T)
+        .unwrap();
+    let mesh = exported(mesh, 0.0);
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert_eq!(
+        kinds(&back, &out.shape),
+        [6, 1, 0, 0, 0],
+        "{:?}",
+        out.report
+    );
+    let cylinder = explore_unique(&back, &out.shape, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find_map(|f| {
+            let data = back.node(&f).unwrap().data().as_face().unwrap();
+            match back.geometry().surface(data.surface).unwrap() {
+                S::Cylinder(c) => Some(c.cylinder()),
+                _ => None,
+            }
+        })
+        .unwrap();
+    let (o, z) = (cylinder.frame().origin(), cylinder.frame().z().vector());
+    assert!(z.cross(Vector::Y).magnitude() < 1e-12, "axis {z:?}");
+    let r = cylinder.radius();
+    assert!((r - 0.5).abs() < 1e-5, "radius {r}");
+    // Tangent: the axis stands the radius in from each face.
+    assert!((20.0 - o.x - r).abs() < 1e-12, "{o:?} against radius {r}");
+    assert!((5.0 - o.z - r).abs() < 1e-12, "{o:?} against radius {r}");
+    holds((&model, &rounded), (&back, &out.shape));
+}
