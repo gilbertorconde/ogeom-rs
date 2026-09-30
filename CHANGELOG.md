@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **STL precision reaches the mesh converter.** `ogeom::io::stl::read_with_quantum`
+  returns the mesh with its encoding's rounding: single precision at the
+  largest coordinate for binary files, the finest printed digit for ASCII.
+  `MeshSolidOptions::quantum` takes it (or `single_precision_quantum` for a
+  mesh held in `f32`), and the default coplanar distance is then never
+  below twice it. An ASCII file written to six significant digits a
+  hundred millimetres from the origin kept its fillets only as facets; it
+  now comes back with cylinders.
+
 ### Fixed
 
 - **`solid_from_mesh` no longer builds faces over the wrong part of their

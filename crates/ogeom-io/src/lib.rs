@@ -43,6 +43,6 @@ pub use mesh_formats::{
     ExportMesh, ImportedMesh, read_glb, read_gltf, write_glb, write_obj, write_ply,
 };
 pub use step::{StepImport, StepReport, UntrimmedFace, WarningSummary, read_step, write_step};
-pub use stl::{Encoding, read, write};
+pub use stl::{Encoding, StlMesh, read, read_with_quantum, write};
 pub use threemf::{ObjectType, ThreeMfImport, ThreeMfObject, read_3mf, write_3mf};
 pub use vrml::read_vrml;

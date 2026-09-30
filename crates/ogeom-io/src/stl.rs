@@ -93,11 +93,55 @@ pub fn write(mesh: &Triangulation, encoding: Encoding) -> OgeomResult<Vec<u8>> {
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the bytes are
 /// not STL of either kind, or are truncated part-way through a triangle.
 pub fn read(bytes: &[u8], tol: Tolerances) -> OgeomResult<Triangulation> {
-    if looks_binary(bytes) {
-        read_binary(bytes, tol)
+    Ok(read_with_quantum(bytes, tol)?.mesh)
+}
+
+/// A mesh read from STL, with how finely its encoding could place a vertex.
+#[derive(Debug, Clone)]
+pub struct StlMesh {
+    /// The triangles, welded.
+    pub mesh: Triangulation,
+    /// How far a vertex may stand from where its writer meant it for the
+    /// encoding alone: half a step of the coordinate grid on each axis, over
+    /// the three axes at once. A binary file's grid is single precision at
+    /// its largest coordinate; an ASCII file's is the finest digit any of its
+    /// coordinates prints, at that same magnitude.
+    pub quantum: f64,
+}
+
+/// Read STL, as [`read`], keeping how finely the encoding placed the
+/// vertices: what a surface fitted to them must allow them before it is the
+/// surface that is wrong.
+///
+/// # Errors
+///
+/// As [`read`].
+pub fn read_with_quantum(bytes: &[u8], tol: Tolerances) -> OgeomResult<StlMesh> {
+    let (mesh, quantum) = if looks_binary(bytes) {
+        read_binary(bytes, tol)?
     } else {
-        read_ascii(bytes, tol)
-    }
+        read_ascii(bytes, tol)?
+    };
+    Ok(StlMesh { mesh, quantum })
+}
+
+/// The largest coordinate magnitude of any vertex.
+fn largest(mesh: &Triangulation) -> f64 {
+    mesh.positions
+        .iter()
+        .flat_map(|p| [p.x.abs(), p.y.abs(), p.z.abs()])
+        .fold(0.0_f64, f64::max)
+}
+
+/// The significant digits a printed number carries: its mantissa's digits
+/// from the first nonzero one.
+fn significant_digits(word: &str) -> usize {
+    let mantissa = word.split(['e', 'E']).next().unwrap_or("");
+    mantissa
+        .chars()
+        .filter(char::is_ascii_digit)
+        .skip_while(|&c| c == '0')
+        .count()
 }
 
 /// Whether the bytes are a binary STL.
@@ -169,7 +213,7 @@ fn write_binary(mesh: &Triangulation) -> Vec<u8> {
 }
 
 /// Parse the binary form.
-fn read_binary(bytes: &[u8], tol: Tolerances) -> OgeomResult<Triangulation> {
+fn read_binary(bytes: &[u8], tol: Tolerances) -> OgeomResult<(Triangulation, f64)> {
     let Ok(count) = <[u8; 4]>::try_from(&bytes[80..84]) else {
         ogeom_bail!(Construction, "the binary STL header is truncated");
     };
@@ -189,7 +233,8 @@ fn read_binary(bytes: &[u8], tol: Tolerances) -> OgeomResult<Triangulation> {
         });
         push(&mut mesh, corners[0], corners[1], corners[2]);
     }
-    Ok(mesh.welded(tol))
+    let quantum = ogeom_algo::single_precision_quantum(&mesh);
+    Ok((mesh.welded(tol), quantum))
 }
 
 /// One little-endian `f32`, or zero past the end.
@@ -210,7 +255,7 @@ fn read_f32(bytes: &[u8], at: usize) -> f32 {
 /// Deliberately strict about a facet having exactly three vertices, because a
 /// facet with four is a quad some writer emitted and silently dropping one
 /// corner would put a hole in the mesh.
-fn read_ascii(bytes: &[u8], tol: Tolerances) -> OgeomResult<Triangulation> {
+fn read_ascii(bytes: &[u8], tol: Tolerances) -> OgeomResult<(Triangulation, f64)> {
     let Ok(text) = std::str::from_utf8(bytes) else {
         ogeom_bail!(
             Construction,
@@ -223,6 +268,7 @@ fn read_ascii(bytes: &[u8], tol: Tolerances) -> OgeomResult<Triangulation> {
     let mut corners: Vec<Point> = Vec::with_capacity(3);
     let mut in_facet = false;
     let mut facets = 0_usize;
+    let mut digits = 0_usize;
 
     for (line_number, line) in text.lines().enumerate() {
         let mut words = line.split_whitespace();
@@ -235,7 +281,12 @@ fn read_ascii(bytes: &[u8], tol: Tolerances) -> OgeomResult<Triangulation> {
                 corners.clear();
             }
             "vertex" => {
-                let values: Vec<f64> = words.filter_map(|w| w.parse().ok()).collect();
+                let words: Vec<&str> = words.collect();
+                digits = words
+                    .iter()
+                    .map(|w| significant_digits(w))
+                    .fold(digits, usize::max);
+                let values: Vec<f64> = words.iter().filter_map(|w| w.parse().ok()).collect();
                 if values.len() != 3 {
                     ogeom_bail!(
                         Construction,
@@ -274,7 +325,19 @@ fn read_ascii(bytes: &[u8], tol: Tolerances) -> OgeomResult<Triangulation> {
             "no facets found; these bytes are not STL of either kind"
         );
     }
-    Ok(mesh.welded(tol))
+    // The finest digit printed, at the magnitude of the largest coordinate:
+    // a writer printing a fixed count of significant digits puts its last
+    // one there, and one printing fixed decimals prints more there than
+    // anywhere.
+    let magnitude = largest(&mesh);
+    let quantum = if magnitude > 0.0 && digits > 0 {
+        let digits = f64::from(u32::try_from(digits).unwrap_or(u32::MAX));
+        let place = magnitude.log10().floor() - digits + 1.0;
+        10.0_f64.powf(place) * 3.0_f64.sqrt() / 2.0
+    } else {
+        ogeom_algo::single_precision_quantum(&mesh)
+    };
+    Ok((mesh.welded(tol), quantum))
 }
 
 /// Append one triangle, with its vertices unshared.
@@ -477,5 +540,38 @@ endsolid q
             .iter()
             .any(|p| (p.x - 1.000_000_1).abs() > 1e-9 && (p.x - 1.0).abs() < 1e-3);
         assert!(moved, "f32 should have rounded the seventh digit away");
+    }
+
+    #[test]
+    fn a_binary_file_s_quantum_is_single_precision_at_its_largest_coordinate() {
+        let mut mesh = tetrahedron();
+        for p in &mut mesh.positions {
+            *p = Point::new(p.x + 100.0, p.y, p.z);
+        }
+        let read = read_with_quantum(&write(&mesh, Encoding::Binary).unwrap(), T).unwrap();
+        // Single-precision values between 64 and 128 are 2^-17 apart; half
+        // a step on each of three axes.
+        let want = 2.0_f64.powi(-17) * 3.0_f64.sqrt() / 2.0;
+        assert!(
+            (read.quantum - want).abs() < want * 1e-9,
+            "{}",
+            read.quantum
+        );
+    }
+
+    #[test]
+    fn an_ascii_file_s_quantum_is_its_finest_digit_at_its_largest_coordinate() {
+        // Six significant digits at magnitudes up to 250: the last digit is
+        // the thousandth, for coordinates both large and small.
+        let text = "solid t\nfacet normal 0 0 0\nouter loop\n\
+                    vertex 0 0 0\nvertex 250.125 0 0\nvertex 0 1.25000 0\n\
+                    endloop\nendfacet\nendsolid t\n";
+        let read = read_with_quantum(text.as_bytes(), T).unwrap();
+        let want = 1e-3 * 3.0_f64.sqrt() / 2.0;
+        assert!(
+            (read.quantum - want).abs() < want * 1e-9,
+            "{}",
+            read.quantum
+        );
     }
 }

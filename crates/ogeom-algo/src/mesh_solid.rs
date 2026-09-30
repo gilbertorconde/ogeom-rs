@@ -51,11 +51,17 @@ pub struct MeshSolidOptions {
     pub coplanar_angle: f64,
     /// How far a triangle's corner may sit off a face's plane, or a
     /// merged edge's intermediate vertex off its line, and still be merged.
-    /// `None` takes the resolution a mesh stored in single precision has:
-    /// a millionth of its bounding box's diagonal, never below the weld
-    /// distance. The vertices and edges of a merged face widen their
-    /// tolerances to cover what they stand off it.
+    /// `None` takes twice the mesh's `quantum`, and never less than a
+    /// millionth of its bounding box's diagonal or the weld distance. The
+    /// vertices and edges of a merged face widen their tolerances to cover
+    /// what they stand off it.
     pub coplanar_distance: Option<f64>,
+    /// How far the mesh's own encoding may have moved a vertex: the
+    /// rounding of its coordinates (see
+    /// [`single_precision_quantum`] for a mesh held in `f32`, and the STL
+    /// reader's for a file). A vertex that far off its surface is on it;
+    /// `None` knows nothing of the encoding.
+    pub quantum: Option<f64>,
     /// Vertices closer than this are welded into one before building; an
     /// STL repeats every vertex once per triangle that uses it. `None` is
     /// the confusion tolerance.
@@ -76,11 +82,32 @@ impl Default for MeshSolidOptions {
             merge_coplanar: true,
             coplanar_angle: 1e-3,
             coplanar_distance: None,
+            quantum: None,
             weld: None,
             recognize: true,
             crease: core::f64::consts::FRAC_PI_6,
         }
     }
+}
+
+/// How far single-precision storage may have moved a mesh's vertices: half
+/// the spacing of `f32` values at its largest coordinate on each axis, over
+/// the three axes at once. The quantum of a mesh that went through `f32`
+/// (a render mesh, a binary STL), for [`MeshSolidOptions::quantum`].
+#[must_use]
+pub fn single_precision_quantum(mesh: &Triangulation) -> f64 {
+    let largest = mesh
+        .positions
+        .iter()
+        .flat_map(|p| [p.x.abs(), p.y.abs(), p.z.abs()])
+        .fold(0.0_f64, f64::max);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the magnitude is an f32 coordinate's"
+    )]
+    let x = (largest as f32).max(f32::MIN_POSITIVE);
+    let step = f64::from(f32::from_bits(x.to_bits() + 1) - x);
+    step * 3.0_f64.sqrt() / 2.0
 }
 
 /// What [`solid_from_mesh`] did, and where the mesh does not close.
@@ -341,7 +368,7 @@ pub fn solid_from_mesh(
     let diagonal = diagonal(&points);
     let mut flat = options
         .coplanar_distance
-        .unwrap_or(1e-6 * diagonal)
+        .unwrap_or_else(|| (1e-6 * diagonal).max(2.0 * options.quantum.unwrap_or(0.0)))
         .max(weld);
     let mut groups = segment(&points, &triangles, &adjacency, options, flat, tol)?;
     // The default distance is what single precision resolves, and some

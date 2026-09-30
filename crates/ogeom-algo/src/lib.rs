@@ -66,7 +66,9 @@ pub use measure::{
 };
 pub use medial::{MedialAxis, medial_axis};
 pub use medial_graph::{MedialBranch, MedialGraph, MedialSite, MedialVertex, medial_graph};
-pub use mesh_solid::{MeshSolid, MeshSolidOptions, MeshSolidReport, solid_from_mesh};
+pub use mesh_solid::{
+    MeshSolid, MeshSolidOptions, MeshSolidReport, single_precision_quantum, solid_from_mesh,
+};
 pub use place::{copied, transformed};
 pub use primitive::{
     make_box, make_cone, make_cylinder, make_half_space, make_hexahedron, make_parallelepiped,

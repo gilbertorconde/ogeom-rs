@@ -1558,3 +1558,43 @@ fn a_windowed_tube_s_wall_patches_each_become_a_face() {
     .mass;
     assert!((v - exact).abs() < exact * 1e-3, "{v} against {exact}");
 }
+
+/// A rounded block a hundred millimetres from the origin, written as ASCII
+/// STL to six significant digits: every coordinate is rounded to the
+/// thousandth, a hundred times the millionth of the diagonal the converter
+/// allows by default. Read with its quantum, the rounding is the file's and
+/// not the surfaces', and the fillets come back cylinders.
+#[test]
+fn an_ascii_file_s_rounding_is_allowed_its_vertices() {
+    use std::fmt::Write as _;
+    let mut model = Model::new();
+    let at = Frame::new(Point::new(100.0, 100.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let block = ogeom::algo::make_box(&mut model, at, (40.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let upright = edges_where(&model, &block, |lo, hi| hi.z - lo.z > 5.0);
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &upright, 3.0, T)
+        .unwrap()
+        .shape;
+    let mesh = ogeom::mesh::triangulate(&model, &rounded, Deflection::with_chord(0.01).unwrap(), T)
+        .unwrap();
+    let mut text = String::from("solid block\n");
+    for t in &mesh.triangles {
+        text += "facet normal 0 0 0\nouter loop\n";
+        for &i in t {
+            let p = mesh.positions[i as usize];
+            let _ = writeln!(text, "vertex {:.5e} {:.5e} {:.5e}", p.x, p.y, p.z);
+        }
+        text += "endloop\nendfacet\n";
+    }
+    text += "endsolid block\n";
+    let read = ogeom::io::stl::read_with_quantum(text.as_bytes(), T).unwrap();
+    let options = MeshSolidOptions {
+        quantum: Some(read.quantum),
+        ..MeshSolidOptions::default()
+    };
+    let mut back = Model::new();
+    let built = solid_from_mesh(&mut back, &read.mesh, &options, T).unwrap();
+    assert_eq!(kinds(&back, &built.shape), [6, 4, 0, 0, 0]);
+    assert!(check(&back, &built.shape, T).unwrap().is_valid());
+}
