@@ -24,6 +24,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A mesh of bodies glued along an edge converts to closed solids.** An
+  edge four triangles use (two blocks touching along it, as exporters
+  write glued parts) paired nothing, and both bodies came back open
+  shells. The bodies are now what the edges used exactly twice join, and at
+  a crowded edge each body's own two triangles pair up.
+
 - **`solid_from_mesh` no longer builds faces over the wrong part of their
   surface.** A recognized region whose fit refused a few vertices lost the
   triangles bringing them, which could leave it in patches joined by

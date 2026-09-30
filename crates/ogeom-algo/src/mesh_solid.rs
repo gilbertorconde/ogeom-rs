@@ -841,6 +841,7 @@ impl Adjacency {
         keyed.sort_unstable();
         let mut twin = vec![None; keyed.len()];
         let (mut used_once, mut used_more) = (0, 0);
+        let mut crowded: Vec<std::ops::Range<usize>> = Vec::new();
         let mut i = 0;
         while i < keyed.len() {
             let mut j = i;
@@ -854,9 +855,49 @@ impl Adjacency {
                     twin[keyed[i].1] = Some(keyed[i + 1].1);
                     twin[keyed[i + 1].1] = Some(keyed[i].1);
                 }
-                _ => used_more += 1,
+                _ => {
+                    used_more += 1;
+                    crowded.push(i..j);
+                }
             }
             i = j;
+        }
+        // An edge more than two triangles use is where bodies meet (two
+        // blocks sharing an edge, as an exporter writes glued parts). The
+        // bodies are what the edges used exactly twice join; at a crowded
+        // edge each body's own two triangles are each other's twins, and each
+        // body closes on its own.
+        if !crowded.is_empty() {
+            let mut body: Vec<usize> = (0..triangles.len()).collect();
+            fn root(body: &mut [usize], mut t: usize) -> usize {
+                while body[t] != t {
+                    body[t] = body[body[t]];
+                    t = body[t];
+                }
+                t
+            }
+            for (h, g) in twin.iter().enumerate() {
+                if let Some(g) = g {
+                    let (a, b) = (root(&mut body, h / 3), root(&mut body, g / 3));
+                    body[a.max(b)] = a.min(b);
+                }
+            }
+            for range in crowded {
+                let halves: Vec<Half> = keyed[range].iter().map(|&(_, h)| h).collect();
+                let bodies: Vec<usize> = halves.iter().map(|&h| root(&mut body, h / 3)).collect();
+                for (k, &h) in halves.iter().enumerate() {
+                    let mine: Vec<usize> = (0..halves.len())
+                        .filter(|&m| bodies[m] == bodies[k])
+                        .collect();
+                    if let [x, y] = mine[..]
+                        && x == k
+                        && halves[x] / 3 != halves[y] / 3
+                    {
+                        twin[h] = Some(halves[y]);
+                        twin[halves[y]] = Some(h);
+                    }
+                }
+            }
         }
         Self {
             twin,

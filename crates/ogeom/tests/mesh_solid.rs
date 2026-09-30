@@ -1598,3 +1598,46 @@ fn an_ascii_file_s_rounding_is_allowed_its_vertices() {
     assert_eq!(kinds(&back, &built.shape), [6, 4, 0, 0, 0]);
     assert!(check(&back, &built.shape, T).unwrap().is_valid());
 }
+
+/// Two blocks touching along one edge, written as one mesh: four triangles
+/// use that edge, two from each block. The blocks are what the edges used
+/// exactly twice join, and at the shared edge each block's own two
+/// triangles pair up: both close, and come back two solids.
+#[test]
+fn blocks_glued_along_an_edge_come_back_two_solids() {
+    let corner = |base: Point, i: u32, size: f64| {
+        Point::new(
+            base.x + f64::from(i & 1) * size,
+            base.y + f64::from((i >> 1) & 1) * size,
+            base.z + f64::from((i >> 2) & 1) * size,
+        )
+    };
+    let faces: [[u32; 3]; 12] = [
+        [0, 2, 1],
+        [1, 2, 3],
+        [4, 5, 6],
+        [5, 7, 6],
+        [0, 1, 4],
+        [1, 5, 4],
+        [2, 6, 3],
+        [3, 6, 7],
+        [0, 4, 2],
+        [2, 4, 6],
+        [1, 3, 5],
+        [3, 7, 5],
+    ];
+    // The second block starts where the first ends in x and y, so the
+    // first's edge x = 10, y = 10 is the second's edge x = 10, y = 10.
+    let triangles = [Point::ORIGIN, Point::new(10.0, 10.0, 0.0)]
+        .into_iter()
+        .flat_map(|base| faces.iter().map(move |f| f.map(|i| corner(base, i, 10.0))));
+    let mesh = soup(triangles);
+    let mut model = Model::new();
+    let built = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(built.closed);
+    assert_eq!(built.report.edges_used_more, 1);
+    assert_eq!(count(&model, &built.shape, ShapeType::Solid), 2);
+    assert!(check(&model, &built.shape, T).unwrap().is_valid());
+    let v = volume(&model, &built.shape);
+    assert!((v - 2000.0).abs() < 1e-9, "{v}");
+}
