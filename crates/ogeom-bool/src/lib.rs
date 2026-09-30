@@ -1727,39 +1727,17 @@ fn fill(
                                 None
                             };
                             let crange = clipped_contact.as_ref().map_or(e.crange, |c| c.1);
-                            let (pcurve, prange) = match exact {
-                                Some(exact) => (exact, e.crange),
-                                // What the other branches cannot image whole
-                                // but only runs on past the target's window
-                                // is imaged over its stretch on the window.
-                                None if let Some(clipped) = clipped_contact.take() => clipped,
-                                // A fitted edge has no closed-form projection,
-                                // but when the two faces sit on the
-                                // *identical chart*, which is exactly the
-                                // situation `Same` names for the analytics,
-                                // the owner's own stored pcurve already is
-                                // the projection, attached at construction,
-                                // and it travels with its own window the way
-                                // every stored pcurve does. A chart that
-                                // merely coincides as a point set is still
-                                // refused.
-                                None if same_chart(&owner.surface, &target.surface, tol) => {
-                                    (e.pcurve.clone(), e.prange)
-                                }
-                                // Two patches that coincide as point sets
-                                // without being one chart (a blend's leg
-                                // on a spline host continued past the
-                                // face, against the face's own patch) get
-                                // the edge fitted by projection into the
-                                // target's chart, same-parameter with the
-                                // edge, the way every reader derives a
-                                // pcurve it was not given.
-                                // One cylinder on two frames whose fit the
-                                // target's window cannot hold (a converted
-                                // part's short wall against a pad's long
-                                // one): the owner's own pcurve carried
-                                // across the charts exactly.
-                                None if let Some(carried) = carried_across(
+                            let clipped = clipped_contact.take();
+                            let shared_chart = exact.is_none()
+                                && clipped.is_none()
+                                && same_chart(&owner.surface, &target.surface, tol);
+                            // One cylinder on two frames whose fit the
+                            // target's window cannot hold (a converted
+                            // part's short wall against a pad's long one):
+                            // the owner's own pcurve carried across the
+                            // charts exactly.
+                            let carried = if exact.is_none() && clipped.is_none() && !shared_chart {
+                                carried_across(
                                     &e.pcurve,
                                     e.prange,
                                     &owner.surface,
@@ -1776,11 +1754,37 @@ fn fill(
                                         tol,
                                     )
                                     .is_err()
-                                }) =>
-                                {
-                                    (carried, e.prange)
-                                }
-                                None => {
+                                })
+                            } else {
+                                None
+                            };
+                            let (pcurve, prange) = match (exact, clipped, carried) {
+                                (Some(exact), _, _) => (exact, e.crange),
+                                // What the other branches cannot image whole
+                                // but only runs on past the target's window
+                                // is imaged over its stretch on the window.
+                                (None, Some(clipped), _) => clipped,
+                                // A fitted edge has no closed-form projection,
+                                // but when the two faces sit on the
+                                // *identical chart*, which is exactly the
+                                // situation `Same` names for the analytics,
+                                // the owner's own stored pcurve already is
+                                // the projection, attached at construction,
+                                // and it travels with its own window the way
+                                // every stored pcurve does. A chart that
+                                // merely coincides as a point set is still
+                                // refused.
+                                (None, None, _) if shared_chart => (e.pcurve.clone(), e.prange),
+                                (None, None, Some(carried)) => (carried, e.prange),
+                                // Two patches that coincide as point sets
+                                // without being one chart (a blend's leg
+                                // on a spline host continued past the
+                                // face, against the face's own patch) get
+                                // the edge fitted by projection into the
+                                // target's chart, same-parameter with the
+                                // edge, the way every reader derives a
+                                // pcurve it was not given.
+                                (None, None, None) => {
                                     let Some(pcurve) = projected_into_shared_chart(
                                         &e.curve,
                                         e.crange,

@@ -11,6 +11,12 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The kernel builds on its declared minimum Rust, 1.90, again.**
+  `ogeom-bool` used an `if let` guard on a match arm, which Rust 1.90
+  refuses; 0.6.0 built only on newer compilers.
+
 ## [0.6.0] - 2026-09-30
 
 A minor release: `cargo semver-checks` against 0.5.1 finds one breaking

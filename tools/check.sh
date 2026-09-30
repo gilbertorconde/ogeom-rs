@@ -24,6 +24,18 @@ node tools/lint-comment-rot.mjs --all
 echo "== clippy =="
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+echo "== msrv =="
+# The declared minimum Rust, as CI checks it: a construct a newer compiler
+# accepts (an `if let` guard on a match arm) is an error on the declared one.
+# Skipped, and said so, where that toolchain is not installed
+# (`rustup toolchain install <version>`).
+msrv="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)"
+if rustup run "$msrv" cargo --version >/dev/null 2>&1; then
+    cargo "+$msrv" check --workspace --all-targets --quiet
+else
+    echo "skipped: Rust $msrv is not installed"
+fi
+
 echo "== test =="
 # One full pass over everything, captured so the count at the end comes from
 # this run rather than from running the world again.
