@@ -126,3 +126,13 @@ opt-level = 2
 # the run-time win, at a sixth of the compile cost.
 [profile.dev]
 opt-level = 1
+
+# The quick loop for work on one area (tools/converter-check.sh): release's
+# optimisation without its link-time work, so a change to one crate rebuilds
+# in seconds while the mesh suites still run at release speed.
+[profile.iterate]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+debug = 0
