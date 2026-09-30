@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A negative scale reverses directions.** `Transform::apply_direction`
+  (and `Transform2`'s) left a direction unchanged under any uniform scale;
+  a negative one is a point mirror with a scale, and reverses it, so
+  circles, planes and frames scaled by a negative factor keep the sense
+  their points do.
+
 - **`fix_shape` turns a located face in place (#101).** A face turned right
   way out was rebuilt on a new node without its location, so a void whose
   faces are placed by one (an assembly part read from STEP) moved out of its

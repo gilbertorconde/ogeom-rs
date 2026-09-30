@@ -350,8 +350,10 @@ impl Transform {
     /// cannot be normalized, which a valid similarity never produces.
     pub fn apply_direction(&self, d: Direction, tol: Tolerances) -> OgeomResult<Direction> {
         match self.kind {
-            TransformKind::Identity | TransformKind::Translation | TransformKind::Scale => Ok(d),
-            TransformKind::PointMirror => Ok(d.reversed()),
+            TransformKind::Identity | TransformKind::Translation => Ok(d),
+            // A negative scale is a point mirror scaled: it reverses.
+            TransformKind::Scale if self.scale > 0.0 => Ok(d),
+            TransformKind::PointMirror | TransformKind::Scale => Ok(d.reversed()),
             _ => Direction::new(self.apply_vector(d.vector()), tol),
         }
     }
@@ -577,8 +579,9 @@ impl Transform2 {
     /// cannot be normalized, which a valid similarity never produces.
     pub fn apply_direction(&self, d: Direction2, tol: Tolerances) -> OgeomResult<Direction2> {
         match self.kind {
-            TransformKind::Identity | TransformKind::Translation | TransformKind::Scale => Ok(d),
-            TransformKind::PointMirror => Ok(d.reversed()),
+            TransformKind::Identity | TransformKind::Translation => Ok(d),
+            TransformKind::Scale if self.scale > 0.0 => Ok(d),
+            TransformKind::PointMirror | TransformKind::Scale => Ok(d.reversed()),
             _ => Direction2::new(self.apply_vector(d.vector()), tol),
         }
     }
@@ -788,6 +791,24 @@ mod tests {
     use approx::assert_relative_eq;
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// A negative scale is a point mirror with a scale: a direction comes
+    /// out as the image of a vector along it does, reversed, in space and
+    /// in the plane.
+    #[test]
+    fn a_negative_scale_reverses_directions() {
+        let s = Transform::scaling(Point::ORIGIN, -2.0, T).unwrap();
+        let d = s.apply_direction(Direction::X, T).unwrap();
+        let v = s.apply_vector(Vector::new(1.0, 0.0, 0.0));
+        assert!(d.vector().dot(v) > 0.0, "{d:?} against {v:?}");
+        assert!(!s.preserves_handedness());
+        let s2 = Transform2::scaling(Point2::ORIGIN, -3.0, T).unwrap();
+        let d2 = s2.apply_direction(Direction2::X, T).unwrap();
+        assert!(d2.vector().dot(s2.apply_vector(Direction2::X.vector())) > 0.0);
+        // A positive scale keeps them.
+        let p = Transform::scaling(Point::ORIGIN, 2.0, T).unwrap();
+        assert_eq!(p.apply_direction(Direction::X, T).unwrap(), Direction::X);
+    }
 
     fn sample_points() -> [Point; 4] {
         [

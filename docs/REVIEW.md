@@ -6,13 +6,13 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 
 ## Issues
 
-- [x] **#101.** `fix_shape` turned a located face right way out on a new node with no location, so a void placed by a location (an assembly part read from STEP) moved out of its solid. The turned face now keeps its location. (commit: fix(heal): a face turned right way out keeps its location)
+- [x] **#101.** `fix_shape` turned a located face right way out on a new node with no location, so a void placed by a location (an assembly part read from STEP) moved out of its solid. The turned face now keeps its location. (12ef0e3)
 
 ## Tier 1: wrong results in everyday use
 
 ### M. Mirrors and negative scales
 
-- [ ] **M1.** A negative uniform scale is classified `Scale`, so `apply_direction` leaves directions unflipped (`ogeom-math/src/transform.rs`, also `Transform2`). Circles, planes and frames transformed by `scaling(c, -2)` keep the wrong orientation.
+- [x] **M1.** A negative uniform scale is classified `Scale`, so `apply_direction` leaves directions unflipped (`ogeom-math/src/transform.rs`, also `Transform2`). Circles, planes and frames transformed by `scaling(c, -2)` keep the wrong orientation.
 - [ ] **M2.** `RevolutionSurface::transformed` under a mirror evaluates at `M·R(-u)·c(v)`: the axis must be reversed when the transform does not preserve handedness (`ogeom-geom/src/surface.rs`).
 - [ ] **M3.** `OffsetCurve` and `OffsetSurface` land on the wrong side after a mirror: the offset distance must be negated when handedness flips (`curve.rs`, `surface.rs`).
 - [ ] **M4.** `OffsetSurface::analytic` rebuilds a plane on a right-handed frame, flipping a mirrored plane's normal; the cone case shifts the parameterization (`surface.rs`).
