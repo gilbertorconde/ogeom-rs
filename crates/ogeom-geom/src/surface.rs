@@ -737,8 +737,15 @@ impl OffsetSurface {
             SurfaceGeometry::Plane(p) => {
                 let plane = p.plane();
                 let frame = plane.frame();
-                let moved =
-                    ogeom_math::Frame::new(frame.origin() + normal * d, frame.z(), frame.x(), tol)?;
+                // The plane's own frame moved, of whichever hand it is: a
+                // mirrored plane's normal and `v` stay as they were.
+                let moved = ogeom_math::Frame::from_axes(
+                    frame.origin() + normal * d,
+                    frame.x(),
+                    frame.y(),
+                    frame.z(),
+                    tol,
+                )?;
                 Some(PlaneSurface::over(ogeom_math::Plane::new(moved), (u0, u1), (v0, v1))?.into())
             }
             SurfaceGeometry::Cylinder(c) => {
@@ -761,13 +768,26 @@ impl OffsetSurface {
                 let radial = at - frame.origin();
                 let radial = radial - frame.z().vector() * radial.dot(frame.z().vector());
                 let grow = if outward(radial) { d } else { -d };
-                let radius = cone.reference_radius() + grow / cone.half_angle().cos();
+                // A point of the offset stands the offset's axial part higher
+                // than its basis point: the frame rises by it, so each
+                // `(u, v)` names the offset of the point it names on the
+                // basis, and the radius there is the basis's grown by the
+                // offset's radial part.
+                let rise = normal.dot(frame.z().vector()) * d;
+                let radius = cone.reference_radius() + grow * cone.half_angle().cos();
                 if radius <= tol.confusion() {
                     return Ok(None);
                 }
+                let raised = ogeom_math::Frame::from_axes(
+                    frame.origin() + frame.z().vector() * rise,
+                    frame.x(),
+                    frame.y(),
+                    frame.z(),
+                    tol,
+                )?;
                 Some(
                     ConeSurface::new(
-                        ogeom_math::Cone::new(frame, radius, cone.half_angle(), tol)?,
+                        ogeom_math::Cone::new(raised, radius, cone.half_angle(), tol)?,
                         (v0, v1),
                     )?
                     .into(),
@@ -1774,6 +1794,60 @@ mod tests {
     /// some of it lies past the end, and refusing there stopped three real
     /// bodies from meshing. A parameter a period past the end names a point
     /// the surface has, and is answered with it.
+    /// The closed form an offset of a plane, cylinder, cone or sphere
+    /// stands for names, at every `(u, v)`, the point the offset names
+    /// there, and turns the same way: a mirrored plane's included, and a
+    /// cone offset either way.
+    #[test]
+    fn an_offset_s_closed_form_is_the_offset_point_for_point() {
+        use crate::Surface as _;
+        use ogeom_math::{Cone, Cylinder, Direction, Plane, Point, Sphere};
+        let tilted = Frame::new(
+            Point::new(1.0, -2.0, 3.0),
+            Direction::from_coords(1.0, 2.0, 3.0, T).unwrap(),
+            Direction::from_coords(3.0, 0.0, -1.0, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let bases: Vec<SurfaceGeometry> = vec![
+            PlaneSurface::new(Plane::new(tilted.mirrored())).into(),
+            CylinderSurface::new(Cylinder::new(tilted, 5.0, T).unwrap(), (0.0, 10.0))
+                .unwrap()
+                .into(),
+            ConeSurface::new(Cone::new(tilted, 5.0, 0.4, T).unwrap(), (0.0, 10.0))
+                .unwrap()
+                .into(),
+            SphereSurface::new(Sphere::new(tilted, 5.0, T).unwrap()).into(),
+        ];
+        for basis in bases {
+            for d in [1.5, -1.5] {
+                let offset = OffsetSurface::new(basis.clone(), d).unwrap();
+                let closed = offset.analytic(T).unwrap().unwrap();
+                for (u, v) in [(0.3, 1.0), (2.0, 4.0), (4.5, 8.0)] {
+                    let v = if matches!(basis, SurfaceGeometry::Sphere(_)) {
+                        v / 10.0
+                    } else {
+                        v
+                    };
+                    let want = offset.point_at(u, v, T).unwrap();
+                    let got = closed.point_at(u, v, T).unwrap();
+                    assert!(
+                        got.distance(want) < 1e-9,
+                        "{basis:?} by {d} at ({u}, {v}): {got:?} against {want:?}"
+                    );
+                    let (a, b) = (
+                        offset.normal_at(u, v, T).unwrap(),
+                        closed.normal_at(u, v, T).unwrap(),
+                    );
+                    assert!(
+                        a.vector().dot(b.vector()) > 0.999_999,
+                        "{basis:?} by {d}: normals {a:?} against {b:?}"
+                    );
+                }
+            }
+        }
+    }
+
     /// An offset sphere carried by a mirror, a point mirror or a negative
     /// scale names, at every `(u, v)`, the image of the point it named.
     #[test]

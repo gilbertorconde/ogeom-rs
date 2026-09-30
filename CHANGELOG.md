@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **An offset surface's closed form is the offset.** `OffsetSurface::analytic`
+  rebuilt an offset plane on a right-handed frame, turning a mirrored
+  plane's normal over, and an offset cone on its basis's frame, naming
+  points a little along the axis from the offset's; the plane keeps its
+  frame's hand, and the cone's frame rises with the offset, so each names
+  the offset's points at the offset's parameters.
+
 - **Mirrored revolutions and offsets are the images of the originals.** A
   surface of revolution carried by a reflection turned the other way round
   its axis, and offset curves and surfaces landed on the other side of

@@ -14,8 +14,8 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 
 - [x] **M1.** A negative uniform scale is classified `Scale`, so `apply_direction` leaves directions unflipped (`ogeom-math/src/transform.rs`, also `Transform2`). Circles, planes and frames transformed by `scaling(c, -2)` keep the wrong orientation. (b36ce02)
 - [x] **M2.** `RevolutionSurface::transformed` under a mirror evaluates at `M·R(-u)·c(v)`: the axis must be reversed when the transform does not preserve handedness (`ogeom-geom/src/surface.rs`).
-- [x] **M3.** `OffsetCurve` and `OffsetSurface` land on the wrong side after a mirror: the offset distance must be negated when handedness flips (`curve.rs`, `surface.rs`). Planar offsets too; `Transform2::preserves_handedness` no longer counts a negative scale, a half turn in the plane, as a reflection.
-- [ ] **M4.** `OffsetSurface::analytic` rebuilds a plane on a right-handed frame, flipping a mirrored plane's normal; the cone case shifts the parameterization (`surface.rs`).
+- [x] **M3.** `OffsetCurve` and `OffsetSurface` land on the wrong side after a mirror: the offset distance must be negated when handedness flips (`curve.rs`, `surface.rs`). Planar offsets too; `Transform2::preserves_handedness` no longer counts a negative scale, a half turn in the plane, as a reflection. (b31289e)
+- [x] **M4.** `OffsetSurface::analytic` rebuilds a plane on a right-handed frame, flipping a mirrored plane's normal; the cone case shifts the parameterization (`surface.rs`).
 - [ ] **M5.** Converting a mirrored cylinder or cone to a B-spline flips its normals: `section_at` rebuilds right-handed frames (`ogeom-algo/src/convert.rs`).
 - [ ] **M6.** Primitives in a left-handed frame (`Frame::mirrored`) come out inside out; `make_sphere` fails (`ogeom-algo/src/primitive.rs`: box, cylinder, torus, cone, wedge, sphere).
 - [ ] **M7.** Booleans with mirrored curved solids: a mirrored cone gives wrong fuse, cut and common that pass `check`; mirrored cylinders, spheres and tori are refused (`ogeom-bool`).
