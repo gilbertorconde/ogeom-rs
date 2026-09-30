@@ -297,7 +297,9 @@ fn rebuild(
                     }
                     patch.into()
                 }
-                Restate::Keep => placed.clone(),
+                Restate::Keep => {
+                    on_right_handed_frame(&placed, tol)?.unwrap_or_else(|| placed.clone())
+                }
                 Restate::With(surface, _) => match surface(&placed)? {
                     Some((restated, flip)) => {
                         flipped = flip;
@@ -600,6 +602,80 @@ fn rebuild(
     let solid = make_solid(model, &shells)?.shape;
     history.modify(shape, solid.clone());
     Ok(Built::new(solid, history))
+}
+
+/// An analytic surface placed by a reflection, restated on its frame's
+/// right-handed twin (the same origin and axis, `y` reversed): the same
+/// points, turning the other way. Downstream code reads a surface's frame
+/// as right-handed, as every surface built from scratch has it; the face's
+/// flag takes the turn, which the rebuild measures. A plane's `v` runs the
+/// other way on the twin, and its window with it. `None` for a surface on
+/// a right-handed frame, or of another kind.
+fn on_right_handed_frame(
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> OgeomResult<Option<SurfaceGeometry>> {
+    use ogeom_geom::{ConeSurface, CylinderSurface, PlaneSurface, SphereSurface, TorusSurface};
+    use ogeom_math::{Cone, Cylinder, Frame, Handedness, Plane, Sphere, Torus};
+    let twin = |frame: Frame| -> OgeomResult<Option<Frame>> {
+        if frame.handedness() == Handedness::Right {
+            return Ok(None);
+        }
+        Ok(Some(Frame::new(frame.origin(), frame.z(), frame.x(), tol)?))
+    };
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    Ok(match surface {
+        SurfaceGeometry::Plane(p) => match twin(p.plane().frame())? {
+            Some(f) => Some(PlaneSurface::over(Plane::new(f), (u0, u1), (-v1, -v0))?.into()),
+            None => None,
+        },
+        SurfaceGeometry::Cylinder(c) => {
+            let cylinder = c.cylinder();
+            match twin(cylinder.frame())? {
+                Some(f) => Some(
+                    CylinderSurface::new(Cylinder::new(f, cylinder.radius(), tol)?, (v0, v1))?
+                        .into(),
+                ),
+                None => None,
+            }
+        }
+        SurfaceGeometry::Cone(c) => {
+            let cone = c.cone();
+            match twin(cone.frame())? {
+                Some(f) => Some(
+                    ConeSurface::new(
+                        Cone::new(f, cone.reference_radius(), cone.half_angle(), tol)?,
+                        (v0, v1),
+                    )?
+                    .into(),
+                ),
+                None => None,
+            }
+        }
+        SurfaceGeometry::Sphere(s) => {
+            let sphere = s.sphere();
+            match twin(sphere.frame())? {
+                Some(f) => Some(SphereSurface::new(Sphere::new(f, sphere.radius(), tol)?).into()),
+                None => None,
+            }
+        }
+        SurfaceGeometry::Torus(t) => {
+            let torus = t.torus();
+            match twin(torus.frame())? {
+                Some(f) => Some(
+                    TorusSurface::new(Torus::new(
+                        f,
+                        torus.major_radius(),
+                        torus.minor_radius(),
+                        tol,
+                    )?)
+                    .into(),
+                ),
+                None => None,
+            }
+        }
+        _ => None,
+    })
 }
 
 /// An edge occurrence's start, middle and end, placed and mapped.
@@ -994,6 +1070,22 @@ fn exact_seam_columns(
             while run[i] - run[i - 1] < -period * 0.5 {
                 run[i] += period;
             }
+        }
+        // A seam running against the chart's direction unwraps below the
+        // window from its start; the chart's own copy lies a period up.
+        let (w0, w1) = if columns { (v0, v1) } else { (u0, u1) };
+        let eps = period * 1e-9;
+        let low = run.iter().copied().fold(f64::INFINITY, f64::min);
+        let high = run.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let shift = if low < w0 - eps {
+            ((w0 - eps - low) / period).ceil() * period
+        } else if high > w1 + eps {
+            -((high - w1 - eps) / period).ceil() * period
+        } else {
+            0.0
+        };
+        for r in &mut run {
+            *r += shift;
         }
     }
     let slope = (run[N] - run[0]) / (range.1 - range.0);

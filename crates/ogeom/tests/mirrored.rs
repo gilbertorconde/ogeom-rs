@@ -249,3 +249,66 @@ fn mirrored_bodies_measure_exactly_at_the_default_chord() {
     let (a, b) = (at_default(&model, &bored), at_default(&model, &mirrored));
     assert!((a - b).abs() < a * 1e-9, "{b} against {a}");
 }
+
+#[test]
+fn booleans_with_mirrored_curved_solids_match_the_unmirrored_images() {
+    type Build = fn(&mut ogeom_topo::Model, f64) -> ogeom_topo::Shape;
+    fn at(x: f64, z: f64) -> Frame {
+        Frame::new(
+            Point::new(x, 0.0, z),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap()
+    }
+    let tools: [(&str, Build); 4] = [
+        ("cylinder", |m, x| {
+            ogeom_algo::make_cylinder(m, at(x, -1.0), 1.0, 6.0, T)
+                .unwrap()
+                .shape
+        }),
+        ("cone", |m, x| {
+            ogeom_algo::make_cone(m, at(x, -1.0), 1.5, 0.5, 6.0, T)
+                .unwrap()
+                .shape
+        }),
+        ("sphere", |m, x| {
+            ogeom_algo::make_sphere(m, at(x, 3.0), 1.5, T)
+                .unwrap()
+                .shape
+        }),
+        ("torus", |m, x| {
+            ogeom_algo::make_torus(m, at(x, 3.0), 3.0, 1.0, T)
+                .unwrap()
+                .shape
+        }),
+    ];
+    let mirror =
+        ogeom_math::Transform::plane_mirror(Point::new(0.0, 0.0, 0.0), ogeom_math::Direction::X);
+    for (name, build) in tools {
+        let mut model = ogeom_topo::Model::new();
+        let block = ogeom_algo::make_box(&mut model, at(-5.0, 0.0), (10.0, 10.0, 3.0), T)
+            .unwrap()
+            .shape;
+        let block = model.placed(
+            &block,
+            ogeom_math::Transform::translation(ogeom_math::Vector::new(0.0, -5.0, 0.0)),
+        );
+        let original = build(&mut model, 0.5);
+        let mirrored = ogeom_algo::transformed(&mut model, &original, mirror)
+            .unwrap()
+            .shape;
+        let image = build(&mut model, -0.5);
+        for op in [ogeom_bool::fuse, ogeom_bool::common, ogeom_bool::cut] {
+            let got = op(&mut model, &block, &mirrored, T).unwrap().shape;
+            let want = op(&mut model, &block, &image, T).unwrap().shape;
+            assert!(
+                ogeom_algo::check(&model, &got, T).unwrap().is_valid(),
+                "{name}"
+            );
+            let (g, w) = (vol(&model, &got), vol(&model, &want));
+            assert!((g - w).abs() < 1e-6 * w.max(1.0), "{name}: {g} against {w}");
+        }
+    }
+}

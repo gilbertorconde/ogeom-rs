@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Booleans with mirrored curved solids.** A mirrored cone gave wrong
+  results that passed `check`, and mirrored cylinders, spheres and tori
+  were refused. Baking a reflected placement restates each analytic surface
+  on its frame's right-handed twin, and a seam that runs against its
+  chart's direction gets its pcurves inside the chart window.
+
 - **Primitives in a mirrored frame are sound.** A box, cylinder, cone,
   torus or wedge laid out in a left-handed frame came out inside out, and a
   sphere failed to build. A round primitive is built on the frame's
