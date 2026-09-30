@@ -1949,3 +1949,103 @@ fn a_verbatim_conversion_refines_to_its_surfaces() {
     );
     holds((&model, &rounded), (&back, &refined.shape));
 }
+
+/// A part read from the STL file named by `OGEOM_TEST_77777` (a file that is
+/// not ours to bundle), converted with the default options; `None`, and the
+/// test skipped, where the variable is unset.
+fn converted_part(model: &mut Model) -> Option<Shape> {
+    let path = std::env::var_os("OGEOM_TEST_77777")?;
+    let bytes = std::fs::read(path).expect("the file the variable names reads");
+    let mesh = ogeom::io::stl::read(&bytes, T).unwrap();
+    let out = solid_from_mesh(model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(out.closed, "{:?}", out.report);
+    Some(out.shape)
+}
+
+/// The upward flat face at the top of `shape` whose bounds hold `(x, y)`.
+fn top_face_over(model: &Model, shape: &Shape, x: f64, y: f64) -> Shape {
+    let top = tight_bounds(model, shape, T).unwrap().high().unwrap().z;
+    explore_unique(model, shape, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let (p, n) = ogeom::algo::face_normal(model, f, T).unwrap();
+            let b = tight_bounds(model, f, T).unwrap();
+            let (lo, hi) = (b.low().unwrap(), b.high().unwrap());
+            n.z > 1.0 - 1e-9
+                && (p.z - top).abs() < 1e-6
+                && (lo.x..=hi.x).contains(&x)
+                && (lo.y..=hi.y).contains(&y)
+        })
+        .expect("a top face over the point")
+}
+
+/// A converted part and a prism of one of its own top faces pushed `depth`
+/// straight down: the prism's sides lie on the part's walls (a flat one and
+/// recognized rounds) over their height. Fuse, cut and common each give a
+/// sound solid, and the fuse and the common hold what the two inputs do.
+fn pad_along_a_converted_part_s_walls(depth: f64) {
+    let mut model = Model::new();
+    let Some(part) = converted_part(&mut model) else {
+        return;
+    };
+    let face = top_face_over(&model, &part, 105.157, 89.76);
+    let pad = ogeom::algo::make_prism(&mut model, &face, Vector::new(0.0, 0.0, -depth), T)
+        .unwrap()
+        .shape;
+    let fine = Deflection::with_chord(1e-3).unwrap();
+    let volume =
+        |model: &Model, shape: &Shape| volume_properties(model, shape, fine, T).unwrap().mass;
+    let (v_part, v_pad) = (volume(&model, &part), volume(&model, &pad));
+    let mut results = Vec::new();
+    for (name, op) in [
+        (
+            "fuse",
+            ogeom::boolean::fuse as fn(&mut Model, &Shape, &Shape, Tolerances) -> _,
+        ),
+        ("cut", ogeom::boolean::cut),
+        ("common", ogeom::boolean::common),
+    ] {
+        let out = op(&mut model, &part, &pad, T).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let diagnosis = check(&model, &out.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+        results.push(volume(&model, &out.shape));
+    }
+    let [fused, cut, common] = results[..] else {
+        unreachable!()
+    };
+    let scale = v_part + v_pad;
+    assert!(
+        (fused + common - scale).abs() < 1e-6 * scale,
+        "fuse {fused} + common {common} against part {v_part} + pad {v_pad}"
+    );
+    assert!(
+        (cut + common - v_part).abs() < 1e-6 * scale,
+        "cut {cut} + common {common} against part {v_part}"
+    );
+    // Wholly inside, the pad adds nothing and the common is the pad.
+    if depth < 5.0 {
+        assert!(
+            (fused - v_part).abs() < 1e-6 * scale,
+            "{fused} against {v_part}"
+        );
+        assert!(
+            (common - v_pad).abs() < 1e-6 * scale,
+            "{common} against {v_pad}"
+        );
+    } else {
+        assert!(fused > v_part + 1.0, "{fused} against {v_part}");
+    }
+}
+
+/// The pad 3 mm deep, within the part.
+#[test]
+fn a_pad_along_a_converted_part_s_walls_within_it() {
+    pad_along_a_converted_part_s_walls(3.0);
+}
+
+/// The pad 10 mm deep, out through the part's bottom.
+#[test]
+fn a_pad_along_a_converted_part_s_walls_out_through_its_bottom() {
+    pad_along_a_converted_part_s_walls(10.0);
+}

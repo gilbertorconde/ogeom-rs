@@ -34,6 +34,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A section leaving a face's boundary all but along it splits the face.**
+  The boolean orders the strands round each junction of a face's
+  arrangement by where they leave a small circle about it, not by their
+  first steps: a section starting at a tangent can set out a hair outside
+  the boundary before turning in, and read by its first step it crossed
+  the boundary and the face was left with no piece at all.
+
 - **A round's crest meeting a flat face is a circle.** A mesh's rim where
   a torus meets a flat face along its tube's crest, a few slops off the
   crest after rounding, was taken for a free curve: the circle's radius

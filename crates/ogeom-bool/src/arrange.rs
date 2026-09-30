@@ -19,7 +19,7 @@ use ogeom_math::Point2;
 #[derive(Debug, Clone)]
 pub(crate) struct Strand<T> {
     /// The curve's course through parameter space, finely enough sampled
-    /// that the first segment approximates the tangent at the start.
+    /// that its first few snaps from each end give the way it leaves.
     pub polyline: Vec<Point2>,
     /// Which exact sub-curve this stands for.
     pub tag: T,
@@ -251,20 +251,65 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
         let (u, v) = ends[d / 2];
         if d.is_multiple_of(2) { u } else { v }
     };
-    // The direction a dart leaves its tail node: the polyline's first step
-    // that way round.
-    let leaving = |d: usize| -> Point2 {
+    // A dart's polyline point `i` steps from its tail, that way round.
+    let point = |d: usize, i: usize| -> Point2 {
         let line = &live[d / 2].polyline;
         if d.is_multiple_of(2) {
-            line[1]
+            line[i]
         } else {
-            line[line.len() - 2]
+            line[line.len() - 1 - i]
         }
     };
     let mut around: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
     for d in 0..dart_count {
         around[tail(d)].push(d);
     }
+    // The order of the darts round a node is read where each first leaves
+    // a small circle about it, one circle for all of them. Strands that
+    // meet only at their ends leave any such circle in the order they
+    // stand round the node, where their first steps need not: a section
+    // leaving a boundary strand all but tangentially (a side swept from a
+    // face's outline crossing a round that meets that outline at a
+    // tangent) can set out a hair to the wrong side of it before turning
+    // in, and read by its first step it would cross the boundary. The
+    // circle is a few snaps wide, and within half of every dart's reach
+    // from the node, so each dart leaves it.
+    let reach = |d: usize| -> f64 {
+        let at = nodes[tail(d)];
+        live[d / 2]
+            .polyline
+            .iter()
+            .map(|p| p.distance(at))
+            .fold(0.0_f64, f64::max)
+    };
+    let mut radius = vec![snap * 4.0; nodes.len()];
+    for d in 0..dart_count {
+        radius[tail(d)] = radius[tail(d)].min(reach(d) * 0.5);
+    }
+    let leaving = |d: usize| -> Point2 {
+        let at = nodes[tail(d)];
+        let r = radius[tail(d)];
+        let count = live[d / 2].polyline.len();
+        let mut previous = point(d, 0);
+        for i in 1..count {
+            let p = point(d, i);
+            let (dp, dq) = (previous.distance(at), p.distance(at));
+            if dq >= r {
+                // Where the step crosses the circle, along the step.
+                let t = if dq - dp > f64::MIN_POSITIVE {
+                    ((r - dp) / (dq - dp)).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                return Point2::new(
+                    previous.x + (p.x - previous.x) * t,
+                    previous.y + (p.y - previous.y) * t,
+                );
+            }
+            previous = p;
+        }
+        point(d, count - 1)
+    };
     // Each dart's angle once, not once per comparison.
     let heading: Vec<f64> = (0..dart_count)
         .map(|d| angle(nodes[tail(d)], leaving(d)))
@@ -755,6 +800,42 @@ mod tests {
             "every probe stands in the same column: {:?}",
             pieces[0].interiors
         );
+    }
+
+    /// A section setting out all but along the boundary, its first step a
+    /// hair to the outside before it turns in (a section starting at a
+    /// tangent, sampled): read where the strands leave a circle about their
+    /// node, it stands inside, and the face splits in two.
+    #[test]
+    fn a_section_leaving_along_the_boundary_still_splits_the_face() {
+        let p = Point2::new;
+        let boundary = |a: Point2, b: Point2, tag: usize| Strand {
+            polyline: vec![a, b],
+            tag,
+            boundary: true,
+        };
+        let strands = vec![
+            boundary(p(0.0, 0.0), p(0.5, 0.0), 0),
+            boundary(p(0.5, 0.0), p(1.0, 0.0), 1),
+            boundary(p(1.0, 0.0), p(1.0, 1.0), 2),
+            boundary(p(1.0, 1.0), p(0.5, 1.0), 3),
+            boundary(p(0.5, 1.0), p(0.0, 1.0), 4),
+            boundary(p(0.0, 1.0), p(0.0, 0.0), 5),
+            Strand {
+                polyline: vec![
+                    p(0.5, 0.0),
+                    p(0.501, -1e-7),
+                    p(0.51, 0.001),
+                    p(0.55, 0.05),
+                    p(0.6, 0.5),
+                    p(0.5, 1.0),
+                ],
+                tag: 6,
+                boundary: false,
+            },
+        ];
+        let pieces = assemble(&strands, 1e-3).unwrap();
+        assert_eq!(pieces.len(), 2);
     }
 
     #[test]
