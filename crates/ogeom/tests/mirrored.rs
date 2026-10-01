@@ -352,3 +352,54 @@ fn a_scaled_body_meshes_to_the_chord_where_it_stands() {
         worst(&b)
     );
 }
+
+/// A mesh says it meets the chord only where it does: measured at every
+/// triangle's middle against the surface, a ball whose grid cells sag past
+/// the chord says so, and a drum, whose cells sag no more than their sides,
+/// meets it and says that.
+#[test]
+fn a_mesh_reports_the_chord_it_meets() {
+    let mut model = ogeom_topo::Model::new();
+    let ball = ogeom_algo::make_sphere(&mut model, Frame::WORLD, 70.0, T)
+        .unwrap()
+        .shape;
+    let drum = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 70.0, 20.0, T)
+        .unwrap()
+        .shape;
+    let deflection = ogeom_mesh::Deflection::default();
+    // The drum's wall: triangles whose corners all stand on the radius and
+    // not all at one level, as a cap's triangle across its rim does.
+    let sag = |m: &ogeom_topo::Triangulation| {
+        let ring = |v: ogeom_math::Vector| v.x.hypot(v.y);
+        m.triangles
+            .iter()
+            .filter_map(|t| {
+                let [p, q, r] = t.map(|i| m.positions[i as usize].to_vector());
+                let level = (p.z - q.z).abs() < 1e-9 && (q.z - r.z).abs() < 1e-9;
+                ([p, q, r].iter().all(|c| (ring(*c) - 70.0).abs() < 1e-6) && !level)
+                    .then(|| 70.0 - ring((p + q + r) / 3.0))
+            })
+            .fold(0.0_f64, f64::max)
+    };
+    let ball_mesh = ogeom_mesh::triangulate(&model, &ball, deflection, T).unwrap();
+    let worst_ball = ball_mesh
+        .triangles
+        .iter()
+        .map(|t| {
+            let [p, q, r] = t.map(|i| ball_mesh.positions[i as usize].to_vector());
+            70.0 - ((p + q + r) / 3.0).magnitude()
+        })
+        .fold(0.0_f64, f64::max);
+    assert_eq!(
+        ball_mesh.deflection_met,
+        worst_ball <= deflection.chord,
+        "{worst_ball}"
+    );
+    let drum_mesh = ogeom_mesh::triangulate(&model, &drum, deflection, T).unwrap();
+    assert!(drum_mesh.deflection_met);
+    assert!(
+        sag(&drum_mesh) <= deflection.chord + 1e-9,
+        "{}",
+        sag(&drum_mesh)
+    );
+}

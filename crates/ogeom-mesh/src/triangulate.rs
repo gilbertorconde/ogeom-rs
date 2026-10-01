@@ -326,6 +326,29 @@ fn triangulate_reporting_from(
         .into_iter()
         .map(|t| if flip { [t[0], t[2], t[1]] } else { t })
         .collect();
+    // The chord is met where the mesh says it is. The grid holds each row
+    // and column to it, and a cell's middle can stand off by both sides'
+    // sags together: each triangle's middle, lifted onto the surface, is
+    // measured against the triangle's plane, where the face stands.
+    if mesh.deflection_met && !matches!(surface.kind(), ogeom_geom::SurfaceKind::Plane) {
+        let chord = deflection.chord * placement.scale_factor().abs();
+        for t in &mesh.triangles {
+            let [a, b, c] = t.map(|i| i as usize);
+            let (pa, pb, pc) = (mesh.positions[a], mesh.positions[b], mesh.positions[c]);
+            let Ok(normal) = (pb - pa).cross(pc - pa).normalized(tol) else {
+                continue;
+            };
+            let (ua, ub, uc) = (mesh.parameters[a], mesh.parameters[b], mesh.parameters[c]);
+            let middle = ((ua.0 + ub.0 + uc.0) / 3.0, (ua.1 + ub.1 + uc.1) / 3.0);
+            let Ok(on) = surface.point_at(middle.0, middle.1, tol) else {
+                continue;
+            };
+            if (placement.apply(on) - pa).dot(normal).abs() > chord + tol.confusion() {
+                mesh.deflection_met = false;
+                break;
+            }
+        }
+    }
     Ok((
         mesh,
         if crossed {

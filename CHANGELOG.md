@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A mesh reports the chord it meets.** On a surface curved both ways a
+  grid cell's middle can stand off the surface by up to twice the chord,
+  while `deflection_met` said the chord was met. Each triangle's middle is
+  now measured against the surface, and the flag is false where any
+  stands off by more than the chord.
+
 - **A scaled body meshes to the chord where it stands.** A face is drawn
   in its own frame and placed after, so a body scaled by its placement
   was meshed to the caller's chord before the scale stretched it: ten
