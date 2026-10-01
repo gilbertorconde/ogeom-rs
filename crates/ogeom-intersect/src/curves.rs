@@ -518,51 +518,74 @@ fn clipped_to_windows(
         });
     }
 
-    let mut overlaps = Vec::with_capacity(found.overlaps.len());
+    let mut overlaps: Vec<Overlap> = Vec::with_capacity(found.overlaps.len());
+    let ordered = |r: (f64, f64)| if r.0 <= r.1 { r } else { (r.1, r.0) };
+    let meet = |x: (f64, f64), y: (f64, f64)| -> Option<(f64, f64)> {
+        let both = (x.0.max(y.0), x.1.min(y.1));
+        (both.1 - both.0 > slack).then_some(both)
+    };
+    let (domain_a, domain_b) = (basis_a.domain(), basis_b.domain());
+    let shifts = |period: Option<f64>| -> Vec<f64> {
+        period.map_or_else(
+            || vec![0.0],
+            |p| [0.0, 1.0, -1.0, 2.0, -2.0].iter().map(|k| k * p).collect(),
+        )
+    };
     for overlap in found.overlaps {
         let span_a = overlap.on_a.1 - overlap.on_a.0;
         let span_b = overlap.on_b.1 - overlap.on_b.0;
         if span_a.abs() <= f64::MIN_POSITIVE || span_b.abs() <= f64::MIN_POSITIVE {
             continue;
         }
-        let to_b = |t: f64| overlap.on_b.0 + span_b * (t - overlap.on_a.0) / span_a;
-        let to_a = |t: f64| overlap.on_a.0 + span_a * (t - overlap.on_b.0) / span_b;
-        let ordered = |r: (f64, f64)| if r.0 <= r.1 { r } else { (r.1, r.0) };
-        let mut kept = ordered(overlap.on_a);
-        // The other side's window, spoken in this side's parameter, and
-        // shifted by whole turns until it meets what is left.
-        if let Some(w) = window_b {
-            let (wlo, whi) = ordered((to_a(w.0), to_a(w.1)));
-            let shift = pa.unwrap_or(0.0);
-            let mut best: Option<(f64, f64)> = None;
-            for k in [0.0, 1.0, -1.0, 2.0, -2.0] {
-                let candidate = (
-                    kept.0.max(shift.mul_add(k, wlo)),
-                    kept.1.min(shift.mul_add(k, whi)),
-                );
-                if candidate.1 - candidate.0 > best.map_or(0.0, |(lo, hi)| hi - lo) {
-                    best = Some(candidate);
-                }
-                if shift == 0.0 {
-                    break;
+        let rate = span_b / span_a;
+        let to_b = |t: f64| overlap.on_b.0 + rate * (t - overlap.on_a.0);
+        let to_a = |t: f64| overlap.on_a.0 + (t - overlap.on_b.0) / rate;
+        // An overlap a whole turn long is the same set traced twice: the
+        // correspondence holds round and round, and each side's window is
+        // all that limits it. Otherwise it holds on its own stretch, at
+        // whichever whole turn each window meets it.
+        let whole = pa.is_some_and(|p| span_a.abs() >= p - slack)
+            && pb.is_some_and(|p| span_b.abs() >= p - slack);
+        let window_a = window_a.map_or(domain_a, ordered);
+        let window_b = window_b.map_or(domain_b, ordered);
+        let mut pieces_a: Vec<(f64, f64, f64)> = Vec::new();
+        if whole {
+            pieces_a.push((window_a.0, window_a.1, 0.0));
+        } else {
+            for shift in shifts(pa) {
+                let stretch = ordered(overlap.on_a);
+                if let Some(piece) = meet((stretch.0 + shift, stretch.1 + shift), window_a) {
+                    pieces_a.push((piece.0, piece.1, shift));
                 }
             }
-            let Some(candidate) = best else { continue };
-            kept = candidate;
         }
-        if let Some(w) = window_a {
-            let (wlo, whi) = ordered(w);
-            kept = (kept.0.max(wlo), kept.1.min(whi));
+        for (lo, hi, shift_a) in pieces_a {
+            // On `b`, at whichever whole turn of it lands in its window.
+            let image = ordered((to_b(lo - shift_a), to_b(hi - shift_a)));
+            for shift_b in shifts(pb) {
+                let Some(on_b) = meet((image.0 + shift_b, image.1 + shift_b), window_b) else {
+                    continue;
+                };
+                let back = |t: f64| to_a(t - shift_b) + shift_a;
+                let on_a = ordered((back(on_b.0), back(on_b.1)));
+                if on_a.1 - on_a.0 <= slack {
+                    continue;
+                }
+                // Walked as `a` walks: `b`'s ends follow `a`'s.
+                let forward = |t: f64| to_b(t - shift_a) + shift_b;
+                let (on_a, on_b) = if span_a >= 0.0 {
+                    (on_a, (forward(on_a.0), forward(on_a.1)))
+                } else {
+                    ((on_a.1, on_a.0), (forward(on_a.1), forward(on_a.0)))
+                };
+                let repeated = overlaps.iter().any(|o| {
+                    (o.on_a.0 - on_a.0).abs() <= slack && (o.on_a.1 - on_a.1).abs() <= slack
+                });
+                if !repeated {
+                    overlaps.push(Overlap { on_a, on_b });
+                }
+            }
         }
-        if kept.1 - kept.0 <= slack {
-            continue;
-        }
-        let (on_a, on_b) = if span_a >= 0.0 {
-            (kept, (to_b(kept.0), to_b(kept.1)))
-        } else {
-            ((kept.1, kept.0), (to_b(kept.1), to_b(kept.0)))
-        };
-        overlaps.push(Overlap { on_a, on_b });
     }
     CurveIntersection {
         crossings,
@@ -2281,5 +2304,62 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// Two trims of one circle share whatever stretch they share, across the
+    /// seam or not, walked the same way or the other: every piece comes
+    /// back inside both windows, and each end of it is the same point on
+    /// both curves.
+    #[test]
+    fn arcs_of_one_circle_overlap_across_the_seam() {
+        use ogeom_geom::{Curve3d as _, TrimmedCurve};
+        let circle = |x: ogeom_math::Direction, z: ogeom_math::Direction| -> Curve {
+            let frame = Frame::new(Point::new(10.0, 20.0, 30.0), z, x, T).unwrap();
+            CircleCurve::new(Circle::new(frame, 50.0, T).unwrap()).into()
+        };
+        let trim = |c: &Curve, a: f64, b: f64| -> Curve {
+            TrimmedCurve::new(c.clone(), a, b, T).unwrap().into()
+        };
+        let (x, y) = (ogeom_math::Direction::X, ogeom_math::Direction::Y);
+        let (up, down) = (ogeom_math::Direction::Z, -ogeom_math::Direction::Z);
+        let plain = circle(x, up);
+        let turned = circle(y, up);
+        let backwards = circle(x, down);
+        // `a`'s share of its own length that `b` covers.
+        for (a, b, share) in [
+            (trim(&plain, 5.5, 7.0), trim(&plain, 0.2, 1.0), 0.517 / 1.5),
+            (trim(&plain, 0.2, 1.0), trim(&plain, 5.5, 7.0), 0.517 / 0.8),
+            (
+                trim(&plain, 5.8, 6.8),
+                trim(&backwards, 5.0, 6.2),
+                0.4336 / 1.0,
+            ),
+            (trim(&plain, 5.0, 7.5), backwards.clone(), 1.0),
+            (trim(&plain, 0.5, 6.0), trim(&turned, 4.0, 6.0), 1.218 / 5.5),
+        ] {
+            let found = intersect_curves(&a, &b, CurveCurveOptions::default(), T).unwrap();
+            let (wa, wb) = (a.domain(), b.domain());
+            let mut covered = 0.0;
+            for o in &found.overlaps {
+                for (t, w) in [
+                    (o.on_a.0, wa),
+                    (o.on_a.1, wa),
+                    (o.on_b.0, wb),
+                    (o.on_b.1, wb),
+                ] {
+                    assert!(t >= w.0 - 1e-9 && t <= w.1 + 1e-9, "{t} outside {w:?}");
+                }
+                for (ta, tb) in [(o.on_a.0, o.on_b.0), (o.on_a.1, o.on_b.1)] {
+                    let gap = a
+                        .point_at(ta, T)
+                        .unwrap()
+                        .distance(b.point_at(tb, T).unwrap());
+                    assert!(gap < 1e-9, "ends {gap} apart");
+                }
+                covered += (o.on_a.1 - o.on_a.0).abs();
+            }
+            let want = share * (wa.1 - wa.0);
+            assert!((covered - want).abs() < 2e-3, "{covered} against {want}");
+        }
     }
 }

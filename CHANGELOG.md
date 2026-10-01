@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Arcs of one circle overlap across its seam.** The overlap of two
+  trims of one circle was clipped within a single turn, so a stretch
+  crossing the seam was lost, and a pair walked opposite ways reported
+  parameters outside the second trim. The correspondence is now carried
+  round whole turns, and every stretch both trims share comes back inside
+  both.
+
 - **A spindle torus is sectioned on its folded half.** A torus whose tube
   swallows its axis has, in every meridian, two tube circles reaching past
   the axis, and the closed forms against a plane square to its axis, a
