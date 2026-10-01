@@ -1245,3 +1245,47 @@ fn faces_within_tolerance_of_the_other_solid_are_settled_from_both_sides() {
         }
     }
 }
+
+/// A ball cut from a box it touches from inside, at the top wall or a tenth
+/// of a micron through it: one solid with the ball as its void, not the
+/// box and an inside-out ball beside it.
+#[test]
+fn a_cavity_touching_its_wall_is_the_solid_s_void() {
+    for poke in [0.0, 1e-7] {
+        let mut model = Model::new();
+        let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (4.0, 4.0, 4.0), T)
+            .unwrap()
+            .shape;
+        let centre = Frame::new(
+            Point::new(2.0, 2.0, 3.0 + poke),
+            Direction::Z,
+            Direction::X,
+            T,
+        )
+        .unwrap();
+        let ball = ogeom::algo::make_sphere(&mut model, centre, 1.0, T)
+            .unwrap()
+            .shape;
+        let cut = ogeom::boolean::cut(&mut model, &block, &ball, T)
+            .unwrap()
+            .shape;
+        let solids = explore_unique(&model, &cut, ShapeType::Solid).unwrap();
+        assert_eq!(solids.len(), 1, "poke {poke}");
+        assert_eq!(
+            explore_unique(&model, &solids[0], ShapeType::Shell)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            ogeom::algo::check(&model, &cut, T).unwrap().is_valid(),
+            "poke {poke}"
+        );
+        let want = 64.0 - 4.0 / 3.0 * core::f64::consts::PI;
+        assert!((volume(&model, &cut) - want).abs() < 1e-6, "poke {poke}");
+        let inside =
+            ogeom::algo::classify_in_solid_exact(&model, &solids[0], Point::new(2.0, 2.0, 3.0), T)
+                .unwrap();
+        assert_eq!(inside, ogeom::algo::Containment::Out, "poke {poke}");
+    }
+}

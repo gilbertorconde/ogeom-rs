@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A cavity touching its wall is the solid's void.** Cutting a ball from
+  a box it touches from inside left the box as one solid and the ball as an
+  inside-out solid of its own beside it, where the ball reached a tenth of
+  a micron past the wall: shells were nested only when one's box held the
+  other's exactly. The container's box now takes the touch tolerance.
+
 - **Faces within tolerance of the other solid's.** A drill whose wall
   pokes a tenth of a micron out of a box side, a ball resting a tenth of a
   micron into a box top, and a box stacked on another and tilted a

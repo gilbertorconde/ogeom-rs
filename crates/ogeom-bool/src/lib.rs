@@ -7235,12 +7235,16 @@ fn nest_shells(
     for shell in shells {
         bounds.push(shape_bounds(model, shell, tol)?);
     }
+    // A container's box widened by the tolerance a touch is read within: a
+    // void meeting its outer shell at a point (a ball resting against the
+    // inside of a wall) may reach a hair past it, and is still within it.
+    let reach = tol.confusion() * 1e2;
     let mut boundaries: Vec<Option<ogeom_algo::SolidBoundary>> =
         (0..shells.len()).map(|_| None).collect();
     let mut encloses = vec![vec![false; shells.len()]; shells.len()];
     for i in 0..shells.len() {
         for j in 0..shells.len() {
-            if i == j || !bounds[i].contains_box(&bounds[j]) {
+            if i == j || !bounds[i].expanded(reach).contains_box(&bounds[j]) {
                 continue;
             }
             if boundaries[i].is_none() {
