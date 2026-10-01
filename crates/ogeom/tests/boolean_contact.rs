@@ -1297,3 +1297,121 @@ fn a_cavity_touching_its_wall_is_the_solid_s_void() {
         assert_eq!(inside, ogeom::algo::Containment::Out, "poke {poke}");
     }
 }
+
+/// Slivers thinner than the weld distance (a hundred confusion distances)
+/// are welded: drums a few microns apart in radius, axis or end, and a box
+/// tilted five microradians on another. Every operation answers with a
+/// valid solid whose volume is the exact one to the sliver it welded, and
+/// nothing in it states a tolerance past the weld distance.
+#[test]
+fn slivers_under_the_weld_distance_are_welded() {
+    use ogeom::topo::Shape;
+    fn at(x: f64, z: f64) -> Frame {
+        Frame::new(Point::new(x, 0.0, z), Direction::Z, Direction::X, T).unwrap()
+    }
+    let pi = core::f64::consts::PI;
+    let drum = |model: &mut Model, frame: Frame, r: f64, h: f64| {
+        ogeom::algo::make_cylinder(model, frame, r, h, T)
+            .unwrap()
+            .shape
+    };
+    type Build = Box<dyn Fn(&mut Model) -> (Shape, Shape)>;
+    let cases: Vec<(&str, Build, [f64; 3])> = vec![
+        (
+            "radius 5e-6",
+            Box::new(move |m: &mut Model| {
+                (
+                    drum(m, at(0.0, 0.0), 2.0, 4.0),
+                    drum(m, at(0.0, 2.0), 2.000005, 4.0),
+                )
+            }),
+            [
+                16.0 * pi + 4.0 * pi * 2.000005f64.powi(2) - 8.0 * pi,
+                8.0 * pi,
+                8.0 * pi,
+            ],
+        ),
+        (
+            "axis 1e-6",
+            Box::new(move |m: &mut Model| {
+                (
+                    drum(m, at(0.0, 0.0), 2.0, 4.0),
+                    drum(m, at(1e-6, 2.0), 2.0, 4.0),
+                )
+            }),
+            [24.0 * pi, 8.0 * pi, 8.0 * pi],
+        ),
+        (
+            "end 5e-6",
+            Box::new(move |m: &mut Model| {
+                (
+                    drum(m, at(0.0, 0.0), 2.0, 4.0),
+                    drum(m, at(0.0, 4.0 - 5e-6), 1.0, 4.0),
+                )
+            }),
+            [20.0 * pi, 0.0, 16.0 * pi],
+        ),
+        (
+            "tilt 5e-6",
+            Box::new(|m: &mut Model| {
+                let low = ogeom::algo::make_box(m, Frame::WORLD, (2.0, 2.0, 2.0), T)
+                    .unwrap()
+                    .shape;
+                let high = ogeom::algo::make_box(m, at(0.0, 2.0), (2.0, 2.0, 2.0), T)
+                    .unwrap()
+                    .shape;
+                let axis = ogeom::math::Axis {
+                    location: Point::new(1.0, 1.0, 2.0),
+                    direction: Direction::X,
+                };
+                let tilted = ogeom::algo::transformed(
+                    m,
+                    &high,
+                    ogeom::math::Transform::rotation(axis, 5e-6),
+                )
+                .unwrap()
+                .shape;
+                (low, tilted)
+            }),
+            [16.0, 0.0, 8.0],
+        ),
+    ];
+    for (case, build, wants) in cases {
+        let mut model = Model::new();
+        let (a, b) = build(&mut model);
+        for (name, built, want) in [
+            (
+                "fuse",
+                ogeom::boolean::fuse(&mut model, &a, &b, T),
+                wants[0],
+            ),
+            (
+                "common",
+                ogeom::boolean::common(&mut model, &a, &b, T),
+                wants[1],
+            ),
+            ("cut", ogeom::boolean::cut(&mut model, &a, &b, T), wants[2]),
+        ] {
+            let shape = built.unwrap_or_else(|e| panic!("{case} {name}: {e}")).shape;
+            if explore_unique(&model, &shape, ShapeType::Face)
+                .unwrap()
+                .is_empty()
+            {
+                assert!(want.abs() < 1e-3, "{case} {name}: nothing, against {want}");
+                continue;
+            }
+            assert!(
+                ogeom::algo::check(&model, &shape, T).unwrap().is_valid(),
+                "{case} {name}"
+            );
+            let v = volume(&model, &shape);
+            assert!((v - want).abs() < 1e-3, "{case} {name}: {v} against {want}");
+            for kind in [ShapeType::Edge, ShapeType::Vertex] {
+                for sub in explore_unique(&model, &shape, kind).unwrap() {
+                    let stated = model.tolerance_of(&sub).unwrap().map_or(0.0, |t| t.get());
+                    assert!(stated <= 1e-5, "{case} {name}: a tolerance of {stated}");
+                }
+            }
+        }
+    }
+}

@@ -609,7 +609,9 @@ fn near_parallel_drums(
         let mut between = centre_b - centre_a;
         between = between - da * between.dot(da);
         let d = between.magnitude();
-        let margin = tol.confusion() * 1e3;
+        // Axes, or a touch, closer than the weld distance are one: the
+        // sliver between the drums is welded rather than sectioned.
+        let margin = tol.confusion() * 1e2;
         if d <= margin || d >= ra + rb - margin || d <= (ra - rb).abs() + margin {
             return None;
         }

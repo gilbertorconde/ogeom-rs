@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Slivers under the weld distance are welded.** Drums a few microns apart
+  in radius, axis or end, and a box tilted a few microradians on another,
+  refused. A boolean that refuses now runs once more at a confusion
+  distance ten times wider, where such a sliver is one the boolean welds,
+  and keeps that result only if nothing in it states a tolerance past the
+  weld distance, a hundred confusion distances, so no thicker sliver is
+  lost. Drums 3e-5 apart in axis, whose crossing lines were not sought
+  closer than 1e-4, now meet in them.
+
 - **Drums a hundredth of a micron to a tenth of a millimetre apart.** Two
   drums 2e-5 to 1e-4 apart in radius, or 1e-4 apart in axis, refused or
   (offset in axis) came out with a misbuilt face. Where a planar face has a

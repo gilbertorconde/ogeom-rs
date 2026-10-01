@@ -5065,13 +5065,26 @@ thread_local! {
     static SETTLE_FROM_BOTH_SIDES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// An operation run once as it always was, and, where it refuses a piece on
-/// the other solid's boundary with no coincident partner, once more with
-/// such pieces settled from both sides of them.
-fn settled(mut attempt: impl FnMut() -> OgeomResult<Built>) -> OgeomResult<Built> {
-    let refusal = match attempt() {
-        Err(e) if e.to_string().contains("no coincident partner face") => e,
-        other => return other,
+/// An operation run once as it always was, and where it refuses, again in
+/// two steps. Where the refusal is a piece on the other solid's boundary
+/// with no coincident partner, once more with such pieces settled from both
+/// sides of them. And where it still refuses, once at a confusion distance
+/// ten times wider: a sliver a few microns thick (two walls a few microns
+/// apart, a face tilted a few microradians) is then the kind the boolean
+/// welds, and the result is kept only if nothing in it was welded by more
+/// than the weld distance, a hundred confusion distances, so a sliver any
+/// thicker is never lost to the retry.
+fn settled(
+    model: &mut Model,
+    tol: Tolerances,
+    mut attempt: impl FnMut(&mut Model, Tolerances) -> OgeomResult<Built>,
+) -> OgeomResult<Built> {
+    let refusal = match attempt(model, tol) {
+        Ok(built) => return Ok(built),
+        Err(e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_))) => {
+            return Err(e);
+        }
+        Err(e) => e,
     };
     struct Reset;
     impl Drop for Reset {
@@ -5081,11 +5094,36 @@ fn settled(mut attempt: impl FnMut() -> OgeomResult<Built>) -> OgeomResult<Built
     }
     SETTLE_FROM_BOTH_SIDES.set(true);
     let _reset = Reset;
-    match attempt() {
-        Ok(built) => Ok(built),
-        Err(ogeom_core::OgeomError::Cancelled) => Err(ogeom_core::OgeomError::Cancelled),
-        Err(_) => Err(refusal),
+    if refusal.to_string().contains("no coincident partner face") {
+        match attempt(model, tol) {
+            Ok(built) => return Ok(built),
+            Err(ogeom_core::OgeomError::Cancelled) => {
+                return Err(ogeom_core::OgeomError::Cancelled);
+            }
+            Err(_) => {}
+        }
     }
+    let Ok(wider) = Tolerances::with_scale(tol.scale() / 10.0) else {
+        return Err(refusal);
+    };
+    match attempt(model, wider) {
+        Ok(built) if welded_within(model, &built.shape, tol.confusion() * 1e2)? => Ok(built),
+        Err(ogeom_core::OgeomError::Cancelled) => Err(ogeom_core::OgeomError::Cancelled),
+        _ => Err(refusal),
+    }
+}
+
+/// Whether every edge and vertex of `shape` states a tolerance within
+/// `weld`.
+fn welded_within(model: &Model, shape: &Shape, weld: f64) -> OgeomResult<bool> {
+    for kind in [ShapeType::Edge, ShapeType::Vertex] {
+        for sub in explore_unique(model, shape, kind)? {
+            if model.tolerance_of(&sub)?.is_some_and(|t| t.get() > weld) {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 
 static ARRANGE_DEBUG: std::sync::LazyLock<bool> =
@@ -7842,7 +7880,7 @@ fn half_space_plane(
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) for arguments
 /// that are not closed solids.
 pub fn fuse(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
-    settled(|| fuse_once(model, a, b, tol))
+    settled(model, tol, |model, tol| fuse_once(model, a, b, tol))
 }
 
 fn fuse_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
@@ -8148,7 +8186,7 @@ fn or_nested(
 ///
 /// As [`fuse`].
 pub fn common(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
-    settled(|| common_once(model, a, b, tol))
+    settled(model, tol, |model, tol| common_once(model, a, b, tol))
 }
 
 fn common_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
@@ -8190,7 +8228,7 @@ fn common_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeo
 ///
 /// As [`fuse`].
 pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
-    settled(|| cut_once(model, a, b, tol))
+    settled(model, tol, |model, tol| cut_once(model, a, b, tol))
 }
 
 fn cut_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
