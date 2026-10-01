@@ -7,7 +7,7 @@
 //!
 //! A separate type hierarchy from [`crate::curve`] rather than a generic
 //! parameter, because a pcurve is used differently from a spatial curve.
-//! Distance in parameter space is not distance in space; the same parametric
+//! Distance in parameter space is not distance in space: the same parametric
 //! step covers a metre near a cylinder's equator and nothing at all near a
 //! sphere's pole, so a function that treats the two alike is wrong, and
 //! separate types keep that from compiling.
@@ -205,7 +205,7 @@ impl Curve2d for Trig2d {
         let mut out = Vec::with_capacity(n + 1);
         out.push(self.raw(t).to_vector());
         for order in 1..=n {
-            // The trig part cycles with period four; the linear part
+            // The trig part cycles with period four. The linear part
             // survives only to first order. Odd orders pick up the
             // reversal sign.
             let trig = match order % 4 {
@@ -239,7 +239,7 @@ impl Curve2d for Trig2d {
 /// parameterization.
 ///
 /// Point and first derivative are exact from the basis's first and second
-/// derivatives; the second would need the basis's third, which the
+/// derivatives. The second would need the basis's third, which the
 /// vocabulary does not carry, so `d2_at` refuses by name. Where the basis's
 /// tangent vanishes the offset direction is undefined and evaluation
 /// refuses.
@@ -1146,7 +1146,7 @@ mod tests {
         let mut curves = every_curve();
         let reversed: Vec<PlanarCurve> = curves.iter().map(Reversible::reversed).collect();
         curves.extend(reversed);
-        // The closed forms; a spline's orders jump at its knots.
+        // The closed forms: a spline's orders jump at its knots.
         curves.retain(|c| !matches!(c.kind(), CurveKind::BSpline | CurveKind::Trimmed));
         for c in curves {
             for u in interior(&c, 6) {

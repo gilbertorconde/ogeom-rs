@@ -1,7 +1,7 @@
 //! Concrete space curves.
 //!
 //! Each analytic curve is a thin parameterization over the shape descriptions
-//! in `ogeom-math`; the spline curve carries its own control points. All of them
+//! in `ogeom-math`. The spline curve carries its own control points. All of them
 //! are reachable through [`Curve`], an enum rather than a boxed trait object.
 //!
 //! # Why an enum
@@ -422,7 +422,7 @@ impl HelixCurve {
     /// # Errors
     ///
     /// As [`HelixCurve::over`], and additionally if `taper` is not finite
-    /// or the radius runs non-positive anywhere on the interval; past the
+    /// or the radius runs non-positive anywhere on the interval. Past the
     /// apex there is no cone to wind.
     pub fn conical(
         frame: Frame,
@@ -461,13 +461,13 @@ impl HelixCurve {
         self.radius
     }
 
-    /// The advance along the axis per full turn; negative winds left-handed.
+    /// The advance along the axis per full turn. Negative winds left-handed.
     #[must_use]
     pub const fn pitch(&self) -> f64 {
         self.pitch
     }
 
-    /// The radial advance per full turn; zero is the cylindrical helix.
+    /// The radial advance per full turn. Zero is the cylindrical helix.
     #[must_use]
     pub const fn taper(&self) -> f64 {
         self.taper
@@ -484,7 +484,7 @@ impl HelixCurve {
     /// The speed at angle `t` is `√(r(t)² + k²)`, where the radius
     /// `r(t) = radius + s·t` advances by `s = taper/2π` a radian and
     /// `k² = s² + (pitch/2π)²`. On a cylinder (`s` zero) that is constant, and
-    /// the length is the speed times the swept angle; on a cone it is
+    /// the length is the speed times the swept angle. On a cone it is
     /// `∫√(r² + k²) dr / s`, in closed form.
     #[must_use]
     pub fn arc_length(&self, from: f64, to: f64) -> f64 {
@@ -600,7 +600,7 @@ impl Curve3d for HelixCurve {
 /// `tangent x reference`, the classical spelling.
 ///
 /// Point and first derivative are exact from the basis's first two
-/// derivatives; the second would need the basis's third, which the
+/// derivatives. The second would need the basis's third, which the
 /// vocabulary does not carry, so `derivatives_at` beyond order one refuses
 /// by name. Where the tangent runs along the reference the offset direction
 /// is undefined and evaluation refuses.
@@ -827,7 +827,7 @@ impl Curve3d for CurveOnSurface {
 
 impl CurveOnSurface {
     fn pcurve_continuity(&self) -> Continuity {
-        // Planar curves in the vocabulary are analytic or spline; the spline
+        // Planar curves in the vocabulary are analytic or spline. The spline
         // reports through its own knots elsewhere, and C2 is the floor the
         // fitting machinery guarantees. Conservative either way.
         Continuity::C2
@@ -917,7 +917,7 @@ impl BSplineCurve {
     /// # Errors
     ///
     /// As [`BSplineCurve::rational`], and additionally if the trailing
-    /// `degree` controls do not repeat the leading ones; an unwrapped ring
+    /// `degree` controls do not repeat the leading ones. An unwrapped ring
     /// evaluated periodically would tear at the seam.
     pub fn periodic_from_parts(
         knots: KnotVector,
@@ -1641,7 +1641,7 @@ impl Curve3d for BSplineCurve {
         }
     }
 
-    /// A periodic spline closes by construction; any other where its ends
+    /// A periodic spline closes by construction. Any other where its ends
     /// meet, which its end control points say only for clamped knots.
     fn is_closed(&self, tol: Tolerances) -> bool {
         self.periodic
@@ -1769,7 +1769,7 @@ impl Transformable for Curve {
                     t.apply_direction(c.axis.direction, tol)?,
                 ),
                 // The parameter is a length, so a scaling rescales the domain
-                // with it; otherwise the trimmed extent would silently change.
+                // with it. Otherwise the trimmed extent would silently change.
                 domain: (
                     c.domain.0 * t.scale_factor().abs(),
                     c.domain.1 * t.scale_factor().abs(),
@@ -1856,7 +1856,7 @@ impl Transformable for Curve {
                 let basis = c.basis.transformed(t, tol)?;
                 // The trim lives in the basis's parameter and moves with it:
                 // a line's is a length and rescales, and so does anything
-                // built on one (a trim of a trim of a line); an angle or a
+                // built on one (a trim of a trim of a line). An angle or a
                 // spline parameter does not, and the map is the identity.
                 let (from, to) = (c.basis.domain(), basis.domain());
                 Self::Trimmed(Box::new(TrimmedCurve {
@@ -2360,7 +2360,7 @@ mod tests {
         );
         let reversed: Vec<Curve> = curves.iter().map(Reversible::reversed).collect();
         curves.extend(reversed);
-        // The closed forms; a spline's orders jump at its knots.
+        // The closed forms: a spline's orders jump at its knots.
         curves.retain(|c| !matches!(c.kind(), CurveKind::BSpline | CurveKind::Trimmed));
         for c in curves {
             for u in interior(&c, 6) {

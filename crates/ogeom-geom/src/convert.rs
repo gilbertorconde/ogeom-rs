@@ -18,7 +18,7 @@
 //! # The parameter does not survive, and cannot
 //!
 //! A circle's parameter is its angle. Its rational quadratic form's is not, and
-//! no reparameterization of a rational quadratic makes it one; the two are
+//! no reparameterization of a rational quadratic makes it one: the two are
 //! related by an arctangent. So conversion preserves the *curve* and not the
 //! parameterization, and every converted curve is handed back on `[0, 1]`.
 //!
@@ -53,7 +53,7 @@ impl Curve {
     ///
     /// Exact rather than fitted: the result passes through the same points as
     /// the original at corresponding parameters, to rounding. The
-    /// *correspondence* is not the identity; see the module documentation for
+    /// *correspondence* is not the identity: see the module documentation for
     /// why it cannot be.
     ///
     /// # Errors
@@ -356,7 +356,7 @@ fn meet(
     }
     let t = between.cross(along_b).dot(cross) / denominator;
     let found = a + along_a * t;
-    // Skew lines have a nearest approach rather than a meeting; only a real
+    // Skew lines have a nearest approach rather than a meeting. Only a real
     // intersection is a control point.
     let s = between.cross(along_a).dot(cross) / denominator;
     if found.distance(b + along_b * s) > tol.confusion() {
@@ -368,7 +368,7 @@ fn meet(
 /// A spline traced the other way.
 ///
 /// The control points reverse and the knots mirror within their own span. No
-/// geometry moves; this is the same curve, walked backwards.
+/// geometry moves. This is the same curve, walked backwards.
 fn reverse(curve: &BSplineCurve) -> OgeomResult<BSplineCurve> {
     let (a, b) = curve.knots().domain();
     let mut knots: Vec<f64> = curve.knots().knots().iter().map(|k| a + b - k).collect();
@@ -494,7 +494,7 @@ impl crate::surface::BSplineSurface {
 
 /// A patch fitted at `degree` through a grid of `point` over `domain`, the
 /// grid doubled until the fit holds every sample to `tolerance` or the
-/// budget runs out; the best fit either way, its error measured at the
+/// budget runs out. The best fit either way, its error measured at the
 /// samples.
 fn grid_fitted(
     point: impl Fn(f64, f64) -> OgeomResult<Point>,
@@ -666,7 +666,7 @@ mod tests {
     }
 
     /// A cubic raised to a quintic restricted back to degree three is the
-    /// cubic again, to rounding; one already low enough is itself.
+    /// cubic again, to rounding. One already low enough is itself.
     #[test]
     fn a_curve_restricted_in_degree_holds_its_tolerance() {
         let cubic = BSplineCurve::new(
@@ -1366,7 +1366,7 @@ mod surface_tests {
 
     /// Whether a patch reaches the same corners as the surface it converted.
     ///
-    /// The implicit test says the patch lies *on* the surface; this says it
+    /// The implicit test says the patch lies *on* the surface. This says it
     /// covers the same piece of it, which the implicit test alone cannot.
     fn spans_the_same(original: &SurfaceGeometry, patch: &crate::surface::BSplineSurface) -> bool {
         let ((ua, ub), (va, vb)) = original.domain();

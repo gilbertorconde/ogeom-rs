@@ -2,17 +2,17 @@
 //!
 //! The five analytic surfaces plus a NURBS patch, a surface of revolution, a
 //! surface of extrusion, and a trimmed restriction of any of them. All reachable
-//! through [`SurfaceGeometry`], an enum for the same reasons curves are one; see
+//! through [`SurfaceGeometry`], an enum for the same reasons curves are one: see
 //! [`crate::curve`].
 //!
 //! # Keeping analytic surfaces analytic
 //!
-//! A cylinder could be written as a NURBS patch, and some kernels do exactly
-//! that. Keeping it a cylinder is worth the extra types: intersection can take a
-//! closed-form path, measurement can report a radius rather than a fit, files
-//! stay small, and a fillet knows it is filleting a cylinder. The cost is that
-//! every algorithm must handle a handful of cases, which the `kind` method
-//! makes an explicit choice rather than a hidden one.
+//! A cylinder could be written as a NURBS patch. Keeping it a cylinder is worth
+//! the extra types: intersection can take a closed-form path, measurement can
+//! report a radius rather than a fit, files stay small, and a fillet knows it
+//! is filleting a cylinder. The cost is that every algorithm must handle a
+//! handful of cases, which the `kind` method makes an explicit choice rather
+//! than a hidden one.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{
@@ -100,8 +100,8 @@ pub struct BSplineSurface {
     /// Whether the net's first and last columns, and rows, coincide:
     /// settled once here, because a parameter past the end of a closed
     /// direction is wrapped rather than refused, and asking the net at
-    /// every such evaluation walked a control column millions of times
-    /// over one face.
+    /// every such evaluation walks a control column per evaluation,
+    /// millions of times over one face.
     closed: (bool, bool),
 }
 
@@ -135,12 +135,12 @@ pub struct TrimmedSurface {
 /// A surface displaced a constant signed distance along its basis's normal,
 /// sharing the basis's parameterization.
 ///
-/// Point and first derivatives are exact; the normal's derivative is the
+/// Point and first derivatives are exact. The normal's derivative is the
 /// projection formula over the basis's second derivatives. The *second*
 /// derivative would need the basis's third, which the vocabulary does not
 /// carry, so `d2_at` refuses by name rather than differencing quietly. For
 /// an analytic basis the offset is itself analytic and the direct type is
-/// the better spelling; this type exists for the free-form bases that have
+/// the better spelling. This type exists for the free-form bases that have
 /// no such spelling.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OffsetSurface {
@@ -354,7 +354,7 @@ impl BSplineSurface {
     /// length over the mean speed along that side, so the continuation
     /// reaches the length where the side runs at its mean speed and less
     /// where the surface stretches faster. The original patch keeps its
-    /// parameters; the domain grows at the side continued.
+    /// parameters. The domain grows at the side continued.
     ///
     /// # Errors
     ///
@@ -986,7 +986,7 @@ impl Surface for CylinderSurface {
         let f = self.cylinder.frame();
         let r = self.cylinder.radius();
         let (sin, cos) = u.sin_cos();
-        // Second derivative in u points back at the axis; the surface is ruled
+        // Second derivative in u points back at the axis. The surface is ruled
         // along v, so everything involving v vanishes.
         Ok((
             f.x() * (-r * cos) + f.y() * (-r * sin),
@@ -1359,7 +1359,7 @@ impl Surface for BSplineSurface {
     }
 
     fn is_closed_u(&self, tol: Tolerances) -> bool {
-        // Settled at construction; the walk is repeated only where the net
+        // Settled at construction. The walk is repeated only where the net
         // was not closed then and a coarser tolerance might say otherwise.
         self.closed.0 || Self::net_closed_u(&self.grid, tol)
     }
@@ -1786,15 +1786,6 @@ pub fn carried(x: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    /// A surface that closes on itself evaluates past its join as a
-    /// periodic one would.
-    ///
-    /// A clamped tube whose first and last control columns coincide has
-    /// the same points at both ends of `u` and repeats nowhere. A ring that
-    /// runs right round it spans exactly a period, so wherever it is slid
-    /// some of it lies past the end, and refusing there stopped three real
-    /// bodies from meshing. A parameter a period past the end names a point
-    /// the surface has, and is answered with it.
     /// The closed form an offset of a plane, cylinder, cone or sphere
     /// stands for names, at every `(u, v)`, the point the offset names
     /// there, and turns the same way: a mirrored plane's included, and a
@@ -1906,6 +1897,15 @@ mod tests {
         }
     }
 
+    /// A surface that closes on itself evaluates past its join as a
+    /// periodic one would.
+    ///
+    /// A clamped tube whose first and last control columns coincide has
+    /// the same points at both ends of `u` and repeats nowhere. A ring that
+    /// runs right round it spans exactly a period, so wherever it is slid
+    /// some of it lies past the end, and a refusal there leaves the face
+    /// unmeshable. A parameter a period past the end names a point the
+    /// surface has, and is answered with it.
     #[test]
     fn a_closed_surface_wraps_a_parameter_past_its_join() {
         use crate::Surface as _;
@@ -2291,7 +2291,7 @@ mod tests {
             let ((ua, ub), (va, vb)) = s.domain();
             let inside = ((ua + ub) / 2.0, (va + vb) / 2.0);
             if s.kind() == SurfaceKind::Plane {
-                // A plane's window is where its face was built; the plane
+                // A plane's window is where its face was built. The plane
                 // goes on past it.
                 let p = s.point_at(ub + 1.0, inside.1, T).unwrap();
                 let q = s.point_at(ub, inside.1, T).unwrap();
@@ -2536,7 +2536,7 @@ mod tests {
 
     #[test]
     fn a_scaling_rescales_length_valued_parameters() {
-        // A cylinder's v is a height, so it must rescale; its u is an angle and
+        // A cylinder's v is a height, so it must rescale. Its u is an angle and
         // must not.
         let s: SurfaceGeometry =
             CylinderSurface::new(Cylinder::new(Frame::WORLD, 2.0, T).unwrap(), (0.0, 4.0))

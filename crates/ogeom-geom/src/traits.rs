@@ -10,9 +10,9 @@
 //!
 //! [`Curve3d::kind`] and [`Surface::kind`] let an algorithm *ask*. Plane/plane
 //! intersection is two lines of algebra and should never go through a marching
-//! intersector; a caller that wants that shortcut matches on the kind and takes
+//! intersector. A caller that wants that shortcut matches on the kind and takes
 //! it. The general path never has to know what it is looking at, so adding a
-//! surface type does not break existing algorithms; it only forgoes a
+//! surface type does not break existing algorithms. It only forgoes a
 //! shortcut until someone writes one.
 
 use ogeom_core::{OgeomResult, Tolerances};
@@ -29,7 +29,7 @@ static DEBUG_DOMAIN: std::sync::LazyLock<bool> =
 /// Ordered from least to most smooth, so `>=` is a meaningful test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Continuity {
-    /// Positions agree; tangents may not. A corner.
+    /// Positions agree. Tangents may not. A corner.
     C0,
     /// Tangent *directions* agree, but their magnitudes need not. Enough for a
     /// visually smooth join, and the usual requirement for a wire.
@@ -313,7 +313,7 @@ pub trait Curve2d {
 
 /// A surface's point and its derivatives through second order, at one place.
 ///
-/// What a foot-point solve needs in one go; see [`Surface::jet_at`].
+/// What a foot-point solve needs in one go: see [`Surface::jet_at`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceJet {
     /// The point at the parameters asked for.
@@ -336,7 +336,7 @@ pub struct SurfaceJet {
 ///
 /// What curvature display, zebra analysis and a fillet's seat all ask.
 /// The principal directions are unit tangents in space, perpendicular to
-/// each other; at an umbilic (where every direction curves the same, as
+/// each other. At an umbilic (where every direction curves the same, as
 /// everywhere on a sphere or a plane) they are any perpendicular pair
 /// in the tangent plane, and [`SurfaceCurvature::is_umbilic`] says so.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -441,7 +441,7 @@ pub trait Surface {
     ///
     /// **The contract is agreement to rounding, not to the bit.** A patch sums
     /// its point by de Boor and its derivatives by basis functions, and those
-    /// reassociate differently; the combined answer may differ from the
+    /// reassociate differently. The combined answer may differ from the
     /// separate accessors' in the last ulp. Callers needing one consistent
     /// jet (every value from the same evaluation) should use this and not
     /// mix it with the accessors at the same parameters.
@@ -582,9 +582,9 @@ pub trait Surface {
     /// parameter a whole period past the end names a point it has. A face
     /// whose trim runs right round such a tube has a ring that straddles
     /// the join whichever way it is slid, so somewhere it is asked past the
-    /// end; refusing there stopped three bodies of one assembly from
-    /// meshing at all. Closure is consulted only once a parameter is
-    /// actually outside, so the common case pays nothing for it.
+    /// end, and a refusal there leaves the face unmeshable. Closure is
+    /// consulted only once a parameter is actually outside, so the common
+    /// case pays nothing for it.
     ///
     /// # Errors
     ///
@@ -593,11 +593,10 @@ pub trait Surface {
     /// direction neither repeats nor closes.
     fn normalize_parameters(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<(f64, f64)> {
         // Every evaluation of every surface passes through here, so the
-        // in-range path is kept to the two comparisons it always was, and
-        // everything rarer (wrapping a periodic direction, wrapping a
-        // closed one, refusing) lives out of line. Folding the rare cases
-        // into one closure with a `&dyn Fn` for closure cost a tenth of an
-        // assembly's meshing time, measured, for nothing on the common path.
+        // in-range path is two comparisons, and everything rarer (wrapping
+        // a periodic direction, wrapping a closed one, refusing) lives out
+        // of line. An indirect call for closure on the common path costs a
+        // measurable share of a large mesh's time, for nothing in-range.
         let ((ua, ub), (va, vb)) = self.domain();
         let slack = tol.parametric();
         let u = if u >= ua - slack && u <= ub + slack && !self.is_periodic_u() {
@@ -621,15 +620,11 @@ pub trait Surface {
     /// A parameter outside its domain, or on a periodic direction: wrapped
     /// where the direction repeats or closes on itself, refused otherwise.
     ///
-    /// A surface that merely closes on itself (a clamped B-spline tube
-    /// whose first and last control columns coincide) has the same points
-    /// at both ends of its domain exactly as a periodic one does, and a
-    /// parameter a whole period past the end names a point it has. A face
-    /// whose trim runs right round such a tube has a ring that straddles
-    /// the join whichever way it is slid, so somewhere it is asked past the
-    /// end; refusing there stopped three bodies of one assembly from
-    /// meshing at all. Closure is consulted only here, once a parameter is
-    /// actually outside.
+    /// A surface that merely closes on itself has the same points at both
+    /// ends of its domain exactly as a periodic one does, so a parameter a
+    /// whole period past the end names a point it has and is wrapped to it,
+    /// for the reason given on `normalize_parameters`. Closure is consulted
+    /// only here, once a parameter is actually outside.
     ///
     /// # Errors
     ///
@@ -684,7 +679,7 @@ pub trait Reversible: Sized {
     /// This geometry with its parameter direction reversed.
     ///
     /// The domain is preserved, so a curve reversed still runs over the same
-    /// interval; only the direction of travel changes. Preserving the domain
+    /// interval. Only the direction of travel changes. Preserving the domain
     /// matters because trimming ranges elsewhere refer to it.
     #[must_use]
     fn reversed(&self) -> Self;

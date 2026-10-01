@@ -60,7 +60,7 @@ fn a_torus_is_saddle_inside_and_dome_outside() {
     let torus = TorusSurface::new(Torus::new(Frame::WORLD, 5.0, 1.0, T).unwrap());
     // On the outer equator both principal curvatures are negative against
     // the outward normal: 1/minor round the tube and 1/(major + minor)
-    // round the ring; on the inner equator the ring's turns positive.
+    // round the ring. On the inner equator the ring's turns positive.
     let outer = torus.curvature_at(0.7, 0.0, T).unwrap();
     let outer_pair = [outer.max, outer.min];
     assert!(
