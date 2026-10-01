@@ -17,18 +17,16 @@ use ogeom_topo::{Model, Shape, ShapeType};
 
 /// Round a solid's vertex with a ball of `radius`.
 ///
-/// The construction is the corner family's centre of gravity, promoted from
-/// the B2 proof: the corner block spanned by the edges less the ball seated
-/// a radius in from every host plane is exactly the spike a rounded corner
-/// sheds, and the general boolean does the shedding. The block's faces
-/// through the ball's centre are square to the edges, so each edge's flush
-/// band ends on the ball's rim: three sequential fillets at a box corner
-/// followed by this call round the vertex the setback way, and the
-/// `b2_three_fillets_and_the_corner_tool_round_the_vertex` pin measures
-/// the result against a closed form. At a vertex of more edges the corner
-/// goes first and the fillets follow (four bands built before the corner
-/// crash into each other at a pyramid's apex) and the block is the
-/// polyhedron of the N host planes and the N planes square to the edges.
+/// The corner block spanned by the edges, less the ball seated a radius in
+/// from every host plane, is exactly the spike a rounded corner sheds, and
+/// the general boolean does the shedding. The block's faces through the
+/// ball's centre are square to the edges, so each edge's flush band ends
+/// on the ball's rim: three sequential fillets at a box corner followed by
+/// this call round the vertex the setback way. At a vertex of more edges
+/// the corner goes first and the fillets follow (four bands built before
+/// the corner crash into each other at a pyramid's apex) and the block is
+/// the polyhedron of the N host planes and the N planes square to the
+/// edges.
 ///
 /// A vertex whose planes share no tangent ball (a rectangular pyramid's
 /// apex, any general N-edged vertex) is rounded by the envelope of every
@@ -92,7 +90,7 @@ pub(crate) fn round_vertex_with(
     };
     // Where the vertex stands, not where its node was built: a prism's far
     // end is its near end moved, and read unplaced the far corner is the
-    // near one: the tool rounded the wrong corner of the solid.
+    // near one, so the tool would round the wrong corner of the solid.
     let corner = vertex.transform(model.datums())?.apply(raw);
 
     // The corner's frame comes from the planes that pass through the
@@ -137,14 +135,13 @@ pub(crate) fn round_vertex_with(
     // planes that span always hold one; more only when they share a
     // tangent ball, which the least-squares fit's residual tells: a
     // square pyramid's apex does, a general N-edged vertex does not, and
-    // that vertex is owed the general setback patch instead.
+    // that vertex takes the general setback patch instead.
     let centre_for = |m: &[Vector]| -> Option<(Point, f64)> {
         // m_k · (c − corner) = radius over all k: solved directly for
-        // three planes, through the normal equations for more. The direct
-        // solve is kept for three not for speed but for its last bit: the
-        // boolean's paving at the touch points is still sensitive to an
-        // ulp of the centre, and the oblique corner closes on the direct
-        // solve's value.
+        // three planes, through the normal equations for more. Three are
+        // solved directly for the last bit, not for speed: the boolean's
+        // paving at the touch points is sensitive to an ulp of the centre,
+        // and an oblique corner closes on the direct solve's value.
         let mut a = [[0.0_f64; 3]; 3];
         let mut b = [0.0_f64; 3];
         if m.len() == 3 {
@@ -342,12 +339,10 @@ pub(crate) fn round_vertex_with(
     // labelling, and the solid it builds is the same for all 2N. The
     // charts the block's faces and the ball wear differ between them (where
     // a rim is exact and where fitted, where a seam falls against a patch
-    // arc) and the boolean closes every one: the unit tests below round an
-    // oblique corner under all six and a pyramid's apex under all eight,
-    // one solid each time. The tool still offers each labelling in turn
-    // and the first that closes stands, so a corner no labelling closes is
-    // refused by name. A failed attempt's nodes stay in the model
-    // unreferenced, under their own operation.
+    // arc). The tool offers each labelling in turn and the first that
+    // closes stands, so a corner no labelling closes is refused by name. A
+    // failed attempt's nodes stay in the model unreferenced, under their
+    // own operation.
     let attempt = |model: &mut Model, start: usize, reverse: bool| -> OgeomResult<Built> {
         // Edge t of the labelling and the host plane holding edges t and t+1.
         let edge_at = |t: usize| -> usize {

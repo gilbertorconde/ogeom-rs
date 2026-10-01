@@ -1,12 +1,12 @@
 //! 2D fillets and chamfers: rounding and beveling a wire's corner.
 //!
-//! The sketch-plane cousins of the edge blends. A corner where two straight
-//! edges of a wire meet is replaced by a tangent arc (the fillet) or a
-//! straight cut at set distances (the chamfer); the two edges are trimmed
-//! back on their own curves, and the wire is rebuilt with the connector in
-//! the corner's place. The tangent construction for corners with curved
-//! sides (a line meeting an arc, two arcs) is the 2D tangency problem
-//! proper (docs/PARITY.md, fillet.corners-2d) rather than approximated here.
+//! The sketch-plane cousins of the edge blends. A corner where two edges of
+//! a wire meet, each a line or a circular arc, is replaced by a tangent arc
+//! (the fillet) or a straight cut at set distances (the chamfer); the two
+//! edges are trimmed back on their own curves, and the wire is rebuilt with
+//! the connector in the corner's place. The tangent construction for
+//! corners with curved sides (a line meeting an arc, two arcs) is the 2D
+//! tangency problem proper, solved in closed form rather than approximated.
 
 use crate::support::edge_curve;
 use ogeom_algo::{Built, History, edge_vertices, make_edge_between, make_vertex, make_wire};
@@ -18,7 +18,8 @@ use ogeom_topo::{Filter, Model, Orientation, Shape, ShapeType, explore};
 
 /// Round a corner of a wire with an arc tangent to both of its edges.
 ///
-/// `vertex` names the corner; the two edges meeting there must be straight.
+/// `vertex` names the corner; the two edges meeting there must be lines or
+/// circular arcs.
 /// The result is a new wire with the two edges trimmed to the tangency points
 /// and the arc between them: the corner vertex is deleted, the edges are
 /// modified into their trimmed selves, and the arc is generated from the
@@ -27,8 +28,8 @@ use ogeom_topo::{Filter, Model, Orientation, Shape, ShapeType, explore};
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the vertex is
-/// not a corner of the wire between two straight edges, the edges are
-/// collinear, `radius` is not a usable length, or the tangency points fall
+/// not a corner of the wire between two edges that are lines or circular
+/// arcs, the edges are collinear, `radius` is not a usable length, or the tangency points fall
 /// off either edge.
 pub fn fillet_corner_2d(
     model: &mut Model,
@@ -44,10 +45,10 @@ pub fn fillet_corner_2d(
     corner.opening(tol)?;
     // The tangent circle's centre lies on each side's offset locus (the
     // parallel line for a straight side, the concentric circle for an arc),
-    // and where two loci cross is a candidate. GccAna's question, answered
-    // the same way: enumerate the loci, intersect in closed form, and keep
-    // the qualified candidate nearest the corner: centre on the corner's
-    // inner side, both tangency feet on the edges themselves.
+    // and where two loci cross is a candidate: enumerate the loci, intersect
+    // in closed form, and keep the qualified candidate nearest the corner:
+    // centre on the corner's inner side, both tangency feet on the edges
+    // themselves.
     let plane_z = {
         let n = corner.sides[0].away.cross(corner.sides[1].away);
         Direction::new(n, tol)?

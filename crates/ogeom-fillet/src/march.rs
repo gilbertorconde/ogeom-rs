@@ -2,17 +2,14 @@
 //!
 //! The analytic seats (an edge between two planes, a plane and a cylinder in
 //! the configurations that give a torus) are built from their own closed
-//! forms elsewhere. This is the general one, and the formulation matters more
-//! than the marching does.
+//! forms elsewhere. This is the general one.
 //!
 //! # Four unknowns, four equations
 //!
-//! The obvious construction intersects the two supports' *offset* surfaces to
-//! get the spine, projects back onto each support for the tangency points, and
-//! skins the arcs between them. It works on paper and is the wrong shape: the
-//! tangency curves arrive by projection, so the legs' pcurves are **fitted**,
-//! and a fitted pcurve on a support is exactly what the boolean cannot treat
-//! as same-domain later.
+//! Intersecting the two supports' *offset* surfaces for the spine, projecting
+//! back onto each support for the tangency points and skinning the arcs
+//! between them leaves the legs' pcurves **fitted**, and a fitted pcurve on a
+//! support is exactly what the boolean cannot treat as same-domain later.
 //!
 //! So the section's two endpoints are solved for directly. The unknowns are
 //! `(u₁, v₁)` on the first support and `(u₂, v₂)` on the second: the two
@@ -25,9 +22,8 @@
 //! any curve running along the seat) by requiring it to lie in the plane
 //! through the guide point normal to the guide's tangent.
 //!
-//! What comes out is worth the change: the tangency curves emerge **in the
-//! supports' own parameters**, so the legs' pcurves are exact by construction
-//! rather than fitted.
+//! The tangency curves then emerge **in the supports' own parameters**, so
+//! the legs' pcurves are exact by construction rather than fitted.
 //!
 //! # Marched by the shared walker
 //!
@@ -83,8 +79,7 @@ impl Sides {
 
 /// Why a marched blend stopped.
 ///
-/// The list is the case checklist the formulation gives for free, and each
-/// one is a different thing for a caller to do about it.
+/// Each reason is a different thing for a caller to do about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlendStop {
     /// The seat closed on itself: a blend all the way round a rim.
@@ -115,9 +110,8 @@ pub struct MarchedBlend {
     pub spine: Vec<Point>,
     /// Where it touched the first support, in that support's own parameters.
     ///
-    /// The point of the whole formulation: these are solved for, not
-    /// projected, so a pcurve fitted through them is a pcurve of the curve
-    /// itself rather than of a projection of it.
+    /// Solved for, not projected, so a pcurve fitted through them is a
+    /// pcurve of the curve itself rather than of a projection of it.
     pub on_first: Vec<(f64, f64)>,
     /// And the second's.
     pub on_second: Vec<(f64, f64)>,

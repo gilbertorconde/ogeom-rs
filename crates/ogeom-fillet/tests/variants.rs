@@ -371,8 +371,8 @@ fn a_line_arc_corner_takes_a_chamfer_by_arc_length() {
 
 #[test]
 fn a_prism_wall_is_a_plane_a_chamfer_can_melt_into() {
-    // The deferred entry's own acceptance: make_prism builds planes for its
-    // straight walls now, so the wedge's same-domain melt works on them.
+    // A prism's straight walls are planes, so the wedge's same-domain melt
+    // works on them.
     let mut model = ogeom_topo::Model::new();
     let base = ogeom_algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 1.0), T).unwrap();
     let profile = explore(&model, &base.shape, Filter::OfType(ShapeType::Face))

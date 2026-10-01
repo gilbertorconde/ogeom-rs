@@ -1707,7 +1707,7 @@ pub(crate) fn build_open_band(
         [&conn_second_0, &conn_second_1],
     )?;
 
-    // The caps: the section planes, bounded by connector–arc–connector.
+    // The caps: the section planes, bounded by connector, arc, connector.
     // Outward is out of the marched window: against the guide at the
     // start, along it at the end.
     let cap = |model: &mut Model,
@@ -1905,8 +1905,8 @@ pub(crate) fn crease_terminates_at(
 /// Only where the two round the same way. A convex blend's cut trims a
 /// convex band against its own, but a fill in a re-entrant corner is
 /// material that cut would eat (an L-bracket's front edge filleted after
-/// its re-entrant one ran the whole length of the leg and out the far side
-/// of the wall) and a fill cannot run on through a band either. `radius`
+/// its re-entrant one would run the whole length of the leg and out the far
+/// side of the wall) and a fill cannot run on through a band either. `radius`
 /// sets the chord the band's own side is read over.
 pub(crate) fn neighbour_blend_at(
     model: &Model,
@@ -2233,13 +2233,13 @@ fn host_leg(
         (delta / period).round() * period
     });
     // The loop's first station stands where the march put it, which on a
-    // seam's column is either side of the seam by rounding: a station
-    // re-solved onto the column came back a hair under the chart's far
-    // edge, the loop unwrapped forward from there ran a whole period past
-    // the window, and the host face never met the rail: its arrangement
-    // drops what lies outside its chart. The whole loop is slid by whole
-    // periods so its first station starts inside the window, the hair
-    // under the far edge read as the near one.
+    // seam's column is either side of the seam by rounding. A station
+    // re-solved onto the column can land a hair under the chart's far
+    // edge, and a loop unwrapped forward from there runs a whole period
+    // past the window, where the host face never meets the rail: its
+    // arrangement drops what lies outside its chart. The whole loop is
+    // slid by whole periods so its first station starts inside the window,
+    // the hair under the far edge read as the near one.
     if let Some(period) = period_of(host) {
         use ogeom_geom::Surface as _;
         let ((u0, _), _) = host.domain();

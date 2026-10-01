@@ -459,8 +459,8 @@ fn fillet_converted(
 ///
 /// A box converted to six patches, one top edge rounded: the legs stand on
 /// the hosts' own patches and the melt resolves them as one chart, and the
-/// wedge's caps cut the patches along straight sections a fit used to send
-/// wandering. The volume drops by the corner's own fill.
+/// wedge's caps cut the patches along straight sections. The volume drops
+/// by the corner's own fill.
 #[test]
 fn a_fillet_on_a_converted_box_edge_melts() {
     let mut model = ogeom_topo::Model::new();

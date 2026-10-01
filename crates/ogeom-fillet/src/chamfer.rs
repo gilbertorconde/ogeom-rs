@@ -1,9 +1,8 @@
 //! Chamfers: the bevel that replaces an edge.
 //!
-//! P4's opening stone, built deliberately on M3's shoulders: a chamfer along
-//! a straight edge between two planar faces is a wedge subtracted, and the
-//! wedge's own faces lie *exactly* on the solid's (coplanar, materials
-//! aligned), which is the same-domain case the boolean learned to resolve.
+//! A chamfer along a straight edge between two planar faces is a wedge
+//! subtracted, and the wedge's own faces lie *exactly* on the solid's
+//! (coplanar, materials aligned), which is the boolean's same-domain case.
 //!
 //! Three spellings, one construction. The symmetric chamfer cuts the same
 //! distance along both faces; the distance-distance form cuts a named

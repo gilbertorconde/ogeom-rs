@@ -122,16 +122,16 @@ fn a_hole_rim_gains_the_mirrored_toroidal_blend() {
 /// The same mouth in a plate, drilled right through: the bore's rim rounded
 /// over where the drill was longer than the plate is thick.
 ///
-/// The drill's length is the whole point. A bore exactly as deep as the
+/// The drill's length is the condition. A bore exactly as deep as the
 /// plate leaves its mouth on the drill cylinder's own rim, and that circle
 /// starts where the wall's chart does; a deeper drill leaves it as a
 /// section, starting wherever the cut split it. The blend's wedge shares
 /// the wall with the plate, and the shared rim's image on that chart is a
 /// straight pcurve running from a quarter turn round to a quarter turn
-/// past the seam, which the boolean's tear remover, seeing two samples
-/// three quarters of a turn apart, read as a wrap and turned back on
-/// itself. The wall then never split, its strip inside the wedge survived,
-/// and the shell would not close.
+/// past the seam. Two of its samples stand three quarters of a turn apart,
+/// which the boolean's tear remover must not read as a wrap: turned back
+/// on itself, the pcurve never splits the wall, the wall's strip inside
+/// the wedge survives, and the shell does not close.
 #[test]
 fn a_bore_mouth_in_a_plate_rounds_over_however_deep_the_drill() {
     let pi = core::f64::consts::PI;

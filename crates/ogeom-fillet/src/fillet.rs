@@ -7,7 +7,7 @@
 //! costs nothing, and both are built the same way: the chamfer's wedge with
 //! the bevel exchanged for the envelope (legs running along the faces to the
 //! tangency lines, and the envelope between them, every pcurve exact). The
-//! boolean then does what it did for the chamfer: the legs melt into the
+//! boolean then does what it does for the chamfer: the legs melt into the
 //! solid's own faces by same-domain resolution, and the envelope stays as
 //! the blend.
 
@@ -241,7 +241,7 @@ pub fn fillet_edges(
     }
     corners.retain(|(_, count)| *count >= 3);
     // A corner the tool rounds, or the solid unchanged where it does not
-    // speak the corner, which keeps the bands' caps, as before.
+    // speak the corner, which keeps the bands' caps.
     let round = |model: &mut Model, built: Built, vertex: &Shape| -> OgeomResult<Built> {
         match crate::corner::round_vertex(model, &built.shape, vertex, radius, tol) {
             Ok(rounded) => Ok(Built {

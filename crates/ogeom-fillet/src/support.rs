@@ -52,7 +52,6 @@ impl Seat {
     }
 }
 
-/// An edge's 3D curve and range, cloned out of the model.
 /// Whether `candidate` is the same edge occurrence as `edge`: the same node,
 /// placed the same way in the world. Two references through different
 /// location paths that compose to one placement are the same occurrence; the
@@ -87,6 +86,7 @@ pub(crate) fn same_occurrence(
     .all(|p| a.apply(p).distance(b.apply(p)) <= tol.confusion())
 }
 
+/// An edge's 3D curve and range, placed in the world.
 pub(crate) fn edge_curve(
     model: &Model,
     edge: &Shape,
@@ -145,15 +145,15 @@ pub(crate) fn hosts_planar(
 /// Find the seat of a blend: the straight edge's ends and direction, and the
 /// outward normals of the exactly two planar faces of `solid` meeting there.
 ///
-/// Refuses concave and tangent edges: the wedge these blends subtract lies in
-/// the material only when the edge is convex. A concave blend *adds* material
-/// and is a different construction; see docs/PARITY.md, fillet.edge-blends.
+/// Refuses tangent edges, which have no corner. Convexity is read from the
+/// solid and carried in the seat: a convex edge's wedge subtracts, a
+/// concave edge's adds, with every sign mirrored.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the edge is
 /// not straight, is not shared by exactly two planar faces of `solid`, or the
-/// edge is concave or tangent.
+/// edge is tangent.
 pub(crate) fn planar_seat(
     model: &Model,
     solid: &Shape,

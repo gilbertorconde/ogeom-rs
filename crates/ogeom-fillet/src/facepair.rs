@@ -29,8 +29,8 @@ use crate::support::Seat;
 /// from the normals, because normals cannot tell a step from a slot.
 ///
 /// Planar supports only. A curved face-face blend needs the marching seat
-/// (the spine that is the two offset surfaces' own intersection), which is
-/// listed as open in `docs/PLAN.md` rather than guessed at here.
+/// (the spine that is the two offset surfaces' own intersection), which
+/// this function does not build.
 ///
 /// # Errors
 ///

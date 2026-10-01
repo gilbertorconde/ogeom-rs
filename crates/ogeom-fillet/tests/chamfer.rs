@@ -1,4 +1,4 @@
-//! The chamfer: P4's opening stone, standing on M3's booleans.
+//! The chamfer: a wedge subtracted through the boolean.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;
