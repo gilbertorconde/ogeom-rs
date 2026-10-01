@@ -2,7 +2,7 @@
 //! validation values.
 //!
 //! Everything here is *data about* shapes rather than geometry: the
-//! free-form key–value pairs an application pins to a face, the material a
+//! free-form key-value pairs an application pins to a face, the material a
 //! body is meant to be cut from, the layers a drawing organizes itself by,
 //! and the mass-property check values an exchange partner records so the
 //! receiver can verify a translation did not quietly lose a boss. The
