@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A sphere on a torus's axis meets it in exact parallels.** The pair
+  went to the marcher, and a sphere seated against the tube came back as
+  two fitted pieces of its contact, a hundred times past their stated
+  tolerance. It has a closed form: each place the sphere's meridian meets
+  the tube's is a parallel, one tangential where the sphere is seated.
+
 - **A fitted section states the error its images reach.** A section
   fitted beside a cone's apex reported a tolerance two hundred times
   tighter than its pcurve on the cone stood from the curve: the error was

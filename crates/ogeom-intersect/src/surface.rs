@@ -91,6 +91,8 @@ pub fn surface_surface(
         (S::Cylinder(c), S::Torus(t)) => coaxial_cylinder_torus(c.cylinder(), t.torus(), tol),
         (S::Torus(t), S::Cylinder(c)) => coaxial_cylinder_torus(c.cylinder(), t.torus(), tol),
         (S::Torus(x), S::Torus(y)) => coaxial_tori(x.torus(), y.torus(), tol),
+        (S::Sphere(s), S::Torus(t)) => axial_sphere_torus(s.sphere(), t.torus(), tol),
+        (S::Torus(t), S::Sphere(s)) => axial_sphere_torus(s.sphere(), t.torus(), tol),
         (S::Plane(p), S::Cone(c)) => plane_cone(p.plane(), c.cone(), tol),
         (S::Cone(c), S::Plane(p)) => plane_cone(p.plane(), c.cone(), tol),
         (S::Cylinder(x), S::Cone(c)) => coaxial_cylinder_cone(x.cylinder(), c.cone(), tol),
@@ -753,47 +755,110 @@ fn coaxial_tori(
     // Profile circles in a meridian plane: each tube is two circles, centred
     // its major radius either side of the axis at its height, radii the
     // minors. A spindle's far circle reaches past the axis onto this side,
-    // so every pairing is met, and the meetings on this side (a positive
-    // distance from the axis) are the parallels.
+    // so every pairing is met.
     let (ra, rb) = (a.minor_radius(), b.minor_radius());
-    let mut profile_points: Vec<ogeom_math::Point2> = Vec::new();
-    for (sa, sb) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
-        let (ca, cb) = (
-            ogeom_math::Point2::new(sa * a.major_radius(), 0.0),
-            ogeom_math::Point2::new(sb * b.major_radius(), lift),
-        );
-        let between = cb - ca;
-        let distance = between.magnitude();
-        if distance <= tol.confusion() {
-            // Concentric profiles of different tube radii never meet; the
-            // same circle was the `Same` case above.
-            continue;
-        }
-        if distance > ra + rb + tol.confusion() || distance < (ra - rb).abs() - tol.confusion() {
-            continue;
-        }
-        let along = distance.mul_add(distance, ra.mul_add(ra, -(rb * rb))) / (2.0 * distance);
-        let squared = ra.mul_add(ra, -(along * along));
-        let direction = between * (1.0 / distance);
-        let foot = ca + direction * along;
-        let found = if squared <= tol.confusion() * tol.confusion() {
-            vec![foot]
-        } else {
-            let offset =
-                ogeom_math::Vector2::new(-direction.y, direction.x) * squared.max(0.0).sqrt();
-            vec![foot + offset, foot - offset]
-        };
-        for p in found {
-            if p.x > tol.confusion()
-                && profile_points
-                    .iter()
-                    .all(|q| q.distance(p) > tol.confusion())
+    let profile_points = profile_meetings(
+        &[
+            (ogeom_math::Point2::new(a.major_radius(), 0.0), ra),
+            (ogeom_math::Point2::new(-a.major_radius(), 0.0), ra),
+        ],
+        &[
+            (ogeom_math::Point2::new(b.major_radius(), lift), rb),
+            (ogeom_math::Point2::new(-b.major_radius(), lift), rb),
+        ],
+        tol,
+    );
+    let circles: Vec<Curve> = profile_points
+        .into_iter()
+        .filter_map(|p| {
+            circle_on(
+                axis.location + axis.direction.vector() * p.y,
+                axis.direction,
+                p.x,
+                tol,
+            )
+        })
+        .collect();
+    Ok(if circles.is_empty() {
+        Meeting::Apart
+    } else {
+        Meeting::Along(circles)
+    })
+}
+
+/// Where circles in a meridian plane meet, on the plane's own side of the
+/// axis (a positive distance from it): each meeting revolves into a
+/// parallel. Every circle of `a` is met with every circle of `b`; the
+/// meetings come back once each.
+fn profile_meetings(
+    a: &[(ogeom_math::Point2, f64)],
+    b: &[(ogeom_math::Point2, f64)],
+    tol: Tolerances,
+) -> Vec<ogeom_math::Point2> {
+    let mut points: Vec<ogeom_math::Point2> = Vec::new();
+    for &(ca, ra) in a {
+        for &(cb, rb) in b {
+            let between = cb - ca;
+            let distance = between.magnitude();
+            // Concentric circles of different radii never meet; the same
+            // circle is the callers' `Same`.
+            if distance <= tol.confusion()
+                || distance > ra + rb + tol.confusion()
+                || distance < (ra - rb).abs() - tol.confusion()
             {
-                profile_points.push(p);
+                continue;
+            }
+            let along = distance.mul_add(distance, ra.mul_add(ra, -(rb * rb))) / (2.0 * distance);
+            let squared = ra.mul_add(ra, -(along * along));
+            let direction = between * (1.0 / distance);
+            let foot = ca + direction * along;
+            let found = if squared <= tol.confusion() * tol.confusion() {
+                vec![foot]
+            } else {
+                let offset =
+                    ogeom_math::Vector2::new(-direction.y, direction.x) * squared.max(0.0).sqrt();
+                vec![foot + offset, foot - offset]
+            };
+            for p in found {
+                if p.x > tol.confusion() && points.iter().all(|q| q.distance(p) > tol.confusion()) {
+                    points.push(p);
+                }
             }
         }
     }
-    let circles: Vec<Curve> = profile_points
+    points
+}
+
+/// A sphere centred on a torus's axis: in a meridian plane the sphere is a
+/// circle on the axis and the tube two circles beside it, and each place
+/// they meet revolves into a parallel; a sphere seated in the tube touches
+/// it along one. A sphere off the axis meets the torus in a curve only the
+/// marcher traces.
+fn axial_sphere_torus(
+    sphere: ogeom_math::Sphere,
+    torus: ogeom_math::Torus,
+    tol: Tolerances,
+) -> OgeomResult<Meeting> {
+    let axis = torus.axis();
+    let lift = (sphere.centre() - axis.location).dot(axis.direction.vector());
+    let foot = axis.location + axis.direction.vector() * lift;
+    if foot.distance(sphere.centre()) > tol.confusion() {
+        ogeom_bail!(
+            NotDone,
+            "a sphere off a torus's axis meets it in a curve only the general \
+             marching intersector can trace"
+        );
+    }
+    let tube = torus.minor_radius();
+    let points = profile_meetings(
+        &[(ogeom_math::Point2::new(0.0, lift), sphere.radius())],
+        &[
+            (ogeom_math::Point2::new(torus.major_radius(), 0.0), tube),
+            (ogeom_math::Point2::new(-torus.major_radius(), 0.0), tube),
+        ],
+        tol,
+    );
+    let circles: Vec<Curve> = points
         .into_iter()
         .filter_map(|p| {
             circle_on(

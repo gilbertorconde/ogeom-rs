@@ -623,3 +623,43 @@ fn a_section_beside_a_cone_s_apex_states_its_true_tolerance() {
         }
     }
 }
+
+/// A sphere centred on a torus's axis meets it in parallels: two where it
+/// crosses the tube, one where it sits against the tube's inside, each an
+/// exact circle and the seated one a single tangential contact.
+#[test]
+fn a_sphere_on_a_torus_s_axis_meets_it_in_parallels() {
+    use ogeom_intersect::{IntersectOptions, SurfaceIntersection, intersect_surfaces};
+    let centre = Point::new(100.0, 200.0, 300.0);
+    let torus: SurfaceGeometry = TorusSurface::new(
+        Torus::new(
+            Frame::new(centre, Direction::Z, Direction::X, T).unwrap(),
+            30.0,
+            5.0,
+            T,
+        )
+        .unwrap(),
+    )
+    .into();
+    for (radius, count, tangential) in [(25.0, 1, true), (27.0, 2, false), (35.0, 1, true)] {
+        let ball = sph(centre, radius);
+        let SurfaceIntersection::Along(curves) =
+            intersect_surfaces(&torus, &ball, IntersectOptions::default(), T).unwrap()
+        else {
+            panic!("the sphere meets the torus at {radius}");
+        };
+        assert_eq!(curves.len(), count, "{radius}");
+        for c in &curves {
+            assert!(c.exact && c.tangential == tangential, "{radius}");
+            assert!(c.on_a.is_some() && c.on_b.is_some());
+            let (lo, hi) = c.curve.domain();
+            for k in 0..=16 {
+                let p = c
+                    .curve
+                    .point_at(lo + (hi - lo) * f64::from(k) / 16.0, T)
+                    .unwrap();
+                assert!(off(&torus, p).abs() < 1e-9 && off(&ball, p).abs() < 1e-9);
+            }
+        }
+    }
+}
