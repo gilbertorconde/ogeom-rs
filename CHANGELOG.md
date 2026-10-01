@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A slab rounded at half its thickness.** Rounding every edge of a box
+  at half its thinnest side refused ("an earlier blend in the chain
+  consumed this edge"): the balls of the two corners at each short edge's
+  ends meet across it and leave nothing of it. An edge of the chain whose
+  ends are both corners the chain rounded, and which they consumed, is now
+  rounded by them; the result is the full round, its volume Steiner's.
+
 - **A closed crease asked for as a chain of its arcs.** `fillet_edges` on
   every arc of a junction loop refused after the first ("an earlier blend
   in the chain consumed this edge"): the first arc's blend runs the whole

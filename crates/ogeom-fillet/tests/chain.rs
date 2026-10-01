@@ -256,3 +256,32 @@ fn every_edge_of_an_l_bracket_rounds_in_either_order() {
         assert!((v - 6.0).abs() < 0.1, "reversed {reversed}: {v}");
     }
 }
+
+/// Every edge of a slab rounded at half its thickness: the blends on each
+/// side meet along its middle and the side is gone, and each short edge
+/// lies wholly inside the balls of the two corners at its ends, which
+/// round it. What is left is the slab's mid-plane rectangle grown by the
+/// radius, whose volume Steiner's formula gives: area times thickness,
+/// a half-cylinder round the perimeter, and a ball.
+#[test]
+fn a_slab_rounds_fully_at_half_its_thickness() {
+    let pi = core::f64::consts::PI;
+    for (x, y) in [(2.0, 2.0), (3.0, 2.0)] {
+        let mut model = ogeom_topo::Model::new();
+        let slab = ogeom_algo::make_box(&mut model, Frame::WORLD, (x, y, 1.0), T)
+            .unwrap()
+            .shape;
+        let edges = explore_unique(&model, &slab, ShapeType::Edge).unwrap();
+        let rounded = ogeom_fillet::fillet_edges(&mut model, &slab, &edges, 0.5, T)
+            .unwrap_or_else(|e| panic!("{x} x {y}: {e}"));
+        let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{x} x {y}: {:?}", diagnosis.problems);
+        let (a, b) = (x - 1.0, y - 1.0);
+        let want = a * b + (a + b) * pi * 0.25 + pi / 6.0;
+        let got = volume(&model, &rounded.shape, 1e-3);
+        assert!((got - want).abs() < 1e-6, "{x} x {y}: {got} against {want}");
+        for edge in &edges {
+            assert!(rounded.history.is_deleted(edge));
+        }
+    }
+}

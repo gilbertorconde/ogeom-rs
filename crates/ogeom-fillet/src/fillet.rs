@@ -333,7 +333,11 @@ pub fn fillet_edges(
             None => (solid.clone(), vec![edge.clone()]),
             Some(b) => {
                 let traced = b.history.trace(edge);
-                let on_blended_crease = blended_creases.contains(&hosts_of(model, edge)?);
+                // An edge both of whose ends this chain's corners rounded,
+                // and which they left nothing of, ran its whole length
+                // inside their balls: the corners are its blend.
+                let on_blended_crease = blended_creases.contains(&hosts_of(model, edge)?)
+                    || mates[index].settled == [true, true];
                 if traced.is_empty() && on_blended_crease {
                     continue;
                 }
