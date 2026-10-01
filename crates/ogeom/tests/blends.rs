@@ -1555,10 +1555,14 @@ fn two_seam_split_blends_meet_cap_to_cap_in_either_order() {
         let faces_before = explore_unique(&model, &grooved, ShapeType::Face)
             .unwrap()
             .len();
-        let before =
-            ogeom::algo::volume_properties(&model, &grooved, ogeom::mesh::Deflection::default(), T)
-                .unwrap()
-                .mass;
+        let before = ogeom::algo::volume_properties(
+            &model,
+            &grooved,
+            ogeom::mesh::Deflection::with_chord(1e-3).unwrap(),
+            T,
+        )
+        .unwrap()
+        .mass;
         let first_arc = edge_near(&model, &grooved, order[0]);
         let first = ogeom::fillet::fillet_edge(&mut model, &grooved, &first_arc, 1.0, T).unwrap();
         let second_arc = edge_near(&model, &first.shape, order[1]);
@@ -1577,7 +1581,7 @@ fn two_seam_split_blends_meet_cap_to_cap_in_either_order() {
         let after = ogeom::algo::volume_properties(
             &model,
             &second.shape,
-            ogeom::mesh::Deflection::default(),
+            ogeom::mesh::Deflection::with_chord(1e-3).unwrap(),
             T,
         )
         .unwrap()

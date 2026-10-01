@@ -35,9 +35,10 @@ bump may break the API and a patch bump may not.
   its state is read once, at the middle of one of its edges. The other
   solid's face trims are drawn only when a point or a ray comes near them,
   face outlines only for the faces a section crosses, a circle's polyline
-  in closed form, and a piece's probes are checked against the fine rings
-  their rays can reach. A pocket into a plate with four hundred bores
-  takes 85 ms, from 160.
+  in closed form, a piece's probes are checked against the fine rings
+  their rays can reach, and an edge rebuilt whole is built once for both
+  its faces. A pocket into a plate with four hundred bores takes about
+  100 ms, from 160.
 
 ## [0.6.1] - 2026-10-01
 

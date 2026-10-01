@@ -6817,6 +6817,10 @@ struct Rebuild<'m> {
     /// Vertices minted from junctions at an edge's own end vertex, which a
     /// tangent section's chart image is bent onto.
     onto_vertex: std::collections::HashSet<ogeom_topo::TShapeId>,
+    /// Boundary edges rebuilt whole, by the edge they were: the face on the
+    /// other side of one finds it built and adds its own pcurve, where a
+    /// second build would leave the sew a twin to find.
+    whole_edges: std::collections::HashMap<EdgeKey, Shape>,
 }
 
 impl Rebuild<'_> {
@@ -7206,6 +7210,20 @@ fn build_sub_edge(
         }
         Tag::Boundary { edge, range } => {
             let e = &face.edges[*edge];
+            let whole = e.other_side.is_none()
+                && (range.0 - e.crange.0).abs() <= tol.parametric()
+                && (range.1 - e.crange.1).abs() <= tol.parametric();
+            if whole && let Some(built) = rebuild.whole_edges.get(&e.node).cloned() {
+                ogeom_algo::attach_pcurve(
+                    rebuild.model,
+                    &built,
+                    e.pcurve.clone(),
+                    surface_id,
+                    Location::identity(),
+                    e.prange,
+                )?;
+                return Ok(built);
+            }
             let from = e.curve.point_at(range.0, tol)?;
             let to = e.curve.point_at(range.1, tol)?;
             let v0 = rebuild.vertex(from, tol);
@@ -7256,6 +7274,9 @@ fn build_sub_edge(
                         sub_p,
                     )?;
                 }
+            }
+            if whole {
+                rebuild.whole_edges.insert(e.node, built.clone());
             }
             Ok(built)
         }
@@ -7521,6 +7542,7 @@ fn assemble_result(
         junction_bins,
         junction_reach,
         onto_vertex: std::collections::HashSet::new(),
+        whole_edges: std::collections::HashMap::new(),
     };
     // A face the operation never touched (nothing crosses it, no edge of it
     // is split, no junction lands at its corners) is rebuilt as an exact
