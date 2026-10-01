@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A point in a spherical void classifies out of the material.** The
+  bound of a sphere face used inside out covered only its seam: its chart
+  outline put both seam walks on one column, so `classify_in_solid_exact`
+  took points in a void bounded by it as inside the material. The first
+  seam walk of an outline takes the image its own record names.
+
 - **A pointed cone converts up to its apex.** `to_nurbs` and
   `general_transformed_shape` widened a cone face's window by a margin
   that ran past the apex into the other nappe, and the converted cone came

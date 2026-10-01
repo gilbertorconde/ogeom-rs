@@ -57,7 +57,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 
 ## Tier 2: narrower wrong results, and crashes
 
-- [ ] **C1.** `classify_in_solid_exact` says In for points in a spherical void: `shape_bounds` of a reversed whole sphere bounds only its seam (`ogeom-algo/src/measure.rs` `patch_bulge`).
+- [x] **C1.** `classify_in_solid_exact` says In for points in a spherical void: `shape_bounds` of a reversed whole sphere bounds only its seam (`ogeom-algo/src/measure.rs` `patch_bulge`).
 - [ ] **C2.** Whole spheres and tori from f32 meshes fail `check`: `whole_face` widens the face's tolerance but not its seam, pole edges and vertices (`mesh_solid.rs`).
 - [ ] **C3.** A small valid `coplanar_distance` on f32 input gives a shape whose whole-shape tessellation is open while `check` passes (`mesh_solid.rs`).
 - [ ] **C4.** `solid_from_mesh` accepts NaN, negative or zero `coplanar_distance`, and NaN or zero `crease`, silently (`mesh_solid.rs`).

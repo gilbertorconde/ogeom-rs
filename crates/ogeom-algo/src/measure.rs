@@ -645,7 +645,17 @@ fn chart_outline(
                         };
                         ring.last().map_or(0.0, |previous| previous.distance(at))
                     };
-                    let take = if reach(*forward) <= reach(*reversed) {
+                    // With nothing walked yet, the record decides: the
+                    // forward image belongs to the edge walked forward in
+                    // the face as stored, whichever way the face is used.
+                    let take = if ring.is_empty() {
+                        let flipped = face.orientation() == ogeom_topo::Orientation::Reversed;
+                        if backwards == flipped {
+                            *forward
+                        } else {
+                            *reversed
+                        }
+                    } else if reach(*forward) <= reach(*reversed) {
                         *forward
                     } else {
                         *reversed

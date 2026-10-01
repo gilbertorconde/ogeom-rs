@@ -977,6 +977,43 @@ mod tests {
         }
     }
 
+    /// A box with a spherical void bounded by a sphere's face turned inside
+    /// out: a point in the void is out of the material, exactly and by mesh.
+    #[test]
+    fn a_point_in_a_spherical_void_is_outside_the_material() {
+        let mut model = Model::new();
+        let corner = Frame::new(
+            Point::new(-20.0, -20.0, -20.0),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let block = make_box(&mut model, corner, (40.0, 40.0, 40.0), T).unwrap();
+        let ball = crate::make_sphere(&mut model, Frame::WORLD, 10.0, T).unwrap();
+        let outer = explore_unique(&model, &block.shape, ShapeType::Shell).unwrap()[0].clone();
+        let skin = explore_unique(&model, &ball.shape, ShapeType::Face).unwrap()[0].clone();
+        let void = model.add_shell(&[skin.reversed()]).unwrap();
+        let holed = crate::make_solid(&mut model, &[outer, void]).unwrap().shape;
+        for (p, want) in [
+            (Point::new(0.0, 0.0, 0.0), Containment::Out),
+            (Point::new(3.0, 3.0, 3.0), Containment::Out),
+            (Point::new(-3.0, -3.0, -3.0), Containment::Out),
+            (Point::new(15.0, 0.0, 0.0), Containment::In),
+        ] {
+            assert_eq!(
+                classify_in_solid_exact(&model, &holed, p, T).unwrap(),
+                want,
+                "{p:?}"
+            );
+            assert_eq!(
+                classify_in_solid(&model, &holed, p, fine(), T).unwrap(),
+                want,
+                "{p:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_point_outside_a_box_is_outside_it() {
         let mut model = Model::new();
