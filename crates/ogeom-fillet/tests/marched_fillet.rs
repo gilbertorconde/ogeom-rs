@@ -628,3 +628,26 @@ fn a_tee_s_junction_loop_rounds_from_any_arc() {
         assert!((v - volumes[0]).abs() < 1e-5, "{volumes:?}");
     }
 }
+
+/// The whole junction loop of a pipe tee asked for as a chain of its arcs
+/// rounds once: the first arc's blend runs the loop, and the arcs after it
+/// lie on the crease it rounded, done rather than in its way.
+#[test]
+fn a_tee_s_junction_loop_rounds_as_a_chain_of_its_arcs() {
+    let (mut model, joined, arcs) = tee();
+    let one = {
+        let mut model = model.clone();
+        let rounded = ogeom_fillet::fillet_edge(&mut model, &joined, &arcs[0], 0.1, T)
+            .unwrap()
+            .shape;
+        volume(&model, &rounded, 1e-3)
+    };
+    let chain = ogeom_fillet::fillet_edges(&mut model, &joined, &arcs, 0.1, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &chain.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let v = volume(&model, &chain.shape, 1e-3);
+    assert!((v - one).abs() < 1e-5, "{v} against {one}");
+    for arc in &arcs {
+        assert!(chain.history.is_deleted(arc));
+    }
+}

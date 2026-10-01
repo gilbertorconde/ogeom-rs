@@ -21,7 +21,7 @@ use ogeom_geom::{
     CircleCurve, Curve, CylinderSurface, PlaneSurface, SurfaceGeometry, TorusSurface,
 };
 use ogeom_math::{Circle, Cylinder, Direction, Frame, Plane, Point, Torus, Vector};
-use ogeom_topo::{Model, Shape};
+use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
 /// Round a convex edge of a solid with a constant-radius blend tangent to
 /// both of its faces.
@@ -304,6 +304,25 @@ pub fn fillet_edges(
     let on_round_rim = |model: &Model, edge: &Shape, rims: &[ogeom_math::Circle]| {
         rim_circle(model, edge, tol).is_some_and(|c| rims.iter().any(|r| same_circle(r, &c, tol)))
     };
+    // The two faces each edge of the chain lies between on the solid as
+    // given. A blend along a crease runs the whole of it where the crease
+    // closes on itself (a junction loop the march follows round), so a
+    // later edge of the same crease that the blend consumed is rounded
+    // already, not interfered with.
+    let hosts_of = |model: &Model, edge: &Shape| -> OgeomResult<Vec<ogeom_topo::TShapeId>> {
+        let mut out = Vec::new();
+        for face in explore_unique(model, solid, ShapeType::Face)? {
+            if explore_unique(model, &face, ShapeType::Edge)?
+                .iter()
+                .any(|e| e.node() == edge.node())
+            {
+                out.push(face.node());
+            }
+        }
+        out.sort_unstable();
+        Ok(out)
+    };
+    let mut blended_creases: Vec<Vec<ogeom_topo::TShapeId>> = Vec::new();
     for (index, edge) in edges.iter().enumerate() {
         // The edge as it stands on the current solid: itself on the first
         // step, and afterwards whatever the earlier blends left of it: one
@@ -314,6 +333,10 @@ pub fn fillet_edges(
             None => (solid.clone(), vec![edge.clone()]),
             Some(b) => {
                 let traced = b.history.trace(edge);
+                let on_blended_crease = blended_creases.contains(&hosts_of(model, edge)?);
+                if traced.is_empty() && on_blended_crease {
+                    continue;
+                }
                 if traced.is_empty() {
                     ogeom_bail!(
                         Construction,
@@ -325,13 +348,21 @@ pub fn fillet_edges(
                 for one in traced {
                     match refind_edges(model, &b.shape, one, tol) {
                         Ok(live) => found.extend(live),
-                        Err(_) if on_round_rim(model, one, &round_rims) => {}
+                        Err(_) if on_blended_crease || on_round_rim(model, one, &round_rims) => {}
                         Err(e) => return Err(e),
                     }
                 }
                 (b.shape.clone(), found)
             }
         };
+        // Nothing left of it: the crease it lies on is rounded, and the
+        // edge with it.
+        if targets.is_empty() {
+            if let Some(b) = built.as_mut() {
+                b.history.delete(edge);
+            }
+            continue;
+        }
         let mut current = current;
         for target in &targets {
             // Each piece's blend replaces the solid; the next piece is
@@ -352,6 +383,10 @@ pub fn fillet_edges(
                 fillet_edge_meeting(model, &current, target, radius, Some((index, &mates)), tol)?;
             if let Some(rim) = rim_circle(model, target, tol) {
                 round_rims.push(rim);
+            }
+            let hosts = hosts_of(model, edge)?;
+            if hosts.len() == 2 && !blended_creases.contains(&hosts) {
+                blended_creases.push(hosts);
             }
             // The blend consumed the re-found stand-in; the caller's edge is
             // the same fact under its original name.

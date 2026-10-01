@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A closed crease asked for as a chain of its arcs.** `fillet_edges` on
+  every arc of a junction loop refused after the first ("an earlier blend
+  in the chain consumed this edge"): the first arc's blend runs the whole
+  loop. An arc of the chain lying between the same two faces as one
+  already rounded is now done, and the history records it consumed.
+
 - **A pipe tee's junction loop would not round.** Filleting the loop where
   a branch drum meets a main drum refused ("the kept pieces did not close
   into a shell"). The blend's leg on the branch is a band between the loop
