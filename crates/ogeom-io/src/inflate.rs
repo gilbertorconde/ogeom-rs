@@ -166,8 +166,8 @@ const CODE_LENGTH_ORDER: [usize; 19] = [
 ];
 
 /// Inflate a raw DEFLATE stream, as a ZIP entry holds it: no zlib or gzip
-/// wrapper. `expected` is the size the archive promises, used to size the
-/// output and to check it.
+/// wrapper. `expected` is the size the archive promises, which sizes the
+/// output and checks it.
 ///
 /// # Errors
 ///

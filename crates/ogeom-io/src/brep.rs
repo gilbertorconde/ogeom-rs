@@ -1,18 +1,17 @@
 //! The `.brep` interchange text format, both directions.
 //!
-//! An interchange format for boundary representation that a good deal of the
-//! field can already read, implemented here from its published
-//! specification. It is worth having for one reason: it is the cheapest
-//! bridge that exists for an application moving onto this kernel, far
-//! cheaper than STEP to produce and far more faithful than a mesh.
+//! An interchange format for boundary representation, implemented from its
+//! published specification. It carries exact geometry and full topology,
+//! which is what makes it a bridge for an application moving onto this
+//! kernel that a mesh cannot be.
 //!
-//! The file is five sections (a header, a table of placements, a table of
-//! geometry, and a table of topology), and the last of those is the
-//! interesting one. Topology records are written leaves first and *numbered
-//! backwards*: the final record is number one, and a record refers to its
-//! children by how far above it they sit. So a parent can only name children
-//! already written, the file needs no forward references, and a reader can
-//! build the model in a single pass with nothing left dangling.
+//! The file is a header followed by tables (placements, geometry, topology),
+//! and the last of those is the interesting one. Topology records are
+//! written leaves first and *numbered backwards*: the final record is number
+//! one, and a record refers to its children by how far above it they sit. So
+//! a parent can only name children already written, the file needs no
+//! forward references, and a reader can build the model in a single pass
+//! with nothing left dangling.
 //!
 //! ## What crosses
 //!

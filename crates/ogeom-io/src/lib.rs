@@ -3,13 +3,11 @@
 //! *Elsewhere:* the shape serialization, STEP, IGES, glTF and transfer-framework
 //! packages.
 //!
-//! The native format comes first, in Phase 1, because it is what the test suite
-//! round-trips through, not because anyone wants it.
-//!
-//! STEP is the one with real external value: there is no production-grade Rust STEP
-//! importer today. Parsing is the easy 20% (`ruststep`/`espr` cover it); the other
-//! 80% is semantic mapping onto our topology, unit and assembly-transform handling,
-//! and surviving spec-violating output from commercial CAD systems.
+//! The native format is what the test suite round-trips through. STEP is the
+//! exchange format with external value, and reading it is mostly not parsing:
+//! the Part 21 syntax is the small part, and the rest is the semantic mapping
+//! onto this kernel's topology, unit and assembly-transform handling, and
+//! surviving the spec-violating output real exporters write.
 //!
 //! # Two formats, two things
 //!

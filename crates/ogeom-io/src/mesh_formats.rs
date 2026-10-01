@@ -52,7 +52,7 @@ impl<'a> ExportMesh<'a> {
 /// Write meshes as a GLB: glTF 2.0's single-file binary form.
 ///
 /// One buffer, one node per mesh under one scene; positions and normals as
-/// `f32` vectors, indices as `u32`, and a metallic–roughness material with
+/// `f32` vectors, indices as `u32`, and a metallic-roughness material with
 /// the base colour where one was given. Empty meshes are skipped; a node
 /// with nothing to draw is not something a viewer should be handed.
 #[must_use]

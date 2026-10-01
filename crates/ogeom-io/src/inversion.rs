@@ -12,12 +12,11 @@ use ogeom_math::Point;
 /// A line's and a circle's stay good off it; an ellipse's does not. The
 /// eccentric anomaly read off a point beside the curve is off by the
 /// point's miss over the minor radius, and it moves along the curve by the
-/// major radius: on a plane's section of a drum cut almost along its axis
-/// (six and a half metres by 1.8 millimetres), a vertex two microns off the
-/// curve took a parameter nine millimetres away from it, and the edge ran
-/// the long way round the ellipse. The closed form seeds Newton on the
-/// nearest-point condition instead, which is well posed however eccentric
-/// the ellipse.
+/// major radius: on a very eccentric ellipse (a plane's section of a drum
+/// cut almost along its axis), a vertex microns off the curve takes a
+/// parameter millimetres away from it, and the edge runs the long way
+/// round the ellipse. The closed form seeds Newton on the nearest-point
+/// condition instead, which is well posed however eccentric the ellipse.
 pub(crate) fn parameter_on(curve: &Curve, p: Point) -> Option<f64> {
     let tau = core::f64::consts::TAU;
     match curve {

@@ -3,7 +3,7 @@
 //! IGES is a 1980s fixed-column format, and the parser honours that rather
 //! than fighting it: a file is a deck of 80-column records, column 73 names
 //! the section (Start, Global, Directory, Parameter, Terminate) and columns
-//! 74–80 number the record within its section. The Directory section holds
+//! 74 to 80 number the record within its section. The Directory section holds
 //! two fixed-format lines of eight-character fields per entity; the Parameter
 //! section holds free-format values whose delimiters the Global section
 //! itself declares, strings as Hollerith constants (`4Htext`), and reals in
@@ -76,9 +76,8 @@ pub struct Entity {
     /// The colour: a negated directory pointer to a 314, a small positive
     /// palette number, or 0.
     pub colour: i64,
-    /// The level (layer) number, or a negated pointer to a level property.
-    /// Parsed because it is part of the entry; mapping levels to document
-    /// layers is owed alongside 402/406 structure reading.
+    /// The level (layer) number, or a negated pointer to a level property
+    /// listing several; the reader maps each level to a document layer.
     #[allow(dead_code, reason = "directory field, not yet mapped to layers")]
     pub level: i64,
     /// The four two-digit fields of the status word, as one number.
@@ -177,7 +176,7 @@ pub fn parse(text: &str) -> OgeomResult<File> {
     let mut start = String::new();
     let mut global_text = String::new();
     let mut directory: Vec<String> = Vec::new();
-    // Parameter records grouped by the directory back-pointer in cols 66–72.
+    // Parameter records grouped by the directory back-pointer in cols 66 to 72.
     let mut params: BTreeMap<i64, String> = BTreeMap::new();
 
     for line in text.lines() {
@@ -260,7 +259,7 @@ pub fn parse(text: &str) -> OgeomResult<File> {
             .replace(' ', "0")
             .parse()
             .unwrap_or_default();
-        // Line one carries fields 1–10 of the entry, line two fields 11–20;
+        // Line one carries fields 1 to 10 of the entry, line two fields 11 to 20;
         // within each line a field's index is its number minus the line's
         // first. The label is field 18, the form 15, the colour 13.
         let entity = Entity {

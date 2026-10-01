@@ -123,8 +123,8 @@ pub fn write(model: &Model, roots: &[Shape], options: WriteOptions) -> OgeomResu
         }
     }
     // The file carries the reachable closure of `roots`, not the model: a
-    // snapshot of one body from a 330-solid assembly is that body's records,
-    // not 35 MB of everyone else's. Empty roots keep the whole
+    // snapshot of one body from a large assembly is that body's records,
+    // not everyone else's. Empty roots keep the whole
     // model; that is `write_document`'s contract, whose products name
     // shapes the root list does not. When the closure covers everything, the
     // subset would be a copy of the model spelled the long way, so the model
@@ -3244,7 +3244,7 @@ mod tests {
             // not by its handle. `bind` deliberately refuses a shape from
             // another document (relabelling one would hand back something that
             // resolves and answers about a different entity), so the way
-            // through is the thing §8 exists for.
+            // through is the identity (`docs/DATA_MODEL.md` §8).
             assert!(
                 restored.bind(before).is_err(),
                 "a foreign handle should not be re-homed"
@@ -3492,8 +3492,8 @@ mod tests {
 
     #[test]
     fn read_into_reads_the_same_version_read_does() {
-        // The grammar did not change for read_into, so neither did VERSION,
-        // and both readers refuse the same unknown one.
+        // `read_into` reads the same grammar under the same VERSION, so both
+        // readers refuse the same unknown one.
         let future = format!("{MAGIC} 99\nunits 1.0\n");
         assert!(read(&future).is_err());
         let mut target = Model::new();

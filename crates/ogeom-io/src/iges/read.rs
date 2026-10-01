@@ -1787,8 +1787,7 @@ impl<'a> Reader<'a> {
                 // closes without being periodic (a skinned wall's is such a
                 // chart, clamped and closed), and there is no period to
                 // shift by. The other column goes a chart's width over,
-                // toward the middle, which is where it went before there
-                // was a walk to ask.
+                // toward the middle.
                 (true, None) => {
                     let other = crate::pcurves::seam_other_side(&image, range, surface, self.tol)?;
                     ogeom_algo::attach_seam(
@@ -2142,7 +2141,7 @@ impl<'a> Reader<'a> {
         Ok(out)
     }
 
-    /// One constructive solid: a primitive (150–168), a boolean tree (180),
+    /// One constructive solid: a primitive (150 to 168), a boolean tree (180),
     /// a solid instance (430) or a manifold solid (186), under the entity's
     /// own placement.
     #[allow(clippy::too_many_lines, reason = "one case per primitive")]
@@ -2769,8 +2768,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// A trimmed carrier where the range is a strict part of the domain: a
-/// generatrix used by a sweep is exactly its stated span.
 /// The file's levels and groups as the document's layers: every shape on
 /// the layer of the level its entity sits on (a negative level names a
 /// definition-levels property listing several), and every group (402,
@@ -2865,6 +2862,8 @@ fn first_number(text: &str) -> Option<f64> {
     tail[..end].parse().ok()
 }
 
+/// A trimmed carrier where the range is a strict part of the domain: a
+/// generatrix used by a sweep is exactly its stated span.
 fn trimmed_to(curve: Curve, range: (f64, f64), tol: Tolerances) -> OgeomResult<Curve> {
     let (lo, hi) = curve.domain();
     if (range.0 - lo).abs() < tol.parametric() && (range.1 - hi).abs() < tol.parametric() {

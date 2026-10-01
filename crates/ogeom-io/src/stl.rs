@@ -342,7 +342,7 @@ fn read_ascii(bytes: &[u8], tol: Tolerances) -> OgeomResult<(Triangulation, f64)
 
 /// Append one triangle, with its vertices unshared.
 ///
-/// Welding happens afterwards, over the whole mesh at once. Sharing as we go
+/// Welding happens afterwards, over the whole mesh at once. Sharing while reading
 /// would need a lookup per vertex against everything read so far, and get the
 /// same answer more slowly.
 fn push(mesh: &mut Triangulation, a: Point, b: Point, c: Point) {

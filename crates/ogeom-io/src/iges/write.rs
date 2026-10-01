@@ -27,7 +27,7 @@ use std::collections::HashMap;
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
 /// document holds no solid, or a solid carries geometry with no IGES
-/// spelling here yet; the error names the entity and the parity row.
+/// spelling here; the error names the entity and the parity row.
 pub fn write_iges(document: &ogeom_doc::Document, tol: Tolerances) -> OgeomResult<String> {
     let mut writer = Writer {
         model: document.model(),
@@ -125,7 +125,7 @@ impl Writer<'_> {
             shell_faces.push(face_entities);
         }
 
-        // Now the lists exist in full.
+        // The lists exist in full.
         let vertex_list = {
             let mut params = format!("{}", self.vertex_coords.len());
             for p in &self.vertex_coords {
@@ -158,7 +158,7 @@ impl Writer<'_> {
             })
         };
         // Loops referred to the lists before the lists existed; the
-        // placeholders resolve now.
+        // placeholders resolve here.
         let vlist_de = self.de(vertex_list);
         let elist_de = self.de(edge_list);
         for e in &mut self.entities {

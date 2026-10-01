@@ -1,9 +1,8 @@
 //! IGES exchange.
 //!
 //! *Elsewhere:* the IGES half of the exchange layer. The format is ANSI
-//! Y14.26M / IGES 5.3, a fixed-column deck from the 1980s that a great deal
-//! of legacy CAD still speaks; implementing it from the published
-//! specification is interoperation, the same footing STEP was built on.
+//! Y14.26M / IGES 5.3, a fixed-column deck from the 1980s, read and written
+//! here from the published specification.
 
 mod parse;
 mod read;

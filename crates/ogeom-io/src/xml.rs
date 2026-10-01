@@ -65,7 +65,7 @@ pub(crate) struct Reader<'a> {
     /// Each open element's namespace declarations, `(prefix, uri)`, the
     /// default namespace under the empty prefix.
     scopes: Vec<Vec<(&'a str, Cow<'a, str>)>>,
-    /// An empty element's end, owed after its start was returned.
+    /// An empty element's end, still to be returned after its start.
     owed_end: bool,
 }
 

@@ -11,8 +11,8 @@
 //! serialized, and shared nodes are deduplicated *per placement*: a prism's
 //! bottom and top edge are one node at two locations, and the file needs
 //! both. Surfaces the format has no analytic name for (extrusions,
-//! revolutions) go out as their exact rational B-spline patches (§3's
-//! conversion), so nothing is fitted on the way out.
+//! revolutions) go out as their exact rational B-spline patches, so nothing
+//! is fitted on the way out.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_doc::{Document, ProductId, ProductKind};
@@ -554,8 +554,8 @@ impl Writer<'_> {
                 )))
             }
             other => {
-                // Exact for the conics and trims: the conversion is the §3
-                // machinery, not a fit. A helix refuses inside the
+                // Exact for the conics and trims: the conversion is exact,
+                // not a fit. A helix refuses inside the
                 // conversion: it has no exact spline form, and writing a
                 // fit without saying so is the lie this crate does not tell.
                 let spline = other.to_bspline_over(range, self.tol)?;

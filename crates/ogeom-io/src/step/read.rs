@@ -66,8 +66,8 @@ pub struct StepReport {
     pub warnings: Vec<String>,
     /// The warning flood, counted: one entry per *kind* of imperfection,
     /// with how often it happened, the worst measured value where the kind
-    /// measures one, and one exemplar entity id. A 776-warning community
-    /// file summarises to a handful of lines a consumer can actually show;
+    /// measures one, and one exemplar entity id. A file with hundreds of
+    /// warnings summarises to a handful of lines a consumer can show;
     /// `warnings` keeps the full prose. Sorted by count, largest first.
     pub summary: Vec<WarningSummary>,
     /// Faces that read without a complete trim: an edge's boundary sat too
@@ -219,7 +219,7 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         entries.sort_by(|a, b| b.count.cmp(&a.count).then(a.kind.cmp(b.kind)));
         reader.report.summary = entries;
     }
-    // The noted refusals resolve to the faces themselves, now that they
+    // The noted refusals resolve to the faces themselves, once they
     // exist: the same cache the shells were assembled from answers by the
     // very id the warnings name.
     for id in std::mem::take(&mut reader.untrimmed_ids) {
@@ -265,9 +265,8 @@ type BuiltEdge = (Shape, Curve, (f64, f64), bool);
 /// A pcurve derived ahead of the face that needs it.
 ///
 /// Deriving one is a pure function of a curve, its range and a surface (no
-/// model, no order), and on a real assembly it is 95% of the time spent
-/// building solids. So it is done for a whole solid at once, off the walk
-/// that attaches it.
+/// model, no order), and it is most of the time spent building solids. So
+/// it is done for a whole solid at once, off the walk that attaches it.
 enum PreparedPcurve {
     /// The projection had a closed form.
     Exact(PlanarCurve),
@@ -304,17 +303,15 @@ struct Reader<'a> {
     untrimmed_ids: Vec<u64>,
     /// kind → (count, worst, exemplar), folded into the report's summary.
     tallies: HashMap<&'static str, (usize, f64, u64)>,
-    /// Usage → its `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION`, built once.
-    /// The lookup used to rescan the whole exchange per assembly edge:
-    /// O(usages × entities), 333 × 457 k on one reporting assembly, which
-    /// was three quarters of the entire document build.
+    /// Usage → its `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION`, built once,
+    /// so an assembly edge is a lookup rather than a scan of the whole
+    /// exchange, which is O(usages × entities).
     cdsr_of_nauo: Option<HashMap<u64, u64>>,
     /// Definition → its `PROPERTY_DEFINITION`s, and property → its
-    /// `SHAPE_DEFINITION_REPRESENTATION`s, built together once. The datum
-    /// target lookup used to rescan the whole exchange per property *per
-    /// target*: the same quadratic shape the assembly index retired, one
-    /// storey deeper. Each list ascends by id, so whichever entry answers
-    /// is the one the old scan would have reached first.
+    /// `SHAPE_DEFINITION_REPRESENTATION`s, built together once, so a datum
+    /// target's lookup is not a scan of the whole exchange per property
+    /// *per target*. Each list ascends by id, so the first entry that
+    /// answers is the lowest id, the one a scan in file order reaches first.
     properties_of_definition: Option<HashMap<u64, Vec<u64>>>,
     sdrs_of_property: Option<HashMap<u64, Vec<u64>>>,
     /// How many geometry or shell builders are open on the stack. Entities
@@ -1062,11 +1059,10 @@ impl<'a> Reader<'a> {
                 )
             }
             "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" => {
-                // A curve dressed in its surface associations: what every
-                // exporter derived from the reference kernel writes for
-                // every edge. The 3D curve is the first argument; the
-                // pcurve list is advisory and this reader re-derives its
-                // own, so unwrapping is the whole job.
+                // A curve dressed in its surface associations: what many
+                // exporters write for every edge. The 3D curve is the first
+                // argument; the pcurve list is advisory and this reader
+                // re-derives its own, so unwrapping is the whole job.
                 self.curve(args.get(1).and_then(Arg::reference).unwrap_or(0))?
             }
             "BEZIER_CURVE" | "UNIFORM_CURVE" | "QUASI_UNIFORM_CURVE" => {
@@ -1594,8 +1590,8 @@ impl<'a> Reader<'a> {
         } else {
             (self.vertex(v1)?, self.vertex(v2)?)
         };
-        // Real files are imprecise, and NIST's own readme says so of these.
-        // Where the curve's end misses its vertex by more than the default
+        // Real files are imprecise. Where the curve's end misses its vertex
+        // by more than the default
         // tolerance, the vertex's tolerance *grows* to state the gap; the
         // data model's growing tolerances are exactly for this, and the
         // warning keeps the healing visible.
@@ -1894,20 +1890,16 @@ impl<'a> Reader<'a> {
         Ok((loop_id, forward))
     }
 
-    /// Attach this face's pcurve (or both seam sides) to an edge.
     #[allow(clippy::too_many_arguments)]
-    /// One use a bound makes of an edge: the edge as the loop walks it, the
-    /// edge as it was built, the file's id for it, and its curve and range.
     /// Stretch a surface's parameter window to hold the edges that bound it.
     ///
     /// The window a reader gives a plane, a cylinder or a cone is a
     /// convention: those surfaces are unbounded, and [`SURFACE_EXTENT`] is
     /// a guess at how far past its own geometry a file will reach. A file
-    /// can falsify the guess: a real assembly places a cylinder's own
-    /// origin half a kilometre from the part it belongs to, so the trim's
-    /// height parameter runs to −5e5 where the window stopped at −1e5,
-    /// and then the surface refuses to be evaluated where its own face
-    /// lies, and the face draws as a hole.
+    /// can falsify the guess: a surface whose own origin sits far from the
+    /// face it carries has trim parameters past any fixed window, the
+    /// surface refuses to be evaluated where its own face lies, and the
+    /// face draws as a hole.
     ///
     /// So the window is measured rather than guessed: the edges' own
     /// points, projected onto the surface's chart by the geometry that
@@ -2021,7 +2013,7 @@ impl<'a> Reader<'a> {
     /// image a period apart, so the walk finds both, and the use that runs
     /// forward is the forward side. Where it cannot, because the chart
     /// closes without being periodic, the other column goes a chart's width
-    /// over as it always did.
+    /// over, toward the middle.
     fn chart_bound(
         &mut self,
         face_id: u64,
@@ -2128,10 +2120,10 @@ impl<'a> Reader<'a> {
             }
             p
         };
-        // Claimed rather than derived, where the pass at the head of the solid
-        // already did it. The fallbacks below stay exactly as they were, for
-        // the faces no pass covered: a face reached outside a solid walk, or
-        // one whose preparation refused.
+        // Taken from the table where the pass at the head of the solid
+        // already derived it. The fallbacks below serve the faces no pass
+        // covered: a face reached outside a solid walk, or one whose
+        // preparation refused.
         if let Some(prepared) = self.pcurves.remove(&(face_id, edge_id)) {
             match prepared {
                 PreparedPcurve::Exact(exact) => {
@@ -2313,17 +2305,16 @@ impl<'a> Reader<'a> {
     /// Derive every pcurve this solid's faces will want, in parallel.
     ///
     /// Deriving one is a pure function of a curve, its range and a surface:
-    /// it reads no model and depends on no order, and measured on a 330-solid
-    /// assembly it is 95% of the time spent building solids. The walk that
-    /// follows attaches them, in file order, exactly as it did when it derived
-    /// them itself.
+    /// it reads no model and depends on no order, and it is most of the time
+    /// spent building solids. The walk that follows attaches them, in file
+    /// order.
     ///
     /// Resolving *what* to derive still runs on the walk's own thread, since
     /// it builds edges and vertices into the model. That part is cheap; it is
     /// the projection and the fitting that are not.
     ///
     /// Best-effort by design: anything this cannot resolve is simply left out
-    /// of the table, and `attach_pcurves` derives it the old way. So a face
+    /// of the table, and `chart_bound` derives it on the walk. So a face
     /// shape this does not anticipate costs time, never correctness.
     fn prepare_pcurves(&mut self, face_ids: &[u64]) {
         struct Job {
@@ -2397,7 +2388,7 @@ impl<'a> Reader<'a> {
             }
         }
         // Below a handful of edges the threads cost more than the work; the
-        // sequential path through `attach_pcurves` is already correct, so the
+        // sequential path through `chart_bound` is already correct, so the
         // table is simply left empty and the walk derives them itself.
         if jobs.len() < 16 {
             return;
@@ -2437,11 +2428,10 @@ impl<'a> Reader<'a> {
     /// `MANIFOLD_SOLID_BREP`, so its first two attributes are the name and
     /// the outer shell, and a third names the shells that bound the voids.
     /// A reader matching on the leading keyword alone does not see it, and
-    /// the part simply vanishes: a printed housing with six cavities in
-    /// it read as no body at all, its thirteen hundred faces with it. The
-    /// voids join the solid as shells of their own, every normal pointing
-    /// away from the material: out of the body on the outside, into the
-    /// cavity within. A void is oriented by its geometry where its flags
+    /// the part vanishes from the import. The voids join the solid as
+    /// shells of their own, every normal pointing away from the material:
+    /// out of the body on the outside, into the cavity within. A void is
+    /// oriented by its geometry where its flags
     /// would have it add material.
     fn solid(&mut self, id: u64) -> OgeomResult<Shape> {
         let instance = self.instance(id)?;
@@ -2511,9 +2501,9 @@ impl<'a> Reader<'a> {
     /// sewn from its faces, a compound of them when there are several.
     ///
     /// A surface body is what a modeller exports for a part built from
-    /// faces rather than from a solid (a motor coupler drawn as
-    /// seventy-three single-face bodies is a real case), and a reader that
-    /// walks only `MANIFOLD_SOLID_BREP` leaves such a part invisible. The
+    /// faces rather than from a solid, often one single-face body per face,
+    /// and a reader that walks only `MANIFOLD_SOLID_BREP` leaves such a
+    /// part invisible. The
     /// shells stay shells: the file did not call them solids, and a closed
     /// one is still the file's surface model, not this reader's promotion.
     fn surface_model(&mut self, id: u64) -> OgeomResult<Shape> {
@@ -2853,8 +2843,8 @@ impl<'a> Reader<'a> {
     fn usage_transform(&mut self, nauo: u64, child_sr: Option<u64>) -> Option<Transform> {
         if self.cdsr_of_nauo.is_none() {
             // One pass over the CDSRs, each resolved to the usage it
-            // describes; ascending id order so a usage described twice keeps
-            // the same one the old lowest-id-first scan chose.
+            // describes, in ascending id order, so a usage described twice
+            // keeps the lowest-id one.
             let mut cdsrs: Vec<u64> = self
                 .exchange
                 .data
@@ -3102,7 +3092,7 @@ impl<'a> Reader<'a> {
         let items_for = |aspect: u64| -> Vec<ogeom_topo::TShapeId> {
             // Three relationship steps: a composite aspect holds components,
             // a derived aspect sits behind a composite, and a datum one link
-            // behind its features: the deepest chain the corpus exhibits.
+            // behind its features: the deepest chain real files exhibit.
             let mut reach = vec![aspect];
             for _ in 0..3 {
                 let mut next = reach.clone();
@@ -3418,8 +3408,8 @@ impl<'a> Reader<'a> {
         // The target's placement and size live in a shape representation the
         // target's own property definition names. The lengths come in the
         // file's own unit, as every length does. Both hops go through the
-        // indexes: the old form rescanned every entity per property *per
-        // target*, the assembly quadratic one storey deeper.
+        // indexes rather than a scan of every entity per property *per
+        // target*.
         self.ensure_property_indexes();
         let mut frame = None;
         let mut lengths: Vec<f64> = Vec::new();
@@ -3699,7 +3689,7 @@ impl<'a> Reader<'a> {
     /// definition → its `PROPERTY_DEFINITION`s (by the definition argument),
     /// property → its `SHAPE_DEFINITION_REPRESENTATION`s (by the definition
     /// they represent). Ascending ids inside each list, so a lookup visits
-    /// candidates in the same order the old full scan would have.
+    /// candidates in file order, lowest id first.
     fn ensure_property_indexes(&mut self) {
         if self.properties_of_definition.is_some() {
             return;
@@ -3863,8 +3853,6 @@ fn collect_refs(args: &[Arg], out: &mut Vec<u64>) {
     }
 }
 
-/// The chart coordinates of a point on an analytic surface, by closed-form
-/// inversion; `None` for surfaces that need iterative projection.
 /// For a two-wire periodic face: each wire's single closed edge with its
 /// vertex, empty when the shape is anything else.
 fn closed_ring_edges(model: &Model, wires: &[Shape]) -> OgeomResult<Vec<(Shape, Shape)>> {

@@ -2,7 +2,7 @@
 //!
 //! The machinery itself lives in `ogeom_algo::pcurve_fit` (fitting a trim
 //! by projection is geometry, not exchange), and the readers reach it
-//! through this shim under the names they always used.
+//! through this shim.
 //!
 //! What is written here is the part neither reader can do edge by edge:
 //! *where in the chart* an image goes. A periodic chart offers a branch per
@@ -69,11 +69,11 @@ pub(crate) fn shifted_to_meet(
 /// Which axis to step along is the surface's business, not the curve's. A
 /// seam lies *on* the join, so it runs along the direction the surface does
 /// not close and stands still in the one it does, and closure, not
-/// periodicity, is the test, the same distinction a skinned wall forced
-/// everywhere else in this module. A patch closed in `v` over `(-π, π)`,
-/// whose `u` is a knot range that closes on nothing, had its second column
-/// stepped a `u` span sideways and off the chart entirely: the face then
-/// drew as one flat triangle across itself, over whatever it was a boss for.
+/// periodicity, is the test, the same distinction a skinned wall forces
+/// everywhere else in this module. On a patch closed in `v` over `(-π, π)`
+/// whose `u` is a knot range that closes on nothing, stepping the second
+/// column a `u` span sideways puts it off the chart entirely, and the face
+/// draws as one flat triangle across itself.
 ///
 /// Where the surface closes on neither axis the edge is a slit rather than
 /// a seam (one curve, walked twice), and the same column serves both ways.

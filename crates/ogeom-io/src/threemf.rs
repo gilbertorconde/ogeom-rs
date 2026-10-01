@@ -2,14 +2,12 @@
 //!
 //! A 3MF file is a ZIP holding three parts: the content-types declaration,
 //! a relationship pointing at the model, and the model itself: an XML
-//! document of meshes and the items that place them. The mesh half is
-//! ordinary; the archive is the part a kernel usually reaches for a library
-//! to do, and this does not.
+//! document of meshes and the items that place them. The archive is written
+//! and read here, with no library behind it.
 //!
-//! It writes *stored* entries (no compression), which the ZIP format has
-//! always allowed and every reader accepts: what a CAD kernel needs to
-//! write a ZIP is the container, not the codec. A file written this way is
-//! larger than one deflated, and says so by being what it is.
+//! It writes *stored* entries (no compression), which the ZIP format allows
+//! and every reader accepts: what writing a package needs is the container,
+//! not the codec. A file written this way is larger than one deflated.
 //!
 //! Reading is the other way round. Every package a slicer or a modelling
 //! tool writes is deflated, so [`read_3mf`] inflates, with the decoder half
