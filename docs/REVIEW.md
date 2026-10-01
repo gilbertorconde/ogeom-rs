@@ -63,7 +63,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [x] **C4.** `solid_from_mesh` accepts NaN, negative or zero `coplanar_distance`, and NaN or zero `crease`, silently (`mesh_solid.rs`). (2ca79a1)
 - [x] **C5.** The converter's nesting ray counts a hit on a shared edge twice or not at all, turning a void into a separate solid (`mesh_solid.rs` `inside`). (bdb0a72)
 - [x] **C6.** Flat caps of a fine f32 mesh, rotated and far from the origin, break into many faces: `coplanar_angle` ignores the quantum (`mesh_solid.rs` `coplanar_groups`). (9ca5089)
-- [x] **R1.** PLY reader panics on an out-of-range face index (`mesh_formats.rs`).
+- [x] **R1.** PLY reader panics on an out-of-range face index (`mesh_formats.rs`). (676d426)
 - [ ] **R2.** Deeply nested glTF (JSON) and VRML overflow the stack and abort the process (`json.rs`, `vrml.rs`).
 - [ ] **X1.** Spindle tori: the folded branch is dropped by the plane, coaxial cylinder and coaxial torus closed forms (`ogeom-intersect/src/surface.rs`).
 - [ ] **X2.** Circle-circle overlaps across the periodic seam are lost or reported outside the window (`curves.rs` `clipped_to_windows`).
