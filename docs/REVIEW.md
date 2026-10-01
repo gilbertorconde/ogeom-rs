@@ -106,4 +106,4 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [x] **P12.** `volume_properties` of a plain box takes seconds at 1000 mm and more at 3000 mm. (9ed3c96)
 - [x] **P13.** Minor tolerance units: `Quaternion::between` near antiparallel, `SurfacePoint::normal` compares a squared length to a length. (7042e86)
 - [x] **P14.** `make_periodic` records face history only at the solid level. (4cf4820)
-- [ ] **P15.** Intersector 2D edge cases: coincident 2D circles ignore phase; collinear segments touching end to end return nothing; a cone tangent to a plane along a ruling reads `Apart`.
+- [x] **P15.** Intersector 2D edge cases: coincident 2D circles ignore phase; collinear segments touching end to end return nothing; a cone tangent to a plane along a ruling reads `Apart`. (5ff2437)
