@@ -96,7 +96,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [ ] **P2.** Fillet refusals: a pipe tee junction loop, all edges of an L-bracket, a full round of a box.
 - [ ] **P3.** `make_prism_tapered` rejects a face straight from `make_face` (no pcurves attached first).
 - [ ] **P4.** `make_polyhedron` takes a face's normal from its first three points and refuses a face starting with three collinear points; `medial_axis` refuses a polygon with a collinear vertex.
-- [ ] **P5.** `elevate_degree` leaves the knots it introduced (C0 where C2), contrary to its doc.
+- [x] **P5.** `elevate_degree` leaves the knots it introduced (C0 where C2), contrary to its doc. (ba5ce5f)
 - [ ] **P6.** Quadratic and cubic solvers lose double roots; the doc's closed-form claim for quartics is untrue.
 - [ ] **P7.** `lines_tangent_to_two_circles` misses the third tangent of touching circles.
 - [x] **P8.** Derivatives above the implemented order come back zero instead of refused (circle, ellipse, hyperbola, parabola, helix, 2D pad). (6fb58f6)
