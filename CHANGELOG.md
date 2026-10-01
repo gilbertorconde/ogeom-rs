@@ -64,12 +64,13 @@ bump may break the API and a patch bump may not.
   their rays can reach, and an edge rebuilt whole is built once for both
   its faces. A pocket into a plate with four hundred bores takes about
   100 ms, from 160.
-- **Edges of a chain that meet nothing round in one boolean.** Every
-  edge sharing no vertex with another of the chain (or only with pieces of
-  its own circle) has its blend built from the faces as they stand, and
-  the blends are applied together, one cut and one fuse. The checks before
-  the blends mesh each face once and pass over edge pairs whose boxes stand
-  apart. A hundred bore rims round in 1.4 s, from 10.
+- **A chain of edges rounds in a few booleans, not one per edge.** The
+  chain is taken in rounds, no two edges of a round sharing a vertex
+  (pieces of one circle count as one); each edge's blend is built against
+  what the earlier rounds left, and a round's blends are applied together,
+  one cut and one fuse. The checks before the blends mesh each face once
+  and pass over edge pairs whose boxes stand apart. A hundred bore rims
+  round in 1.4 s, from 10, and a box's twelve edges in half the time.
 
 ## [0.6.1] - 2026-10-01
 

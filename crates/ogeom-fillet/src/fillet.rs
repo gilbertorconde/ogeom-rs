@@ -326,11 +326,13 @@ pub fn fillet_edges(
         Ok(out)
     };
     let mut blended_creases: Vec<Vec<ogeom_topo::TShapeId>> = Vec::new();
-    // An edge sharing no vertex with another of the chain rounds alone:
-    // nothing it meets is rounded, and its blend is built from the faces
-    // as they stand. Pieces of one circle meet only each other, and the
-    // first rounds the whole turn. Such edges are rounded after the rest,
-    // their wedges set aside and applied together in one boolean each way.
+    // Edges that share no vertex round without meeting: each blend is built
+    // from the faces as they stand, and theirs can be applied together.
+    // Edges that do share one are rounded in turn, the later built against
+    // what the earlier left. So the chain is taken in rounds, no two edges
+    // of a round sharing a vertex (pieces of one circle meet only each
+    // other, and the first rounds the whole turn), each round's wedges set
+    // aside and applied together, one boolean each way.
     let rims: Vec<Option<Circle>> = edges.iter().map(|e| rim_circle(model, e, tol)).collect();
     let mut ends_of: Vec<Vec<Shape>> = Vec::with_capacity(edges.len());
     for edge in edges {
@@ -344,26 +346,40 @@ pub fn fillet_edges(
         }
         ends_of.push(ends);
     }
-    let alone: Vec<bool> = (0..edges.len())
-        .map(|i| {
-            (0..edges.len()).all(|j| {
-                j == i
-                    || !ends_of[i]
-                        .iter()
-                        .any(|v| ends_of[j].iter().any(|w| w.is_same(v)))
-                    || matches!((&rims[i], &rims[j]), (Some(a), Some(b)) if same_circle(a, b, tol))
-            })
-        })
-        .collect();
-    let order: Vec<usize> = (0..edges.len())
-        .filter(|&i| !alone[i])
-        .chain((0..edges.len()).filter(|&i| alone[i]))
-        .collect();
+    let meet = |i: usize, j: usize| {
+        ends_of[i]
+            .iter()
+            .any(|v| ends_of[j].iter().any(|w| w.is_same(v)))
+            && !matches!((&rims[i], &rims[j]), (Some(a), Some(b)) if same_circle(a, b, tol))
+    };
+    let mut round_of: Vec<usize> = Vec::with_capacity(edges.len());
+    for i in 0..edges.len() {
+        let mut round = 0;
+        while (0..i).any(|j| round_of[j] == round && meet(i, j)) {
+            round += 1;
+        }
+        round_of.push(round);
+    }
+    let mut order: Vec<usize> = (0..edges.len()).collect();
+    order.sort_by_key(|&i| (round_of[i], i));
     let mut set_aside: Vec<(Shape, crate::support::Wedge)> = Vec::new();
+    let mut this_round = 0;
     for index in order {
         let edge = &edges[index];
-        // A piece of a circle whose whole turn a set-aside wedge rounds.
-        if alone[index] && on_round_rim(model, edge, &round_rims) {
+        // A round's wedges are applied before the next round is built.
+        if round_of[index] != this_round {
+            this_round = round_of[index];
+            if let Some(b) = built.take() {
+                built = Some(apply_set_aside(
+                    model,
+                    b,
+                    core::mem::take(&mut set_aside),
+                    tol,
+                )?);
+            }
+        }
+        // A piece of a circle whose whole turn another piece's blend rounds.
+        if on_round_rim(model, edge, &round_rims) {
             if let Some(b) = built.as_mut() {
                 b.history.delete(edge);
             }
@@ -428,14 +444,12 @@ pub fn fillet_edges(
                      the chain's members interfere"
                 );
             };
-            let mut step = if alone[index] {
+            let mut step = {
                 let (step, wedges) = crate::support::collecting_wedges(|| {
                     fillet_edge_meeting(model, &current, target, radius, Some((index, &mates)), tol)
                 });
                 set_aside.extend(wedges.into_iter().map(|w| (edge.clone(), w)));
                 step?
-            } else {
-                fillet_edge_meeting(model, &current, target, radius, Some((index, &mates)), tol)?
             };
             if let Some(rim) = rim_circle(model, target, tol) {
                 round_rims.push(rim);
