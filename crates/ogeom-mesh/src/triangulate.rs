@@ -98,9 +98,9 @@ fn triangulate_with(
 /// degenerate there (a cone's apex, a sphere's pole, a patch's collapsed
 /// corner), the normal a step inside along the vertex's own column.
 ///
-/// A degenerate point has no normal of its own, and `None` for it left
-/// the vertex shading black and dragged every normal it was welded with
-/// towards nothing. It has a *limit* normal along any line approaching
+/// A degenerate point has no normal of its own, and `None` for it would
+/// shade the vertex black and drag every normal it is welded with towards
+/// nothing. It has a *limit* normal along any line approaching
 /// it: the apex of a cone seen up one ruling is that ruling's normal, and
 /// a mesh vertex at the apex carries the `u` of the ruling it closes. The
 /// step is a millionth of the domain towards its middle, first along
@@ -236,9 +236,8 @@ fn triangulate_reporting_from(
     // fragments with holes between them.
     //
     // Counting is why it is asked this way round. Sweeping the rings for a
-    // crossing is the direct question and costs a sort and an active list
-    // per face; measured over a hundred thousand faces it was the whole of
-    // an eighteen per cent regression, to catch four bodies. The count is
+    // crossing is the direct question, and costs a sort and an active list
+    // on every face to catch the rare one that crosses. The count is
     // already in hand and exact for the failure that matters.
     //
     // That count is exact only before interior points go in; over a face
@@ -892,17 +891,12 @@ pub fn face_boundary(
     .rings)
 }
 
-/// The rings bounding a face in parameter space, and whether every boundary
-/// edge met its deflection.
-/// Boundary rings with, per ring vertex, the 3D anchor its edge's own curve
-/// provides; `None` where an edge has no 3D curve to defer to.
-/// The chord each edge must be drawn with, where the caller's is too coarse.
-///
-/// Keyed by the edge's node, so both faces bounding it look the same value
-/// up and sample it identically. Absent means the caller's own chord.
 /// The chord each edge is to be drawn to, by edge node index, where a face
 /// wants its edges finer than the caller's chord: what every face sharing
 /// an edge has to agree on, or their meshes disagree along it.
+///
+/// Keyed by the edge's node, so both faces bounding it look the same value
+/// up and sample it identically. Absent means the caller's own chord.
 pub type EdgeChords = std::collections::HashMap<u32, f64>;
 
 /// How many times a face's boundary may be redrawn finer before its
@@ -917,13 +911,11 @@ const REFINEMENTS: usize = 6;
 /// What one face needs its own edges drawn with.
 ///
 /// A face narrower than the chord error its boundary is drawn with has a
-/// boundary that crosses *itself*. One body of a real assembly carries a
-/// quarter-arc sliver forty-five millimetres long and eighteen microns
-/// wide: at a tenth of a millimetre the sagitta of each bounding arc is
-/// twenty-nine microns, so the inner polyline bulges straight through the
-/// outer one, and what reaches the triangulator is not a region at all. It
-/// answered with sixteen triangles in fifteen disconnected pieces, and the
-/// holes between them were what stopped the body meshing closed.
+/// boundary that crosses *itself*: on an arc sliver a few microns wide,
+/// drawn at a chord whose sagitta exceeds that width, the inner polyline
+/// bulges straight through the outer one, and what reaches the
+/// triangulator is not a region at all but disconnected fragments with
+/// holes between them, which stop the body meshing closed.
 ///
 /// The deflection a caller asks for bounds how far the mesh may sit from
 /// the surface; it is not a licence to hand the triangulator a polygon that
@@ -1383,11 +1375,11 @@ fn trimming_rings(
     // Folded across a join, a ring on a *closed* surface can come to rest a
     // whole period outside the domain. A periodic surface would not mind
     // (it wraps), but a surface that merely closes on itself evaluates only
-    // where its knots are, and refuses everywhere else; three bodies of one
-    // assembly stopped meshing that way, every point of one ring a turn
-    // past the end. The fold kept the ring continuous, which is the part
-    // that matters, and a rigid slide by whole periods keeps it so: the
-    // same points on the surface, named inside the chart.
+    // where its knots are and refuses everywhere else, so a ring every
+    // point of which lies a turn past the end does not lift at all. The
+    // fold keeps the ring continuous, which is the part that matters, and
+    // a rigid slide by whole periods keeps it so: the same points on the
+    // surface, named inside the chart.
     {
         use ogeom_geom::Surface as _;
         let ((ua, ub), (va, vb)) = surface.domain();
@@ -1412,8 +1404,7 @@ fn trimming_rings(
                 }
                 // A hair past the end is fit noise, not a period: the knots
                 // take it, and rounding it up to a whole turn would carry the
-                // ring a period the wrong way, which is exactly what it did
-                // to the face this was written for, before the slack.
+                // ring a period the wrong way.
                 let slack = span * 1e-6;
                 let turns = if least < lo - slack {
                     ((lo - least) / span).ceil()
@@ -1471,17 +1462,14 @@ fn trimming_rings(
     rings.retain(|r| r.len() >= 3);
     ring_anchors.retain(|a| a.len() >= 3);
 
-    // An inner ring thinner than a micron is a slit, not a hole. A real file
-    // draws one by running out along two arcs and back along two splines
-    // fitted to the same arcs: a loop three millimetres long and a fifth of
-    // a micron wide, enclosing nothing, which the triangulator can only
-    // read as a tangle: one face carrying five of them drew with twelve
-    // holes it does not have. Measured in space through the ring's own
-    // anchors, so a chart's units do not enter into it; a ring not anchored
-    // end to end is left alone, and so is the outer ring, whatever its
-    // width, since a face that is itself a slit is a different question.
-    // The thinnest real feature in the assembly that showed this is twenty
-    // microns across, twenty times the cutoff.
+    // An inner ring thinner than a micron is a slit, not a hole: a loop run
+    // out along two arcs and back along two splines fitted to the same
+    // arcs encloses nothing, and the triangulator can only read it as a
+    // tangle, drawing holes the face does not have. Measured in space
+    // through the ring's own anchors, so a chart's units do not enter into
+    // it. A ring not anchored end to end is left alone, and so is the outer
+    // ring, whatever its width, since a face that is itself a slit is a
+    // different question.
     if rings.len() > 1 {
         let chart_area = |ring: &[Point2]| -> f64 {
             let mut a = 0.0;
@@ -1710,8 +1698,8 @@ fn boundary_ring(
     let mut met = true;
     // Whether each chart direction comes back on itself: periodic, or
     // closed without repeating. Asked once here: closure on a spline is a
-    // walk down a control column, and asking it at every edge of every face
-    // of a hundred-thousand-face assembly was a tenth of the meshing time.
+    // walk down a control column, too costly to repeat at every edge of
+    // every face.
     let (wraps_u, wraps_v) = model
         .geometry()
         .surface(surface)
@@ -1889,7 +1877,7 @@ fn boundary_ring(
         // tolerance the vertex itself records. An imported curve ends within
         // the vertex's widened tolerance of it, and lifting the ends through
         // the curve alone would leave each corner split as many ways as there
-        // are curves meeting there; a vertex that sits *beyond* its stated
+        // are curves meeting there. A vertex that sits *beyond* its stated
         // tolerance from the curve is not describing the curve's end at all,
         // and the curve stays the authority.
         if !points.is_empty()
@@ -1923,7 +1911,7 @@ fn boundary_ring(
         // edge share its pcurve, and on a periodic surface the pcurve sits in
         // *one* face's window: a cylinder split into two halves has a ruling
         // at u = 0 that the other half needs at u = 2pi. The chart cannot
-        // store both; continuity with the ring being walked recovers the
+        // store both. Continuity with the ring being walked recovers the
         // right branch, exactly as the seam sides are chosen.
         if let Some(last) = ring.last().copied()
             && let Some(first) = points.first().copied()
@@ -2048,12 +2036,12 @@ fn boundary_ring(
         // has to be degenerate: a run along an apex row lifts to one point
         // the whole way, so its chart midpoint lands on the shared vertex,
         // where a wide gap on a live row lifts to somewhere the width of the
-        // gap away. Width alone kept slop on fitted splines; the lift alone
-        // kept every gap too small for its midpoint to land anywhere else.
-        // And no fraction of the period alone is right at all: one real
-        // part's rulings stand exactly a quarter turn apart, which a
-        // quarter-period test read as not apart, and the face lost the
-        // triangle at its apex.
+        // gap away. Width alone keeps slop on fitted splines. The lift alone
+        // keeps every gap too small for its midpoint to land anywhere else.
+        // And no fraction of the period alone is right at all: rulings into
+        // an apex can stand exactly a quarter turn apart, and a threshold at
+        // that fraction reads them as not apart and loses the triangle at
+        // the apex.
         let keep_gap = if let (Some(last), Some(first)) = (ring.last(), points.first()) {
             model.geometry().surface(surface).is_some_and(|geometry| {
                 use ogeom_geom::Surface as _;
@@ -2158,14 +2146,6 @@ fn close_wound_ring(
     let (Some(first), Some(last)) = (ring.first().copied(), ring.last().copied()) else {
         return;
     };
-    // A ring that winds one periodic direction of a doubly-periodic
-    // surface: a diagonal loop on a torus. The folded walk ends a
-    // whole period from where it began, and the face is the band
-    // between the chain and its own translate one period over in the
-    // *other* periodic direction, joined at the ends by columns that
-    // lift to one 3D circle. The translate's anchors are the same 3D
-    // points, and the joining columns' two copies lift identically,
-    // so the weld closes them exactly as it closes a seam.
     use ogeom_geom::Surface as _;
     let ((ua, ub), (va, vb)) = geometry.domain();
     let du = last.x - first.x;
@@ -2605,8 +2585,8 @@ fn triangulate_region_inner(
     // other row for the mesher to reach. The band around the hole then fans
     // from the rim to the far side of the gap, in triangles that sag through
     // the solid by far more than the deflection while every one of their
-    // vertices sits exactly on the surface. The boolean caught this as a
-    // fused solid whose faces all had the right area and the wrong volume.
+    // vertices sits exactly on the surface: a mesh whose faces all have the
+    // right area and the wrong volume.
     //
     // The repair measures the truth: any kept triangle whose midpoints sag
     // beyond the chord gets its centre inserted, and the loop runs until the
@@ -2648,13 +2628,12 @@ fn triangulate_region_inner(
                 }
                 // The grid already bounds sag along rows and columns, and a
                 // grid triangle's diagonal spanning one cell each way may
-                // legitimately sag up to the sum (twice the chord), which
-                // was the guarantee before this loop existed. The threshold
-                // sits clear above that band so the repair fires only on the
-                // fan triangles it exists for, which sag through a hole's
-                // gap by tens of chords, and an honest grid (including a
-                // perfectly symmetric one, whose mesh must stay symmetric)
-                // is left untouched.
+                // legitimately sag up to the sum (twice the chord). The
+                // threshold sits clear above that band so the repair fires
+                // only on the fan triangles it exists for, which sag through
+                // a hole's gap by tens of chords, and an honest grid
+                // (including a perfectly symmetric one, whose mesh must stay
+                // symmetric) is left untouched.
                 let sagged = (0..3).any(|i| {
                     let (a, b) = (corners[i], corners[(i + 1) % 3]);
                     let bits = |p: (f64, f64)| [p.0.to_bits(), p.1.to_bits()];
@@ -2853,8 +2832,8 @@ fn add_interior_points(
     // chart, and a bore four hundred millimetres long with one row in the
     // middle hands it two-hundred-millimetre spans from each rim to that
     // row. Delaunay bridges those however it likes, and the repair below
-    // fires only at three chords; a triangle a quarter turn wide on a two
-    // millimetre bore sags less than that, so it stayed, and the bore drew
+    // fires only at three chords: a triangle a quarter turn wide on a two
+    // millimetre bore sags less than that, so it stays, and the bore draws
     // as a square between its holes. Cells are held to a bounded aspect
     // instead: rows close enough, measured in space through the surface,
     // that no triangle between two rows can reach across more than a few
@@ -3224,11 +3203,6 @@ fn refine_direction<F: Fn(f64, f64) -> f64>(lo: f64, hi: f64, chord: f64, sag: F
     values
 }
 
-/// How far the surface departs from the chord joining two parameter points.
-///
-/// Measured in space, which is the only place the number means anything: the
-/// same step in `u` covers a metre at a sphere's equator and a millimetre near
-/// its pole.
 /// How far a grid cell's edge is from honest, as a sag: the chord sag
 /// itself, or the normal's turn across it scaled so that a turn of the
 /// angular deflection weighs the same as a sag of the chord, whichever
@@ -3259,6 +3233,11 @@ fn cell_error(
     sag.max(turn / deflection.angular * deflection.chord)
 }
 
+/// How far the surface departs from the chord joining two parameter points.
+///
+/// Measured in space, which is the only place the number means anything: the
+/// same step in `u` covers a metre at a sphere's equator and a millimetre near
+/// its pole.
 fn sag_between(
     surface: &SurfaceGeometry,
     from: (f64, f64),
@@ -3321,14 +3300,14 @@ fn crosses_odd_times<P: Predicates>(ring: &[Point2], p: Point2) -> bool {
     inside
 }
 
-/// Whether the mesh debug dump is on, read once.
-///
-/// `env::var` takes a process-wide lock and allocates its answer, and this was
-/// asked once per face; on an imported assembly, once per face of every part.
 /// Whether to report, per shape, how many faces were drawn again finer.
+///
+/// Read once: `env::var` takes a process-wide lock and allocates its answer,
+/// and this is asked per face.
 static MESH_DEBUG_REFINE: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("OGEOM_MESH_DEBUG_REFINE").is_ok());
 
+/// Whether the mesh debug dump is on, read once for the same reason.
 static MESH_DEBUG: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("OGEOM_MESH_DEBUG").is_ok());
 
@@ -3551,8 +3530,8 @@ mod tests {
 
     const T: Tolerances = Tolerances::millimetres();
 
-    /// `refine_direction` as it was written: rescan from zero after every
-    /// split. Kept here as the reference the cursor form is held to.
+    /// `refine_direction` by rescan from zero after every split: the
+    /// reference the cursor form is held to.
     fn refine_by_rescan<F: Fn(f64, f64) -> f64>(lo: f64, hi: f64, chord: f64, sag: F) -> Vec<f64> {
         let mut values = vec![lo, f64::midpoint(lo, hi), hi];
         while values.len() < MAX_DIRECTION_STEPS {
@@ -3572,7 +3551,7 @@ mod tests {
     #[test]
     fn walking_forward_splits_where_rescanning_did() {
         // The cursor is only sound because splitting an interval cannot change
-        // whether an earlier one sags. Held to the old form's output exactly,
+        // whether an earlier one sags. Held to the rescan's output exactly,
         // over sag profiles that bite in different places: flat, steep at one
         // end, periodic, and one savage enough to reach the step cap.
         /// A named sag profile to hold both forms to.

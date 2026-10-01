@@ -16,7 +16,7 @@
 //!
 //! The angular deflection bounds how far the tangent may turn across one
 //! segment. Without it a nearly straight curve gets two points and a
-//! near-circular one gets far too few near its flattest part; chord error
+//! near-circular one gets far too few near its flattest part. Chord error
 //! alone does not notice a long, gently curving span.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -54,14 +54,13 @@ impl Default for Deflection {
             // A tenth of a millimetre at unit scale: invisible on screen. On
             // a small curved part the angular limit below rules instead, and
             // a mesh at this default can be a part in a hundred off in
-            // volume; mass properties integrate a face on its exact surface
+            // volume. Mass properties integrate a face on its exact surface
             // wherever its pcurves allow, and mesh only what they cannot.
             chord: 1e-1,
             // Half a radian (twenty-eight degrees, a circle in thirteen
-            // segments), which is what B-rep kernels have long defaulted
-            // to, and what a viewer that lets the user tighten it asks for.
-            // The interior of a face is held to it as its edges are, so a
-            // tighter default is paid for on every curved face.
+            // segments): coarse enough for a viewer that lets the user
+            // tighten it. The interior of a face is held to it as its edges
+            // are, so a tighter default is paid for on every curved face.
             angular: 0.5,
             min_segments: 2,
             max_segments: 4096,
@@ -261,11 +260,9 @@ pub fn discretize(
 
     // Leftmost-first subdivision with a worklist: each segment is settled
     // before the walk moves right, and a split pushes its halves back for
-    // re-examination: the exact split sequence the old
-    // rescan-from-zero-and-insert loop produced, without re-asking every
-    // settled segment on every pass or shifting the vectors per split. Same
-    // splits in the same order, so the same floats come out; a circle that
-    // took ~8 000 midpoint measurements to reach 128 points now takes ~250.
+    // re-examination. The splits come in the same order a rescan from zero
+    // would make them, so the same floats come out, without re-asking every
+    // settled segment on every pass or shifting the vectors per split.
     let mut met = true;
     let seeds = core::mem::take(&mut parameters);
     let seed_points = core::mem::take(&mut points);
@@ -284,8 +281,8 @@ pub fn discretize(
         let t0 = *parameters.last().unwrap_or(&t1);
         let p0 = points.last().copied().unwrap_or(p1);
         if splitting && needs_split(curve, (t0, t1), (p0, p1), (lo, hi), deflection, tol)? {
-            // The count the cap sees is every point currently alive, exactly
-            // as the old loop counted before each split.
+            // The count the cap sees is every point currently alive, settled
+            // and pending together.
             if parameters.len() + pending.len() + 1 > deflection.max_segments {
                 met = false;
                 splitting = false;
@@ -347,7 +344,7 @@ fn needs_split(
     // a small fraction of the whole edge. A fitted edge often ends in a
     // hook a few microns long (the fit overshooting its vertex and turning
     // back), and the tangent turns through a right angle across it at
-    // every scale; asked of it, the angular test bisects the hook down to
+    // every scale. Asked of it, the angular test bisects the hook down to
     // the resolution of the parameter and hands the face a fan of hairs at
     // one corner, each a fin off the surface. A turn across a span under
     // the deflection the caller accepted is below what they can see; the
@@ -452,7 +449,7 @@ pub fn discretize_on_surface(
 ///
 /// The deflection is measured in parameter units here, not in space, so a caller
 /// wanting a spatial tolerance has to convert through the surface's own scale:
-/// the two differ by orders of magnitude near a pole; [`discretize_on_surface`]
+/// the two differ by orders of magnitude near a pole. [`discretize_on_surface`]
 /// is the version that measures through the surface. This exists for boundary
 /// work in parameter space; for a face's actual boundary, discretize the edge's
 /// 3D curve and evaluate the pcurve at those parameters instead, which is what
