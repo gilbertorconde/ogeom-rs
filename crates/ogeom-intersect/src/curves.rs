@@ -797,11 +797,25 @@ fn line_line_2d(
         let project = |p: Point2| (p - oa).dot(da);
         let (s0, s1) = (project(ob + db * b_lo), project(ob + db * b_hi));
         let (lo, hi) = (s0.min(s1).max(a_lo), s0.max(s1).min(a_hi));
-        if lo >= hi {
-            return CurveIntersection::empty();
-        }
         // And back onto b.
         let back = |t: f64| (oa + da * t - ob).dot(db);
+        if hi - lo <= tol.confusion() {
+            // Segments meeting end to end share a point, not a stretch.
+            if lo - hi > tol.confusion() {
+                return CurveIntersection::empty();
+            }
+            let t = f64::midpoint(lo, hi).clamp(a_lo, a_hi);
+            return CurveIntersection {
+                crossings: vec![Crossing {
+                    on_a: t,
+                    on_b: back(t).clamp(b_lo, b_hi),
+                    point: oa + da * t,
+                    gap: 0.0,
+                    reach: 0.0,
+                }],
+                overlaps: Vec::new(),
+            };
+        }
         return CurveIntersection {
             crossings: Vec::new(),
             overlaps: vec![Overlap {
@@ -903,12 +917,29 @@ fn circle_circle_2d(
 
     if distance <= tol.confusion() {
         if (ra - rb).abs() <= tol.confusion() {
-            // The same circle: the overlap is both whole domains.
+            // The same circle, the whole turn of each. As in space: phase
+            // from where `a` starts on `b`, winding from whether the two run
+            // the same way there, so `on_b` names where `b` stands at
+            // `a`'s own ends.
+            use ogeom_geom::Curve2d as _;
+            let (lo, hi) = a.domain();
+            let correspondence = (|| {
+                let start = a.point_at(lo, tol).ok()?;
+                let phase = circle_parameter(b, start, tol)?;
+                let along_a = a.d1_at(lo, tol).ok()?;
+                let along_b = b.d1_at(phase, tol).ok()?;
+                let winding: f64 = if along_a.dot(along_b) >= 0.0 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                Some((phase, winding.mul_add(hi - lo, phase)))
+            })();
             return CurveIntersection {
                 crossings: Vec::new(),
                 overlaps: vec![Overlap {
-                    on_a: a.domain(),
-                    on_b: b.domain(),
+                    on_a: (lo, hi),
+                    on_b: correspondence.unwrap_or_else(|| b.domain()),
                 }],
             };
         }
@@ -996,10 +1027,26 @@ fn line_line_3d(
         let project = |p: Point| (p - oa).dot(da);
         let (s0, s1) = (project(ob + db * b_lo), project(ob + db * b_hi));
         let (lo, hi) = (s0.min(s1).max(a_lo), s0.max(s1).min(a_hi));
-        if lo >= hi {
-            return CurveIntersection::empty();
-        }
         let back = |t: f64| (oa + da * t - ob).dot(db);
+        if hi - lo <= tol.confusion() {
+            // Segments meeting end to end share a point, not a stretch.
+            if lo - hi > tol.confusion() {
+                return CurveIntersection::empty();
+            }
+            let t = f64::midpoint(lo, hi).clamp(a_lo, a_hi);
+            let s = back(t).clamp(b_lo, b_hi);
+            let point = oa + da * t;
+            return CurveIntersection {
+                crossings: vec![Crossing {
+                    on_a: t,
+                    on_b: s,
+                    point,
+                    gap: point.distance(ob + db * s),
+                    reach: 0.0,
+                }],
+                overlaps: Vec::new(),
+            };
+        }
         return CurveIntersection {
             crossings: Vec::new(),
             overlaps: vec![Overlap {
@@ -2006,6 +2053,57 @@ mod tests {
             let on_wave = wave.point_at(hit.on_a, T).unwrap();
             assert!(on_wave.is_equal(hit.point, T));
         }
+    }
+
+    /// One circle written twice in the plane, a quarter turn apart and
+    /// wound against each other: the overlap's ranges correspond.
+    #[test]
+    fn one_planar_circle_written_twice_states_the_correspondence() {
+        let a = circle2(Point2::new(1.0, 2.0), 3.0);
+        let quarter = Frame2::new(
+            Point2::new(1.0, 2.0),
+            Direction2::new(Vector2::new(0.0, 1.0), T).unwrap(),
+        );
+        let b: PlanarCurve = Circle2d::new(Circle2::new(quarter, 3.0, T).unwrap()).into();
+        let flipped: PlanarCurve = ogeom_geom::Reversible::reversed(&b);
+        for other in [b, flipped] {
+            let found = intersect_curves_2d(&a, &other, CurveCurveOptions::default(), T).unwrap();
+            assert_eq!(found.overlaps.len(), 1);
+            let overlap = found.overlaps[0];
+            for i in 0..=8 {
+                let t = f64::from(i) / 8.0;
+                let ta = (overlap.on_a.1 - overlap.on_a.0).mul_add(t, overlap.on_a.0);
+                let tb = (overlap.on_b.1 - overlap.on_b.0).mul_add(t, overlap.on_b.0);
+                let pa = a.point_at(ta, T).unwrap();
+                let pb = other
+                    .point_at(tb.rem_euclid(core::f64::consts::TAU), T)
+                    .unwrap();
+                assert!(pa.distance(pb) < 1e-9, "at {t}: {pa:?} against {pb:?}");
+            }
+        }
+    }
+
+    /// Collinear segments meeting end to end share their end point, in the
+    /// plane and in space, as a perpendicular pair meeting there does.
+    #[test]
+    fn collinear_segments_meeting_end_to_end_share_a_point() {
+        let a = line2(Point2::new(0.0, 0.0), Point2::new(5.0, 0.0));
+        let b = line2(Point2::new(5.0, 0.0), Point2::new(9.0, 0.0));
+        let found = intersect_curves_2d(&a, &b, CurveCurveOptions::default(), T).unwrap();
+        assert!(found.overlaps.is_empty());
+        assert_eq!(found.crossings.len(), 1);
+        assert!(found.crossings[0].point.distance(Point2::new(5.0, 0.0)) < 1e-12);
+
+        let a: Curve = LineCurve::segment(Point::ORIGIN, Point::new(0.0, 0.0, 5.0), T)
+            .unwrap()
+            .into();
+        let b: Curve = LineCurve::segment(Point::new(0.0, 0.0, 5.0), Point::new(0.0, 0.0, 7.0), T)
+            .unwrap()
+            .into();
+        let found = intersect_curves(&a, &b, CurveCurveOptions::default(), T).unwrap();
+        assert!(found.overlaps.is_empty());
+        assert_eq!(found.crossings.len(), 1);
+        assert!(found.crossings[0].point.distance(Point::new(0.0, 0.0, 5.0)) < 1e-12);
     }
 
     /// Two descriptions of one circle overlap over the whole turn, and the

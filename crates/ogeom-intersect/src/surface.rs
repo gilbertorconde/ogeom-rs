@@ -93,8 +93,8 @@ pub fn surface_surface(
         (S::Torus(x), S::Torus(y)) => coaxial_tori(x.torus(), y.torus(), tol),
         (S::Sphere(s), S::Torus(t)) => axial_sphere_torus(s.sphere(), t.torus(), tol),
         (S::Torus(t), S::Sphere(s)) => axial_sphere_torus(s.sphere(), t.torus(), tol),
-        (S::Plane(p), S::Cone(c)) => plane_cone(p.plane(), c.cone(), tol),
-        (S::Cone(c), S::Plane(p)) => plane_cone(p.plane(), c.cone(), tol),
+        (S::Plane(p), S::Cone(c)) => plane_cone(p.plane(), c.cone(), heights(c), tol),
+        (S::Cone(c), S::Plane(p)) => plane_cone(p.plane(), c.cone(), heights(c), tol),
         (S::Cylinder(x), S::Cone(c)) => coaxial_cylinder_cone(x.cylinder(), c.cone(), tol),
         (S::Cone(c), S::Cylinder(x)) => coaxial_cylinder_cone(x.cylinder(), c.cone(), tol),
         (S::Cone(x), S::Cone(y)) => coaxial_cones(x.cone(), y.cone(), tol),
@@ -573,10 +573,15 @@ fn coaxial_cylinder_torus(
 fn plane_cone(
     plane: ogeom_math::Plane,
     cone: ogeom_math::Cone,
+    heights: (f64, f64),
     tol: Tolerances,
 ) -> OgeomResult<Meeting> {
     let axis = cone.axis();
     let along = plane.normal().dot(axis.direction);
+    if !square_to_axis(along, tol) && plane.signed_distance_to(cone.apex()).abs() <= tol.confusion()
+    {
+        return Ok(rulings_in(plane, &cone, heights, tol));
+    }
     if !square_to_axis(along, tol) {
         ogeom_bail!(
             NotDone,
@@ -600,6 +605,93 @@ fn plane_cone(
         Some(circle) => Meeting::Along(vec![circle]),
         None => Meeting::Apart,
     })
+}
+
+/// A cone surface's window along its axis.
+fn heights(cone: &ogeom_geom::ConeSurface) -> (f64, f64) {
+    ogeom_geom::Surface::domain(cone).1
+}
+
+/// A plane through a cone's apex: the rulings it holds. A plane steeper
+/// than the cone holds two, one tangent to it holds the one it touches
+/// along, and one shallower meets the cone at the apex alone. Each ruling
+/// is stated over the cone's window of `heights`, one segment for each
+/// nappe the window reaches.
+fn rulings_in(
+    plane: ogeom_math::Plane,
+    cone: &ogeom_math::Cone,
+    heights: (f64, f64),
+    tol: Tolerances,
+) -> Meeting {
+    let apex = cone.apex();
+    let apex_height = cone.frame().to_local(apex).z;
+    // A ruling from the apex along `direction`, cut to the window: the
+    // stretch on each side of the apex the window holds.
+    let stated = |direction: Direction| -> Vec<Curve> {
+        let climb = direction.vector().dot(cone.axis().direction.vector());
+        if climb.abs() <= tol.angular() {
+            return Vec::new();
+        }
+        let (lo, hi) = (heights.0.min(heights.1), heights.0.max(heights.1));
+        let mut out = Vec::new();
+        for (from, to) in [(lo.max(apex_height), hi), (lo, hi.min(apex_height))] {
+            if !(from.is_finite() && to.is_finite()) || to - from <= tol.confusion() {
+                continue;
+            }
+            let (a, b) = ((from - apex_height) / climb, (to - apex_height) / climb);
+            if let Ok(line) = ogeom_geom::LineCurve::over(
+                ogeom_math::Axis::new(apex, direction),
+                a.min(b),
+                a.max(b),
+            ) {
+                out.push(line.into());
+            }
+        }
+        out
+    };
+    let a = cone.axis().direction.vector();
+    let n = plane.normal().vector();
+    let half = cone.half_angle().abs();
+    let across = n.dot(a);
+    // How far the plane leans off tangency: tangent planes make the cone's
+    // half angle with the axis's perpendicular.
+    let lean = across.abs().clamp(0.0, 1.0).asin() - half;
+    if lean.abs() <= 1e-10 {
+        // The ruling the plane touches along: the plane's own direction
+        // nearest the axis.
+        let toward = a - n * across;
+        return match Direction::new(toward, tol).map(stated) {
+            Ok(lines) if !lines.is_empty() => Meeting::Along(lines),
+            _ => Meeting::Touching(vec![apex]),
+        };
+    }
+    if lean > 0.0 {
+        return Meeting::Touching(vec![apex]);
+    }
+    // Two rulings: a direction `cos a + sin (cos t e + sin t f)` lies in the
+    // plane where `cos t` takes the value below.
+    let side = n - a * across;
+    let Ok(e) = Direction::new(side, tol) else {
+        return Meeting::Touching(vec![apex]);
+    };
+    let e = e.vector();
+    let f = a.cross(e);
+    let (sin, cos) = half.sin_cos();
+    let k = (-across * cos / (side.magnitude() * sin)).clamp(-1.0, 1.0);
+    let s = (1.0 - k * k).max(0.0).sqrt();
+    let lines: Vec<Curve> = [s, -s]
+        .into_iter()
+        .filter_map(|t| {
+            let d = a * cos + (e * k + f * t) * sin;
+            Direction::new(d, tol).ok()
+        })
+        .flat_map(stated)
+        .collect();
+    if lines.is_empty() {
+        Meeting::Touching(vec![apex])
+    } else {
+        Meeting::Along(lines)
+    }
 }
 
 /// A cylinder sharing a cone's axis: the parallels where the slant crosses

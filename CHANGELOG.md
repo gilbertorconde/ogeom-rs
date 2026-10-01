@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Three intersector edge cases answer.** A plane tangent to a cone
+  along a ruling read `Apart`: a plane through a cone's apex now holds its
+  rulings in closed form (one tangent, two crossing, or the apex alone),
+  each stated over the cone's window. One circle written twice in the plane
+  gave both whole domains as its overlap, whatever the phase and winding;
+  `on_b` now names where the second stands at the first's ends, as in
+  space. Collinear segments meeting end to end, in the plane or in space,
+  returned nothing; they share their end point.
+
 - **A periodic pattern traces its faces and may have gaps.**
   `make_periodic` recorded history only for the whole solid; every face
   and edge of the cell now traces to its own image and generates its

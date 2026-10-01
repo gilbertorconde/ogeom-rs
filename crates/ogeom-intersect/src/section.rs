@@ -1057,12 +1057,30 @@ fn chart_inversion(
 /// The parameter interval over which a 2D line stays inside a surface's
 /// parameter box. `None` when it never enters.
 fn inside_box(pcurve: &PlanarCurve, surface: &SurfaceGeometry) -> Option<(f64, f64)> {
-    let PlanarCurve::Line(line) = pcurve else {
-        return None;
+    // The pcurve as a point and a rate along its own parameter: a line, or
+    // a degree-one spline of two points (a cone's ruling), linear in it.
+    let (o, d) = match pcurve {
+        PlanarCurve::Line(line) => {
+            let axis = line.axis();
+            (axis.location, axis.direction.vector())
+        }
+        PlanarCurve::BSpline(spline)
+            if spline.knots().degree() == 1 && spline.control_points().len() == 2 =>
+        {
+            let (t0, t1) = spline.knots().domain();
+            let (p0, p1) = (
+                spline.control_points()[0].point(),
+                spline.control_points()[1].point(),
+            );
+            if t1 <= t0 {
+                return None;
+            }
+            let rate = (p1 - p0) / (t1 - t0);
+            (p0 - rate * t0, rate)
+        }
+        _ => return None,
     };
     let ((ua, ub), (va, vb)) = surface.domain();
-    let axis = line.axis();
-    let (o, d) = (axis.location, axis.direction.vector());
 
     // The slab test, one axis at a time.
     let mut lo = f64::NEG_INFINITY;
@@ -2745,6 +2763,61 @@ mod tests {
             }
         }
     }
+    /// A plane through a cone's apex: tangent, it touches along one ruling;
+    /// steeper, it holds two; shallower, it meets the apex alone. Every
+    /// ruling lies on both surfaces and stays within the cone's window.
+    #[test]
+    fn a_plane_through_a_cones_apex_holds_its_rulings() {
+        use ogeom_geom::ConeSurface;
+        let frame = Frame::new(
+            Point::new(100.0, 200.0, 300.0),
+            Direction::Z,
+            Direction::X,
+            T,
+        )
+        .unwrap();
+        let cone = ogeom_math::Cone::new(frame, 10.0, core::f64::consts::FRAC_PI_4, T).unwrap();
+        let surface: SurfaceGeometry = ConeSurface::new(cone, (-5.0, 50.0)).unwrap().into();
+        let apex = Point::new(100.0, 200.0, 290.0);
+        let plane = |normal: Vector| -> SurfaceGeometry {
+            PlaneSurface::new(Plane::through(apex, Direction::new(normal, T).unwrap())).into()
+        };
+        let cases = [
+            (Vector::new(1.0, 0.0, -1.0), 1, true),
+            (Vector::new(1.0, 0.0, 0.0), 2, false),
+        ];
+        for (normal, count, tangent) in cases {
+            let cut = plane(normal);
+            let SurfaceIntersection::Along(sections) =
+                intersect_surfaces(&surface, &cut, IntersectOptions::default(), T).unwrap()
+            else {
+                panic!("{normal:?}: rulings");
+            };
+            assert_eq!(sections.len(), count, "{normal:?}");
+            for section in &sections {
+                assert_eq!(section.tangential, tangent, "{normal:?}");
+                let (lo, hi) = section.curve.domain();
+                for k in 0..=4 {
+                    let p = section
+                        .curve
+                        .point_at(lo + (hi - lo) * f64::from(k) / 4.0, T)
+                        .unwrap();
+                    assert!(cone.distance_to(p) < 1e-9, "{p:?} on the cone");
+                    let height = p.z - 300.0;
+                    assert!(
+                        (-5.0 - 1e-9..=50.0 + 1e-9).contains(&height),
+                        "{p:?} in the window"
+                    );
+                }
+            }
+        }
+        let shallow = plane(Vector::new(0.2, 0.0, 1.0));
+        assert!(matches!(
+            intersect_surfaces(&surface, &shallow, IntersectOptions::default(), T).unwrap(),
+            SurfaceIntersection::Touching(_) | SurfaceIntersection::Apart
+        ));
+    }
+
     #[test]
     fn a_far_stated_ruling_reads_its_angle_on_the_used_nappe() {
         use ogeom_geom::ConeSurface;
