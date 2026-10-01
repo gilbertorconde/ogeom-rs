@@ -87,3 +87,11 @@ jobs:
           cargo publish --workspace "${skip[@]}"
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      # What cargo publish leaves under target/package is the crates' packaged
+      # sources, not build output, and the cache's cleanup on its way out
+      # walks into them for test directories they do not ship, failing on
+      # each. They are dropped first, whatever became of the publish.
+      - name: Drop the packaged sources
+        if: always()
+        run: rm -rf target/package
