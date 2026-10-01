@@ -58,19 +58,15 @@ bump may break the API and a patch bump may not.
   tool leaves alone (no section on it, no edge of it split, no coincident
   partner) is neither split nor arranged: its rings are its own wires and
   its state is read once, at the middle of one of its edges. The other
-  solid's face trims are drawn only when a point or a ray comes near them,
-  face outlines only for the faces a section crosses, a circle's polyline
-  in closed form, a piece's probes are checked against the fine rings
-  their rays can reach, and an edge rebuilt whole is built once for both
-  its faces. A crossed face's outline is drawn once, a circle on a plane
-  is sampled to its sag in closed form, and the outline's ends are welded
-  among their neighbours rather than against every other end. Sewing's
-  point bins are sized so a lookup reads eight cells, not sixty-four, and
-  an edge too loose for them is compared only with edges starting within
-  its reach; whether a middle lies on a line or a circle edge is answered
-  in closed form. A piece's probes draw their scanlines widest first from a
-  heap as the search asks for them, not from all of them sorted. A pocket
-  into a plate with four hundred bores takes about 50 ms, from 160.
+  solid's trims are drawn only where a point or a ray comes near them, a
+  crossed face's outline is drawn once, circles are sampled to their sag
+  in closed form, outline ends are welded among their neighbours, a
+  piece's scanlines come from a heap as the search asks, and an edge
+  rebuilt whole is built once for both its faces. Sewing looks up eight
+  grid cells per point, not sixty-four, compares a loose edge only with
+  edges starting within its reach, and finds a middle's foot on a line or
+  circle in closed form. A pocket into a plate with four hundred bores
+  takes about 50 ms, from 160.
 - **A chain of edges rounds in a few booleans, not one per edge.** The
   chain is taken in rounds, no two edges of a round sharing a vertex
   (pieces of one circle count as one); each edge's blend is built against
