@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A nearly circular ellipse is a circle, not NaN.** An ellipse whose
+  minor radius exceeded its major by less than the confusion tolerance
+  was accepted and reported a NaN focal distance and eccentricity. Such a
+  minor radius is stored as the major.
+
 - **Two circles' bisector bends round the smaller one.** `bisector` of two
   circles of unequal radii put the hyperbola's equidistant branch round
   the second circle whichever was smaller, the wrong branch when the

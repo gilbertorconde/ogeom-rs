@@ -256,10 +256,13 @@ impl Ellipse {
                 "minor radius {minor_radius} exceeds major radius {major_radius}"
             );
         }
+        // A minor radius over the major by no more than rounding is the
+        // major: a circle, whose focal distance is zero rather than the
+        // root of a negative.
         Ok(Self {
             frame,
             major_radius,
-            minor_radius,
+            minor_radius: minor_radius.min(major_radius),
         })
     }
 
@@ -610,10 +613,11 @@ impl Ellipse2 {
                 "minor radius {minor_radius} exceeds major radius {major_radius}"
             );
         }
+        // As in space: a minor over the major by rounding is the major.
         Ok(Self {
             frame,
             major_radius,
-            minor_radius,
+            minor_radius: minor_radius.min(major_radius),
         })
     }
 
@@ -1037,5 +1041,22 @@ mod tests {
         assert!(p.focus().is_equal(Point2::new(2.0, 0.0), T));
 
         assert!(Ellipse2::new(Frame2::WORLD, 1.0, 2.0, T).is_err());
+    }
+
+    /// A minor radius over the major by no more than rounding makes a
+    /// circle, whose focal distance and eccentricity are zero, not NaN.
+    #[test]
+    fn a_nearly_circular_ellipse_is_a_circle() {
+        let e = Ellipse::new(Frame::WORLD, 1.0, 1.000_000_05, T).unwrap();
+        assert!(e.focal_distance() == 0.0 && e.eccentricity() == 0.0);
+        assert!((e.length() - core::f64::consts::TAU).abs() < 1e-12);
+        let flat = Ellipse2::new(
+            Frame2::new(Point2::ORIGIN, crate::Direction2::X),
+            1.0,
+            1.000_000_05,
+            T,
+        )
+        .unwrap();
+        assert!(flat.focal_distance() == 0.0);
     }
 }
