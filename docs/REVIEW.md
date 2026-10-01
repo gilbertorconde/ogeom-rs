@@ -43,7 +43,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 ### F. Fillets
 
 - [x] **F1.** `fillet_edge` never checks that the ball fits: a radius of 100 on a 2 mm box deletes the solid and reports success; concave edges add material far outside (`ogeom-fillet/src/fillet.rs`). (5074595)
-- [x] **F2.** `fillet_edges` accepts blends whose setbacks overlap across a shared face (`fillet.rs`).
+- [x] **F2.** `fillet_edges` accepts blends whose setbacks overlap across a shared face (`fillet.rs`). (28f9106)
 
 ### N. Boolean fallbacks and small gaps
 
