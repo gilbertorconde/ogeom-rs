@@ -768,7 +768,9 @@ pub(crate) fn face_reach(
 /// and classified against the face. A contact outside a face is a band
 /// that runs past it; the refusal names the edge and the distance. Edges
 /// that are not shared by exactly two faces, and faces meeting tangent,
-/// are left to the blend itself.
+/// are left to the blend itself. The contacts found come back, each with
+/// its face and its setback, for a chain to check its bands against each
+/// other.
 ///
 /// # Errors
 ///
@@ -780,10 +782,11 @@ pub(crate) fn ball_fits(
     edge: &Shape,
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<()> {
+) -> OgeomResult<Vec<Contact>> {
     use ogeom_geom::Surface as _;
+    let mut contacts = Vec::new();
     let Ok((curve, range)) = edge_curve(model, edge, tol) else {
-        return Ok(());
+        return Ok(contacts);
     };
     // Each face holding the edge, with the edge's sense in that face's walk.
     let mut sides: Vec<(Shape, bool)> = Vec::new();
@@ -799,7 +802,7 @@ pub(crate) fn ball_fits(
         }
     }
     let [(face0, rev0), (face1, rev1)] = sides.as_slice() else {
-        return Ok(());
+        return Ok(contacts);
     };
     let normal_at = |face: &Shape, p: Point| -> OgeomResult<Option<(SurfaceGeometry, Vector)>> {
         let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
@@ -891,9 +894,117 @@ pub(crate) fn ball_fits(
                      across a face that does not reach so far"
                 );
             }
+            contacts.push(Contact {
+                face: face.node(),
+                at: found.point,
+                setback,
+            });
+        }
+    }
+    Ok(contacts)
+}
+
+/// Where a rolling ball touches one of an edge's faces.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Contact {
+    /// The face touched.
+    pub face: ogeom_topo::TShapeId,
+    /// The point of contact.
+    pub at: Point,
+    /// How far back from the edge it stands.
+    pub setback: f64,
+}
+
+/// Refuse a chain whose bands overlap across a face they share.
+///
+/// Each edge's band covers the strip of a face between the edge and its
+/// contact line. Two edges of one face that do not meet at a vertex (the
+/// two long edges of a narrow strip, a wall's two rims) each need their own
+/// strip; where one's contact stands inside the other's strip, the two
+/// balls overlap and no pair of blends is the rounding. Edges meeting at a
+/// vertex are corner mates, whose bands meet there by design.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+/// where two bands overlap.
+pub(crate) fn bands_clear(
+    model: &Model,
+    edges: &[Shape],
+    contacts: &[Vec<Contact>],
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let vertices = |edge: &Shape| -> OgeomResult<Vec<ogeom_topo::TShapeId>> {
+        Ok(ogeom_algo::edge_vertices(model, edge)?
+            .map(|(a, b)| vec![a.node(), b.node()])
+            .unwrap_or_default())
+    };
+    for (i, first) in edges.iter().enumerate() {
+        for (j, second) in edges.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let (ends, others) = (vertices(first)?, vertices(second)?);
+            if ends.iter().any(|v| others.contains(v)) {
+                continue;
+            }
+            let Ok((curve, range)) = edge_curve(model, second, tol) else {
+                continue;
+            };
+            for contact in &contacts[i] {
+                // The second edge's own setback on this face, if it has one.
+                let Some(strip) = contacts[j]
+                    .iter()
+                    .filter(|c| c.face == contact.face)
+                    .map(|c| c.setback)
+                    .reduce(f64::max)
+                else {
+                    continue;
+                };
+                let away = distance_to_edge(&curve, range, contact.at, tol)?;
+                if away < strip - tol.confusion() * 1e3 {
+                    ogeom_bail!(
+                        Construction,
+                        "two blends of the chain overlap across a face they share: a \
+                         contact stands {away} from the other edge, inside its band of {strip}"
+                    );
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// The distance from `p` to a curve over `range`: the nearest of a scan,
+/// refined in the interval around it.
+fn distance_to_edge(
+    curve: &Curve,
+    range: (f64, f64),
+    p: Point,
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    use ogeom_geom::Curve3d as _;
+    const SCAN: u32 = 64;
+    let at = |t: f64| -> OgeomResult<f64> { Ok(curve.point_at(t, tol)?.distance(p)) };
+    let step = (range.1 - range.0) / f64::from(SCAN);
+    let mut best = (range.0, at(range.0)?);
+    for k in 1..=SCAN {
+        let t = range.0 + step * f64::from(k);
+        let d = at(t)?;
+        if d < best.1 {
+            best = (t, d);
+        }
+    }
+    let (mut lo, mut hi) = ((best.0 - step).max(range.0), (best.0 + step).min(range.1));
+    for _ in 0..60 {
+        let (a, b) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+        if at(a)? < at(b)? {
+            hi = b;
+        } else {
+            lo = a;
+        }
+    }
+    Ok(at(f64::midpoint(lo, hi))?.min(best.1))
 }
 
 /// Whether a chart point lies in a face's region: inside one of the

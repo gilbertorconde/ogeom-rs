@@ -213,10 +213,13 @@ pub fn fillet_edges(
         ogeom_bail!(Construction, "a chain of no edges rounds nothing");
     }
     // The ball touches each face a setback back from the edge; set back
-    // past a face's far side, the band would cut through the face.
+    // past a face's far side, the band would cut through the face, and set
+    // back into another edge's band, the two balls overlap.
+    let mut contacts = Vec::with_capacity(edges.len());
     for edge in edges {
-        crate::support::ball_fits(model, solid, edge, radius, tol)?;
+        contacts.push(crate::support::ball_fits(model, solid, edge, radius, tol)?);
     }
+    crate::support::bands_clear(model, edges, &contacts, tol)?;
     use ogeom_geom::Curve3d as _;
     // The vertices three or more of the chain's edges meet at: the corners
     // the ball rolls round, closed by the corner tool.

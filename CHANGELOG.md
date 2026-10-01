@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Fillets whose balls overlap are refused.** `fillet_edges` accepted two
+  edges of a narrow face (or a short wall's two rims) whose bands overlap
+  across it, and built a solid that was neither rounding. A chain whose
+  contact on a shared face stands inside another edge's band is refused;
+  edges meeting at a corner still meet there.
+
 - **A fillet the faces cannot hold is refused.** `fillet_edge` never
   checked that the ball fits: a radius of 100 on a 2 mm box deleted the
   solid and reported success. It now checks each face reaches the ball's

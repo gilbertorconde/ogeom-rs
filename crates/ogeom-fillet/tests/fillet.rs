@@ -386,3 +386,45 @@ fn a_fillet_the_faces_cannot_hold_is_refused() {
         );
     }
 }
+
+/// Two edges of a narrow face whose balls would overlap across it are
+/// refused together, where each alone fits.
+#[test]
+fn blends_overlapping_across_a_shared_face_are_refused() {
+    let mut model = ogeom_topo::Model::new();
+    let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 0.5), T).unwrap();
+    let along_y_at = |model: &ogeom_topo::Model, z: f64| {
+        explore(model, &block.shape, Filter::OfType(ShapeType::Edge))
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                ogeom_algo::edge_vertices(model, e)
+                    .unwrap()
+                    .is_some_and(|(a, b)| {
+                        let p = |v: &ogeom_topo::Shape| {
+                            model
+                                .node(v)
+                                .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                                .unwrap()
+                        };
+                        let (pa, pb) = (p(&a), p(&b));
+                        (pa.x - 2.0).abs() < 1e-9
+                            && (pb.x - 2.0).abs() < 1e-9
+                            && (pa.z - z).abs() < 1e-9
+                            && (pb.z - z).abs() < 1e-9
+                    })
+            })
+            .expect("the box has that edge")
+    };
+    let (low, high) = (along_y_at(&model, 0.0), along_y_at(&model, 0.5));
+    let fits = ogeom_fillet::fillet_edges(
+        &mut model,
+        &block.shape,
+        &[low.clone(), high.clone()],
+        0.2,
+        T,
+    );
+    assert!(fits.is_ok());
+    let overlaps = ogeom_fillet::fillet_edges(&mut model, &block.shape, &[low, high], 0.3, T);
+    assert!(overlaps.is_err());
+}
