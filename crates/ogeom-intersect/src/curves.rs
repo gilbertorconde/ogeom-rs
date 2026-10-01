@@ -142,12 +142,59 @@ pub fn intersect_curves_2d(
     tol: Tolerances,
 ) -> OgeomResult<CurveIntersection<Point2>> {
     check(options)?;
-    match (a, b) {
-        (PlanarCurve::Line(x), PlanarCurve::Line(y)) => Ok(line_line_2d(x, y, tol)),
-        (PlanarCurve::Line(x), PlanarCurve::Circle(y)) => Ok(line_circle_2d(x, y, false, tol)),
-        (PlanarCurve::Circle(x), PlanarCurve::Line(y)) => Ok(line_circle_2d(y, x, true, tol)),
-        (PlanarCurve::Circle(x), PlanarCurve::Circle(y)) => Ok(circle_circle_2d(x, y, tol)),
-        _ => general_2d(a, b, options, tol),
+    // Through any trim to the basis the closed forms answer for, as in
+    // space; the answer is clipped to the trims' windows after.
+    let (basis_a, window_a) = through_trim_2d(a);
+    let (basis_b, window_b) = through_trim_2d(b);
+    let found = match (basis_a, basis_b) {
+        (PlanarCurve::Line(x), PlanarCurve::Line(y)) => line_line_2d(x, y, tol),
+        (PlanarCurve::Line(x), PlanarCurve::Circle(y)) => line_circle_2d(x, y, false, tol),
+        (PlanarCurve::Circle(x), PlanarCurve::Line(y)) => line_circle_2d(y, x, true, tol),
+        (PlanarCurve::Circle(x), PlanarCurve::Circle(y)) => circle_circle_2d(x, y, tol),
+        _ => return general_2d(a, b, options, tol),
+    };
+    let side = |curve: &PlanarCurve, window: Option<(f64, f64)>| Side {
+        period: {
+            let (lo, hi) = curve.domain();
+            (curve.is_periodic() && hi > lo).then_some(hi - lo)
+        },
+        domain: curve.domain(),
+        window,
+    };
+    Ok(clipped_to_windows(
+        found,
+        side(basis_a, window_a),
+        side(basis_b, window_b),
+        tol,
+    ))
+}
+
+/// A planar curve seen through a trim, as [`through_trim`] sees one in
+/// space.
+fn through_trim_2d(curve: &PlanarCurve) -> (&PlanarCurve, Option<(f64, f64)>) {
+    match curve {
+        PlanarCurve::Trimmed(t) if !t.is_reversed() => (t.basis(), Some(t.domain())),
+        other => (other, None),
+    }
+}
+
+/// One side of a curve pair as clipping sees it: its basis's period and
+/// domain, and the window a trim restricts it to.
+#[derive(Debug, Clone, Copy)]
+struct Side {
+    period: Option<f64>,
+    domain: (f64, f64),
+    window: Option<(f64, f64)>,
+}
+
+impl Side {
+    fn of(curve: &Curve, window: Option<(f64, f64)>) -> Self {
+        let (lo, hi) = curve.domain();
+        Self {
+            period: (curve.is_periodic() && hi > lo).then_some(hi - lo),
+            domain: (lo, hi),
+            window,
+        }
     }
 }
 
@@ -168,16 +215,16 @@ pub fn intersect_curves(
     if let Some(found) = same_curve_3d(basis_a, basis_b) {
         return Ok(clipped_to_windows(
             found,
-            (basis_a, window_a),
-            (basis_b, window_b),
+            Side::of(basis_a, window_a),
+            Side::of(basis_b, window_b),
             tol,
         ));
     }
     if let Some(found) = analytic_3d(basis_a, basis_b, options, tol) {
         return Ok(clipped_to_windows(
             found,
-            (basis_a, window_a),
-            (basis_b, window_b),
+            Side::of(basis_a, window_a),
+            Side::of(basis_b, window_b),
             tol,
         ));
     }
@@ -466,26 +513,17 @@ fn conic_parameter(conic: &Curve, point: Point, tol: Tolerances) -> Option<f64> 
 /// brings them there. An overlap is an interval on each side tied by an
 /// affine correspondence, so it is clipped on one side, carried across, and
 /// clipped again, and what comes back is the stretch both trims really share.
-fn clipped_to_windows(
-    found: CurveIntersection<Point>,
-    a: (&Curve, Option<(f64, f64)>),
-    b: (&Curve, Option<(f64, f64)>),
+fn clipped_to_windows<P>(
+    found: CurveIntersection<P>,
+    a: Side,
+    b: Side,
     tol: Tolerances,
-) -> CurveIntersection<Point> {
-    let (basis_a, window_a) = a;
-    let (basis_b, window_b) = b;
+) -> CurveIntersection<P> {
+    let (window_a, window_b) = (a.window, b.window);
     if window_a.is_none() && window_b.is_none() {
         return found;
     }
-    let period = |curve: &Curve| -> Option<f64> {
-        if curve.is_periodic() {
-            let (lo, hi) = curve.domain();
-            (hi > lo).then_some(hi - lo)
-        } else {
-            None
-        }
-    };
-    let (pa, pb) = (period(basis_a), period(basis_b));
+    let (pa, pb) = (a.period, b.period);
     let slack = tol.parametric();
     let placed = |t: f64, window: Option<(f64, f64)>, period: Option<f64>| -> Option<f64> {
         let Some((lo, hi)) = window else {
@@ -524,7 +562,7 @@ fn clipped_to_windows(
         let both = (x.0.max(y.0), x.1.min(y.1));
         (both.1 - both.0 > slack).then_some(both)
     };
-    let (domain_a, domain_b) = (basis_a.domain(), basis_b.domain());
+    let (domain_a, domain_b) = (a.domain, b.domain);
     let shifts = |period: Option<f64>| -> Vec<f64> {
         period.map_or_else(
             || vec![0.0],
@@ -2361,5 +2399,41 @@ mod tests {
             let want = share * (wa.1 - wa.0);
             assert!((covered - want).abs() < 2e-3, "{covered} against {want}");
         }
+    }
+
+    /// A trimmed arc answers as its circle does inside its window: a line
+    /// tangent to it, one crossing it twice a hair below the tangent, and a
+    /// circle touching it from outside are all found.
+    #[test]
+    fn a_trimmed_arc_meets_tangents_as_its_circle_does() {
+        use ogeom_geom::Trimmed2d;
+        let options = CurveCurveOptions::default();
+        let circle = circle2(Point2::new(0.0, 0.0), 10.0);
+        let arc: PlanarCurve = Trimmed2d::new(circle, 0.3, 2.9, T).unwrap().into();
+        let tangent = line2(Point2::new(-20.0, 10.0), Point2::new(20.0, 10.0));
+        let found = intersect_curves_2d(&arc, &tangent, options, T).unwrap();
+        assert_eq!(found.crossings.len(), 1);
+        assert!(found.crossings[0].point.is_equal(Point2::new(0.0, 10.0), T));
+        let grazing = line2(
+            Point2::new(-20.0, 10.0 - 1e-4),
+            Point2::new(20.0, 10.0 - 1e-4),
+        );
+        let found = intersect_curves_2d(&arc, &grazing, options, T).unwrap();
+        assert_eq!(found.crossings.len(), 2);
+        let beside: PlanarCurve =
+            Trimmed2d::new(circle2(Point2::new(20.0, 0.0), 10.0), 2.0, 4.5, T)
+                .unwrap()
+                .into();
+        let whole = circle2(Point2::new(0.0, 0.0), 10.0);
+        let found = intersect_curves_2d(&whole, &beside, options, T).unwrap();
+        assert_eq!(found.crossings.len(), 1);
+        assert!(found.crossings[0].point.is_equal(Point2::new(10.0, 0.0), T));
+        // Outside the window, nothing.
+        let below = line2(Point2::new(-20.0, -10.0), Point2::new(20.0, -10.0));
+        assert!(
+            intersect_curves_2d(&arc, &below, options, T)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

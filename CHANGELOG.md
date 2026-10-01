@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Trimmed planar curves meet as their bases do.** `intersect_curves_2d`
+  sampled any trimmed curve, and missed a line tangent to an arc, a line
+  crossing one twice just below the tangent, and a circle touching an arc.
+  It answers on the bases in closed form and clips to the trims' windows,
+  as the space-curve path already did.
+
 - **A curve's tangencies and lying stretches come back once.** Where no
   closed form applies, `intersect_curve_surface` reported a tangency up to
   eighteen times, and a curve lying in the surface (a cone's ruling, a
