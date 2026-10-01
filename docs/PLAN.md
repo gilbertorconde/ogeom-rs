@@ -65,6 +65,25 @@ drill's placement.
   it needs lives in `ogeom-algo`, above the intersector. Moving
   `project_on_surface` down into `ogeom-geom` would let `intersect_surfaces`
   answer `Same` itself, for every caller.
+- Local operations, so an op costs what an edit touches, not what the solid
+  holds. None of these is done yet:
+  - Local boolean. Today every face of both solids is split, classified piece
+    by piece, rebuilt on a new surface and the whole result sewn again; the
+    one shortcut is an all-pairs face box test. Wanted: faces the tool's box
+    misses and no section crosses pass through as the same face, a connected
+    region of them classified by one probe, a face tree in place of the
+    all-pairs test, and only the touched region sewn again.
+  - Unchanged faces in the history. Every result face traces to its source,
+    but an untouched face comes out "modified" into a new node. `History`
+    can already say unchanged; the boolean needs to keep the face to say it.
+  - Local refine. `unify_same_domain` takes only a whole shape; wanted, a
+    variant restricted to given faces and their neighbours.
+  - Fillets in one pass. Each blend piece and each corner is one whole-solid
+    boolean today; wanted, all of a fillet's blends in one boolean, or
+    replaced faces locally.
+  - Face bounds in the model. Every caller works out a face's box afresh;
+    wanted, the box kept with the face and read by the booleans,
+    `shape_bounds` and `tight_bounds` alike.
 
 **SAT, X\_T and JT are refused.** Their specifications are unpublished.
 Implementing them would mean reverse engineering files instead of reading a
