@@ -2223,3 +2223,45 @@ fn a_whole_sphere_or_torus_from_single_precision_checks_valid() {
         assert!(diagnosis.is_valid(), "{diagnosis}");
     }
 }
+
+/// Options that say nothing a distance or a turn can mean are refused by
+/// name rather than read as something else.
+#[test]
+fn unusable_converter_options_are_refused() {
+    let cube = cube_soup(2.0);
+    let bad = [
+        MeshSolidOptions {
+            coplanar_distance: Some(f64::NAN),
+            ..MeshSolidOptions::default()
+        },
+        MeshSolidOptions {
+            coplanar_distance: Some(0.0),
+            ..MeshSolidOptions::default()
+        },
+        MeshSolidOptions {
+            coplanar_distance: Some(-1e-3),
+            ..MeshSolidOptions::default()
+        },
+        MeshSolidOptions {
+            crease: f64::NAN,
+            ..MeshSolidOptions::default()
+        },
+        MeshSolidOptions {
+            crease: 0.0,
+            ..MeshSolidOptions::default()
+        },
+        MeshSolidOptions {
+            quantum: Some(-1.0),
+            ..MeshSolidOptions::default()
+        },
+    ];
+    for options in bad {
+        let mut model = Model::new();
+        assert!(
+            solid_from_mesh(&mut model, &cube, &options, T).is_err(),
+            "{options:?}"
+        );
+    }
+    let mut model = Model::new();
+    assert!(solid_from_mesh(&mut model, &cube, &MeshSolidOptions::default(), T).is_ok());
+}

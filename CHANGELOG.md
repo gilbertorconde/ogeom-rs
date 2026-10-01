@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Unusable converter options are refused.** `solid_from_mesh` read a
+  NaN, zero or negative `coplanar_distance`, a negative `quantum`, and a
+  NaN or zero `crease` as something else, silently. Each is refused by
+  name, as the documentation said.
+
 - **Whole spheres and tori from single-precision meshes check valid.** The
   converter widened a whole face's tolerance to its fit's deviation but
   left its seam, poles and vertices tighter, which `check` refuses. The

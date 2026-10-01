@@ -338,6 +338,35 @@ pub fn solid_from_mesh(
     if !(options.coplanar_angle.is_finite() && options.coplanar_angle >= 0.0) {
         ogeom_bail!(Construction, "the coplanar angle is not finite");
     }
+    if let Some(distance) = options.coplanar_distance
+        && !(distance.is_finite() && distance > 0.0)
+    {
+        ogeom_bail!(
+            Construction,
+            "the coplanar distance {distance} is not finite and positive"
+        );
+    }
+    if let Some(quantum) = options.quantum
+        && !(quantum.is_finite() && quantum >= 0.0)
+    {
+        ogeom_bail!(
+            Construction,
+            "the quantum {quantum} is not finite and non-negative"
+        );
+    }
+    // A crease turns by more than nothing and no more than a half turn: at
+    // zero every turn is a crease, and nothing turns further than back on
+    // itself.
+    if !(options.crease.is_finite()
+        && options.crease > 0.0
+        && options.crease <= core::f64::consts::PI)
+    {
+        ogeom_bail!(
+            Construction,
+            "the crease angle {} is not a turn between nothing and a half turn",
+            options.crease
+        );
+    }
     let count = mesh.positions.len();
     if mesh
         .triangles
