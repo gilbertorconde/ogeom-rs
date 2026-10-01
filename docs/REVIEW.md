@@ -100,7 +100,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [ ] **P6.** Quadratic and cubic solvers lose double roots; the doc's closed-form claim for quartics is untrue.
 - [ ] **P7.** `lines_tangent_to_two_circles` misses the third tangent of touching circles.
 - [ ] **P8.** Derivatives above the implemented order come back zero instead of refused (circle, ellipse, hyperbola, parabola, helix, 2D pad).
-- [ ] **P9.** `Triangulation::welded` panics on a mesh with no normals.
+- [x] **P9.** `Triangulation::welded` panics on a mesh with no normals. (e3e6fea)
 - [ ] **P10.** HLR `project` draws every outline edge twice.
 - [ ] **P11.** `make_wedge` doc says a zero top extent is refused; it is accepted.
 - [ ] **P12.** `volume_properties` of a plain box takes seconds at 1000 mm and more at 3000 mm.
