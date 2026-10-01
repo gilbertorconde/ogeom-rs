@@ -62,7 +62,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [ ] **C3.** A small valid `coplanar_distance` on f32 input gives a shape whose whole-shape tessellation is open while `check` passes (`mesh_solid.rs`). Diagnosed 2026-10-01: the slits run along recognized sphere faces (a rounded block's corners) where they meet single-facet planar faces; those sphere faces' triangles overrun their exact area. Withdrawing recognition on an open body tessellation in `body_culprits` was tried and rejected: inside the build loop sound bodies also tessellate open. Deferred to the end of Tier 2.
 - [x] **C4.** `solid_from_mesh` accepts NaN, negative or zero `coplanar_distance`, and NaN or zero `crease`, silently (`mesh_solid.rs`). (2ca79a1)
 - [x] **C5.** The converter's nesting ray counts a hit on a shared edge twice or not at all, turning a void into a separate solid (`mesh_solid.rs` `inside`). (bdb0a72)
-- [ ] **C6.** Flat caps of a fine f32 mesh, rotated and far from the origin, break into many faces: `coplanar_angle` ignores the quantum (`mesh_solid.rs` `coplanar_groups`).
+- [x] **C6.** Flat caps of a fine f32 mesh, rotated and far from the origin, break into many faces: `coplanar_angle` ignores the quantum (`mesh_solid.rs` `coplanar_groups`).
 - [ ] **R1.** PLY reader panics on an out-of-range face index (`mesh_formats.rs`).
 - [ ] **R2.** Deeply nested glTF (JSON) and VRML overflow the stack and abort the process (`json.rs`, `vrml.rs`).
 - [ ] **X1.** Spindle tori: the folded branch is dropped by the plane, coaxial cylinder and coaxial torus closed forms (`ogeom-intersect/src/surface.rs`).

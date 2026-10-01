@@ -561,7 +561,7 @@ pub fn solid_from_mesh(
             &points,
             &triangles,
             &adjacency,
-            options.coplanar_angle,
+            options,
             flat,
             &mut groups,
             tol,
@@ -1618,7 +1618,7 @@ fn coplanar_groups(
     points: &[Point],
     triangles: &[[u32; 3]],
     adjacency: &Adjacency,
-    angle: f64,
+    options: &MeshSolidOptions,
     flat: f64,
     groups: &mut Groups,
     tol: Tolerances,
@@ -1631,7 +1631,8 @@ fn coplanar_groups(
         .filter(|&t| groups.of[t] == usize::MAX)
         .collect();
     order.sort_by(|&x, &y| area(y).total_cmp(&area(x)));
-    let cos = angle.cos();
+    let cos = options.coplanar_angle.cos();
+    let quantum = options.quantum.unwrap_or(0.0);
     let mut stack = Vec::new();
     for seed in order {
         if groups.of[seed] != usize::MAX {
@@ -1659,6 +1660,20 @@ fn coplanar_groups(
                     }
                     let [a, b, c] = triangles[other].map(|i| points[i as usize]);
                     let n = (b - a).cross(c - a);
+                    // A small triangle's corners, each rounded by the
+                    // mesh's encoding, tilt its normal by up to twice the
+                    // rounding over its smallest altitude: on a mesh stored
+                    // far from its origin, a tilt that is no turn of the
+                    // surface. Its corners' distance decides it then.
+                    let longest = (b - a)
+                        .magnitude()
+                        .max((c - b).magnitude())
+                        .max((a - c).magnitude());
+                    let altitude = n.magnitude() / longest.max(f64::MIN_POSITIVE);
+                    let slop = (2.0 * quantum / altitude.max(f64::MIN_POSITIVE))
+                        .min(1.0)
+                        .asin();
+                    let cos = cos.min(slop.cos());
                     if n.dot(normal) < cos * n.magnitude()
                         || [a, b, c]
                             .iter()
@@ -1954,7 +1969,7 @@ fn segment(
             points,
             triangles,
             adjacency,
-            options.coplanar_angle,
+            options,
             flat,
             &mut planes,
             tol,
@@ -1978,7 +1993,7 @@ fn segment(
         points,
         triangles,
         adjacency,
-        options.coplanar_angle,
+        options,
         flat,
         &mut groups,
         tol,

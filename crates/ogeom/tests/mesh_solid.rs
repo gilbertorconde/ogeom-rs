@@ -2296,3 +2296,38 @@ fn a_void_whose_ray_meets_a_shared_edge_stays_a_void() {
     let v = volume(&model, &built.shape);
     assert!((v - (27000.0 - 125.0)).abs() < 1e-6, "{v}");
 }
+
+/// A drum meshed finely and stored in single precision a thousand
+/// millimetres out keeps its flat caps whole: their small triangles lean by
+/// the rounding of their corners, which is no turn of the cap.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the rounding to single precision is the point"
+)]
+#[test]
+fn caps_of_a_fine_mesh_far_out_stay_whole() {
+    let mut source = Model::new();
+    let drum = ogeom::algo::make_cylinder(&mut source, Frame::WORLD, 5.0, 12.0, T)
+        .unwrap()
+        .shape;
+    let mut mesh =
+        ogeom::mesh::triangulate(&source, &drum, Deflection::with_chord(0.01).unwrap(), T).unwrap();
+    let (sin, cos) = 0.3_f64.sin_cos();
+    for p in &mut mesh.positions {
+        let (y, z) = (p.y * cos - p.z * sin, p.y * sin + p.z * cos);
+        let (x, y) = (p.x * cos - y * sin, p.x * sin + y * cos);
+        *p = Point::new(
+            f64::from((x + 1000.0) as f32),
+            f64::from((y + 2000.0) as f32),
+            f64::from((z + 3000.0) as f32),
+        );
+    }
+    let options = MeshSolidOptions {
+        quantum: Some(ogeom::algo::single_precision_quantum(&mesh)),
+        ..MeshSolidOptions::default()
+    };
+    let mut model = Model::new();
+    let built = solid_from_mesh(&mut model, &mesh, &options, T).unwrap();
+    assert_eq!(kinds(&model, &built.shape), [2, 1, 0, 0, 0]);
+    assert!(check(&model, &built.shape, T).unwrap().is_valid());
+}

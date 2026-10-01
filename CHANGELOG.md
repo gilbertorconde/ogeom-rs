@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Flat caps of a fine mesh far from the origin stay whole.** A finely
+  meshed part stored in single precision a long way out broke its flat
+  faces into dozens: their small triangles lean past the coplanar angle by
+  the rounding of their corners alone. A triangle's allowed lean now
+  widens by its corners' rounding (twice the mesh's quantum over its
+  smallest altitude).
+
 - **A mesh's void stays a void wherever its ray lands.** The converter
   decided nesting with one ray, and a ray through an edge two of the outer
   piece's triangles share counted the crossing twice, or not at all, so a
