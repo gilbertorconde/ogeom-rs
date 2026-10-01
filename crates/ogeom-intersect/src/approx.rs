@@ -176,17 +176,53 @@ pub fn approximate_branch(
         ogeom_geom::fit::fit_points_joint(&points, &unwrapped_a, &unwrapped_b, 3, tolerance, tol)?
     };
 
+    // And measured where it is promised: each pcurve lifted through its
+    // surface against the curve, between the trace's samples as well as at
+    // them. Near a cone's apex or a sphere's pole the chart turns fast, and
+    // a fit that holds at every sample can wander between them.
+    let lifted =
+        lift_error(a, &on_a, &space.curve, tol).max(lift_error(b, &on_b, &space.curve, tol));
+    let fit_error = space
+        .error
+        .max(space_error(a, &(on_a.clone(), space.met, space.error), tol))
+        .max(space_error(b, &(on_b.clone(), space.met, space.error), tol))
+        .max(lifted);
     Ok(IntersectionCurve {
-        fit_error: space
-            .error
-            .max(space_error(a, &(on_a.clone(), space.met, space.error), tol))
-            .max(space_error(b, &(on_b.clone(), space.met, space.error), tol)),
+        fit_error,
         met: space.met,
         curve: space.curve,
         on_a,
         on_b,
         closed: branch.closed(),
     })
+}
+
+/// How far a pcurve, lifted through its surface, stands from the curve it
+/// images, at the same parameters: four stations in every span of the
+/// curve's knots and at least two hundred along it.
+fn lift_error(
+    surface: &SurfaceGeometry,
+    pcurve: &BSpline2d,
+    curve: &BSplineCurve,
+    tol: Tolerances,
+) -> f64 {
+    use ogeom_geom::{Curve2d as _, Curve3d as _};
+    let (lo, hi) = curve.knots().domain();
+    let spans = curve.knots().distinct().len().saturating_sub(1).max(1);
+    let stations = (4 * spans).max(200);
+    let mut worst = 0.0_f64;
+    for k in 0..=stations {
+        #[allow(clippy::cast_precision_loss)]
+        let t = lo + (hi - lo) * k as f64 / stations as f64;
+        let (Ok(on), Ok(at)) = (curve.point_at(t, tol), pcurve.point_at(t, tol)) else {
+            continue;
+        };
+        let Ok(lifted) = surface.point_at(at.x, at.y, tol) else {
+            continue;
+        };
+        worst = worst.max(lifted.distance(on));
+    }
+    worst
 }
 
 /// The fitted pcurve's error, converted back into space.

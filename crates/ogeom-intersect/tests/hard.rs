@@ -575,3 +575,51 @@ fn a_cone_through_its_apex_is_sectioned_on_both_nappes() {
         }
     }
 }
+
+/// A steep plane passing half a millimetre from a cone's apex: the fitted
+/// section's images, lifted through their surfaces, stand within the
+/// tolerance it states, however fast the cone's chart turns there.
+#[test]
+fn a_section_beside_a_cone_s_apex_states_its_true_tolerance() {
+    use ogeom_geom::{Curve2d as _, Surface as _};
+    use ogeom_intersect::{IntersectOptions, SurfaceIntersection, intersect_surfaces};
+    let cone: SurfaceGeometry = ConeSurface::new(
+        Cone::new(Frame::WORLD, 10.0, core::f64::consts::FRAC_PI_4, T).unwrap(),
+        (-9.5, 50.0),
+    )
+    .unwrap()
+    .into();
+    let tilt: f64 = 1.2;
+    let steep: SurfaceGeometry = PlaneSurface::over(
+        Plane::through(
+            Point::new(0.5, 0.3, -9.0),
+            Direction::new(Vector::new(tilt.sin(), 0.0, tilt.cos()), T).unwrap(),
+        ),
+        (-200.0, 200.0),
+        (-200.0, 200.0),
+    )
+    .unwrap()
+    .into();
+    let SurfaceIntersection::Along(curves) =
+        intersect_surfaces(&cone, &steep, IntersectOptions::default(), T).unwrap()
+    else {
+        panic!("the plane cuts the cone");
+    };
+    for c in &curves {
+        let (lo, hi) = c.curve.domain();
+        for k in 0..=4000 {
+            let t = lo + (hi - lo) * f64::from(k) / 4000.0;
+            let on = c.curve.point_at(t, T).unwrap();
+            for (surface, image) in [(&cone, &c.on_a), (&steep, &c.on_b)] {
+                let at = image.as_ref().unwrap().point_at(t, T).unwrap();
+                let lifted = surface.point_at(at.x, at.y, T).unwrap();
+                assert!(
+                    lifted.distance(on) <= c.tolerance,
+                    "{} off at {t}, stated {}",
+                    lifted.distance(on),
+                    c.tolerance
+                );
+            }
+        }
+    }
+}

@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A fitted section states the error its images reach.** A section
+  fitted beside a cone's apex reported a tolerance two hundred times
+  tighter than its pcurve on the cone stood from the curve: the error was
+  read at the trace's samples, and the chart turns fast between them
+  there. Each pcurve is now lifted through its surface at dense stations,
+  and the stated tolerance covers the worst.
+
 - **A cone through its apex is sectioned on both nappes.** The closed
   forms for a cone against a coaxial cylinder, a coaxial cone and a level
   plane answered on the chart's own nappe only: a cone face running past
