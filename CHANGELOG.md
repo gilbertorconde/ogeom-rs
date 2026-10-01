@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Cone and torus inversion past the apex and the axis.**
+  `cone_parameters` returned a point's own angle and height, the chart
+  point only on the cone's own nappe and only for a point already on it;
+  `torus_parameters` did not round-trip on a spindle torus's folded half.
+  Each now returns the nearest point's parameters, half a turn round where
+  that point lies past the apex or the axis.
+
 - **Trimmed planar curves meet as their bases do.** `intersect_curves_2d`
   sampled any trimmed curve, and missed a line tangent to an arc, a line
   crossing one twice just below the tangent, and a circle touching an arc.

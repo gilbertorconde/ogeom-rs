@@ -347,19 +347,47 @@ pub fn cone_at(cone: &Cone, angle: f64, height: f64) -> SurfacePoint {
 
 /// The `(angle, height)` of the point on a cone nearest `p`.
 ///
+/// In the half-plane through the axis and `p` the cone is two rays from
+/// the apex: its own nappe at `p`'s angle, and the far nappe, past the
+/// apex, half a turn round (where the radius runs negative). The foot is
+/// the nearer of `p`'s feet on the two.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if `p` lies on the
 /// axis.
 pub fn cone_parameters(cone: &Cone, p: Point, tol: Tolerances) -> OgeomResult<(f64, f64)> {
     let local = cone.frame().to_local(p);
-    if local.x.hypot(local.y) <= tol.confusion() {
+    let ring = local.x.hypot(local.y);
+    if ring <= tol.confusion() {
         ogeom_bail!(
             Construction,
             "point is on the cone's axis; no nearest angle"
         );
     }
-    Ok((wrap_angle(local.y.atan2(local.x)), local.z))
+    let angle = local.y.atan2(local.x);
+    let (start, slope) = (cone.reference_radius(), cone.half_angle().tan());
+    let apex = -start / slope;
+    let squared = slope.mul_add(slope, 1.0);
+    // Along its own nappe the radius is `start + slope · v` and stands at
+    // `p`'s angle; along the far one it is the negative of that, half a
+    // turn round. Each foot stays on its own side of the apex.
+    let near = (local.z + slope * (ring - start)) / squared;
+    let far = (local.z - slope * (ring + start)) / squared;
+    let on_own_side = |v: f64, sign: f64| {
+        if sign * slope.mul_add(v, start) >= 0.0 {
+            v
+        } else {
+            apex
+        }
+    };
+    let (near, far) = (on_own_side(near, 1.0), on_own_side(far, -1.0));
+    let gap = |v: f64, sign: f64| (sign * slope.mul_add(v, start) - ring).hypot(v - local.z);
+    Ok(if gap(far, -1.0) < gap(near, 1.0) {
+        (wrap_angle(angle + core::f64::consts::PI), far)
+    } else {
+        (wrap_angle(angle), near)
+    })
 }
 
 /// Evaluate a sphere at `(longitude, latitude)`.
@@ -434,12 +462,25 @@ pub fn torus_parameters(torus: &Torus, p: Point, tol: Tolerances) -> OgeomResult
     if ring <= tol.confusion() {
         ogeom_bail!(Construction, "point is on the torus's axis");
     }
-    let u = wrap_angle(local.y.atan2(local.x));
-    let radial = ring - torus.major_radius();
+    let angle = local.y.atan2(local.x);
+    // In the half-plane through the axis and `p` the tube is two circles,
+    // centred the major radius either side of the axis; on a spindle the
+    // far one reaches past the axis and can be the nearer, its points half
+    // a turn round where the sweep's radius runs negative.
+    let (major, minor) = (torus.major_radius(), torus.minor_radius());
+    let radial = ring - major;
+    let beyond = -ring - major;
+    let near_gap = (radial.hypot(local.z) - minor).abs();
+    let far_gap = (beyond.hypot(local.z) - minor).abs();
+    let (u, radial) = if far_gap < near_gap {
+        (angle + core::f64::consts::PI, beyond)
+    } else {
+        (angle, radial)
+    };
     if radial.hypot(local.z) <= tol.confusion() {
         ogeom_bail!(Construction, "point is on the tube's centre circle");
     }
-    Ok((u, wrap_angle(local.z.atan2(radial))))
+    Ok((wrap_angle(u), wrap_angle(local.z.atan2(radial))))
 }
 
 #[cfg(test)]
@@ -684,6 +725,48 @@ mod tests {
         }
         check_surface_derivatives(|u, v| cylinder_at(&c, u, v), 0.7, 3.0);
         assert!(cylinder_parameters(&c, c.frame().origin(), T).is_err());
+    }
+
+    #[test]
+    fn a_cone_inverts_past_its_apex_and_off_its_surface() {
+        let c = Cone::new(tilted(), 3.0, 0.6, T).unwrap();
+        let apex = -3.0 / 0.6_f64.tan();
+        // Past the apex, on the far nappe: the same point back.
+        for i in 0..8 {
+            let angle = f64::from(i) * PI / 4.0 + 0.1;
+            for h in [apex - 1.0, apex - 4.0] {
+                let p = cone_at(&c, angle, h).point;
+                let (u, v) = cone_parameters(&c, p, T).unwrap();
+                assert!(cone_at(&c, u, v).point.distance(p) < 1e-10, "{angle} {h}");
+            }
+        }
+        // Off the surface: the foot is the nearest point, nearer than any
+        // other point of the cone's tried.
+        let off = cone_at(&c, 0.7, 2.0).point + Vector::new(0.3, -0.2, 0.5);
+        let (u, v) = cone_parameters(&c, off, T).unwrap();
+        let foot = cone_at(&c, u, v).point.distance(off);
+        for i in 0..64 {
+            for j in 0..64 {
+                let (a, h) = (f64::from(i) * PI / 32.0, apex + f64::from(j) * 0.2 - 6.0);
+                assert!(cone_at(&c, a, h).point.distance(off) >= foot - 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn a_spindle_torus_inverts_on_its_folded_half() {
+        let t = Torus::new(tilted(), 2.0, 3.0, T).unwrap();
+        for i in 0..8 {
+            for j in 0..12 {
+                let (u, v) = (
+                    f64::from(i) * PI / 4.0 + 0.1,
+                    f64::from(j) * PI / 6.0 + 0.05,
+                );
+                let p = torus_at(&t, u, v).point;
+                let (bu, bv) = torus_parameters(&t, p, T).unwrap();
+                assert!(torus_at(&t, bu, bv).point.distance(p) < 1e-10, "{u} {v}");
+            }
+        }
     }
 
     #[test]
