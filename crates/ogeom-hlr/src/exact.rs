@@ -11,12 +11,12 @@
 //! on a cylinder or a cone. Visibility is decided by asking the *faces*
 //! whether anything stands between a point and the eye: an exact
 //! curve/surface interference and a trim test, not a triangle count. What is
-//! still sampled is the drawing itself, because a drawing is polylines; the
+//! still sampled is the drawing itself, because a drawing is polylines. The
 //! curves it samples and the classification it carries are exact.
 //!
-//! A surface whose silhouette has no closed form (a torus, a spline) is
-//! refused by name rather than approximated here. The polygonal path draws
-//! those, and says so.
+//! A surface whose silhouette has no closed form (a torus, a spline) has it
+//! marched: the silhouette is one equation on the surface's own chart, and
+//! the shared walker follows it.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{CircleCurve, Curve, Curve3d as _, LineCurve, Surface as _, SurfaceGeometry};
@@ -44,7 +44,7 @@ pub struct Silhouette {
 /// normal to, for a cylinder the two rulings furthest to either side, for a
 /// cone the two rulings through its apex where the same holds. Planes have
 /// none (a plane either faces the eye or does not), and a face whose
-/// surface has no closed-form silhouette is refused by name.
+/// surface has no closed-form silhouette has it marched and fitted.
 ///
 /// Each curve comes back trimmed to the stretch that lies within its own
 /// face, decided by sampling the face's trim, so a silhouette on a face
@@ -53,8 +53,8 @@ pub struct Silhouette {
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-/// direction has no length, or a face carries a surface whose silhouette has
-/// no closed form.
+/// direction has no length. A marched silhouette whose walk or fit fails
+/// contributes no curve.
 pub fn silhouettes(
     model: &Model,
     shape: &Shape,
@@ -266,8 +266,9 @@ pub fn iso_curves(
 ///
 /// # Errors
 ///
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
-/// face's silhouette has no closed form, or the shape has no faces.
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// shape has no faces, or the direction has no length. A marched silhouette
+/// whose walk or fit fails contributes no curve.
 pub fn project_exact(
     model: &Model,
     shape: &Shape,
@@ -366,7 +367,7 @@ fn classify(
             Visibility::Visible
         };
         if held.is_some_and(|was| was != visibility) {
-            // The change happens somewhere between the two samples; the run
+            // The change happens somewhere between the two samples. The run
             // ends at the sample that changed, so the two runs meet there.
             let last = run.last().copied();
             flush(&mut run, held);
@@ -439,7 +440,7 @@ fn within_trim(
     let rings = ogeom_mesh::face_boundary(model, face, deflection, tol)?;
     let (t0, t1) = curve.domain();
     // A line's domain is the whole real line as far as the type is
-    // concerned; a silhouette on one is only interesting where the face is,
+    // concerned. A silhouette on one is only interesting where the face is,
     // so an unbounded curve is walked over the face's own reach.
     let (t0, t1) = if t0.is_finite() && t1.is_finite() && t1 - t0 < 1e6 {
         (t0, t1)
@@ -470,7 +471,7 @@ fn within_trim(
         Ok(projection.distance <= tol.confusion() && inside_rings(&rings, Point2::new(u, v)))
     };
     // Where the answer changes between two stations, the edge of the face
-    // is between them; bisecting says where to a part in a million of a
+    // is between them. Bisecting says where to a part in a million of a
     // station, so a silhouette ends *on* its face rather than a station
     // past it.
     let edge_between = |inside: f64, outside: f64| -> OgeomResult<f64> {
@@ -527,8 +528,8 @@ fn within_trim(
 
 /// A curve's polyline over a range, at the given deflection: the same
 /// discretization the model's edges are drawn with, which follows the
-/// curve's turning. Estimating steps from the straight distance between
-/// the range's ends drew a closed silhouette (a sphere's great circle, a
+/// curve's turning. A step count taken from the straight distance between
+/// the range's ends draws a closed silhouette (a sphere's great circle, a
 /// torus's loop, whose ends coincide) as an octagon.
 fn sampled(
     curve: &Curve,
@@ -580,13 +581,12 @@ fn perpendicular(v: Vector, tol: Tolerances) -> OgeomResult<Direction> {
 /// intersection did not already need: it is the same walk, following a
 /// different condition.
 ///
-/// Stated with the **unit** normal, and that is not a detail. The
-/// unnormalized `Sᵤ × Sᵥ` has the same zero set and a simpler derivative, but
-/// its residual carries the surface's own scale: on a torus of radius eight
-/// the correction had to drive `|Sᵤ × Sᵥ| · d` below a *length* tolerance,
-/// which is a demand on the angle some eight times tighter than anything
-/// asked for, and the walk answered by halving its step until it crawled.
-/// A dimensionless residual is a dimensionless tolerance.
+/// Stated with the **unit** normal. The unnormalized `Sᵤ × Sᵥ` has the same
+/// zero set and a simpler derivative, but its residual carries the surface's
+/// own scale: a correction that drives `|Sᵤ × Sᵥ| · d` below a *length*
+/// tolerance demands the angle tighter by the surface's own size, and the
+/// walk halves its step until it crawls. A dimensionless residual is a
+/// dimensionless tolerance.
 struct SilhouetteOn<'s> {
     surface: &'s SurfaceGeometry,
     along: Vector,
@@ -618,7 +618,7 @@ impl ogeom_intersect::walk::Condition for SilhouetteOn<'_> {
         }
         let normal = cross / length;
         // The unit normal's own derivative: the part of the unnormalized
-        // one's across the normal, over the length; the projection is what
+        // one's across the normal, over the length. The projection is what
         // keeps a unit vector unit.
         let across = |d: Vector| (d - normal * d.dot(normal)) / length;
         let du = across(suu.cross(sv) + su.cross(suv));
@@ -685,9 +685,8 @@ fn on_polyline(line: &[Point], p: Point) -> f64 {
 ///
 /// Seeded the way the intersector seeds: the chart is sampled on a grid and
 /// every sign change of `n · d` between neighbours is a starting point,
-/// refined onto the condition before the walk begins. That is the same
-/// limitation with the same knob on it (a silhouette loop smaller than one
-/// cell is stepped over), and it is stated rather than discovered.
+/// refined onto the condition before the walk begins. A silhouette loop
+/// smaller than one grid cell is stepped over.
 ///
 /// The walked polylines are fitted to curves at `chord`, and the fit's own
 /// error is added to it, so what comes back carries a budget rather than a
@@ -703,10 +702,10 @@ fn marched_silhouettes(
         ..ogeom_intersect::Marching::default()
     };
     let ((ua, ub), (va, vb)) = surface.domain();
-    // The step control wants a *length*, and the surface's own is the only
-    // honest one: a torus's face is bounded by a seam and one vertex, so its
-    // vertices' bounding box is a point and a step control fed that walks the
-    // whole ring in steps of a ten-thousandth.
+    // The step control wants a *length*, and it must be the surface's own:
+    // a torus's face is bounded by a seam and one vertex, so its vertices'
+    // bounding box is a point, and a step control fed that walks the whole
+    // ring in steps of a ten-thousandth.
     let reach = {
         let mut bound = ogeom_math::Aabb::EMPTY;
         for i in 0..=8 {
@@ -779,9 +778,9 @@ fn marched_silhouettes(
         };
         // Against the polyline, not its vertices: the walk's own step is
         // hundreds of times the chord, so a seed landing between two points
-        // of a curve already found is the same branch met in another cell and
-        // would otherwise be walked all over again. A torus seen down its
-        // axis has a seed in every grid column of both equators.
+        // of a curve already found would otherwise be walked all over again.
+        // A torus seen down its axis has a seed in every grid column of both
+        // equators.
         if walked_points
             .iter()
             .any(|line| on_polyline(line, here) <= options.chord * 32.0)
@@ -794,7 +793,7 @@ fn marched_silhouettes(
         if walked.points.len() < 4 {
             continue;
         }
-        // Fitted, with the fit's own error added to the walk's chord; the
+        // Fitted, with the fit's own error added to the walk's chord. The
         // curve says what it is worth.
         let Ok(fitted) = ogeom_geom::fit::fit_points(&walked.points, 3, options.chord, tol) else {
             continue;

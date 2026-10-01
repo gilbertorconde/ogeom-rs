@@ -34,7 +34,7 @@ pub struct SectionView {
 /// Cut `solid` at `plane` and draw the section.
 ///
 /// Material on the plane's `+z` side is removed. The outline loops are the
-/// cut faces' boundaries in the plane's `(x, y)`; the drawing views the
+/// cut faces' boundaries in the plane's `(x, y)`. The drawing views the
 /// remainder along the plane's normal.
 ///
 /// # Errors
@@ -94,7 +94,7 @@ fn section_with_window(
 ) -> OgeomResult<SectionView> {
     let reach = reach_of(model, solid, tol)?;
     let frame = plane.frame();
-    // The proxy box: one face exactly on the plane, extending along +z; its
+    // The proxy box: one face exactly on the plane, extending along +z. Its
     // footprint is the window. Slight overshoot along z keeps the far face
     // clear of the solid.
     let corner = frame.to_world(Point::new(window_min.0, window_min.1, 0.0));
@@ -183,9 +183,9 @@ fn face_on_plane(
 /// Cut away one quarter of the part and draw the half-section.
 ///
 /// The plane's frame states the whole convention: material on the `+z`
-/// side is removed, but only over the frame's `+x` half; the split line
+/// side is removed, but only over the frame's `+x` half. The split line
 /// is the frame's own `y` axis. The section outline covers the cut half,
-/// hatched by the draughtsman's convention through [`hatch`]; the drawing
+/// hatched by the draughtsman's convention through [`hatch`]. The drawing
 /// shows the other half in outside view, which is what a half-section is
 /// for.
 ///
@@ -247,7 +247,7 @@ pub fn hatch(outline: &[Vec<Point2>], spacing: f64, angle: f64) -> Vec<(Point2, 
     // still receives a stroke.
     let mut y = lo.1 + spacing * 0.5;
     while y < hi.1 {
-        // Every crossing of this scanline with every loop edge; sorted,
+        // Every crossing of this scanline with every loop edge, sorted,
         // then paired even-odd: inside between the first and second,
         // outside between the second and third, and so on.
         let mut crossings: Vec<f64> = Vec::new();
@@ -340,9 +340,9 @@ mod tests {
 
         // Section through the bore, half a radius off its axis: the plane
         // exactly through the axis meets the wall along its rulings, a
-        // configuration the boolean still refuses (honestly), so the test
-        // sections where the answer is just as exact: the slot's width is
-        // the chord at that offset.
+        // configuration the boolean refuses, so the test sections where
+        // the answer is just as exact: the slot's width is the chord at
+        // that offset.
         let plane = Plane::new(
             Frame::new(Point::new(0.0, 2.5, 0.0), Direction::Y, Direction::Z, T).unwrap(),
         );

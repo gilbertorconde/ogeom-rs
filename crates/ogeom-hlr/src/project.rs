@@ -11,9 +11,8 @@
 //! drawing shows.
 //!
 //! Polygonal, not exact: the classification is as fine as the tessellation
-//! and the sampling. That is the honest half of `HLRBRep`; the exact half
-//! (curve/surface interference resolved analytically) is deferred and the
-//! parity ledger says so; see docs/PARITY.md, hlr.projection.
+//! and the sampling. The exact half (silhouettes in closed form, visibility
+//! asked of the faces themselves) is the `exact` module.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Direction, Frame, Point, Point2, Vector};
@@ -351,7 +350,7 @@ fn classify_into(
 /// The view is orthographic, so the ray from a point toward the eye can
 /// only hit a triangle whose projection covers the point's: a sample is
 /// tested against the triangles of its own cell of a grid over the drawing,
-/// not the whole mesh. The test itself is unchanged, so is the answer.
+/// not the whole mesh.
 struct Occluders<'m> {
     mesh: &'m Triangulation,
     cells: Vec<Vec<u32>>,
@@ -482,7 +481,7 @@ fn occluded(
             mesh.positions[b as usize],
             mesh.positions[c as usize],
         );
-        // Möller–Trumbore, orthographic: the ray from p toward the eye.
+        // Möller-Trumbore, orthographic: the ray from p toward the eye.
         let (e1, e2) = (pb - pa, pc - pa);
         let h = toward_eye.cross(e2);
         let det = e1.dot(h);
@@ -544,7 +543,7 @@ mod tests {
         let drawing = super::project(&model, &solid.shape, &view, fine(), T).unwrap();
 
         // Four top edges visible, four bottom edges hidden behind the top
-        // face; the four vertical edges project to points and are dropped.
+        // face. The four vertical edges project to points and are dropped.
         assert_eq!(edge_curves(&drawing, Visibility::Visible), 4);
         assert_eq!(edge_curves(&drawing, Visibility::Hidden), 4);
     }
