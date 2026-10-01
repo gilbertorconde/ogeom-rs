@@ -280,7 +280,8 @@ fn of_radius_near(
 }
 
 /// The up-to-four lines tangent to two circles: the external pair where the
-/// circles lie on the same side, the internal pair where they straddle.
+/// circles lie on the same side, the internal pair where they straddle. A
+/// pair whose circles touch is the one line through the touching point.
 #[must_use]
 pub fn lines_tangent_to_two_circles(a: &Circle2, b: &Circle2, tol: Tolerances) -> Vec<Axis2> {
     let e = b.centre() - a.centre();
@@ -293,12 +294,18 @@ pub fn lines_tangent_to_two_circles(a: &Circle2, b: &Circle2, tol: Tolerances) -
     let mut out = Vec::new();
     // Unit normal n with n·(ca − cb) = s_a·ra − s_b·rb, d = n·ca − s_a·ra.
     for (sa, sb) in [(1.0, 1.0), (1.0, -1.0)] {
-        let k = (sa * a.radius() - sb * b.radius()) / distance;
-        if k.abs() > 1.0 - tol.angular() {
+        let reach = sa * a.radius() - sb * b.radius();
+        // How far the circles stand from touching for this pair: past it
+        // there is no line, at it the pair is one.
+        let gap = reach.abs() - distance;
+        if gap > tol.confusion() {
             continue;
         }
-        let across_part = (1.0 - k * k).sqrt();
-        for flip in [1.0, -1.0] {
+        let touching = gap.abs() <= tol.confusion();
+        let k = (reach / distance).clamp(-1.0, 1.0);
+        let across_part = if touching { 0.0 } else { (1.0 - k * k).sqrt() };
+        let flips: &[f64] = if touching { &[1.0] } else { &[1.0, -1.0] };
+        for &flip in flips {
             let n = along * -k + across * (across_part * flip);
             let d = n.dot(a.centre().to_vector()) - sa * a.radius();
             // The line's own frame: direction perpendicular to n, located at
@@ -878,6 +885,25 @@ mod tests {
         for line in &lines {
             assert!((line.distance_to(a.centre()) - 2.0).abs() < 1e-9);
             assert!((line.distance_to(b.centre()) - 1.0).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn touching_circles_have_three_tangent_lines() {
+        // Touching from outside: the external pair and the line through the
+        // touching point; from inside, that line alone.
+        for (b, expected, touch) in [
+            (circle(3.0, 0.0, 2.0), 3, Point2::new(1.0, 0.0)),
+            (circle(1.0, 0.0, 2.0), 1, Point2::new(-1.0, 0.0)),
+        ] {
+            let a = circle(0.0, 0.0, 1.0);
+            let lines = lines_tangent_to_two_circles(&a, &b, T);
+            assert_eq!(lines.len(), expected, "{b:?}");
+            for line in &lines {
+                assert!((line.distance_to(a.centre()) - a.radius()).abs() < 1e-9);
+                assert!((line.distance_to(b.centre()) - b.radius()).abs() < 1e-9);
+            }
+            assert!(lines.iter().any(|line| line.distance_to(touch) < 1e-9));
         }
     }
 

@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Touching circles have their third tangent line.**
+  `lines_tangent_to_two_circles` dropped a pair of tangents that had
+  closed into one, so circles touching from outside got two lines instead
+  of three and circles touching from inside none instead of one.
+
 - **Polynomial roots keep their double roots.** A tangency's double root
   sits where the discriminant is zero only up to rounding, and the quadratic
   and cubic solvers dropped it when rounding left the discriminant a hair
