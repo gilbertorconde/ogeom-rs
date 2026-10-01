@@ -1602,9 +1602,14 @@ impl Curve3d for BSplineCurve {
         }
     }
 
+    /// A periodic spline closes by construction; any other where its ends
+    /// meet, which its end control points say only for clamped knots.
     fn is_closed(&self, tol: Tolerances) -> bool {
-        let (first, last) = (self.control[0], self.control[self.control.len() - 1]);
-        first.point().is_equal(last.point(), tol)
+        self.periodic
+            || match (self.start(tol), self.end(tol)) {
+                (Ok(a), Ok(b)) => a.is_equal(b, tol),
+                _ => false,
+            }
     }
 
     fn is_periodic(&self) -> bool {
@@ -1983,6 +1988,25 @@ mod tests {
     use ogeom_math::{Direction, Frame};
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// A spline whose ends meet is closed, periodic or unclamped, and the
+    /// surface it sweeps closes with it.
+    #[test]
+    fn a_periodic_spline_is_closed() {
+        let ring = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(10.0, 0.0, 1.0),
+            Point::new(10.0, 10.0, 2.0),
+            Point::new(0.0, 10.0, 0.0),
+        ];
+        let c: Curve = BSplineCurve::periodic(&ring, 3, T).unwrap().into();
+        assert!(c.is_periodic() && c.is_closed(T));
+        let sweep: crate::surface::SurfaceGeometry =
+            crate::surface::ExtrusionSurface::new(c, Direction::Z, 10.0)
+                .unwrap()
+                .into();
+        assert!(crate::traits::Surface::is_closed_u(&sweep, T));
+    }
 
     /// A conical helix's arc length is the integral of its speed, which
     /// grows with its radius: the sum of fine chords agrees with it.

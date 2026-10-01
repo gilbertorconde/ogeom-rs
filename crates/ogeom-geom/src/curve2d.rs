@@ -718,10 +718,13 @@ impl Curve2d for BSpline2d {
         CurveKind::BSpline
     }
 
+    /// Where its ends meet, which its end control points say only for
+    /// clamped knots.
     fn is_closed(&self, tol: Tolerances) -> bool {
-        self.control[0]
-            .point()
-            .is_equal(self.control[self.control.len() - 1].point(), tol)
+        match (self.start(tol), self.end(tol)) {
+            (Ok(a), Ok(b)) => a.is_equal(b, tol),
+            _ => false,
+        }
     }
 
     fn is_periodic(&self) -> bool {

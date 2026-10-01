@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A periodic spline is closed.** `is_closed` on a B-spline compared its
+  end control points, which are its ends only for clamped knots: a
+  periodic spline, and a surface extruded from one, read as open. A
+  periodic spline is closed, and any other is closed where its ends meet.
+
 - **A conical helix measures its own length.** `HelixCurve::arc_length`
   ignored the taper and reported a cylindrical helix's length; a conical
   helix's speed grows with its radius, and its length now integrates it
