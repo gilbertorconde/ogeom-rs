@@ -53,6 +53,12 @@ fn obj_and_ply_come_back_as_the_mesh_they_were() {
     // A binary PLY is refused by name rather than mis-parsed.
     let binary = written.replace("format ascii 1.0", "format binary_little_endian 1.0");
     assert!(ogeom::io::mesh_formats::read_ply(&binary).is_err());
+    // So is a face naming a vertex the file does not have.
+    let astray = "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\n\
+                  property float y\nproperty float z\nelement face 1\n\
+                  property list uchar uint vertex_indices\nend_header\n\
+                  0 0 0\n1 0 0\n0 1 0\n3 0 1 7\n";
+    assert!(ogeom::io::mesh_formats::read_ply(astray).is_err());
 }
 
 #[test]

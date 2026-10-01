@@ -13,6 +13,10 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A PLY face naming a missing vertex is refused.** `read_ply` indexed
+  the vertices with the file's face indices unchecked and panicked on one
+  past the end; it refuses the file by name, as `read_obj` does.
+
 - **Flat caps of a fine mesh far from the origin stay whole.** A finely
   meshed part stored in single precision a long way out broke its flat
   faces into dozens: their small triangles lean past the coplanar angle by

@@ -494,8 +494,9 @@ fn corner(
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-/// header is not a PLY header, the format is binary, or the body does not
-/// match what the header promised.
+/// header is not a PLY header, the format is binary, the body does not
+/// match what the header promised, or a face names a vertex that is not
+/// there.
 pub fn read_ply(text: &str) -> ogeom_core::OgeomResult<Triangulation> {
     let mut lines = text.lines();
     if lines.next().map(str::trim) != Some("ply") {
@@ -586,6 +587,17 @@ pub fn read_ply(text: &str) -> ogeom_core::OgeomResult<Triangulation> {
     }
     if positions.is_empty() {
         ogeom_core::ogeom_bail!(Construction, "the file carries no vertices");
+    }
+    if let Some(past) = triangles
+        .iter()
+        .flatten()
+        .find(|&&v| v as usize >= positions.len())
+    {
+        ogeom_core::ogeom_bail!(
+            Construction,
+            "a face names vertex {past}, past the {} the file has",
+            positions.len()
+        );
     }
     // Normals the file did not give come from the triangles, as in OBJ.
     let mut resolved = normals;
