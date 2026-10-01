@@ -10,7 +10,7 @@ use ogeom_mesh::Deflection;
 const T: Tolerances = Tolerances::millimetres();
 
 /// Re-dress every `EDGE_CURVE`'s geometry in a `SURFACE_CURVE` wrapper, the
-/// way OCCT-derived exporters write their files.
+/// way exporters derived from the reference kernel write their files.
 fn dressed(text: &str) -> String {
     let mut highest: u64 = 0;
     for line in text.lines() {
