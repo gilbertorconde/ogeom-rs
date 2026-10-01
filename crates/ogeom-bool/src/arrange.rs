@@ -382,12 +382,14 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
         }
     }
 
-    // The boundary strands' polylines, for the material test.
+    // The boundary strands' polylines, for the material test, each with
+    // its box: a face with hundreds of holes asks it of every hole's disc.
     let material: Vec<&[Point2]> = live
         .iter()
         .filter(|s| s.boundary)
         .map(|s| s.polyline.as_slice())
         .collect();
+    let material = Boxed::new(&material);
 
     // The nodes each cycle passes through: a hole that shares one with a
     // positive cycle is the same component, not a hole in it. Asked of the
@@ -425,43 +427,56 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
     };
     // A point outside a polygon's box is outside the polygon.
     let contains = |k: usize, p: Point2| within(&positive_box[k], p) && inside(&positives[k].1, p);
+    // A hole belongs to the smallest positive cycle strictly containing
+    // it. Sharing a node means same component, not a hole. Each hole's
+    // containers are found once: a face with hundreds of holes has as many
+    // positive cycles (each hole's own disc), and asking every pair about
+    // every other cycle is the square of that again.
+    let containers: Vec<Vec<usize>> = negatives
+        .iter()
+        .enumerate()
+        .map(|(hi, (_, hole))| {
+            (0..positives.len())
+                .filter(|&oi| {
+                    contains(oi, hole[0]) && !meet(&negative_nodes[hi], &positive_nodes[oi])
+                })
+                .collect()
+        })
+        .collect();
+    let mut holes_of: Vec<Vec<usize>> = vec![Vec::new(); positives.len()];
+    for (hi, held) in containers.iter().enumerate() {
+        for &pi in held {
+            let direct = !held.iter().any(|&oi| {
+                oi != pi
+                    && contains(pi, positives[oi].1[0])
+                    && positive_area[oi] < positive_area[pi]
+            });
+            if direct {
+                holes_of[pi].push(hi);
+            }
+        }
+    }
     let mut pieces = Vec::new();
     for (pi, (cycle, line)) in positives.iter().enumerate() {
         let mut rings = vec![traversals(cycle, &live)];
         let mut rings_outline = vec![line.clone()];
-        for (hi, (hole_cycle, hole)) in negatives.iter().enumerate() {
-            // A hole belongs to the smallest positive cycle strictly
-            // containing it. Sharing a node means same component, not a hole.
-            if meet(&negative_nodes[hi], &positive_nodes[pi]) {
-                continue;
-            }
-            if !contains(pi, hole[0]) {
-                continue;
-            }
-            let direct = !(0..positives.len()).any(|oi| {
-                oi != pi
-                    && contains(pi, positives[oi].1[0])
-                    && positive_area[oi] < positive_area[pi]
-                    && contains(oi, hole[0])
-                    && !meet(&negative_nodes[hi], &positive_nodes[oi])
-            });
-            if direct {
-                rings.push(traversals(hole_cycle, &live));
-                rings_outline.push(hole.clone());
-            }
+        for &hi in &holes_of[pi] {
+            let (hole_cycle, hole) = &negatives[hi];
+            rings.push(traversals(hole_cycle, &live));
+            rings_outline.push(hole.clone());
         }
         let interiors = interior_points(&rings_outline, snap);
         let Some(interior) = interiors.first().copied() else {
             continue;
         };
-        if !inside_many(&material, interior) {
+        if !material.inside(interior) {
             continue;
         }
         // Only probes inside the material this arrangement bounds are of
         // any use to a caller asking "where does this piece stand".
         let interiors: Vec<Point2> = interiors
             .into_iter()
-            .filter(|p| inside_many(&material, *p))
+            .filter(|p| material.inside(*p))
             .collect();
         pieces.push(Piece {
             rings,
@@ -586,6 +601,46 @@ pub(crate) fn inside_rings(rings: &[Vec<Point2>], p: Point2) -> bool {
     rings.iter().fold(false, |acc, ring| acc != inside(ring, p))
 }
 
+/// Polylines with their boxes, for asking [`inside_many`] of many points.
+struct Boxed<'a> {
+    lines: &'a [&'a [Point2]],
+    boxes: Vec<(f64, f64, f64)>,
+}
+
+impl<'a> Boxed<'a> {
+    fn new(lines: &'a [&'a [Point2]]) -> Self {
+        let boxes = lines
+            .iter()
+            .map(|line| {
+                line.iter().fold(
+                    (f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
+                    |(low_y, high_y, high_x), q| (low_y.min(q.y), high_y.max(q.y), high_x.max(q.x)),
+                )
+            })
+            .collect();
+        Self { lines, boxes }
+    }
+
+    /// [`inside_many`], skipping the polylines the ray cannot cross: one
+    /// wholly above or below the point's height, where no segment
+    /// straddles it, or wholly left of it, where the exact side test puts
+    /// the point right of every segment that does.
+    fn inside(&self, p: Point2) -> bool {
+        let mut inside = false;
+        for (line, &(low_y, high_y, high_x)) in self.lines.iter().zip(&self.boxes) {
+            if low_y > p.y || high_y <= p.y || high_x < p.x {
+                continue;
+            }
+            for w in line.windows(2) {
+                if ray_crosses_segment::<Exact>(w[0], w[1], p) {
+                    inside = !inside;
+                }
+            }
+        }
+        inside
+    }
+}
+
 /// Even-odd containment against open polylines that jointly close.
 ///
 /// The strands are pieces of closed rings, so counting crossings segment by
@@ -646,18 +701,34 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
     // any plane through both) puts that interval inside the cusp, where
     // the "interior" point is within rounding of the boundary and reads as
     // lying on it.
+    let segments = Bands::new(rings);
     let mut candidates: Vec<(f64, Point2)> = Vec::new();
-    for (gap, level) in levels {
+    // A candidate's room is never more than its scanline's gap, and the
+    // scanlines come widest first. Once the candidates roomier than the
+    // next scanline's gap already settle every probe, no later scanline can
+    // change the choice, and the rest (on a face with hundreds of holes,
+    // thousands of scanlines each crossing every segment) are not cast.
+    let mut checked_at = 1;
+    for (index, &(gap, level)) in levels.iter().enumerate() {
+        if index == checked_at {
+            checked_at *= 2;
+            let mut settled: Vec<(f64, Point2)> = candidates
+                .iter()
+                .copied()
+                .filter(|(room, _)| *room > gap)
+                .collect();
+            settled.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
+            if choose(&settled, snap).1 {
+                break;
+            }
+        }
         if gap <= snap {
             continue;
         }
         let mut crossings: Vec<f64> = Vec::new();
-        for ring in rings {
-            for i in 0..ring.len() {
-                let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
-                if (a.y > level) != (b.y > level) {
-                    crossings.push((b.x - a.x).mul_add((level - a.y) / (b.y - a.y), a.x));
-                }
+        for &(a, b) in segments.near(level) {
+            if (a.y > level) != (b.y > level) {
+                crossings.push((b.x - a.x).mul_add((level - a.y) / (b.y - a.y), a.x));
             }
         }
         crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
@@ -683,7 +754,6 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
             }
         }
     }
-    candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
 
     // Room first, but never room alone. Ranked purely by width, every scanline
     // of a piece symmetric about a chart-vertical line offers its own midpoint
@@ -697,10 +767,84 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
     // rest are all that can follow them: a face with hundreds of holes
     // offers hundreds of thousands of candidates, and comparing each with
     // every column already chosen costs seconds for nine points.
-    const PROBES: usize = 9;
+    candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
+    choose(&candidates, snap).0
+}
+
+/// The rings' segments filed by height in bands, so a scanline is met
+/// only by the segments of its own band: a face with hundreds of holes
+/// casts thousands of scanlines.
+struct Bands {
+    low: f64,
+    height: f64,
+    bands: Vec<Vec<(Point2, Point2)>>,
+}
+
+impl Bands {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "a count of bands"
+    )]
+    fn new(rings: &[Vec<Point2>]) -> Self {
+        let segments: Vec<(Point2, Point2)> = rings
+            .iter()
+            .flat_map(|ring| (0..ring.len()).map(move |i| (ring[i], ring[(i + 1) % ring.len()])))
+            .collect();
+        let (low, high) = segments
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), (a, b)| {
+                (lo.min(a.y).min(b.y), hi.max(a.y).max(b.y))
+            });
+        let count = ((segments.len() as f64).sqrt() as usize).max(1);
+        let height = if high > low {
+            (high - low) / count as f64
+        } else {
+            1.0
+        };
+        let mut out = Self {
+            low,
+            height,
+            bands: vec![Vec::new(); count],
+        };
+        for (a, b) in segments {
+            let (from, to) = (out.band(a.y.min(b.y)), out.band(a.y.max(b.y)));
+            for band in &mut out.bands[from..=to] {
+                band.push((a, b));
+            }
+        }
+        out
+    }
+
+    /// The band a height falls in, clamped to the bands there are.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a band index"
+    )]
+    fn band(&self, y: f64) -> usize {
+        let at = ((y - self.low) / self.height).floor().max(0.0) as usize;
+        at.min(self.bands.len() - 1)
+    }
+
+    /// The segments that may straddle `level`, in the rings' order.
+    fn near(&self, level: f64) -> &[(Point2, Point2)] {
+        &self.bands[self.band(level)]
+    }
+}
+
+/// How many interior points a piece offers.
+const PROBES: usize = 9;
+
+/// The probes [`interior_points`] offers from its ranked candidates: the
+/// roomiest at each distinct column first, then the rest in width order;
+/// and whether the columns alone filled them, so that no candidate ranked
+/// lower could change the choice.
+fn choose(candidates: &[(f64, Point2)], snap: f64) -> (Vec<Point2>, bool) {
     let mut chosen: Vec<(f64, Point2)> = Vec::new();
     let mut rest: Vec<(f64, Point2)> = Vec::new();
-    for candidate in candidates {
+    for &candidate in candidates {
         if chosen.len() == PROBES {
             break;
         }
@@ -715,9 +859,10 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
             chosen.push(candidate);
         }
     }
+    let full = chosen.len() == PROBES;
     chosen.extend(rest);
     chosen.truncate(PROBES);
-    chosen.into_iter().map(|(_, p)| p).collect()
+    (chosen.into_iter().map(|(_, p)| p).collect(), full)
 }
 
 #[cfg(test)]

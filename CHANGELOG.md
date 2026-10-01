@@ -551,6 +551,18 @@ bump may break the API and a patch bump may not.
   `ogeom-bool` used an `if let` guard on a match arm, which Rust 1.90
   refuses; 0.6.0 built only on newer compilers.
 
+### Changed
+
+- **A boolean on a face with hundreds of holes is several times faster.**
+  Splitting a face picked its probe points with a scanline per vertex
+  height crossing every segment, and placed each hole by asking every
+  pair of cycles about every other; on a plate with four hundred bores a
+  small pocket took 580 ms, most of it on faces the pocket never touches.
+  The scanlines now stop once their choice is settled and meet only the
+  segments at their height, each hole's containers are found once, and
+  the material test skips polylines the ray cannot cross. The probes and
+  pieces are the same; the pocket takes 170 ms.
+
 ## [0.6.0] - 2026-09-30
 
 A minor release: `cargo semver-checks` against 0.5.1 finds one breaking
