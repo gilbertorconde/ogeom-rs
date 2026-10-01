@@ -2734,8 +2734,13 @@ fn fill(
             }
 
             // Whether the section at `t` lies inside each face's trim.
-            let inside_each = |t: f64| -> OgeomResult<[bool; 2]> {
-                let tf = if section.closed { fold(t, domain) } else { t };
+            // Whether a piece of the section lies inside each face. A planar
+            // face with a curved rim is asked exactly at the piece's middle,
+            // and where the middle stands too close to the rim to say (a
+            // sliver a few microns wide, deepest at one end of the piece),
+            // at points either side of it; the polyline answers only where
+            // no point along the piece is clear of the rim.
+            let inside_over = |lo: f64, hi: f64| -> OgeomResult<[bool; 2]> {
                 let la: Vec<&[Point2]> = outlines_a[section.face_a]
                     .iter()
                     .map(Vec::as_slice)
@@ -2744,21 +2749,36 @@ fn fill(
                     .iter()
                     .map(Vec::as_slice)
                     .collect();
-                let ua = fold_inside(
-                    section.pc_a.point_at(tf, tol)?,
-                    &ga.faces[section.face_a].surface,
-                    &la,
-                );
-                let ub = fold_inside(
-                    section.pc_b.point_at(tf, tol)?,
-                    &gb.faces[section.face_b].surface,
-                    &lb,
-                );
                 let face_a = &ga.faces[section.face_a];
                 let face_b = &gb.faces[section.face_b];
+                let at = |t: f64| -> OgeomResult<(Point2, Point2)> {
+                    let tf = if section.closed { fold(t, domain) } else { t };
+                    Ok((
+                        fold_inside(section.pc_a.point_at(tf, tol)?, &face_a.surface, &la),
+                        fold_inside(section.pc_b.point_at(tf, tol)?, &face_b.surface, &lb),
+                    ))
+                };
+                let mid = f64::midpoint(lo, hi);
+                let (ua, ub) = at(mid)?;
+                let mut held = [
+                    inside_plane_exactly(face_a, ua, tol),
+                    inside_plane_exactly(face_b, ub, tol),
+                ];
+                for k in [3.0, 5.0, 2.0, 6.0, 1.0, 7.0] {
+                    if held.iter().all(Option::is_some) {
+                        break;
+                    }
+                    let (va, vb) = at(lo + (hi - lo) * k / 8.0)?;
+                    if held[0].is_none() {
+                        held[0] = inside_plane_exactly(face_a, va, tol);
+                    }
+                    if held[1].is_none() {
+                        held[1] = inside_plane_exactly(face_b, vb, tol);
+                    }
+                }
                 Ok([
-                    inside_plane_exactly(face_a, ua, tol).unwrap_or_else(|| inside_many(&la, ua)),
-                    inside_plane_exactly(face_b, ub, tol).unwrap_or_else(|| inside_many(&lb, ub)),
+                    held[0].unwrap_or_else(|| inside_many(&la, ua)),
+                    held[1].unwrap_or_else(|| inside_many(&lb, ub)),
                 ])
             };
 
@@ -2772,7 +2792,7 @@ fn fill(
                 } else {
                     mid
                 };
-                let held = inside_each(mid)?;
+                let held = inside_over(lo, hi)?;
                 if *DEBUG_WIRE {
                     let tf = if section.closed {
                         fold(mid, domain)

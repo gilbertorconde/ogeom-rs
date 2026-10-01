@@ -1160,6 +1160,48 @@ fn drums_a_thousandth_apart_keep_their_volumes() {
     }
 }
 
+/// Two drums whose axes stand the weld distance apart, or a hair more,
+/// overlapping half their height. Where the wider cap meets the other
+/// drum it leaves a crescent that thin, and the rim's arc across it lies
+/// inside the cap by the full offset only at its middle angle: asked
+/// where it lies inside by less than the boundary's own doubt, the arc
+/// still counts as inside, and each drum is split along the two lines the
+/// other crosses it on.
+#[test]
+fn drums_the_weld_distance_apart_in_axis_are_split_apart() {
+    let at =
+        |x: f64, z: f64| Frame::new(Point::new(x, 0.0, z), Direction::Z, Direction::X, T).unwrap();
+    for offset in [1e-5, 1.03e-5, 1.06e-5] {
+        let mut model = Model::new();
+        let low = ogeom::algo::make_cylinder(&mut model, at(0.0, 0.0), 2.0, 4.0, T)
+            .unwrap()
+            .shape;
+        let high = ogeom::algo::make_cylinder(&mut model, at(offset, 2.0), 2.0, 4.0, T)
+            .unwrap()
+            .shape;
+        let va = volume(&model, &low);
+        let common = ogeom::boolean::common(&mut model, &low, &high, T)
+            .unwrap_or_else(|e| panic!("{offset}: common: {e}"));
+        let cut = ogeom::boolean::cut(&mut model, &low, &high, T)
+            .unwrap_or_else(|e| panic!("{offset}: cut: {e}"));
+        let fuse = ogeom::boolean::fuse(&mut model, &low, &high, T)
+            .unwrap_or_else(|e| panic!("{offset}: fuse: {e}"));
+        for (name, made) in [("common", &common), ("cut", &cut), ("fuse", &fuse)] {
+            let diagnosis = ogeom::algo::check(&model, &made.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{offset}: {name}: {diagnosis}");
+        }
+        let (c, k) = (volume(&model, &common.shape), volume(&model, &cut.shape));
+        assert!((k + c - va).abs() < 1e-6, "{offset}: {k} + {c}");
+        let lens = 8.0 * (offset / 4.0).acos() - offset / 2.0 * (16.0 - offset * offset).sqrt();
+        assert!((c - 2.0 * lens).abs() < 1e-6, "{offset}: {c}");
+        // The fuse keeps both crescents as faces of their own.
+        let faces = explore_unique(&model, &fuse.shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(faces, 6, "{offset}");
+    }
+}
+
 /// Faces that meet the other solid's within tolerance without being its
 /// coincident partners: a drill whose wall pokes a tenth of a micron out of
 /// a box side, a ball resting a tenth of a micron into a box top, and a box

@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Drums the weld distance apart in axis.** Two drums whose axes stood
+  1e-5 to about 1.07e-5 apart refused every operation. The rim arc across
+  the thin crescent one leaves on the other's cap was asked whether it lies
+  inside the cap only at its middle, where it lies inside by less than the
+  boundary's own doubt; it was dropped and the drum was not split. A piece
+  is now asked at points either side of its middle as well.
+
 - **A thread groove cut into a rod depended on its start angle.** A
   helical sweep cut into a body of revolution failed at some angles about
   the axis ("edge N ends where edge N+1 does not begin", or a shell that
