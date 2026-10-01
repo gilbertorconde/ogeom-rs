@@ -96,7 +96,10 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
   - Near-coaxial drums (r 2 against 2 + d, d up to 1e-3): the wider drum's cap splits into an annulus d wide and a disc, but the rings are fixed-count chord polylines whose sag (about 2.4e-3 on the r = 2 section) exceeds d, so the annulus's scanline probe lands in the true hole and the annulus reads In. Needs adaptive strand sampling against the piece width, or probes checked against the exact curves.
   - A box slid by exactly 1e-6 on another: the slide equals the strand doubt (ten confusion distances), and only that coincidence refuses; 9e-7 and 1.1e-6 work. Slides under the 1e-5 weld floor weld the sliver away within the vertex tolerance they then carry.
   - A stacked box tilted 1e-7 to 1e-4 rad about a horizontal axis: the contact faces are near-coplanar without being coincident, and the pieces within tolerance of the other face have no coincident partner to classify against.
-- [ ] **P2.** Fillet refusals: a pipe tee junction loop, all edges of an L-bracket, a full round of a box.
+- [ ] **P2.** Fillet refusals: a pipe tee junction loop, all edges of an L-bracket, a full round of a box. Diagnosed 2026-10-01, still open:
+  - Full round of a 2 x 2 x 1 box at r = 0.5: the two blends on each thin side meet along its middle and consume it, and the chain refuses ("an earlier blend in the chain consumed this edge"); r = 0.49 works. A full round is its own topology, the side face reduced to the seam between two blends.
+  - All 18 edges of an L-bracket at r = 0.1: refuses with an open shell in one edge order and "an edge shared by 4 faces" in the other, so an intermediate blend at the step's mixed convex and concave corners leaves a non-manifold solid. The chamfer of the same 18 edges works.
+  - The junction loop of a drum tee (r 1 and 0.6): the boolean trimming the rolling-ball band along the marched loop refuses ("kept pieces did not close").
 - [x] **P3.** `make_prism_tapered` rejects a face straight from `make_face` (no pcurves attached first). (acb9aed)
 - [x] **P4.** `make_polyhedron` takes a face's normal from its first three points and refuses a face starting with three collinear points; `medial_axis` refuses a polygon with a collinear vertex. (79b9658)
 - [x] **P5.** `elevate_degree` leaves the knots it introduced (C0 where C2), contrary to its doc. (ba5ce5f)
