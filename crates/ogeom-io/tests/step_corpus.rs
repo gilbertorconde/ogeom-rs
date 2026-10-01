@@ -57,7 +57,7 @@ fn the_smallest_nist_part_reads_into_a_closed_solid() {
     assert_eq!(
         import.report.warnings.len(),
         2,
-        "two torus fillets await re-anchoring: {:?}",
+        "the two torus fillets warn that no seam was synthesised, and mesh regardless: {:?}",
         import.report.warnings
     );
 }

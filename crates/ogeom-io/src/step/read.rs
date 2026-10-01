@@ -1890,7 +1890,6 @@ impl<'a> Reader<'a> {
         Ok((loop_id, forward))
     }
 
-    #[allow(clippy::too_many_arguments)]
     /// Stretch a surface's parameter window to hold the edges that bound it.
     ///
     /// The window a reader gives a plane, a cylinder or a cone is a
@@ -3876,12 +3875,6 @@ fn closed_ring_edges(model: &Model, wires: &[Shape]) -> OgeomResult<Vec<(Shape, 
         out.push((edge, a));
     }
     Ok(out)
-}
-
-/// Unused-import guard for kinds only touched via traits.
-#[allow(dead_code)]
-fn _keep(p: PlanarCurve) -> PlanarCurve {
-    p
 }
 
 /// The window of `curve` between the feet of two vertices that stand on it

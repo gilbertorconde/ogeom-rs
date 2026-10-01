@@ -78,7 +78,6 @@ pub struct Entity {
     pub colour: i64,
     /// The level (layer) number, or a negated pointer to a level property
     /// listing several; the reader maps each level to a document layer.
-    #[allow(dead_code, reason = "directory field, not yet mapped to layers")]
     pub level: i64,
     /// The four two-digit fields of the status word, as one number.
     pub status: i64,
