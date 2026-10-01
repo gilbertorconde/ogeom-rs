@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A scaled body meshes to the chord where it stands.** A face is drawn
+  in its own frame and placed after, so a body scaled by its placement
+  was meshed to the caller's chord before the scale stretched it: ten
+  times the chord at a tenfold scale, and mass properties two percent off.
+  The chord is now taken where the face stands.
+
 - **Tight bounds reach a sphere's and a torus's extremes.** In a general
   frame `tight_bounds` could come out up to 45 microns small on a sphere or
   a torus, its descent stopping short of the extreme. Their extremes are

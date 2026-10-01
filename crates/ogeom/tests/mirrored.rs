@@ -312,3 +312,43 @@ fn booleans_with_mirrored_curved_solids_match_the_unmirrored_images() {
         }
     }
 }
+
+/// A body scaled by a placement is meshed to the chord where it stands: a
+/// ball scaled tenfold comes out as the ball drawn at that size, not as the
+/// small ball's mesh stretched, whose chords stand ten times off.
+#[test]
+fn a_scaled_body_meshes_to_the_chord_where_it_stands() {
+    let mut model = ogeom_topo::Model::new();
+    let small = ogeom_algo::make_sphere(&mut model, Frame::WORLD, 7.0, T)
+        .unwrap()
+        .shape;
+    let scaled = ogeom_algo::transformed(
+        &mut model,
+        &small,
+        ogeom_math::Transform::scaling(Point::ORIGIN, 10.0, T).unwrap(),
+    )
+    .unwrap()
+    .shape;
+    let large = ogeom_algo::make_sphere(&mut model, Frame::WORLD, 70.0, T)
+        .unwrap()
+        .shape;
+    let deflection = ogeom_mesh::Deflection::default();
+    let mesh = |shape| ogeom_mesh::triangulate(&model, shape, deflection, T).unwrap();
+    let (a, b) = (mesh(&scaled), mesh(&large));
+    let worst = |m: &ogeom_topo::Triangulation| {
+        m.triangles
+            .iter()
+            .map(|t| {
+                let [p, q, r] = t.map(|i| m.positions[i as usize].to_vector());
+                let centroid = (p + q + r) / 3.0;
+                70.0 - centroid.magnitude()
+            })
+            .fold(0.0_f64, f64::max)
+    };
+    assert!(
+        (worst(&a) - worst(&b)).abs() < deflection.chord * 0.1,
+        "{} against {}",
+        worst(&a),
+        worst(&b)
+    );
+}

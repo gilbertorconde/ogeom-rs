@@ -152,6 +152,23 @@ fn triangulate_reporting(
 /// if it is narrower than a few of the caller's.
 type Walked = (Trimming, Option<f64>);
 
+/// The deflection a face is drawn to in its own frame: the caller's chord
+/// is a distance where the face stands, and a placement that scales the
+/// face scales every chord drawn before it with it.
+fn in_own_frame(model: &Model, face: &Shape, deflection: Deflection) -> Deflection {
+    let scale = face
+        .transform(model.datums())
+        .map_or(1.0, |t| t.scale_factor().abs());
+    if scale > 0.0 && scale.is_finite() && (scale - 1.0).abs() > f64::EPSILON {
+        Deflection {
+            chord: deflection.chord / scale,
+            ..deflection
+        }
+    } else {
+        deflection
+    }
+}
+
 /// [`triangulate_reporting`] with the rings already walked, where the
 /// caller has them and none of the face's edges were told to draw finer
 /// since; the rings depend on nothing else.
@@ -167,6 +184,7 @@ fn triangulate_reporting_from(
     if model.kind_of(face)? != ShapeType::Face {
         ogeom_bail!(Construction, "expected a face");
     }
+    let deflection = in_own_frame(model, face, deflection);
     let Some(node) = model.node(face) else {
         ogeom_bail!(Dangling, "face is not in this model");
     };
@@ -563,6 +581,7 @@ fn walk_for_chords(
             let Some(surface) = read_model.geometry().surface(data.surface) else {
                 return Ok(None);
             };
+            let deflection = in_own_frame(read_model, face, deflection);
             let trim = trimming_rings(
                 read_model,
                 face,
@@ -897,6 +916,7 @@ fn face_chords(
     deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<EdgeChords> {
+    let deflection = in_own_frame(model, face, deflection);
     let mut finer = EdgeChords::new();
     let mut chord = deflection.chord;
     // A face narrower than a few chords first: its edges drawn to a
