@@ -4900,6 +4900,38 @@ static DEBUG_WIRE: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("OGEOM_DEBUG_WIRE").is_ok());
 static DEBUG_STRANDS: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("OGEOM_DEBUG_STRANDS").is_ok());
+thread_local! {
+    /// Whether a piece read on the other solid's boundary, with no coincident
+    /// partner, is settled by asking just off it on both sides. Off on the
+    /// first attempt, so a configuration the nested fallback answers exactly
+    /// keeps that answer; on for the second. Read once per boolean on the
+    /// calling thread.
+    static SETTLE_FROM_BOTH_SIDES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// An operation run once as it always was, and, where it refuses a piece on
+/// the other solid's boundary with no coincident partner, once more with
+/// such pieces settled from both sides of them.
+fn settled(mut attempt: impl FnMut() -> OgeomResult<Built>) -> OgeomResult<Built> {
+    let refusal = match attempt() {
+        Err(e) if e.to_string().contains("no coincident partner face") => e,
+        other => return other,
+    };
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            SETTLE_FROM_BOTH_SIDES.set(false);
+        }
+    }
+    SETTLE_FROM_BOTH_SIDES.set(true);
+    let _reset = Reset;
+    match attempt() {
+        Ok(built) => Ok(built),
+        Err(ogeom_core::OgeomError::Cancelled) => Err(ogeom_core::OgeomError::Cancelled),
+        Err(_) => Err(refusal),
+    }
+}
+
 static ARRANGE_DEBUG: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("OGEOM_ARRANGE_DEBUG").is_ok());
 
@@ -4979,6 +5011,9 @@ fn audit_fill_equivalence(
 }
 
 fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<GeneralFused> {
+    // Read here, on the caller's thread: the pieces are classified on
+    // worker threads, which do not share it.
+    let settle = SETTLE_FROM_BOTH_SIDES.get();
     ogeom_core::progress::stage("boolean: gather");
     let ga = gather(model, a, tol)?;
     let gb = gather(model, b, tol)?;
@@ -5982,6 +6017,57 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                                     continue;
                                 }
                                 Containment::On => {}
+                            }
+                            // Still on it, on the boolean's second attempt
+                            // (see [`settled`]): a face all but coplanar with
+                            // the other's, crossing it at a hair's angle, keeps
+                            // a sliver within tolerance of it with no
+                            // coincident partner. Just off the piece on both
+                            // sides the other solid answers plainly: the
+                            // same on both, the piece is that; inside only
+                            // on the piece's own material side, the other's
+                            // face runs along it backed the same way, the
+                            // aligned contact, which the first solid's piece
+                            // speaks for; inside only beyond it, opposed.
+                            if settle {
+                                let off = own_normal * (tol.confusion() * 1e3);
+                                let side = |q: Point| {
+                                    ogeom_algo::classify_in_solid_exact_banded(
+                                        model,
+                                        other,
+                                        q,
+                                        tol.confusion() * 10.0,
+                                        tol,
+                                    )
+                                };
+                                let (beyond, within) = (side(probe + off)?, side(probe - off)?);
+                                let read = match (beyond, within) {
+                                    (Containment::In, Containment::In) => {
+                                        Some((PieceState::In, false))
+                                    }
+                                    (Containment::Out, Containment::Out) => {
+                                        Some((PieceState::Out, false))
+                                    }
+                                    (Containment::Out, Containment::In) => {
+                                        Some((PieceState::OnAligned, !from_a))
+                                    }
+                                    (Containment::In, Containment::Out) => {
+                                        Some((PieceState::OnOpposed, false))
+                                    }
+                                    _ => None,
+                                };
+                                if let Some((state, covered)) = read {
+                                    pieces.push(FacePiece {
+                                        from_a,
+                                        face: fi,
+                                        rings: piece.rings,
+                                        outlines: piece.outlines,
+                                        probe,
+                                        state,
+                                        covered,
+                                    });
+                                    continue;
+                                }
                             }
                             if *DEBUG_WIRE {
                                 eprintln!(
@@ -7548,6 +7634,10 @@ fn half_space_plane(
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) for arguments
 /// that are not closed solids.
 pub fn fuse(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    settled(|| fuse_once(model, a, b, tol))
+}
+
+fn fuse_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
     if is_half_space(model, a, tol)? || is_half_space(model, b, tol)? {
         ogeom_bail!(
             Construction,
@@ -7850,6 +7940,10 @@ fn or_nested(
 ///
 /// As [`fuse`].
 pub fn common(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    settled(|| common_once(model, a, b, tol))
+}
+
+fn common_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
     let (a, b) = (
         &resolved_half_space(model, a, b, tol)?,
         &resolved_half_space(model, b, a, tol)?,
@@ -7888,6 +7982,10 @@ pub fn common(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeom
 ///
 /// As [`fuse`].
 pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    settled(|| cut_once(model, a, b, tol))
+}
+
+fn cut_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
     let (a, b) = (
         &resolved_half_space(model, a, b, tol)?,
         &resolved_half_space(model, b, a, tol)?,

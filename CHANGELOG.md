@@ -13,6 +13,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Faces within tolerance of the other solid's.** A drill whose wall
+  pokes a tenth of a micron out of a box side, a ball resting a tenth of a
+  micron into a box top, and a box stacked on another and tilted a
+  microradian all refused: a piece lay on the other solid's boundary with
+  no coincident partner face. Where that refusal stands after the nested
+  fallback, the boolean now runs once more, settling each such piece by
+  asking just off it on both sides: outside or inside on both, it is
+  that; inside only on its own material side, the other's face runs along
+  it backed the same way.
+
 - **Small corner rounds and an L-bracket's every edge.** Rounding a
   block's three edges at a corner refused at any radius up to 0.1: the
   ball patch's rim leaves each sharp edge tangentially, and an arc stated

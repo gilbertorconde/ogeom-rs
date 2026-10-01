@@ -1151,3 +1151,97 @@ fn drums_a_thousandth_apart_keep_their_volumes() {
         );
     }
 }
+
+/// Faces that meet the other solid's within tolerance without being its
+/// coincident partners: a drill whose wall pokes a tenth of a micron out of
+/// a box side, a ball resting a tenth of a micron into a box top, and a box
+/// stacked on another and tilted a microradian. Each piece read on the
+/// other's boundary is settled by asking just off it on both sides, and
+/// every operation keeps its volumes.
+#[test]
+fn faces_within_tolerance_of_the_other_solid_are_settled_from_both_sides() {
+    let at = |x: f64, y: f64, z: f64| {
+        Frame::new(Point::new(x, y, z), Direction::Z, Direction::X, T).unwrap()
+    };
+    let pi = core::f64::consts::PI;
+    let cases: Vec<(&str, f64, f64, f64)> = vec![
+        // (case, fuse, common, cut)
+        (
+            "drill",
+            64.0 + 6.0 * pi - 4.0 * pi,
+            4.0 * pi,
+            64.0 - 4.0 * pi,
+        ),
+        ("ball", 64.0 + 4.0 / 3.0 * pi, 0.0, 64.0),
+        ("tilt", 16.0 - 1e-6, 0.0, 8.0 - 1e-6),
+    ];
+    for (case, fuse_want, common_want, cut_want) in cases {
+        let mut model = Model::new();
+        let (a, b) = match case {
+            "drill" => (
+                ogeom::algo::make_box(&mut model, Frame::WORLD, (4.0, 4.0, 4.0), T)
+                    .unwrap()
+                    .shape,
+                ogeom::algo::make_cylinder(&mut model, at(1.0 - 1e-7, 2.0, -1.0), 1.0, 6.0, T)
+                    .unwrap()
+                    .shape,
+            ),
+            "ball" => (
+                ogeom::algo::make_box(&mut model, Frame::WORLD, (4.0, 4.0, 4.0), T)
+                    .unwrap()
+                    .shape,
+                ogeom::algo::make_sphere(&mut model, at(2.0, 2.0, 5.0 - 1e-7), 1.0, T)
+                    .unwrap()
+                    .shape,
+            ),
+            _ => {
+                let low = ogeom::algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T)
+                    .unwrap()
+                    .shape;
+                let high = ogeom::algo::make_box(&mut model, at(0.0, 0.0, 2.0), (2.0, 2.0, 2.0), T)
+                    .unwrap()
+                    .shape;
+                let axis = ogeom::math::Axis {
+                    location: Point::new(1.0, 1.0, 2.0),
+                    direction: Direction::X,
+                };
+                let tilted = ogeom::algo::transformed(
+                    &mut model,
+                    &high,
+                    ogeom::math::Transform::rotation(axis, 1e-6),
+                )
+                .unwrap()
+                .shape;
+                (low, tilted)
+            }
+        };
+        for (name, built, want) in [
+            (
+                "fuse",
+                ogeom::boolean::fuse(&mut model, &a, &b, T),
+                fuse_want,
+            ),
+            (
+                "common",
+                ogeom::boolean::common(&mut model, &a, &b, T),
+                common_want,
+            ),
+            ("cut", ogeom::boolean::cut(&mut model, &a, &b, T), cut_want),
+        ] {
+            let shape = built.unwrap_or_else(|e| panic!("{case} {name}: {e}")).shape;
+            let v = if explore_unique(&model, &shape, ShapeType::Face)
+                .unwrap()
+                .is_empty()
+            {
+                0.0
+            } else {
+                assert!(
+                    ogeom::algo::check(&model, &shape, T).unwrap().is_valid(),
+                    "{case} {name}"
+                );
+                volume(&model, &shape)
+            };
+            assert!((v - want).abs() < 1e-5, "{case} {name}: {v} against {want}");
+        }
+    }
+}
