@@ -74,24 +74,23 @@ the corner, the near-coplanar sliver band again.
   `project_on_surface` down into `ogeom-geom` would let `intersect_surfaces`
   answer `Same` itself, for every caller.
 - Local operations, so an op costs what an edit touches, not what the solid
-  holds. None of these is done yet:
-  - Local boolean. Today every face of both solids is split, classified piece
-    by piece, rebuilt on a new surface and the whole result sewn again; the
-    one shortcut is an all-pairs face box test. Wanted: faces the tool's box
-    misses and no section crosses pass through as the same face, a connected
-    region of them classified by one probe, a face tree in place of the
-    all-pairs test, and only the touched region sewn again.
-  - Unchanged faces in the history. Every result face traces to its source,
-    but an untouched face comes out "modified" into a new node. `History`
-    can already say unchanged; the boolean needs to keep the face to say it.
-  - Local refine. `unify_same_domain` takes only a whole shape; wanted, a
-    variant restricted to given faces and their neighbours.
+  holds:
+  - Local boolean, in part. A face the tool leaves alone is neither split nor
+    arranged, the other solid's trims and outlines are drawn only where
+    asked, and an edge rebuilt whole is built once for its two faces. Still
+    whole-solid: the pair filter (all pairs, by box), the rebuild of every
+    kept face as new nodes, and the sew over all of them; a face the tool
+    crosses is arranged whole, its untouched holes with it.
+  - Unchanged faces in the history: done as `History::copy`, an exact copy
+    on new nodes. Sharing the nodes themselves would need every operation
+    that edits its result in place to copy on write first.
+  - Local refine: done, `unify_same_domain_around`.
   - Fillets in one pass. Each blend piece and each corner is one whole-solid
     boolean today; wanted, all of a fillet's blends in one boolean, or
     replaced faces locally.
-  - Face bounds in the model. Every caller works out a face's box afresh;
-    wanted, the box kept with the face and read by the booleans,
-    `shape_bounds` and `tight_bounds` alike.
+  - Face bounds in the model: not kept; `shape_bounds` and `tight_bounds`
+    take about a millisecond on a four-hundred-face part, which a cache
+    and its invalidation would not improve on.
 
 **SAT, X\_T and JT are refused.** Their specifications are unpublished.
 Implementing them would mean reverse engineering files instead of reading a
