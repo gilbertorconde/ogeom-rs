@@ -104,7 +104,7 @@ impl Json {
 pub fn parse(text: &str) -> OgeomResult<Json> {
     let bytes = text.as_bytes();
     let mut at = 0;
-    let value = parse_value(bytes, &mut at)?;
+    let value = parse_value(bytes, &mut at, 0)?;
     skip_space(bytes, &mut at);
     if at != bytes.len() {
         ogeom_bail!(Construction, "trailing content at byte {at}");
@@ -118,14 +118,26 @@ fn skip_space(bytes: &[u8], at: &mut usize) {
     }
 }
 
-fn parse_value(bytes: &[u8], at: &mut usize) -> OgeomResult<Json> {
+/// How deep objects and arrays may nest. A glTF document nests a handful
+/// of levels; a document nesting thousands is hostile or broken, and
+/// reading it by recursion would run the stack out.
+const DEPTH: usize = 256;
+
+fn parse_value(bytes: &[u8], at: &mut usize, depth: usize) -> OgeomResult<Json> {
     skip_space(bytes, at);
     let Some(&byte) = bytes.get(*at) else {
         ogeom_bail!(Construction, "the document ends where a value was expected");
     };
+    if matches!(byte, b'{' | b'[') && depth >= DEPTH {
+        ogeom_bail!(
+            Construction,
+            "the document nests deeper than {DEPTH} levels, at byte {at}",
+            at = *at
+        );
+    }
     match byte {
-        b'{' => parse_object(bytes, at),
-        b'[' => parse_array(bytes, at),
+        b'{' => parse_object(bytes, at, depth + 1),
+        b'[' => parse_array(bytes, at, depth + 1),
         b'"' => Ok(Json::Text(parse_string(bytes, at)?)),
         b't' => literal(bytes, at, "true", Json::Bool(true)),
         b'f' => literal(bytes, at, "false", Json::Bool(false)),
@@ -142,7 +154,7 @@ fn literal(bytes: &[u8], at: &mut usize, word: &str, value: Json) -> OgeomResult
     ogeom_bail!(Construction, "expected `{word}` at byte {at}", at = *at);
 }
 
-fn parse_object(bytes: &[u8], at: &mut usize) -> OgeomResult<Json> {
+fn parse_object(bytes: &[u8], at: &mut usize, depth: usize) -> OgeomResult<Json> {
     *at += 1;
     let mut map = HashMap::new();
     skip_space(bytes, at);
@@ -165,7 +177,7 @@ fn parse_object(bytes: &[u8], at: &mut usize) -> OgeomResult<Json> {
             ogeom_bail!(Construction, "expected `:` at byte {at}", at = *at);
         }
         *at += 1;
-        let value = parse_value(bytes, at)?;
+        let value = parse_value(bytes, at, depth)?;
         map.insert(key, value);
         skip_space(bytes, at);
         match bytes.get(*at) {
@@ -179,7 +191,7 @@ fn parse_object(bytes: &[u8], at: &mut usize) -> OgeomResult<Json> {
     }
 }
 
-fn parse_array(bytes: &[u8], at: &mut usize) -> OgeomResult<Json> {
+fn parse_array(bytes: &[u8], at: &mut usize, depth: usize) -> OgeomResult<Json> {
     *at += 1;
     let mut items = Vec::new();
     skip_space(bytes, at);
@@ -188,7 +200,7 @@ fn parse_array(bytes: &[u8], at: &mut usize) -> OgeomResult<Json> {
         return Ok(Json::Array(items));
     }
     loop {
-        items.push(parse_value(bytes, at)?);
+        items.push(parse_value(bytes, at, depth)?);
         skip_space(bytes, at);
         match bytes.get(*at) {
             Some(&b',') => *at += 1,

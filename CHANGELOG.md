@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Endlessly nested glTF and VRML are refused.** Both readers parse by
+  recursion, and a document nesting arrays, objects or nodes a hundred
+  thousand deep ran the stack out and aborted the process. Nesting past
+  256 levels is refused by name.
+
 - **A PLY face naming a missing vertex is refused.** `read_ply` indexed
   the vertices with the file's face indices unchecked and panicked on one
   past the end; it refuses the file by name, as `read_obj` does.

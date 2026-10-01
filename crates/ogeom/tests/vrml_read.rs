@@ -123,3 +123,18 @@ fn what_is_not_vrml_is_refused() {
     assert!(read_vrml("solid nothing\nendsolid").is_err());
     assert!(read_vrml("#VRML V2.0 utf8\nShape { geometry USE Missing }").is_err());
 }
+
+/// A scene nested far deeper than any scene graph is refused rather than
+/// read by recursion until the stack runs out.
+#[test]
+fn a_scene_nested_without_end_is_refused() {
+    let depth = 100_000;
+    let mut text = String::from("#VRML V2.0 utf8\n");
+    for _ in 0..depth {
+        text.push_str("Transform { children [ ");
+    }
+    for _ in 0..depth {
+        text.push_str("] } ");
+    }
+    assert!(read_vrml(&text).is_err());
+}

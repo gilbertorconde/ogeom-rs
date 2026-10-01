@@ -455,3 +455,12 @@ fn what_is_not_read_is_refused_by_name() {
     let message = format!("{}", read_gltf(document).unwrap_err());
     assert!(message.contains("names no vertex"), "{message}");
 }
+
+/// A document nested far deeper than any glTF is refused rather than read
+/// by recursion until the stack runs out.
+#[test]
+fn a_document_nested_without_end_is_refused() {
+    let depth = 100_000;
+    let text = format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+    assert!(read_gltf(&text).is_err());
+}

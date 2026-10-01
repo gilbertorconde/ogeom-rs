@@ -40,6 +40,7 @@ pub fn read_vrml(text: &str) -> OgeomResult<Vec<ImportedMesh>> {
         tokens,
         at: 0,
         defined: HashMap::new(),
+        depth: 0,
     };
     let mut roots = Vec::new();
     while parser.at < parser.tokens.len() {
@@ -204,7 +205,14 @@ struct Parser {
     tokens: Vec<Token>,
     at: usize,
     defined: HashMap<String, Rc<Node>>,
+    /// How many nodes enclose the one being read.
+    depth: usize,
 }
+
+/// How deep nodes may nest. A scene graph nests a few dozen levels; a file
+/// nesting thousands is hostile or broken, and reading it by recursion
+/// would run the stack out.
+const DEPTH: usize = 256;
 
 impl Parser {
     fn peek(&self) -> Option<&Token> {
@@ -281,6 +289,16 @@ impl Parser {
     }
 
     fn node(&mut self) -> OgeomResult<Rc<Node>> {
+        if self.depth >= DEPTH {
+            ogeom_bail!(Construction, "the scene nests deeper than {DEPTH} nodes");
+        }
+        self.depth += 1;
+        let node = self.node_within();
+        self.depth -= 1;
+        node
+    }
+
+    fn node_within(&mut self) -> OgeomResult<Rc<Node>> {
         let first = self.word()?;
         if first == "USE" {
             let name = self.word()?;
