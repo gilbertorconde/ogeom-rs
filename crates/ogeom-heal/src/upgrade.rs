@@ -33,14 +33,95 @@ pub fn unify_same_domain(
     shape: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<(Built, usize)> {
+    unify(model, shape, None, tol)
+}
+
+/// [`unify_same_domain`] for the faces `around` alone: each is merged with
+/// the faces on its carrier it reaches across shared edges, and every other
+/// face of `shape` is left as it is, split or not.
+///
+/// What an application refining after a feature wants: the faces the
+/// feature made unified with their neighbours, and the splits the part
+/// already held (kept on purpose, or not its business) untouched. A face
+/// of `around` that is not in `shape` names nothing and is passed over.
+///
+/// # Errors
+///
+/// As [`unify_same_domain`].
+pub fn unify_same_domain_around(
+    model: &mut Model,
+    shape: &Shape,
+    around: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<(Built, usize)> {
+    unify(model, shape, Some(around), tol)
+}
+
+fn unify(
+    model: &mut Model,
+    shape: &Shape,
+    around: Option<&[Shape]>,
+    tol: Tolerances,
+) -> OgeomResult<(Built, usize)> {
     let faces = explore_unique(model, shape, ShapeType::Face)?;
 
-    // The carrier of each planar face: where it lies in the world, which
-    // decides the grouping, and the chart it was stored in, which is where
-    // any synthesized pcurve has to land.
+    // The faces in play: every face, or those `around` names and every
+    // face their carriers reach across shared edges, found as they are
+    // reached.
+    let in_play: Vec<bool> = match around {
+        None => vec![true; faces.len()],
+        Some(seeds) => {
+            let mut edge_users: HashMap<TShapeId, Vec<usize>> = HashMap::new();
+            for (i, face) in faces.iter().enumerate() {
+                for edge in explore_unique(model, face, ShapeType::Edge)? {
+                    edge_users.entry(edge.node()).or_default().push(i);
+                }
+            }
+            let mut reached = vec![false; faces.len()];
+            let mut carriers: HashMap<usize, Option<Carrier>> = HashMap::new();
+            let mut queue: Vec<usize> = Vec::new();
+            for (i, face) in faces.iter().enumerate() {
+                if seeds.iter().any(|s| s.node() == face.node()) {
+                    reached[i] = true;
+                    queue.push(i);
+                }
+            }
+            while let Some(i) = queue.pop() {
+                if let std::collections::hash_map::Entry::Vacant(slot) = carriers.entry(i) {
+                    slot.insert(carrier_of(model, &faces[i], tol)?);
+                }
+                for edge in explore_unique(model, &faces[i], ShapeType::Edge)? {
+                    for &j in edge_users.get(&edge.node()).map_or(&[][..], Vec::as_slice) {
+                        if reached[j] {
+                            continue;
+                        }
+                        if let std::collections::hash_map::Entry::Vacant(slot) = carriers.entry(j) {
+                            slot.insert(carrier_of(model, &faces[j], tol)?);
+                        }
+                        if let (Some(Some(ci)), Some(Some(cj))) =
+                            (carriers.get(&i), carriers.get(&j))
+                            && same_carrier(ci, cj, tol)
+                        {
+                            reached[j] = true;
+                            queue.push(j);
+                        }
+                    }
+                }
+            }
+            reached
+        }
+    };
+
+    // The carrier of each planar face in play: where it lies in the world,
+    // which decides the grouping, and the chart it was stored in, which is
+    // where any synthesized pcurve has to land.
     let mut carriers: Vec<Option<Carrier>> = Vec::with_capacity(faces.len());
-    for face in &faces {
-        carriers.push(carrier_of(model, face, tol)?);
+    for (face, &playing) in faces.iter().zip(&in_play) {
+        carriers.push(if playing {
+            carrier_of(model, face, tol)?
+        } else {
+            None
+        });
     }
 
     // Union-find over faces sharing an edge on one carrier.
@@ -64,8 +145,7 @@ pub fn unify_same_domain(
             // One carrier means one *plane*, not one frame: two halves of a
             // wall carry their own origins on the same flat.
             if let (Some(ca), Some(cb)) = (carriers[a].as_ref(), carriers[b].as_ref())
-                && ca.world.normal().dot(cb.world.normal()) > 1.0 - tol.angular()
-                && ca.world.signed_distance_to(cb.world.frame().origin()).abs() <= tol.confusion()
+                && same_carrier(ca, cb, tol)
             {
                 let (ra, rb) = (root(&mut group, a), root(&mut group, b));
                 group[ra] = rb;
@@ -153,6 +233,12 @@ struct Carrier {
     stored: Plane,
     /// What takes the stored chart to the world.
     placement: Transform,
+}
+
+/// Whether two carriers are one plane, whatever their frames.
+fn same_carrier(a: &Carrier, b: &Carrier, tol: Tolerances) -> bool {
+    a.world.normal().dot(b.world.normal()) > 1.0 - tol.angular()
+        && a.world.signed_distance_to(b.world.frame().origin()).abs() <= tol.confusion()
 }
 
 /// The carrier of a planar face, if it is one.

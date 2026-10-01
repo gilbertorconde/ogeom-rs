@@ -11,6 +11,15 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Refine around the faces an operation made.**
+  `unify_same_domain_around` merges the given faces with the faces on
+  their carriers they reach across shared edges, and leaves every other
+  face of the solid as it is, split or not: an application refining after
+  a feature unifies what the feature made without undoing splits the part
+  already held.
+
 ## [0.6.1] - 2026-10-01
 
 A patch release: `cargo semver-checks` against 0.6.0 finds no breaking

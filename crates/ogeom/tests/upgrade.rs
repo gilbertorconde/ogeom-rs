@@ -92,3 +92,62 @@ fn tolerances_shrink_back_to_what_is_measured() {
         assert!(claimed < 1e-3, "back to the measured agreement: {claimed}");
     }
 }
+
+/// Four boxes in a row, fused: the top, the bottom and both long sides
+/// are each split in four. Unified around one piece of the top, the top
+/// becomes one face and every other split is left alone; unified whole,
+/// all of them merge.
+#[test]
+fn unifying_around_a_face_merges_its_carrier_and_nothing_else() {
+    let face_count = |model: &Model, s: &ogeom::topo::Shape| {
+        explore_unique(model, s, ShapeType::Face).unwrap().len()
+    };
+    let volume = |model: &Model, s: &ogeom::topo::Shape| {
+        ogeom::algo::volume_properties(model, s, Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let mut model = Model::new();
+    let mut row = ogeom::algo::make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
+        .unwrap()
+        .shape;
+    for k in 1..4 {
+        let at = Frame::new(
+            Point::new(f64::from(k), 0.0, 0.0),
+            Direction::Z,
+            Direction::X,
+            T,
+        )
+        .unwrap();
+        let next = ogeom::algo::make_box(&mut model, at, (1.0, 1.0, 1.0), T)
+            .unwrap()
+            .shape;
+        row = ogeom::boolean::fuse(&mut model, &row, &next, T)
+            .unwrap()
+            .shape;
+    }
+    let faces = explore_unique(&model, &row, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 18);
+    let top = faces
+        .iter()
+        .find(|f| {
+            let (p, n) = ogeom::algo::face_normal(&model, f, T).unwrap();
+            n.z > 0.999 && p.x < 1.0
+        })
+        .unwrap()
+        .clone();
+
+    let (around, _) =
+        ogeom::heal::unify_same_domain_around(&mut model, &row, std::slice::from_ref(&top), T)
+            .unwrap();
+    assert_eq!(face_count(&model, &around.shape), 15);
+    assert!(
+        ogeom::algo::check(&model, &around.shape, T)
+            .unwrap()
+            .is_valid()
+    );
+    assert!((volume(&model, &around.shape) - 4.0).abs() < 1e-9);
+
+    let (whole, _) = ogeom::heal::unify_same_domain(&mut model, &row, T).unwrap();
+    assert_eq!(face_count(&model, &whole.shape), 6);
+}
