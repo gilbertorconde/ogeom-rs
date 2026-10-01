@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Lengths and points along a curve turn its kinks.** `curve_length`
+  could fail across a polyline spline's corner, and `parameter_at_length`
+  (with `points_by_count` and `points_by_spacing` on it) took the failure
+  for a zero length and returned wrong points silently. Lengths are
+  integrated span by span between a spline's knots, and a failure is
+  reported.
+
 - **A periodic spline is closed.** `is_closed` on a B-spline compared its
   end control points, which are its ends only for clamped knots: a
   periodic spline, and a surface extruded from one, read as open. A

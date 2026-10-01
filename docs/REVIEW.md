@@ -82,7 +82,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [x] **G3.** Scaling a parabola does not rescale its parameter (`curve.rs`; `convert.rs` range adjustment misses it too). (12d754e)
 - [x] **G4.** `HelixCurve::arc_length` ignores taper (`curve.rs`). (c11773a)
 - [x] **G5.** A periodic B-spline reports `is_closed() == false` (`curve.rs`, `curve2d.rs`). (bb054ad)
-- [ ] **L1.** `curve_length` fails at a kink of a polyline spline, and `parameter_at_length` / `points_by_count` then return wrong points silently (`ogeom-algo/src/length.rs`).
+- [x] **L1.** `curve_length` fails at a kink of a polyline spline, and `parameter_at_length` / `points_by_count` then return wrong points silently (`ogeom-algo/src/length.rs`).
 - [ ] **L2.** `medial_axis` ignores the face's placement (`medial.rs`).
 - [ ] **L3.** `tight_bounds` can be up to 0.045 mm too small on spheres and tori in general frames (`tight.rs`).
 - [ ] **L4.** Mass properties of a scaled shape are off by about 2%: the tessellation's chord scales with the transform (`mass.rs`, `ogeom-mesh`).

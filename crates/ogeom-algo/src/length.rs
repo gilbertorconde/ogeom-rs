@@ -58,8 +58,43 @@ pub fn curve_length(curve: &Curve, range: (f64, f64), tol: Tolerances) -> OgeomR
     // range, and a curve that cannot be differentiated there has a singular
     // parameterization, which is what the integrator will then report.
     let speed = |u: f64| curve.d1_at(u, tol).map_or(0.0, |d| d.magnitude());
-    let length = integrate(speed, lo, hi, tol.confusion())?;
-    Ok(length.abs())
+    // Span by span between the curve's breaks: across a kink (a polyline
+    // spline's corner) the speed jumps, and an adaptive rule straddling the
+    // jump refines there without end. Within a span it is smooth.
+    let (from, to) = (lo.min(hi), lo.max(hi));
+    let mut stations = vec![from];
+    stations.extend(breaks(curve).into_iter().filter(|&b| b > from && b < to));
+    stations.push(to);
+    let mut length = 0.0;
+    for pair in stations.windows(2) {
+        if pair[1] - pair[0] > tol.parametric() {
+            length += integrate(speed, pair[0], pair[1], tol.confusion())?.abs();
+        }
+    }
+    Ok(length)
+}
+
+/// Where a curve's speed may jump: a spline's interior knots, and a trim's
+/// basis's inside its window (mirrored for a trim walked backwards).
+fn breaks(curve: &Curve) -> Vec<f64> {
+    match curve {
+        Curve::BSpline(spline) => spline
+            .knots()
+            .distinct()
+            .into_iter()
+            .map(|(value, _)| value)
+            .collect(),
+        Curve::Trimmed(trim) => {
+            let (lo, hi) = trim.domain();
+            let inner = breaks(trim.basis());
+            if trim.is_reversed() {
+                inner.into_iter().map(|b| lo + hi - b).collect()
+            } else {
+                inner
+            }
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// The parameter at which a given arc length from the start of `range` is
@@ -106,7 +141,17 @@ pub fn parameter_at_length(
     // Length from the start is strictly increasing wherever the speed is
     // non-zero, so this has exactly one root in the range and a bracketed
     // method cannot land on the wrong one.
-    let residual = |u: f64| curve_length(curve, (range.0, u), tol).unwrap_or(0.0) - target;
+    // A length that cannot be measured is an error to report, not a zero
+    // to solve against: the root a zero bends the residual to is a wrong
+    // point no caller could tell from a right one.
+    let failed: core::cell::Cell<Option<ogeom_core::OgeomError>> = core::cell::Cell::new(None);
+    let residual = |u: f64| match curve_length(curve, (range.0, u), tol) {
+        Ok(length) => length - target,
+        Err(e) => {
+            failed.set(Some(e));
+            0.0
+        }
+    };
     let criteria = solve::Criteria {
         // The residual is a *length*, so it is measured against a spatial
         // tolerance; the step is a parameter and is measured against a
@@ -115,7 +160,11 @@ pub fn parameter_at_length(
         step: tol.parametric(),
         ..solve::Criteria::default()
     };
-    Ok(solve::brent(residual, range.0, range.1, criteria)?.value)
+    let found = solve::brent(residual, range.0, range.1, criteria);
+    if let Some(e) = failed.take() {
+        return Err(e);
+    }
+    Ok(found?.value)
 }
 
 /// `count` points evenly spaced *by arc length* along a curve, ends included.
@@ -194,7 +243,7 @@ mod tests {
     use approx::assert_relative_eq;
     use core::f64::consts::{PI, TAU};
     use ogeom_geom::{BSplineCurve, CircleCurve, LineCurve};
-    use ogeom_math::{Circle, Frame, KnotVector};
+    use ogeom_math::{Circle, Frame, KnotVector, Point};
 
     const T: Tolerances = Tolerances::millimetres();
 
@@ -362,5 +411,43 @@ mod tests {
         assert!(points_by_spacing(&c, (0.0, TAU), 0.0, T).is_err());
         assert!(points_by_spacing(&c, (0.0, TAU), -1.0, T).is_err());
         assert!(points_by_spacing(&c, (0.0, TAU), f64::NAN, T).is_err());
+    }
+
+    /// A polyline spline turns a corner at its interior knot, and lengths
+    /// measured across the corner, and points placed by length past it,
+    /// come out where the polyline puts them.
+    #[test]
+    fn lengths_and_points_across_a_kink() {
+        let knots = KnotVector::new(vec![0.0, 0.0, 0.37, 1.0, 1.0], 1).unwrap();
+        let corner: Curve = BSplineCurve::new(
+            knots,
+            vec![
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(30.0, 0.0, 0.0),
+                Point::new(30.0, 70.0, 0.0),
+            ],
+            T,
+        )
+        .unwrap()
+        .into();
+        assert_relative_eq!(
+            curve_length(&corner, (0.0, 1.0), T).unwrap(),
+            100.0,
+            epsilon = 1e-9
+        );
+        let placed = points_by_count(&corner, (0.0, 1.0), 5, T).unwrap();
+        let want = [
+            (0.0, 0.0),
+            (25.0, 0.0),
+            (30.0, 20.0),
+            (30.0, 45.0),
+            (30.0, 70.0),
+        ];
+        for ((_, p), (x, y)) in placed.iter().zip(want) {
+            assert!(
+                p.distance(Point::new(x, y, 0.0)) < 1e-6,
+                "{p:?} against ({x}, {y})"
+            );
+        }
     }
 }
