@@ -11,9 +11,7 @@
 //!
 //! So the walk lives here once, over a [`Condition`], and what changes per
 //! problem is the condition's own residual and derivatives. The step control,
-//! the stall reporting and the closure test are written once and inherited,
-//! which matters, because they are the parts that took the longest to get
-//! right and would be the easiest to get subtly wrong a second time.
+//! the stall reporting and the closure test are written once and inherited.
 //!
 //! # What a condition owes the walker
 //!
@@ -295,7 +293,7 @@ pub fn walk_one_way<C: Condition + ?Sized>(
             break;
         };
 
-        // Back where we started: a closed loop. Only checked once the walk has
+        // Back at the start: a closed loop. Only checked once the walk has
         // gone far enough to have left, or every curve would close at once.
         if points.len() > 3 && next_point.distance(from) <= step {
             states.push(states[0].clone());

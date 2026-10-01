@@ -1,18 +1,16 @@
 //! Adversarial cases for the marching intersector and its instruments.
 //!
-//! Each of these began as a probe that was expected to break something, and
-//! three of them did. They are kept as assertions so the defects they found
-//! stay found:
+//! Each pins a condition the intersector or an instrument must hold:
 //!
-//! - coincident surfaces returned six confident little curves that existed
-//!   nowhere but in rounding: the tangency gate sat *below* the noise floor
-//!   the Newton correction is allowed to leave;
-//! - a walk that ran into a surface's edge reported `Stalled` rather than
-//!   `LeftTheDomain`, because it converges on the boundary from inside and
-//!   never enters the strict band the crossing test uses;
-//! - the coverage instrument compared cell centres to polyline *vertices*, so
-//!   a perfectly traced straight line (whose points sit far apart, since
-//!   nothing bends) scored half missing.
+//! - coincident surfaces produce no curves: the tangency gate sits *above*
+//!   the noise floor the Newton correction is allowed to leave, or rounding
+//!   supplies confident little curves that exist nowhere;
+//! - a walk that runs into a surface's edge reports `LeftTheDomain`, not
+//!   `Stalled`: it converges on the boundary from inside and never enters
+//!   the strict band the crossing test uses;
+//! - the coverage instrument compares cell centres to polyline *segments*,
+//!   not vertices: a perfectly traced straight line has widely spaced points,
+//!   since nothing bends, and would otherwise score half missing.
 
 #![allow(
     clippy::unwrap_used,
@@ -89,10 +87,10 @@ fn coincident_surfaces_yield_no_curves_at_all() {
     // The seed correction may leave a residual up to the confusion tolerance,
     // and on coincident surfaces that residual masquerades as an angle between
     // the two normals. With the tangency gate below that noise floor, identical
-    // spheres came back as six short curves lying perfectly on both surfaces
-    // and describing nothing. The gate now sits above the floor, and the
-    // honest answer for a coincident pair is: no curves, ask surface_surface,
-    // which says Same.
+    // spheres come back as short curves lying perfectly on both surfaces and
+    // describing nothing. The gate sits above the floor, and the honest answer
+    // for a coincident pair is: no curves, ask surface_surface, which says
+    // Same.
     let s = sphere(Point::ORIGIN, 2.0);
     let found = branches(&s, &s.clone(), options(), T).unwrap();
     assert!(
@@ -168,8 +166,8 @@ fn a_walk_that_reaches_the_edge_of_a_surface_says_so() {
 #[test]
 fn coverage_measures_the_curve_not_the_spacing_of_its_points() {
     // A straight line's trace has widely spaced points, because nothing bends.
-    // Comparing cell centres to vertices marked the cells between two samples
-    // of a perfect trace as missed; the measure is against segments now.
+    // The measure is against segments: compared to vertices, the cells between
+    // two samples of a perfect trace would read as missed.
     let a = cylinder(Point::ORIGIN, Vector::Z, 1.0);
     let b = plane(Point::ORIGIN, Vector::X);
     let found = branches(&a, &b, options(), T).unwrap();

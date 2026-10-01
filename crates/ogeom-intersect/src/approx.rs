@@ -122,8 +122,8 @@ pub fn approximate_branch(
     // One fit in seven dimensions: the curve and both parameter images
     // together. Fitted separately, each fit's parameter correction drifts
     // its parameterization independently and the three results silently stop
-    // being same-parameter: the boolean found pcurves claiming 1e-7 that
-    // evaluated millimetres from their own curve. Jointly, one
+    // being same-parameter: a pcurve claiming 1e-7 can evaluate millimetres
+    // from its own curve. Jointly, one
     // parameterization and one knot vector serve all three, and the reported
     // error bounds every coordinate.
     let unwrapped_a = unwrap_periodic(a, &kept_a, tol);
@@ -271,9 +271,9 @@ fn unwrap_periodic(
     // Closure as well as periodicity: a converted drum is a clamped patch
     // that meets itself at its seam, and a loop walked round it lands on
     // either side of that seam by the walk's own rounding. Folded by the
-    // chart's span like a period, the trace is the continuous curve it is;
-    // left as sampled, it jumped a whole span at the seam and the closed
-    // fit chased the jump to a third of a millimetre.
+    // chart's span like a period, the trace is the continuous curve it is.
+    // Left as sampled, it jumps a whole span at the seam and the closed
+    // fit chases the jump far from the trace.
     let u_period = if surface.is_periodic_u() || surface.is_closed_u(tol) {
         Some(ub - ua)
     } else {
@@ -476,9 +476,9 @@ mod tests {
     /// itself at its seam. A plane across it cuts a circle the walk reaches
     /// the seam on from both sides, each half stopping a fraction of a step
     /// short of it, and the joined branch has coincident ends. Left flagged
-    /// as having left the domain, the arrangement downstream held a circle
-    /// with two ends at one point; it is closed, and fitted as a loop whose
-    /// chart image runs continuously across the seam.
+    /// as having left the domain, the arrangement downstream would hold a
+    /// circle with two ends at one point. It is closed, and fitted as a loop
+    /// whose chart image runs continuously across the seam.
     #[test]
     fn a_loop_cut_at_a_converted_drum_s_seam_is_closed() {
         let drum: SurfaceGeometry = cylinder(2.0).to_bspline(T).unwrap().into();

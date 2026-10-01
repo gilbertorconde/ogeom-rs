@@ -5,7 +5,7 @@
 //! filler, and the exact point-in-solid classifier, which is a ray/surface
 //! query per face.
 //!
-//! # Well-posed, for once
+//! # Well-posed
 //!
 //! `C(t) = S(u, v)` is three equations in three unknowns; unlike the
 //! surface/surface system, nothing has to be pinned for Newton to converge to
@@ -266,8 +266,6 @@ fn line_quadric(
         // parameters into the stated domain, so a root beyond the cylinder's
         // height converges to the rim with a gap of exactly how far past it
         // was: a piercing of the unbounded geometry, not of this surface.
-        // Discarding the polish's gap and writing zero here was the bug this
-        // comment replaces.
         if found.gap > tol.confusion() {
             continue;
         }

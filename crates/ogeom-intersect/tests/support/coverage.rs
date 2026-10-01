@@ -1,6 +1,6 @@
 //! Measuring whether an intersection is *all* of the intersection.
 //!
-//! The second instrument the gate needs, and the one that can falsify the first.
+//! The second instrument, and the one that can falsify the first.
 //!
 //! [`benchmark`](crate::benchmark) measures accuracy: every point of every
 //! reported curve lies on both surfaces. That is necessary and it is not
@@ -157,7 +157,7 @@ pub fn coverage(
             // A branch passing anywhere through the cell counts. Measured
             // against the polyline's *segments*, not its vertices: the tracer
             // spaces its points by curvature, so on a straight stretch they sit
-            // far apart, and comparing to vertices alone marked the cells
+            // far apart, and comparing to vertices alone would mark the cells
             // between two samples of a perfectly traced line as missed.
             let centre = Point::from_vector(
                 corners

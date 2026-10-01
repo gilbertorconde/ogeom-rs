@@ -155,7 +155,7 @@ mod accuracy {
 
     #[test]
     fn every_closed_form_lands_on_both_surfaces() {
-        // The gate's own measurement, run as an assertion. Every point of every
+        // The accuracy measurement, run as an assertion. Every point of every
         // reported curve is on both surfaces to machine precision, which is
         // the defining property of an intersection curve and the only one that
         // can be checked without a second implementation to compare against.
@@ -217,7 +217,7 @@ mod accuracy {
             Meeting::Touching(ref p) if p.len() == 1
         ));
 
-        // Oblique stays deferred by name.
+        // An oblique plane on a cone has no closed form and is refused.
         assert!(
             surface_surface(
                 &plane(Point::ORIGIN, Vector::new(0.0, 1.0, 1.0)),
@@ -385,11 +385,11 @@ mod accuracy {
 
     #[test]
     fn a_pair_with_no_closed_form_is_deferred_rather_than_guessed() {
-        // The honest half. Two cylinders on skew axes meet in a quartic space
-        // curve; returning something plausible would be the single worst thing
-        // this module could do, because the boolean above it would trust it.
-        // Genuinely skew: equal radii on *crossing* axes factor into two
-        // ellipses and are answered exactly.
+        // Two cylinders on skew axes meet in a quartic space curve with no
+        // closed form. The pair is refused, not approximated, because the
+        // boolean above would build on a plausible answer. Genuinely skew:
+        // equal radii on *crossing* axes factor into two ellipses and are
+        // answered exactly.
         let a = cylinder(Point::ORIGIN, Vector::Z, 1.0);
         let b = cylinder(Point::new(0.0, 2.0, 0.0), Vector::X, 1.0);
         let err = surface_surface(&a, &b, T).unwrap_err();
@@ -489,10 +489,9 @@ mod completeness {
 
     #[test]
     fn dropping_a_branch_is_caught() {
-        // The test that makes the instrument worth having. A completeness
-        // measure that always says "complete" looks exactly like a correct one
-        // until something is actually missing, so the negative control is not
-        // optional; it is the only evidence the thing works.
+        // A completeness measure that always says "complete" looks exactly
+        // like a correct one until something is actually missing. This
+        // negative control hides a branch and checks the measure reports it.
         let a = sphere(Point::ORIGIN, 3.0);
         let b = cylinder(Vector::Z, 1.5);
 
@@ -530,8 +529,8 @@ mod completeness {
 
     #[test]
     fn the_marching_intersector_finds_all_of_what_it_is_asked_for() {
-        // The measurement the gate wants, on the cases that have no closed
-        // form. Accuracy was already established; this is the other half.
+        // Completeness on the cases that have no closed form. Accuracy is the
+        // other half.
         let cases: Vec<(&str, SurfaceGeometry, SurfaceGeometry)> = vec![
             (
                 "sphere/plane",

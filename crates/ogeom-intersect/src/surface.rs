@@ -6,23 +6,19 @@
 //! *not* a partial implementation of the second: a pair it cannot solve exactly
 //! is reported as needing the general path, never approximated.
 //!
-//! # Why the exact cases come first, and separately
+//! # The exact cases
 //!
-//! Three reasons, and the third is the one that matters.
-//!
-//! They are common. Plane against plane, plane against cylinder, sphere against
-//! sphere: a mechanical part is mostly these, and running a marching
+//! They are common: plane against plane, plane against cylinder, sphere
+//! against sphere. A mechanical part is mostly these, and running a marching
 //! intersector over a pair whose answer is a circle is slower and less accurate
 //! than writing down the circle.
 //!
 //! They are fast. No stepping, no refinement, no approximation stage.
 //!
-//! And they are *ground truth*. Every result here can be checked without
-//! reference to anything but the two surfaces themselves: sample the curve, ask
-//! each surface how far away it is, and the answer should be zero. That check is
-//! the instrument the intersection gate is measured with,
-//! and it only exists because these cases are exact. A benchmark whose reference
-//! answers came from the thing being benchmarked would measure nothing.
+//! And they are exact. Every result here can be checked without reference to
+//! anything but the two surfaces themselves: sample the curve, ask each
+//! surface how far away it is, and the answer should be zero. That check is
+//! the accuracy instrument in `tests/support/`.
 //!
 //! # What it reports
 //!
@@ -63,8 +59,7 @@ pub enum Meeting {
 ///
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if this pair has no closed
 /// form, which is a statement about the pair, not a failure to compute. The
-/// general marching intersector is what answers those, and it is gated on the
-/// benchmark this module makes possible.
+/// general marching intersector is what answers those.
 pub fn surface_surface(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
@@ -160,9 +155,9 @@ fn plane_plane(a: ogeom_math::Plane, b: ogeom_math::Plane, reach: f64, tol: Tole
     // satisfies both. Measured from that origin rather than from the world's:
     // the planes' own offsets from the world origin cancel to a few digits
     // when divided by the square of a small angle between them (two faces a
-    // few hundredths of a milliradian apart met a third of a micron off
-    // their true line), where the second plane's distance from a point on
-    // the first is known to rounding.
+    // few hundredths of a milliradian apart would meet a third of a micron
+    // off their true line), where the second plane's distance from a point
+    // on the first is known to rounding.
     let Ok(direction) = Direction::from_cross(a.normal().vector(), b.normal().vector(), tol) else {
         return Meeting::Apart;
     };
@@ -741,7 +736,7 @@ fn coaxial_cylinder_cone(
 /// Two cones sharing an axis: the same surface, the shared apex, or the
 /// parallel where the slants cross.
 ///
-/// In height–radius coordinates along the shared axis each cone is a line,
+/// In height and radius coordinates along the shared axis each cone is a line,
 /// and the crossing is one linear equation; the parallel there is a circle
 /// unless it lands on the apex, which is a touch.
 fn coaxial_cones(

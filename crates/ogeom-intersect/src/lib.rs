@@ -14,7 +14,7 @@
 //!   on; the spatial one reports the gap each crossing achieved, because
 //!   space curves generically miss.
 //! - [`intersect_curve_surface`]: curve/surface, the well-posed system, and
-//!   what the exact point-in-solid classifier will cast its rays with.
+//!   what the point-in-solid classifier casts its rays with.
 //!
 //! The stages underneath are public because each is separately measurable:
 //! [`surface_surface`] (the closed forms), [`seeds`]/[`trace`]/[`branches`]
@@ -22,11 +22,10 @@
 //!
 //! # The instruments
 //!
-//! **This crate was the project's single largest risk** (no Rust equivalent
-//! existed, and it is where prior open-source B-rep efforts failed), so it is
-//! held to instruments rather than trusted. They live in `tests/support/`,
-//! because measuring an intersector is not something a caller of one wants to
-//! do; what a caller wants is an intersector that has been measured.
+//! The crate is held to instruments rather than trusted. They live in
+//! `tests/support/`, because measuring an intersector is not something a
+//! caller of one wants to do. What a caller wants is an intersector that has
+//! been measured.
 //!
 //! One scores accuracy: every point of every reported curve against both
 //! surfaces, with ground truth being the surfaces themselves rather than
@@ -36,12 +35,8 @@
 //! branch. The second exists because the first cannot catch a missing answer:
 //! an intersector that finds one circle of two and traces it perfectly scores
 //! perfectly on accuracy alone. Both have negative controls in
-//! `tests/instruments.rs`; they demonstrably fail when something is genuinely
+//! `tests/instruments.rs`. They demonstrably fail when something is genuinely
 //! missing.
-//!
-//! What this still lacks is an input no one here generated: a published
-//! corpus. Until that lands, the numbers say the machinery is sound on what it
-//! has seen, and they say nothing more than that.
 
 pub mod approx;
 pub mod curve_surface;

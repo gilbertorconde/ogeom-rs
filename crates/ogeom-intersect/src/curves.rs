@@ -4,7 +4,7 @@
 //! plane, and extrema-based crossing for space. The planar case is the
 //! load-bearing one: boolean face splitting happens in a surface's parameter
 //! space, and the curves it splits with are pcurves, so 2D curve/curve is the
-//! operation the whole §8 pipeline stands on.
+//! operation the whole boolean pipeline stands on.
 //!
 //! # Two curves in space generically miss
 //!
@@ -631,11 +631,6 @@ fn clipped_to_windows<P>(
     }
 }
 
-/// Two circles tracing the same point set in space: the circle counterpart of
-/// collinear lines, and the one 3D circle pair the sampling path cannot
-/// answer: every sample is a hit, and "the crossings" do not exist. Distinct
-/// circles return `None` and fall through to the general machinery, which
-/// handles genuinely crossing pairs.
 /// Two circles in one plane, in closed form: where they cross, from the
 /// radical line in the plane. Exact however shallow the crossing: two rims a
 /// micron apart meet at a fraction of a milliradian, and sampled, the touch
@@ -709,6 +704,11 @@ fn coplanar_circles_3d(
     })
 }
 
+/// Two circles tracing the same point set in space: the circle counterpart of
+/// collinear lines, and the one 3D circle pair the sampling path cannot
+/// answer: every sample is a hit, and "the crossings" do not exist. Distinct
+/// circles return `None` and fall through to the general machinery, which
+/// handles genuinely crossing pairs.
 fn same_circle_3d(
     a: &ogeom_geom::CircleCurve,
     b: &ogeom_geom::CircleCurve,
@@ -1284,8 +1284,7 @@ fn general_3d(
     // such a basin; the pairs round it would all polish to the same place.
     // Two curves running near each other (a section beside the edge it was
     // cut along) put hundreds of pairs in reach, and polishing every one
-    // found the same few crossings over and over: five in six polishes
-    // were repeats.
+    // finds the same few crossings over and over.
     let (na, nb) = (sa.points.len(), sb.points.len());
     // Pairs whose boxes stand further apart than the reach cannot be in
     // it: they are not measured, and read as out of reach, which is what
@@ -1490,8 +1489,6 @@ fn contact_between_3d(
     })
 }
 
-/// Runs of the first curve's samples whose feet on the second lie within
-/// the gap, each bisected to its parametric ends.
 /// The foot of a point on the second curve, seeded from its sampled
 /// polyline's nearest segment: the parameter and the distance there.
 fn foot_via_samples(
@@ -1540,6 +1537,8 @@ fn hugging_runs(feet: &[Option<(f64, f64)>], gap: f64) -> Vec<bool> {
     out
 }
 
+/// Runs of the first curve's samples whose feet on the second lie within
+/// the gap, each bisected to its parametric ends.
 fn shared_support_3d(
     a: &Curve,
     b: &Curve,
@@ -1685,7 +1684,7 @@ fn polish_2d(
     })
 }
 
-/// Gauss–Newton on the closest approach of two space curves.
+/// Gauss-Newton on the closest approach of two space curves.
 ///
 /// Three equations would be overdetermined for two unknowns, so the system is
 /// the two *stationarity* conditions (the gap vector perpendicular to both
@@ -2232,10 +2231,10 @@ mod tests {
     fn space_curves_cross_within_a_gap_and_report_it() {
         // Two circles that would cross in a shared plane, with one lifted a
         // hair out of it: the crossings become passes with a real, small gap
-        // that must be reported, not zeroed. (Not chain links: a first draft
-        // of this test used linked circles, and linked circles never approach:
-        // passing through each other's *disks* is what linked means, and these
-        // radii hold the curves a constant two units apart.)
+        // that must be reported, not zeroed. (Not chain links: linked circles
+        // never approach, since passing through each other's *disks* is what
+        // linked means, and these radii hold the curves a constant two units
+        // apart.)
         let a: Curve = CircleCurve::new(Circle::new(Frame::WORLD, 2.0, T).unwrap()).into();
         let lifted = Frame::new(
             Point::new(3.0, 0.0, 0.001),
@@ -2308,8 +2307,8 @@ mod tests {
         // A spline fitted along a circle's arc sits within its fit budget
         // of the circle everywhere, and "crosses" it at every wobble. The
         // sampling path reports the stretch as one overlap and keeps no
-        // crossing inside it; read as crossings, a section tracing the arc
-        // it was cut along shattered into hundreds of pieces.
+        // crossing inside it. Read as crossings, a section tracing the arc
+        // it was cut along would shatter into hundreds of pieces.
         let circle: Curve = CircleCurve::new(Circle::new(Frame::WORLD, 4.0, T).unwrap()).into();
         let points: Vec<Point> = (0..=40)
             .map(|i| {

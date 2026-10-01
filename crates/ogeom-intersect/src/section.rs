@@ -2,7 +2,7 @@
 //!
 //! Everything else in this crate is a stage: closed forms, seeding, tracing,
 //! fitting. This is the function an application calls, and the one `ogeom-bool`
-//! will build on: give it two surfaces, get back what they do to each other,
+//! builds on: give it two surfaces, get back what they do to each other,
 //! with the analytic path taken where it exists and the marched-and-fitted
 //! path where it does not. The caller does not choose; the pair does.
 //!
@@ -161,8 +161,8 @@ pub fn intersect_surfaces(
                 SurfaceIntersection::Along(sections)
             })
         }
-        // No closed form for this pair: the statement that sends us marching,
-        // unless the pair is two drums all but parallel.
+        // No closed form for this pair: the statement that sends it to the
+        // marcher, unless the pair is two drums all but parallel.
         Err(_) => match near_parallel_drums(a, b, tol)
             .or_else(|| ball_through_drum(a, b, tol))
             .or_else(|| axial_plane_revolution(a, b, tol))
@@ -909,8 +909,8 @@ fn near_parallel_plane_drum(
 ///
 /// A *closed* curve partially outside an extent is kept whole: cutting it into
 /// arcs is the restriction problem, and the restriction that matters is the
-/// face's trim, which is §8's job; the extent here is only the surface's
-/// parameterization window.
+/// face's trim, which is the boolean's job. The extent here is only the
+/// surface's parameterization window.
 fn exact_section(
     curve: Curve,
     a: &SurfaceGeometry,
@@ -1019,7 +1019,7 @@ fn touching_along(
     // Offsets chosen off the round fractions, so a curve through a chart
     // degeneracy (a meridian's poles sit at quarters of its turn) is
     // sampled beside the degenerate points rather than on them. A sample
-    // whose inversion still fails is skipped: the point tells us nothing,
+    // whose inversion still fails is skipped: the point says nothing,
     // not that the surfaces cross.
     let mut judged = 0_usize;
     for f in [0.07, 0.19, 0.37, 0.53, 0.71, 0.89] {
@@ -1591,8 +1591,8 @@ fn on_cone(
 /// at constant `v`; a *tube circle* (minor radius, centred on the tube's
 /// spine, in a plane through the axis) runs at constant `u`. Both inherit
 /// the circle's own angle, phase and winding included, exactly as the
-/// cylinder case does; the STEP reader is the consumer that forced the torus
-/// into this list, fillet faces being tori more often than not.
+/// cylinder case does. Fillet faces are tori more often than not, so the
+/// STEP reader is the chief consumer.
 fn on_torus(curve: &Curve, torus: ogeom_math::Torus, tol: Tolerances) -> Option<PlanarCurve> {
     let Curve::Circle(c) = curve else {
         return None;
@@ -1807,10 +1807,10 @@ fn on_cylinder(
             // and which way its parameter runs around the axis. A section
             // circle inherits its winding from the pair that made it, and one
             // wound against the cylinder's `u` (a circle cut by a plane whose
-            // normal opposes the axis) runs its pcurve in `-u`. Writing `+u`
-            // unconditionally here was the bug the boolean's drill test found:
-            // the pcurve evaluated half a turn away from the curve, and the
-            // face's arrangement tore along a seam that was not there.
+            // normal opposes the axis) runs its pcurve in `-u`. Written `+u`
+            // unconditionally, the pcurve evaluates half a turn away from the
+            // curve, and the face's arrangement tears along a seam that is
+            // not there.
             let start = circle.centre() + circle.frame().x().vector() * circle.radius();
             let at = frame.to_local(start);
             let phase = at.y.atan2(at.x);
@@ -2150,9 +2150,9 @@ mod tests {
 
     #[test]
     fn an_oblique_cut_gives_the_ellipse_a_trig_pcurve_on_the_drum() {
-        // The pcurve an earlier plan owed: the oblique ellipse runs
-        // linearly in the chart angle and sinusoidally in height (the
-        // trig-affine family), exactly, same-parameter, both sides.
+        // The oblique ellipse's pcurve runs linearly in the chart angle and
+        // sinusoidally in height (the trig-affine family), exactly,
+        // same-parameter, both sides.
         let drum = cylinder(Vector::Z, 2.0);
         let angle: f64 = 0.5;
         let cut = plane(Point::ORIGIN, Vector::new(0.0, angle.sin(), angle.cos()));
@@ -2598,13 +2598,12 @@ mod tests {
 
     #[test]
     fn a_circle_wound_against_the_axis_keeps_its_pcurve_same_parameter() {
-        // The winding bug the boolean's drill test found: a plane whose
-        // normal opposes the cylinder's axis cuts a circle wound against the
-        // cylinder's `u`, and the pcurve must run in `-u` with it. Written
-        // `+u` unconditionally, the pcurve evaluated half a turn away from
-        // the curve and every face built on the section tore in parameter
-        // space. Both windings are pinned by lifting the pcurve through the
-        // surface and demanding the curve's own point back.
+        // A plane whose normal opposes the cylinder's axis cuts a circle
+        // wound against the cylinder's `u`, and the pcurve must run in `-u`
+        // with it. Written `+u` unconditionally, the pcurve evaluates half a
+        // turn away from the curve and every face built on the section tears
+        // in parameter space. Both windings are pinned by lifting the pcurve
+        // through the surface and demanding the curve's own point back.
         let drum: SurfaceGeometry = CylinderSurface::new(
             Cylinder::new(
                 Frame::new(Point::new(2.0, 2.0, -1.0), Direction::Z, Direction::X, T).unwrap(),
@@ -2721,9 +2720,9 @@ mod tests {
     /// the basis's own pcurve trimmed the same way, on every surface, since
     /// the answer does not depend on the surface at all.
     ///
-    /// Found by a corner blend: a fillet's own end cap is a plane, the edges
-    /// bounding it are trimmed curves, and the boolean refused the coincidence
-    /// because it could not put a trimmed curve into a chart it plainly lies in.
+    /// A fillet's own end cap is a plane and the edges bounding it are trimmed
+    /// curves. Without this, the boolean refuses the coincidence because it
+    /// cannot put a trimmed curve into a chart it plainly lies in.
     #[test]
     fn a_trimmed_curve_carries_its_basis_pcurve_trimmed_the_same_way() {
         use ogeom_geom::TrimmedCurve;

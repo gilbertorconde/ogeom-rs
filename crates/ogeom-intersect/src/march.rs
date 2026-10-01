@@ -307,7 +307,7 @@ pub fn branches(
     let found = seeds(a, b, options, tol)?;
     let mut out: Vec<Traced> = Vec::new();
     for seed in found {
-        // Already on something we have followed.
+        // Already on something followed.
         let reach = options.chord.max(tol.confusion()) * 8.0;
         if out
             .iter()
@@ -362,7 +362,7 @@ fn crossing_sine(
 /// rounding in the corrected parameters leaves the two normals a whisker apart,
 /// the walk takes a couple of steps, and then stalls where the arithmetic gives
 /// out. What comes back lies on both surfaces perfectly and describes nothing:
-/// identical spheres yielded six such fragments, each a few points long.
+/// identical spheres yield such fragments, each a few points long.
 ///
 /// A stalled branch shorter than a handful of chords carries no information the
 /// seed did not, so it is noise from a degenerate configuration and dropped. A
@@ -389,7 +389,7 @@ fn is_fragment(branch: &Traced, options: Marching) -> bool {
 /// Measured against the polyline's *segments*, not its vertices. The vertices
 /// are a marching step apart (far more than the chord tolerance), so a seed
 /// sitting neatly between two of them looks distant from both, and comparing to
-/// vertices alone reported one circle nine times.
+/// vertices alone would report one circle many times.
 fn passes_near(branch: &Traced, p: Point, reach: f64) -> bool {
     branch
         .points
@@ -433,7 +433,7 @@ pub fn trace(
     }
 
     // Forwards first. If it closes, that is the whole branch and there is
-    // nothing behind us.
+    // nothing behind.
     let ahead = walk(a, b, from, 1.0, options, tol)?;
     if ahead.stopped == Stopped::Closed {
         return Ok(ahead);
@@ -475,8 +475,8 @@ pub fn trace(
     // is walked from the seed to the seam one way and to the seam the
     // other, each walk stopping a fraction of a step short of it, and the
     // two ends meet where the surface closes on itself. That is the whole
-    // loop, and it is closed: left open, the arrangement downstream held a
-    // circle with two ends at one point and found no face piece to keep.
+    // loop, and it is closed: left open, the arrangement downstream would
+    // hold a circle with two ends at one point and find no face piece to keep.
     // The ends are within a couple of the walks' own last steps of each
     // other, and the loop is closed exactly on its first point.
     if stopped == Stopped::LeftTheDomain && points.len() > 3 {
@@ -747,8 +747,8 @@ fn land_on_edge(pair: &SurfacePair<'_>, walked: &mut crate::walk::Walked, tol: T
 /// coincident or near-coincident surfaces, that disagreement shows up as a
 /// spurious angle between the two computed normals of about the residual over
 /// the local feature size. A gate below that floor reads the correction's own
-/// noise as a direction and marches along it: identical spheres came back as
-/// six confident little curves that existed nowhere but in rounding.
+/// noise as a direction and marches along it: identical spheres come back as
+/// confident little curves that exist nowhere but in rounding.
 ///
 /// So below this angle the marcher cannot tell an ultra-shallow crossing from
 /// coincidence, and refuses both rather than guessing. A genuine crossing
@@ -1250,7 +1250,7 @@ fn interior_is_transversal(
 }
 
 /// Join stalled fragments that meet at branch points into the curves they
-/// belong to: the stitching an earlier plan owed, now delivered.
+/// belong to.
 ///
 /// Where the two normals become parallel the intersection has no single
 /// direction: the walk stalls there, wanders in place while the correction
@@ -1529,8 +1529,8 @@ pub(crate) fn nearest_on(
     Some(((u, v), surface.point_at(u, v, tol).ok()?))
 }
 
-/// Trace tangential contact along a curve: the walker an earlier plan
-/// owed, following the valley of the gap function rather than a crossing.
+/// Trace tangential contact along a curve, following the valley of the gap
+/// function rather than a crossing.
 ///
 /// Where two surfaces touch along a whole curve there is no transversal
 /// direction to march: the crossing angle is zero along the entire

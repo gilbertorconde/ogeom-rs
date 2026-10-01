@@ -1,16 +1,14 @@
 //! Measuring an intersection against ground truth.
 //!
-//! The boolean pipeline is gated on this: surface/surface
-//! quality is *measured* before anything is built on top of it, and if it does
-//! not clear the bar the project ships as a geometry library rather than
-//! spending years on a boolean over an intersector that cannot carry one.
+//! Surface/surface quality is measured here before the boolean pipeline
+//! builds on it.
 //!
-//! This is the instrument. It is not a test; it is the thing a test asserts
+//! This is the instrument. It is not a test. It is the thing a test asserts
 //! about, and the thing a report quotes.
 //!
 //! # What ground truth is here
 //!
-//! Not another kernel's answer. The two surfaces themselves.
+//! The two surfaces themselves.
 //!
 //! An intersection curve has exactly one defining property: every point of it
 //! lies on **both** surfaces. That is checkable without reference to anything
@@ -27,10 +25,6 @@
 //! instrument (sampling one surface and asking whether points near the other
 //! are covered), and the general intersector is where that starts to matter,
 //! since these closed forms return the whole answer by construction.
-//!
-//! Saying so is the point. A benchmark that quietly measured one thing while
-//! being read as measuring another would be worse than none, because the number
-//! would be trusted.
 
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_geom::{Curve, Curve3d, Surface, SurfaceGeometry};

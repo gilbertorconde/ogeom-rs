@@ -1,9 +1,9 @@
 //! The stationary approaches between two geometries.
 //!
 //! *Elsewhere* this is `Extrema` and the `GeomAPI_Extrema*` family. The
-//! consumer that drives it is minimum distance between shapes, which is
-//! `BRepExtrema` there and lives in `ogeom-algo` here; this module answers for
-//! the geometry, and the shape layer assembles the answer for topology.
+//! consumer that drives it is minimum distance between shapes, which lives
+//! in `ogeom-algo`: this module answers for the geometry, and the shape layer
+//! assembles the answer for topology.
 //!
 //! # What an extremum is, and what it is not
 //!
@@ -22,8 +22,7 @@
 //! - **A guessed point on a constant-distance locus.** Parallel lines,
 //!   concentric circles, a sphere inside a sphere: the nearest distance is
 //!   attained along a whole locus, and no isolated point is *the* answer.
-//!   That is reported as [`Extrema::family`], the way the conventional
-//!   kernel's `IsParallel` flag says the same thing.
+//!   That is reported as [`Extrema::family`].
 //!
 //! Every approach reported is verifiable on the spot: two parameter sets, the
 //! two evaluated points, and the distance between them, which is the claim.
@@ -825,7 +824,7 @@ fn finish<A: Copy, B: Copy>(mut approaches: Vec<Approach<A, B>>, tol: Tolerances
                 .take_while(|a| a.distance - first.distance <= near)
                 .collect();
             // Three or more equally-near approaches at genuinely different
-            // places are not coincidence; they are a locus showing through
+            // places are not coincidence. They are a locus showing through
             // the sampling.
             ties.len() >= 3
                 && ties

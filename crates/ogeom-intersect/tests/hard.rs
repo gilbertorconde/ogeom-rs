@@ -5,13 +5,9 @@
 
 //! Configurations the surface/surface literature names as hard.
 //!
-//! The corpus problem in miniature: every other test's inputs were chosen by
-//! the people who wrote the code, and these were not; they are transcribed
-//! from the published record of what breaks intersectors. Two of them earned
-//! their keep immediately: the cone case exposed `Cone::distance_to` measuring
-//! one nappe of a two-nappe surface (a defect in the *instrument*, flagged by
-//! a correctly traced curve), and the tangent-torus case pinned the noise a
-//! tangency-along-a-curve produces.
+//! Every other test's inputs are chosen by the people who wrote the code.
+//! These are transcribed from the published record of what breaks
+//! intersectors.
 
 use ogeom_core::Tolerances;
 use ogeom_geom::{
@@ -142,11 +138,10 @@ fn near_tangent_sphere_and_cylinder_give_one_thin_loop() {
 
 #[test]
 fn a_sphere_across_a_cones_apex_cuts_both_nappes() {
-    // The case that caught the instrument. A cone's height range crosses its
-    // apex, so the surface has two nappes, and a sphere spanning the apex
-    // cuts a loop in each. The first run flagged the lower loop as 0.9 off
-    // the cone; the trace was exact and Cone::distance_to was measuring one
-    // nappe of a two-nappe surface.
+    // A cone's height range crosses its apex, so the surface has two nappes,
+    // and a sphere spanning the apex cuts a loop in each. The instrument's
+    // `Cone::distance_to` must measure both nappes, or a correctly traced
+    // lower loop reads as far off the cone.
     let cone: SurfaceGeometry = ConeSurface::new(
         Cone::new(Frame::WORLD, 0.5, 0.5_f64.atan(), T).unwrap(),
         (-3.0, 3.0),
@@ -178,9 +173,8 @@ fn tangency_along_a_circle_produces_fragments_not_a_curve() {
     // briefly before stalling. What comes back is fragments hugging the
     // contact circle: on both surfaces to rounding, describing nothing.
     //
-    // Pinned as the documented limit it is. The honest answer needs
-    // tangential contact traced as its own kind of curve, which is listed
-    // as open in docs/PLAN.md.
+    // Pinned as the crossing marcher's limit. Tangential contact is traced
+    // as its own kind of curve by `intersect_surfaces`, below.
     let torus: SurfaceGeometry =
         TorusSurface::new(Torus::new(Frame::WORLD, 3.0, 1.0, T).unwrap()).into();
     let resting = pln(Point::new(0.0, 0.0, 1.0), Vector::Z);
@@ -301,9 +295,9 @@ fn a_ball_seated_in_a_torus_tube_has_its_contact_walked() {
 
 #[test]
 fn a_plane_through_a_torus_tube_cuts_two_loops() {
-    // The transversal cousin of the tangent case, and the first marched torus
-    // result: a plane through the tube at half the minor radius cuts two
-    // closed loops, one around the outer half, one around the inner.
+    // The transversal cousin of the tangent case: a plane through the tube
+    // at half the minor radius cuts two closed loops, one around the outer
+    // half, one around the inner.
     let torus: SurfaceGeometry =
         TorusSurface::new(Torus::new(Frame::WORLD, 3.0, 1.0, T).unwrap()).into();
     let cut = pln(Point::new(0.0, 0.0, 0.5), Vector::Z);
