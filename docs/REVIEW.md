@@ -85,7 +85,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [x] **L1.** `curve_length` fails at a kink of a polyline spline, and `parameter_at_length` / `points_by_count` then return wrong points silently (`ogeom-algo/src/length.rs`). (922ab2f)
 - [x] **L2.** `medial_axis` ignores the face's placement (`medial.rs`). (8283b48)
 - [x] **L3.** `tight_bounds` can be up to 0.045 mm too small on spheres and tori in general frames (`tight.rs`). (6e5e189)
-- [x] **L4.** Mass properties of a scaled shape are off by about 2%: the tessellation's chord scales with the transform (`mass.rs`, `ogeom-mesh`).
+- [x] **L4.** Mass properties of a scaled shape are off by about 2%: the tessellation's chord scales with the transform (`mass.rs`, `ogeom-mesh`). (77e152f)
 - [ ] **T1.** Tessellation interiors sag up to twice the chord while `deflection_met` says true (`ogeom-mesh/src/triangulate.rs`).
 - [ ] **H1.** `divide_by_angle` and `divide_by_area` fail on cylinders shorter than 1 (`ogeom-heal/src/divide.rs`, probe at parameter 1).
 - [ ] **H2.** `to_nurbs` / `to_bezier` of a torus leaves a face whose exact measures are off by 2 to 5% and that fails to triangulate 1000 mm out.
