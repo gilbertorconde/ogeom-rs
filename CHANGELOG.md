@@ -53,7 +53,12 @@ bump may break the API and a patch bump may not.
   Such a seam is now threaded straight through the facet's corners, its
   tolerance how far it stands off the fillet, and the fillet keeps its
   surface; where the straight seam strays too far, the fillet is built
-  faceted.
+  faceted. A sliver between two curved faces whose seams cross in its
+  plane, and any facet whose mesh does not meet its neighbours', is
+  threaded the same way. A threaded build that leaves a face turned into
+  the material or collapsed onto a line is set aside for the unthreaded
+  one. Three converted corpus parts and the rough rounded box now
+  tessellate closed.
 
 ### Changed
 

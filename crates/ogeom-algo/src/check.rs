@@ -267,6 +267,25 @@ pub fn inside_out_faces(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomR
     Ok(out)
 }
 
+/// Which of `faces` face into the material of `solid`: each probed as
+/// [`inside_out_faces`] probes a face, without the walk over the whole
+/// solid's orientation flags that tells it which faces to ask about.
+pub(crate) fn faces_turned_in(
+    model: &Model,
+    solid: &Shape,
+    faces: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<Vec<Shape>> {
+    let boundary = crate::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol)?;
+    let mut out = Vec::new();
+    for face in faces {
+        if faces_inward(model, face, &boundary, tol)? == Some(true) {
+            out.push(face.clone());
+        }
+    }
+    Ok(out)
+}
+
 /// Whether a face's outward normal points into the solid's material, probed
 /// at the middle of its largest mesh triangle; `None` where the probe
 /// cannot tell.

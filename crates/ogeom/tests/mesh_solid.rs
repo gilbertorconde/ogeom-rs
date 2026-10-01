@@ -1392,6 +1392,43 @@ fn stepped_part(model: &mut Model) -> Shape {
 /// exact part's, and every boolean with the pad matches the exact part's
 /// own, including a pad a micron below the top and one out through the
 /// bottom.
+/// A rounded block in single precision, converted at a coplanar distance
+/// a few times its rounding: facets left between the corner balls lie in
+/// slivers whose two seams cross in their plane, and threaded straight they
+/// let the whole shape tessellate closed.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the rounding to single precision is the point"
+)]
+#[test]
+fn a_fine_conversion_of_a_rounded_block_tessellates_closed() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    let mut mesh = meshed(&model, &rounded);
+    for p in &mut mesh.positions {
+        *p = Point::new(
+            f64::from(p.x as f32),
+            f64::from(p.y as f32),
+            f64::from(p.z as f32),
+        );
+    }
+    let options = MeshSolidOptions {
+        coplanar_distance: Some(8e-7),
+        ..MeshSolidOptions::default()
+    };
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &options, T).unwrap();
+    assert!(check(&back, &out.shape, T).unwrap().is_valid());
+    let drawn = ogeom::mesh::triangulate(&back, &out.shape, Deflection::default(), T).unwrap();
+    assert!(drawn.is_closed());
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     reason = "the rounding to single precision is the point"

@@ -485,6 +485,13 @@ pub fn solid_from_mesh(
     // turn of its surface closes a face of the wrong extent) and build again.
     let mut pinned: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut straight: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+    // What stood before any seam was threaded straight: a straightened
+    // build with a face turned into its material is set aside for it.
+    let mut unthreaded: Option<(Groups, MeshSolidReport)> = None;
+    let mut threading_refused = false;
+    // Whether faces were faceted after the first seam was threaded: the
+    // build then differs from the unthreaded one beyond those seams.
+    let mut refaceted = false;
     let shape = loop {
         let planner = Planner {
             points: &points,
@@ -534,13 +541,27 @@ pub fn solid_from_mesh(
                     } else {
                         Vec::new()
                     };
-                    if culprits.is_empty() && options.recognize {
+                    if culprits.is_empty() && options.recognize && !threading_refused {
                         let crossed = crossed_seams(
                             model, &shape, &triangles, &adjacency, &groups, &built, tol,
                         )?;
                         let before = straight.len();
+                        if before == 0 && !crossed.is_empty() {
+                            unthreaded = Some((groups.clone(), report.clone()));
+                        }
                         straight.extend(crossed);
                         if straight.len() > before {
+                            continue;
+                        }
+                        if let Some((was, then)) = unthreaded.take()
+                            && (turned_over(
+                                model, &shape, &triangles, &groups, &built, &straight, tol,
+                            )? || (refaceted && any_turned_in(model, &shape, tol)?))
+                        {
+                            groups = was;
+                            report = then;
+                            straight.clear();
+                            threading_refused = true;
                             continue;
                         }
                     }
@@ -560,6 +581,7 @@ pub fn solid_from_mesh(
                 }
             }
         };
+        refaceted |= unthreaded.is_some() && !failed.is_empty();
         for g in failed {
             groups.carriers[g] = Carrier::Gone;
             report.curved_faceted += 1;
@@ -586,13 +608,64 @@ pub fn solid_from_mesh(
     })
 }
 
+/// Whether any face of the shape's solids faces into their material.
+fn any_turned_in(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<bool> {
+    for solid in ogeom_topo::explore_unique(model, shape, ogeom_topo::ShapeType::Solid)? {
+        if !crate::check::inside_out_faces(model, &solid, tol)?.is_empty() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Whether a face beside a seam threaded straight faces into the material
+/// of the shape's solids, or has collapsed: thinner than the confusion
+/// distance, its seams threaded onto one line.
+fn turned_over(
+    model: &Model,
+    shape: &Shape,
+    triangles: &[[u32; 3]],
+    groups: &Groups,
+    built: &[Option<Shape>],
+    straight: &std::collections::HashSet<(u32, u32)>,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let mut beside: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    for h in 0..triangles.len() * 3 {
+        let (a, b) = from_to(triangles, h);
+        if straight.contains(&(a.min(b), a.max(b))) {
+            beside.insert(groups.of[h / 3]);
+        }
+    }
+    let faces: Vec<Shape> = beside
+        .iter()
+        .filter_map(|&g| built.get(g).and_then(Option::as_ref).cloned())
+        .collect();
+    let fine = ogeom_mesh::Deflection::with_chord(ogeom_mesh::Deflection::default().chord * 1e-2)?;
+    for face in &faces {
+        let area = crate::surface_properties(model, face, fine, tol)?.mass;
+        let reach = crate::shape_bounds(model, face, tol)?.diagonal();
+        if area <= reach * tol.confusion() {
+            return Ok(true);
+        }
+    }
+    for solid in ogeom_topo::explore_unique(model, shape, ogeom_topo::ShapeType::Solid)? {
+        if !crate::check::faces_turned_in(model, &solid, &faces, tol)?.is_empty() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// The seams between a planar face and a curved one that bend the planar
 /// face's trim back across itself: a facet thinner than the curve the two
-/// surfaces meet along bulges, whose exact area cancels where its trim
-/// folds while its triangles cover the fold twice. Each such face is meshed
-/// at the default deflection on the shape's agreed edge chords and its
-/// triangles' area set against its exact area; the mesh edges along its
-/// seams with curved faces are returned, to be threaded straight.
+/// surfaces meet along bulges, or a sliver between two curved faces whose
+/// seams cross in its plane. Every face is meshed at the default deflection
+/// on the shape's agreed edge chords, as a caller meshing the shape would.
+/// A facet or two left between curved faces whose triangles cover a fifth
+/// more than its exact area, or which draws a mesh edge no other face
+/// draws (or that two others draw too), has its seams with curved faces
+/// returned, to be threaded straight.
 fn crossed_seams(
     model: &Model,
     shape: &Shape,
@@ -603,7 +676,13 @@ fn crossed_seams(
     tol: Tolerances,
 ) -> OgeomResult<Vec<(u32, u32)>> {
     let curved = |g: usize| matches!(groups.carriers.get(g), Some(Carrier::Curved(_)));
-    // Each planar face's mesh edges against a curved face.
+    // Only a facet or two left between curved faces: a larger planar face
+    // holds its own shape, and straightening its seams can turn it over.
+    let mut size: HashMap<usize, usize> = HashMap::new();
+    for &g in &groups.of {
+        *size.entry(g).or_insert(0) += 1;
+    }
+    // Each such face's mesh edges against a curved face.
     let mut seams: HashMap<usize, Vec<(u32, u32)>> = HashMap::new();
     for (h, twin) in adjacency.twin.iter().enumerate() {
         let Some(g) = *twin else {
@@ -613,6 +692,7 @@ fn crossed_seams(
         if mine == theirs
             || !curved(theirs)
             || !matches!(groups.carriers.get(mine), Some(Carrier::Plane(_)))
+            || size.get(&mine).copied().unwrap_or(0) > SLIVER_FACETS
         {
             continue;
         }
@@ -622,40 +702,98 @@ fn crossed_seams(
     if seams.is_empty() {
         return Ok(Vec::new());
     }
-    let mut planes: Vec<usize> = seams.keys().copied().collect();
-    planes.sort_unstable();
     let deflection = ogeom_mesh::Deflection::default();
     let fine = ogeom_mesh::Deflection::with_chord(deflection.chord * 1e-2)?;
     let chords = ogeom_mesh::edge_chords_for(model, shape, deflection, tol)?;
-    let found = ogeom_core::parallel::map_ordered(&planes, |_, &g| -> OgeomResult<bool> {
-        let Some(face) = built.get(g).and_then(Option::as_ref) else {
-            return Ok(false);
-        };
-        let Ok(mesh) = ogeom_mesh::triangulate_face_with(model, face, deflection, &chords, tol)
-        else {
-            return Ok(true);
-        };
-        let drawn: f64 = mesh
-            .triangles
-            .iter()
-            .map(|t| {
-                let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
-                (b - a).cross(c - a).magnitude() * 0.5
-            })
-            .sum();
-        let exact = crate::surface_properties(model, face, fine, tol)?.mass;
-        Ok(drawn > exact * OVERRUN + tol.confusion())
+    let faces: Vec<(usize, &Shape)> = built
+        .iter()
+        .enumerate()
+        .filter_map(|(g, b)| b.as_ref().map(|f| (g, f)))
+        .collect();
+    let meshes = ogeom_core::parallel::map_ordered(&faces, |_, &(_, face)| {
+        ogeom_mesh::triangulate_face_with(model, face, deflection, &chords, tol).ok()
     });
-    let mut out = Vec::new();
-    for (g, crossed) in planes.iter().zip(found) {
-        if crossed? {
-            out.extend(seams[g].iter().copied());
+    // The faces' points welded within the confusion distance: a shared
+    // edge's points come from the same chords, and a seam's two columns
+    // land a rounding apart.
+    let cell = tol.confusion();
+    #[allow(clippy::cast_possible_truncation, reason = "a grid cell")]
+    let cell_of = |p: Point| {
+        (
+            (p.x / cell).round() as i64,
+            (p.y / cell).round() as i64,
+            (p.z / cell).round() as i64,
+        )
+    };
+    let mut grid: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
+    let mut welded: Vec<Point> = Vec::new();
+    let mut weld = |p: Point| -> usize {
+        let (x, y, z) = cell_of(p);
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    if let Some(found) = grid.get(&(x + dx, y + dy, z + dz)).and_then(|list| {
+                        list.iter()
+                            .copied()
+                            .find(|&i| welded[i].distance(p) <= cell)
+                    }) {
+                        return found;
+                    }
+                }
+            }
+        }
+        welded.push(p);
+        grid.entry((x, y, z)).or_default().push(welded.len() - 1);
+        welded.len() - 1
+    };
+    let mut flagged: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    let mut uses: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    for (&(g, face), mesh) in faces.iter().zip(&meshes) {
+        let Some(mesh) = mesh else {
+            if seams.contains_key(&g) {
+                flagged.insert(g);
+            }
+            continue;
+        };
+        let at: Vec<usize> = mesh.positions.iter().map(|&p| weld(p)).collect();
+        let mut drawn = 0.0;
+        for t in &mesh.triangles {
+            let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+            drawn += (b - a).cross(c - a).magnitude() * 0.5;
+            let corners = t.map(|i| at[i as usize]);
+            if corners[0] == corners[1] || corners[1] == corners[2] || corners[2] == corners[0] {
+                continue;
+            }
+            for k in 0..3 {
+                let (a, b) = (corners[k], corners[(k + 1) % 3]);
+                uses.entry((a.min(b), a.max(b))).or_default().push(g);
+            }
+        }
+        if seams.contains_key(&g)
+            && drawn
+                > crate::surface_properties(model, face, fine, tol)?.mass * OVERRUN
+                    + tol.confusion()
+        {
+            flagged.insert(g);
         }
     }
+    for users in uses.values() {
+        if users.len() != 2 {
+            flagged.extend(users.iter().copied().filter(|g| seams.contains_key(g)));
+        }
+    }
+    let mut out: Vec<(u32, u32)> = flagged
+        .iter()
+        .flat_map(|g| seams[g].iter().copied())
+        .collect();
     out.sort_unstable();
     out.dedup();
     Ok(out)
 }
+
+/// The most mesh triangles a planar face between curved ones may hold for
+/// its seams with them to be threaded straight.
+const SLIVER_FACETS: usize = 2;
 
 /// How much more a planar face's drawn triangles may cover than its exact
 /// area before its trim is taken to cross itself: a planar face's mesh
