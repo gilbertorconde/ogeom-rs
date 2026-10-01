@@ -13,6 +13,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A cut by an identical solid, and a cap that all but meets a wall.**
+  Cutting a solid by an identical copy described another way (two spheres
+  on turned frames) failed in the arrangement; a solid lying within its
+  tool is now cut away entirely. A drum a hair wider than the box it
+  stands in refused at most turns of its seam: a planar face's bound was
+  its rim's sampled points, and a disc's rim bows out between them by more
+  than the drum's cap pokes past the box wall, so the pair was never
+  intersected. A plane's bound now carries its rim's sampling slack, as a
+  ruled face's does.
+
 - **Three intersector edge cases answer.** A plane tangent to a cone
   along a ruling read `Apart`: a plane through a cone's apex now holds its
   rulings in closed form (one tangent, two crossing, or the apex alone),

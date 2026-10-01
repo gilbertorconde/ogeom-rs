@@ -1043,3 +1043,70 @@ fn boxes_stacked_microns_apart_fuse_without_a_membrane() {
         }
     }
 }
+
+/// A solid cut by itself, or by a copy described another way, is cut away
+/// entirely.
+#[test]
+fn a_solid_cut_by_its_own_copy_leaves_nothing() {
+    let mut model = Model::new();
+    let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 1.0, T)
+        .unwrap()
+        .shape;
+    let same = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 1.0, T)
+        .unwrap()
+        .shape;
+    let turned = Frame::new(Point::ORIGIN, Direction::X, Direction::Y, T).unwrap();
+    let other = ogeom::algo::make_sphere(&mut model, turned, 1.0, T)
+        .unwrap()
+        .shape;
+    for tool in [same, other] {
+        let cut = ogeom::boolean::cut(&mut model, &ball, &tool, T).unwrap();
+        assert!(
+            explore_unique(&model, &cut.shape, ShapeType::Face)
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+/// A drum a hair wider than the box it stands in pokes out of every side
+/// by a sliver. Its caps' rims bow past their sampled chords by far more
+/// than that, and whichever way the drum's seam is turned the caps meet the
+/// box sides and every operation keeps its volumes.
+#[test]
+fn a_drum_poking_a_sliver_out_of_a_box_works_at_any_turn() {
+    let mut reference: Option<(f64, f64, f64)> = None;
+    for turn in [0.0_f64, 0.05, 0.123, 0.3] {
+        let mut model = Model::new();
+        let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (4.0, 4.0, 4.0), T)
+            .unwrap()
+            .shape;
+        let frame = Frame::new(
+            Point::new(2.0, 2.0, 1.0),
+            Direction::Z,
+            Direction::new(ogeom::math::Vector::new(turn.cos(), turn.sin(), 0.0), T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let drum = ogeom::algo::make_cylinder(&mut model, frame, 2.002, 2.0, T)
+            .unwrap()
+            .shape;
+        let (va, vb) = (volume(&model, &block), volume(&model, &drum));
+        let fuse = ogeom::boolean::fuse(&mut model, &block, &drum, T).unwrap();
+        let common = ogeom::boolean::common(&mut model, &block, &drum, T).unwrap();
+        let cut = ogeom::boolean::cut(&mut model, &block, &drum, T).unwrap();
+        let (f, c, k) = (
+            volume(&model, &fuse.shape),
+            volume(&model, &common.shape),
+            volume(&model, &cut.shape),
+        );
+        assert!((f + c - va - vb).abs() < 1e-6, "turn {turn}");
+        assert!((k + c - va).abs() < 1e-6, "turn {turn}");
+        match reference {
+            None => reference = Some((f, c, k)),
+            Some((f0, c0, k0)) => {
+                assert!((f - f0).abs() < 1e-6 && (c - c0).abs() < 1e-6 && (k - k0).abs() < 1e-6);
+            }
+        }
+    }
+}

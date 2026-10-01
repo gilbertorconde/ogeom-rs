@@ -445,16 +445,18 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
             }
         }
         let mut bound = ogeom_math::Aabb::EMPTY;
-        // For a ruled surface the box will be trusted to the boundary's own
-        // hull, so the boundary's sampling slack must be measured: how far
-        // the true edge sags from the 16-chord polyline, read at each
-        // chord's midpoint and doubled for the sag's asymmetry. Nothing else
+        // For a plane or a ruled surface the box is trusted to the
+        // boundary's own hull, so the boundary's sampling slack must be
+        // measured: how far the true edge sags from the 16-chord polyline,
+        // read at each chord's midpoint and doubled for the sag's asymmetry.
+        // A disc's rim bows out between its samples by more than a
+        // cylinder's cap pokes past a wall it all but meets. Nothing else
         // uses the measurement, and the extra evaluations are priced on
-        // spline edges, so nothing else pays for it: an unruled face keeps
+        // spline edges, so nothing else pays for it: any other face keeps
         // the exact box it always had, and the exact admit set with it.
         let ruled = matches!(
             &surface,
-            SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_)
+            SurfaceGeometry::Plane(_) | SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_)
         );
         let mut slack = 0.0_f64;
         for e in &mut edges {
@@ -484,13 +486,15 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
         // A plane never bulges past its boundary. A ruled surface (cylinder,
         // cone) cannot either: every surface point lies on a straight ruling
         // whose ends are on the boundary, so the face sits inside its
-        // boundary's hull and only the boundary's own sampling slack is owed.
+        // boundary's hull and only the boundary's own sampling slack is owed,
+        // the plane's as much as the ruled surface's.
         // Anything else may genuinely bulge (a dome past its equator) and
         // keeps most of its own diagonal as allowance. The audit behind
         // OGEOM_BOOL_AUDIT_BOUNDS holds every arm to conservatism.
         let bulge = match &surface {
-            SurfaceGeometry::Plane(_) => 0.0,
-            SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_) => slack,
+            SurfaceGeometry::Plane(_) | SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_) => {
+                slack
+            }
             _ => bound.diagonal() * 0.75,
         };
         // The scale the marching chord is derived from, decoupled from the
@@ -7832,24 +7836,46 @@ pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRes
         &baked_if_scaled(model, a, tol)?,
         &baked_if_scaled(model, b, tol)?,
     );
-    let fused = general_fuse(model, a, b, tol)?;
-    // The first argument's outward pieces stay; the tool's inward pieces
-    // close the cut with their material side flipped. On the shared surface:
-    // an opposed pair means the tool's material is entirely on the other
-    // side, so the first argument's face survives untouched; an aligned pair
-    // means the tool's material backs the same wall, which the cut removes.
-    let kept: Vec<(usize, bool)> = fused
-        .pieces
-        .iter()
-        .enumerate()
-        .filter_map(|(i, p)| match (p.from_a, p.state) {
-            (true, PieceState::Out) => Some((i, false)),
-            (true, PieceState::OnOpposed) => Some((i, false)),
-            (false, PieceState::In) => Some((i, true)),
-            _ => None,
-        })
-        .collect();
-    assemble_result(model, &fused, &kept, a, b, tol)
+    let built = (|| {
+        let fused = general_fuse(model, a, b, tol)?;
+        // The first argument's outward pieces stay; the tool's inward pieces
+        // close the cut with their material side flipped. On the shared
+        // surface: an opposed pair means the tool's material is entirely on
+        // the other side, so the first argument's face survives untouched;
+        // an aligned pair means the tool's material backs the same wall,
+        // which the cut removes.
+        let kept: Vec<(usize, bool)> = fused
+            .pieces
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| match (p.from_a, p.state) {
+                (true, PieceState::Out) => Some((i, false)),
+                (true, PieceState::OnOpposed) => Some((i, false)),
+                (false, PieceState::In) => Some((i, true)),
+                _ => None,
+            })
+            .collect();
+        assemble_result(model, &fused, &kept, a, b, tol)
+    })();
+    let refusal = match built {
+        Ok(built) => return Ok(built),
+        Err(e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_))) => {
+            return Err(e);
+        }
+        Err(e) => e,
+    };
+    // A solid lying within the tool, whatever contact their boundaries
+    // make (the same solid twice among them), is cut away entirely.
+    if nested(model, b, a, tol)? != Some(true) {
+        return Err(refusal);
+    }
+    let empty = model.add_compound(&[])?;
+    let mut history = ogeom_algo::History::new();
+    for face in explore_unique(model, a, ShapeType::Face)? {
+        history.delete(&face);
+    }
+    history.modify(a, empty.clone());
+    Ok(Built::new(empty, history))
 }
 
 /// The edges where the two solids' boundaries cross.
