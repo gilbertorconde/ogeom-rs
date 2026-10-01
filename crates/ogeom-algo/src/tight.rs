@@ -15,6 +15,17 @@ use ogeom_topo::{EdgeRepr, Model, NodeData, Shape, ShapeType, explore_unique};
 
 const AXES: [Vector; 3] = [Vector::X, Vector::Y, Vector::Z];
 
+/// Whether a surface is swept by straight lines: a plane, a drum, a cone,
+/// a linear extrusion, or a trim of one.
+fn ruled(surface: &ogeom_geom::SurfaceGeometry) -> bool {
+    use ogeom_geom::SurfaceGeometry as S;
+    match surface {
+        S::Plane(_) | S::Cylinder(_) | S::Cone(_) | S::Extrusion(_) => true,
+        S::Trimmed(t) => ruled(t.basis()),
+        S::Sphere(_) | S::Torus(_) | S::BSpline(_) | S::Revolution(_) | S::Offset(_) => false,
+    }
+}
+
 /// The smallest axis-aligned box holding `shape`, to within `tol`: each of
 /// its six sides where the shape actually reaches, on an edge, at a vertex
 /// or inside a face.
@@ -46,8 +57,39 @@ pub fn tight_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResul
         let Some(geometry) = model.geometry().curve(*curve) else {
             ogeom_bail!(Dangling, "curve is not in this model");
         };
+        // A straight edge leads at its ends, which the vertices hold.
+        if matches!(geometry, ogeom_geom::Curve::Line(_)) {
+            continue;
+        }
         let placement = edge.transform(model.datums())?;
         let at = |t: f64| -> OgeomResult<Point> { Ok(placement.apply(geometry.point_at(t, tol)?)) };
+        // A circle leads along each side at the angle its frame names, or
+        // half a turn on: those angles, either way round the circle, are
+        // the candidates, and each that falls on the arc is a point of it.
+        if let ogeom_geom::Curve::Circle(c) = geometry {
+            let frame = c.circle().frame();
+            let (x, y) = (
+                placement.apply_vector(frame.x().vector()),
+                placement.apply_vector(frame.y().vector()),
+            );
+            let tau = core::f64::consts::TAU;
+            for axis in AXES {
+                let theta = axis.dot(y).atan2(axis.dot(x));
+                for angle in [
+                    theta,
+                    theta + core::f64::consts::PI,
+                    -theta,
+                    core::f64::consts::PI - theta,
+                ] {
+                    let turns = ((range.0 - angle) / tau).ceil();
+                    let t = turns.mul_add(tau, angle);
+                    if t <= range.1 {
+                        points.push(at(t)?);
+                    }
+                }
+            }
+            continue;
+        }
         const N: usize = 64;
         #[allow(clippy::cast_precision_loss)]
         let step = (range.1 - range.0) / N as f64;
@@ -94,6 +136,13 @@ pub fn tight_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResul
         let Some(surface) = model.geometry().surface(data.surface) else {
             ogeom_bail!(Dangling, "surface is not in this model");
         };
+        // A face on a ruled surface reaches no further than its boundary:
+        // every point of it lies on a straight stretch of the surface that
+        // ends on the boundary, and a coordinate along a straight stretch
+        // leads at one end of it. The edges hold those extremes already.
+        if ruled(surface) {
+            continue;
+        }
         let placement = face.transform(model.datums())?;
         let mesh = ogeom_mesh::triangulate_face(model, &face, Deflection::default(), tol)?;
         if mesh.positions.is_empty() {

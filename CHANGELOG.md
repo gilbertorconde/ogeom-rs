@@ -20,6 +20,16 @@ bump may break the API and a patch bump may not.
   a feature unifies what the feature made without undoing splits the part
   already held.
 
+### Changed
+
+- **`tight_bounds` is hundreds of times faster on ruled and round
+  parts.** Every face was meshed and searched for an interior extreme, and
+  every edge searched numerically. A face on a plane, drum, cone or linear
+  extrusion reaches no further than its boundary, a straight edge leads at
+  its ends, and a circle at an angle its frame names: those are taken as
+  they are. A plate with four hundred bores bounds in 1 ms, not 311 ms, to
+  the same box.
+
 ## [0.6.1] - 2026-10-01
 
 A patch release: `cargo semver-checks` against 0.6.0 finds no breaking
