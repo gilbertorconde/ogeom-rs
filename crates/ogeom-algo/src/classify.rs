@@ -318,8 +318,13 @@ struct PreparedFace {
     surface: ogeom_geom::SurfaceGeometry,
     /// The placement's inverse, for carrying a point into the surface's frame.
     inverse: ogeom_math::Transform,
-    /// The trimming rings, polylined at the boundary's stated chord.
-    rings: Vec<Vec<Point2>>,
+    /// The face itself, for drawing its rings when first asked.
+    face: Shape,
+    /// The trimming rings, polylined at the boundary's stated chord, drawn
+    /// the first time a point or a ray comes near the face: a boolean asks
+    /// about a few faces of a large solid, and drawing every face's rings
+    /// up front cost more than all its questions.
+    rings: std::sync::OnceLock<OgeomResult<Vec<Vec<Point2>>>>,
     /// Where the face can be, padded past anything its bound could miss: a
     /// point outside is not on it, and a ray missing it does not cross it.
     bound: Aabb,
@@ -329,10 +334,32 @@ struct PreparedFace {
 }
 
 impl PreparedFace {
+    /// The face's trimming rings at `deflection`, drawn once.
+    fn rings(
+        &self,
+        model: &Model,
+        deflection: Deflection,
+        tol: Tolerances,
+    ) -> OgeomResult<&[Vec<Point2>]> {
+        match self
+            .rings
+            .get_or_init(|| face_boundary(model, &self.face, deflection, tol))
+        {
+            Ok(rings) => Ok(rings),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
     /// Where a point sits against this face: [`classify_on_face`] on what
     /// was prepared, with no surface lookup, placement or ring walk per
     /// question.
-    fn holds(&self, point: Point, chord: f64, tol: Tolerances) -> OgeomResult<Containment> {
+    fn holds(
+        &self,
+        model: &Model,
+        point: Point,
+        deflection: Deflection,
+        tol: Tolerances,
+    ) -> OgeomResult<Containment> {
         let local = self.inverse.apply(point);
         let projection = project_on_surface(&self.surface, local, 32, tol)?;
         if projection.distance > self.reach {
@@ -340,10 +367,10 @@ impl PreparedFace {
         }
         Ok(against_rings(
             &self.surface,
-            &self.rings,
+            self.rings(model, deflection, tol)?,
             projection.parameters,
             self.reach,
-            chord,
+            deflection.chord,
             tol,
         ))
     }
@@ -410,15 +437,6 @@ impl SolidBoundary {
             ogeom_bail!(Construction, "the boundary bounds nothing");
         };
 
-        // The rings' own polylining error, spatially: they are only used to
-        // decide which side of a face's trim a crossing landed, and a crossing
-        // nearer the ring than this is ambiguous rather than decided.
-        let ring_deflection = Deflection {
-            chord: ring_chord,
-            angular: 0.05,
-            ..Deflection::default()
-        };
-
         let faces = ogeom_topo::explore_unique(model, solid, ShapeType::Face)?;
         // One prepared face per face, in face order, computed in parallel:
         // each preparation reads the model and writes nothing, and walking a
@@ -435,7 +453,6 @@ impl SolidBoundary {
                 ogeom_bail!(Dangling, "face refers to a surface not in this model");
             };
             let inverse = face.transform(model.datums())?.inverse()?;
-            let rings = face_boundary(model, face, ring_deflection, tol)?;
             let own = crate::measure::shape_bounds(model, face, tol)?;
             let bound = own.expanded(
                 ring_chord + data.tolerance.get() + tol.confusion() * 1e2 + own.diagonal() * 0.02,
@@ -443,7 +460,8 @@ impl SolidBoundary {
             Ok(PreparedFace {
                 surface: surface.clone(),
                 inverse,
-                rings,
+                face: face.clone(),
+                rings: std::sync::OnceLock::new(),
                 bound,
                 reach: tol.confusion().max(data.tolerance.get()),
             })
@@ -464,7 +482,7 @@ impl SolidBoundary {
     /// # Errors
     ///
     /// As [`classify_in_solid_exact`].
-    pub fn holds(&self, _model: &Model, point: Point, tol: Tolerances) -> OgeomResult<Containment> {
+    pub fn holds(&self, model: &Model, point: Point, tol: Tolerances) -> OgeomResult<Containment> {
         let ring_chord = self.ring_chord;
         let ring_deflection = Deflection {
             chord: ring_chord,
@@ -484,7 +502,7 @@ impl SolidBoundary {
             if !prepared.bound.contains(point) {
                 continue;
             }
-            if prepared.holds(point, ring_deflection.chord, tol)? != Containment::Out {
+            if prepared.holds(model, point, ring_deflection, tol)? != Containment::Out {
                 return Ok(Containment::On);
             }
         }
@@ -493,14 +511,13 @@ impl SolidBoundary {
             let far = point + along * length;
             let mut crossings = 0_usize;
 
-            for PreparedFace {
-                surface,
-                inverse,
-                rings,
-                bound,
-                ..
-            } in &self.faces
-            {
+            for prepared in &self.faces {
+                let PreparedFace {
+                    surface,
+                    inverse,
+                    bound,
+                    ..
+                } = prepared;
                 if !segment_meets(bound, point, far) {
                     continue;
                 }
@@ -529,6 +546,7 @@ impl SolidBoundary {
                         // rings is the unbounded surface talking, not the face,
                         // and it neither counts nor poisons the ray.
                         let (u, v) = hit.on_surface;
+                        let rings = prepared.rings(model, ring_deflection, tol)?;
                         let at = place_on_rings(surface, rings, Point2::new(u, v), tol);
                         let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
                         if distance_to_rings(rings, at) <= band || inside_boundary(rings, at) {
@@ -552,6 +570,7 @@ impl SolidBoundary {
                         // needs zero or two; abandon the ray rather than guess.
                         continue 'directions;
                     }
+                    let rings = prepared.rings(model, ring_deflection, tol)?;
                     let at = place_on_rings(surface, rings, Point2::new(u, v), tol);
                     let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
                     if distance_to_rings(rings, at) <= band {

@@ -29,6 +29,15 @@ bump may break the API and a patch bump may not.
   its ends, and a circle at an angle its frame names: those are taken as
   they are. A plate with four hundred bores bounds in 1 ms, not 311 ms, to
   the same box.
+- **A small cut into a large solid costs what it touches.** A face the
+  tool leaves alone (no section on it, no edge of it split, no coincident
+  partner) is neither split nor arranged: its rings are its own wires and
+  its state is read once, at the middle of one of its edges. The other
+  solid's face trims are drawn only when a point or a ray comes near them,
+  face outlines only for the faces a section crosses, a circle's polyline
+  in closed form, and a piece's probes are checked against the fine rings
+  their rays can reach. A pocket into a plate with four hundred bores
+  takes 85 ms, from 160.
 
 ## [0.6.1] - 2026-10-01
 

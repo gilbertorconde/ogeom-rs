@@ -246,13 +246,52 @@ pub fn discretize(
     } else {
         deflection.min_segments
     };
-    let mut parameters: Vec<f64> = (0..=start)
+    let parameters: Vec<f64> = (0..=start)
         .map(|i| {
             #[allow(clippy::cast_precision_loss)]
             let t = i as f64 / start as f64;
             lo + (hi - lo) * t
         })
         .collect();
+    if let Some(uniform) = circle_halvings(curve, (lo, hi), start, deflection) {
+        return halved(curve, parameters, uniform, tol);
+    }
+    bisect(curve, (lo, hi), parameters, deflection, tol)
+}
+
+/// The seed parameters halved `times` over, by the midpoints the bisection
+/// would take, and the curve's points there.
+fn halved(curve: &Curve, seeds: Vec<f64>, times: u32, tol: Tolerances) -> OgeomResult<Polyline> {
+    let mut parameters = seeds;
+    for _ in 0..times {
+        let mut finer = Vec::with_capacity(parameters.len() * 2);
+        for pair in parameters.windows(2) {
+            finer.push(pair[0]);
+            finer.push(f64::midpoint(pair[0], pair[1]));
+        }
+        finer.extend(parameters.last().copied());
+        parameters = finer;
+    }
+    let points = parameters
+        .iter()
+        .map(|u| curve.point_at(*u, tol))
+        .collect::<OgeomResult<_>>()?;
+    Ok(Polyline {
+        points,
+        parameters,
+        deflection_met: true,
+    })
+}
+
+/// The leftmost-first bisection from the seed parameters: each segment
+/// split while [`needs_split`] asks it to, up to the segment cap.
+fn bisect(
+    curve: &Curve,
+    (lo, hi): (f64, f64),
+    mut parameters: Vec<f64>,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<Polyline> {
     let mut points: Vec<Point> = parameters
         .iter()
         .map(|u| curve.point_at(*u, tol))
@@ -310,6 +349,68 @@ pub fn discretize(
         parameters,
         deflection_met: met,
     })
+}
+
+/// How many times a circular arc's seed segments are halved, all of them
+/// alike: on a circle every segment of one depth spans the same angle, so
+/// [`needs_split`] answers them all the same, and the depth it settles at
+/// is the first whose span passes. `None` for any other curve, where the
+/// segment cap would stop the halving part-way, or where a span stands
+/// within rounding of a test's limit.
+fn circle_halvings(
+    curve: &Curve,
+    (lo, hi): (f64, f64),
+    seeds: usize,
+    deflection: Deflection,
+) -> Option<u32> {
+    let Curve::Circle(circle) = curve else {
+        return None;
+    };
+    let radius = circle.circle().radius();
+    let whole = hi - lo;
+    let mut segments = seeds;
+    for depth in 0..48 {
+        #[allow(clippy::cast_precision_loss, reason = "a segment count")]
+        let span = whole / segments as f64;
+        let sag = radius * (1.0 - (span / 2.0).cos());
+        let reach = 2.0 * radius * (span / 2.0).sin();
+        // Where a test that decides stands within rounding of its limit, the
+        // bisection's own segments, each rounded its own way, fall either
+        // side of it, and only the bisection says which.
+        let near = |x: f64, limit: f64| (x - limit).abs() <= limit.abs() * 1e-9;
+        if near(sag, deflection.chord) {
+            return None;
+        }
+        let split = if sag > deflection.chord {
+            true
+        } else {
+            if near(reach, deflection.chord) {
+                return None;
+            }
+            let short = reach < deflection.chord && {
+                if near(span, whole / 16.0) {
+                    return None;
+                }
+                span < whole / 16.0
+            };
+            if short {
+                false
+            } else {
+                if near(span, deflection.angular) {
+                    return None;
+                }
+                span > deflection.angular
+            }
+        };
+        if !split {
+            return Some(depth);
+        }
+        segments *= 2;
+        if segments + 1 > deflection.max_segments {
+            return None;
+        }
+    }
+    None
 }
 
 /// Whether one segment violates either tolerance.
@@ -527,6 +628,41 @@ mod tests {
 
     fn circle(radius: f64) -> Curve {
         CircleCurve::new(Circle::new(Frame::WORLD, radius, T).unwrap()).into()
+    }
+
+    /// A circle is halved uniformly in closed form, and comes out exactly
+    /// as the bisection would make it: the same parameters, bit for bit,
+    /// over radii, arcs and deflections either side of each test's limit.
+    #[test]
+    fn a_circle_halves_as_the_bisection_would() {
+        for radius in [1e-3, 0.37, 1.0, 2.5, 40.0, 900.0] {
+            for (lo, hi) in [(0.0, core::f64::consts::TAU), (0.3, 1.9), (-2.0, 0.05)] {
+                for chord in [1e-4, 1e-3, 0.01, 0.1] {
+                    for angular in [0.05, 0.2, 0.5] {
+                        let deflection = Deflection {
+                            chord,
+                            angular,
+                            ..Deflection::default()
+                        };
+                        let curve = circle(radius);
+                        let fast = discretize(&curve, (lo, hi), deflection, T).unwrap();
+                        let seeds: Vec<f64> = (0..=deflection.min_segments)
+                            .map(|i| {
+                                #[allow(clippy::cast_precision_loss)]
+                                let t = i as f64 / deflection.min_segments as f64;
+                                lo + (hi - lo) * t
+                            })
+                            .collect();
+                        let slow = bisect(&curve, (lo, hi), seeds, deflection, T).unwrap();
+                        assert_eq!(
+                            fast.parameters, slow.parameters,
+                            "r {radius} ({lo}, {hi}) chord {chord} angular {angular}"
+                        );
+                        assert_eq!(fast.deflection_met, slow.deflection_met);
+                    }
+                }
+            }
+        }
     }
 
     /// The greatest distance from the curve to the polyline, sampled densely.

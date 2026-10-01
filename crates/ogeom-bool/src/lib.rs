@@ -2309,13 +2309,26 @@ fn fill(
         bridge_outline_gaps(&mut lines);
         Ok(lines)
     };
-    let mut outlines_a = Vec::new();
-    for f in &ga.faces {
-        outlines_a.push(outline(f)?);
+    // Only the faces a section crosses are asked about: on a large solid
+    // and a small tool that is a handful, and drawing every face's outline
+    // was most of the paving's cost.
+    let crossed_a: std::collections::HashSet<usize> = sections.iter().map(|s| s.face_a).collect();
+    let crossed_b: std::collections::HashSet<usize> = sections.iter().map(|s| s.face_b).collect();
+    let mut outlines_a = Vec::with_capacity(ga.faces.len());
+    for (i, f) in ga.faces.iter().enumerate() {
+        outlines_a.push(if crossed_a.contains(&i) {
+            outline(f)?
+        } else {
+            Vec::new()
+        });
     }
-    let mut outlines_b = Vec::new();
-    for f in &gb.faces {
-        outlines_b.push(outline(f)?);
+    let mut outlines_b = Vec::with_capacity(gb.faces.len());
+    for (i, f) in gb.faces.iter().enumerate() {
+        outlines_b.push(if crossed_b.contains(&i) {
+            outline(f)?
+        } else {
+            Vec::new()
+        });
     }
 
     // Crossings of each section with the boundary edges of both its faces,
@@ -4242,6 +4255,7 @@ fn fine_rings(
     rings: &[Vec<Traversal<Tag>>],
     sections: &[SectionRec],
     from_a: bool,
+    only: Option<&[bool]>,
     tol: Tolerances,
 ) -> Option<Vec<Vec<Point2>>> {
     const FINE: usize = 1024;
@@ -4249,8 +4263,12 @@ fn fine_rings(
         return None;
     }
     let mut lines: Vec<Vec<Point2>> = Vec::with_capacity(rings.len());
-    for ring in rings {
+    for (k, ring) in rings.iter().enumerate() {
         let mut line: Vec<Point2> = Vec::new();
+        if only.is_some_and(|wanted| !wanted.get(k).copied().unwrap_or(true)) {
+            lines.push(line);
+            continue;
+        }
         for traversal in ring {
             let (curve, a, b, wrap) = match traversal.tag {
                 Tag::Boundary { edge, range } => {
@@ -4290,6 +4308,37 @@ fn fine_rings(
         lines.push(line);
     }
     Some(lines)
+}
+
+/// Which of a piece's rings a horizontal ray from any of `probes` may
+/// cross: those whose outline, widened past what its chords bow, spans the
+/// probe's height and reaches to its right. A ray crosses no other, coarse
+/// or fine, and an empty ring in its place counts the same.
+fn rings_near(outlines: &[Vec<Point2>], probes: &[Point2]) -> Vec<bool> {
+    outlines
+        .iter()
+        .map(|line| {
+            let (mut low, mut high) = (
+                Point2::new(f64::INFINITY, f64::INFINITY),
+                Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+            );
+            for p in line {
+                low = Point2::new(low.x.min(p.x), low.y.min(p.y));
+                high = Point2::new(high.x.max(p.x), high.y.max(p.y));
+            }
+            if low
+                .x
+                .partial_cmp(&high.x)
+                .is_none_or(core::cmp::Ordering::is_gt)
+            {
+                return true;
+            }
+            let margin = 1e-3 + 1e-2 * low.distance(high);
+            probes
+                .iter()
+                .any(|p| p.y >= low.y - margin && p.y <= high.y + margin && p.x <= high.x + margin)
+        })
+        .collect()
 }
 
 /// Whether a chart point lies inside a planar face, counted exactly: the
@@ -4653,6 +4702,67 @@ fn pave_junctions(
         }
     }
     Ok(junctions)
+}
+
+/// How long an edge of a face left alone must be: a shorter one may be
+/// dust some other chart collapses, which only the face's own split finds.
+const QUIET_EDGE: f64 = 1e-2;
+
+/// The one piece of a face the other solid leaves alone: its own wires as
+/// rings, its state read at the middle of one of its edges, which no
+/// section touches and which therefore stands inside the other solid or
+/// out of it with the whole face. `None` where that edge reads on the other
+/// boundary after all, or a wire's edge is not one the face was gathered
+/// with.
+fn quiet_piece(
+    model: &Model,
+    from_a: bool,
+    fi: usize,
+    face: &GFace,
+    boundary: &ogeom_algo::SolidBoundary,
+    tol: Tolerances,
+) -> OgeomResult<Option<FacePiece>> {
+    let forward = face.face.oriented(ogeom_topo::Orientation::Forward);
+    let mut rings = Vec::new();
+    for wire in model.ordered_children_of(&forward)? {
+        let mut ring = Vec::new();
+        for edge in model.ordered_children_of(&wire)? {
+            let key = EdgeKey::of(&edge);
+            let Some(index) = face.edges.iter().position(|e| e.node == key) else {
+                return Ok(None);
+            };
+            ring.push(Traversal {
+                tag: Tag::Boundary {
+                    edge: index,
+                    range: face.edges[index].crange,
+                },
+                reversed: edge.orientation() == ogeom_topo::Orientation::Reversed,
+            });
+        }
+        rings.push(ring);
+    }
+    let Some(e) = face.edges.first() else {
+        return Ok(None);
+    };
+    let probe = e
+        .curve
+        .point_at(f64::midpoint(e.crange.0, e.crange.1), tol)?;
+    let state = match boundary.holds(model, probe, tol) {
+        Ok(Containment::In) => PieceState::In,
+        Ok(Containment::Out) => PieceState::Out,
+        Ok(Containment::On) | Err(ogeom_core::OgeomError::NotDone(_)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    Ok(Some(FacePiece {
+        from_a,
+        face: fi,
+        rings,
+        outlines: Vec::new(),
+        probe,
+        state,
+        covered: false,
+        whole: true,
+    }))
 }
 
 /// The face's outward normal at a chart point: the surface's, flipped when
@@ -6069,11 +6179,47 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     };
     /// A face's strands and its snap, waiting to be arranged.
     type Prepared = Option<(Vec<Strand<Tag>>, f64)>;
+    // A face the other solid leaves alone (no section on it, no contact
+    // into it, no edge of it split, no coincident partner, no pole, no
+    // edge short enough to be anyone's dust) is one piece, itself, and is
+    // neither split nor arranged: its rings are its own wires and its state
+    // is read once. On a large solid and a small tool that is nearly every
+    // face.
+    let mut quiet: [Vec<bool>; 2] = [vec![true; ga.faces.len()], vec![true; gb.faces.len()]];
+    for s in &sections {
+        quiet[0][s.face_a] = false;
+        quiet[1][s.face_b] = false;
+    }
+    for c in &contacts {
+        quiet[usize::from(!c.target_from_a)][c.target_face] = false;
+    }
+    for t in &tangents {
+        quiet[0][t.face_a] = false;
+        quiet[1][t.face_b] = false;
+    }
+    for (side, solid, same) in [(0_usize, &ga, &same_a), (1, &gb, &same_b)] {
+        for (fi, face) in solid.faces.iter().enumerate() {
+            if !same[fi].is_empty()
+                || !face.poles.is_empty()
+                || face.edges.iter().any(|e| {
+                    paves.contains_key(&e.node)
+                        || e.ends[0].0.distance(e.ends[1].0) <= QUIET_EDGE
+                        || e.bound.diagonal() <= QUIET_EDGE
+                })
+            {
+                quiet[side][fi] = false;
+            }
+        }
+    }
     let mut prepared: [Vec<Prepared>; 2] = [Vec::new(), Vec::new()];
     let mut dust: Vec<(usize, usize, (f64, f64))> = Vec::new();
     for (side, solid, from_a) in [(0_usize, &ga, true), (1, &gb, false)] {
         for (fi, face) in solid.faces.iter().enumerate() {
             ogeom_core::progress::checkpoint()?;
+            if quiet[side][fi] {
+                prepared[side].push(Some((Vec::new(), 0.0)));
+                continue;
+            }
             let (strands, snap) = strands_of(from_a, fi, face)?;
             for st in &strands {
                 if st.polyline.len() >= 2
@@ -6128,13 +6274,20 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 (&gb, &ga.solid, &boundaries[1])
             };
             let face = &own.faces[fi];
-            let Some((mut strands, face_snap)) = prepared_face
+            let Some((mut strands, mut face_snap)) = prepared_face
                 .lock()
                 .map_err(|_| ogeom_core::ogeom_err!(Construction, "a face's work was poisoned"))?
                 .take()
             else {
                 ogeom_bail!(Construction, "a face was prepared twice");
             };
+            if quiet[usize::from(!from_a)][fi] {
+                if let Some(piece) = quiet_piece(model, from_a, fi, face, boundary, tol)? {
+                    return Ok((vec![piece], Vec::new()));
+                }
+                // Read on the other solid after all: split it as any face.
+                (strands, face_snap) = strands_of(from_a, fi, face)?;
+            }
             let mut pieces: Vec<FacePiece> = Vec::new();
             let mut junctions: Vec<Junction> = Vec::new();
             // A strand's ends in space, or none for a pole.
@@ -6346,12 +6499,18 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 // where none of them is inside those, the rings offer their
                 // own: a sliver narrower than the outline's chords bow has
                 // every coarse probe in a neighbour.
-                let fine = fine_rings(face, &piece.rings, &sections, from_a, tol);
+                // Only the rings a probe's ray can cross are drawn finely: on a
+                // face with hundreds of holes the rest are far from every probe.
+                let reached = rings_near(&piece.outlines, &piece.interiors);
+                let fine = fine_rings(face, &piece.rings, &sections, from_a, Some(&reached), tol);
                 let mut interiors: Vec<Point2> = piece.interiors.clone();
                 if let Some(fine) = &fine {
                     interiors.retain(|p| arrange::inside_rings(fine, *p));
-                    if interiors.is_empty() {
-                        interiors = arrange::interior_points_of(fine, tol.parametric());
+                    if interiors.is_empty()
+                        && let Some(every) =
+                            fine_rings(face, &piece.rings, &sections, from_a, None, tol)
+                    {
+                        interiors = arrange::interior_points_of(&every, tol.parametric());
                     }
                 }
                 for candidate in &interiors {
