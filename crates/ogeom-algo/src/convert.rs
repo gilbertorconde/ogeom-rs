@@ -1324,7 +1324,21 @@ fn bounded_to_face(
             ogeom_geom::CylinderSurface::new(c.cylinder(), (v0 - margin, v1 + margin))?.into()
         }
         SurfaceGeometry::Cone(c) => {
-            ogeom_geom::ConeSurface::new(c.cone(), (v0 - margin, v1 + margin))?.into()
+            // The margin stops at the apex: past it lies the other nappe,
+            // which the face never reaches and a patch over it would take in.
+            let cone = c.cone();
+            let slope = cone.half_angle().tan();
+            let (mut low, mut high) = (v0 - margin, v1 + margin);
+            if slope.abs() > tol.angular() {
+                let apex = -cone.reference_radius() / slope;
+                if v0 >= apex - tol.confusion() {
+                    low = low.max(apex);
+                }
+                if v1 <= apex + tol.confusion() {
+                    high = high.min(apex);
+                }
+            }
+            ogeom_geom::ConeSurface::new(cone, (low, high))?.into()
         }
         // An offset over a plane's or drum's unbounded chart has no
         // extent to fit or convert over; held to the face's window, it has.

@@ -32,3 +32,38 @@ fn a_drilled_spline_box_measures_exactly() {
         p.mass
     );
 }
+
+/// A pointed cone converted to splines, or stretched unevenly, keeps its
+/// apex: the conversion's chart stops there rather than running on into the
+/// cone's other nappe.
+#[test]
+fn a_pointed_cone_converts_up_to_its_apex() {
+    let pointed = std::f64::consts::PI * 36.0 * 9.0 / 3.0;
+    let mut model = Model::new();
+    let cone = ogeom::algo::make_cone(&mut model, Frame::WORLD, 6.0, 0.0, 9.0, T)
+        .unwrap()
+        .shape;
+    let splines = to_nurbs(&mut model, &cone, T).unwrap().shape;
+    let fine = Deflection::with_chord(1e-3).unwrap();
+    let measured = volume_properties(&model, &splines, fine, T).unwrap().mass;
+    assert!(
+        (measured - pointed).abs() < pointed * 1e-6,
+        "{measured} against {pointed}"
+    );
+    let stretch = ogeom::math::GeneralTransform::scaling_xyz(2.0, 1.0, 1.0);
+    let stretched = ogeom::algo::general_transformed_shape(&mut model, &cone, &stretch, T)
+        .unwrap()
+        .shape;
+    let measured = volume_properties(&model, &stretched, fine, T).unwrap().mass;
+    assert!(
+        (measured - 2.0 * pointed).abs() < pointed * 1e-6,
+        "{measured} against {}",
+        2.0 * pointed
+    );
+    let top = ogeom::algo::tight_bounds(&model, &stretched, T)
+        .unwrap()
+        .high()
+        .unwrap()
+        .z;
+    assert!((top - 9.0).abs() < 1e-6, "the apex stands at {top}");
+}

@@ -53,7 +53,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 ### A. Other algorithms
 
 - [x] **A1.** `make_revolution` of a face whose hole winds the same way as its outline adds the hole's volume (`ogeom-algo/src/sweep.rs` `revolution_over_face`). (c834382)
-- [ ] **A2.** `to_nurbs` and `general_transformed_shape` extend a pointed cone's window past the apex: 15 to 20% too much volume (`convert.rs` `bounded_to_face`).
+- [x] **A2.** `to_nurbs` and `general_transformed_shape` extend a pointed cone's window past the apex: 15 to 20% too much volume (`convert.rs` `bounded_to_face`).
 
 ## Tier 2: narrower wrong results, and crashes
 

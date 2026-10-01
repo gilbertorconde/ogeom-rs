@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A pointed cone converts up to its apex.** `to_nurbs` and
+  `general_transformed_shape` widened a cone face's window by a margin
+  that ran past the apex into the other nappe, and the converted cone came
+  back 15 to 20% too big. The margin stops at the apex.
+
 - **A hole wound like its outline revolves hollow.** `make_revolution` read
   the hand of the outline alone, so a hole wound the same way swept walls
   facing into the material and added the hole's volume. Each wire's turn
