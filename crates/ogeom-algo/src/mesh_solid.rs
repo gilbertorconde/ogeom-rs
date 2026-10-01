@@ -2168,7 +2168,7 @@ const PATCH_SCALE: f64 = 20.0;
 
 /// How much larger than a seed's flat patch another must be for a first
 /// sample to take its facets without growing on from them.
-const LEAF_SCALE: f64 = 4.0;
+const LEAF_SCALE: f64 = 16.0;
 
 /// The mesh cut into flat patches: each grown from its largest facet across
 /// edges to neighbours whose normals stay within a couple of degrees of
