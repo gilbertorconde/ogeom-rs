@@ -1981,6 +1981,99 @@ fn fill(
                             }
                         }
                     }
+                    // Two planes at a small angle that share an edge only to
+                    // their points' rounding (a pad's wall standing on a
+                    // facet just under the top edge they both hold) cross on
+                    // a line the solve places by that rounding over the
+                    // angle's sine: microns of slop, tens of microns along.
+                    // An edge of either lying on the other's plane to within
+                    // the weld distance, and off the solved line by more than
+                    // the confusion distance yet no more than that slop
+                    // allows, is where they cross: it splits the other face
+                    // as a contact, and the solved line, a sliver away from
+                    // it, splits nothing.
+                    let mut replaced = false;
+                    if let (SurfaceGeometry::Plane(pa), SurfaceGeometry::Plane(pb)) =
+                        (&fa.surface, &fb.surface)
+                    {
+                        let sine = pa
+                            .plane()
+                            .normal()
+                            .vector()
+                            .cross(pb.plane().normal().vector())
+                            .magnitude();
+                        let lines: Vec<&Curve> = curves
+                            .iter()
+                            .filter(|c| !c.tangential)
+                            .map(|c| &c.curve)
+                            .collect();
+                        if sine > 1e-3
+                            && let [solved] = lines.as_slice()
+                            && matches!(solved, Curve::Line(_))
+                        {
+                            let weld = tol.confusion() * 1e2;
+                            for (owner, target, target_from_a, target_face) in
+                                [(fb, fa, true, ia), (fa, fb, false, ib)]
+                            {
+                                let SurfaceGeometry::Plane(on) = &target.surface else {
+                                    continue;
+                                };
+                                for e in &owner.edges {
+                                    if !matches!(&*e.curve, Curve::Line(_)) {
+                                        continue;
+                                    }
+                                    let mut ends = Vec::with_capacity(2);
+                                    for t in [e.crange.0, e.crange.1] {
+                                        ends.push(e.curve.point_at(t, tol)?);
+                                    }
+                                    let stray = ends
+                                        .iter()
+                                        .map(|p| on.plane().distance_to(*p))
+                                        .fold(0.0_f64, f64::max);
+                                    if stray > weld {
+                                        continue;
+                                    }
+                                    let mut off = 0.0_f64;
+                                    for p in &ends {
+                                        off = off.max(
+                                            ogeom_algo::project_on_curve(solved, *p, 64, tol)?
+                                                .distance,
+                                        );
+                                    }
+                                    // The solve's own slop, the edge's
+                                    // stray magnified by the shallow angle;
+                                    // a line no further from the edge than
+                                    // the edge from the plane is a crossing
+                                    // the solve placed well.
+                                    if off <= tol.confusion().max(stray * 2.0) || off > weld / sine
+                                    {
+                                        continue;
+                                    }
+                                    let Some(pcurve) = ogeom_intersect::exact_pcurve_of(
+                                        &e.curve,
+                                        &target.surface,
+                                        tol,
+                                    ) else {
+                                        continue;
+                                    };
+                                    out.contacts.push(ContactRec {
+                                        curve: (*e.curve).clone(),
+                                        crange: e.crange,
+                                        pcurve,
+                                        prange: e.crange,
+                                        node: e.node,
+                                        tolerance: e
+                                            .tolerance
+                                            .max(owner.tolerance + target.tolerance),
+                                        target_from_a,
+                                        target_face,
+                                        bound: e.bound,
+                                    });
+                                    replaced = true;
+                                }
+                            }
+                        }
+                    }
                     // Where one curve has no chart image, the pair is
                     // marched whole, every branch at once: the sections its
                     // other curves already gave are replaced by the marched
@@ -2006,7 +2099,7 @@ fn fill(
                             }
                             continue;
                         }
-                        if marched {
+                        if marched || replaced {
                             continue;
                         }
                         // A section can be no longer than a turn round the
@@ -2459,6 +2552,30 @@ fn fill(
                                     honesty = honesty.max(foot.distance).max(crossing.reach);
                                 }
                                 break;
+                            }
+                        }
+                        // Where the edge runs all but in the other face's plane
+                        // (a facet row's edge between two facets nearly
+                        // coplanar with a wall that crosses them), where it
+                        // pierces that plane is known along it only to the
+                        // crossing's gap over the sine of its lean out of the
+                        // plane. A facet's plane misses the edge it shares with
+                        // the next by its points' rounding, so the sections on
+                        // the facets either side reach the edge microns apart,
+                        // and those are one point; an exact pair meets with no
+                        // gap and stays exact.
+                        if at_end.is_none()
+                            && let SurfaceGeometry::Plane(plane) = &across.surface
+                        {
+                            let along_edge = e.curve.d1_at(on_b, tol)?;
+                            let length = along_edge.magnitude();
+                            if length > 0.0 {
+                                let sine =
+                                    along_edge.dot(plane.plane().normal().vector()).abs() / length;
+                                if sine > 0.0 {
+                                    let moved = crossing.gap / sine;
+                                    honesty = honesty.max(moved.min(tol.confusion() * 1e3));
+                                }
                             }
                         }
                         if *DEBUG_WIRE {

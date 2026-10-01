@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Pads on a part converted face for facet.** A pad pushed down from a
+  top face of a converted part, its walls standing on facets a hundredth of
+  a radian off them, refused ("the kept pieces did not close into a
+  shell"). Two planes sharing an edge only to their points' rounding were
+  crossed on a line the solve left a sliver under the edge; they now cross
+  on the edge itself. And where a facet row's edge runs all but in a wall's
+  plane, the sections on the facets either side reached it microns apart
+  and split it twice; they are now one junction.
+
 - **A slab rounded at half its thickness.** Rounding every edge of a box
   at half its thinnest side refused ("an earlier blend in the chain
   consumed this edge"): the balls of the two corners at each short edge's

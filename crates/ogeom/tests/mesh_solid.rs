@@ -2331,3 +2331,150 @@ fn caps_of_a_fine_mesh_far_out_stay_whole() {
     assert_eq!(kinds(&model, &built.shape), [2, 1, 0, 0, 0]);
     assert!(check(&model, &built.shape, T).unwrap().is_valid());
 }
+
+/// A slab drafted inward from its top, one corner rounded in six segments,
+/// tessellated in rows and rounded to `f32` a hundred millimetres from the
+/// origin, converted face for facet, and a pad of its top face pushed
+/// `depth` down into it: fused back and in common with it, each valid, the
+/// two volumes adding up to the slab's and the pad's.
+fn pad_on_a_drafted_slab(depth: f64) {
+    let rows = [0.0_f64, 1.5, 3.0, 4.5, 5.8333, 7.1667, 8.5];
+    let top = 8.5;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the rounding to single precision is the point"
+    )]
+    let single = |v: f64| f64::from(v as f32);
+    let mut mesh = Triangulation::default();
+    let mut rings: Vec<Vec<u32>> = Vec::new();
+    for &z in &rows {
+        // The wall leans in as it falls, faster further down.
+        let inset = 0.02 * (top - z).powf(1.5);
+        let mut outline = vec![(inset, inset), (10.0 - inset, inset)];
+        for k in 0..=6 {
+            let a = core::f64::consts::FRAC_PI_2 * f64::from(k) / 6.0;
+            outline.push((8.0 + (2.0 - inset) * a.cos(), 8.0 + (2.0 - inset) * a.sin()));
+        }
+        outline.push((inset, 10.0 - inset));
+        let mut ring = Vec::new();
+        for (x, y) in outline {
+            mesh.positions
+                .push(Point::new(single(x + 100.0), single(y + 80.0), single(z)));
+            ring.push(u32::try_from(mesh.positions.len() - 1).unwrap());
+        }
+        rings.push(ring);
+    }
+    let n = rings[0].len();
+    for j in 0..rows.len() - 1 {
+        for i in 0..n {
+            let (a, b) = (rings[j][i], rings[j][(i + 1) % n]);
+            let (c, d) = (rings[j + 1][(i + 1) % n], rings[j + 1][i]);
+            mesh.triangles.push([a, b, c]);
+            mesh.triangles.push([a, c, d]);
+        }
+    }
+    let (bottom, upper) = (&rings[0], &rings[rows.len() - 1]);
+    for i in 1..n - 1 {
+        mesh.triangles.push([bottom[0], bottom[i + 1], bottom[i]]);
+        mesh.triangles.push([upper[0], upper[i], upper[i + 1]]);
+    }
+    let options = MeshSolidOptions {
+        recognize: false,
+        keep_vertices: true,
+        quantum: Some(ogeom::algo::single_precision_quantum(&mesh)),
+        ..MeshSolidOptions::default()
+    };
+    let mut model = Model::new();
+    let slab = solid_from_mesh(&mut model, &mesh, &options, T)
+        .unwrap()
+        .shape;
+    let lid = explore_unique(&model, &slab, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let (p, n) = ogeom::algo::face_normal(&model, f, T).unwrap();
+            n.z > 0.999 && (p.z - top).abs() < 1e-3
+        })
+        .unwrap();
+    let pad = ogeom::algo::make_prism(&mut model, &lid, Vector::new(0.0, 0.0, -depth), T)
+        .unwrap()
+        .shape;
+    let fuse = ogeom::boolean::fuse(&mut model, &slab, &pad, T)
+        .unwrap_or_else(|e| panic!("depth {depth}: fuse: {e}"))
+        .shape;
+    let common = ogeom::boolean::common(&mut model, &slab, &pad, T)
+        .unwrap_or_else(|e| panic!("depth {depth}: common: {e}"))
+        .shape;
+    for (name, made) in [("fuse", &fuse), ("common", &common)] {
+        let diagnosis = check(&model, made, T).unwrap();
+        assert!(diagnosis.is_valid(), "depth {depth}: {name}: {diagnosis}");
+    }
+    let fine = Deflection::with_chord(1e-3).unwrap();
+    let v = |s: &Shape| volume_properties(&model, s, fine, T).unwrap().mass;
+    let gap = v(&fuse) + v(&common) - v(&slab) - v(&pad);
+    assert!(gap.abs() < 1e-4, "depth {depth}: off by {gap}");
+}
+
+/// Each wall of the pad stands on the facet just under the top edge they
+/// share, the two at a hundredth of a radian, the facet's plane missing
+/// the edge's ends by their rounding: the walls cross on that edge, not on
+/// a line their planes' solve leaves a sliver under it.
+#[test]
+fn a_pad_into_a_drafted_single_precision_slab_fuses_back() {
+    for depth in [3.0, 10.0] {
+        pad_on_a_drafted_slab(depth);
+    }
+}
+
+/// Pads from the large top faces of the part `OGEOM_TEST_77777` names,
+/// converted face for facet in single precision, fused back into it. Where
+/// a pad's wall crosses a facet row's edge that runs all but in the wall's
+/// plane, the sections on the facets either side reach the edge microns
+/// apart, and they are one junction.
+#[test]
+fn pads_on_a_part_converted_face_for_facet_fuse_back() {
+    let Some(path) = std::env::var_os("OGEOM_TEST_77777") else {
+        return;
+    };
+    let bytes = std::fs::read(path).expect("the file the variable names reads");
+    let mesh = ogeom::io::stl::read(&bytes, T).unwrap();
+    let options = MeshSolidOptions {
+        recognize: false,
+        keep_vertices: true,
+        quantum: Some(ogeom::algo::single_precision_quantum(&mesh)),
+        ..MeshSolidOptions::default()
+    };
+    let mut model = Model::new();
+    let part = solid_from_mesh(&mut model, &mesh, &options, T)
+        .unwrap()
+        .shape;
+    let fine = Deflection::with_chord(1e-3).unwrap();
+    let whole = volume_properties(&model, &part, fine, T).unwrap().mass;
+    let tops: Vec<Shape> = explore_unique(&model, &part, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter(|f| {
+            let (_, n) = ogeom::algo::face_normal(&model, f, T).unwrap();
+            n.z > 0.999_999
+                && ogeom::algo::surface_properties(&model, f, fine, T).is_ok_and(|p| p.mass > 1.0)
+        })
+        .collect();
+    assert!(!tops.is_empty());
+    for top in &tops {
+        for depth in [3.0, 10.0] {
+            let pad = ogeom::algo::make_prism(&mut model, top, Vector::new(0.0, 0.0, -depth), T)
+                .unwrap()
+                .shape;
+            let fused = ogeom::boolean::fuse(&mut model, &part, &pad, T)
+                .unwrap_or_else(|e| panic!("depth {depth}: {e}"))
+                .shape;
+            let diagnosis = check(&model, &fused, T).unwrap();
+            assert!(diagnosis.is_valid(), "depth {depth}: {diagnosis}");
+            let v = volume_properties(&model, &fused, fine, T).unwrap().mass;
+            assert!(
+                v > whole - 1e-3 * whole,
+                "depth {depth}: {v} against {whole}"
+            );
+        }
+    }
+}
