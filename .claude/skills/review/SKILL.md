@@ -48,7 +48,7 @@ Each finding cites the rule it breaks. The slugs come from
 | `invariants-not-in-a-pr` | Nothing in `docs/DATA_MODEL.md` changes without being argued as a design change |
 | `history-emitted` | Every operation reports what became of its inputs |
 | `tolerances-only-grow` | Per-entity tolerances widen, never shrink, and containment holds across boundary relationships |
-| `present-tense-comments` | Comments describe present behaviour: no change narration, no issue or commit as the reason, no mention of a file the author tested with |
+| `present-tense-comments` | Comments describe present behaviour: no change narration, no plan reference, no issue or commit as the reason, no mention of a file the author tested with (see comment-cleanup) |
 | `independence` | Nothing names, links, vendors or mirrors another kernel; the field's vocabulary only |
 | `scope` | `docs/SCOPE.md` decides; usage data orders the work and never widens the scope |
 | `no-unwrap-in-library` | `unwrap`, `expect`, lossy casts and `unsafe` in library code need an `allow` with a reason and a documented `# Panics` |

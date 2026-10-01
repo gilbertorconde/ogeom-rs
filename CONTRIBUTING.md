@@ -149,6 +149,7 @@ the skill before the task it covers.
 | `test-audit` | writing, changing, reviewing or pruning tests |
 | `performance-optimizer` | a measured slowness or a benchmark drift |
 | `ci-iterate` | a CI run is red, or a PR has review feedback to address |
+| `comment-cleanup` | before committing, when the comment-rot lint fails, or to trim or unify comments |
 
 ## Releasing
 
