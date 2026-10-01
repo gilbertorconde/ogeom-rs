@@ -6782,6 +6782,16 @@ fn assemble_result(
     // Sewing rebuilds the pieces onto shared edges: the result's faces are
     // its faces, reached from the inputs through both steps.
     history = history.then(&sewn.history);
+    let mut sewn = sewn;
+    let dropped = without_membranes(model, &mut sewn.shells, floor, tol)?;
+    history = history.then(&dropped);
+    if sewn.shells.is_empty() {
+        // Membranes all through: what was kept encloses nothing.
+        let empty = model.add_compound(&[])?;
+        history.modify(a, empty.clone());
+        history.modify(b, empty.clone());
+        return Ok(Built::new(empty, history));
+    }
     for shell in &sewn.shells {
         if !is_shell_closed(model, shell)? {
             // Env-gated forensics: the open shell's unshared edges, the
@@ -6945,6 +6955,111 @@ fn assemble_result(
     history.modify(a, result.clone());
     history.modify(b, result.clone());
     Ok(Built::new(result, history))
+}
+
+/// Each shell without its membranes, and the history of their removal.
+///
+/// Two faces standing apart by less than the weld (two boxes stacked a few
+/// microns apart) have their corners welded into one vertex each, and their
+/// edges sewn into one: the two faces then bound one shell along the same
+/// edges, lying on each other and facing apart, a wall of no thickness with
+/// material on both sides. That is the opposed pair the boolean drops where
+/// the contact is exact, and it is dropped here the same way. A pair bounded
+/// by the same edges but standing apart (a lens's two caps on their one
+/// rim) is a solid's own boundary and stays. A shell that is membranes
+/// through (a sliver thinner than the weld) encloses nothing and goes.
+fn without_membranes(
+    model: &mut Model,
+    shells: &mut Vec<Shape>,
+    weld: f64,
+    tol: Tolerances,
+) -> OgeomResult<History> {
+    use ogeom_geom::Transformable as _;
+    let mut dropped = History::new();
+    let bounding = |model: &Model, face: &Shape| -> OgeomResult<Vec<ogeom_topo::TShapeId>> {
+        let mut edges: Vec<ogeom_topo::TShapeId> = explore_unique(model, face, ShapeType::Edge)?
+            .iter()
+            .filter(|e| {
+                model
+                    .node(e)
+                    .and_then(|n| n.data().as_edge())
+                    .is_some_and(|d| !d.degenerate)
+            })
+            .map(Shape::node)
+            .collect();
+        edges.sort_unstable();
+        Ok(edges)
+    };
+    // Whether `second` lies on `first`, facing away from it.
+    let membrane = |model: &Model, first: &Shape, second: &Shape| -> OgeomResult<bool> {
+        let (at, n) = ogeom_algo::face_normal(model, first, tol)?;
+        let (_, m) = ogeom_algo::face_normal(model, second, tol)?;
+        if n.dot(m) > -0.99 * n.magnitude() * m.magnitude() {
+            return Ok(false);
+        }
+        // An inner point of the first, on the second's surface.
+        let mesh =
+            ogeom_mesh::triangulate_face(model, first, ogeom_mesh::Deflection::default(), tol)?;
+        let probe = mesh.triangles.first().map_or(at, |t| {
+            let [p, q, r] = t.map(|i| mesh.positions[i as usize]);
+            Point::from_vector((p.to_vector() + q.to_vector() + r.to_vector()) / 3.0)
+        });
+        let Some(NodeData::Face(data)) = model.node(second).map(|n| n.data()) else {
+            return Ok(false);
+        };
+        let Some(surface) = model.geometry().surface(data.surface) else {
+            return Ok(false);
+        };
+        let placed = surface.transformed(&second.transform(model.datums())?, tol)?;
+        let foot = ogeom_algo::project_on_surface(&placed, probe, 16, tol)?;
+        // As far as the weld that joined their corners reached: its floor
+        // past what the corners themselves own.
+        let owned = explore_unique(model, first, ShapeType::Vertex)?
+            .iter()
+            .filter_map(|v| model.node(v).and_then(|n| n.data().as_vertex()))
+            .fold(0.0_f64, |acc, d| acc.max(d.tolerance.get()));
+        Ok(foot.point.distance(probe) <= weld + owned)
+    };
+    let mut emptied = Vec::new();
+    for (index, shell) in shells.iter_mut().enumerate() {
+        let faces = ogeom_topo::explore(model, shell, Filter::OfType(ShapeType::Face))?;
+        let edges = faces
+            .iter()
+            .map(|f| bounding(model, f))
+            .collect::<OgeomResult<Vec<_>>>()?;
+        let mut gone = vec![false; faces.len()];
+        for i in 0..faces.len() {
+            for j in i + 1..faces.len() {
+                if gone[i] || gone[j] || edges[i].is_empty() || edges[i] != edges[j] {
+                    continue;
+                }
+                if membrane(model, &faces[i], &faces[j])? {
+                    gone[i] = true;
+                    gone[j] = true;
+                }
+            }
+        }
+        if !gone.contains(&true) {
+            continue;
+        }
+        let mut kept = Vec::new();
+        for (face, gone) in faces.iter().zip(&gone) {
+            if *gone {
+                dropped.delete(face);
+            } else {
+                kept.push(face.clone());
+            }
+        }
+        if kept.is_empty() {
+            emptied.push(index);
+        } else {
+            *shell = model.add_shell(&kept)?;
+        }
+    }
+    for index in emptied.into_iter().rev() {
+        shells.remove(index);
+    }
+    Ok(dropped)
 }
 
 /// Closed shells grouped into solids: each outer shell with the voids

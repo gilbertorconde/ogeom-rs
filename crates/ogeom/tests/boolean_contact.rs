@@ -992,3 +992,54 @@ fn a_solid_poking_microns_through_another_is_not_taken_as_nested() {
         );
     }
 }
+
+/// Two boxes stacked a few microns apart, closer than the boolean welds:
+/// their facing walls are not kept as a wall of no thickness inside one
+/// shell. Below the weld the union is the one tall box, as touching boxes
+/// fuse; past it, the two boxes apart.
+#[test]
+fn boxes_stacked_microns_apart_fuse_without_a_membrane() {
+    for gap in [1e-6, 5e-6, 1e-5, 2e-5] {
+        let mut model = Model::new();
+        let low = ogeom::algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T)
+            .unwrap()
+            .shape;
+        let seat = Frame::new(
+            Point::new(0.0, 0.0, 2.0 + gap),
+            Direction::Z,
+            Direction::X,
+            T,
+        )
+        .unwrap();
+        let high = ogeom::algo::make_box(&mut model, seat, (2.0, 2.0, 2.0), T)
+            .unwrap()
+            .shape;
+        let fused = ogeom::boolean::fuse(&mut model, &low, &high, T)
+            .unwrap()
+            .shape;
+        assert!(ogeom::algo::check(&model, &fused, T).unwrap().is_valid());
+        let faces = explore_unique(&model, &fused, ShapeType::Face).unwrap();
+        let solids = explore_unique(&model, &fused, ShapeType::Solid).unwrap();
+        // Every edge of every shell bounds two faces.
+        for shell in explore_unique(&model, &fused, ShapeType::Shell).unwrap() {
+            let shell_faces = explore_unique(&model, &shell, ShapeType::Face).unwrap();
+            for edge in explore_unique(&model, &shell, ShapeType::Edge).unwrap() {
+                let users = shell_faces
+                    .iter()
+                    .filter(|f| {
+                        explore_unique(&model, f, ShapeType::Edge)
+                            .unwrap()
+                            .iter()
+                            .any(|e| e.node() == edge.node())
+                    })
+                    .count();
+                assert_eq!(users, 2, "gap {gap}");
+            }
+        }
+        match solids.len() {
+            1 => assert_eq!(faces.len(), 10, "gap {gap}"),
+            2 => assert_eq!(faces.len(), 12, "gap {gap}"),
+            n => panic!("gap {gap}: {n} solids"),
+        }
+    }
+}

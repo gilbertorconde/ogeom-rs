@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Faces welded within microns are not kept as a membrane.** Two boxes
+  stacked a few microns apart, closer than the boolean welds vertices,
+  fused into one shell holding both facing walls on the same edges: a
+  wall of no thickness that `check` passed. Such a pair, bounded by the
+  same edges and lying on each other facing apart, is dropped as the
+  exact contact's opposed pair is, and a shell left with nothing else
+  goes.
+
 - **A solid poking microns through another is not taken as nested.** Where
   the general boolean refused, the nesting fallback read the boundaries at
   a mesh's samples, a tenth of a millimetre apart, and took a drum two
