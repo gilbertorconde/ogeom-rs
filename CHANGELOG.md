@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A converted torus measures exactly and divides into spans.** A torus
+  stated as a spline far from the origin had its closing seam sampled back
+  onto the chart's start, so its seam sides were fitted with ringing and the
+  volume came out off by a few tenths of a percent; a spline seam that is a
+  chart line now takes the exact measure, also when it is cut into pieces.
+  `divide_by_continuity` walked a torus's ring of seams with its first seam
+  on the wrong chart side and never cut it, so `to_bezier` left one
+  multi-span face; it now cuts into sixteen, each patch held to its own span.
+
 - **A drum shorter than a unit divides.** `divide_by_angle` and
   `divide_by_area` read a straight cut line's direction off the surface at
   parameters zero and one, past the window of a drum or cone less than a

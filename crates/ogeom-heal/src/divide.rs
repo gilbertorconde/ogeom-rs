@@ -275,6 +275,18 @@ pub fn to_bezier(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
         let rings = rings(model, &forward(&face), data.surface, tol)?;
         let ((u0, u1), (v0, v1)) = chart_bounds(&rings, tol);
         let ((du0, du1), (dv0, dv1)) = spline.domain();
+        // A cut's trims stand on its knot line up to their fit; read a
+        // hair off it, the patch would keep a sliver of the next span.
+        let snap = |x: f64, knots: &[(f64, usize)]| {
+            knots
+                .iter()
+                .map(|&(k, _)| k)
+                .find(|k| (k - x).abs() <= tol.parametric())
+                .unwrap_or(x)
+        };
+        let (us, vs) = (spline.u_knots().distinct(), spline.v_knots().distinct());
+        let (u0, u1) = (snap(u0, &us), snap(u1, &us));
+        let (v0, v1) = (snap(v0, &vs), snap(v1, &vs));
         let patch = spline.segment((u0.max(du0), u1.min(du1)), (v0.max(dv0), v1.min(dv1)), tol)?;
         let id = model
             .geometry_mut()
@@ -762,45 +774,66 @@ fn rings(
                 _ => None,
             });
         }
-        // Walked from an edge off the seam where there is one; a ring of
-        // seams alone (a torus's) starts on the side its first occurrence's
-        // orientation names.
+        // Walked from an edge off the seam where there is one. A ring of
+        // seams alone (a torus's) has no such edge, and where its seams are
+        // cut into pieces every corner is one vertex, so the side its first
+        // occurrence takes is tried both ways: the right one closes the
+        // ring in the chart.
         let first_plain = choices
             .iter()
-            .position(|c| c.as_ref().is_some_and(|c| c.1.is_none()))
-            .unwrap_or(0);
-        let n = edges.len();
-        let mut ring: Vec<Option<Occurrence>> = vec![None; n];
-        let mut last: Option<Point2> = None;
-        for k in 0..n {
-            let i = (first_plain + k) % n;
-            let Some((a, b, range)) = choices[i].clone() else {
-                ogeom_bail!(Construction, "an edge has no trim on this face");
-            };
-            let mut occurrence = Occurrence {
-                edge: edges[i].clone(),
-                pcurve: a,
-                range,
-            };
-            if let Some(b) = b {
-                let other = Occurrence {
-                    pcurve: b,
-                    ..occurrence.clone()
+            .position(|c| c.as_ref().is_some_and(|c| c.1.is_none()));
+        let start = first_plain.unwrap_or(0);
+        let walk = |flip: bool| -> OgeomResult<(Vec<Occurrence>, f64)> {
+            let n = edges.len();
+            let mut ring: Vec<Option<Occurrence>> = vec![None; n];
+            let mut last: Option<Point2> = None;
+            let mut gap = 0.0;
+            for k in 0..n {
+                let i = (start + k) % n;
+                let Some((a, b, range)) = choices[i].clone() else {
+                    ogeom_bail!(Construction, "an edge has no trim on this face");
                 };
-                let take_other = match last {
-                    Some(last) => {
-                        other.at(0.0, tol)?.distance(last) < occurrence.at(0.0, tol)?.distance(last)
+                let mut occurrence = Occurrence {
+                    edge: edges[i].clone(),
+                    pcurve: a,
+                    range,
+                };
+                if let Some(b) = b {
+                    let other = Occurrence {
+                        pcurve: b,
+                        ..occurrence.clone()
+                    };
+                    let take_other = match last {
+                        Some(last) => {
+                            other.at(0.0, tol)?.distance(last)
+                                < occurrence.at(0.0, tol)?.distance(last)
+                        }
+                        None => occurrence.reversed() != flip,
+                    };
+                    if take_other {
+                        occurrence = other;
                     }
-                    None => occurrence.reversed(),
-                };
-                if take_other {
-                    occurrence = other;
                 }
+                if let Some(last) = last {
+                    gap += occurrence.at(0.0, tol)?.distance(last);
+                }
+                last = Some(occurrence.at(1.0, tol)?);
+                ring[i] = Some(occurrence);
             }
-            last = Some(occurrence.at(1.0, tol)?);
-            ring[i] = Some(occurrence);
+            let ring: Vec<Occurrence> = ring.into_iter().flatten().collect();
+            if let (Some(first), Some(last)) = (ring.first(), last) {
+                gap += first.at(0.0, tol)?.distance(last);
+            }
+            Ok((ring, gap))
+        };
+        let (mut ring, gap) = walk(false)?;
+        if first_plain.is_none() && gap > tol.parametric() {
+            let (flipped, flipped_gap) = walk(true)?;
+            if flipped_gap < gap {
+                ring = flipped;
+            }
         }
-        out.push(ring.into_iter().flatten().collect());
+        out.push(ring);
     }
     Ok(out)
 }

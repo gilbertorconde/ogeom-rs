@@ -1210,9 +1210,19 @@ fn exact_wire(
                     let Some(pcurve) = model.geometry().pcurve(*id) else {
                         return Ok(None);
                     };
-                    let ogeom_geom::PlanarCurve::Line(_) = pcurve else {
-                        return Ok(None);
+                    // A chart column or row, stated as a line or as a
+                    // spline whose control points all stand on one (a
+                    // converted face's seams).
+                    let straight = match pcurve {
+                        ogeom_geom::PlanarCurve::Line(_) => true,
+                        ogeom_geom::PlanarCurve::BSpline(spline) => {
+                            along_one_chart_line(spline.control_points())
+                        }
+                        _ => false,
                     };
+                    if !straight {
+                        return Ok(None);
+                    }
                     let (lo, hi) = pcurve.domain();
                     let at = pcurve.point_at(range.0.clamp(lo, hi), tol)?;
                     let far = pcurve.point_at(range.1.clamp(lo, hi), tol)?;
@@ -1324,6 +1334,12 @@ fn exact_wire(
             return Ok(None);
         }
         perimeter += a.distance(*b);
+    }
+    // A seam cut into pieces stands each piece on the same chart side; the
+    // side is one side of the rectangle however many pieces it took.
+    for values in [&mut columns, &mut rows] {
+        values.sort_by(f64::total_cmp);
+        values.dedup_by(|a, b| (*a - *b).abs() <= eps);
     }
     #[allow(clippy::cast_precision_loss)]
     for (values, lo, hi, span) in [(&columns, u0, u1, v1 - v0), (&rows, v0, v1, u1 - u0)] {

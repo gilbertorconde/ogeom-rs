@@ -309,3 +309,55 @@ fn a_short_drum_divides_by_angle_and_by_area() {
         .shape;
     holds(&model, &divided, volume, 1e-6);
 }
+
+#[test]
+fn a_converted_torus_measures_exactly_near_and_far_and_divides_to_spans() {
+    let volume = 2.0 * core::f64::consts::PI.powi(2) * 10.0 * 3.0 * 3.0;
+    for offset in [0.0, 1000.0] {
+        for bezier in [false, true] {
+            let mut model = Model::new();
+            let frame = Frame::new(
+                ogeom::math::Point::new(offset, 0.0, 0.0),
+                ogeom::math::Direction::Z,
+                ogeom::math::Direction::X,
+                T,
+            )
+            .unwrap();
+            let torus = ogeom::algo::make_torus(&mut model, frame, 10.0, 3.0, T)
+                .unwrap()
+                .shape;
+            let converted = if bezier {
+                ogeom::heal::to_bezier(&mut model, &torus, T)
+            } else {
+                ogeom::algo::to_nurbs(&mut model, &torus, T)
+            }
+            .unwrap()
+            .shape;
+            if bezier {
+                assert_eq!(faces(&model, &converted).len(), 16);
+                for face in faces(&model, &converted) {
+                    let SurfaceGeometry::BSpline(s) = surface_of(&model, &face) else {
+                        panic!("a converted face is a spline");
+                    };
+                    assert_eq!(s.u_knots().distinct().len(), 2, "one span in u");
+                    assert_eq!(s.v_knots().distinct().len(), 2, "one span in v");
+                }
+            }
+            let measured =
+                ogeom::algo::volume_properties(&model, &converted, Deflection::default(), T)
+                    .unwrap();
+            assert_eq!(
+                measured.deflection, 0.0,
+                "offset {offset} bezier {bezier}: measured exactly"
+            );
+            assert!(
+                (measured.mass - volume).abs() <= volume * 1e-9,
+                "offset {offset} bezier {bezier}: {} against {volume}",
+                measured.mass
+            );
+            for face in faces(&model, &converted) {
+                ogeom::mesh::triangulate_face(&model, &face, Deflection::default(), T).unwrap();
+            }
+        }
+    }
+}

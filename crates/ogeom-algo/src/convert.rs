@@ -1047,11 +1047,14 @@ fn exact_seam_columns(
         (x - a).abs() <= eps || (x - b).abs() <= eps
     };
     // Which pair of chart edges the seam runs on, and the coordinate it
-    // runs along.
+    // runs along. A closed run's samples near its far end project to either
+    // copy of the closure, so a closed direction unwraps like a periodic one.
     let (columns, lo, hi, period) = if chart.iter().all(|p| on(p.x, u0, u1)) {
-        (true, u0, u1, surface.is_periodic_v().then_some(v1 - v0))
+        let closed = surface.is_periodic_v() || surface.is_closed_v(tol);
+        (true, u0, u1, closed.then_some(v1 - v0))
     } else if chart.iter().all(|p| on(p.y, v0, v1)) {
-        (false, v0, v1, surface.is_periodic_u().then_some(u1 - u0))
+        let closed = surface.is_periodic_u() || surface.is_closed_u(tol);
+        (false, v0, v1, closed.then_some(u1 - u0))
     } else {
         return None;
     };
