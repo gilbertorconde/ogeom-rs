@@ -1183,15 +1183,14 @@ pub fn make_torus(
 /// `size` is the box at the frame's origin; `top` is the `(x, y)` extent of the
 /// upper face, over the same corner. Equal extents give a box.
 ///
-/// Both top extents must be positive. A wedge whose top collapses to a ridge
-/// has five faces and one whose top collapses to a point has four: different
-/// topologies, not this one with a zero somewhere, and building them here would
-/// produce a face with no area.
+/// A top extent may be zero. A top collapsed to a ridge (one extent zero) or
+/// to a point (both) is built as its own topology, five faces either way,
+/// rather than as a box with a face of no area.
 ///
 /// # Errors
 ///
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a dimension is
-/// not finite and positive.
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a size is not
+/// finite and positive, or a top extent is not finite and non-negative.
 pub fn make_wedge(
     model: &mut Model,
     frame: Frame,

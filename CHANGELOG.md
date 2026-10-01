@@ -13,6 +13,10 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`make_wedge` documents its zero top extents.** The doc said a zero
+  top extent is refused; it builds a ridge or a point top, five faces either
+  way, and the doc now says so.
+
 - **A mesh of positions alone welds.** `Triangulation::welded` indexed
   the normals and parameters of every vertex and panicked on a mesh read
   without them; the optional arrays now follow only where they are full.
