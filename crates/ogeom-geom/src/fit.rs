@@ -678,7 +678,6 @@ fn fit_points_2d_at_inner(
     })
 }
 
-#[allow(clippy::type_complexity)]
 /// How a free fit first assigns parameters to its samples, before the
 /// correction rounds move them to the feet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -760,7 +759,7 @@ fn fit_spaced<const D: usize>(
     });
     let parameters = match spacing {
         Spacing::Centripetal => centripetal::<D>(&points),
-        Spacing::ChordLength => chord_length::<D>(&points),
+        Spacing::ChordLength => chordal::<D>(&points),
     };
 
     // Start with the fewest control points a clamped curve of this degree can
@@ -1463,27 +1462,6 @@ fn interpolating_knots(degree: usize, parameters: &[f64]) -> OgeomResult<KnotVec
 /// map keeps a uniform speed across spacing jumps, exactly where the
 /// centripetal assignment would fold a spacing jump into a speed kink.
 fn chordal<const D: usize>(points: &[[f64; D]]) -> Vec<f64> {
-    let mut out = Vec::with_capacity(points.len());
-    out.push(0.0);
-    let mut total = 0.0;
-    for pair in points.windows(2) {
-        total += distance::<D>(&pair[0], &pair[1]);
-        out.push(total);
-    }
-    if total > 0.0 {
-        for u in &mut out {
-            *u /= total;
-        }
-    }
-    if let Some(last) = out.last_mut() {
-        *last = 1.0;
-    }
-    out
-}
-
-/// Parameters proportional to the running chord length, ending exactly at
-/// one.
-fn chord_length<const D: usize>(points: &[[f64; D]]) -> Vec<f64> {
     let mut out = Vec::with_capacity(points.len());
     out.push(0.0);
     let mut total = 0.0;
