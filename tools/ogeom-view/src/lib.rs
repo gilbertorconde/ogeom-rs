@@ -2,8 +2,7 @@
 //!
 //! Numeric checks catch what you thought to check. A picture catches the rest:
 //! a face wound inside out, a hole where two surfaces failed to meet, a seam
-//! that did not weld. Those have all been real defects in this kernel, and each
-//! would have been obvious in one frame.
+//! that did not weld, each obvious in one frame.
 //!
 //! # Why there is no window here
 //!
@@ -16,9 +15,6 @@
 //! dependencies beyond the kernel itself, works anywhere `cargo test` does, and
 //! can be *tested*: a sphere's silhouette is a circle, a cube seen down an axis
 //! is a square, and both of those are assertions rather than opinions.
-//!
-//! A windowed viewer can wrap this later. It would add interaction, not
-//! correctness.
 //!
 //! # The format is PPM
 //!
@@ -37,7 +33,7 @@ pub struct Camera {
     pub eye: Point,
     /// What it looks at.
     pub target: Point,
-    /// Which way is up, as a reference; its component along the view is
+    /// Which way is up, as a reference. Its component along the view is
     /// removed, so it need not be perpendicular.
     pub up: Vector,
     /// Vertical field of view, in radians.
@@ -83,7 +79,7 @@ impl Camera {
         // Far enough that a sphere of that radius fits, plus a fifth for air.
         let distance = radius / (field_of_view * 0.5).sin() * 1.2;
 
-        // Any up reference not parallel to the view will do; the frame removes
+        // Any up reference not parallel to the view will do. The frame removes
         // its along-view component anyway.
         let up = if direction.vector().cross(Vector::Z).magnitude() > tol.confusion() {
             Vector::Z
@@ -265,7 +261,7 @@ pub fn render(
         };
         let camera_space = corners.map(to_camera);
         // Nothing behind the eye. A triangle straddling the plane needs
-        // clipping, which this does not do; it is dropped, and the docs say
+        // clipping, which this does not do. It is dropped, and the docs say
         // so, because a partly-drawn triangle is worse than a missing one for
         // a picture whose job is to be trusted.
         if camera_space.iter().any(|c| c.z <= tol.confusion()) {
@@ -427,7 +423,7 @@ mod tests {
     fn a_sphere_renders_as_a_circle() {
         // The cheapest real check there is: a sphere looks the same from every
         // direction, and its silhouette is round. A footprint that is not
-        // square-ish means the projection is wrong; one that is empty means
+        // square-ish means the projection is wrong. One that is empty means
         // nothing rendered at all.
         let mut model = Model::new();
         let built = make_sphere(&mut model, Frame::WORLD, 2.0, T).unwrap();
@@ -507,7 +503,7 @@ mod tests {
     #[test]
     fn a_face_wound_inside_out_renders_in_a_colour_that_says_so() {
         // Not culled. A hole where a face should be looks exactly like a face
-        // that was never built; a face in an alarming colour does not.
+        // that was never built. A face in an alarming colour does not.
         let mut model = Model::new();
         let built = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T).unwrap();
         let mut mesh = triangulate(&model, &built.shape, fine(), T).unwrap();

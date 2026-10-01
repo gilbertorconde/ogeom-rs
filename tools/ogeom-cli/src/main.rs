@@ -8,7 +8,7 @@
 //!
 //! Every command that produces a shape runs the validity check over it and says
 //! what it found. A tool that only prints the answer teaches you to trust the
-//! answer; one that prints the answer *and* what is wrong with the shape it
+//! answer. One that prints the answer *and* what is wrong with the shape it
 //! came from teaches you when not to.
 
 use std::collections::HashMap;
@@ -92,7 +92,7 @@ fn main() -> ExitCode {
 /// Watertight is [`Triangulation::is_closed`]: every edge crossed as often
 /// each way. A solid that is not is reported with how many of its edges
 /// are unbalanced, which is roughly how many triangles are missing or
-/// wound wrong; a solid the mesher refused is reported with its error.
+/// wound wrong. A solid the mesher refused is reported with its error.
 fn census(args: &[String]) -> Result<(), String> {
     let Some(path) = args.first() else {
         return Err("census takes a STEP file".to_string());
@@ -169,7 +169,7 @@ fn census(args: &[String]) -> Result<(), String> {
 }
 
 /// How many of a mesh's edges are crossed more often one way than the
-/// other; zero exactly when the mesh is closed.
+/// other: zero exactly when the mesh is closed.
 fn unbalanced_edges(mesh: &Triangulation) -> usize {
     let mut balance: HashMap<(u32, u32), i64> = HashMap::new();
     for t in &mesh.triangles {

@@ -1,11 +1,10 @@
-//! Benchmarks over the kernel's hot paths: the sequencing instrument the
-//! scope promised.
+//! Benchmarks over the kernel's hot paths.
 //!
 //! The harness is deliberately its own: medians over repeated runs, wall
 //! clock, no dependency. Absolute times move with the machine, so every run
 //! also times a fixed arithmetic spin (the *calibration*) and the
 //! comparison mode reports each benchmark as a multiple of it. Ratios
-//! travel between machines; milliseconds do not.
+//! travel between machines. Milliseconds do not.
 //!
 //! `ogeom-bench` prints this machine's numbers. `ogeom-bench --check
 //! <baseline.json>` compares calibrated ratios against a recorded baseline
@@ -98,7 +97,7 @@ fn benchmarks() -> Vec<(&'static str, f64)> {
         }),
     ));
 
-    // The boolean: the drilled box, the pipeline's pinned proof.
+    // The boolean: the drilled box.
     out.push((
         "boolean_drill",
         median(5, || {
@@ -160,7 +159,7 @@ fn benchmarks() -> Vec<(&'static str, f64)> {
         }),
     ));
 
-    // A constant-radius fillet: the blend machinery, which no benchmark reached.
+    // A constant-radius fillet: the blend machinery.
     out.push((
         "fillet_block",
         median(5, || {

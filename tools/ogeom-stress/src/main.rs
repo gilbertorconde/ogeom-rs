@@ -1,7 +1,7 @@
 //! Randomized robustness runs over the kernel: many generated cases, each
 //! judged by an oracle, the tally watched against a recorded baseline.
 //!
-//! A single repro proves one case; a kernel is trusted on the rate at which
+//! A single repro proves one case. A kernel is trusted on the rate at which
 //! the cases nobody wrote down go wrong. Each scenario draws its cases from
 //! a seeded generator, biased toward the degenerate placements that break
 //! booleans and blends (a drill tangent to a face, through a vertex, a pair
@@ -13,11 +13,11 @@
 //! - `wrong`: a valid answer the oracle contradicts;
 //! - `panic`: it crashed.
 //!
-//! Refusals are honest and tracked; the last three are the bugs.
+//! Refusals are honest and tracked. The last three are the bugs.
 //!
 //! `ogeom-stress` runs every scenario and prints the tally. `--check
 //! <baseline.json>` fails when a scenario has fewer `ok` or more bad cases
-//! than the baseline records; `--write <path>` records one. `--case
+//! than the baseline records, and `--write <path>` records one. `--case
 //! drill/box/17` replays one case and prints what happened.
 #![allow(
     clippy::unwrap_used,
@@ -386,8 +386,8 @@ fn corpus_parts() -> Vec<Part> {
     let dir = format!("{}/../../tests/corpus", env!("CARGO_MANIFEST_DIR"));
     let mut parts = Vec::new();
     // Every part here drills in seconds. Half of nist_ftc_06's drills are
-    // refused today (the arrangement leaves a face no piece, or the kept
-    // pieces do not close), and the baseline says so, so a fix shows as an
+    // refused (the arrangement leaves a face no piece, or the kept pieces
+    // do not close), and the baseline records that, so a fix shows as an
     // improvement.
     for file in [
         "nist_ftc_11_asme1_rb.stp",
@@ -710,7 +710,7 @@ fn cases(seed: u64, per_part: usize, corpus: bool) -> Vec<Case> {
     }
     let mut out: Vec<Case> = Vec::new();
     for (index, part) in parts.iter().enumerate() {
-        // Corpus parts are large; they take a third of the drills.
+        // Corpus parts are large. They take a third of the drills.
         let n = if index < generated {
             per_part
         } else {
