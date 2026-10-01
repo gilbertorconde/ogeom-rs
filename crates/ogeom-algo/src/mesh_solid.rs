@@ -5910,11 +5910,14 @@ impl Builder<'_> {
         else {
             ogeom_bail!(Construction, "a primitive came back with no face");
         };
-        if let Some(node) = self.model.node_mut(&face)
-            && let ogeom_topo::NodeData::Face(data) = node.data_mut()
-        {
-            data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
-        }
+        // The facets stand off the surface by up to the fit's deviation, and
+        // so do the seam and the poles built on it: the face's tolerance
+        // reaches down to every edge and vertex it holds, as the checker
+        // requires of a face looser than its boundary.
+        self.model.widen(
+            &face,
+            Tolerance::new(curved.deviation.max(self.tol.confusion()))?,
+        )?;
         Ok(if outward { face } else { face.reversed() })
     }
 }

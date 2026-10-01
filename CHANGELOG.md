@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Whole spheres and tori from single-precision meshes check valid.** The
+  converter widened a whole face's tolerance to its fit's deviation but
+  left its seam, poles and vertices tighter, which `check` refuses. The
+  widening now reaches everything the face bounds.
+
 - **A point in a spherical void classifies out of the material.** The
   bound of a sphere face used inside out covered only its seam: its chart
   outline put both seam walks on one column, so `classify_in_solid_exact`

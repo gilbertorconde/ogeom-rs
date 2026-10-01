@@ -2184,3 +2184,42 @@ fn a_sketched_pad_along_a_converted_part_s_walls_within_it() {
 fn a_sketched_pad_along_a_converted_part_s_walls_out_through_its_bottom() {
     pad_along_a_converted_part_s_walls(10.0, true);
 }
+
+/// A whole sphere or torus meshed in single precision far from the origin
+/// comes back as one face whose looser tolerance its seam and poles share,
+/// as the checker requires of everything a face bounds.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the rounding to single precision is the point"
+)]
+#[test]
+fn a_whole_sphere_or_torus_from_single_precision_checks_valid() {
+    let mut source = Model::new();
+    let ball = ogeom::algo::make_sphere(&mut source, Frame::WORLD, 70.0, T)
+        .unwrap()
+        .shape;
+    let ring = ogeom::algo::make_torus(&mut source, Frame::WORLD, 100.0, 30.0, T)
+        .unwrap()
+        .shape;
+    for whole in [ball, ring] {
+        let mut mesh =
+            ogeom::mesh::triangulate(&source, &whole, Deflection::with_chord(0.1).unwrap(), T)
+                .unwrap();
+        for p in &mut mesh.positions {
+            *p = Point::new(
+                f64::from((p.x + 100.0) as f32),
+                f64::from((p.y + 200.0) as f32),
+                f64::from((p.z + 300.0) as f32),
+            );
+        }
+        let options = MeshSolidOptions {
+            quantum: Some(ogeom::algo::single_precision_quantum(&mesh)),
+            ..MeshSolidOptions::default()
+        };
+        let mut model = Model::new();
+        let built = solid_from_mesh(&mut model, &mesh, &options, T).unwrap();
+        assert_eq!(count(&model, &built.shape, ShapeType::Face), 1);
+        let diagnosis = check(&model, &built.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{diagnosis}");
+    }
+}
