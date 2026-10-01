@@ -4478,6 +4478,9 @@ struct FacePiece {
     /// identified by containment, and only a piece genuinely stood in for is
     /// dropped.
     covered: bool,
+    /// Whether the piece is its whole face, untouched: nothing crosses it
+    /// and none of its edges is split.
+    whole: bool,
 }
 
 struct GeneralFused {
@@ -6436,6 +6439,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                                         probe,
                                         state: PieceState::In,
                                         covered: false,
+                                        whole: false,
                                     });
                                     continue;
                                 }
@@ -6448,6 +6452,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                                         probe,
                                         state: PieceState::Out,
                                         covered: false,
+                                        whole: false,
                                     });
                                     continue;
                                 }
@@ -6500,6 +6505,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                                         probe,
                                         state,
                                         covered,
+                                        whole: false,
                                     });
                                     continue;
                                 }
@@ -6530,7 +6536,25 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     probe,
                     state,
                     covered: false,
+                    whole: false,
                 });
+            }
+            // A face nothing crosses, its boundary unsplit, is one piece:
+            // itself.
+            let untouched = strands.iter().all(|st| match &st.tag {
+                Tag::Boundary { edge, range } => {
+                    let full = face.edges[*edge].crange;
+                    (range.0.min(range.1) - full.0.min(full.1)).abs() <= tol.parametric()
+                        && (range.0.max(range.1) - full.0.max(full.1)).abs() <= tol.parametric()
+                }
+                Tag::Pole { .. } => true,
+                Tag::Section { .. } | Tag::Contact { .. } => false,
+            });
+            if untouched
+                && let [piece] = pieces.as_mut_slice()
+                && matches!(piece.state, PieceState::In | PieceState::Out)
+            {
+                piece.whole = true;
             }
 
             Ok((pieces, junctions))
@@ -7339,15 +7363,50 @@ fn assemble_result(
         junction_reach,
         onto_vertex: std::collections::HashSet::new(),
     };
+    // A face the operation never touched (nothing crosses it, no edge of it
+    // is split, no junction lands at its corners) is rebuilt as an exact
+    // copy of itself. Its neighbours across its unsplit edges build those
+    // edges from the same curves, so whichever twin the sew keeps is its
+    // own boundary.
+    let clean = |piece: &FacePiece, model: &Model| -> OgeomResult<bool> {
+        if !piece.whole {
+            return Ok(false);
+        }
+        let face = &source_face(piece);
+        for vertex in explore_unique(model, face, ShapeType::Vertex)? {
+            let Some(data) = model.node(&vertex).and_then(|n| n.data().as_vertex()) else {
+                continue;
+            };
+            let at = vertex.transform(model.datums())?.apply(data.point);
+            if fused
+                .junctions
+                .iter()
+                .any(|j| j.at.distance(at) <= j.reach + floor)
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    };
+    // One kept turned over (a tool's face lining the cavity a cut leaves)
+    // faces the other way, which no copy does.
+    let mut copies = Vec::with_capacity(kept.len());
+    for &(index, flip) in kept {
+        copies.push(!flip && clean(&fused.pieces[index], rebuild.model)?);
+    }
     let mut faces = Vec::new();
     let mut kept_sources: std::collections::HashSet<Shape> = std::collections::HashSet::new();
-    for &(index, flip) in kept {
+    for (slot, &(index, flip)) in kept.iter().enumerate() {
         let piece = &fused.pieces[index];
         let mut built = build_piece(&mut rebuild, fused, piece, tol)?;
         if flip {
             built = built.reversed();
         }
-        history.modify(&source_face(piece), built.clone());
+        if copies[slot] {
+            history.copy(&source_face(piece), built.clone());
+        } else {
+            history.modify(&source_face(piece), built.clone());
+        }
         kept_sources.insert(source_face(piece));
         faces.push(built);
     }

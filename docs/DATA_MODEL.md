@@ -243,6 +243,16 @@ Adding history later means revisiting every algorithm. Incomplete history is
 worse than none: it fails silently and corrupts documents instead of raising an
 error.
 
+A modification may be marked an exact copy (`History::copy`, read back with
+`History::copy_of`): the image is a new node standing for the same thing, on
+the same surface or curve within the same boundary, its vertices where they
+were to within their tolerances. A boolean's faces the tool never touched, and
+a face the sew only moves onto shared edges, are reported so. An application
+holding names or meshes for the input carries them across without comparing
+geometry. Composition keeps the mark only where every step copied the shape or
+left it alone. Results stay new nodes: an operation edits its own result in
+place, and a node shared with an earlier solid would change it too.
+
 > *Elsewhere:* `Generated` / `Modified` / `IsDeleted` on the operation base
 > class, plus a standalone history object.
 

@@ -394,12 +394,18 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
     let mut history = History::new();
     let mut rebuilt = Vec::with_capacity(faces.len());
     for face in faces {
-        let Some(sewn) = rebuild_face(model, face, &substitution, tol)? else {
+        let Some((sewn, whole)) = rebuild_face(model, face, &substitution, tol)? else {
             history.delete(face);
             continue;
         };
         model.set_derived(&sewn, std::slice::from_ref(face), roles::SEWN_FACE)?;
-        history.modify(face, sewn.clone());
+        // Moved onto the shared edges with every ring kept, the face is the
+        // same face: a copy, on its own surface within its own boundary.
+        if whole {
+            history.copy(face, sewn.clone());
+        } else {
+            history.modify(face, sewn.clone());
+        }
         rebuilt.push(sewn);
     }
 
@@ -1035,7 +1041,8 @@ fn rebuild_face(
     face: &Shape,
     merged: &HashMap<TShapeId, (TShapeId, bool)>,
     tol: Tolerances,
-) -> OgeomResult<Option<Shape>> {
+) -> OgeomResult<Option<(Shape, bool)>> {
+    let mut whole = true;
     let Some(data) = model.node(face).and_then(|n| n.data().as_face()).cloned() else {
         ogeom_bail!(Construction, "expected a face");
     };
@@ -1069,6 +1076,7 @@ fn rebuild_face(
             if wires.is_empty() {
                 return Ok(None);
             }
+            whole = false;
             continue;
         }
         let wire = match make_wire(model, &ring, tol) {
@@ -1107,7 +1115,7 @@ fn rebuild_face(
         wires.push(wire);
     }
     if !touched {
-        return Ok(Some(face.clone()));
+        return Ok(Some((face.clone(), whole)));
     }
     if wires.is_empty() {
         return Ok(None);
@@ -1145,11 +1153,14 @@ fn rebuild_face(
             return Err(e);
         }
     };
-    Ok(if face.orientation() == Orientation::Reversed {
-        Some(sewn.reversed())
-    } else {
-        Some(sewn)
-    })
+    Ok(Some((
+        if face.orientation() == Orientation::Reversed {
+            sewn.reversed()
+        } else {
+            sewn
+        },
+        whole,
+    )))
 }
 
 /// Group faces by whether they share an edge, transitively.

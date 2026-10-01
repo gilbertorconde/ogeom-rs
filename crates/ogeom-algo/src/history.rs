@@ -9,6 +9,12 @@
 //!   halves.
 //! - **deleted**: it has no image in the result at all.
 //!
+//! A modification may also be marked an **exact copy**: the image is a new
+//! node standing for the same thing, on the same surface or curve within the
+//! same boundary, its vertices where they were to within their tolerances.
+//! A boolean's faces the tool never touched come through so, and a caller
+//! holding names or meshes for the input can carry them across unchanged.
+//!
 //! A parametric application records "fillet *that* edge" and must still find
 //! that edge after the model is rebuilt with different dimensions. It does so
 //! by walking history. Half-populated history does not error. It reopens the
@@ -37,6 +43,8 @@ pub struct History {
     generated: HashMap<SameKey, Vec<Shape>>,
     modified: HashMap<SameKey, Vec<Shape>>,
     deleted: HashSet<SameKey>,
+    /// The modifications that are exact copies.
+    copied: HashSet<SameKey>,
 }
 
 impl History {
@@ -88,7 +96,30 @@ impl History {
     pub fn delete(&mut self, input: &Shape) {
         let key = SameKey(input.clone());
         self.modified.remove(&key);
+        self.copied.remove(&key);
         self.deleted.insert(key);
+    }
+
+    /// Record that `input` became `output`, an exact copy of it: a new node
+    /// standing for the same thing, on the same surface or curve within the
+    /// same boundary.
+    ///
+    /// A modification like any other to every query but
+    /// [`History::copy_of`]; a second image recorded for the same input
+    /// makes it a split, no longer a copy.
+    pub fn copy(&mut self, input: &Shape, output: Shape) {
+        self.modify(input, output);
+        self.copied.insert(SameKey(input.clone()));
+    }
+
+    /// The exact copy `input` became, where it became exactly one.
+    #[must_use]
+    pub fn copy_of(&self, input: &Shape) -> Option<&Shape> {
+        let key = SameKey(input.clone());
+        match self.modified.get(&key).map(Vec::as_slice) {
+            Some([image]) if self.copied.contains(&key) => Some(image),
+            _ => None,
+        }
     }
 
     /// New entities made from `input`.
@@ -225,11 +256,22 @@ impl History {
                     final_images.extend(later.trace(image).iter().cloned());
                 }
 
+                // A copy of a copy is a copy, and so is a copy the other
+                // step left alone; anything else that changed it is a change.
+                let copied = self.copy_of(&input).is_some() || !changed_by_self;
+                let copied = copied
+                    && after_first
+                        .iter()
+                        .all(|image| later.copy_of(image).is_some() || !later.is_affected(image));
                 if final_images.is_empty() {
                     out.delete(&input);
                 } else if changed_by_self || changed_by_later {
-                    for image in final_images {
-                        out.modify(&input, image);
+                    if copied && let [image] = final_images.as_slice() {
+                        out.copy(&input, image.clone());
+                    } else {
+                        for image in final_images {
+                            out.modify(&input, image);
+                        }
                     }
                 }
                 // Otherwise neither step touched it, and silence is the answer.
@@ -305,6 +347,48 @@ mod tests {
             .map(|i| model.add_point(Point::new(i as f64, 0.0, 0.0)))
             .collect();
         (model, shapes)
+    }
+
+    #[test]
+    fn a_copy_is_a_modification_that_says_so() {
+        let (_, s) = shapes(3);
+        let mut h = History::new();
+        h.copy(&s[0], s[1].clone());
+        assert!(h.is_affected(&s[0]));
+        assert_eq!(h.trace(&s[0]).len(), 1);
+        assert!(h.copy_of(&s[0]).is_some_and(|c| c.is_same(&s[1])));
+        // A second image makes it a split.
+        h.modify(&s[0], s[2].clone());
+        assert!(h.copy_of(&s[0]).is_none());
+    }
+
+    #[test]
+    fn copies_compose_as_copies_and_a_change_breaks_them() {
+        let (_, s) = shapes(5);
+        let mut first = History::new();
+        first.copy(&s[0], s[1].clone());
+        let mut copy_again = History::new();
+        copy_again.copy(&s[1], s[2].clone());
+        let mut change = History::new();
+        change.modify(&s[1], s[3].clone());
+        let untouched = History::new();
+
+        let both = first.then(&copy_again);
+        assert!(both.copy_of(&s[0]).is_some_and(|c| c.is_same(&s[2])));
+        let left_alone = first.then(&untouched);
+        assert!(left_alone.copy_of(&s[0]).is_some_and(|c| c.is_same(&s[1])));
+        let changed = first.then(&change);
+        assert!(changed.copy_of(&s[0]).is_none());
+        assert!(changed.modified(&s[0])[0].is_same(&s[3]));
+        // A change first, a copy after, is a change.
+        let mut early = History::new();
+        early.modify(&s[0], s[1].clone());
+        assert!(early.then(&copy_again).copy_of(&s[0]).is_none());
+        // Deleting withdraws the copy.
+        let mut gone = History::new();
+        gone.copy(&s[0], s[4].clone());
+        gone.delete(&s[0]);
+        assert!(gone.copy_of(&s[0]).is_none());
     }
 
     #[test]

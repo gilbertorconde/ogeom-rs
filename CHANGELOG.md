@@ -551,6 +551,17 @@ bump may break the API and a patch bump may not.
   `ogeom-bool` used an `if let` guard on a match arm, which Rust 1.90
   refuses; 0.6.0 built only on newer compilers.
 
+### Added
+
+- **A history says which faces came through a boolean unchanged.**
+  `History::copy` records a modification that is an exact copy (a new node
+  on the same surface within the same boundary) and `History::copy_of`
+  reads it back. A boolean reports so every face the tool never touched,
+  and the sew every face it only moves onto shared edges; composition keeps
+  the mark only where every step copied the shape or left it alone. An
+  application holding names, meshes or bounds for a face carries them
+  across without comparing geometry.
+
 ### Changed
 
 - **A boolean on a face with hundreds of holes is several times faster.**
