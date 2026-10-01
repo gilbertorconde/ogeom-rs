@@ -3,10 +3,9 @@
 //! *Elsewhere:* `ShapeFix`, `ShapeAnalysis`, `ShapeUpgrade`, `ShapeBuild`,
 //! `ShapeConstruct` and `ShapeExtend`.
 //!
-//! Not optional and not deferrable: essentially every real-world STEP or IGES file
-//! needs healing before it can be modeled with. A kernel that cannot survive
-//! imperfect imported geometry is unusable regardless of how good its booleans
-//! are.
+//! Imported STEP and IGES geometry carries boundary slop, missing trims and
+//! false same-parameter claims. Healing repairs those before the shape is
+//! modelled with.
 
 pub mod divide;
 pub mod fix;

@@ -1,8 +1,7 @@
 //! Re-anchoring the rings of a seamless periodic face.
 //!
-//! The first healing operation an imported file demanded by name. A STEP
-//! face on a periodic surface may arrive bounded by two closed rings and no
-//! seam; where the rings' vertices share an angle, the reader synthesises
+//! A STEP face on a periodic surface may arrive bounded by two closed rings
+//! and no seam. Where the rings' vertices share an angle, the reader synthesises
 //! the seam itself, but where they sit at *different* angles no seam can
 //! join them: the vertices are load-bearing, and one of them is in the
 //! wrong place. Moving it is surgery: the ring's closed edge is rebuilt

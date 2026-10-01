@@ -1459,7 +1459,7 @@ fn iso_curve(
             (Curve::BSpline(fitted.curve), 1.0, 0.0)
         }
     };
-    // The closed forms above assume the surfaces' own conventions; hold
+    // The closed forms above assume the surfaces' own conventions. Hold
     // them to it.
     let (curve, scale, offset) = &found;
     for &w in probes {

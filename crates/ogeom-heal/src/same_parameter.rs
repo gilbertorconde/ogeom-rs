@@ -60,7 +60,7 @@ pub fn repair_same_parameter(
         };
         let data = data.clone();
         let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
-            // A degenerate edge's pcurve is its whole story; there is nothing
+            // A degenerate edge's pcurve is its whole story. There is nothing
             // for it to disagree with.
             report.trivial += 1;
             set_flag(model, &edge, true);

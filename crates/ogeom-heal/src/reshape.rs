@@ -123,8 +123,8 @@ impl Reshape {
         // occurrence's orientation into every child, and the rebuilt node is
         // oriented as the occurrence once, below. Read through a reversed
         // occurrence, a reversed edge rebuilt around a substituted vertex
-        // came out with its start and end swapped and was then reversed
-        // again, and the wire it sat in walked it against its neighbours.
+        // comes out with its start and end swapped and is then reversed
+        // again, so the wire it sits in walks it against its neighbours.
         let forward = if shape.orientation() == Orientation::Reversed {
             shape.reversed()
         } else {

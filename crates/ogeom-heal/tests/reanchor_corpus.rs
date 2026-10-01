@@ -1,4 +1,4 @@
-//! Healing's first customer: the torus fillets of the smallest NIST part.
+//! Healing an imported part whose torus fillets carry misaligned pcurves.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;
@@ -24,9 +24,7 @@ fn reanchoring_makes_the_smallest_nist_part_whole() {
             .unwrap();
     assert!(!healed.0.history.is_empty(), "something was healed");
 
-    // Every face of the healed solid now triangulates, and the part
-    // measures: the reader's warning became the healer's work order, and
-    // the work is done.
+    // Every face of the healed solid triangulates, and the part measures.
     let fine = ogeom_mesh::Deflection {
         chord: 1e-2,
         ..ogeom_mesh::Deflection::default()
@@ -53,9 +51,9 @@ fn reanchoring_makes_the_smallest_nist_part_whole() {
         ogeom_algo::is_shell_closed(import.document.model(), &shell).unwrap(),
         "the healed topology closes"
     );
-    // The part measures: every revolution face was re-annotated with
-    // window-coherent pcurves, boundary vertices anchor to their edges'
-    // curves, and the volume integral has a watertight boundary.
+    // The part measures: every revolution face carries window-coherent
+    // pcurves, boundary vertices anchor to their edges' curves, and the
+    // volume integral has a watertight boundary.
     let props =
         ogeom_algo::volume_properties(import.document.model(), &healed.0.shape, fine, T).unwrap();
     eprintln!("REPORT healed volume {:.3} mm^3", props.mass);
@@ -73,7 +71,7 @@ fn the_imported_part_repairs_its_same_parameter_claims() {
     let solid = import.solids[0].clone();
     let report = ogeom_heal::repair_same_parameter(import.document.model_mut(), &solid, T).unwrap();
     assert!(report.checked > 0);
-    // Imported pcurves were fitted against the file's own slop; some edges
+    // Imported pcurves are fitted against the file's own slop. Some edges
     // widen, and afterwards every claim is true.
     let all_true = ogeom_topo::explore(
         import.document.model(),

@@ -10,13 +10,11 @@
 //! certificate is the worst deviation actually measured; a surface that is
 //! genuinely free-form at that tolerance stays what it is.
 //!
-//! Why it matters: exchange formats routinely spell a cylinder out pointwise,
-//! and every algorithm downstream (intersection, blending, the boolean's
-//! closed forms) is faster and exacter on the analytic carrier. The
-//! reference keeps this in its healing layer for the same reason.
+//! Exchange formats routinely spell a cylinder out pointwise, and every
+//! algorithm downstream (intersection, blending, the boolean's closed forms)
+//! is faster and exacter on the analytic carrier.
 //!
-//! The estimators are classical, and shared with the sample-based recognizer
-//! that lives outside the kernel: a plane is the mean normal; a sphere's
+//! The estimators are classical: a plane is the mean normal; a sphere's
 //! centre is where the normal lines meet, in least squares; a cylinder's
 //! axis is the direction the normals avoid (their covariance's smallest
 //! eigenvector), and a cone adds the linear taper of radius against height.

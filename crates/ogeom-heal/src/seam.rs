@@ -697,8 +697,8 @@ fn pole_gap(
         let end = *walk.samples[k].last().unwrap_or(&walk.samples[k][0]);
         let next = walk.samples[(k + 1) % n][0];
         // The walk moved each piece to continue the last, so a piece
-        // leaving the pole on another column shows as a jump along the row;
-        // the ring does not go round, so it closes where it started.
+        // leaving the pole on another column shows as a jump along the row.
+        // The ring does not go round, so it closes where it started.
         let gap = next.x - end.x;
         if (end.y.abs() - half).abs() > 1e-9 || gap.abs() <= 1e-9 * walk.span {
             continue;
