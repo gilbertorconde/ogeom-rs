@@ -772,15 +772,23 @@ pub(crate) fn face_reach(
 /// its face and its setback, for a chain to check its bands against each
 /// other.
 ///
+/// `anywhere` asks only that the ball sit somewhere along the edge: a face
+/// narrowing toward one end (a pyramid's side under a rounded apex) holds
+/// the ball along most of the edge and lets it run off near that end,
+/// where the blend stops flush. Only a ball that fits at no station is
+/// refused then.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
-/// where a contact falls outside its face.
+/// where a contact falls outside its face (at every station, for
+/// `anywhere`).
 pub(crate) fn ball_fits(
     model: &Model,
     solid: &Shape,
     edge: &Shape,
     radius: f64,
+    anywhere: bool,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Contact>> {
     use ogeom_geom::Surface as _;
@@ -829,7 +837,9 @@ pub(crate) fn ball_fits(
     };
     // The edge's curve comes placed. Stations stay clear of its ends,
     // where a neighbouring face in a chain carries the band on.
-    for fraction in [0.25, 0.5, 0.75] {
+    let mut missed: Option<String> = None;
+    let mut held = false;
+    'stations: for fraction in [0.25, 0.5, 0.75] {
         let t = range.0 + (range.1 - range.0) * fraction;
         let p = curve.point_at(t, tol)?;
         let d = curve.d1_at(t, tol)?;
@@ -888,11 +898,15 @@ pub(crate) fn ball_fits(
             if !chart_holds(model, face, ogeom_math::Point2::new(u, v), tol)?
                 && !on_boundary(model, solid, found.point, tol)?
             {
-                ogeom_bail!(
-                    Construction,
+                let refusal = format!(
                     "a blend of radius {radius} on the edge through {p:?} sets back {setback} \
                      across a face that does not reach so far"
                 );
+                if !anywhere {
+                    ogeom_bail!(Construction, "{refusal}");
+                }
+                missed = Some(refusal);
+                continue 'stations;
             }
             contacts.push(Contact {
                 face: face.node(),
@@ -900,6 +914,12 @@ pub(crate) fn ball_fits(
                 setback,
             });
         }
+        held = true;
+    }
+    if let Some(refusal) = missed
+        && !held
+    {
+        ogeom_bail!(Construction, "{refusal}");
     }
     Ok(contacts)
 }

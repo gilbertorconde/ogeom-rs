@@ -50,8 +50,9 @@ pub fn fillet_edge(
         ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
     }
     // The ball touches each face a setback back from the edge; set back
-    // past a face's far side, the band would cut through the face.
-    crate::support::ball_fits(model, solid, edge, radius, tol)?;
+    // past a face's far side all along it, the band would cut through the
+    // face.
+    crate::support::ball_fits(model, solid, edge, radius, true, tol)?;
     fillet_edge_meeting(model, solid, edge, radius, None, tol)
 }
 
@@ -217,7 +218,9 @@ pub fn fillet_edges(
     // back into another edge's band, the two balls overlap.
     let mut contacts = Vec::with_capacity(edges.len());
     for edge in edges {
-        contacts.push(crate::support::ball_fits(model, solid, edge, radius, tol)?);
+        contacts.push(crate::support::ball_fits(
+            model, solid, edge, radius, false, tol,
+        )?);
     }
     crate::support::bands_clear(model, edges, &contacts, tol)?;
     use ogeom_geom::Curve3d as _;
