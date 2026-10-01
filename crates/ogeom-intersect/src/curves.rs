@@ -667,9 +667,10 @@ fn coplanar_circles_3d(
     if distance > ra + rb + options.gap || distance < (ra - rb).abs() - options.gap {
         return Some(CurveIntersection::empty());
     }
-    // Within the weld distance of touching, the two crossings are one touch
-    // the root of a rounding error has pulled apart.
-    let weld = tol.confusion() * 1e2;
+    // Well within the weld distance of touching (half of it, as for two
+    // drums), the two crossings are one touch the root of a rounding error
+    // has pulled apart.
+    let weld = tol.confusion() * 50.0;
     if (distance - (ra + rb)).abs() <= weld || (distance - (ra - rb).abs()).abs() <= weld {
         return None;
     }

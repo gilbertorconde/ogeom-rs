@@ -156,14 +156,16 @@ fn plane_plane(a: ogeom_math::Plane, b: ogeom_math::Plane, reach: f64, tol: Tole
         };
     }
     // The line of intersection runs along both normals' cross product, and
-    // passes through the point nearest the origin that satisfies both planes.
+    // passes through the point nearest the first plane's origin that
+    // satisfies both. Measured from that origin rather than from the world's:
+    // the planes' own offsets from the world origin cancel to a few digits
+    // when divided by the square of a small angle between them (two faces a
+    // few hundredths of a milliradian apart met a third of a micron off
+    // their true line), where the second plane's distance from a point on
+    // the first is known to rounding.
     let Ok(direction) = Direction::from_cross(a.normal().vector(), b.normal().vector(), tol) else {
         return Meeting::Apart;
     };
-    let (da, db) = (
-        a.normal().dot_vector(a.origin().to_vector()),
-        b.normal().dot_vector(b.origin().to_vector()),
-    );
     let (na, nb) = (a.normal().vector(), b.normal().vector());
     let dot = na.dot(nb);
     // sin² of the angle between the normals, from the cross product: one
@@ -172,9 +174,9 @@ fn plane_plane(a: ogeom_math::Plane, b: ogeom_math::Plane, reach: f64, tol: Tole
     if denominator <= 0.0 {
         return Meeting::Apart;
     }
-    let ca = da.mul_add(1.0, -(db * dot)) / denominator;
-    let cb = db.mul_add(1.0, -(da * dot)) / denominator;
-    let through = Point::from_vector(na * ca + nb * cb);
+    let origin = a.origin();
+    let off = b.signed_distance_to(origin);
+    let through = origin + (na * (off * dot) - nb * off) / denominator;
     Meeting::Along(vec![line_through(through, direction)])
 }
 

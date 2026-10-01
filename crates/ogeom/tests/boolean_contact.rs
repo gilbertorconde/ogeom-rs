@@ -1415,3 +1415,85 @@ fn slivers_under_the_weld_distance_are_welded() {
         }
     }
 }
+
+/// Blocks tilted by a few hundredths of a milliradian, a sliver of real
+/// geometry: stacked and hinged about a horizontal axis through the middle
+/// of the joint (the wedge each side is the tilt's own volume, tan t), and
+/// standing in one another turned about the vertical (four corner wedges,
+/// 4 tan t between them). The two faces near-parallel along the hinge cross on
+/// their true line, and every operation keeps its volume.
+#[test]
+fn blocks_tilted_by_a_hair_keep_their_volumes() {
+    for (turn, about_x) in [(1e-4_f64, true), (3e-5, true), (3e-5, false)] {
+        let mut model = Model::new();
+        let low = ogeom::algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T)
+            .unwrap()
+            .shape;
+        let (base, axis) = if about_x {
+            (
+                Frame::new(Point::new(0.0, 0.0, 2.0), Direction::Z, Direction::X, T).unwrap(),
+                ogeom::math::Axis {
+                    location: Point::new(1.0, 1.0, 2.0),
+                    direction: Direction::X,
+                },
+            )
+        } else {
+            (
+                Frame::WORLD,
+                ogeom::math::Axis {
+                    location: Point::new(1.0, 1.0, 0.0),
+                    direction: Direction::Z,
+                },
+            )
+        };
+        let other = ogeom::algo::make_box(&mut model, base, (2.0, 2.0, 2.0), T)
+            .unwrap()
+            .shape;
+        let turned = ogeom::algo::transformed(
+            &mut model,
+            &other,
+            ogeom::math::Transform::rotation(axis, turn),
+        )
+        .unwrap()
+        .shape;
+        let (fuse_want, common_want, cut_want) = if about_x {
+            (16.0 - turn.tan(), turn.tan(), 8.0 - turn.tan())
+        } else {
+            (
+                8.0 + 4.0 * turn.tan(),
+                8.0 - 4.0 * turn.tan(),
+                4.0 * turn.tan(),
+            )
+        };
+        for (name, built, want) in [
+            (
+                "fuse",
+                ogeom::boolean::fuse(&mut model, &low, &turned, T),
+                fuse_want,
+            ),
+            (
+                "common",
+                ogeom::boolean::common(&mut model, &low, &turned, T),
+                common_want,
+            ),
+            (
+                "cut",
+                ogeom::boolean::cut(&mut model, &low, &turned, T),
+                cut_want,
+            ),
+        ] {
+            let shape = built
+                .unwrap_or_else(|e| panic!("{turn} {about_x} {name}: {e}"))
+                .shape;
+            assert!(
+                ogeom::algo::check(&model, &shape, T).unwrap().is_valid(),
+                "{turn} {about_x} {name}"
+            );
+            let v = volume(&model, &shape);
+            assert!(
+                (v - want).abs() < 2e-6,
+                "{turn} {about_x} {name}: {v} against {want}"
+            );
+        }
+    }
+}

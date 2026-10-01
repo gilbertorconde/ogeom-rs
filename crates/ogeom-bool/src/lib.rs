@@ -1938,6 +1938,60 @@ fn fill(
                 // non-manifold contact it is.
                 SurfaceIntersection::Touching(_) => {}
                 SurfaceIntersection::Along(curves) => {
+                    // Two planes all but parallel cross along a line, and on
+                    // either side of it stay within tolerance of each other
+                    // for a stretch: a block stacked on another and tilted a
+                    // hair. An edge of either lying on the other's plane
+                    // there splits the other's face as a coincident pair's
+                    // edge would, or the two faces walk different splits of
+                    // the stretch they share.
+                    if let (SurfaceGeometry::Plane(pa), SurfaceGeometry::Plane(pb)) =
+                        (&fa.surface, &fb.surface)
+                    {
+                        let (na, nb) = (pa.plane().normal(), pb.plane().normal());
+                        if na.vector().cross(nb.vector()).magnitude() <= 1e-3 {
+                            for (owner, target, target_from_a, target_face) in
+                                [(fb, fa, true, ia), (fa, fb, false, ib)]
+                            {
+                                let SurfaceGeometry::Plane(on) = &target.surface else {
+                                    continue;
+                                };
+                                for e in &owner.edges {
+                                    if !matches!(&*e.curve, Curve::Line(_)) {
+                                        continue;
+                                    }
+                                    let lies = [e.crange.0, e.crange.1].iter().all(|&t| {
+                                        e.curve.point_at(t, tol).is_ok_and(|p| {
+                                            on.plane().distance_to(p) <= tol.confusion()
+                                        })
+                                    });
+                                    if !lies {
+                                        continue;
+                                    }
+                                    let Some(pcurve) = ogeom_intersect::exact_pcurve_of(
+                                        &e.curve,
+                                        &target.surface,
+                                        tol,
+                                    ) else {
+                                        continue;
+                                    };
+                                    out.contacts.push(ContactRec {
+                                        curve: (*e.curve).clone(),
+                                        crange: e.crange,
+                                        pcurve,
+                                        prange: e.crange,
+                                        node: e.node,
+                                        tolerance: e
+                                            .tolerance
+                                            .max(owner.tolerance + target.tolerance),
+                                        target_from_a,
+                                        target_face,
+                                        bound: e.bound,
+                                    });
+                                }
+                            }
+                        }
+                    }
                     // Where one curve has no chart image, the pair is
                     // marched whole, every branch at once: the sections its
                     // other curves already gave are replaced by the marched
@@ -3414,8 +3468,14 @@ fn fill(
                 if crossing.gap > reach {
                     continue;
                 }
-                if crossing.on_a < contact.crange.0 + tol.parametric()
-                    || crossing.on_a > contact.crange.1 - tol.parametric()
+                // A contact ending on a target edge needs no split of its
+                // own there, but the edge does: the contact's strand ends
+                // on it, and an edge left whole leaves the strand dangling.
+                let at_end = crossing.on_a < contact.crange.0 + tol.parametric()
+                    || crossing.on_a > contact.crange.1 - tol.parametric();
+                if at_end
+                    && (crossing.on_a < contact.crange.0 - tol.parametric()
+                        || crossing.on_a > contact.crange.1 + tol.parametric())
                 {
                     continue;
                 }
@@ -3428,10 +3488,12 @@ fn fill(
                     continue;
                 }
                 let honesty = honest(contact.tolerance, tol).max(crossing.reach);
-                paves.entry(contact.node).or_default().push(Pave {
-                    t: crossing.on_a,
-                    honesty,
-                });
+                if !at_end {
+                    paves.entry(contact.node).or_default().push(Pave {
+                        t: crossing.on_a,
+                        honesty,
+                    });
+                }
                 let on_b = onto_range(crossing.on_b, &e.curve, e.crange, tol);
                 if on_b > e.crange.0 + tol.parametric() && on_b < e.crange.1 - tol.parametric() {
                     paves
@@ -4124,12 +4186,14 @@ fn inside_plane_exactly(face: &GFace, p: Point2, tol: Tolerances) -> Option<bool
     {
         return None;
     }
-    // On the boundary to within the weld distance (or an edge's own doubt,
-    // where wider) is on it: a sliver that thin is welded, no parity speaks
-    // for such a point, and the outline's reading stands.
+    // On the boundary to well within the weld distance (three quarters of
+    // it, or an edge's own doubt where wider) is on it: a sliver that thin is
+    // welded, no parity speaks for such a point, and the outline's reading
+    // stands. One at the weld distance itself is read exactly, as two drums
+    // that far apart are sectioned.
     let at = face.surface.point_at(p.x, p.y, tol).ok()?;
     for e in &face.edges {
-        let doubt = (e.tolerance * 2.0).max(tol.confusion() * 1e2);
+        let doubt = (e.tolerance * 2.0).max(tol.confusion() * 75.0);
         if !e.bound.expanded(doubt).contains(at) {
             continue;
         }
@@ -5068,11 +5132,12 @@ thread_local! {
 /// An operation run once as it always was, and where it refuses, again in
 /// two steps. Where the refusal is a piece on the other solid's boundary
 /// with no coincident partner, once more with such pieces settled from both
-/// sides of them. And where it still refuses, once at a confusion distance
-/// ten times wider: a sliver a few microns thick (two walls a few microns
-/// apart, a face tilted a few microradians) is then the kind the boolean
-/// welds, and the result is kept only if nothing in it was welded by more
-/// than the weld distance, a hundred confusion distances, so a sliver any
+/// sides of them. And where it still refuses, at a confusion distance ten
+/// and then a hundred times wider: a sliver a few microns thick (two walls
+/// a few microns apart, a face tilted a few microradians) is then the kind
+/// the boolean welds, and the result is kept only if nothing in it states
+/// a tolerance past the weld distance, a hundred confusion distances (and
+/// the ten the welding run states its own vertices to), so a sliver any
 /// thicker is never lost to the retry.
 fn settled(
     model: &mut Model,
@@ -5103,14 +5168,22 @@ fn settled(
             Err(_) => {}
         }
     }
-    let Ok(wider) = Tolerances::with_scale(tol.scale() / 10.0) else {
-        return Err(refusal);
-    };
-    match attempt(model, wider) {
-        Ok(built) if welded_within(model, &built.shape, tol.confusion() * 1e2)? => Ok(built),
-        Err(ogeom_core::OgeomError::Cancelled) => Err(ogeom_core::OgeomError::Cancelled),
-        _ => Err(refusal),
+    // The weld distance, and the wider confusion the welding run itself
+    // states its vertices to.
+    let limit = (tol.confusion() * 1e2 + tol.confusion() * 10.0) * (1.0 + 1e-9);
+    for widen in [10.0, 100.0] {
+        let Ok(wider) = Tolerances::with_scale(tol.scale() / widen) else {
+            continue;
+        };
+        match attempt(model, wider) {
+            Ok(built) if welded_within(model, &built.shape, limit)? => return Ok(built),
+            Err(ogeom_core::OgeomError::Cancelled) => {
+                return Err(ogeom_core::OgeomError::Cancelled);
+            }
+            _ => {}
+        }
     }
+    Err(refusal)
 }
 
 /// Whether every edge and vertex of `shape` states a tolerance within

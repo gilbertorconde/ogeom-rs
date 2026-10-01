@@ -13,6 +13,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Blocks tilted by a hair, and slivers at the weld distance.** Two
+  blocks stacked and hinged, or standing in one another turned, by 1e-5 to
+  1e-4 rad refused. Two planes all but parallel now cross on their true
+  line (measured from a point on the first, not the world origin, whose
+  offsets cancelled to a third of a micron); an edge of either lying on the
+  other's plane splits it as a coincident pair's edge would; and a target
+  edge splits where a contact ends on it. The welding retry takes a second,
+  wider step, held to the same tolerance limit, and drums whose sliver
+  lies at the weld distance itself are sectioned rather than lost between
+  the two readings.
+
 - **Slivers under the weld distance are welded.** Drums a few microns apart
   in radius, axis or end, and a box tilted a few microradians on another,
   refused. A boolean that refuses now runs once more at a confusion
