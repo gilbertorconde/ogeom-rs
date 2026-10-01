@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A thread groove cut into a rod depended on its start angle.** A
+  helical sweep cut into a body of revolution failed at some angles about
+  the axis ("edge N ends where edge N+1 does not begin", or a shell that
+  did not close) and passed at others. A marched section stopped a
+  fraction of a step short of the edge of the patch it left, so it missed
+  the next patch's section by more than either curve's tolerance. The
+  marcher now ends such a section on the edge itself; a sphere's pole and
+  other bounds that collapse to a point are not edges and are left alone.
+
 - **Blocks tilted by a hair, and slivers at the weld distance.** Two
   blocks stacked and hinged, or standing in one another turned, by 1e-5 to
   1e-4 rad refused. Two planes all but parallel now cross on their true

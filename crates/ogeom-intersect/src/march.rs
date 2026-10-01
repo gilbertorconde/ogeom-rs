@@ -482,6 +482,12 @@ pub fn trace(
     if stopped == Stopped::LeftTheDomain && points.len() > 3 {
         let gap = points[0].distance(points[points.len() - 1]);
         if gap <= (steps * 2.0).max(tol.confusion() * 10.0) {
+            // Both walks may have landed on the seam itself, one point.
+            if gap <= tol.confusion() {
+                points.pop();
+                on_a.pop();
+                on_b.pop();
+            }
             points.push(points[0]);
             on_a.push(on_a[0]);
             on_b.push(on_b[0]);
@@ -605,13 +611,132 @@ fn walk(
 ) -> OgeomResult<Traced> {
     let pair = SurfacePair { a, b };
     let start = [from.on_a.0, from.on_a.1, from.on_b.0, from.on_b.1];
-    let walked = crate::walk::walk_one_way(&pair, &start, sense, options, tol)?;
+    let mut walked = crate::walk::walk_one_way(&pair, &start, sense, options, tol)?;
+    if walked.stopped == Stopped::LeftTheDomain {
+        land_on_edge(&pair, &mut walked, tol);
+    }
     Ok(Traced {
         on_a: walked.states.iter().map(|x| (x[0], x[1])).collect(),
         on_b: walked.states.iter().map(|x| (x[2], x[3])).collect(),
         points: walked.points,
         stopped: walked.stopped,
     })
+}
+
+/// End a walk that left a surface's domain on the edge it left through.
+///
+/// The walk stops a fraction of a step short of the edge, and a section
+/// ending there misses the edge by that much: across a patch boundary the
+/// section on the next patch starts on the edge, and the two ends stand
+/// apart by more than either curve's tolerance. The last point is carried
+/// onto the nearest non-periodic bound of either surface, the pair still
+/// meeting there, and kept if it lies ahead within a couple of steps.
+fn land_on_edge(pair: &SurfacePair<'_>, walked: &mut crate::walk::Walked, tol: Tolerances) {
+    use crate::walk::Condition as _;
+    let n = walked.states.len();
+    if n < 2 {
+        return;
+    }
+    let (last, before) = (&walked.states[n - 1], &walked.states[n - 2]);
+    let step = walked.points[n - 1].distance(walked.points[n - 2]);
+    let heading = walked.points[n - 1] - walked.points[n - 2];
+    let mut bounds: Vec<(f64, usize, f64)> = Vec::new();
+    for (surface, first) in [(pair.a, 0_usize), (pair.b, 2)] {
+        let ((ua, ub), (va, vb)) = surface.domain();
+        for (k, (lo, hi), periodic) in [
+            (first, (ua, ub), surface.is_periodic_u()),
+            (first + 1, (va, vb), surface.is_periodic_v()),
+        ] {
+            let span = hi - lo;
+            if periodic || !span.is_finite() || span <= 0.0 {
+                continue;
+            }
+            // Only a bound the walk was heading for, and one that is an
+            // edge: a sphere's pole bounds its chart at a point.
+            let moving = last[k] - before[k];
+            let across = if k == first {
+                surface.domain().1
+            } else {
+                surface.domain().0
+            };
+            let collapses = |bound: f64| {
+                let at = |t: f64| {
+                    if k == first {
+                        surface.point_at(bound, t, tol)
+                    } else {
+                        surface.point_at(t, bound, tol)
+                    }
+                };
+                match (at(across.0), at(f64::midpoint(across.0, across.1))) {
+                    (Ok(p), Ok(q)) => p.distance(q) <= tol.confusion(),
+                    _ => true,
+                }
+            };
+            for (bound, toward) in [(lo, moving < 0.0), (hi, moving > 0.0)] {
+                if (toward || (last[k] - bound).abs() <= span * 1e-4) && !collapses(bound) {
+                    bounds.push(((last[k] - bound).abs() / span, k, bound));
+                }
+            }
+        }
+    }
+    bounds.sort_by(|x, y| x.0.total_cmp(&y.0));
+    for (_, k, bound) in bounds {
+        let system = |x: &[f64]| {
+            let Some(((mut residual, mut jacobian), _, _)) = pair.system_at(x, tol) else {
+                return (vec![f64::INFINITY; 4], vec![vec![0.0; 4]; 4]);
+            };
+            residual.push(x[k] - bound);
+            let mut row = vec![0.0; 4];
+            row[k] = 1.0;
+            jacobian.push(row);
+            (residual, jacobian)
+        };
+        let criteria = solve::Criteria {
+            residual: tol.confusion() * 0.01,
+            step: tol.parametric(),
+            max_iterations: 40,
+        };
+        let Ok(found) = solve::newton_system(system, last, criteria) else {
+            continue;
+        };
+        if found.residual > tol.confusion() {
+            continue;
+        }
+        let at = found.value;
+        let within = [(pair.a, 0_usize), (pair.b, 2)]
+            .iter()
+            .all(|(surface, first)| {
+                let ((ua, ub), (va, vb)) = surface.domain();
+                [
+                    (*first, ua, ub, surface.is_periodic_u()),
+                    (first + 1, va, vb, surface.is_periodic_v()),
+                ]
+                .iter()
+                .all(|&(i, lo, hi, periodic)| {
+                    periodic || (at[i] >= lo - tol.parametric() && at[i] <= hi + tol.parametric())
+                })
+            });
+        if !within {
+            continue;
+        }
+        let Ok(point) = pair.a.point_at(at[0], at[1], tol) else {
+            continue;
+        };
+        let ahead = point - walked.points[n - 1];
+        if ahead.magnitude() > (step * 2.0).max(tol.confusion())
+            || ahead.dot(heading) < -tol.confusion() * step
+        {
+            continue;
+        }
+        if ahead.magnitude() <= tol.confusion() {
+            walked.states[n - 1] = at;
+            walked.points[n - 1] = point;
+        } else {
+            walked.states.push(at);
+            walked.points.push(point);
+        }
+        return;
+    }
 }
 
 /// The sine of the shallowest crossing angle the marcher will follow.

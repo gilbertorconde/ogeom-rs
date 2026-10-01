@@ -491,3 +491,85 @@ fn a_level_profile_on_the_axis_is_refused() {
         "{refused:?}"
     );
 }
+
+/// A planar face through the Z axis, turned `theta` about it, from
+/// (distance from the axis, height) pairs.
+fn axial_face(model: &mut Model, pts: &[(f64, f64)], theta: f64) -> Shape {
+    let (c, s) = (theta.cos(), theta.sin());
+    let p: Vec<Point> = pts
+        .iter()
+        .map(|&(r, z)| Point::new(r * c, r * s, z))
+        .collect();
+    let wire = make_polygon(model, &p, true, T).unwrap().shape;
+    let normal = Direction::new(ogeom::math::Vector::new(s, -c, 0.0), T).unwrap();
+    let x = Direction::new(ogeom::math::Vector::new(c, s, 0.0), T).unwrap();
+    let plane = Plane::new(Frame::new(Point::ORIGIN, normal, x, T).unwrap());
+    make_face(model, PlaneSurface::new(plane).into(), &[wire], T)
+        .unwrap()
+        .shape
+}
+
+/// A thread groove cut into a chamfered rod is the same cut whatever angle
+/// about the axis it starts at. The groove's sections run from one patch of
+/// the sweep to the next, and each ends on the patch edge exactly, where
+/// the next one starts; a section stopping short of it left the wire open
+/// at some start angles.
+#[test]
+fn a_thread_cut_into_a_rod_is_the_same_at_any_start_angle() {
+    let mut volumes = Vec::new();
+    for degrees in [0.0_f64, 37.0, 91.0, 195.0, 286.0, 351.0] {
+        let mut model = Model::new();
+        let section = axial_face(
+            &mut model,
+            &[
+                (0.0, 0.0),
+                (2.2, 0.0),
+                (2.5, 0.3),
+                (2.5, 11.7),
+                (2.2, 12.0),
+                (0.0, 12.0),
+            ],
+            0.0,
+        );
+        let rod =
+            ogeom::algo::make_revolution(&mut model, &section, z_axis(), core::f64::consts::TAU, T)
+                .unwrap()
+                .shape;
+        let s = 1.2;
+        let profile = axial_face(
+            &mut model,
+            &[
+                (2.9, s - 0.36),
+                (2.01, s - 0.05),
+                (2.01, s + 0.05),
+                (2.9, s + 0.36),
+            ],
+            degrees.to_radians(),
+        );
+        let groove = ogeom::offset::make_helical_sweep(
+            &mut model,
+            &profile,
+            z_axis(),
+            0.8,
+            12.0,
+            false,
+            0.0,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let cut = ogeom::boolean::cut(&mut model, &rod, &groove, T)
+            .unwrap_or_else(|e| panic!("at {degrees} degrees: {e}"))
+            .shape;
+        let diagnosis = check(&model, &cut, T).unwrap();
+        assert!(diagnosis.is_valid(), "at {degrees} degrees: {diagnosis}");
+        volumes.push((degrees, volume(&model, &cut)));
+    }
+    let first = volumes[0].1;
+    for (degrees, v) in &volumes {
+        assert!(
+            (v - first).abs() < first * 1e-5,
+            "{v} at {degrees} degrees against {first}"
+        );
+    }
+}
