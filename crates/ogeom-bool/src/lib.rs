@@ -688,16 +688,19 @@ fn measured_overlaps(
     // from another by a few microns over its length (a wall leaning off a
     // pad's side) runs beside it, not along it, and read as along it the
     // strands that meet it are left a few microns short.
-    let exact = |c: &Curve| {
-        matches!(
-            c,
+    // A trim of an exact curve (an arc stated as a stretch of its circle)
+    // is as exact as its basis.
+    fn exact(c: &Curve) -> bool {
+        match c {
             Curve::Line(_)
-                | Curve::Circle(_)
-                | Curve::Ellipse(_)
-                | Curve::Hyperbola(_)
-                | Curve::Parabola(_)
-        )
-    };
+            | Curve::Circle(_)
+            | Curve::Ellipse(_)
+            | Curve::Hyperbola(_)
+            | Curve::Parabola(_) => true,
+            Curve::Trimmed(t) => exact(t.basis()),
+            _ => false,
+        }
+    }
     let floor = if exact(curve) && exact(&e.curve) {
         tol.confusion() * 10.0
     } else {

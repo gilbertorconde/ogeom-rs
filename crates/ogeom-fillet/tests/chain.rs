@@ -170,3 +170,89 @@ fn a_tangent_chain_of_edges_fillets_in_one_call() {
     );
     assert_eq!(tori, 2, "one torus blend per rounded end: {tori}");
 }
+
+/// The edge of `shape` whose middle stands at `at`.
+fn edge_through(
+    model: &ogeom_topo::Model,
+    shape: &ogeom_topo::Shape,
+    at: Point,
+) -> ogeom_topo::Shape {
+    explore_unique(model, shape, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(model, e).unwrap().unwrap();
+            let point =
+                |v: &ogeom_topo::Shape| model.node(v).unwrap().data().as_vertex().unwrap().point;
+            Point::midpoint(point(&a), point(&b)).distance(at) < 1e-9
+        })
+        .expect("an edge there")
+}
+
+/// A block's three edges at one corner, rounded in one call at small
+/// radii: the corner's ball patch and the bands meet along rims that leave
+/// the block's sharp edges tangentially, and each closes to the closed
+/// form: every band's section (1 - pi/4) r^2 over its length short of the
+/// ball, and the ball's octant r^3 (1 - pi/6).
+#[test]
+fn a_corner_rounds_at_any_radius() {
+    let (x, y, z) = (2.0, 2.0, 1.0);
+    for radius in [0.01, 0.05, 0.1, 0.2] {
+        let mut model = ogeom_topo::Model::new();
+        let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (x, y, z), T)
+            .unwrap()
+            .shape;
+        let edges: Vec<ogeom_topo::Shape> = [
+            Point::new(x, y / 2.0, z),
+            Point::new(x, y, z / 2.0),
+            Point::new(x / 2.0, y, z),
+        ]
+        .iter()
+        .map(|&p| edge_through(&model, &block, p))
+        .collect();
+        let rounded = ogeom_fillet::fillet_edges(&mut model, &block, &edges, radius, T)
+            .unwrap()
+            .shape;
+        assert!(ogeom_algo::check(&model, &rounded, T).unwrap().is_valid());
+        let removed =
+            (1.0 - core::f64::consts::FRAC_PI_4) * radius * radius * (x + y + z - 3.0 * radius)
+                + radius.powi(3) * (1.0 - core::f64::consts::PI / 6.0);
+        let measured = volume(&model, &rounded, 1e-5);
+        let want = x * y * z - removed;
+        assert!(
+            (measured - want).abs() < 1e-6,
+            "radius {radius}: {measured} against {want}"
+        );
+    }
+}
+
+/// Every edge of an L-bracket, in either order. The step's inner corner,
+/// where its re-entrant edge meets two convex ones, is no convex corner,
+/// and whichever blend comes first there takes it.
+#[test]
+fn every_edge_of_an_l_bracket_rounds_in_either_order() {
+    for reversed in [false, true] {
+        let mut model = ogeom_topo::Model::new();
+        let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T)
+            .unwrap()
+            .shape;
+        let step = Frame::new(Point::new(1.0, -0.5, 1.0), Direction::Z, Direction::X, T).unwrap();
+        let notch = ogeom_algo::make_box(&mut model, step, (2.0, 3.0, 2.0), T)
+            .unwrap()
+            .shape;
+        let bracket = ogeom_bool::cut(&mut model, &block, &notch, T)
+            .unwrap()
+            .shape;
+        let mut edges = explore_unique(&model, &bracket, ShapeType::Edge).unwrap();
+        assert_eq!(edges.len(), 18);
+        if reversed {
+            edges.reverse();
+        }
+        let rounded = ogeom_fillet::fillet_edges(&mut model, &bracket, &edges, 0.1, T)
+            .unwrap_or_else(|e| panic!("reversed {reversed}: {e}"))
+            .shape;
+        assert!(ogeom_algo::check(&model, &rounded, T).unwrap().is_valid());
+        let v = volume(&model, &rounded, 1e-4);
+        assert!((v - 6.0).abs() < 0.1, "reversed {reversed}: {v}");
+    }
+}

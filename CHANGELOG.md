@@ -13,6 +13,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Small corner rounds and an L-bracket's every edge.** Rounding a
+  block's three edges at a corner refused at any radius up to 0.1: the
+  ball patch's rim leaves each sharp edge tangentially, and an arc stated
+  as a trim of its circle was held to the loose overlap width meant for
+  fitted curves, so the boolean read the rim as running along the edge for
+  a stretch and split it where the band beside it was whole. A trimmed
+  exact curve is now as exact as its basis. Every edge of an L-bracket
+  failed in either order: the corner tool took the step's re-entrant
+  corner, where a concave edge meets two convex ones, for a convex corner,
+  because the planes through it taken whole look like one. It now probes
+  beside each corner edge and leaves a re-entrant corner to the blends.
+
 - **A STEP void reads as a cavity whichever way it is written.** A void
   shell whose flags turn it to add material (written inside out and then
   marked reversed as well, as some exporters do) read inside out: the

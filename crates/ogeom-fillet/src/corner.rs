@@ -248,6 +248,29 @@ pub(crate) fn round_vertex_with(
             edges.len()
         );
     }
+    // The planes taken whole make any corner look convex, but a re-entrant
+    // one (an L-bracket's step, where a concave edge meets two convex ones)
+    // has material outside a plane beside one of its edges. At a convex
+    // corner the solid lies within every plane near the vertex, however
+    // much of it earlier blends have cut away, so a point just off one of
+    // an edge's planes, and in from the other, is outside it.
+    {
+        let boundary = ogeom_algo::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol)?;
+        let step = (radius * 1e-2).max(tol.confusion() * 1e3);
+        for &(i, j, d) in &edges {
+            for (k, other) in [(i, j), (j, i)] {
+                let off = corner + (d.vector() - m[k] + m[other]) * step;
+                if boundary.holds(model, off, tol)? == ogeom_algo::Containment::In {
+                    ogeom_bail!(
+                        Construction,
+                        "material stands outside a plane through this vertex beside \
+                         one of its edges; the corner is re-entrant, not the simple \
+                         convex one this tool speaks"
+                    );
+                }
+            }
+        }
+    }
     let mut ring: Vec<usize> = vec![0];
     let mut last_edge: Option<usize> = None;
     loop {
