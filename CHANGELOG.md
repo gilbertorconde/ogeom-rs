@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A mesh's void stays a void wherever its ray lands.** The converter
+  decided nesting with one ray, and a ray through an edge two of the outer
+  piece's triangles share counted the crossing twice, or not at all, so a
+  void came back as a separate solid. A ray grazing a triangle's boundary
+  is set aside and another direction tried.
+
 - **Unusable converter options are refused.** `solid_from_mesh` read a
   NaN, zero or negative `coplanar_distance`, a negative `quantum`, and a
   NaN or zero `crease` as something else, silently. Each is refused by

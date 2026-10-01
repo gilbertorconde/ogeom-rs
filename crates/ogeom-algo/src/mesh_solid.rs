@@ -1455,37 +1455,71 @@ fn signed_volume(points: &[Point], [a, b, c]: [u32; 3]) -> f64 {
 
 /// Whether piece `inner` lies inside closed piece `outer`: a ray from one
 /// of its vertices crosses `outer` an odd number of times.
+///
+/// A ray through a shared edge or vertex of `outer` meets two triangles
+/// there, or none, and its count says nothing; so a ray passing that close
+/// to any triangle's boundary is set aside and the next direction tried.
+/// Where every direction grazes something, the parities they read vote.
 fn inside(points: &[Point], triangles: &[[u32; 3]], outer: &Piece, inner: &Piece) -> bool {
     let Some(&first) = inner.triangles.first() else {
         return false;
     };
     let origin = points[triangles[first as usize][0] as usize];
-    // An off-axis direction, so a ray along a mesh's grid lines is unlikely.
-    let direction = Vector::new(0.577_215_664_9, 0.618_033_988_7, 0.533_751_168_7);
-    let mut crossings = 0;
-    for &t in &outer.triangles {
-        let [a, b, c] = triangles[t as usize].map(|i| points[i as usize]);
-        let (e1, e2) = (b - a, c - a);
-        let p = direction.cross(e2);
-        let det = e1.dot(p);
-        if det.abs() < 1e-300 {
-            continue;
-        }
-        let s = origin - a;
-        let u = s.dot(p) / det;
-        if !(0.0..=1.0).contains(&u) {
-            continue;
-        }
-        let q = s.cross(e1);
-        let v = direction.dot(q) / det;
-        if v < 0.0 || u + v > 1.0 {
-            continue;
-        }
-        if e2.dot(q) / det > 0.0 {
+    // Off-axis directions, so a ray along a mesh's grid lines is unlikely;
+    // the crossing test needs no unit length.
+    const DIRECTIONS: [[f64; 3]; 6] = [
+        [0.577_215_664_9, 0.618_033_988_7, 0.533_751_168_7],
+        [-0.412_310_562_6, 0.723_606_797_7, 0.553_574_358_9],
+        [0.682_384_715_9, -0.291_637_412_8, 0.669_740_133_4],
+        [0.267_949_192_4, 0.414_213_562_4, -0.869_565_217_4],
+        [-0.713_825_491_7, -0.327_419_853_1, 0.618_574_239_6],
+        [0.229_416_525_6, -0.881_784_197_0, -0.412_310_562_6],
+    ];
+    // How near a triangle's boundary, in its own barycentric terms, a hit
+    // stands too close to say which triangle it belongs to.
+    const GRAZE: f64 = 1e-9;
+    let mut odd = 0_usize;
+    let mut read = 0_usize;
+    for direction in DIRECTIONS {
+        let direction = Vector::new(direction[0], direction[1], direction[2]);
+        let mut crossings = 0_usize;
+        let mut grazed = false;
+        for &t in &outer.triangles {
+            let [a, b, c] = triangles[t as usize].map(|i| points[i as usize]);
+            let (e1, e2) = (b - a, c - a);
+            let p = direction.cross(e2);
+            let det = e1.dot(p);
+            if det.abs() < 1e-300 {
+                continue;
+            }
+            let s = origin - a;
+            let u = s.dot(p) / det;
+            if !(-GRAZE..=1.0 + GRAZE).contains(&u) {
+                continue;
+            }
+            let q = s.cross(e1);
+            let v = direction.dot(q) / det;
+            if v < -GRAZE || u + v > 1.0 + GRAZE {
+                continue;
+            }
+            if e2.dot(q) / det <= 0.0 {
+                continue;
+            }
+            if u < GRAZE || v < GRAZE || u + v > 1.0 - GRAZE {
+                grazed = true;
+                break;
+            }
             crossings += 1;
         }
+        read += 1;
+        if crossings % 2 == 1 {
+            odd += 1;
+        }
+        if !grazed {
+            return crossings % 2 == 1;
+        }
     }
-    crossings % 2 == 1
+    odd * 2 > read
 }
 
 /// What a face is built on.

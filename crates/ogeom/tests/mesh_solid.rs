@@ -2265,3 +2265,34 @@ fn unusable_converter_options_are_refused() {
     let mut model = Model::new();
     assert!(solid_from_mesh(&mut model, &cube, &MeshSolidOptions::default(), T).is_ok());
 }
+
+/// A small cube inside a large one is the large one's void, wherever a ray
+/// from it happens to meet the large one: here along the diagonal two of
+/// its triangles share, where a single ray counts the crossing twice.
+#[test]
+fn a_void_whose_ray_meets_a_shared_edge_stays_a_void() {
+    let shifted = |mesh: Triangulation, by: Vector| {
+        let mut mesh = mesh;
+        for p in &mut mesh.positions {
+            *p += by;
+        }
+        mesh
+    };
+    // A ray from the small cube's first corner along the probe direction
+    // meets the large cube's +x face on its diagonal.
+    let probe = Vector::new(0.577_215_664_9, 0.618_033_988_7, 0.533_751_168_7);
+    let (reach, hit) = (21.1, Point::new(30.0, 15.31, 14.69));
+    let corner = hit - probe * reach;
+    let outer = cube_soup(30.0);
+    let inner = shifted(cube_soup(5.0), corner - Point::ORIGIN);
+    let mut mesh = outer;
+    let base = u32::try_from(mesh.positions.len()).unwrap();
+    mesh.positions.extend(inner.positions);
+    mesh.triangles
+        .extend(inner.triangles.iter().map(|t| t.map(|i| i + base)));
+    let mut model = Model::new();
+    let built = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert_eq!(count(&model, &built.shape, ShapeType::Solid), 1);
+    let v = volume(&model, &built.shape);
+    assert!((v - (27000.0 - 125.0)).abs() < 1e-6, "{v}");
+}
