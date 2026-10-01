@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A placed face's medial axis moves with it.** `medial_axis` read a
+  moved face's boundary in its surface's unplaced frame and lifted the
+  axis back through it, giving an axis neither where the face stands nor
+  where it was written. The frame is now placed with the face.
+
 - **Lengths and points along a curve turn its kinks.** `curve_length`
   could fail across a polyline spline's corner, and `parameter_at_length`
   (with `points_by_count` and `points_by_spacing` on it) took the failure

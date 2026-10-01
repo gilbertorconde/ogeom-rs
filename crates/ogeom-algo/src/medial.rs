@@ -55,8 +55,10 @@ pub fn medial_axis(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<
              surface is not a plane"
         );
     };
-    let frame = plane.plane().frame();
+    // The plane where the face stands: its frame carried by the face's
+    // placement, so the boundary is read, and the axis lifted back, there.
     let placement = face.transform(model.datums())?;
+    let frame = placement.apply_frame(&plane.plane().frame(), tol)?;
 
     let wires = model.ordered_children_of(face)?;
     if wires.len() != 1 {
@@ -89,7 +91,9 @@ pub fn medial_axis(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<
         } else {
             (range.0, range.1)
         };
-        let start = placement.apply(geometry.point_at(t0, tol)?);
+        let start = edge
+            .transform(model.datums())?
+            .apply(geometry.point_at(t0, tol)?);
         let _ = t1;
         let local = frame.to_local(start);
         ring.push(Point2::new(local.x, local.y));

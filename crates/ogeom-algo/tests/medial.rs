@@ -112,3 +112,28 @@ fn what_the_axis_cannot_yet_hold_is_refused_by_name() {
     let err = ogeom_algo::medial_axis(&model, &face, T).unwrap_err();
     assert!(err.to_string().contains("reflex"), "{err}");
 }
+
+/// A face moved and turned has the axis it had, moved and turned with it:
+/// read in the plane where the face stands, not where its surface was
+/// written.
+#[test]
+fn a_placed_faces_axis_moves_with_it() {
+    use ogeom_math::{Axis, Direction, Transform, Vector};
+    let mut model = Model::new();
+    let corners = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(20.0, 0.0, 0.0),
+        Point::new(20.0, 10.0, 0.0),
+        Point::new(0.0, 10.0, 0.0),
+    ];
+    let face = planar_face(&mut model, &corners);
+    let plain = ogeom_algo::medial_axis(&model, &face, T).unwrap();
+    let motion = Transform::translation(Vector::new(0.0, 0.0, 50.0))
+        * Transform::rotation(Axis::new(Point::ORIGIN, Direction::X), 1.0);
+    let moved_face = model.placed(&face, motion);
+    let moved = ogeom_algo::medial_axis(&model, &moved_face, T).unwrap();
+    assert_eq!(moved.segments.len(), plain.segments.len());
+    for ((a, b), (c, d)) in plain.segments.iter().zip(&moved.segments) {
+        assert!(motion.apply(*a).distance(*c) < 1e-9 && motion.apply(*b).distance(*d) < 1e-9);
+    }
+}
