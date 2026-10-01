@@ -260,10 +260,9 @@ impl SolidMesh {
 /// Where a point sits relative to a closed shell or solid, decided against
 /// the true surfaces.
 ///
-/// This is the promise the tessellated classifier's documentation makes on
-/// behalf of "a later layer", kept: rays are cast against each face's actual
-/// geometry through the curve/surface intersector, so the band where the
-/// answer is *On* rather than a side is the tolerance, not the deflection. A
+/// Rays are cast against each face's actual geometry through the
+/// curve/surface intersector, so the band where the answer is *On* rather
+/// than a side is the tolerance, not the deflection. A
 /// point a micron off a sphere's wall classifies as the side it is on;
 /// [`classify_in_solid`] at any practical deflection could only say *On*.
 ///
@@ -355,10 +354,9 @@ impl PreparedFace {
 /// Classifying a point casts rays and counts crossings, which is cheap. What
 /// is not cheap is what the rays are cast *against*: every face's trimming
 /// rings, polylined, plus its placement's inverse. That work depends on the
-/// solid and the chord, never on the point, and asked point by point it was
-/// redone from scratch every time, which for a boolean means once per face
-/// piece. Measured on a four-hole cut, preparing took 3.5 ms against 5.6 µs
-/// of ray casting: six hundred times the work of the question being asked.
+/// solid and the chord, never on the point, and a boolean asks once per face
+/// piece. Preparing costs hundreds of times the ray casting it serves, so it
+/// is done once.
 #[derive(Debug)]
 pub struct SolidBoundary {
     faces: Vec<PreparedFace>,
@@ -424,8 +422,7 @@ impl SolidBoundary {
         let faces = ogeom_topo::explore_unique(model, solid, ShapeType::Face)?;
         // One prepared face per face, in face order, computed in parallel:
         // each preparation reads the model and writes nothing, and walking a
-        // face's trimming rings is the whole cost of building a boundary:
-        // 84% of the boolean's split stage before this ran wide.
+        // face's trimming rings is the whole cost of building a boundary.
         let prepared = ogeom_core::parallel::map_ordered(&faces, |_, face| {
             ogeom_core::progress::checkpoint()?;
             let Some(node) = model.node(face) else {
@@ -639,7 +636,7 @@ enum Hit {
     Ambiguous,
 }
 
-/// Möller–Trumbore, with the degenerate cases separated out rather than
+/// Möller-Trumbore, with the degenerate cases separated out rather than
 /// rounded away.
 fn ray_hits_triangle(from: Point, along: Direction, t: [Point; 3], tol: Tolerances) -> Hit {
     let direction = along.vector();
@@ -769,12 +766,6 @@ fn segment_distance_2d(p: Point2, a: Point2, b: Point2) -> f64 {
     p.distance(a + d * t)
 }
 
-/// How wide, in parameter units, a distance of `reach` in space is at `(u, v)`.
-///
-/// The surface's tangents give the conversion. Where a tangent vanishes (a
-/// sphere's pole, a cone's apex), no parameter distance corresponds to a
-/// spatial one, and the band opens to cover the whole neighbourhood rather than
-/// closing to nothing.
 /// Fold a chart point toward the rings' own window, one period at a time.
 ///
 /// Projection and intersection answer parameters in a surface's principal
@@ -895,6 +886,12 @@ fn place_on_rings(
         .unwrap_or(folded)
 }
 
+/// How wide, in parameter units, a distance of `reach` in space is at `(u, v)`.
+///
+/// The surface's tangents give the conversion. Where a tangent vanishes (a
+/// sphere's pole, a cone's apex), no parameter distance corresponds to a
+/// spatial one, and the band opens to cover the whole neighbourhood rather than
+/// closing to nothing.
 pub(crate) fn parametric_band(
     surface: &ogeom_geom::SurfaceGeometry,
     at: (f64, f64),

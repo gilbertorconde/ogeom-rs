@@ -5,11 +5,10 @@
 //! `BRepLib`, `BRepGProp`, `BRepCheck`, `BRepClass3d`, `BRepExtrema`, `GeomAPI`,
 //! `GCPnts` and `GProp` families, plus the classical curve constructors.
 //! The adaptor layer is `ogeom-geom`'s: evaluating topology as geometry
-//! belongs with the geometry traits (`docs/PARITY.md`, geom.adaptors).
+//! belongs with the geometry traits.
 //!
 //! Every operation in this crate emits history (`generated` / `modified` /
-//! `is_deleted`) from the start. That is not optional and cannot be retrofitted:
-//! downstream stable naming is built directly on it.
+//! `is_deleted`): downstream stable naming is built directly on it.
 
 mod bins;
 pub mod build;

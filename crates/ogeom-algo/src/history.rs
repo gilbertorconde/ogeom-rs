@@ -9,12 +9,11 @@
 //!   halves.
 //! - **deleted**: it has no image in the result at all.
 //!
-//! This is not bookkeeping for its own sake. A parametric application records
-//! "fillet *that* edge" and must still find that edge after the model is
-//! rebuilt with different dimensions; it does so by walking history. Half-
-//! populated history does not error; it reopens the document with the wrong
-//! faces filleted, which is why every operation populates it from the commit
-//! that introduces it rather than later.
+//! A parametric application records "fillet *that* edge" and must still find
+//! that edge after the model is rebuilt with different dimensions. It does so
+//! by walking history. Half-populated history does not error. It reopens the
+//! document with the wrong faces filleted, which is why every operation
+//! populates it.
 //!
 //! # Composition is the hard part
 //!

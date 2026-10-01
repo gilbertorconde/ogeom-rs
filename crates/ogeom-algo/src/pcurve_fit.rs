@@ -6,9 +6,9 @@
 //! it does not (a spline surface, mostly), the pcurve is *fitted at the
 //! curve's own parameters*: sample the edge, project each sample into the
 //! chart, fit the trace with the parameters held fixed, so the same-parameter
-//! law holds by construction. This honours the standing decision that an
-//! exact curve never carries a fitted pcurve silently: the fit's error is
-//! returned, and the callers widen tolerances and warn with it. That error
+//! law holds by construction. An exact curve never carries a fitted pcurve
+//! silently: the fit's error is returned, and the callers widen tolerances
+//! and warn with it. That error
 //! is reported as a *length*, in the model's own units: the fitted pcurve is
 //! walked through the surface and compared against the trace it was fitted
 //! to. A chart's units are whatever the file chose, and no single scale
@@ -168,11 +168,11 @@ pub fn fit_projected_pcurve_capped(
     }
     retry_stalled(surface, &points, &mut trace, &mut offs, tol);
     // The cap separates a file's own slop from an edge paired with the
-    // wrong surface. Slop is routinely a micron or two, but real community
-    // exports carry as much as 0.34 mm, while a wrong pairing
-    // misses by the distance between two different surfaces of the body,
-    // whole millimetres. One millimetre stands between the worst slop
-    // observed and the smallest wrong pairing plausible. Slop inside the
+    // wrong surface. Slop is routinely a micron or two and reaches a third
+    // of a millimetre in exchange files, while a wrong pairing misses by
+    // the distance between two different surfaces of the body, whole
+    // millimetres. One millimetre stands between the slop a file carries and
+    // the smallest wrong pairing plausible. Slop inside the
     // cap is accepted and *recorded*: the edge's tolerance is widened to
     // cover it, so the model says what it knows instead of refusing to
     // triangulate. Judged after the retry, so a projection that stalled
@@ -238,14 +238,13 @@ pub fn fit_projected_pcurve_capped(
     // nearest sound samples, extrapolating at the ends.
     //
     // Weak is measured in millimetres, not against `dv`. A ratio calls a
-    // direction weak whenever the *other* one is strong, and a patch whose
-    // `v` is parameterised a thousand times more densely than its `u`
-    // (three millimetres over twelve thousandths of a unit, beside a unit of
-    // `u` for a little over half a millimetre) had every sample of every
-    // edge called weak, its `u` held at one value, and two edges half a
-    // millimetre long fitted as a single point. What makes a direction
-    // degenerate is that crossing the whole of it moves the point less than
-    // a micron; that question has an answer in length, and only in length.
+    // direction weak whenever the *other* one is strong: on a patch whose
+    // `v` is parameterised a thousand times more densely than its `u`,
+    // every sample of every edge is called weak, its `u` held at one value,
+    // and an edge across the patch fits as a single point. What makes a
+    // direction degenerate is that crossing the whole of it moves the point
+    // less than a micron; that question has an answer in length, and only
+    // in length.
     let (u_span, _) = {
         let ((ua, ub), (va, vb)) = surface.domain();
         (ub - ua, vb - va)
@@ -359,22 +358,21 @@ pub fn fit_projected_pcurve_capped(
         }
     };
     // What the caller is told, as a length. The fitter reports its error
-    // in *chart* units, and a chart's units are whatever the file chose: one
-    // patch met in the wild spans four microns across its `u` and ten
-    // millimetres along its `v`, so no single scale converts the one number
-    // into the other: a control point dragged back into that chart by the
-    // clamp read as seven hundred millimetres of mesh error, on a face a
-    // tenth of a millimetre across. So the fitted curve is walked instead,
-    // through the surface, against the trace it was fitted to: that
-    // difference is the fit's own and is measured where the mesh will be.
+    // in *chart* units, and a chart's units are whatever the file chose: a
+    // patch can span four microns across its `u` and ten millimetres along
+    // its `v`, so no single scale converts the one number into the other,
+    // and a control point dragged back into such a chart by the clamp reads
+    // as hundreds of millimetres of mesh error on a face a tenth of a
+    // millimetre across. So the fitted curve is walked instead, through the
+    // surface, against the trace it was fitted to: that difference is the
+    // fit's own and is measured where the mesh will be.
     //
     // Measured between the samples as well as at them. The samples are
     // spaced evenly in the curve's parameter, and a curve is free to run
-    // sixteen times faster at one end than the other: a blade's root
-    // meeting a hub turns through most of its bend inside the first
-    // interval, and a cubic held only at the interval's ends hooked four
-    // tenths of a millimetre past the curve there, off the face and across
-    // its neighbouring ring, while every sample sat within a hundredth. A
+    // many times faster at one end than the other: one that turns through
+    // most of its bend inside the first interval leaves a cubic held only
+    // at the interval's ends hooking well past it, off the face and across
+    // its neighbouring ring, while every sample sits within a hundredth. A
     // midpoint the fit leaves is projected and joins the samples, and the
     // fit is asked again, a few rounds at most.
     let closed_form = points
@@ -503,8 +501,8 @@ pub fn fit_projected_pcurve_capped(
             }
         }
         // The fit is asked again at twice the samples everywhere, the
-        // middle of every interval joining them, landed now where the
-        // rough test spared it the projection.
+        // middle of every interval joining them, projected here where the
+        // rough test spared it.
         if left {
             more = landed_middles;
             if !closed_form {
@@ -518,13 +516,13 @@ pub fn fit_projected_pcurve_capped(
         (error, between_all, more)
     };
     // A micron between samples is the bar, a tenth of the finest chord a
-    // mesh is asked for: the hook was four hundred times that. Every fit
-    // pays one pass of probes; only the few that leave the curve pay a
-    // refit, at twice the samples everywhere (a handful of new samples
-    // in one interval draw the fitter's knots to themselves and the curve
-    // wobbles on either side, while an even doubling keeps it steady), and
-    // a curve the fit cannot follow, a corner inside the edge, stops at a
-    // few hundred samples rather than doubling for ever.
+    // mesh is asked for, and a hook worth the name is hundreds of times
+    // that. Every fit pays one pass of probes; only the few that leave the
+    // curve pay a refit, at twice the samples everywhere (a handful of new
+    // samples in one interval draw the fitter's knots to themselves and the
+    // curve wobbles on either side, while an even doubling keeps it
+    // steady), and a curve the fit cannot follow, a corner inside the edge,
+    // stops at a few hundred samples rather than doubling for ever.
     const DENSIFY: usize = 6;
     const MOST: usize = 512;
     let mut fitted = fit_and_clamp(&parameters, &trace)?;
@@ -572,15 +570,14 @@ pub fn fit_projected_pcurve_capped(
 ///
 /// Where a chart collapses (a spline patch whose whole `v = 0` row is a
 /// single point), the projector has no direction to move in, and it answers
-/// with the pole's own parameters and the distance to it. Four consecutive
-/// samples of one imported edge came back pinned to such a row, the last of
-/// them a tenth of a millimetre out; the reader repeated that as the file's
-/// own boundary slop, widened the edge to cover it, and the fitter tried to
-/// draw a curve through it. A sample that landed badly is retried from a
-/// neighbour that landed well, the same seeding the forward walk already
-/// trusts, run in both directions so a run of them unwinds from whichever
-/// end is sound. The retry is kept only when it lands closer, so it can
-/// never make an honest projection worse: a file's real slop is left alone.
+/// with the pole's own parameters and the distance to it. A run of samples
+/// pinned to such a row would be taken for the file's own boundary slop,
+/// the edge widened to cover it, and a curve drawn through it. A sample
+/// that landed badly is retried from a neighbour that landed well, the
+/// same seeding the forward walk already trusts, run in both directions so
+/// a run of them unwinds from whichever end is sound. The retry is kept
+/// only when it lands closer, so it can never make an honest projection
+/// worse: a file's real slop is left alone.
 fn retry_stalled(
     surface: &SurfaceGeometry,
     points: &[Point],
@@ -629,8 +626,7 @@ fn retry_stalled(
 /// Unwrapped for continuity, a trace can end up a whole turn outside the
 /// chart it belongs to: a projection that starts near one edge of a closed
 /// chart and walks off it keeps walking, and the surface then refuses to be
-/// evaluated where its own trim lies: an imported face whose
-/// fitted v ran to −2.5π on a chart that stops at −π, and drew as a hole.
+/// evaluated where its own trim lies, so the face draws as a hole.
 ///
 /// A rigid shift keeps the trace exactly as continuous as the unwrap left
 /// it and can only move it inward. One that genuinely spans more than a
@@ -691,9 +687,9 @@ mod tests {
 
     /// A trace unwrapped clean off its chart is slid back by whole turns.
     ///
-    /// A real assembly has a face whose fitted `v` ran from −2.5π to
-    /// −π on a chart that stops at −π: continuous, outside, and the surface
-    /// refuses to be asked about it, so the face drew as a hole.
+    /// A fitted `v` running from −2.5π to −π on a chart that stops at −π
+    /// is continuous and outside. The surface refuses to be asked about
+    /// it, and the face draws as a hole.
     #[test]
     fn a_trace_that_walked_off_its_chart_is_slid_back() {
         let pi = core::f64::consts::PI;
@@ -826,8 +822,8 @@ mod tests {
     /// The patch is a flat strip: `u` runs a millimetre across it and `v`
     /// runs twenty millimetres along it over a parameter span of a hundredth,
     /// two thousand times denser than `u`. Against `dv`, `du` looks weak at
-    /// every sample, and a ratio test held every `u` at one value: an edge
-    /// a millimetre long across the strip fitted as a single chart point.
+    /// every sample, and a ratio test holds every `u` at one value: an edge
+    /// a millimetre long across the strip fits as a single chart point.
     /// Crossing the whole of `u` moves the point a millimetre, which is the
     /// only thing "weak" can honestly mean, and it is not.
     #[test]
@@ -866,8 +862,8 @@ mod tests {
 
     /// A boundary 0.3 mm off its surface fits, and says so.
     ///
-    /// Community exports carry boundary curves that far from the surfaces
-    /// they trim: 0.12–0.34 mm on a real assembly. The fit
+    /// Exchange files carry boundary curves that far from the surfaces
+    /// they trim, up to a third of a millimetre. The fit
     /// accepts anything under a millimetre and reports the offset, so the
     /// reader widens the edge's tolerance instead of leaving the face
     /// without a trim; a miss of whole millimetres (the signature of an
@@ -902,8 +898,8 @@ mod tests {
     /// curve spends a twentieth of its parameter on a steep drop of a
     /// millimetre before running slowly round the drum for the rest: the
     /// whole of the drop, and the bend at its foot, fall inside the first
-    /// sample interval. A cubic held only at the samples hooked past the
-    /// curve there; measured between the samples and refitted where it
+    /// sample interval. A cubic held only at the samples hooks past the
+    /// curve there. Measured between the samples and refitted where it
     /// leaves them, the pcurve follows the curve everywhere.
     #[test]
     fn a_fit_is_held_between_its_samples_where_the_curve_runs_fast() {

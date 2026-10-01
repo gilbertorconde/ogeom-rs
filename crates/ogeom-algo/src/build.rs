@@ -1304,15 +1304,15 @@ fn surface_axis_origin(surface: &ogeom_geom::SurfaceGeometry) -> Option<Point> {
 /// Build the face of a revolution band: two closed rings joined by a
 /// synthesised seam, pcurves attached window-coherently.
 ///
-/// The one authority for a job three call sites got subtly wrong three
-/// different ways. The chart walk decides everything: the bottom ring is
+/// The one construction of a band's seam, for every caller. The chart walk
+/// decides everything: the bottom ring is
 /// traversed forward, and where its chart line *ends* is where the first
 /// seam column stands; the top ring's occurrence direction is chosen so its
 /// walk starts there (rings winding the same way traverse opposite, rings
 /// winding opposite traverse alike), and the seam's two pcurves are assigned
 /// to match which occurrence the triangulator will hand them to. The face is
-/// built on a fresh copy of the surface, so no stale annotation from another
-/// phase of the same rings can apply.
+/// built on a fresh copy of the surface, so no annotation left by an earlier
+/// use of the same rings can apply.
 ///
 /// One ring may be *degenerate* (an edge with no curve, both ends the same
 /// vertex, flagged as such), standing for an apex or a pole: a rim of no
@@ -2464,7 +2464,7 @@ mod tests {
             .collect();
         let built =
             make_face_with_pcurves(&mut model, surface, std::slice::from_ref(&edges), tol).unwrap();
-        // Every edge carries a pcurve for the face's surface now.
+        // Every edge carries a pcurve for the face's surface.
         let data = model
             .node(&built.shape)
             .unwrap()

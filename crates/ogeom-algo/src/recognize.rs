@@ -966,7 +966,7 @@ fn regauged(like: &Canonical, mut x: Vec<f64>, points: &[Point]) -> Vec<f64> {
 }
 
 /// Least squares on the points' distances to the surface, from the
-/// estimate: Gauss–Newton steps through the Jacobian's singular value
+/// estimate: Gauss-Newton steps through the Jacobian's singular value
 /// decomposition, the directions the samples barely determine truncated
 /// rather than amplified, and each step halved until it lowers the cost.
 /// The Jacobian is by central differences: a handful of numbers, and a

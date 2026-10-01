@@ -268,7 +268,7 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
                 let Some(flipped) = catalogue[i].1.same_as(&catalogue[j].1, tol)? else {
                     continue;
                 };
-                // The survivor now answers for both descriptions of the edge,
+                // The survivor answers for both descriptions of the edge,
                 // and its vertices must reach the twin's ends: two fingerprints
                 // that matched within their stated widths may still disagree by
                 // more than a fresh vertex's tolerance, and the disagreement is
@@ -327,10 +327,9 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
     // backwards relative to the survivor's own curve, and copied unchanged it
     // makes the survivor's face walk one edge of its boundary the wrong way:
     // the parameter-space ring zigzags to zero area and the face stops being
-    // triangulable. The boolean found this by sewing faces whose edges were
-    // annotated before sewing decided which twin survives. The pcurve is
-    // consumed by *proportional* same-parameter mapping, so reversing its
-    // traversal exactly is swapping the stored range's ends.
+    // triangulable. The pcurve is consumed by *proportional* same-parameter
+    // mapping, so reversing its traversal exactly is swapping the stored
+    // range's ends.
     //
     // Nor is it copying when the two edges describe one curve at different
     // paces: a fitted rim against the exact circle it traces, which the
@@ -381,7 +380,7 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
         }
     }
 
-    // One map from every original edge to what it is now: rebuilt onto merged
+    // One map from every original edge to what it becomes: rebuilt onto merged
     // vertices, then possibly merged with a coincident twin.
     let mut substitution: HashMap<TShapeId, (TShapeId, bool)> = HashMap::new();
     for (original, rebuilt) in &rebuilt_edges {
@@ -532,7 +531,7 @@ fn twin_ends_apart(
     Ok(out)
 }
 
-/// Make `gone` one vertex with `keep`: every vertex mapped to either now
+/// Make `gone` one vertex with `keep`: every vertex mapped to either then
 /// maps to `keep`'s survivor, whose tolerance reaches `gone`'s span.
 fn join_vertex(
     model: &mut Model,
@@ -917,18 +916,13 @@ impl Fingerprint {
     }
 }
 
-/// The edges after `i` in the catalogue that could be the same edge as
-/// edge `i`, in catalogue order.
-///
-/// Two edges are one only when each end of one meets an end of the other,
-/// so an edge's twin starts within reach of one of its ends: the edges
-/// binned by where they start, near either end of edge `i`, are every edge
-/// that could match, and an edge is asked about those alone rather than
-/// about the whole catalogue.
-/// Edge starts binned for the twin search. A pair is compared within the
-/// wider of its two edges' widths, so the few loose edges an import can
-/// carry are binned apart: the tight edges' cells are sized by the tight
-/// edges, and one loose edge does not coarsen the search for all of them.
+/// Edge starts binned for the twin search. Two edges are one only when
+/// each end of one meets an end of the other, so an edge's twin starts
+/// within reach of one of its ends, and the edges binned near either end
+/// are every edge that could match. A pair is compared within the wider
+/// of its two edges' widths, so the few loose edges an import can carry
+/// are binned apart: the tight edges' cells are sized by the tight edges,
+/// and one loose edge does not coarsen the search for all of them.
 struct StartBins {
     /// Edges no wider than `cell`.
     tight: Bins,
@@ -1601,9 +1595,7 @@ mod tests {
         //
         // The carry must reverse with the merge: consumers map 3D parameters
         // onto the pcurve range proportionally, so swapping the stored
-        // range's ends reverses the traversal exactly. The boolean found
-        // this by sewing faces annotated before sewing decided which twin
-        // survives.
+        // range's ends reverses the traversal exactly.
         let mut model = Model::new();
         let c = Point::new;
         let faces = [

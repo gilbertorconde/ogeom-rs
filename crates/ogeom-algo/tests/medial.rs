@@ -68,7 +68,7 @@ fn a_rectangles_axis_is_its_roof_line() {
     assert!((deepest - 5.0).abs() < 1e-9, "half the height: {deepest}");
 }
 
-/// A 3–4–5 right triangle's axis meets at the incenter, and the clearance
+/// A 3-4-5 right triangle's axis meets at the incenter, and the clearance
 /// there is the inradius, (a + b − c) / 2 = 1, a closed form older than
 /// the field.
 #[test]

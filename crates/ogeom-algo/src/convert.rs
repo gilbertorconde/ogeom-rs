@@ -1,15 +1,14 @@
 //! Whole-shape conversion: everything as NURBS, and general affine
 //! transforms over a shape.
 //!
-//! The geometry-level conversions are exact and were done long ago; what a
-//! *shape* needs is the operator that walks it and restates every dependent
-//! description, because conversion necessarily reparameterizes: a circle's
-//! parameter is its angle and a rational quadratic's is not. So every edge's
-//! range moves to its converted curve's domain, and every pcurve is
-//! re-derived against a surface whose parameterization has also moved.
-//! Re-deriving a pcurve is a *fit* (at the edge's own parameters, so
-//! same-parameter holds by construction), which is why this waited for the
-//! adaptive fitting core.
+//! The geometry-level conversions are exact. What a *shape* needs is the
+//! operator that walks it and restates every dependent description, because
+//! conversion necessarily reparameterizes: a circle's parameter is its angle
+//! and a rational quadratic's is not. So every edge's range moves to its
+//! converted curve's domain, and every pcurve is re-derived against a
+//! surface whose parameterization has also moved. Re-deriving a pcurve is a
+//! *fit*, at the edge's own parameters, so same-parameter holds by
+//! construction.
 //!
 //! The affine operator rides on top: an affine map moves a B-spline's
 //! control points and nothing else, so the parameterizations of the
@@ -45,7 +44,7 @@ type ChartWindow = ((f64, f64), (f64, f64));
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
 /// shape is not a solid or a conversion has no exact form (a trimmed
-/// surface's basis is converted; nothing else refuses today);
+/// surface's basis is converted; nothing else refuses);
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if a pcurve
 /// refit cannot reach its target.
 pub fn to_nurbs(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Built> {
@@ -972,10 +971,10 @@ fn exact_iso_pcurve(
         b.y = v;
         let span = nu1 - nu0;
         // On the closure both chart edges image the same point, and the
-        // projection answers with either: a half circle from the seam
-        // round the back was drawn as the segment from the seam to the
+        // projection answers with either: taken wrong, a half circle from
+        // the seam round the back becomes the segment from the seam to the
         // half-way column (the *front* half, mirrored), and the wall's
-        // ring lost its far side. The edge's own interior decides which
+        // ring loses its far side. The edge's own interior decides which
         // column a seam endpoint is: the image of a point a little way in
         // from that end lies on the same side of the chart.
         let at_seam = |u: &f64| (*u - nu0).abs() < span * 1e-6 || (*u - nu1).abs() < span * 1e-6;
@@ -1202,12 +1201,6 @@ fn pole_row(surface: &SurfaceGeometry, pole: Point, tol: Tolerances) -> Option<f
     (gap(v) <= tol.confusion()).then_some(v)
 }
 
-/// The surface shrunk to the face's own chart region, with a margin.
-///
-/// The face's pcurves say which part of the surface the face actually uses;
-/// converting the whole declared domain would spend the patch's parameter
-/// range on empty plane. Kinds whose windows are structural (a sphere's, a
-/// torus's, the closed direction of a cylinder) keep them.
 /// Whether a face's new surface has its natural normal against the old
 /// surface's carried through the placement, read in the middle of the
 /// face's own chart window; `None` where the surfaces cannot be read there.
@@ -1256,6 +1249,12 @@ fn profile_held(
         )
 }
 
+/// The surface shrunk to the face's own chart region, with a margin.
+///
+/// The face's pcurves say which part of the surface the face actually uses;
+/// converting the whole declared domain would spend the patch's parameter
+/// range on empty plane. Kinds whose windows are structural (a sphere's, a
+/// torus's, the closed direction of a cylinder) keep them.
 fn bounded_to_face(
     model: &Model,
     face: &Shape,
@@ -1424,7 +1423,7 @@ mod tests {
         let solid = make_box(&mut model, Frame::WORLD, (2.0, 3.0, 4.0), T).unwrap();
         let converted = to_nurbs(&mut model, &solid.shape, T).unwrap();
 
-        // Every surface is now a spline.
+        // Every surface is a spline after conversion.
         for face in explore(&model, &converted.shape, Filter::OfType(ShapeType::Face)).unwrap() {
             let NodeData::Face(data) = model.node(&face).unwrap().data() else {
                 panic!("face data");

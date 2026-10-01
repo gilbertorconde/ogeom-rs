@@ -1,12 +1,9 @@
 //! Text to wires: a built-in single-stroke engraving font.
 //!
-//! The glyphs are the kernel's own, defined here as polyline strokes on a
-//! six-by-nine grid: the shapes a CNC engraver or a drawing title block
-//! wants, dependency-free and deterministic. Outline fonts are a file
-//! format problem: when a TTF reader arrives with the exchange work, its
-//! glyph outlines feed the same wire builder. Until then, what this speaks
-//! it speaks exactly, and any character it does not carry is refused by
-//! name rather than dropped.
+//! The glyphs are defined here as polyline strokes on a six-by-nine grid:
+//! the shapes a CNC engraver or a drawing title block wants. Outline fonts
+//! are not read. Any character the font does not carry is refused by name
+//! rather than dropped.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::LineCurve;

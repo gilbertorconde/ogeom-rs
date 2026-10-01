@@ -361,7 +361,7 @@ mod tests {
         // The bake walks every wire in traversal order and rebuilds it, so it
         // is the shortest path to the question "do this copy's edges still
         // meet?", and it is the path a mirrored operand takes into the
-        // boolean, where this last went wrong.
+        // boolean.
         let mut model = Model::new();
         let solid = prism_of_a_square(&mut model);
         let copy = copied(&mut model, &solid).unwrap().shape;

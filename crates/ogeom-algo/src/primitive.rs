@@ -412,8 +412,8 @@ fn ring_normal(points: &[Point], ring: &[usize]) -> ogeom_math::Vector {
 ///
 /// A box and a wedge differ only in where the corners are: both have the same
 /// eight, the same twelve edges and the same six planar faces. Sharing the
-/// construction is not just less code; it is what keeps the two from drifting
-/// apart in their winding, their roles or their pcurves.
+/// construction is what keeps the two from drifting apart in their winding,
+/// their roles or their pcurves.
 fn box_like(model: &mut Model, corner_points: &[Point], tol: Tolerances) -> OgeomResult<Built> {
     box_like_named(model, corner_points, false, tol)
 }
@@ -1337,8 +1337,8 @@ fn wedge_in(
 /// space, and mean nothing. What does mean something is which side of the face
 /// a point is on, which is the question a half space exists to answer.
 ///
-/// That is what it is for: a half space is an argument to a boolean: cut a
-/// solid with one and you have trimmed it by a surface. `cut`, `common` and
+/// A half space is an argument to a boolean: cut a solid with one and you
+/// have trimmed it by a surface. `cut`, `common` and
 /// `section` all accept one as either operand; `fuse` refuses it by name,
 /// because an unbounded fuse has no volume to keep. Classification against it
 /// works too and is what the tests here use.
@@ -2070,8 +2070,8 @@ mod revolution_tests {
         let mut model = Model::new();
         let built = make_cylinder(&mut model, Frame::WORLD, radius, height, T).unwrap();
 
-        // The *mesh* is inscribed and converges from below; the measurement
-        // itself now runs on the exact surface and lands on the closed form.
+        // The *mesh* is inscribed and converges from below. The measurement
+        // itself runs on the exact surface and lands on the closed form.
         // Converges, not climbs: the angular deflection holds the rim at
         // thirty-two segments until the chord is finer than that, so the
         // first two chords draw the same polygon and the volume stands still.

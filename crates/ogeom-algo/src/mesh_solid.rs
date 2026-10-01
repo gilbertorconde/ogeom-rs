@@ -4,8 +4,8 @@
 //! repeated vertices are welded, two triangles that share two vertices
 //! share an edge. So the topology is built from that connectivity
 //! directly (one vertex per mesh vertex, one edge per mesh edge), and no
-//! geometric sewing search is needed, which is what lets a printable file
-//! of hundreds of thousands of triangles convert in seconds.
+//! geometric sewing search is needed, which is what keeps a mesh of
+//! hundreds of thousands of triangles cheap to convert.
 //!
 //! Adjacent triangles that lie in one plane merge into one planar face,
 //! bounded by the region's outer loop and its holes, and a run of boundary

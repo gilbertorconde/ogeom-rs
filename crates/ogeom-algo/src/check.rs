@@ -1155,11 +1155,11 @@ mod tessellation_tests {
 
     #[test]
     fn a_prism_tessellates_into_an_agreeing_mesh_whichever_face_it_swept() {
-        // This check found the defect that made the distinction matter:
-        // sweeping the *downward* face of a box produced four lateral faces
-        // that every one of them failed to triangulate, while the shell still
-        // closed and every other check passed. Both directions are covered
-        // here now, so a regression cannot hide behind the one that worked.
+        // A sweep of a box's downward face must triangulate as well as one of
+        // its upward face: lateral walls wound the wrong way fail to
+        // triangulate while the shell still closes and every other check
+        // passes. Both directions are covered, so a regression cannot hide
+        // behind the one that works.
         use ogeom_math::Vector;
         for role in [
             crate::primitive::roles::FACE_MAX_Z,
@@ -1194,12 +1194,10 @@ mod tessellation_tests {
 
     #[test]
     fn moving_a_vertex_does_not_move_the_mesh() {
-        // Worth pinning, because it is unintuitive and it invalidated an
-        // earlier attempt at a test here. Tessellation reads curves and
-        // pcurves, never vertex positions, so a vertex moved off its edges is
-        // caught by `check` (the curve no longer reaches it) and is invisible
-        // to `check_tessellation`. The two checks genuinely see different
-        // things, which is why both exist.
+        // Tessellation reads curves and pcurves, never vertex positions, so a
+        // vertex moved off its edges is caught by `check` (the curve no longer
+        // reaches it) and is invisible to `check_tessellation`. The two checks
+        // see different things, which is why both exist.
         let mut model = Model::new();
         let solid = make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T)
             .unwrap()

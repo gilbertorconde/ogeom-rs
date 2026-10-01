@@ -125,8 +125,7 @@ pub fn make_prism(
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
 /// profile is not a planar face, the travel is not square to it, a profile
 /// edge is neither straight nor a full circle (the curved-wall taper needs a
-/// fitted ruling; see docs/PARITY.md, offset.sweeps), or the taper collapses a
-/// loop over the height.
+/// fitted ruling), or the taper collapses a loop over the height.
 pub fn make_prism_tapered(
     model: &mut Model,
     profile: &Shape,
@@ -556,8 +555,8 @@ fn prism_over_face(
 
     // A closed wire on a plane bounds one region however it is walked, but a
     // wall's side is read off its edge's direction: walked clockwise about
-    // the travel, an outer ring swept every wall facing into the material
-    // while the caps faced out, and the solid came back inside out. Each
+    // the travel, an outer ring sweeps every wall facing into the material
+    // while the caps face out, and the solid comes back inside out. Each
     // ring's turn about the travel is measured, the ring enclosing the most
     // is the outer one and must turn positively, every other a hole turning
     // the other way, and a ring walked against that has its walls turned.
@@ -812,8 +811,8 @@ fn prism_over_edge(
     // traversed from `hi` to `lo`, and the rail its walk starts at stands at
     // `u = hi`, not at `u = lo`.
     //
-    // Pinning the rails to `lo` and `hi` regardless (which is what this did)
-    // puts each rail's pcurve on the wrong side of the parameter rectangle, and
+    // Pinning the rails to `lo` and `hi` regardless of the occurrence puts
+    // each rail's pcurve on the wrong side of the parameter rectangle, and
     // the boundary comes out as a bow tie enclosing nothing. The face then
     // fails to triangulate outright, while the topology looks perfect: the wire
     // closes, the shell closes, and every edge is used twice.
@@ -1318,8 +1317,8 @@ fn revolution_over_edge(
 /// The surface a profile sweeps, named where the vocabulary has a name for
 /// it, with the profile's range carried into that surface's own `v`.
 ///
-/// Worth the trouble because a revolution is a surface nothing has a closed
-/// form for: no intersection answers `Same` for one, so a revolved body can
+/// Named because a revolution is a surface nothing has a closed form for:
+/// no intersection answers `Same` for one, so a revolved body can
 /// never melt against the cylinder or cone or torus it *is*, and every
 /// surface meeting it has to be marched into a fitted curve where an exact
 /// section was available.
@@ -1474,8 +1473,8 @@ fn flat_revolution(
             .is_some_and(|d| d.curve3d().is_none())
     };
 
-    // Exact Cartesian pcurves for whichever edges bound the face; the
-    // degenerate centre of the old polar chart simply has no place here.
+    // Exact Cartesian pcurves for whichever edges bound the face: a polar
+    // chart's degenerate centre has no place here.
     let attach = |model: &mut Model, occurrence: &Shape| -> OgeomResult<()> {
         let Some(data) = model.node(occurrence).and_then(|n| n.data().as_edge()) else {
             ogeom_bail!(Construction, "a flat revolution edge holds no data");
@@ -1665,23 +1664,20 @@ enum AxisRelation {
 /// of a rectangle that revolves into a cylinder) and gets no face. An edge
 /// merely touching the axis at an end sweeps out a pole, which is ordinary.
 ///
-/// Solved, not sampled. An earlier version sampled the radial vector at
-/// thirty-two places and watched for its direction reversing, with the note
-/// that deciding exactly where a curve meets a line is the intersector's work
-/// and the intersector did not exist yet. It does now, and the decision is
-/// exact in two layers: the intersector names every point where the curve
-/// meets the axis within tolerance, and the extrema machinery names every
-/// stationary nearest approach, which is what catches the case the sampling
-/// never could, a profile grazing the axis *tangentially* between samples,
-/// where the radial direction never reverses and no sample lands on the
-/// touch.
+/// Solved, not sampled. Watching the radial vector reverse direction across
+/// a row of samples misses a profile grazing the axis *tangentially*
+/// between samples, where the radial direction never reverses and no sample
+/// lands on the touch. The decision is exact in two layers: the intersector
+/// names every point where the curve meets the axis within tolerance, and
+/// the extrema machinery names every stationary nearest approach, which is
+/// what catches the tangential graze.
 fn axis_relation(
     curve: &ogeom_geom::Curve,
     range: (f64, f64),
     axis: Axis,
     tol: Tolerances,
 ) -> OgeomResult<AxisRelation> {
-    // The cheap layer stays for what it answers exactly: an edge every one of
+    // The sampled layer answers one case exactly: an edge every one of
     // whose samples sits on the axis is a straight edge lying along it.
     let mut points = Vec::with_capacity(AXIS_SAMPLES + 1);
     for i in 0..=AXIS_SAMPLES {
@@ -2453,10 +2449,10 @@ mod tests {
 
     #[test]
     fn a_square_revolved_a_full_turn_is_a_ring_that_agrees_with_itself() {
-        // The case the reverted draft got wrong: correct topology, a closed
-        // shell, per-face triangulations matching Pappus, and twelve unshared
-        // triangle edges at the seam, because the two sides of a face closed in
-        // `u` did not weld together.
+        // The failure a mishandled seam produces: correct topology, a closed
+        // shell, per-face triangulations matching Pappus, and unshared
+        // triangle edges at the seam, where the two sides of a face closed in
+        // `u` do not weld together.
         let (offset, side) = (3.0_f64, 2.0_f64);
         let mut model = Model::new();
         let profile = ring_profile(&mut model, offset, side);
@@ -2999,14 +2995,13 @@ mod tests {
 
     #[test]
     fn a_profile_grazing_the_axis_between_samples_is_refused_exactly() {
-        // The case the sampled check could never see, and the reason the
-        // exact one replaced it. The bottom of this profile is the quadratic
-        // Bezier x(t) = (1 - 3t)^2: it dips to touch the axis tangentially at
-        // t = 1/3 (not on any evenly spaced sample grid) and comes back
-        // without ever changing side, so the radial direction never reverses
-        // either. Sampling saw a profile clear of the axis; the extrema layer
-        // sees the stationary approach that reaches it, and the revolution
-        // would pinch to a point mid-face there.
+        // The case no sampled check sees. The bottom of this profile is the
+        // quadratic Bezier x(t) = (1 - 3t)^2: it dips to touch the axis
+        // tangentially at t = 1/3 (not on any evenly spaced sample grid) and
+        // comes back without ever changing side, so the radial direction
+        // never reverses either. Sampling sees a profile clear of the axis;
+        // the extrema layer sees the stationary approach that reaches it,
+        // and the revolution would pinch to a point mid-face there.
         let mut model = Model::new();
         let frame = Frame::new(
             Point::new(1.0, 0.0, 0.0),

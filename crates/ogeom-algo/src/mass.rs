@@ -713,8 +713,7 @@ fn integrable_face(
 /// boundary carries its own sign and every inner one the opposite, which
 /// is what a hole *is* under the divergence theorem. So a plate with a
 /// bore in it is a rectangle less a disc, and a tube's end face a disc
-/// less a disc, neither of which had to be meshed, and both of which
-/// were.
+/// less a disc, neither of which needs meshing.
 fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<Vec<ExactFace>>> {
     let Some(node) = model.node(face) else {
         return Ok(None);
@@ -808,15 +807,15 @@ type PlacedCurves = std::collections::HashMap<
 /// flag, the material's direction from the chart, since a face's region
 /// lies around the middle of the boundary that encloses it.
 ///
-/// A part in the corpus has a bore wall whose flag points into the solid.
-/// The tessellator repairs such a shell, flipping whichever side of the
-/// disagreement is in the minority, and the closed-form integral cannot:
-/// it would hand the bore back as material, a third of that part's volume.
+/// A bore wall whose flag points into the solid walks its edges the same
+/// way as its neighbours. The tessellator repairs such a shell, flipping
+/// whichever side of the disagreement is in the minority, and the
+/// closed-form integral cannot: it would hand the bore back as material.
 /// So where the flags disagree this says so and the mesh is asked instead.
 ///
 /// An instanced solid says nothing here: one edge stands in several places
 /// and nothing in a name tells them apart, so its flags are taken as they
-/// come, which is what they were before there was anything to ask.
+/// come.
 pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<bool> {
     use ogeom_geom::Curve2d as _;
     use ogeom_geom::Surface as _;

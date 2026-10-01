@@ -421,16 +421,15 @@ fn bounds_within(
 ///
 /// A flat or ruled patch reaches nowhere: every one of its points lies on a
 /// straight line between two points of its own boundary, so the boundary's
-/// bound holds it and this adds nothing. A sphere's or a torus's does (the
-/// button head of a screw is a sphere zone whose apex is a bulge between
-/// its rims, three millimetres past the hull of every vertex it has), and
-/// for those the bulge is exactly where the surface reaches its own extreme
-/// along each axis, when that point lies inside the face's trim.
+/// bound holds it and this adds nothing. A sphere's or a torus's does (a
+/// sphere zone's apex is a bulge between its rims, past the hull of every
+/// vertex it has), and for those the bulge is exactly where the surface
+/// reaches its own extreme along each axis, when that point lies inside the
+/// face's trim.
 ///
-/// Anything else keeps its surface's whole bound, which is what it had
-/// before there was a better answer: a spline's control hull is finite and
-/// honest, and a revolution's or an extrusion's carrier is the only bound
-/// there is for it.
+/// A patch is bounded by its control hull over the rectangle its trim
+/// spans in the chart, cut down to it. Anything else keeps its surface's
+/// whole bound: a revolution's carrier is the only bound there is for it.
 fn patch_bulge(
     model: &Model,
     face: &Shape,
@@ -448,11 +447,11 @@ fn patch_bulge(
         SurfaceGeometry::Sphere(s) => s.sphere().frame(),
         SurfaceGeometry::Torus(t) => t.torus().frame(),
         // A patch's whole net is honest and can still be useless. A patch
-        // whose `u` knots run from −80 to 1 and whose `v` run to 85 after
-        // four spans inside the first two carries a face in the last unit
-        // of each, and the whole net bounds it seven metres across, which
-        // is what a viewer frames a scene to, so the part it belongs to
-        // draws as a speck. The trim says which part of the net can matter.
+        // with one enormous knot span beside the spans that hold the shape
+        // carries its face in the small spans, and the whole net bounds it
+        // at the size of the enormous one, which is what a viewer frames a
+        // scene to, so the part draws as a speck. The trim says which part
+        // of the net can matter.
         SurfaceGeometry::BSpline(spline) => {
             let Some(outline) = chart_outline(model, face, surface_id, tol)? else {
                 return Ok(surface_bounds(surface, tol).unwrap_or(Aabb::EMPTY));
@@ -523,18 +522,17 @@ fn patch_bulge(
 /// A patch's control hull over one rectangle of its chart.
 ///
 /// The convex-hull property is *local*, but taking the control points whose
-/// support merely overlaps the rectangle is not enough on a real file: the
-/// patch above runs its `u` knots from −80 to 1, and the control
-/// points that shape the last unit also shape the eighty before it, so they
-/// sit a hundred and seventy millimetres from a part sixty across. The
-/// patch is cut down to the rectangle instead (knots raised to full
-/// multiplicity at each edge, which is what makes the control points either
-/// side independent), and the piece that remains carries its own net, tight
-/// around the only part of the surface the trim can reach.
+/// support merely overlaps the rectangle is not enough: a control point
+/// that shapes a small span also shapes the enormous span beside it, and
+/// sits as far from the surface as that span reaches. The patch is cut down
+/// to the rectangle instead (knots raised to full multiplicity at each
+/// edge, which is what makes the control points either side independent),
+/// and the piece that remains carries its own net, tight around the only
+/// part of the surface the trim can reach.
 ///
 /// A cut that cannot be made (an edge already at the domain's own end, or a
-/// multiplicity already full) leaves that direction whole, which is the
-/// bound this had before.
+/// multiplicity already full) leaves that direction whole, bounded by its
+/// whole net.
 fn spline_hull_over(
     spline: &ogeom_geom::BSplineSurface,
     u: (f64, f64),
@@ -1420,7 +1418,7 @@ impl Starts {
 /// Where to seed a projection in each direction.
 ///
 /// A fitted surface can carry hundreds of knot spans in one direction (a
-/// thread flank swept two hundred turns down a lead screw has 1261), and a
+/// thread flank swept hundreds of turns down a lead screw), and a
 /// grid of sixteen or ninety-six seeds lands turns away from the nearest
 /// point, where Newton converges faithfully onto the wrong flank. So a
 /// patch is seeded *by its spans*, never by its domain: every span gets its
@@ -1436,13 +1434,13 @@ fn seed_lines(surface: &SurfaceGeometry, samples: usize) -> (Vec<f64>, Vec<f64>)
         return (spread(ua, ub, base), spread(va, vb, base));
     };
     // A patch's knots are where its shape is, and a file's knots are its
-    // own business: one imported patch runs its `u` from −80 to 1 with every
-    // knot but the first inside the last unit, and its face occupies a
-    // tenth of that unit. A grid spread evenly over that domain puts one
-    // seed in the whole region the face lives in, and a projection seeded
-    // a knot span away lands wherever Newton takes it, four millimetres
-    // out, on an edge that sits on the surface. So the seeds follow the
-    // spans: each one gets its share, however wide the file made it.
+    // own business: an imported patch may put every knot but the first
+    // inside the last small fraction of its domain, with its face in a
+    // fraction of that. A grid spread evenly over the domain puts one seed
+    // in the whole region the face lives in, and a projection seeded a
+    // knot span away lands wherever Newton takes it, well off an edge that
+    // sits on the surface. So the seeds follow the spans: each one gets
+    // its share, however wide the file made it.
     (
         per_span(&breaks(spline.u_knots()), base, CAP),
         per_span(&breaks(spline.v_knots()), base, CAP),
@@ -2424,15 +2422,13 @@ mod tests {
 
     /// A patch is bounded by the part of it the trim can reach.
     ///
-    /// A real export carries a patch whose `u` knots run (−80, 0, 0.571, 1)
-    /// and whose `v` knots stop at 85 after four spans inside the first
-    /// two: one enormous span beside the spans that hold the shape. Its
-    /// face lives in the last unit of each, and the whole net bounded it
-    /// seven metres across, which is what a viewer frames a scene to, so
-    /// the part it belongs to drew as a speck.
+    /// A patch whose `u` knots run (-80, 0, 1) has one enormous span beside
+    /// the span that holds the shape. Its face lives in the last unit, and
+    /// the whole net bounds it a metre across, which is what a viewer
+    /// frames a scene to, so the part draws as a speck.
     ///
     /// The control points are not near the surface they shape here: the one
-    /// at `u = −80` is a metre away, and it shapes the span next to the
+    /// at `u = -80` is a metre away, and it shapes the span next to the
     /// trim as well as its own. Only cutting the patch down separates them.
     #[test]
     fn a_patch_is_bounded_by_the_piece_its_trim_can_reach() {
@@ -2573,7 +2569,7 @@ mod oriented_bound_tests {
             obb.frame.origin()
         );
         // The half-extents are the box's, in some order: the axes come from the
-        // spread, which does not know or care which one we called x.
+        // spread, which does not know or care which one the test calls x.
         let mut found = [obb.half_extent.x, obb.half_extent.y, obb.half_extent.z];
         found.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mut want = [size.0 / 2.0, size.1 / 2.0, size.2 / 2.0];
