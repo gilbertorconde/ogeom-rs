@@ -153,6 +153,65 @@ pub fn tight_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResul
                 .iter()
                 .any(|(a, b)| distance_to_segment(p, *a, *b) <= against)
         };
+        // A sphere's and a torus's extreme along each side is closed form,
+        // and where it falls inside the face it is the face's extreme; the
+        // descent below can stall short of it in a general frame. Angles
+        // are tried a whole turn either way, as the chart may run them.
+        use ogeom_geom::Transformable as _;
+        let placed = surface.transformed(&placement, tol)?;
+        let tau = core::f64::consts::TAU;
+        let inside_turned = |u: f64, v: f64, periodic_v: bool| {
+            let turns: &[f64] = &[0.0, 1.0, -1.0];
+            turns.iter().any(|&a| {
+                let shifts: &[f64] = if periodic_v { turns } else { &[0.0] };
+                shifts
+                    .iter()
+                    .any(|&b| inside(Point2::new(u + a * tau, v + b * tau)))
+            })
+        };
+        for axis in AXES {
+            for sense in [1.0, -1.0] {
+                let toward = axis * sense;
+                let extreme = match &placed {
+                    ogeom_geom::SurfaceGeometry::Sphere(s) => {
+                        let sphere = s.sphere();
+                        let p = sphere.centre() + toward * sphere.radius();
+                        ogeom_math::elementary::sphere_parameters(&sphere, p, tol)
+                            .ok()
+                            .map(|(u, v)| (p, u, v, false))
+                    }
+                    ogeom_geom::SurfaceGeometry::Torus(t) => {
+                        let torus = t.torus();
+                        let frame = torus.frame();
+                        let z = frame.z().vector();
+                        let along = toward.dot(z);
+                        let across = toward - z * along;
+                        let reach = across.magnitude();
+                        // Facing straight along the axis every parallel
+                        // leads equally; any one of them will do.
+                        let out = if reach > 1e-12 {
+                            across / reach
+                        } else {
+                            frame.x().vector()
+                        };
+                        let lean = along.hypot(reach);
+                        let tilt = (out * reach + z * along) / lean;
+                        let p = frame.origin()
+                            + out * torus.major_radius()
+                            + tilt * torus.minor_radius();
+                        ogeom_math::elementary::torus_parameters(&torus, p, tol)
+                            .ok()
+                            .map(|(u, v)| (p, u, v, true))
+                    }
+                    _ => None,
+                };
+                if let Some((p, u, v, periodic_v)) = extreme
+                    && inside_turned(u, v, periodic_v)
+                {
+                    points.push(p);
+                }
+            }
+        }
         for axis in AXES {
             for sense in [1.0, -1.0] {
                 let score = |p: Point| p.to_vector().dot(axis) * sense;

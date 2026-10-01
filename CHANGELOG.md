@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Tight bounds reach a sphere's and a torus's extremes.** In a general
+  frame `tight_bounds` could come out up to 45 microns small on a sphere or
+  a torus, its descent stopping short of the extreme. Their extremes are
+  closed form and are now taken wherever they lie inside the face.
+
 - **A placed face's medial axis moves with it.** `medial_axis` read a
   moved face's boundary in its surface's unplaced frame and lifted the
   axis back through it, giving an axis neither where the face stands nor
