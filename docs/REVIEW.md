@@ -80,7 +80,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [x] **G1.** A trimmed pcurve over a non-line basis is not rescaled by a scaling transform (`curve2d.rs`). (12d754e)
 - [x] **G2.** `CurveOnSurface::transformed` ignores scaling of length-type surface parameters (`curve.rs`). (12d754e)
 - [x] **G3.** Scaling a parabola does not rescale its parameter (`curve.rs`; `convert.rs` range adjustment misses it too). (12d754e)
-- [x] **G4.** `HelixCurve::arc_length` ignores taper (`curve.rs`).
+- [x] **G4.** `HelixCurve::arc_length` ignores taper (`curve.rs`). (c11773a)
 - [ ] **G5.** A periodic B-spline reports `is_closed() == false` (`curve.rs`, `curve2d.rs`).
 - [ ] **L1.** `curve_length` fails at a kink of a polyline spline, and `parameter_at_length` / `points_by_count` then return wrong points silently (`ogeom-algo/src/length.rs`).
 - [ ] **L2.** `medial_axis` ignores the face's placement (`medial.rs`).
