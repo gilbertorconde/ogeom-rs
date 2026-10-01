@@ -242,6 +242,56 @@ fn a_periodic_pattern_fuses_into_one() {
     assert!((v - 3000.0).abs() < 1e-6, "three cells, one bar: {v}");
 }
 
+/// A pattern's history reaches its faces: every face of the cell traces
+/// to its own image and generates its copies', and together they are every
+/// face of the result, apart or fused.
+#[test]
+fn a_periodic_pattern_traces_every_face() {
+    use ogeom::math::Vector;
+    use ogeom::topo::{Shape, ShapeType, explore_unique};
+    for (period, faces) in [(20.0, 18), (10.0, 14)] {
+        let mut model = Model::new();
+        let cell = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let built =
+            ogeom::boolean::make_periodic(&mut model, &cell, Vector::new(period, 0.0, 0.0), 3, T)
+                .unwrap();
+        let result = explore_unique(&model, &built.shape, ShapeType::Face).unwrap();
+        assert_eq!(result.len(), faces, "period {period}");
+        let mut reached: Vec<Shape> = Vec::new();
+        for face in explore_unique(&model, &cell, ShapeType::Face).unwrap() {
+            // Faces only: a fuse also generates its section edges from the
+            // faces it cuts.
+            let generated: Vec<Shape> = built
+                .history
+                .generated(&face)
+                .iter()
+                .filter(|g| model.kind_of(g).unwrap() == ShapeType::Face)
+                .cloned()
+                .collect();
+            // Apart, every face has two copies; flush, a wall's copies
+            // between cells are inside the bar and gone.
+            if period > 10.0 {
+                assert_eq!(generated.len(), 2, "period {period}: a face's copies");
+            }
+            for image in built.history.trace(&face).iter().chain(&generated) {
+                assert!(
+                    result.iter().any(|r| r.is_same(image)),
+                    "period {period}: an image in the result"
+                );
+                reached.push(image.clone());
+            }
+        }
+        for face in &result {
+            assert!(
+                reached.iter().any(|r| r.is_same(face)),
+                "period {period}: every result face is reached"
+            );
+        }
+    }
+}
+
 /// A prism's far cap is its near cap moved: the same edge nodes under a
 /// displacement. A box notching only the far cap's edges splits them
 /// there, and the near cap's edges, the same nodes in another place, stay

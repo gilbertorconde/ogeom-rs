@@ -7300,18 +7300,61 @@ pub fn make_periodic(
     if step.magnitude() <= tol.confusion() {
         ogeom_bail!(Construction, "a zero period stacks every copy on the first");
     }
+    // Each face and edge of the input traces to its own image in the
+    // pattern and generates its copies' images, through every fuse.
+    let mut parts: Vec<Shape> = Vec::new();
+    for kind in [ShapeType::Face, ShapeType::Edge] {
+        parts.extend(ogeom_topo::explore_unique(model, shape, kind)?);
+    }
     let mut history = History::new();
-    let mut result = shape.clone();
+    // The pattern so far as disjoint solids: a copy is fused into each piece
+    // it joins, and stands as a piece of its own where a gap parts it from
+    // the rest.
+    let mut pieces: Vec<Shape> = vec![shape.clone()];
     for i in 1..count {
         #[allow(clippy::cast_precision_loss, reason = "pattern counts are small")]
         let offset = step * i as f64;
         let moved =
             ogeom_algo::transformed(model, shape, ogeom_math::Transform::translation(offset))?
                 .shape;
-        let joined = fuse(model, &result, &moved, tol)?;
-        history.modify(&moved, joined.shape.clone());
-        result = joined.shape;
+        // A placement moves every part with the whole: the copy's parts are
+        // the input's, placed as the copy is.
+        let placement = moved.location().then(&shape.location().inverted());
+        let mut images: Vec<(usize, Vec<Shape>)> = parts
+            .iter()
+            .enumerate()
+            .map(|(k, part)| (k, vec![part.moved(&placement)]))
+            .collect();
+        let mut current = moved;
+        let mut apart: Vec<Shape> = Vec::new();
+        for piece in pieces {
+            let joined = fuse(model, &piece, &current, tol)?;
+            if model.kind_of(&joined.shape)? != ShapeType::Solid {
+                apart.push(piece);
+                continue;
+            }
+            history = history.then(&joined.history);
+            for (_, traced) in &mut images {
+                *traced = traced
+                    .iter()
+                    .flat_map(|image| joined.history.trace(image).to_vec())
+                    .collect();
+            }
+            current = joined.shape;
+        }
+        for (k, traced) in images {
+            for image in traced {
+                history.generate(&parts[k], image);
+            }
+        }
+        apart.push(current);
+        pieces = apart;
     }
+    let result = if let [one] = pieces.as_slice() {
+        one.clone()
+    } else {
+        ogeom_algo::build::make_compound(model, &pieces)?.shape
+    };
     history.generate(shape, result.clone());
     Ok(Built::new(result, history))
 }

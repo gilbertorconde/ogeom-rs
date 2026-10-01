@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A periodic pattern traces its faces and may have gaps.**
+  `make_periodic` recorded history only for the whole solid; every face
+  and edge of the cell now traces to its own image and generates its
+  copies' images through each fuse. A pattern whose copies stand apart
+  failed at the second copy, the fuse refusing the compound the first one
+  left; the copies are now fused only into the pieces they join.
+
 - **Every outline is drawn once.** HLR `project` read its silhouettes off
   a mesh whose faces were meshed apart, so every face border counted as an
   outline and every outline edge was drawn a second time over the model
