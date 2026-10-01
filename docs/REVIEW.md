@@ -94,7 +94,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 
 - [ ] **P1.** Boolean refusals: near-coaxial cylinders (radius 5e-6 to 3e-3 apart), boxes offset 1e-6, a box rotated 1e-7 to 1e-4 rad on another, cut of two identical spheres, cylinder seam at some angles near a section line.
 - [ ] **P2.** Fillet refusals: a pipe tee junction loop, all edges of an L-bracket, a full round of a box.
-- [ ] **P3.** `make_prism_tapered` rejects a face straight from `make_face` (no pcurves attached first).
+- [x] **P3.** `make_prism_tapered` rejects a face straight from `make_face` (no pcurves attached first). (acb9aed)
 - [x] **P4.** `make_polyhedron` takes a face's normal from its first three points and refuses a face starting with three collinear points; `medial_axis` refuses a polygon with a collinear vertex. (79b9658)
 - [x] **P5.** `elevate_degree` leaves the knots it introduced (C0 where C2), contrary to its doc. (ba5ce5f)
 - [x] **P6.** Quadratic and cubic solvers lose double roots; the doc's closed-form claim for quartics is untrue. (4354c03)
