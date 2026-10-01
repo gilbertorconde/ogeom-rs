@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A cone narrowing up its axis measures its distance.** A negative half
+  angle (a cone narrowing in `+z`, which tapered sweeps and chamfers
+  build) is accepted, but `Cone::distance_to` measured such a cone's own
+  points as off it. Its nappes now lean out from the axis whichever way
+  the cone widens.
+
 - **Cone and torus inversion past the apex and the axis.**
   `cone_parameters` returned a point's own angle and height, the chart
   point only on the cone's own nappe and only for a point already on it;

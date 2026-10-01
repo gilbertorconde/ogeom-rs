@@ -277,13 +277,13 @@ impl Cone {
     /// A cone with the given reference radius and half angle.
     ///
     /// The reference circle lies in `frame`'s `xy` plane. A positive half angle
-    /// widens the cone in `+z`.
+    /// widens the cone in `+z`, a negative one narrows it there.
     ///
     /// # Errors
     ///
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
-    /// `reference_radius` is negative or non-finite, or if `half_angle` is not
-    /// strictly between `0` and `pi/2`. At zero the cone is a cylinder and at
+    /// `reference_radius` is negative or non-finite, or if `half_angle`'s size
+    /// is not strictly between `0` and `pi/2`. At zero the cone is a cylinder and at
     /// `pi/2` it is a plane; both are different surfaces with their own types,
     /// and admitting them here would produce a cone whose apex is at infinity.
     pub fn new(
@@ -332,7 +332,8 @@ impl Cone {
         self.reference_radius
     }
 
-    /// The half angle at the apex, in `(0, pi/2)`.
+    /// The half angle at the apex, its size in `(0, pi/2)`: negative where
+    /// the cone narrows in `+z`.
     #[must_use]
     pub const fn half_angle(&self) -> f64 {
         self.half_angle
@@ -352,7 +353,7 @@ impl Cone {
         self.half_angle.tan().mul_add(z, self.reference_radius)
     }
 
-    /// The distance from `p` to the surface, ignoring the far nappe.
+    /// The distance from `p` to the surface, both nappes of it.
     ///
     /// A double cone extends both sides of its apex; this measures to the
     /// surface as a whole, which is what a surface query means.
@@ -372,8 +373,12 @@ impl Cone {
         //
         // In the (radial, axial) half-plane each nappe is a ray from the apex;
         // the distance is the nearer of the two, each clamped to its own ray
-        // so a point in the wedge beyond the apex measures to the apex.
+        // so a point in the wedge beyond the apex measures to the apex. The
+        // rays lean out from the axis whichever way the cone widens: a
+        // negative half angle (a cone narrowing up its axis) only swaps
+        // which of them is the chart's own nappe.
         let (sin, cos) = self.half_angle.sin_cos();
+        let sin = sin.abs();
         let height = local.z - apex_z;
         let apex_distance = radial.hypot(height);
         let nappe = |along: f64, across: f64| {
@@ -792,6 +797,25 @@ mod tests {
         assert_relative_eq!(c.volume(5.0), core::f64::consts::PI * 20.0);
         // Height is a magnitude; a negative one is the same section.
         assert_relative_eq!(c.volume(-5.0), c.volume(5.0));
+    }
+
+    #[test]
+    fn a_cone_narrowing_up_its_axis_measures_to_both_nappes() {
+        let f = Frame::WORLD;
+        // A negative half angle narrows the cone up its axis, and points of
+        // it, on either nappe, stand on it.
+        let narrowing = Cone::new(f, 2.0, -0.5, T).unwrap();
+        for z in [-3.0, 0.0, 1.5, 6.0] {
+            let r = narrowing.radius_at(z);
+            let p = f.to_world(Point::new(r.abs() * 0.6, r.abs() * 0.8, z));
+            assert!(
+                narrowing.distance_to(p) < 1e-12,
+                "{z}: {}",
+                narrowing.distance_to(p)
+            );
+        }
+        let beside = f.to_world(Point::new(2.5, 0.0, 0.0));
+        assert!((narrowing.distance_to(beside) - 0.5 * 0.5_f64.cos()).abs() < 1e-12);
     }
 
     #[test]

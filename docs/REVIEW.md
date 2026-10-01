@@ -73,7 +73,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [x] **X6.** The general curve/surface path reports each tangency up to 9 times (`curve_surface.rs` dedup radius). (c4c1db8)
 - [x] **X7.** Planar curve/curve misses tangent and near-tangent crossings when a curve is trimmed (`curves.rs`). (3cf6676)
 - [x] **K1.** `cone_parameters` is wrong past the apex and does not return the nearest point; `torus_parameters` does not round-trip on a spindle torus (`ogeom-math/src/elementary.rs`). (bc7c37b)
-- [ ] **K2.** A cone with a negative half angle is accepted but its `distance_to` is wrong (`quadric.rs`).
+- [x] **K2.** A cone with a negative half angle is accepted but its `distance_to` is wrong (`quadric.rs`).
 - [ ] **K3.** The circle-circle bisector returns the wrong branch when the first circle is smaller (`construct2d.rs`).
 - [ ] **K4.** A near-circular ellipse (minor slightly over major) gives NaN (`conic.rs`).
 - [ ] **K5.** Apollonius circles lose precision away from the origin (`construct2d.rs`).
