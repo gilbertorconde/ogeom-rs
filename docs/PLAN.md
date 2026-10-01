@@ -85,9 +85,11 @@ the corner, the near-coplanar sliver band again.
     on new nodes. Sharing the nodes themselves would need every operation
     that edits its result in place to copy on write first.
   - Local refine: done, `unify_same_domain_around`.
-  - Fillets in one pass. Each blend piece and each corner is one whole-solid
-    boolean today; wanted, all of a fillet's blends in one boolean, or
-    replaced faces locally.
+  - Fillets in one pass, in part. A chain's edges that meet no other edge
+    of it round in one boolean each way, their wedges taken as a compound
+    of disjoint solids. Edges that meet at a vertex, and the corners they
+    make, still round one boolean at a time, each blend built against what
+    the last left.
   - Face bounds in the model: not kept; `shape_bounds` and `tight_bounds`
     take about a millisecond on a four-hundred-face part, which a cache
     and its invalidation would not improve on.
