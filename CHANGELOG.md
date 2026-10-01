@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Degree elevation keeps the continuity at every knot.**
+  `elevate_degree` left each interior knot at full multiplicity, a C0
+  joint where the curve was C2, against its doc; the knots it introduced
+  now come out exactly, each interior knot one higher than it was.
+
 - **Conics and helices answer every derivative order.** A circle's,
   ellipse's, hyperbola's and helix's derivatives past the second (the
   helix's past the third) came back zero, as did a 2D circle's and

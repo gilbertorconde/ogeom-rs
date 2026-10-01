@@ -644,7 +644,9 @@ pub fn to_bezier_segments<P: Blend>(
 ///
 /// Works segment by segment on the Bézier decomposition, where degree elevation
 /// is the exact closed form `Q[i] = (i/(p+1)) P[i-1] + (1 - i/(p+1)) P[i]`, and
-/// reassembles by removing the knots that were introduced.
+/// reassembles by removing the knots that were introduced: an interior knot of
+/// multiplicity `m` comes back with `m + 1`, so the curve keeps its continuity
+/// there.
 ///
 /// # Errors
 ///
@@ -685,7 +687,65 @@ pub fn elevate_degree<P: Blend>(
         }
     }
 
+    // Each interior knot stands at full multiplicity, `p + 1` in degree
+    // `p + 1`; the curve is as smooth there as it was, so all but `m + 1`
+    // come out exactly.
+    for (value, multiplicity) in knots.distinct() {
+        let (start, end) = knots.domain();
+        if value <= start || value >= end {
+            continue;
+        }
+        for _ in multiplicity..p {
+            (new_knots, points) = remove_knot_once(&new_knots, &points, p + 1, value);
+        }
+    }
+
     Ok((KnotVector::new(new_knots, p + 1)?, points))
+}
+
+/// One occurrence of the interior knot `u` taken out of a degree-`p` spline
+/// the knot is exactly removable from: the inverse of inserting it, solved
+/// from both ends of the points it touches and met in the middle.
+fn remove_knot_once<P: Blend>(
+    knots: &[f64],
+    control: &[P],
+    p: usize,
+    u: f64,
+) -> (Vec<f64>, Vec<P>) {
+    let Some(r) = knots.iter().rposition(|k| *k == u) else {
+        return (knots.to_vec(), control.to_vec());
+    };
+    let left = knots.iter().filter(|k| **k == u).count() - 1;
+    let mut reduced = knots.to_vec();
+    reduced.remove(r);
+    // Inserting `u` into the reduced spline rewrites its points `lo..=hi`:
+    // `P[i] = a[i] Q[i] + (1 - a[i]) Q[i - 1]`, keeping those before and
+    // shifting those after by one.
+    let k = r - 1;
+    let (lo, hi) = (k + 1 - p, k - left);
+    let alpha = |i: usize| (u - reduced[i]) / (reduced[i + p] - reduced[i]);
+    let mut q: Vec<P> = Vec::with_capacity(control.len() - 1);
+    q.extend_from_slice(&control[..lo]);
+    let mut forward: Vec<P> = Vec::with_capacity(hi - lo);
+    let mut previous = control[lo - 1];
+    for (i, point) in control.iter().enumerate().take(hi).skip(lo) {
+        let a = alpha(i);
+        previous = point.sub(previous.scale(1.0 - a)).scale(1.0 / a);
+        forward.push(previous);
+    }
+    let mut backward: Vec<P> = vec![P::zero(); hi - lo];
+    let mut next = control[hi + 1];
+    for i in (lo + 1..=hi).rev() {
+        let a = alpha(i);
+        next = control[i].sub(next.scale(a)).scale(1.0 / (1.0 - a));
+        backward[i - 1 - lo] = next;
+    }
+    let middle = (hi - lo) / 2;
+    for j in 0..hi - lo {
+        q.push(if j < middle { forward[j] } else { backward[j] });
+    }
+    q.extend_from_slice(&control[hi + 1..]);
+    (reduced, q)
 }
 
 /// Reverse the parameter direction, leaving the curve's shape unchanged.
@@ -1095,6 +1155,34 @@ mod tests {
         let after = sample(&k2, &c2, 100);
         for (a, b) in before.iter().zip(&after) {
             assert!(a.is_equal(*b, T), "elevation moved the curve");
+        }
+    }
+
+    #[test]
+    fn elevation_keeps_the_continuity_at_every_knot() {
+        let (k, c) = cubic_curve();
+        let (k2, c2) = elevate_degree(&k, &c, T).unwrap();
+        let interior = |v: &KnotVector| -> Vec<(f64, usize)> {
+            let (a, b) = v.domain();
+            v.distinct()
+                .into_iter()
+                .filter(|(x, _)| *x > a && *x < b)
+                .collect()
+        };
+        let raised: Vec<(f64, usize)> = interior(&k).into_iter().map(|(x, m)| (x, m + 1)).collect();
+        assert_eq!(interior(&k2), raised);
+        let before = sample(&k, &c, 100);
+        for (a, b) in before.iter().zip(&sample(&k2, &c2, 100)) {
+            assert!(a.distance(*b) < 1e-12, "elevation moved the curve");
+        }
+        // Second derivatives agree from either side of a knot.
+        for (x, _) in interior(&k2) {
+            let left = derivatives(&k2, &c2, x - 1e-9, 2, T).unwrap()[2];
+            let right = derivatives(&k2, &c2, x + 1e-9, 2, T).unwrap()[2];
+            assert!(
+                left.distance(right) < 1e-5,
+                "{left:?} against {right:?} at {x}"
+            );
         }
     }
 
