@@ -484,6 +484,7 @@ pub fn solid_from_mesh(
     // reaches past the triangles it replaces (a boundary placed on the wrong
     // turn of its surface closes a face of the wrong extent) and build again.
     let mut pinned: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut straight: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
     let shape = loop {
         let planner = Planner {
             points: &points,
@@ -492,6 +493,7 @@ pub fn solid_from_mesh(
             groups: &groups,
             merge: options.merge_coplanar && !options.keep_vertices,
             pinned: &pinned,
+            straight: &straight,
             flat,
             tol,
         };
@@ -532,6 +534,16 @@ pub fn solid_from_mesh(
                     } else {
                         Vec::new()
                     };
+                    if culprits.is_empty() && options.recognize {
+                        let crossed = crossed_seams(
+                            model, &shape, &triangles, &adjacency, &groups, &built, tol,
+                        )?;
+                        let before = straight.len();
+                        straight.extend(crossed);
+                        if straight.len() > before {
+                            continue;
+                        }
+                    }
                     if culprits.is_empty() {
                         report.faces = built.iter().flatten().count();
                         report.curved_faces = groups
@@ -573,6 +585,82 @@ pub fn solid_from_mesh(
         report,
     })
 }
+
+/// The seams between a planar face and a curved one that bend the planar
+/// face's trim back across itself: a facet thinner than the curve the two
+/// surfaces meet along bulges, whose exact area cancels where its trim
+/// folds while its triangles cover the fold twice. Each such face is meshed
+/// at the default deflection on the shape's agreed edge chords and its
+/// triangles' area set against its exact area; the mesh edges along its
+/// seams with curved faces are returned, to be threaded straight.
+fn crossed_seams(
+    model: &Model,
+    shape: &Shape,
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    groups: &Groups,
+    built: &[Option<Shape>],
+    tol: Tolerances,
+) -> OgeomResult<Vec<(u32, u32)>> {
+    let curved = |g: usize| matches!(groups.carriers.get(g), Some(Carrier::Curved(_)));
+    // Each planar face's mesh edges against a curved face.
+    let mut seams: HashMap<usize, Vec<(u32, u32)>> = HashMap::new();
+    for (h, twin) in adjacency.twin.iter().enumerate() {
+        let Some(g) = *twin else {
+            continue;
+        };
+        let (mine, theirs) = (groups.of[h / 3], groups.of[g / 3]);
+        if mine == theirs
+            || !curved(theirs)
+            || !matches!(groups.carriers.get(mine), Some(Carrier::Plane(_)))
+        {
+            continue;
+        }
+        let (a, b) = from_to(triangles, h);
+        seams.entry(mine).or_default().push((a.min(b), a.max(b)));
+    }
+    if seams.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut planes: Vec<usize> = seams.keys().copied().collect();
+    planes.sort_unstable();
+    let deflection = ogeom_mesh::Deflection::default();
+    let fine = ogeom_mesh::Deflection::with_chord(deflection.chord * 1e-2)?;
+    let chords = ogeom_mesh::edge_chords_for(model, shape, deflection, tol)?;
+    let found = ogeom_core::parallel::map_ordered(&planes, |_, &g| -> OgeomResult<bool> {
+        let Some(face) = built.get(g).and_then(Option::as_ref) else {
+            return Ok(false);
+        };
+        let Ok(mesh) = ogeom_mesh::triangulate_face_with(model, face, deflection, &chords, tol)
+        else {
+            return Ok(true);
+        };
+        let drawn: f64 = mesh
+            .triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+                (b - a).cross(c - a).magnitude() * 0.5
+            })
+            .sum();
+        let exact = crate::surface_properties(model, face, fine, tol)?.mass;
+        Ok(drawn > exact * OVERRUN + tol.confusion())
+    });
+    let mut out = Vec::new();
+    for (g, crossed) in planes.iter().zip(found) {
+        if crossed? {
+            out.extend(seams[g].iter().copied());
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
+}
+
+/// How much more a planar face's drawn triangles may cover than its exact
+/// area before its trim is taken to cross itself: a planar face's mesh
+/// covers its area exactly, but for the rounding of its boundary's chords.
+const OVERRUN: f64 = 1.2;
 
 /// The recognized regions whose built face strays from the triangles it
 /// replaces: its bounds stand beyond theirs by more than the surface bulges
@@ -3747,6 +3835,10 @@ struct Planner<'a> {
     merge: bool,
     /// Vertices kept as edge ends whatever lies either side of them.
     pinned: &'a std::collections::HashSet<u32>,
+    /// Mesh edges whose seam is threaded straight through the chain's own
+    /// vertices: the solved curve bent the trim of a face beside it back
+    /// across itself.
+    straight: &'a std::collections::HashSet<(u32, u32)>,
     flat: f64,
     tol: Tolerances,
 }
@@ -3922,7 +4014,18 @@ impl Planner<'_> {
                 }
                 let faces = edge_faces[&key].clone();
                 if any_curved(&faces) {
-                    match self.snapped(&chain, &faces) {
+                    let threaded = edges.iter().any(|e| self.straight.contains(e));
+                    let snapped = if threaded {
+                        let closed = chain.len() > 2 && chain[0] == chain[chain.len() - 1];
+                        let pts: Vec<Point> = chain[..chain.len() - usize::from(closed)]
+                            .iter()
+                            .map(|&v| self.points[v as usize])
+                            .collect();
+                        self.chord(&pts, closed, &faces, self.flat * REACH)
+                    } else {
+                        self.snapped(&chain, &faces)
+                    };
+                    match snapped {
                         Some(spec) => {
                             let index = plan.edges.len();
                             let (spec, forward, images) = spec;

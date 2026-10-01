@@ -45,6 +45,16 @@ bump may break the API and a patch bump may not.
   come back with far fewer faces; one of 6268 triangles, 1615 faces before,
   comes back in 13.
 
+- **A converted part tessellates closed where a single facet meets a
+  fillet.** A facet left beside a fillet, thinner than the curve its plane
+  meets the fillet along bulges, had that curve as its seam: the facet's
+  trim folded back across itself, its triangles covered the fold twice,
+  and the whole part's tessellation opened there while every check passed.
+  Such a seam is now threaded straight through the facet's corners, its
+  tolerance how far it stands off the fillet, and the fillet keeps its
+  surface; where the straight seam strays too far, the fillet is built
+  faceted.
+
 ### Changed
 
 - **`tight_bounds` is hundreds of times faster on ruled and round

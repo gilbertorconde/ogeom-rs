@@ -893,8 +893,12 @@ fn fillets_ending_on_rough_corners_are_still_cylinders() {
     assert_eq!(kinds(&back, &out.shape)[1], 12, "every fillet a cylinder");
     assert_eq!(out.report.curved_faceted, 0);
     assert!(check(&back, &out.shape, T).unwrap().is_valid());
-    // Its faces meet on curves too loose for the drawn mesh to weld shut,
-    // and its volume is still the mesh's, face by face.
+    // A single facet left beside a fillet is thinner than the curve the
+    // two surfaces meet along bulges; their seam is threaded straight
+    // instead, so the facet's trim does not fold over itself and the
+    // whole shape tessellates closed.
+    let drawn = ogeom::mesh::triangulate(&back, &out.shape, Deflection::default(), T).unwrap();
+    assert!(drawn.is_closed());
     let got = volume(&back, &out.shape);
     assert!(
         (got - mesh.volume()).abs() < mesh.volume() * 2e-3,
