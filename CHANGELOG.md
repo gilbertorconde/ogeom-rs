@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A pipe tee's junction loop would not round.** Filleting the loop where
+  a branch drum meets a main drum refused ("the kept pieces did not close
+  into a shell"). The blend's leg on the branch is a band between the loop
+  and the ball's contact ring, and the two rings' chart images started on
+  one column a period apart, so the band's seam wound a full turn round the
+  branch as a helix. The second ring's image is now moved into the first's
+  period and the seam runs straight along the column.
+
 - **Drums the weld distance apart in axis.** Two drums whose axes stood
   1e-5 to about 1.07e-5 apart refused every operation. The rim arc across
   the thin crescent one leaves on the other's cap was asked whether it lies

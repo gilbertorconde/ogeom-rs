@@ -1954,6 +1954,16 @@ pub fn make_band_between(
     // surface's own iso; on different columns it is the straight chart
     // segment: a ruling, a parallel arc, or a helix, all exact on a
     // cylinder, and refused by name elsewhere.
+    // The rings close round the period, so a start a whole period from the
+    // other's is the same column: the second ring's image is moved into the
+    // first's period, or the connector would wind a full turn round to it.
+    let turns = ((prepared[1].start.x - prepared[0].start.x) / span).round();
+    if turns != 0.0 {
+        let shift =
+            ogeom_math::Transform2::translation(ogeom_math::Vector2::new(-turns * span, 0.0));
+        prepared[1].pcurve = prepared[1].pcurve.transformed(&shift, tol)?;
+        prepared[1].start = shift.apply(prepared[1].start);
+    }
     let (start0, start1) = (prepared[0].start, prepared[1].start);
     let dcol = start1.x - start0.x;
     // The iso is for rings sharing a column to within the confusion

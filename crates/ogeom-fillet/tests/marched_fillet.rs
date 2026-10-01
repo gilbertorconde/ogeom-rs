@@ -543,3 +543,88 @@ fn a_fillet_on_a_converted_cone_rim_melts() {
         "{before} -> {after}"
     );
 }
+
+/// A pipe tee: a branch of radius 0.6 along X fused into a drum of radius
+/// 1 along Z, and the arcs of the junction loop the boolean leaves.
+fn tee() -> (ogeom_topo::Model, ogeom_topo::Shape, Vec<ogeom_topo::Shape>) {
+    use ogeom_geom::Curve3d as _;
+    let mut model = ogeom_topo::Model::new();
+    let at = |p: Point, z, x| Frame::new(p, z, x, T).unwrap();
+    let drum = ogeom_algo::make_cylinder(
+        &mut model,
+        at(
+            Point::new(0.0, 0.0, -3.0),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+        ),
+        1.0,
+        6.0,
+        T,
+    )
+    .unwrap();
+    let branch = ogeom_algo::make_cylinder(
+        &mut model,
+        at(
+            Point::ORIGIN,
+            ogeom_math::Direction::X,
+            ogeom_math::Direction::Y,
+        ),
+        0.6,
+        3.0,
+        T,
+    )
+    .unwrap();
+    let joined = ogeom_bool::fuse(&mut model, &drum.shape, &branch.shape, T)
+        .unwrap()
+        .shape;
+    let arcs: Vec<_> = explore_unique(&model, &joined, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (curve, range) = model
+                .node(e)
+                .and_then(|n| n.data().as_edge())
+                .and_then(|d| d.curve3d())
+                .and_then(|r| {
+                    let ogeom_topo::EdgeRepr::Curve3d { curve, range, .. } = r else {
+                        return None;
+                    };
+                    Some((model.geometry().curve(*curve)?.clone(), *range))
+                })
+                .unwrap();
+            let p = curve.point_at(f64::midpoint(range.0, range.1), T).unwrap();
+            p.x > 0.5 && p.x < 1.0 && p.z.abs() < 0.7
+        })
+        .collect();
+    (model, joined, arcs)
+}
+
+/// The junction loop of a pipe tee rounds from any one of its arcs: the
+/// blend runs the whole loop, and its leg on the branch is a band between
+/// the loop and the ball's contact ring, which start on one column of the
+/// branch's chart a period apart and are joined there, not round a full
+/// turn.
+#[test]
+fn a_tee_s_junction_loop_rounds_from_any_arc() {
+    let (model, joined, arcs) = tee();
+    assert_eq!(arcs.len(), 4);
+    let before = volume(&model, &joined, 1e-3);
+    let mut volumes = Vec::new();
+    for arc in &arcs {
+        let mut model = model.clone();
+        let rounded = ogeom_fillet::fillet_edge(&mut model, &joined, arc, 0.1, T)
+            .unwrap()
+            .shape;
+        let diagnosis = ogeom_algo::check(&model, &rounded, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        volumes.push(volume(&model, &rounded, 1e-3));
+    }
+    // Concave all round, so it adds material: no more than a square
+    // corner's worth, (1 - pi/4) r^2, round the branch's circumference.
+    let ceiling = (1.0 - core::f64::consts::FRAC_PI_4) * 0.01 * core::f64::consts::TAU * 0.6;
+    for v in &volumes {
+        let added = v - before;
+        assert!(added > 0.0 && added < ceiling, "added {added}");
+        assert!((v - volumes[0]).abs() < 1e-5, "{volumes:?}");
+    }
+}
