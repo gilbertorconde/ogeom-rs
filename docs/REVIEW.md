@@ -60,7 +60,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [x] **C1.** `classify_in_solid_exact` says In for points in a spherical void: `shape_bounds` of a reversed whole sphere bounds only its seam (`ogeom-algo/src/measure.rs` `patch_bulge`). (17e0a28)
 - [x] **C2.** Whole spheres and tori from f32 meshes fail `check`: `whole_face` widens the face's tolerance but not its seam, pole edges and vertices (`mesh_solid.rs`). (7bc5070)
 - [ ] **C3.** A small valid `coplanar_distance` on f32 input gives a shape whose whole-shape tessellation is open while `check` passes (`mesh_solid.rs`). Diagnosed 2026-10-01: the slits run along recognized sphere faces (a rounded block's corners) where they meet single-facet planar faces; those sphere faces' triangles overrun their exact area. Withdrawing recognition on an open body tessellation in `body_culprits` was tried and rejected: inside the build loop sound bodies also tessellate open. Deferred to the end of Tier 2.
-- [x] **C4.** `solid_from_mesh` accepts NaN, negative or zero `coplanar_distance`, and NaN or zero `crease`, silently (`mesh_solid.rs`).
+- [x] **C4.** `solid_from_mesh` accepts NaN, negative or zero `coplanar_distance`, and NaN or zero `crease`, silently (`mesh_solid.rs`). (2ca79a1)
 - [ ] **C5.** The converter's nesting ray counts a hit on a shared edge twice or not at all, turning a void into a separate solid (`mesh_solid.rs` `inside`).
 - [ ] **C6.** Flat caps of a fine f32 mesh, rotated and far from the origin, break into many faces: `coplanar_angle` ignores the quantum (`mesh_solid.rs` `coplanar_groups`).
 - [ ] **R1.** PLY reader panics on an out-of-range face index (`mesh_formats.rs`).
