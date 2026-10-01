@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Scaled curves name the images of their points.** Under a scaling a
+  planar trim of anything but a bare line (a trim of a trim, of an offset)
+  kept its old window, a parabola its old domain, and a curve on a surface
+  its old chart curve while the surface's length directions rescaled; each
+  then named the wrong points. All three now follow the rescaled
+  parameter, and the whole-shape conversion carries edge ranges the same
+  way.
+
 - **Tangent circles keep their digits far from the origin.**
   `circles_tangent_to_three` and `circles_of_radius_tangent_to_two`
   solved rows holding each target's squared distance from the origin, so

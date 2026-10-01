@@ -737,16 +737,13 @@ fn convert_edge(
     use ogeom_geom::Transformable as _;
     let placed = geometry.transformed(&placement, tol)?;
     // A placement with scale rescales a length-parameterized curve's domain
-    // (the same rule `transformed` itself applies), so the edge's range
-    // must move with it or the conversion covers only part of the edge.
-    let stretch = placement.scale_factor().abs();
-    let range_on_placed = match &geometry {
-        Curve::Line(_) => (range.0 * stretch, range.1 * stretch),
-        Curve::Trimmed(t) if matches!(t.basis(), Curve::Line(_)) => {
-            (range.0 * stretch, range.1 * stretch)
-        }
-        _ => *range,
-    };
+    // (a line's, a parabola's, anything built on one), so the edge's range
+    // moves with the domain or the conversion covers only part of the edge.
+    let (from, to) = (geometry.domain(), placed.domain());
+    let range_on_placed = (
+        ogeom_geom::carried(range.0, from, to),
+        ogeom_geom::carried(range.1, from, to),
+    );
     let (curve, new_range): (Curve, (f64, f64)) = if matches!(restate, Restate::Nurbs) {
         let spline = placed.to_bspline_over(range_on_placed, tol)?;
         // The affine map moves control points; the parameterization and the

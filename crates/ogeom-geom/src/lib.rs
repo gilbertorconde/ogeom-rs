@@ -26,7 +26,7 @@ pub use curve2d::{
 };
 pub use surface::{
     BSplineSurface, ConeSurface, CylinderSurface, ExtrusionSurface, OffsetSurface, PlaneSurface,
-    RevolutionSurface, SphereSurface, SurfaceGeometry, TorusSurface, TrimmedSurface,
+    RevolutionSurface, SphereSurface, SurfaceGeometry, TorusSurface, TrimmedSurface, carried,
 };
 pub use traits::{
     Continuity, Curve2d, Curve3d, CurveKind, Reversible, Surface, SurfaceCurvature, SurfaceJet,

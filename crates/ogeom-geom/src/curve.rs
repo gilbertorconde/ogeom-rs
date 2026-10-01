@@ -1731,8 +1731,14 @@ impl Transformable for Curve {
                 hyperbola: c.hyperbola.transformed(t, tol)?,
                 ..*c
             }),
+            // The parameter runs along the axis frame's `y`, a length, and a
+            // scaling rescales it as it does a line's.
             Self::Parabola(c) => Self::Parabola(ParabolaCurve {
                 parabola: c.parabola.transformed(t, tol)?,
+                domain: (
+                    c.domain.0 * t.scale_factor().abs(),
+                    c.domain.1 * t.scale_factor().abs(),
+                ),
                 ..*c
             }),
             Self::BSpline(c) => {
@@ -1764,10 +1770,28 @@ impl Transformable for Curve {
                     * if t.preserves_handedness() { 1.0 } else { -1.0 },
                 reference: t.apply_direction(c.reference, tol)?,
             })),
-            Self::OnSurface(c) => Self::OnSurface(Box::new(CurveOnSurface {
-                pcurve: c.pcurve.clone(),
-                surface: c.surface.transformed(t, tol)?,
-            })),
+            // The surface's length directions rescale under a scaling (a
+            // plane's both, a cylinder's height), and the chart curve
+            // stretches with them so it names the same points' images.
+            Self::OnSurface(c) => {
+                use crate::traits::Surface as _;
+                let surface = c.surface.transformed(t, tol)?;
+                let (from, to) = (c.surface.domain(), surface.domain());
+                let ratio = |a: (f64, f64), b: (f64, f64)| {
+                    let span = a.1 - a.0;
+                    if span.is_finite() && span != 0.0 && (b.1 - b.0).is_finite() {
+                        (b.1 - b.0) / span
+                    } else {
+                        1.0
+                    }
+                };
+                Self::OnSurface(Box::new(CurveOnSurface {
+                    pcurve: c
+                        .pcurve
+                        .stretched(ratio(from.0, to.0), ratio(from.1, to.1), tol)?,
+                    surface,
+                }))
+            }
             Self::Trimmed(c) => {
                 let basis = c.basis.transformed(t, tol)?;
                 // The trim lives in the basis's parameter and moves with it:
@@ -1943,6 +1967,84 @@ mod tests {
     use ogeom_math::{Direction, Frame};
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// A scaled curve names, at every parameter, the image of the point it
+    /// named: a parabola, whose parameter is a length; a trim of a trim of a
+    /// line and a trim of an offset line in a chart; and a curve on a plane
+    /// or on a cylinder, whose chart curve stretches with the surface's
+    /// length directions.
+    #[test]
+    fn a_scaled_curve_is_the_image_of_the_original() {
+        use crate::curve2d::{Line2d, Offset2d, PlanarCurve, Trimmed2d};
+        use crate::surface::{CylinderSurface, PlaneSurface, SurfaceGeometry};
+        use crate::traits::Curve2d as _;
+        use ogeom_math::{Cylinder, Parabola, Plane, Point2, Transform, Transform2};
+        let scaling = Transform::scaling(Point::ORIGIN, 2.0, T).unwrap();
+        let parabola: Curve =
+            ParabolaCurve::new(Parabola::new(Frame::WORLD, 5.0, T).unwrap(), 10.0)
+                .unwrap()
+                .into();
+        let parabola: Curve = TrimmedCurve::new(parabola, -10.0, 10.0, T).unwrap().into();
+        let segment: PlanarCurve =
+            Line2d::segment(Point2::new(10.0, 0.0), Point2::new(10.0, 20.0), T)
+                .unwrap()
+                .into();
+        let on_plane = Curve::OnSurface(Box::new(CurveOnSurface::new(
+            segment.clone(),
+            PlaneSurface::over(Plane::XY, (-100.0, 100.0), (-100.0, 100.0))
+                .unwrap()
+                .into(),
+        )));
+        let slant: PlanarCurve = Line2d::segment(Point2::new(0.0, 1.0), Point2::new(3.0, 4.0), T)
+            .unwrap()
+            .into();
+        let drum: SurfaceGeometry =
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, 5.0, T).unwrap(), (-10.0, 10.0))
+                .unwrap()
+                .into();
+        let on_drum = Curve::OnSurface(Box::new(CurveOnSurface::new(slant, drum)));
+        for curve in [parabola, on_plane, on_drum] {
+            let moved = curve.transformed(&scaling, T).unwrap();
+            let (a, b) = curve.domain();
+            let (c, d) = moved.domain();
+            for k in 0..=8 {
+                let f = f64::from(k) / 8.0;
+                let want = scaling.apply(curve.point_at(a + (b - a) * f, T).unwrap());
+                let got = moved.point_at(c + (d - c) * f, T).unwrap();
+                assert!(got.distance(want) < 1e-9, "{got:?} against {want:?}");
+            }
+        }
+        let flat = Transform2::scaling(Point2::ORIGIN, 2.0, T).unwrap();
+        let line: PlanarCurve = Line2d::segment(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0), T)
+            .unwrap()
+            .into();
+        let nested: PlanarCurve = Trimmed2d::new(
+            Trimmed2d::new(line.clone(), 1.0, 9.0, T).unwrap().into(),
+            3.0,
+            7.0,
+            T,
+        )
+        .unwrap()
+        .into();
+        let beside: PlanarCurve = Trimmed2d::new(
+            PlanarCurve::Offset(Box::new(Offset2d::new(line, 1.0).unwrap())),
+            3.0,
+            7.0,
+            T,
+        )
+        .unwrap()
+        .into();
+        for curve in [nested, beside] {
+            let moved = curve.transformed(&flat, T).unwrap();
+            for (at, on) in [
+                (curve.domain().0, moved.domain().0),
+                (curve.domain().1, moved.domain().1),
+            ] {
+                let want = flat.apply(curve.point_at(at, T).unwrap());
+                assert!(moved.point_at(on, T).unwrap().distance(want) < 1e-9);
+            }
+        }
+    }
 
     /// An offset curve carried by a mirror or a point mirror names, at every
     /// parameter, the image of the point it named.

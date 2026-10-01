@@ -863,15 +863,73 @@ impl PlanarCurve {
                 b: t.apply_vector(c.b),
                 ..*c
             }),
+            // The trim lives in the basis's parameter and moves with it: a
+            // line's is a length and rescales, and so does anything built on
+            // one (a trim of it, an offset of it), as in space.
+            Self::Trimmed(c) => {
+                let basis = c.basis.transformed(t, tol)?;
+                let (from, to) = (c.basis.domain(), basis.domain());
+                Self::Trimmed(Box::new(Trimmed2d {
+                    domain: (
+                        crate::surface::carried(c.domain.0, from, to),
+                        crate::surface::carried(c.domain.1, from, to),
+                    ),
+                    basis,
+                    reversed: c.reversed,
+                }))
+            }
+        })
+    }
+}
+
+impl PlanarCurve {
+    /// This curve with each point's coordinates stretched, `u` by `su` and
+    /// `v` by `sv`, at the same parameters: the image a chart curve takes
+    /// when its surface's length directions rescale unevenly (a cylinder's
+    /// height under a scaling, its angle not). Equal factors are a plain
+    /// scaling about the chart's origin.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) for
+    /// an uneven stretch of a circle, an ellipse, an offset or a
+    /// trigonometric curve, whose stretched image no curve here states at
+    /// the same parameters.
+    pub fn stretched(&self, su: f64, sv: f64, tol: Tolerances) -> OgeomResult<Self> {
+        if su == sv {
+            if su == 1.0 {
+                return Ok(self.clone());
+            }
+            let scaling = ogeom_math::Transform2::scaling(Point2::ORIGIN, su, tol)?;
+            return self.transformed(&scaling, tol);
+        }
+        let map = |p: Point2| Point2::new(p.x * su, p.y * sv);
+        Ok(match self {
+            Self::Line(c) => {
+                let (a, b) = c.domain;
+                let knots = KnotVector::new(vec![a, a, b, b], 1)?;
+                Self::BSpline(BSpline2d::new(
+                    knots,
+                    vec![map(c.axis.point_at(a)), map(c.axis.point_at(b))],
+                    tol,
+                )?)
+            }
+            Self::BSpline(c) => Self::BSpline(BSpline2d {
+                control: c
+                    .control
+                    .iter()
+                    .map(|w| Weighted::new(map(w.point()), w.weight, tol))
+                    .collect::<OgeomResult<Vec<_>>>()?,
+                ..c.clone()
+            }),
             Self::Trimmed(c) => Self::Trimmed(Box::new(Trimmed2d {
-                basis: c.basis.transformed(t, tol)?,
-                domain: if matches!(c.basis, Self::Line(_)) {
-                    (c.domain.0 * scale, c.domain.1 * scale)
-                } else {
-                    c.domain
-                },
-                reversed: c.reversed,
+                basis: c.basis.stretched(su, sv, tol)?,
+                ..(**c).clone()
             })),
+            _ => ogeom_bail!(
+                Construction,
+                "a chart curve of this kind has no image under an uneven stretch"
+            ),
         })
     }
 }

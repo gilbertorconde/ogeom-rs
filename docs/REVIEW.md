@@ -77,9 +77,9 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [x] **K3.** The circle-circle bisector returns the wrong branch when the first circle is smaller (`construct2d.rs`). (8add0f5)
 - [x] **K4.** A near-circular ellipse (minor slightly over major) gives NaN (`conic.rs`). (7ad169b)
 - [x] **K5.** Apollonius circles lose precision away from the origin (`construct2d.rs`). (fbc3008)
-- [ ] **G1.** A trimmed pcurve over a non-line basis is not rescaled by a scaling transform (`curve2d.rs`).
-- [ ] **G2.** `CurveOnSurface::transformed` ignores scaling of length-type surface parameters (`curve.rs`).
-- [ ] **G3.** Scaling a parabola does not rescale its parameter (`curve.rs`; `convert.rs` range adjustment misses it too).
+- [x] **G1.** A trimmed pcurve over a non-line basis is not rescaled by a scaling transform (`curve2d.rs`).
+- [x] **G2.** `CurveOnSurface::transformed` ignores scaling of length-type surface parameters (`curve.rs`).
+- [x] **G3.** Scaling a parabola does not rescale its parameter (`curve.rs`; `convert.rs` range adjustment misses it too).
 - [ ] **G4.** `HelixCurve::arc_length` ignores taper (`curve.rs`).
 - [ ] **G5.** A periodic B-spline reports `is_closed() == false` (`curve.rs`, `curve2d.rs`).
 - [ ] **L1.** `curve_length` fails at a kink of a polyline spline, and `parameter_at_length` / `points_by_count` then return wrong points silently (`ogeom-algo/src/length.rs`).

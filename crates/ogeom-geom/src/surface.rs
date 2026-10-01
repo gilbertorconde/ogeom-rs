@@ -1763,7 +1763,8 @@ impl From<TrimmedSurface> for SurfaceGeometry {
 /// between them: where a transform rescales a parameter, a trim inside the
 /// old domain lands at the same place inside the new. Unchanged where the
 /// old domain has no width to map from.
-pub(crate) fn carried(x: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
+#[must_use]
+pub fn carried(x: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
     let span = from.1 - from.0;
     if span == 0.0 || !span.is_finite() || !(to.1 - to.0).is_finite() {
         return x;
