@@ -92,7 +92,10 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 
 ## Tier 3: refusals and minor contracts
 
-- [ ] **P1.** Boolean refusals: near-coaxial cylinders (radius 5e-6 to 3e-3 apart), boxes offset 1e-6, a box rotated 1e-7 to 1e-4 rad on another, cut of two identical spheres, cylinder seam at some angles near a section line.
+- [ ] **P1.** Boolean refusals: near-coaxial cylinders (radius 5e-6 to 3e-3 apart), boxes offset 1e-6, a box rotated 1e-7 to 1e-4 rad on another, cut of two identical spheres, cylinder seam at some angles near a section line. Fixed (f5f4ba7): cut by an identical solid; the seam-angle refusal, which was a planar face's bound missing its rim's chord sag (a disc's rim bows past its samples by more than a cap pokes past a wall), so the pair was never intersected. Diagnosed 2026-10-01, still open:
+  - Near-coaxial drums (r 2 against 2 + d, d up to 1e-3): the wider drum's cap splits into an annulus d wide and a disc, but the rings are fixed-count chord polylines whose sag (about 2.4e-3 on the r = 2 section) exceeds d, so the annulus's scanline probe lands in the true hole and the annulus reads In. Needs adaptive strand sampling against the piece width, or probes checked against the exact curves.
+  - A box slid by exactly 1e-6 on another: the slide equals the strand doubt (ten confusion distances), and only that coincidence refuses; 9e-7 and 1.1e-6 work. Slides under the 1e-5 weld floor weld the sliver away within the vertex tolerance they then carry.
+  - A stacked box tilted 1e-7 to 1e-4 rad about a horizontal axis: the contact faces are near-coplanar without being coincident, and the pieces within tolerance of the other face have no coincident partner to classify against.
 - [ ] **P2.** Fillet refusals: a pipe tee junction loop, all edges of an L-bracket, a full round of a box.
 - [x] **P3.** `make_prism_tapered` rejects a face straight from `make_face` (no pcurves attached first). (acb9aed)
 - [x] **P4.** `make_polyhedron` takes a face's normal from its first three points and refuses a face starting with three collinear points; `medial_axis` refuses a polygon with a collinear vertex. (79b9658)
