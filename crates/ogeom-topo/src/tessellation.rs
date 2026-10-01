@@ -20,9 +20,11 @@ use ogeom_math::{Aabb, Point, Vector};
 pub struct Triangulation {
     /// Vertex positions.
     pub positions: Vec<Point>,
-    /// Outward unit normals, one per vertex.
+    /// Outward unit normals, one per vertex, or none for a mesh read
+    /// without them.
     pub normals: Vec<Vector>,
-    /// The surface parameters each vertex came from.
+    /// The surface parameters each vertex came from, or none for a mesh
+    /// that did not come from a surface.
     pub parameters: Vec<(f64, f64)>,
     /// Triangles, as indices into the vertex arrays, wound counter-clockwise
     /// about the outward normal.
@@ -526,8 +528,18 @@ impl Triangulation {
                 #[allow(clippy::cast_possible_truncation)]
                 let fresh = out.positions.len() as u32;
                 out.positions.push(*position);
-                out.normals.push(self.normals[index]);
-                out.parameters.push(self.parameters[index]);
+                // A mesh read from a file may carry positions alone; the
+                // optional per-vertex arrays follow only where they are full.
+                if let Some(&normal) = self.normals.get(index)
+                    && self.normals.len() == self.positions.len()
+                {
+                    out.normals.push(normal);
+                }
+                if let Some(&uv) = self.parameters.get(index)
+                    && self.parameters.len() == self.positions.len()
+                {
+                    out.parameters.push(uv);
+                }
                 buckets.entry((kx, ky, kz)).or_default().push(fresh);
                 fresh
             });
@@ -553,6 +565,24 @@ mod tests {
     use approx::assert_relative_eq;
 
     const T: Tolerances = Tolerances::millimetres();
+
+    #[test]
+    fn a_mesh_of_positions_alone_welds() {
+        let mut mesh = Triangulation::new();
+        mesh.positions = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(0.0, 1.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(1.0, 1.0, 0.0),
+            Point::new(0.0, 1.0, 0.0),
+        ];
+        mesh.triangles = vec![[0, 1, 2], [3, 4, 5]];
+        let welded = mesh.welded(T);
+        assert_eq!(welded.positions.len(), 4);
+        assert!(welded.normals.is_empty() && welded.parameters.is_empty());
+        assert_eq!(welded.triangles, vec![[0, 1, 2], [1, 3, 2]]);
+    }
 
     #[test]
     fn an_empty_mesh_answers_sensibly() {

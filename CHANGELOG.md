@@ -13,6 +13,10 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A mesh of positions alone welds.** `Triangulation::welded` indexed
+  the normals and parameters of every vertex and panicked on a mesh read
+  without them; the optional arrays now follow only where they are full.
+
 - **A converted torus measures exactly and divides into spans.** A torus
   stated as a spline far from the origin had its closing seam sampled back
   onto the chart's start, so its seam sides were fitted with ringing and the
