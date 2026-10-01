@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Every outline is drawn once.** HLR `project` read its silhouettes off
+  a mesh whose faces were meshed apart, so every face border counted as an
+  outline and every outline edge was drawn a second time over the model
+  edge. The mesh is welded first, and a silhouette along a drawn edge is
+  left to the edge.
+
 - **A bare or placed profile tapers.** `make_prism_tapered` refused a
   face straight from `make_face`, whose edges carry no pcurves yet, and a
   placed profile, whose material side it probed in the wrong frame. The

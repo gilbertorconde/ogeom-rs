@@ -138,8 +138,10 @@ pub fn project(
 
     let mut drawing = Drawing::default();
 
-    // The model's own edges.
+    // The model's own edges, their segments kept so a silhouette along one
+    // is not drawn over it.
     let mut seen = std::collections::HashSet::new();
+    let mut drawn = DrawnSegments::new(tol);
     for edge in explore(model, shape, Filter::OfType(ShapeType::Edge))? {
         let key = (edge.node(), edge.location().clone());
         if !seen.insert(key) {
@@ -148,6 +150,7 @@ pub fn project(
         let Ok(points) = ogeom_mesh::polyline_of_edge(model, &edge, deflection, tol) else {
             continue;
         };
+        drawn.add(&points);
         classify_into(
             &mut drawing,
             &points,
@@ -160,7 +163,10 @@ pub fn project(
     }
 
     // Silhouettes: interior mesh edges whose triangles disagree about facing
-    // the eye, and border edges, which are their own outline.
+    // the eye, and border edges, which are their own outline. Faces are
+    // meshed apart, so the mesh is welded first: otherwise every face's
+    // border would read as an outline.
+    let mesh = mesh.welded(tol);
     let toward_eye = view.toward_eye();
     let mut uses: std::collections::HashMap<(u32, u32), Vec<usize>> =
         std::collections::HashMap::new();
@@ -191,6 +197,9 @@ pub fn project(
             continue;
         }
         let points = [mesh.positions[a as usize], mesh.positions[b as usize]];
+        if drawn.holds(points[0], points[1]) {
+            continue;
+        }
         classify_into(
             &mut drawing,
             &points,
@@ -202,6 +211,81 @@ pub fn project(
         );
     }
     Ok(drawing)
+}
+
+/// A grid cell of [`DrawnSegments`].
+type Cell = (i64, i64, i64);
+
+/// The segments of the model edges already drawn, found by their ends.
+struct DrawnSegments {
+    cell: f64,
+    tol: Tolerances,
+    /// Each polyline point by its grid cell: which polyline, and where on
+    /// it.
+    points: std::collections::HashMap<Cell, Vec<(usize, usize, Point)>>,
+    lines: usize,
+}
+
+impl DrawnSegments {
+    fn new(tol: Tolerances) -> Self {
+        Self {
+            cell: tol.confusion().max(f64::MIN_POSITIVE) * 10.0,
+            tol,
+            points: std::collections::HashMap::new(),
+            lines: 0,
+        }
+    }
+
+    fn key(&self, p: Point) -> Cell {
+        #[allow(clippy::cast_possible_truncation)]
+        (
+            (p.x / self.cell).floor() as i64,
+            (p.y / self.cell).floor() as i64,
+            (p.z / self.cell).floor() as i64,
+        )
+    }
+
+    fn add(&mut self, polyline: &[Point]) {
+        for (index, p) in polyline.iter().enumerate() {
+            let key = self.key(*p);
+            self.points
+                .entry(key)
+                .or_default()
+                .push((self.lines, index, *p));
+        }
+        self.lines += 1;
+    }
+
+    /// Where `p` stands on the drawn polylines.
+    fn at(&self, p: Point) -> Vec<(usize, usize)> {
+        let (x, y, z) = self.key(p);
+        let mut out = Vec::new();
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    let Some(found) = self.points.get(&(x + dx, y + dy, z + dz)) else {
+                        continue;
+                    };
+                    out.extend(
+                        found
+                            .iter()
+                            .filter(|(_, _, q)| q.is_equal(p, self.tol))
+                            .map(|&(line, index, _)| (line, index)),
+                    );
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether `a` to `b` is a segment of a drawn polyline.
+    fn holds(&self, a: Point, b: Point) -> bool {
+        let at_b = self.at(b);
+        self.at(a).into_iter().any(|(line, index)| {
+            at_b.iter()
+                .any(|&(other, j)| other == line && index.abs_diff(j) == 1)
+        })
+    }
 }
 
 /// Split a polyline into visible and hidden runs against the mesh.
@@ -509,6 +593,40 @@ mod tests {
             "diameter across the sheet"
         );
         assert!((max_y - min_y - 8.0).abs() < 0.1, "height up the sheet");
+    }
+
+    fn silhouette_length(drawing: &Drawing, visibility: Visibility) -> f64 {
+        drawing
+            .curves()
+            .filter(|c| c.visibility == visibility && matches!(c.source, Source::Silhouette))
+            .map(|c| {
+                c.points
+                    .windows(2)
+                    .map(|w| w[0].distance(w[1]))
+                    .sum::<f64>()
+            })
+            .sum()
+    }
+
+    /// Each outline is drawn once: a box's outline is its own edges, with
+    /// no silhouette over them, and a drum's side silhouette is its two
+    /// generators, not its face borders as well.
+    #[test]
+    fn every_outline_is_drawn_once() {
+        let mut model = Model::new();
+        let solid = ogeom_algo::make_box(&mut model, MFrame::WORLD, (10.0, 6.0, 4.0), T).unwrap();
+        let view =
+            View::looking(Vector::new(-1.0, -1.2, -0.9), Vector::new(0.0, 0.0, 1.0), T).unwrap();
+        let drawing = super::project(&model, &solid.shape, &view, fine(), T).unwrap();
+        assert!(silhouette_length(&drawing, Visibility::Visible) < 1e-9);
+        assert!(silhouette_length(&drawing, Visibility::Hidden) < 1e-9);
+
+        let drum = ogeom_algo::make_cylinder(&mut model, MFrame::WORLD, 3.0, 8.0, T).unwrap();
+        let side =
+            View::looking(Vector::new(-1.0, 0.3, 0.0), Vector::new(0.0, 0.0, 1.0), T).unwrap();
+        let drawing = super::project(&model, &drum.shape, &side, fine(), T).unwrap();
+        let visible = silhouette_length(&drawing, Visibility::Visible);
+        assert!((visible - 16.0).abs() < 1e-6, "two generators: {visible}");
     }
 
     #[test]
