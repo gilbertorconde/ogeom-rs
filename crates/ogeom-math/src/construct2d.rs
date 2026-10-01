@@ -128,6 +128,23 @@ pub fn circles_tangent_to_three(
     targets: &[Target2; 3],
     tol: Tolerances,
 ) -> OgeomResult<Vec<TangentCircle>> {
+    // Solved about the targets' own middle: the linearized rows carry each
+    // anchor's squared distance from the origin, and far from it those
+    // squares cancel to a few digits.
+    let shift = middle(targets);
+    let near = [
+        shifted(&targets[0], -shift, tol)?,
+        shifted(&targets[1], -shift, tol)?,
+        shifted(&targets[2], -shift, tol)?,
+    ];
+    let found = tangent_to_three_near(&near, tol)?;
+    found.into_iter().map(|t| moved(t, shift, tol)).collect()
+}
+
+fn tangent_to_three_near(
+    targets: &[Target2; 3],
+    tol: Tolerances,
+) -> OgeomResult<Vec<TangentCircle>> {
     for i in 0..3 {
         for j in i + 1..3 {
             if targets_coincide(&targets[i], &targets[j], tol) {
@@ -164,6 +181,59 @@ pub fn circles_tangent_to_three(
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
 /// radius is not finite and positive, or the targets coincide.
 pub fn circles_of_radius_tangent_to_two(
+    radius: f64,
+    targets: &[Target2; 2],
+    tol: Tolerances,
+) -> OgeomResult<Vec<TangentCircle>> {
+    // About the targets' middle, as for three.
+    let shift = middle(targets);
+    let near = [
+        shifted(&targets[0], -shift, tol)?,
+        shifted(&targets[1], -shift, tol)?,
+    ];
+    let found = of_radius_near(radius, &near, tol)?;
+    found.into_iter().map(|t| moved(t, shift, tol)).collect()
+}
+
+/// Where a set of targets stands: the mean of their anchors (a point, a
+/// circle's centre, a line's stated location).
+fn middle(targets: &[Target2]) -> Vector2 {
+    let mut sum = Vector2::new(0.0, 0.0);
+    for target in targets {
+        sum += match target {
+            Target2::Point(p) => p.to_vector(),
+            Target2::Circle(c) => c.centre().to_vector(),
+            Target2::Line(axis) => axis.location.to_vector(),
+        };
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let count = targets.len().max(1) as f64;
+    sum * (1.0 / count)
+}
+
+/// A target moved by `by`.
+fn shifted(target: &Target2, by: Vector2, tol: Tolerances) -> OgeomResult<Target2> {
+    Ok(match target {
+        Target2::Point(p) => Target2::Point(*p + by),
+        Target2::Line(axis) => Target2::Line(Axis2::new(axis.location + by, axis.direction)),
+        Target2::Circle(c) => Target2::Circle(Circle2::new(
+            Frame2::new(c.centre() + by, c.frame().x()),
+            c.radius(),
+            tol,
+        )?),
+    })
+}
+
+/// A solution moved by `by`; its standings move with it.
+fn moved(found: TangentCircle, by: Vector2, tol: Tolerances) -> OgeomResult<TangentCircle> {
+    let c = found.circle;
+    Ok(TangentCircle {
+        circle: Circle2::new(Frame2::new(c.centre() + by, c.frame().x()), c.radius(), tol)?,
+        placements: found.placements,
+    })
+}
+
+fn of_radius_near(
     radius: f64,
     targets: &[Target2; 2],
     tol: Tolerances,
@@ -893,5 +963,25 @@ mod tests {
         let pair = bisector(&line, &slanted, T).unwrap();
         assert!(matches!(pair, Bisector2::Pair(_)), "{pair:?}");
         assert_equidistant(&pair, &line, &slanted);
+    }
+
+    /// A micron-sized circle through three points ten metres from the
+    /// origin comes back to rounding, as it does at the origin.
+    #[test]
+    fn tangent_circles_far_from_the_origin_keep_their_digits() {
+        for offset in [0.0, 1_000.0, 10_000.0] {
+            let radius: f64 = 1e-3;
+            let through = [0.3_f64, 2.0, 4.1].map(|a| {
+                Target2::Point(Point2::new(
+                    radius.mul_add(a.cos(), offset),
+                    radius.mul_add(a.sin(), offset),
+                ))
+            });
+            let found = circles_tangent_to_three(&through, T).unwrap();
+            assert_eq!(found.len(), 1, "{offset}");
+            let circle = found[0].circle;
+            assert!((circle.radius() - radius).abs() < 1e-12, "{offset}");
+            assert!(circle.centre().distance(Point2::new(offset, offset)) < 1e-12);
+        }
     }
 }

@@ -76,7 +76,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [x] **K2.** A cone with a negative half angle is accepted but its `distance_to` is wrong (`quadric.rs`). (356a0a7)
 - [x] **K3.** The circle-circle bisector returns the wrong branch when the first circle is smaller (`construct2d.rs`). (8add0f5)
 - [x] **K4.** A near-circular ellipse (minor slightly over major) gives NaN (`conic.rs`). (7ad169b)
-- [ ] **K5.** Apollonius circles lose precision away from the origin (`construct2d.rs`).
+- [x] **K5.** Apollonius circles lose precision away from the origin (`construct2d.rs`).
 - [ ] **G1.** A trimmed pcurve over a non-line basis is not rescaled by a scaling transform (`curve2d.rs`).
 - [ ] **G2.** `CurveOnSurface::transformed` ignores scaling of length-type surface parameters (`curve.rs`).
 - [ ] **G3.** Scaling a parabola does not rescale its parameter (`curve.rs`; `convert.rs` range adjustment misses it too).

@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Tangent circles keep their digits far from the origin.**
+  `circles_tangent_to_three` and `circles_of_radius_tangent_to_two`
+  solved rows holding each target's squared distance from the origin, so
+  a small circle ten metres out came back off by a percent of its radius.
+  Both now solve about the targets' own middle.
+
 - **A nearly circular ellipse is a circle, not NaN.** An ellipse whose
   minor radius exceeded its major by less than the confusion tolerance
   was accepted and reported a NaN focal distance and eccentricity. Such a
