@@ -11,6 +11,29 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-01
+
+A patch release: `cargo semver-checks` against 0.6.0 finds no breaking
+change, and every crate packages and verifies in a publish dry run. Most of
+it answers an adversarial review of the kernel: mirrors and negative scales
+transform curves, surfaces, primitives and booleans the right way round;
+spheres come back whole through STEP and IGES; unclamped and periodic
+splines reverse, rescale and split unchanged; offsets and fillets refuse what
+they cannot build instead of returning it inside out. The boolean settles
+near-coincident faces by one rule, welding a sliver thinner than the weld
+distance and keeping anything thicker as real geometry, and pads on a part
+converted face for facet now fuse back into it. A pipe tee's junction loop
+and a slab's full round fillet, and a thread groove cuts the same at any
+start angle. A history now says which faces came through a boolean
+unchanged (`History::copy_of`), and a boolean on a face with hundreds of
+holes is several times faster.
+
+Known limits, each with its diagnosis in `docs/PLAN.md` or
+`docs/REVIEW.md`: a converted rounded block's whole-shape tessellation can
+stay open along its corner spheres while `check` passes, and a pad into a
+slab whose faceted walls lean in by less than their chords sag refuses at
+some facet counts.
+
 ### Fixed
 
 - **Pads on a part converted face for facet.** A pad pushed down from a
@@ -119,7 +142,7 @@ bump may break the API and a patch bump may not.
   because the planes through it taken whole look like one. It now probes
   beside each corner edge and leaves a re-entrant corner to the blends.
 
-- **A STEP void reads as a cavity whichever way it is written.** A void
+- **A STEP void reads as a cavity whichever way it is written (#102, #103).** A void
   shell whose flags turn it to add material (written inside out and then
   marked reversed as well, as some exporters do) read inside out: the
   cavity counted as extra material and `check` reported its faces broken.
@@ -2532,7 +2555,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.4.1...v0.5.0
