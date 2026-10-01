@@ -65,17 +65,31 @@ impl Quaternion {
     /// antiparallel: infinitely many shortest rotations exist and picking one
     /// arbitrarily would make the result depend on unobservable rounding.
     pub fn between(from: Direction, to: Direction, tol: Tolerances) -> OgeomResult<Self> {
-        let d = from.dot(to);
-        if d < -1.0 + tol.confusion() {
+        let (a, b) = (from.vector(), to.vector());
+        let cross = a.cross(b);
+        let dot = a.dot(b);
+        if dot >= 0.0 {
+            // Within a quarter turn: the half-way direction is well
+            // conditioned, and the rotation turns `from` onto it and on by
+            // as much again. w = cos(theta / 2), (x, y, z) = sin(theta / 2)
+            // times the axis.
+            let half = (a + b) / (a + b).magnitude();
+            let axis = a.cross(half);
+            return Self::new(a.dot(half), axis.x, axis.y, axis.z).normalized(tol);
+        }
+        // Past a quarter turn the angle is read off the cross product, which
+        // holds its digits as the two turn antiparallel where `1 + cos` does
+        // not; the axis is held to the angular tolerance, independent of the
+        // unit.
+        let sine = cross.magnitude();
+        if sine <= tol.angular() {
             ogeom_bail!(
                 Construction,
                 "rotation between antiparallel directions is not unique"
             );
         }
-        let axis = from.cross_vector(to);
-        // w = 1 + cos(theta), (x,y,z) = sin(theta) * axis. Normalizing this
-        // halves the angle, which is what the quaternion needs.
-        Self::new(1.0 + d, axis.x, axis.y, axis.z).normalized(tol)
+        let axis = Direction::new(cross / sine, tol)?;
+        Ok(Self::from_axis_angle(axis, sine.atan2(dot)))
     }
 
     /// From a rotation matrix.
@@ -438,6 +452,19 @@ mod tests {
         );
         let (_, angle) = q.to_axis_angle(T).unwrap();
         assert_relative_eq!(angle, core::f64::consts::FRAC_PI_4, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn between_holds_its_digits_near_a_half_turn() {
+        for gap in [1e-4_f64, 1e-6, 1e-9] {
+            let to = Direction::new(Vector::new(-gap.cos(), gap.sin(), 0.0), T).unwrap();
+            let q = Quaternion::between(Direction::X, to, T).unwrap();
+            let turned = q.rotate(Direction::X.vector());
+            assert!(
+                (turned - to.vector()).magnitude() < 1e-12,
+                "gap {gap}: {turned:?} against {to:?}"
+            );
+        }
     }
 
     #[test]

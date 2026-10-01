@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A near half turn and a small chart keep their digits.**
+  `Quaternion::between` refused directions within some 5e-4 rad of a half
+  turn (a length tolerance held against a cosine) and lost digits short of
+  that; it now reads the angle off the cross product and refuses only within
+  the angular tolerance. `SurfacePoint::normal` held the tangents' cross
+  product, an area, against a length and refused a healthy chart a tenth of a
+  millimetre across.
+
 - **A large box measures at once and exactly.** The exact surface
   integral cut every chart rectangle into quarter-turn panels in both
   parameters, so a plane's millimetre parameters gave a metre cube some

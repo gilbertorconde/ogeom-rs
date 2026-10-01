@@ -89,7 +89,11 @@ impl SurfacePoint {
                 "surface point is degenerate; the tangents determine no normal"
             );
         }
-        Direction::new(self.du.cross(self.dv), tol)
+        // The cross product is an area; taken to the tangents' own scale
+        // first, it is never refused as short where `is_degenerate` found
+        // it healthy.
+        let scale = self.du.magnitude().max(self.dv.magnitude());
+        Direction::new(self.du.cross(self.dv) / (scale * scale), tol)
     }
 
     /// Whether the tangents fail to determine a normal.
@@ -492,6 +496,17 @@ mod tests {
 
     const T: Tolerances = Tolerances::millimetres();
     const PI: f64 = core::f64::consts::PI;
+
+    #[test]
+    fn a_small_healthy_chart_has_a_normal() {
+        let at = SurfacePoint {
+            point: Point::ORIGIN,
+            du: Vector::new(1e-4, 0.0, 0.0),
+            dv: Vector::new(0.0, 1e-4, 0.0),
+        };
+        assert!(!at.is_degenerate(T));
+        assert_relative_eq!(at.normal(T).unwrap().z(), 1.0);
+    }
 
     fn tilted() -> Frame {
         Frame::new(
