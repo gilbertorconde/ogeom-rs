@@ -1372,7 +1372,7 @@ fn stitch_stalled(
 
 /// Newton projection of a point onto a surface, warm-started: the local
 /// tool the tangential walker corrects with.
-fn nearest_on(
+pub(crate) fn nearest_on(
     surface: &SurfaceGeometry,
     seed: (f64, f64),
     target: Point,

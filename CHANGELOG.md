@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A curve's tangencies and lying stretches come back once.** Where no
+  closed form applies, `intersect_curve_surface` reported a tangency up to
+  eighteen times, and a curve lying in the surface (a cone's ruling, a
+  circle on a sphere) as hundreds of piercings. Piercings between which
+  the curve never leaves the surface are now one contact: a tangency once,
+  or a stretch in `lying`.
+
 - **A sphere on a torus's axis meets it in exact parallels.** The pair
   went to the marcher, and a sphere seated against the tube came back as
   two fitted pieces of its contact, a hundred times past their stated

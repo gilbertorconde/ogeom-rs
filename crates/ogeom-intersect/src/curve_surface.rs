@@ -19,8 +19,8 @@
 //! A line in a plane crosses it nowhere and everywhere. That is an overlap
 //! (the parameter range of the curve that lies in the surface), and it is a
 //! different answer from any list of points. Detected where the analytic
-//! forms can see it; the general path reports whatever isolated piercings its
-//! sampling resolves, and says so.
+//! forms can see it, and on the general path as a run of piercings between
+//! which the curve never leaves the surface.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve3d, Surface, SurfaceGeometry};
@@ -48,9 +48,9 @@ pub struct CurveSurfaceIntersection {
     pub crossings: Vec<Piercing>,
     /// Parameter ranges of the curve that lie *in* the surface.
     ///
-    /// Detected for the analytic cases: a line in a plane. The general path
-    /// cannot see lying-on and reports whatever isolated piercings its
-    /// sampling resolves.
+    /// Detected for the analytic cases (a line in a plane) and, on the
+    /// general path, as a run of piercings longer than the curve's sampling
+    /// step between which the curve never leaves the surface.
     pub lying: Vec<(f64, f64)>,
 }
 
@@ -395,10 +395,70 @@ fn general(
             .partial_cmp(&b.on_curve)
             .unwrap_or(core::cmp::Ordering::Equal)
     });
-    Ok(CurveSurfaceIntersection {
-        crossings,
+    Ok(gathered(curve, surface, crossings, options, tol))
+}
+
+/// Piercings gathered into the contacts they describe.
+///
+/// Newton lands a little apart each time it is started near a tangency,
+/// where the gap touches zero without crossing it, and all along a stretch
+/// of curve lying in the surface; a radius of rounding merges neither. So
+/// neighbouring piercings between which the curve never leaves the surface
+/// are one contact: a run shorter than the curve's sampling step is one
+/// tangency, kept once (where the gap is least), and a longer one is a
+/// stretch lying in the surface.
+fn gathered(
+    curve: &Curve,
+    surface: &SurfaceGeometry,
+    crossings: Vec<Piercing>,
+    options: CurveSurfaceOptions,
+    tol: Tolerances,
+) -> CurveSurfaceIntersection {
+    let stays_on = |x: &Piercing, y: &Piercing| -> bool {
+        (1..=3).all(|k| {
+            let t = x.on_curve + (y.on_curve - x.on_curve) * f64::from(k) / 4.0;
+            let Ok(p) = curve.point_at(t, tol) else {
+                return false;
+            };
+            // From either end: by a pole or an apex one side's chart
+            // turns too fast for the other's seed.
+            [x.on_surface, y.on_surface].into_iter().any(|seed| {
+                crate::march::nearest_on(surface, seed, p, tol)
+                    .is_some_and(|(_, q)| q.distance(p) <= options.gap)
+            })
+        })
+    };
+    let (lo, hi) = curve.domain();
+    #[allow(clippy::cast_precision_loss)]
+    let step = (hi - lo).abs() / options.samples.max(1) as f64;
+    let mut runs: Vec<Vec<Piercing>> = Vec::new();
+    for crossing in crossings {
+        match runs.last_mut() {
+            Some(run) if run.last().is_some_and(|last| stays_on(last, &crossing)) => {
+                run.push(crossing);
+            }
+            _ => runs.push(vec![crossing]),
+        }
+    }
+    let mut out = CurveSurfaceIntersection {
+        crossings: Vec::new(),
         lying: Vec::new(),
-    })
+    };
+    for run in runs {
+        let (Some(first), Some(last)) = (run.first(), run.last()) else {
+            continue;
+        };
+        if run.len() > 1 && (last.on_curve - first.on_curve).abs() >= step {
+            out.lying.push((first.on_curve, last.on_curve));
+        } else if let Some(best) = run.iter().min_by(|a, b| {
+            a.gap
+                .partial_cmp(&b.gap)
+                .unwrap_or(core::cmp::Ordering::Equal)
+        }) {
+            out.crossings.push(*best);
+        }
+    }
+    out
 }
 
 /// How many seed cells to lay along each direction of a surface: the
@@ -752,5 +812,41 @@ mod tests {
         ] {
             assert!(intersect_curve_surface(&ray, &ball, options, T).is_err());
         }
+    }
+
+    /// The general path (a torus has no closed form against a line) answers
+    /// each tangency once, and a curve lying in the surface as the stretch
+    /// it lies along rather than as hundreds of piercings.
+    #[test]
+    fn tangencies_come_back_once_and_lying_curves_as_stretches() {
+        use ogeom_geom::TorusSurface;
+        use ogeom_math::Torus;
+        let torus: SurfaceGeometry =
+            TorusSurface::new(Torus::new(Frame::WORLD, 60.0, 20.0, T).unwrap()).into();
+        let options = CurveSurfaceOptions::default();
+        // Along the tube's top: tangent at two points.
+        let top = segment(Point::new(-100.0, 0.0, 20.0), Point::new(100.0, 0.0, 20.0));
+        let found = intersect_curve_surface(&top, &torus, options, T).unwrap();
+        assert_eq!(found.crossings.len(), 2, "{:?}", found.crossings);
+        assert!(found.lying.is_empty());
+        // Touching the inner equator and crossing the outer twice.
+        let inner = segment(Point::new(-100.0, 40.0, 0.0), Point::new(100.0, 40.0, 0.0));
+        let found = intersect_curve_surface(&inner, &torus, options, T).unwrap();
+        assert_eq!(found.crossings.len(), 3, "{:?}", found.crossings);
+        // A parallel of the torus lies in it the whole way round.
+        let parallel: Curve = CircleCurve::new(
+            Circle::new(
+                Frame::new(Point::new(0.0, 0.0, 20.0), Direction::Z, Direction::X, T).unwrap(),
+                60.0,
+                T,
+            )
+            .unwrap(),
+        )
+        .into();
+        let found = intersect_curve_surface(&parallel, &torus, options, T).unwrap();
+        assert!(found.crossings.is_empty(), "{:?}", found.crossings);
+        assert_eq!(found.lying.len(), 1);
+        let (from, to) = found.lying[0];
+        assert!((to - from).abs() > 6.0, "{from} to {to}");
     }
 }
