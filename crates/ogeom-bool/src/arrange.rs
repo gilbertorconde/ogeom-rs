@@ -24,7 +24,7 @@ pub(crate) struct Strand<T> {
     /// Which exact sub-curve this stands for.
     pub tag: T,
     /// Whether this is a piece of the face's own boundary, as opposed to a
-    /// section. Boundary strands define the material; a dangling boundary is
+    /// section. Boundary strands define the material. A dangling boundary is
     /// an error where a dangling section is a pruning.
     pub boundary: bool,
 }
@@ -42,7 +42,7 @@ pub(crate) struct Traversal<T> {
 #[derive(Debug, Clone)]
 pub(crate) struct Piece<T> {
     /// The boundary as directed strand traversals: ring `[0]` is the outer
-    /// contour, counter-clockwise in parameter space; further rings are
+    /// contour, counter-clockwise in parameter space. Further rings are
     /// holes, clockwise.
     pub rings: Vec<Vec<Traversal<T>>>,
     /// The same rings as parameter-space polylines, in the same order.
@@ -84,7 +84,7 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
     // contract says strands meet nowhere else.
     let mut nodes: Vec<Point2> = Vec::new();
     // Nodes binned on a grid of the snap's own size, so an endpoint looks
-    // only at the nine bins about it; of the nodes in reach it takes the
+    // only at the nine bins about it. Of the nodes in reach it takes the
     // first made, the one a scan in order would have met first.
     let cell = |p: Point2| -> (i64, i64) {
         let at = |x: f64| -> i64 {
@@ -171,7 +171,7 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
     }
 
     // Prune dangling chains. A section that fails to separate material hangs
-    // by an end; a *boundary* strand doing so means the face's own boundary
+    // by an end. A *boundary* strand doing so means the face's own boundary
     // does not close, which no amount of pruning repairs.
     //
     // Peeled by a queue: a strand goes when either end is left on fewer
@@ -392,7 +392,7 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
     // The nodes each cycle passes through: a hole that shares one with a
     // positive cycle is the same component, not a hole in it. Asked of the
     // nodes, not of the polylines' nearness: a hole can pass within the weld
-    // of a loose boundary without meeting it, and read by distance it was
+    // of a loose boundary without meeting it, and read by distance it is
     // taken for part of the boundary and dropped.
     let nodes_of = |cycle: &[usize]| -> std::collections::BTreeSet<usize> {
         cycle.iter().map(|&d| tail(d)).collect()
@@ -431,7 +431,7 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
         let mut rings_outline = vec![line.clone()];
         for (hi, (hole_cycle, hole)) in negatives.iter().enumerate() {
             // A hole belongs to the smallest positive cycle strictly
-            // containing it; sharing a node means same component, not a hole.
+            // containing it. Sharing a node means same component, not a hole.
             if meet(&negative_nodes[hi], &positive_nodes[pi]) {
                 continue;
             }
@@ -508,11 +508,11 @@ fn area(ring: &[Point2]) -> f64 {
 /// Whether the ray from `p` toward `+x` crosses the segment `a`→`b`,
 /// decided by the predicate rather than by a computed intersection.
 ///
-/// The straddle test picks the segments the ray could cross; for those, the
+/// The straddle test picks the segments the ray could cross. For those, the
 /// crossing question is exactly "which side of the segment's line does `p`
 /// lie on", which is `orient2d`'s question. A point exactly on the segment's
-/// line reads as no crossing, matching the strict comparison this replaces;
-/// the callers probe interior sample points, never boundary ones.
+/// line reads as no crossing. The callers probe interior sample points,
+/// never boundary ones.
 fn ray_crosses_segment<P: Predicates>(a: Point2, b: Point2, p: Point2) -> bool {
     if (a.y > p.y) == (b.y > p.y) {
         return false;
@@ -677,7 +677,7 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
                 // height, so a solid touching it along that line is met by
                 // every one of these "different" probes at once. The quarter
                 // heights above exist for the same reason in the other
-                // direction; this is that rule, applied to the width.
+                // direction. This is that rule, applied to the width.
                 candidates.push((room * 0.5, Point2::new(width.mul_add(0.25, pair[0]), level)));
                 candidates.push((room * 0.5, Point2::new(width.mul_add(0.75, pair[0]), level)));
             }
@@ -696,7 +696,7 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
     // Nine are returned, so nine columns end the search, and nine of the
     // rest are all that can follow them: a face with hundreds of holes
     // offers hundreds of thousands of candidates, and comparing each with
-    // every column already chosen cost seconds for nine points.
+    // every column already chosen costs seconds for nine points.
     const PROBES: usize = 9;
     let mut chosen: Vec<(f64, Point2)> = Vec::new();
     let mut rest: Vec<(f64, Point2)> = Vec::new();
@@ -744,8 +744,7 @@ mod tests {
         assert!(inside(&ring, Point2::new(0.5 - eps, 0.5)));
         assert!(!inside(&ring, Point2::new(0.5 + eps, 0.5)));
         // A point exactly on the edge's line, straddle satisfied, reads as
-        // no crossing from either side: the convention the strict
-        // comparison had, now stated by `Sign::Zero`.
+        // no crossing from either side: `Sign::Zero` is no crossing.
         assert!(!ray_crosses_segment::<Exact>(
             Point2::new(1.0, 0.0),
             Point2::new(0.0, 1.0),
@@ -940,8 +939,9 @@ mod tests {
 
     #[test]
     fn curved_strands_walk_like_straight_ones() {
-        // A wavy section spanning the face: the angular sort works from the
-        // first polyline step, so curvature is invisible to the walk.
+        // A wavy section spanning the face: the angular sort reads where
+        // each strand leaves a circle about its node, so curvature is
+        // invisible to the walk.
         let strands = vec![
             Strand {
                 polyline: vec![Point2::new(0.0, 0.0), Point2::new(4.0, 0.0)],

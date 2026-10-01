@@ -2,21 +2,14 @@
 //!
 //! *Elsewhere:* `BOPDS`, `BOPAlgo`, `BOPTools`, `IntTools` and `BRepAlgoAPI`.
 //!
-//! The architectural insight worth preserving: **fuse, common, cut, section and
-//! split are one algorithm (general fuse) plus a selection predicate.** The
-//! pipeline is
-//!
-//! 1. a data structure of indexed sub-shapes, per-type interference lists
-//!    (V/V, V/E, V/F, E/E, E/F, F/F), pave blocks and common blocks;
-//! 2. a pave filler running in strictly increasing dimension, ending in face/face
-//!    intersection, section-edge construction and pcurve generation;
-//! 3. a builder that splits faces in 2D parametric space, unifies same-domain
-//!    faces, rebuilds solids from face sets, and repairs tolerances;
-//! 4. filters that select from the general-fuse result.
+//! Fuse, common, cut, section and split are one algorithm (general fuse)
+//! plus a selection predicate: every face of each solid is split by the
+//! other solid's faces, the pieces are classified against the other solid,
+//! and a filter keeps the pieces the operation wants.
 //!
 //! # One pipeline, any analytic face
 //!
-//! The pipeline runs on solids whose faces are any surface §7's intersectors
+//! The pipeline runs on solids whose faces are any surface the intersectors
 //! answer for (planes, cylinders, spheres, cones, tori), with the planar
 //! case as nothing more than the case where every curve is a line. Sections
 //! come from [`intersect_surfaces`](ogeom_intersect::intersect_surfaces), exact
@@ -27,14 +20,15 @@
 //! parameter space by an arrangement of *strands*: polyline scaffolding, each
 //! naming the exact sub-curve it stands for, so the combinatorics run on
 //! polylines and the rebuilt result is exact curves, pcurves attached both
-//! sides, sewn back into shared topology by the sewing whose flipped-carry
-//! bug this crate found and §9 fixed.
+//! sides, sewn back into shared topology.
 //!
 //! Pieces are classified against the other solid by the exact ray classifier
 //! and the filters select: fuse keeps what is outside, common what is inside,
 //! cut flips the tool's contribution. Same-domain contact (a piece lying
-//! *on* the other boundary) and tangential touching are refused with an
-//! error naming the deferred entry, never silently mishandled.
+//! *on* the other boundary) is resolved by whether the two solids' outward
+//! normals agree there, where the contact's edges can be imaged in the
+//! shared chart, and refused by name where they cannot. A tangential touch
+//! splits nothing and is carried as the contact curve it is.
 
 mod arrange;
 mod bins;
@@ -184,7 +178,7 @@ struct BoundaryEdge {
 /// a point in space.
 ///
 /// A sphere's poles and a cone's apex have no curve to split, but they are
-/// half the chart's boundary; leave them out and the face's outline does
+/// half the chart's boundary. Leave them out and the face's outline does
 /// not close, and nothing can be arranged inside it.
 struct PoleEdge {
     /// Where the pole sits in space.
@@ -204,7 +198,7 @@ struct GFace {
     /// slack for the ruled kinds whose rulings pin them to their boundary's
     /// hull, most of the diagonal for anything that can genuinely bulge, a
     /// dome past its equator. The poles join after. Gates the pair filter
-    /// and refusals; `OGEOM_BOOL_AUDIT_BOUNDS` audits its conservatism.
+    /// and refusals. `OGEOM_BOOL_AUDIT_BOUNDS` audits its conservatism.
     bound: ogeom_math::Aabb,
     /// The scale the marching chord derives from: deliberately *not* the
     /// filter box's diagonal, so the filter can tighten without silently
@@ -218,7 +212,7 @@ struct GFace {
     /// The face's boundary polylined in its chart, both seam columns, ends
     /// welded: the trim [`chart_point_within`] tests against. Built the first
     /// time a probe asks and kept, since the same face is asked about once
-    /// per piece that might lie on it; `None` where a pcurve would not
+    /// per piece that might lie on it. `None` where a pcurve would not
     /// polyline.
     outline: std::sync::OnceLock<Option<Vec<Vec<Point2>>>>,
     /// The face's trim sampled coarsely for folding a chart image inside
@@ -478,7 +472,7 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
                 // Both columns meet the rest of the boundary: the face
                 // wraps, and both belong.
                 (true, true) => {}
-                // One column is this face's; the far copy would dangle.
+                // One column is this face's. The far copy would dangle.
                 (true, false) => edges[i].other_side = None,
                 (false, true) => {
                     let e = &mut edges[i];
@@ -487,7 +481,7 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
                     e.other_side = None;
                 }
                 // Neither connects: leave both, and the arrangement's own
-                // refusal names the failure as it always did.
+                // refusal names the failure.
                 (false, false) => {}
             }
         }
@@ -497,10 +491,7 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
         // measured: how far the true edge sags from the 16-chord polyline,
         // read at each chord's midpoint and doubled for the sag's asymmetry.
         // A disc's rim bows out between its samples by more than a
-        // cylinder's cap pokes past a wall it all but meets. Nothing else
-        // uses the measurement, and the extra evaluations are priced on
-        // spline edges, so nothing else pays for it: any other face keeps
-        // the exact box it always had, and the exact admit set with it.
+        // cylinder's cap pokes past a wall it all but meets.
         let ruled = matches!(
             &surface,
             SurfaceGeometry::Plane(_) | SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_)
@@ -533,7 +524,7 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
         // A plane never bulges past its boundary. A ruled surface (cylinder,
         // cone) cannot either: every surface point lies on a straight ruling
         // whose ends are on the boundary, so the face sits inside its
-        // boundary's hull and only the boundary's own sampling slack is owed,
+        // boundary's hull and only the boundary's own sampling slack is needed,
         // the plane's as much as the ruled surface's.
         // Anything else may genuinely bulge (a dome past its equator) and
         // keeps most of its own diagonal as allowance. The audit behind
@@ -545,11 +536,10 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
             _ => bound.diagonal() * 0.75,
         };
         // The scale the marching chord is derived from, decoupled from the
-        // filter box. It reproduces exactly what the heuristic was tuned
-        // against (the diagonal as the blanket three-quarter bulge left it)
-        // because the chord is a tolerance, not a bound: tightening the
-        // filter must not silently tighten the marcher, which is exactly
-        // what a single box feeding both does.
+        // filter box: the diagonal with a blanket three-quarter bulge for
+        // every curved surface. The chord is a tolerance, not a bound, so
+        // tightening the filter must not silently tighten the marcher,
+        // which is what a single box feeding both does.
         let margin = tol.confusion() * 1e2;
         let chord_scale = match &surface {
             SurfaceGeometry::Plane(_) => bound.expanded(margin).diagonal(),
@@ -592,9 +582,9 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
 /// A periodic curve's own domain and an edge's range over it need not agree
 /// on which turn to count from: a sphere's seam runs its half meridian over
 /// `[-π/2, π/2]`, while every crossing found on it comes back in `[0, 2π)`.
-/// Left alone, a crossing at latitude `-0.96` arrives as `5.32`, sits outside
-/// the range, and is discarded, so the seam never splits where a section
-/// genuinely meets it, and the arrangement finds the chain hanging.
+/// Left alone, a crossing on the negative half arrives a turn on, sits
+/// outside the range, and is discarded, so the seam never splits where a
+/// section genuinely meets it, and the arrangement finds the chain hanging.
 fn onto_range(t: f64, curve: &Curve, range: (f64, f64), tol: Tolerances) -> f64 {
     if !curve.is_periodic() {
         return t;
@@ -616,7 +606,7 @@ fn onto_range(t: f64, curve: &Curve, range: (f64, f64), tol: Tolerances) -> f64 
 /// The part of an overlap that falls within the second curve's own bounded
 /// range, stated in the *first* curve's parameter.
 ///
-/// An overlap is between two curves; an edge covers only part of its curve.
+/// An overlap is between two curves. An edge covers only part of its curve.
 /// The correspondence the overlap states is affine, so the edge's range
 /// carries across as an interval, and on a periodic curve it carries across
 /// up to whole turns, so the shift that meets the overlap is the one meant.
@@ -669,7 +659,6 @@ fn rescale(t: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
     to.0 + (to.1 - to.0) * (t - from.0) / span
 }
 
-/// The pcurve's course over a sub-range of the *curve's* parameters.
 /// The stretches of `curve` over `crange` that lie along the edge `e`
 /// within the pair's honesty, as overlaps with the edge's own parameters at
 /// their ends: the measured twin of the intersector's closed-form
@@ -683,7 +672,7 @@ fn measured_overlaps(
 ) -> OgeomResult<Vec<ogeom_intersect::Overlap>> {
     const SAMPLES: usize = 48;
     // A fitted curve wobbles about the edge it runs along by far more than
-    // its stated budget, and is measured loosely; two exact curves are held
+    // its stated budget, and is measured loosely. Two exact curves are held
     // to their own tolerances, as an exact section is: an edge that parts
     // from another by a few microns over its length (a wall leaning off a
     // pad's side) runs beside it, not along it, and read as along it the
@@ -730,7 +719,7 @@ fn measured_overlaps(
         }
         let end = i;
         i += 1;
-        // Three samples along is a stretch; fewer is a crossing's blur.
+        // Three samples along is a stretch. Fewer is a crossing's blur.
         if end - start < 2 {
             continue;
         }
@@ -828,6 +817,7 @@ fn measured_overlaps(
     Ok(out)
 }
 
+/// The pcurve's course over a sub-range of the *curve's* parameters.
 fn pcurve_polyline(
     pcurve: &PlanarCurve,
     prange: (f64, f64),
@@ -840,7 +830,7 @@ fn pcurve_polyline(
     let hi = rescale(sub.1, crange, prange);
     // Enough samples that the first step approximates the tangent and the
     // scanline interior test has a faithful outline. Straight pcurves get
-    // two points; everything else a fixed fine sampling.
+    // two points. Everything else a fixed fine sampling.
     let mut count = match pcurve {
         PlanarCurve::Line(_) => 1,
         _ => {
@@ -902,17 +892,6 @@ struct SectionRec {
     tolerance: f64,
 }
 
-/// The parameter intervals of a contact curve over which *both* faces
-/// actually reach it.
-///
-/// Two surfaces touch along the whole of their contact; two faces touch
-/// along whatever part of it their trims both hold. That part is found by
-/// sampling (sixty-four stations along the curve, each asked of both
-/// charts) rather than by intersecting the contact with the boundary
-/// edges, because a contact meets those boundaries tangentially too and the
-/// crossing finder is the wrong instrument for it. The cost of sampling is
-/// the usual one: a stretch shorter than a station can be missed, and an
-/// endpoint is placed within a station of the truth.
 /// A face's welded chart outline, borrowed as the trim tests take it.
 fn outline_refs(face: &GFace, tol: Tolerances) -> OgeomResult<Vec<&[Point2]>> {
     let Some(lines) = face.outline(tol) else {
@@ -924,6 +903,17 @@ fn outline_refs(face: &GFace, tol: Tolerances) -> OgeomResult<Vec<&[Point2]>> {
     Ok(lines.iter().map(Vec::as_slice).collect())
 }
 
+/// The parameter intervals of a contact curve over which *both* faces
+/// actually reach it.
+///
+/// Two surfaces touch along the whole of their contact. Two faces touch
+/// along whatever part of it their trims both hold. That part is found by
+/// sampling (sixty-four stations along the curve, each asked of both
+/// charts) rather than by intersecting the contact with the boundary
+/// edges, because a contact meets those boundaries tangentially too and the
+/// crossing finder is the wrong instrument for it. The cost of sampling is
+/// the usual one: a stretch shorter than a station can be missed, and an
+/// endpoint is placed within a station of the truth.
 fn contact_intervals(
     fused: &GeneralFused,
     contact: &TangentRec,
@@ -946,7 +936,7 @@ fn contact_intervals(
             reason = "a station index, far below the mantissa"
         )]
         let t = span.mul_add(k as f64 / STATIONS as f64, domain.0);
-        // A periodic chart's parameters run out past its own window; the
+        // A periodic chart's parameters run out past its own window. The
         // trim test is only meaningful once they are folded back into it.
         let held = matches!(
             (
@@ -995,7 +985,6 @@ struct TangentRec {
     face_b: usize,
 }
 
-/// One kept sub-range of one section.
 /// A strand's tolerance as a junction may trust it: a fitted section whose
 /// trace failed reports a budget of metres, and a weld that believed it
 /// would join every vertex of the model. Nothing this pipeline fits is
@@ -1098,6 +1087,7 @@ fn cluster_paves(
     Ok(clusters)
 }
 
+/// One kept sub-range of one section.
 #[derive(Clone)]
 struct SectionPiece {
     section: usize,
@@ -1210,9 +1200,9 @@ fn projected_into_shared_chart(
 /// only what lies within it can split the face on that surface.
 ///
 /// The edge is sampled, and the samples whose foot on the surface is
-/// within `reach` and clear of the window's rim make one run; its ends
+/// within `reach` and clear of the window's rim make one run. Its ends
 /// are narrowed onto the rim by bisection, and the image fitted over the
-/// run alone. `Ok(None)` where no sample lands on the window; an error
+/// run alone. `Ok(None)` where no sample lands on the window. An error
 /// where the samples that do make more than one run, or the fit fails.
 fn clipped_into_chart(
     curve: &Curve,
@@ -1416,7 +1406,7 @@ enum Tag {
     /// lying in this face's own surface, splitting it.
     Contact { contact: usize, range: (f64, f64) },
     /// A sub-range of a pole of the face's own chart. The edge is a point in
-    /// space whatever the range says; the range is where it runs in the
+    /// space whatever the range says. The range is where it runs in the
     /// chart, which is the only place it has length.
     Pole { pole: usize, range: (f64, f64) },
 }
@@ -1441,16 +1431,6 @@ enum PieceState {
     OnOpposed,
 }
 
-/// Fold a param-space polyline into a periodic surface's chart, by one
-/// constant offset per axis.
-///
-/// A section's pcurve is *unwrapped* across a seam: continuous, and allowed
-/// to leave the stated domain, because that is what crossing a seam is. The
-/// arrangement lives in one chart, and the filler has already split every
-/// section at its seam crossings, so each strand spans at most one chart
-/// width and a single period shift per axis brings it home. The shift is
-/// chosen by the strand's midpoint, so endpoints sitting exactly on the
-/// chart's edge stay on whichever side the strand's body is.
 /// A point in a polyline's *interior*: its half-way member, except that a
 /// straight strand is two points and its half-way member is an endpoint,
 /// which may sit exactly on a seam or a trim. The chord midpoint is on the
@@ -1466,6 +1446,16 @@ fn interior_of(line: &[Point2]) -> Point2 {
     }
 }
 
+/// Fold a param-space polyline into a periodic surface's chart, by one
+/// constant offset per axis.
+///
+/// A section's pcurve is *unwrapped* across a seam: continuous, and allowed
+/// to leave the stated domain, because that is what crossing a seam is. The
+/// arrangement lives in one chart, and the filler has already split every
+/// section at its seam crossings, so each strand spans at most one chart
+/// width and a single period shift per axis brings it home. The shift is
+/// chosen by the strand's midpoint, so endpoints sitting exactly on the
+/// chart's edge stay on whichever side the strand's body is.
 fn fold_into_chart(line: &mut [Point2], surface: &SurfaceGeometry) {
     let ((ua, ub), (va, vb)) = surface.domain();
     if line.is_empty() {
@@ -1538,7 +1528,7 @@ fn fold_line_inside(line: &mut [Point2], surface: &SurfaceGeometry, trim: &[&[Po
     }
     // The strand's middle can sit level with the boundary's own vertices
     // (a contact running across the chart ends where it paved the trim),
-    // where the level ray passes through them; the leaning ray cannot.
+    // where the level ray passes through them. The leaning ray cannot.
     let mid = interior_of(line);
     if let Some((du, dv)) = period_shifts(surface)
         .into_iter()
@@ -1621,7 +1611,7 @@ fn fold_point_into_chart(p: Point2, surface: &SurfaceGeometry) -> Point2 {
 /// A sub-range of a closed curve, brought into its domain.
 ///
 /// The filler split every wrap interval at the domain end, so a piece fits
-/// within one period; the fold of its start may still land the end a hair
+/// within one period. The fold of its start may still land the end a hair
 /// past the domain, which clamps.
 fn folded_range(range: (f64, f64), domain: (f64, f64), closed: bool) -> (f64, f64) {
     if !closed {
@@ -1680,7 +1670,7 @@ fn fill(
     let mut contacts: Vec<ContactRec> = Vec::new();
     let mut tangents: Vec<TangentRec> = Vec::new();
     let mut same_pairs: Vec<(usize, usize)> = Vec::new();
-    // Marched sections are fitted; the fit is driven below the confusion
+    // Marched sections are fitted. The fit is driven below the confusion
     // tolerance so a fitted curve meets edges, vertices and the mesh welder
     // on the same terms as an exact one. The budget each still carries is
     // recorded per section and widens the crossing filters.
@@ -1748,11 +1738,13 @@ fn fill(
             match met {
                 SurfaceIntersection::Apart => {}
                 SurfaceIntersection::Same => {
-                    // Coincident surfaces offer no section curve; what splits
+                    // Coincident surfaces offer no section curve. What splits
                     // each face is the *other* face's boundary. Exact pcurve
                     // projection carries an edge into the other chart, and
-                    // planes always have one; a curved same-domain pair whose
-                    // edges do not project in closed form is still refused.
+                    // planes always have one. A curved pair's edge without
+                    // one is carried across coaxial charts, read from the
+                    // owner's own pcurve on the identical chart, or fitted
+                    // by projection, and refused where none of those holds.
                     out.same_pairs.push((ia, ib));
                     for (owner_from_a, owner, target_from_a, target, target_face) in
                         [(false, fb, true, fa, ia), (true, fa, false, fb, ib)]
@@ -1871,9 +1863,7 @@ fn fill(
                                 // the owner's own stored pcurve already is
                                 // the projection, attached at construction,
                                 // and it travels with its own window the way
-                                // every stored pcurve does. A chart that
-                                // merely coincides as a point set is still
-                                // refused.
+                                // every stored pcurve does.
                                 (None, None, _) if shared_chart => (e.pcurve.clone(), e.prange),
                                 (None, None, Some(carried)) => (carried, e.prange),
                                 // Two patches that coincide as point sets
@@ -2022,9 +2012,9 @@ fn fill(
                         }
                         // A section can be no longer than a turn round the
                         // faces it cuts or round its own extent: a marched
-                        // trace that wandered off beside a chart's pole came
-                        // back twenty-five times the circle it stood for,
-                        // faithfully fitted. That is no section, and is
+                        // trace that wanders off beside a chart's pole comes
+                        // back many times the length of the circle it stands
+                        // for, faithfully fitted. That is no section, and is
                         // refused by name. A whole loop of two surfaces
                         // meeting all the way round, faces cutting only an
                         // arc of it, is one turn round its own extent.
@@ -2064,7 +2054,7 @@ fn fill(
                                 // single chart image, because the longitude
                                 // jumps half a turn there. Each piece
                                 // *between* the poles does have one, and it
-                                // is exact. Split first; march only if that
+                                // is exact. Split first. March only if that
                                 // fails.
                                 if let Some(split) = split_at_degeneracies(&sc.curve, fa, fb, tol)?
                                 {
@@ -2089,8 +2079,8 @@ fn fill(
                                 // parameters: a plane's circle passing
                                 // beside a sphere chart's pole, whose image
                                 // swings fast but is a curve all the same.
-                                // Marching the pair, which follows, wandered
-                                // beside the pole in both ways there are.
+                                // Marching the pair instead wanders beside
+                                // the pole.
                                 let image = |surface: &SurfaceGeometry,
                                          have: Option<&PlanarCurve>|
                              -> OgeomResult<Option<(PlanarCurve, f64)>> {
@@ -2144,11 +2134,9 @@ fn fill(
                                     // thousand chords off its trace, and a
                                     // trace longer than a turn round the
                                     // faces. A plane's circle passing beside
-                                    // a sphere chart's pole marched both ways
-                                    // here (a section six tenths of a
-                                    // millimetre off, a section twenty-five
-                                    // laps long), and stated as data they
-                                    // welded the tool into a point.
+                                    // a sphere chart's pole marches both
+                                    // ways, and stated as data either welds
+                                    // the tool into a point.
                                     let budget =
                                         (options.marching.chord * 1e3).max(options.tolerance * 1e3);
                                     if fitted.fit_error > budget {
@@ -2250,7 +2238,7 @@ fn fill(
     type SectionWork = (Vec<(EdgeKey, Pave)>, Vec<SectionPiece>, Vec<Junction>);
     let mut hug_junctions: Vec<Junction> = Vec::new();
     // Each section's box, for skipping pairs of sections too far apart to
-    // cross; a curve whose box cannot be had stands unbounded and is never
+    // cross. A curve whose box cannot be had stands unbounded and is never
     // skipped.
     let section_bounds: Vec<Option<ogeom_math::Aabb>> = sections
         .iter()
@@ -2312,12 +2300,12 @@ fn fill(
                     // An edge within its own radius of the face (the boundary
                     // of a merged group of near-coplanar facets, a ruling of a
                     // fitted cone) stands off the surface the section lies on
-                    // by as much, and meets the section only that near; a near
+                    // by as much, and meets the section only that near. A near
                     // miss there is the crossing. On a plane that is always
                     // so. A curved face's fitted rail can pass that near a
                     // section without crossing it, running beside it, so on a
                     // curved face the edge's radius counts only for a line or
-                    // a conic meeting an exact section across it; a fitted
+                    // a conic meeting an exact section across it. A fitted
                     // section's own reach already stands for both.
                     let planar = matches!(own.surface, SurfaceGeometry::Plane(_));
                     let analytic = matches!(
@@ -2386,7 +2374,7 @@ fn fill(
                                     // there, the crossing lands a few
                                     // hundredths of a millimetre along the
                                     // rim from the corner, and paved there
-                                    // it split the rim into a sliver.
+                                    // it splits the rim into a sliver.
                                     on_b = end;
                                 }
                                 break;
@@ -2397,7 +2385,7 @@ fn fill(
                         // edge tangentially where the band is tangent to the
                         // drum, and the touch of two fitted curves at a
                         // shallow angle wanders along them by far more than
-                        // their honesty; but the section stops there because
+                        // their honesty. But the section stops there because
                         // it leaves its own face, and that stop is the
                         // junction: the crossing takes the end's parameter
                         // and the edge splits under the end itself.
@@ -2486,7 +2474,7 @@ fn fill(
                         hits.push((side, e.node, on_b, on_a, honesty));
                     }
                     for overlap in &found.overlaps {
-                        // The curves overlap; what is *boundary* is the stretch
+                        // The curves overlap. What is *boundary* is the stretch
                         // the edge actually covers. A sphere's seam and the far
                         // half of the same great circle lie on one curve, and
                         // reading the whole curve as boundary makes the meridian
@@ -2642,7 +2630,7 @@ fn fill(
                     // tangentially (a wall through a plane and the fillet
                     // tangent to it), their own crossing is ill-conditioned
                     // and lands off the edge, as far off as the two stay
-                    // within their doubt of each other; the edge's stop is
+                    // within their doubt of each other. The edge's stop is
                     // the one where they cannot be told apart up to it.
                     let shared = |edges: &[BoundaryEdge], node: EdgeKey| {
                         edges.iter().any(|e| e.node == node)
@@ -2809,7 +2797,7 @@ fn fill(
                 // A section that runs along a boundary edge of a face splits
                 // nothing *there*: the split already exists as boundary. The
                 // analytic overlap detection above catches the same-support
-                // cases; this catches the rest (a fitted section tracing a
+                // cases. This catches the rest (a fitted section tracing a
                 // boundary curve, a surface meeting another exactly at its own
                 // trim) by measurement rather than by recognising supports.
                 // The hug is asked before the trim: a section on a face's own
@@ -2850,8 +2838,8 @@ fn fill(
                         // to the edge's own honesty: a plane's ellipse across
                         // a band touches the band's rail tangentially, and
                         // the stretch within a tenth of a millimetre of the
-                        // rail is the section, not the rail; read as a hug
-                        // it left the cap's crescent unable to close.
+                        // rail is the section, not the rail. Read as a hug
+                        // it leaves the cap's crescent unable to close.
                         let floor = if section.tolerance > 0.0 {
                             tol.confusion() * 1e3
                         } else {
@@ -3129,7 +3117,7 @@ fn fill(
                             let foot = ogeom_algo::project_on_curve(&e.curve, at, 64, tol)?;
                             // A cut off the edge (past the stretch the
                             // section hugs, on a neighbouring edge) is no
-                            // split of it; stated as one with its distance
+                            // split of it. Stated as one with its distance
                             // for honesty it seeds a junction a feature wide.
                             if foot.distance > reach.max(tol.confusion() * 1e3) {
                                 continue;
@@ -3205,8 +3193,8 @@ fn fill(
     // split twice: the piece where its section's cuts fell, the edge where
     // every section that met it paved it, each worked out apart. A loop
     // hugging a rim is split at its middle, the rim wherever another
-    // section crossed it; the two faces then walk different pieces of one
-    // circle and never sew. Now that every pave is in, each such piece is
+    // section crossed it. The two faces then walk different pieces of one
+    // circle and never sew. Once every pave is in, each such piece is
     // cut wherever its edge is split, and the edge split wherever the piece
     // ends, twice over so a split one piece adds reaches the others.
     for _ in 0..2 {
@@ -3351,7 +3339,7 @@ fn fill(
         // A hug-admitted piece against every other piece kept on the same
         // face: a section admitted the ordinary way, inside both faces,
         // already speaks for the split, and the hug-admitted one yields
-        // to it; two hug-admitted ones yield to the longer.
+        // to it. Two hug-admitted ones yield to the longer.
         for &x in &hugged_onto {
             let px = &pieces[x];
             let Some((_, target_from_a, target_face)) = px.hug_key else {
@@ -3372,7 +3360,7 @@ fn fill(
                 }
                 let sx = &sections[px.section];
                 // A closed section's pieces are ranged past its domain end
-                // and folded on use; the distance helper samples the range
+                // and folded on use. The distance helper samples the range
                 // it is given, so it is given the folded one.
                 let stretch = |section: &SectionRec, range: (f64, f64)| -> (f64, f64) {
                     folded_range(range, section.curve.domain(), section.closed)
@@ -3420,7 +3408,7 @@ fn fill(
     // need no check: a contact is an owner edge lying in the target face,
     // which forces the boxes to overlap where the edge does.
     //
-    // This membership check is the audit's first tooth; the second is the
+    // This membership check is the audit's first tooth. The second is the
     // strict replay in general_fuse, which runs the *filtered* fill for the
     // production result and diffs this unfiltered one against it, so the
     // non-compositionality of paving (a section's kept intervals see the
@@ -3507,12 +3495,12 @@ fn fill(
             // (identically stacked boxes are all such spans), and duplicating
             // it as a strand would cancel the boundary it copies.
             // The intersector answers coincidence in closed form for the
-            // analytic pairs only; a fitted curve lying on an exact one
+            // analytic pairs only. A fitted curve lying on an exact one
             // (a marched sphere's rim on a wedge cap's arc) comes back as
             // crossings or nothing. That span is measured instead: the
             // stretch of the contact within the pair's honesty of the edge.
             // An analytic overlap survives only where it lands inside the
-            // contact's own window; a trimmed circle written a turn up
+            // contact's own window. A trimmed circle written a turn up
             // clips to nothing, and is then measured like a fitted one.
             let survives = |overlap: &ogeom_intersect::Overlap| -> bool {
                 let (lo, hi) = if overlap.on_a.0 <= overlap.on_a.1 {
@@ -3534,13 +3522,13 @@ fn fill(
                 };
                 carried > tol.parametric()
             };
-            // The closed-form overlap is between the two *curves*; the
+            // The closed-form overlap is between the two *curves*. The
             // stretch that is boundary is what the *edge* covers of it. A
             // box cut from an L-bracket flush with the bracket's wall puts
             // the box's wall-side edge on the line of the end face's own
             // edge along the wall, a length below it: read as along that
-            // edge over the whole curve, the strip's side was never paved
-            // and the end face kept the strip. Clipped through the
+            // edge over the whole curve, the strip's side is never paved
+            // and the end face keeps the strip. Clipped through the
             // overlap's own correspondence so the carry below stays affine.
             let clipped: Vec<ogeom_intersect::Overlap> = found
                 .overlaps
@@ -3583,11 +3571,11 @@ fn fill(
             for overlap in clipped.iter().chain(measured.iter()) {
                 let ordered = |r: (f64, f64)| if r.0 <= r.1 { r } else { (r.1, r.0) };
                 let (lo, hi) = ordered(overlap.on_a);
-                // The overlap is between the two *curves*; what interferes is
+                // The overlap is between the two *curves*. What interferes is
                 // the stretch both *edges* actually cover. A hole's arc and
                 // the disc that fills it lie on one circle, so the curves
                 // overlap over the whole turn while the arc covers three
-                // quarters of it), and paving at the turn's ends says nothing,
+                // quarters of it, and paving at the turn's ends says nothing,
                 // where paving at the arc's ends is exactly the split the
                 // other side needs to sew against.
                 // A periodic curve's overlap is answered on its base turn;
@@ -3655,7 +3643,7 @@ fn fill(
                 let periodic = e.curve.is_periodic();
                 for t in [tlo, thi] {
                     // A correspondence across a full turn can run the
-                    // parameter past the domain; the pave belongs where the
+                    // parameter past the domain. The pave belongs where the
                     // edge actually is.
                     let t = if periodic { fold(t, target_domain) } else { t };
                     if t > e.crange.0 + tol.parametric() && t < e.crange.1 - tol.parametric() {
@@ -3743,7 +3731,7 @@ fn split_at_degeneracies(
     stops.dedup_by(|a, b| (*a - *b).abs() <= tol.parametric());
 
     // A closed curve is cut into the arcs between successive stops, the last
-    // wrapping past the domain end; an open one keeps its own ends as stops.
+    // wrapping past the domain end. An open one keeps its own ends as stops.
     let closed = curve.is_closed(tol) || curve.is_periodic();
     let mut arcs: Vec<(f64, f64)> = Vec::new();
     if closed {
@@ -3952,7 +3940,7 @@ fn march_pair(
 /// extents.
 ///
 /// A conservative grid measurement: sample the smaller-extent surface and
-/// project each sample onto the other; apart means every sample clears a
+/// project each sample onto the other. Apart means every sample clears a
 /// margin scaled to the extents. Surfaces with unbounded or enormous stated
 /// domains (an imported plane's billion units) are never called apart this
 /// way, because a grid over them samples nothing.
@@ -3974,9 +3962,9 @@ fn surfaces_stand_apart(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerance
     let ((ua, ub), (va, vb)) = sample.domain();
     const GRID: usize = 9;
     // One seeding grid over the far surface, asked a hundred times: the
-    // same seeds and the same Newton the per-call projection would use, so
-    // the verdict is bit-identical, at hundreds of evaluations instead of
-    // tens of thousands for every genuine near-miss.
+    // same seeds and the same Newton a per-call projection uses, at
+    // hundreds of evaluations instead of tens of thousands for every
+    // genuine near-miss.
     let Ok(seeds) = ogeom_algo::SurfaceSeeds::over(against, 16, tol) else {
         return false;
     };
@@ -4012,7 +4000,7 @@ fn surfaces_stand_apart(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerance
 /// Asked only where the faces, or a fuzzy boolean's widened confusion,
 /// allow more than the default confusion distance's few. The smaller face
 /// is sampled on a grid over its chart, inside its
-/// trim; every sample inside the other face's trim must lie within the
+/// trim. Every sample inside the other face's trim must lie within the
 /// stated tolerance of the other's surface, and a few must, for the answer
 /// to mean anything. A pair that crosses fails at its first sample off the
 /// other.
@@ -4110,7 +4098,7 @@ fn partner_reach(face: &GFace, partner: &GFace, tol: Tolerances) -> f64 {
 /// A planar piece's rings resampled finely off their exact curves. The
 /// piece's own polylines bow inside a curved strand by more than the width
 /// of a sliver beside it, so a probe picked inside them can stand outside
-/// the piece; these rings hold it to a few microns. `None` for a face that
+/// the piece. These rings hold it to a few microns. `None` for a face that
 /// is not a plane, or a ring with a strand this cannot resample (a contact
 /// or a pole).
 fn fine_rings(
@@ -4275,8 +4263,8 @@ fn inside_plane_exactly(face: &GFace, p: Point2, tol: Tolerances) -> Option<bool
 /// surface.
 ///
 /// One-sided by construction: a pair that crosses puts interior samples well
-/// off the other, so it cannot pass, and a pair this cannot resolve marches
-/// exactly as it did before.
+/// off the other, so it cannot pass, and a pair this cannot resolve is
+/// marched.
 fn surfaces_coincide(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
@@ -4377,8 +4365,8 @@ struct GeneralFused {
 /// cluster of crossings inside its own stated radius: each face's section
 /// stops at its own crossing with the rail, and the crossings sit a few
 /// tenths of a micron to a few hundred apart along it. The rail's strands
-/// split once per cluster, at its first pave; the sections' ends still name
-/// their own crossings; and the two descriptions of the junction can sit
+/// split once per cluster, at its first pave. The sections' ends still name
+/// their own crossings. And the two descriptions of the junction can sit
 /// apart by the cluster's whole span, which no single strand's honesty
 /// covers. So the junction is one vertex standing at the first pave, owning
 /// the span the paves disagree by, and every strand end inside that span
@@ -4412,8 +4400,8 @@ fn merge_junctions(junctions: Vec<Junction>) -> Vec<Junction> {
     // Swept along x: two balls overlap only if their centres are within
     // both reaches along every axis, so each junction is asked only of those
     // ahead of it by no more than its reach and the widest. The groups are
-    // the same as asking every pair; a converted part carries tens of
-    // thousands of junctions, and every pair was seconds.
+    // the same as asking every pair, which for the tens of thousands of
+    // junctions a converted part carries costs seconds.
     let widest = junctions.iter().map(|j| j.reach).fold(0.0_f64, f64::max);
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&x, &y| junctions[x].at.x.total_cmp(&junctions[y].at.x));
@@ -4541,8 +4529,6 @@ fn outward_normal(face: &GFace, at: Point2, tol: Tolerances) -> OgeomResult<ogeo
     )
 }
 
-/// The chart point of a world point lying on a planar face, if it lands
-/// inside the face's trim.
 /// How far apart two of a face's edges may honestly end in its chart: the
 /// loosest edge's tolerance, or the hug width where an edge is a fitted
 /// section that once ran along another before parting from it.
@@ -4563,7 +4549,7 @@ fn outline_snap(face: &GFace, tol: Tolerances) -> f64 {
 /// nearest it where that end is nearest it too and the opening is small
 /// against the outline.
 ///
-/// The topology says a face's boundary closes; where two edges' pcurves end
+/// The topology says a face's boundary closes. Where two edges' pcurves end
 /// further apart in the chart than their tolerances reach (a fitted blend
 /// edge meeting a column on a narrow torus wedge, a pole's row with no edge
 /// along it), a ray cast for containment passes through the opening, counts
@@ -4712,7 +4698,7 @@ fn length_and_reach(curve: &Curve, tol: Tolerances) -> OgeomResult<(f64, f64)> {
 }
 
 /// Where a point sits in a face's chart, for a point up to `reach` off the
-/// face's surface and inside its trim; `None` elsewhere.
+/// face's surface and inside its trim. `None` elsewhere.
 fn chart_point_within(face: &GFace, p: Point, reach: f64, tol: Tolerances) -> Option<Point2> {
     // Closed-form inversion for the analytic surfaces: the same-domain
     // resolution asks "where does this probe sit in the partner's chart", and
@@ -4867,7 +4853,7 @@ fn fitted_image(
         }
         // A sphere's image is its frame's longitude and latitude, exact
         // where the projection's Newton cannot refine beside a pole and
-        // hands back a coarse scan sample instead; the reading is checked
+        // hands back a coarse scan sample instead. The reading is checked
         // round the trip and left to the projection if the chart's
         // convention is not this one.
         if let SurfaceGeometry::Sphere(ball) = surface {
@@ -5103,19 +5089,17 @@ fn mark_covered_coincidences(ga: &GSolid, gb: &GSolid, pieces: &mut [FacePiece],
     }
 }
 
-/// The debug dumps, read once rather than once per face.
-///
-/// `env::var` takes a process-wide lock and allocates; the strand dump asked
-/// it inside the per-face loop, where a large model asks thousands of times
-/// to be told no.
 /// The face-bound filter's audit: admit every pair, and name any the filter
 /// would have dropped that then produces a record. A conservative filter is
 /// a correctness precondition (a pair wrongly dropped is absorbed by the
-/// empty-result fallback today, and would be a wrong solid if that fallback
-/// ever came up empty too), and this is the check that makes the
-/// precondition falsifiable. Costs one branch per pair when off.
+/// empty-result fallback, and would be a wrong solid if that fallback came
+/// up empty too), and this is the check that makes the precondition
+/// falsifiable. Costs one branch per pair when off.
 static AUDIT_BOUNDS: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("OGEOM_BOOL_AUDIT_BOUNDS").is_ok());
+/// The debug dumps, read once rather than once per face: `env::var` takes a
+/// process-wide lock and allocates, and a large model asks thousands of
+/// times to be told no.
 static DEBUG_WIRE: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("OGEOM_DEBUG_WIRE").is_ok());
 static DEBUG_STRANDS: std::sync::LazyLock<bool> =
@@ -5124,13 +5108,13 @@ thread_local! {
     /// Whether a piece read on the other solid's boundary, with no coincident
     /// partner, is settled by asking just off it on both sides. Off on the
     /// first attempt, so a configuration the nested fallback answers exactly
-    /// keeps that answer; on for the second. Read once per boolean on the
+    /// keeps that answer. On for the second. Read once per boolean on the
     /// calling thread.
     static SETTLE_FROM_BOTH_SIDES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// An operation run once as it always was, and where it refuses, again in
-/// two steps. Where the refusal is a piece on the other solid's boundary
+/// An operation run once, and where it refuses, again in two steps. Where
+/// the refusal is a piece on the other solid's boundary
 /// with no coincident partner, once more with such pieces settled from both
 /// sides of them. And where it still refuses, at a confusion distance ten
 /// and then a hundred times wider: a sliver a few microns thick (two walls
@@ -5389,7 +5373,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     if *AUDIT_BOUNDS {
         // A pair only the unfiltered fill tries may refuse (a march beside a
         // pole the filter never sends it), which says nothing of the
-        // filter; the audit says so and compares nothing.
+        // filter. The audit says so and compares nothing.
         match fill(&ga, &gb, true, tol) {
             Ok((audit_sections, audit_pieces, ..)) => audit_fill_equivalence(
                 (&sections, &section_pieces),
@@ -5418,7 +5402,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         // How far apart the paves one junction stands for lie. A section
         // meeting the edge all but tangentially (its fitted end sliding
         // along it) paves it a few microns from where an exact section
-        // crosses; the first pave speaks for both, and the other's strand
+        // crosses. The first pave speaks for both, and the other's strand
         // must still reach it.
         // Each such junction where it stands in space and in this chart,
         // and how far its members reach: the strands ending at a member are
@@ -5506,7 +5490,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             } else {
                 sp.range
             };
-            // The pcurve shares the curve's parameterization; sampling
+            // The pcurve shares the curve's parameterization. Sampling
             // uses folded parameters for periodic curves.
             let fold_at = |t: f64| if section.closed { fold(t, domain) } else { t };
             let count = if !matches!(face.surface, SurfaceGeometry::Plane(_))
@@ -5524,7 +5508,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 line.push(pcurve.point_at(tf, tol)?);
             }
             // Folding the parameter can tear the sampled polyline at the
-            // period; unwrap it pointwise, then bring the whole strand
+            // period. Unwrap it pointwise, then bring the whole strand
             // into the chart with one shift.
             unwrap_polyline(&mut line, &face.surface, tol);
             {
@@ -5596,7 +5580,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             if contact.target_from_a != from_a || contact.target_face != fi {
                 continue;
             }
-            // The owner's paves split its edge; the contact strands split
+            // The owner's paves split its edge. The contact strands split
             // at the same parameters, so the sub-edges rebuilt from both
             // sides are the same edges and sew shared.
             let mut stops = vec![contact.crange.0];
@@ -5632,7 +5616,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     }
                     continue;
                 }
-                // Keep only what lies inside this face's trim; the rest
+                // Keep only what lies inside this face's trim. The rest
                 // of the owner's boundary splits nothing here.
                 let mut line = pcurve_polyline(
                     &contact.pcurve,
@@ -5670,11 +5654,11 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         }
 
         // A tolerant contact's chart image meets the boundary it paved
-        // only as closely as its own slop allows; the arrangement's node
+        // only as closely as its own slop allows. The arrangement's node
         // weld reaches that far on this face, or the strand dangles a
         // few microns from the junction it belongs to.
         // A fitted section that hugs one of this face's edges leaves it
-        // at the hug's far end by up to the hug's own width; its strand
+        // at the hug's far end by up to the hug's own width. Its strand
         // must still find the edge's node there.
         // A strand ending at another member of a junction than the one that
         // speaks for it ends where its curve all but runs along the edge (a
@@ -5684,7 +5668,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         // carried there it meets the edge's split exactly, so the face's
         // weld need not widen to the cluster's span, which would swallow a
         // sliver beside the edge whole. A fitted one wanders by more than
-        // that, and the weld widens for it as before.
+        // that, and the weld widens for it.
         let mut spread = 0.0_f64;
         for strand in strands.iter_mut().filter(|st| !st.boundary) {
             let exact = matches!(strand.tag, Tag::Section { section, .. }
@@ -5973,8 +5957,8 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     // The other solid's boundary, prepared once per side. It is asked once
     // per face piece, and what it costs to prepare (every face's trimming
     // rings, polylined) does not depend on the point being asked about.
-    // Rebuilt per question it dwarfed the question: 3.5 ms of preparation
-    // against 5.6 µs of ray casting.
+    // Rebuilt per question, the preparation costs hundreds of times the
+    // question.
     let boundaries = [
         ogeom_algo::SolidBoundary::of(model, &gb.solid, tol.confusion() * 1e4, tol)?,
         ogeom_algo::SolidBoundary::of(model, &ga.solid, tol.confusion() * 1e4, tol)?,
@@ -6014,10 +5998,6 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             };
             let mut pieces: Vec<FacePiece> = Vec::new();
             let mut junctions: Vec<Junction> = Vec::new();
-            // A piece some other chart already collapsed collapses here too:
-            // its ends become one node, every neighbour meeting them moves
-            // onto it, and one junction owns the span in space so the
-            // rebuilt vertices agree on every face.
             // A strand's ends in space, or none for a pole.
             let space_ends = |face: &GFace, tag: &Tag| -> OgeomResult<Option<(Point, Point)>> {
                 Ok(Some(match tag {
@@ -6066,6 +6046,10 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     });
                 }
             }
+            // A piece some other chart already collapsed collapses here too:
+            // its ends become one node, every neighbour meeting them moves
+            // onto it, and one junction owns the span in space so the
+            // rebuilt vertices agree on every face.
             let forced: Vec<usize> = strands
                 .iter()
                 .enumerate()
@@ -6199,7 +6183,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             for piece in split {
                 // Where a piece stands is asked at its interior probes in
                 // turn. The first is the roomiest, and usually the only one
-                // needed; the rest are for the piece that merely *touches*
+                // needed. The rest are for the piece that merely *touches*
                 // the other solid, whose roomiest probe can land on the
                 // contact and read neither in nor out.
                 //
@@ -6208,13 +6192,13 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 // carries, the partner *is* the answer, and getting there
                 // through the classifier means every ray grazing the shared
                 // face, its whole fan of directions exhausted, before it
-                // reports the On the partner list already knew. On a part
-                // whose bore is refilled by its own cylinder that is the
-                // difference between a tenth of a second and a minute.
+                // reports the On the partner list already knew, which on a
+                // part whose bore is refilled by its own cylinder is orders
+                // of magnitude slower.
                 //
                 // A probe every ray from which is ambiguous (one a hair off
                 // the other solid's faces, where they run along this one)
-                // says nothing either way, and the next is asked; only a
+                // says nothing either way, and the next is asked. Only a
                 // piece none of whose probes can be read is refused.
                 let partners = if from_a { &same_a[fi] } else { &same_b[fi] };
                 let mut chosen = None;
@@ -6339,11 +6323,11 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                             // a sliver within tolerance of it with no
                             // coincident partner. Just off the piece on both
                             // sides the other solid answers plainly: the
-                            // same on both, the piece is that; inside only
+                            // same on both, the piece is that. Inside only
                             // on the piece's own material side, the other's
                             // face runs along it backed the same way, the
                             // aligned contact, which the first solid's piece
-                            // speaks for; inside only beyond it, opposed.
+                            // speaks for. Inside only beyond it, opposed.
                             if settle {
                                 let off = own_normal * (tol.confusion() * 1e3);
                                 let side = |q: Point| {
@@ -6467,7 +6451,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     // Merged again: the arrangement adds junctions of its own (a strand
     // that collapsed with its partners becomes one) after the first
     // merge, and two of those at one triple point, each within the other's
-    // reach, welded the ends of one band to two vertices with a hairline
+    // reach, weld the ends of one band to two vertices with a hairline
     // between them.
     let junctions = merge_junctions(junctions);
     Ok(GeneralFused {
@@ -6576,13 +6560,13 @@ impl Rebuild<'_> {
         // And as far again as the vertex already owns: a vertex widened by
         // the descriptions it has taken in claims its point within that
         // tolerance, an end arriving within that and the weld of it may be
-        // the same point, and a boolean cannot show it is not. Three
-        // descriptions of one triple point, where a third band met two
-        // bands at an apex, arrived a tenth of a micron apart in turn, each
-        // within the last's reach and none within the first's, and the
-        // wire round the band's end had two vertices where it needed one.
-        // Every end taken in is remembered where it arrived, so the next
-        // end is measured from the description nearest it.
+        // the same point, and a boolean cannot show it is not. Several
+        // descriptions of one junction (three bands meeting at an apex)
+        // can arrive in turn, each within the last's reach and none within
+        // the first's, and measured from the first alone the wire round
+        // the band's end has two vertices where it needs one. So every end
+        // taken in is remembered where it arrived, and the next end is
+        // measured from the description nearest it.
         let floor = self.weld.max(tol.confusion() * 1e2);
         let near = self
             .vertex_bins
@@ -6603,7 +6587,7 @@ impl Rebuild<'_> {
             .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
         if let Some((gap, shape)) = found {
             // Two descriptions of one junction may disagree by a general
-            // crossing's residual; the vertex's tolerance is where that
+            // crossing's residual. The vertex's tolerance is where that
             // disagreement is recorded, so the sub-edges built against
             // either description still reach it honestly.
             let at = self
@@ -6735,7 +6719,7 @@ fn build_piece(
             // A piece whose two ends welded to one vertex and whose whole
             // length lies within the vertex's reach is that vertex's dust
             // (a rim's last fraction of a micron before a pole corner) and
-            // no edge of the wire; a closed edge on one vertex, a full
+            // no edge of the wire. A closed edge on one vertex, a full
             // circle, reaches far from it and stays.
             if !matches!(traversal.tag, Tag::Pole { .. })
                 && let Some((v0, v1)) = ogeom_algo::edge_vertices(rebuild.model, &built)?
@@ -6982,7 +6966,7 @@ fn build_sub_edge(
                 }
             }
             let model = &mut *rebuild.model;
-            // The stored image keeps its own window; the attached copy names
+            // The stored image keeps its own window. The attached copy names
             // the sub-window this piece covers under the proportional map.
             let sub_p = (
                 rescale(range.0, c.crange, c.prange),
@@ -7046,7 +7030,7 @@ fn build_sub_edge(
                 }
             }
             let model = &mut *rebuild.model;
-            // The section's pcurve is unwrapped across any seam; the face's
+            // The section's pcurve is unwrapped across any seam. The face's
             // triangulator lives in one chart, so the attached copy is folded
             // home by the same period shift the arrangement gave this
             // strand's polyline (to the side of the face's seam its trim is
@@ -7118,7 +7102,7 @@ fn pcurve_onto_ends(
         let foot = ogeom_algo::project_on_surface_from(surface, *target, (end.x, end.y), tol)?;
         let raw = Point2::new(foot.parameters.0, foot.parameters.1);
         // The foot may land a turn away from the end on a periodic chart,
-        // whether or not the surface's wrapper says it is periodic; a
+        // whether or not the surface's wrapper says it is periodic. A
         // shifted candidate counts where the surface agrees it is the foot.
         let turn = core::f64::consts::TAU;
         let mut shifts = period_shifts(surface);
@@ -7834,7 +7818,8 @@ pub fn make_periodic(
 /// into its geometry before the pipeline runs.
 ///
 /// A scale changes a surface's parameterization out from under its
-/// pcurves (the old refusal), so the bake is the whole-shape conversion:
+/// pcurves (the refusal the gather makes), so the bake is the whole-shape
+/// conversion:
 /// surfaces restated in world space, edges moved exactly, pcurves
 /// re-derived against the new parameterizations. Unscaled shapes pass
 /// through untouched.
@@ -7842,7 +7827,7 @@ fn baked_if_scaled(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomRe
     let mut restate = false;
     for face in ogeom_topo::explore(model, shape, Filter::OfType(ShapeType::Face))? {
         let placement = face.transform(model.datums())?;
-        // A scale changes lengths the melt compares; a reflection flips
+        // A scale changes lengths the melt compares. A reflection flips
         // every chart's natural normal against its face's flag. Either way
         // the operand is restated in world coordinates first, where both
         // effects are already folded in.
@@ -7869,7 +7854,7 @@ fn is_half_space(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<b
 /// A planar boundary becomes a box filling the material side, sized past
 /// the other argument's whole reach. The box's plane-side face is
 /// *coplanar with the boundary itself*, so the cut the caller sees is the
-/// exact plane; its far faces stand outside everything the other shape
+/// exact plane. Its far faces stand outside everything the other shape
 /// reaches and never appear in the result. A curved boundary is resolved
 /// by [`half_space::resolved`]. A shape that is not a half space passes
 /// through untouched.
@@ -7970,7 +7955,7 @@ fn fuse_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomR
     );
     let built = (|| {
         let fused = general_fuse(model, a, b, tol)?;
-        // Outward pieces bound the union; a same-domain pair with aligned
+        // Outward pieces bound the union. A same-domain pair with aligned
         // material keeps one copy, and one with opposed material is interior
         // to the union and vanishes.
         let kept: Vec<(usize, bool)> = fused
@@ -8028,7 +8013,7 @@ fn nested(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<O
         Ok(out)
     };
     // Every sample on the right side: `allowed` names the containments that
-    // fit. An ambiguous sample says nothing; a boundary most of whose
+    // fit. An ambiguous sample says nothing. A boundary most of whose
     // samples say nothing is not settled.
     let all_read = |points: &[Point],
                     boundary: &ogeom_algo::SolidBoundary,
@@ -8243,7 +8228,7 @@ fn or_nested(
     let Some(b_in_a) = nested(model, a, b, tol)? else {
         return Err(refusal);
     };
-    // For the union the container stands; for the intersection, what it
+    // For the union the container stands. For the intersection, what it
     // contains.
     let (kept, gone) = if b_in_a == outer { (a, b) } else { (b, a) };
     let mut history = ogeom_algo::History::new();
@@ -8273,7 +8258,7 @@ fn common_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeo
     );
     let built = (|| {
         let fused = general_fuse(model, a, b, tol)?;
-        // Inward pieces bound the intersection; an aligned same-domain pair
+        // Inward pieces bound the intersection. An aligned same-domain pair
         // bounds it too, once. An opposed pair encloses no volume between
         // them.
         let kept: Vec<(usize, bool)> = fused
@@ -8315,7 +8300,7 @@ fn cut_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     );
     let built = (|| {
         let fused = general_fuse(model, a, b, tol)?;
-        // The first argument's outward pieces stay; the tool's inward pieces
+        // The first argument's outward pieces stay. The tool's inward pieces
         // close the cut with their material side flipped. On the shared
         // surface: an opposed pair means the tool's material is entirely on
         // the other side, so the first argument's face survives untouched;
@@ -8661,11 +8646,11 @@ mod tests {
 
     #[test]
     fn drilling_a_box_leaves_a_cylindrical_hole() {
-        // The curved milestone: box minus a through-post cylinder. The box's
-        // top and bottom faces come back with *circular* holes, the hole's
-        // wall is the cylinder's own surface with its material side flipped,
-        // and the cylinder's seam and both section circles all had to split
-        // and sew for the shell to close.
+        // Box minus a through-post cylinder: the box's top and bottom faces
+        // come back with *circular* holes, the hole's wall is the cylinder's
+        // own surface with its material side flipped, and the cylinder's
+        // seam and both section circles all split and sew for the shell to
+        // close.
         let mut model = Model::new();
         let block = make_box(&mut model, Frame::WORLD, (4.0, 4.0, 1.0), T).unwrap();
         let drill = make_cylinder(

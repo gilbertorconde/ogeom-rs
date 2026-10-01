@@ -12,7 +12,7 @@ const MOST_CELLS: i64 = 512;
 /// Entry indices binned by the cell their point falls in.
 #[derive(Debug)]
 pub(crate) struct Bins {
-    /// The cell's width; a width that is not finite and positive bins
+    /// The cell's width. A width that is not finite and positive bins
     /// nothing, and every query answers `None`.
     cell: f64,
     bins: HashMap<(i64, i64, i64), Vec<usize>>,
@@ -31,7 +31,7 @@ impl Bins {
     }
 
     // A cast saturates, so a coordinate past `i64`'s cells shares the last
-    // one; the division rounds monotonically, so a point never bins below
+    // one. The division rounds monotonically, so a point never bins below
     // a lower one.
     #[allow(clippy::cast_possible_truncation, reason = "saturating")]
     fn key(&self, x: f64) -> i64 {

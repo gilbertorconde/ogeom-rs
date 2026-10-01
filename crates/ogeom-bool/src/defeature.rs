@@ -1,7 +1,7 @@
 //! Defeaturing by face removal: delete faces, close the wound from the
 //! neighbours' own surfaces.
 //!
-//! The input is a set of faces; what those faces *mean* is the caller's
+//! The input is a set of faces. What those faces *mean* is the caller's
 //! business, and the operation works on a solid whose history is gone.
 //! Three wounds exist, and they close differently.
 //!
@@ -36,7 +36,7 @@
 //! shape the rim had before the feature was cut.
 //!
 //! Several bands close together. Each removed band recovers its own
-//! crease; where two creases meet (two blends that met at a corner, or
+//! crease. Where two creases meet (two blends that met at a corner, or
 //! one blend's flush cap standing against another's band, the cap named
 //! with its band), the corner is where one crease pierces the other's
 //! side, and it is one vertex for both.
@@ -44,7 +44,7 @@
 //! Every rebuilt wire is spliced in the face's own order rather than
 //! re-chained from a bag of edges: a chart's seam stands in its wire
 //! twice, and a bag cannot say so. Where a gap leaves and arrives at one
-//! vertex, the rim it replaces says which way round it goes; nothing in
+//! vertex, the rim it replaces says which way round it goes. Nothing in
 //! the topology notices a face inside out along its own rim, and the
 //! mesher finds it as a boundary that will not close.
 //!
@@ -87,7 +87,7 @@ pub fn remove_faces(
         ogeom_bail!(Construction, "no faces named; there is nothing to remove");
     }
     // Separate features remove separately. Two bores named in one call are
-    // two wounds; classifying their ring edges together declares the two
+    // two wounds. Classifying their ring edges together declares the two
     // longest interrupted faces "the sides" across both and recovers a
     // nonsense edge. Faces group into features by shared edges, and each
     // feature runs the whole machinery on the previous feature's result,
@@ -202,7 +202,7 @@ pub fn remove_faces(
             interrupted.push(entry.face);
         } else {
             // Dropping the outer boundary would leave a face with nothing
-            // to stand on; replacing it, where the neighbours meet, is the
+            // to stand on. Replacing it, where the neighbours meet, is the
             // branch above.
             if entry.outer {
                 ogeom_bail!(
@@ -369,7 +369,7 @@ fn unwrapped(curve: &Curve, t: f64, about: f64) -> f64 {
 /// interrupted face rebuilt with the creases it borders.
 ///
 /// A band's sides are the two survivors it shares the most ring length
-/// with; a wedge's cap named alongside its band shares the band's sides
+/// with. A wedge's cap named alongside its band shares the band's sides
 /// and folds into the same crease. A crease's ends are the nearest
 /// piercings just past the removed faces' own extent along it, so a
 /// survivor the curve merely runs through far away is not mistaken for an
@@ -553,14 +553,14 @@ fn close_wound(
         // A tangent junction: two bands of one chain meeting flush (a
         // stadium's straight run into its semicircular end) share the
         // cross-section edge where they meet, and their creases touch
-        // there without either piercing the other's side; a wall the
+        // there without either piercing the other's side. A wall the
         // crease merely grazes yields no piercing, and a touch found as a
         // closest approach sits anywhere in a valley the width of the
         // slop. The shared edge says exactly where: the cross-section
         // stands in the plane normal to the rim at the junction, so the
         // junction is the foot of that edge on either crease: a
         // transversal projection, exact to the last bit. Taken only where
-        // the two creases are tangent there; bands meeting at a corner
+        // the two creases are tangent there. Bands meeting at a corner
         // place theirs by piercing.
         for face in removed_faces {
             if crease_of.get(&face.node()) != Some(&index) {
@@ -759,7 +759,7 @@ fn close_wound(
                 let v0 = vertex_at(model, p0);
                 let v1 = vertex_at(model, p1);
                 // Unwrapped about the anchor, a window can start before a
-                // periodic curve's domain; slid by whole turns to start
+                // periodic curve's domain. Slid by whole turns to start
                 // inside it, it is the same run, and may end a turn past
                 // the end as any run across the seam does.
                 let window = if crease.curve.is_periodic() {
@@ -900,7 +900,7 @@ fn rebuild_interrupted(
                 continue;
             }
             // A face that has already extended this edge decided for
-            // everyone; sewing rejoins on the shared node.
+            // everyone. Sewing rejoins on the shared node.
             let replaced = match extended.get(&edge.node()) {
                 Some(found) => Some(found.clone()),
                 None => {
@@ -916,7 +916,7 @@ fn rebuild_interrupted(
                     }
                 }
             };
-            // A replacement is built forward; the wire's own use decides
+            // A replacement is built forward. The wire's own use decides
             // which way it runs here.
             ring.push((
                 edge.clone(),
@@ -997,7 +997,7 @@ fn rebuild_interrupted(
                 };
                 let mut bridge = bridge_gap(model, &mut pool, &from, &to)?;
                 // A gap that leaves and arrives at one vertex could be
-                // walked either way round; the rim it replaces says which.
+                // walked either way round. The rim it replaces says which.
                 if from.node() == to.node() {
                     let mut was = Vec::new();
                     for (edge, _) in &ring[index..run_end] {
@@ -1172,7 +1172,7 @@ fn bridge_gap(
         let Some((index, backwards, next)) = found else {
             if here == to.node() {
                 // Nothing to bridge: the wire's own edges already meet
-                // where the rim used to run.
+                // where the rim stood.
                 return Ok(chain);
             }
             if std::env::var_os("OGEOM_DEBUG_DEFEATURE").is_some() {
@@ -1320,7 +1320,7 @@ fn extend_to_corner(
              sits on the wrong side of the edge"
         );
     }
-    // A segment's stored domain ends at its own vertices; the extension is
+    // A segment's stored domain ends at its own vertices. The extension is
     // the same line over a wider window.
     let geometry = match geometry {
         Curve::Line(line) => {

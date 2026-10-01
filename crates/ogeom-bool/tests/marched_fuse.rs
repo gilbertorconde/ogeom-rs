@@ -22,10 +22,10 @@ fn volume(model: &ogeom_topo::Model, shape: &ogeom_topo::Shape, chord: f64) -> f
 
 #[test]
 fn a_branch_standing_on_a_drum_fuses_through_the_marched_seam() {
-    // The seam winds the branch's whole chart and is metres of marching at
-    // the old fixed chord: the walk has to close within its budget, the
-    // fitted section has to meet the tolerance it states, and the branch
-    // wall has to split along it.
+    // The seam winds the branch's whole chart and is metres of marching:
+    // the walk has to close within its budget, the fitted section has to
+    // meet the tolerance it states, and the branch wall has to split along
+    // it.
     let mut model = ogeom_topo::Model::new();
     let main = Frame::new(
         Point::new(-20.0, 0.0, 0.0),

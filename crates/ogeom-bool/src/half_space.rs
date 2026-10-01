@@ -9,7 +9,7 @@
 //! A closed surface divides all of space. A drum, a cone, a ball or a
 //! ring is resolved into its own primitive where the material is inside
 //! it, and into a box with the primitive cut out where the material is
-//! outside; the primitive's surface is the face's own, so the result is
+//! outside. The primitive's surface is the face's own, so the result is
 //! exact on it. A drum and a cone are read as unbounded along their axes,
 //! whatever height their surfaces declare.
 //!
@@ -67,7 +67,7 @@ fn world_surface(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Su
 }
 
 /// A trimmed surface's basis, and an offset of a drum, ball or ring as the
-/// drum, ball or ring it is; `None` where there is nothing to see through.
+/// drum, ball or ring it is. `None` where there is nothing to see through.
 fn seen_through(surface: &SurfaceGeometry, tol: Tolerances) -> Option<SurfaceGeometry> {
     match surface {
         SurfaceGeometry::Trimmed(t) => {
