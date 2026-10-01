@@ -101,7 +101,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [x] **P7.** `lines_tangent_to_two_circles` misses the third tangent of touching circles. (fd3ffab)
 - [x] **P8.** Derivatives above the implemented order come back zero instead of refused (circle, ellipse, hyperbola, parabola, helix, 2D pad). (6fb58f6)
 - [x] **P9.** `Triangulation::welded` panics on a mesh with no normals. (e3e6fea)
-- [ ] **P10.** HLR `project` draws every outline edge twice.
+- [x] **P10.** HLR `project` draws every outline edge twice. (ee9c81a)
 - [x] **P11.** `make_wedge` doc says a zero top extent is refused; it is accepted. (e8e0b44)
 - [x] **P12.** `volume_properties` of a plain box takes seconds at 1000 mm and more at 3000 mm. (9ed3c96)
 - [x] **P13.** Minor tolerance units: `Quaternion::between` near antiparallel, `SurfacePoint::normal` compares a squared length to a length. (7042e86)
