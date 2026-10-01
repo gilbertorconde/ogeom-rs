@@ -68,6 +68,44 @@ the corner, the near-coplanar sliver band again. A slab drafted 0.005 or
 at 0.001 some counts refuse, the open edges being the pad's corner walls
 where they run along the corner's facets.
 
+**Mesh conversion.** `solid_from_mesh` rebuilds planes and the four
+canonical surfaces and leaves every other region faceted. `docs/SCOPE.md`
+admits the items below. Each is held to the converter's standard: verified
+against every sample, edges placed on both surfaces, facets as the fallback.
+
+- Revolution and extrusion surfaces. A smooth region whose triangles all
+  meet one axis (revolution) or are all parallel to one direction
+  (extrusion) is rebuilt on that surface, its profile fitted with
+  `fit_points` and verified. This covers turned parts with any profile and
+  prismatic parts with spline outlines, both faceted today. The surface
+  types exist; the work is finding the axis or the direction, and the
+  profile.
+- A fitted B-spline patch for a smooth region nothing else fits, tried
+  after the two above. `fit_surface_scattered` needs a height field, so a
+  region that folds over its principal plane needs a mesh parameterization
+  first, which the kernel does not have. The verification must sample
+  triangle interiors, not just corners, since a patch can wave between
+  them. Edges to neighbours go through the existing solve onto both
+  surfaces, which is where C3 in `docs/REVIEW.md` already lives: a patch
+  meeting a cylinder tangentially must not add to it.
+- The steps as an API: the regions found, merging two, splitting one along a
+  vertex path, fitting a chosen surface type to one (optionally with a fixed
+  axis or radius), then building the solid. The pieces exist inside
+  `solid_from_mesh`; the work is a stable surface for them and tests that
+  a corrected conversion builds what an automatic one would have.
+- The free boundary of an open mesh. A recognized region's edge with no
+  neighbour has no second surface to be solved onto. Check whether it comes
+  back as a polyline. If so, place it on the region's surface as a curve
+  (a circle on a cylinder's rim, a fitted spline otherwise), split where it
+  turns sharply.
+- Tests the converter lacks:
+  - a converted solid written to STEP, read back and checked;
+  - `offset_faces` and `move_faces` on a converted solid;
+  - a committed mesh corpus. Tessellating the STEP corpus and converting it
+    back gives meshes with a known answer (the original faces), without
+    licensing questions;
+  - `ogeom-cli` reading a mesh and writing the converted solid.
+
 **Speed, not correctness.**
 
 - A per-face state cache would let the boolean's build phase read a piece's

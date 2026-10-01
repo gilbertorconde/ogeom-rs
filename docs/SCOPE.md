@@ -39,7 +39,10 @@ What the reference kernel does: its modelling algorithms build a shape on a
 mesh (one planar face per triangle, with shared edges) and merge coplanar faces.
 
 What ogeom adds: it finds which regions of triangles lie on a cylinder, a
-cone, a sphere or a torus, and rebuilds those regions on those surfaces.
+cone, a sphere or a torus, and rebuilds those regions on those surfaces. A
+smooth region on none of them is rebuilt on a surface of revolution, an
+extrusion, or a fitted B-spline patch, in that order of preference, before it
+is left faceted.
 
 Why: the same reason the exchange module exists. Printers, slicers and model
 sites exchange meshes. A kernel that reads STL, OBJ and 3MF but can only display
@@ -53,8 +56,23 @@ Recognition meets the kernel's standard, not a heuristic's:
 
 This is what makes recognition a construction the kernel can stand behind.
 
-Still out of scope: fitting free-form surfaces to scans, and reading design
-intent back out of topology.
+A fitted patch is held to the same standard. Facets are exact to the mesh
+but nothing downstream can work with them: an offset, a shell or a fillet
+across a faceted region gives facets back, or fails. A patch verified within
+the tolerance (at the triangles' interiors as well as their corners) is the
+better result, and the facets remain the fallback when no patch verifies.
+The fitting itself is already in scope (`algo.fitting`); this only says
+where the converter uses it.
+
+The kernel also exposes the steps under the converter: the regions it found,
+merging and splitting them, fitting a chosen surface type to one, and
+building the solid from the result. An application can then correct an
+automatic conversion. The selection and the interface for it belong to the
+application.
+
+Still out of scope: scans. Noisy or incomplete point data needs denoising,
+hole filling and registration, which are a discipline of their own. Reading
+design intent back out of topology is out of scope too.
 
 ## Code that is out of scope: `outside/`
 
