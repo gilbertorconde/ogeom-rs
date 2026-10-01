@@ -736,23 +736,46 @@ pub(crate) fn interior_points_of(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2
 
 fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
     let mut heights: Vec<f64> = rings.iter().flatten().map(|p| p.y).collect();
-    heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+    heights.sort_unstable_by(f64::total_cmp);
     heights.dedup_by(|a, b| (*a - *b).abs() <= snap);
     // Widest gap first (that is the scanline with the most room), then the
-    // rest, so a caller that needs a second opinion has one.
-    let mut levels: Vec<(f64, f64)> = heights
+    // rest, so a caller that needs a second opinion has one; equal gaps
+    // lowest first. Drawn from a heap as the search asks, since it mostly
+    // stops after a few dozen of thousands.
+    let gaps: Vec<(f64, f64)> = heights
         .windows(2)
         .map(|pair| (pair[1] - pair[0], f64::midpoint(pair[0], pair[1])))
         .collect();
-    levels.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
-    // An unsplit chart (a whole sphere, pole to pole) has exactly one gap
-    // and therefore one scanline, straight across its middle. That is
-    // precisely where a solid seated on its equator touches it, so the widest
-    // gap also offers its quarter heights: same piece, different latitude.
-    if let Some(&(gap, level)) = levels.first() {
-        levels.insert(1, (gap, gap.mul_add(-0.25, level)));
-        levels.insert(2, (gap, gap.mul_add(0.25, level)));
-    }
+    // A gap is never negative, and a non-negative float's bits order as
+    // the float does.
+    let mut widest: std::collections::BinaryHeap<(u64, std::cmp::Reverse<usize>)> = gaps
+        .iter()
+        .enumerate()
+        .map(|(i, &(gap, _))| {
+            (
+                if gap > 0.0 { gap.to_bits() } else { 0 },
+                std::cmp::Reverse(i),
+            )
+        })
+        .collect();
+    let mut levels: Vec<(f64, f64)> = Vec::new();
+    let mut level_at = |index: usize, levels: &mut Vec<(f64, f64)>| -> Option<(f64, f64)> {
+        while levels.len() <= index {
+            let (_, std::cmp::Reverse(i)) = widest.pop()?;
+            levels.push(gaps[i]);
+            // An unsplit chart (a whole sphere, pole to pole) has exactly
+            // one gap and therefore one scanline, straight across its
+            // middle. That is precisely where a solid seated on its equator
+            // touches it, so the widest gap also offers its quarter heights:
+            // same piece, different latitude.
+            if levels.len() == 1 {
+                let (gap, level) = gaps[i];
+                levels.push((gap, gap.mul_add(-0.25, level)));
+                levels.push((gap, gap.mul_add(0.25, level)));
+            }
+        }
+        levels.get(index).copied()
+    };
 
     // Every inside interval of every scanline is a candidate, and they are
     // ranked by width. The first interval of the roomiest scanline is not
@@ -769,7 +792,10 @@ fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
     // change the choice, and the rest (on a face with hundreds of holes,
     // thousands of scanlines each crossing every segment) are not cast.
     let mut checked_at = 1;
-    for (index, &(gap, level)) in levels.iter().enumerate() {
+    for index in 0.. {
+        let Some((gap, level)) = level_at(index, &mut levels) else {
+            break;
+        };
         if index == checked_at {
             checked_at *= 2;
             let mut settled: Vec<(f64, Point2)> = candidates
@@ -866,12 +892,27 @@ impl Bands {
         let mut out = Self {
             low,
             height,
-            bands: vec![Vec::new(); count],
+            bands: Vec::new(),
         };
-        for (a, b) in segments {
-            let (from, to) = (out.band(a.y.min(b.y)), out.band(a.y.max(b.y)));
+        // Each band's share counted first, so every band is filled once
+        // into room already its own.
+        let spans: Vec<(usize, usize)> = segments
+            .iter()
+            .map(|(a, b)| {
+                let (lo, hi) = if a.y <= b.y { (a.y, b.y) } else { (b.y, a.y) };
+                (out.band_of(lo, count), out.band_of(hi, count))
+            })
+            .collect();
+        let mut sizes = vec![0_usize; count];
+        for &(from, to) in &spans {
+            for size in &mut sizes[from..=to] {
+                *size += 1;
+            }
+        }
+        out.bands = sizes.into_iter().map(Vec::with_capacity).collect();
+        for (segment, (from, to)) in segments.into_iter().zip(spans) {
             for band in &mut out.bands[from..=to] {
-                band.push((a, b));
+                band.push(segment);
             }
         }
         out
@@ -884,8 +925,19 @@ impl Bands {
         reason = "a band index"
     )]
     fn band(&self, y: f64) -> usize {
-        let at = ((y - self.low) / self.height).floor().max(0.0) as usize;
-        at.min(self.bands.len() - 1)
+        self.band_of(y, self.bands.len())
+    }
+
+    /// [`Bands::band`] among `count` bands.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a band index"
+    )]
+    fn band_of(&self, y: f64, count: usize) -> usize {
+        // Truncation is the floor of a height at or above the lowest.
+        let at = ((y - self.low) / self.height).max(0.0) as usize;
+        at.min(count - 1)
     }
 
     /// The segments that may straddle `level`, in the rings' order.
