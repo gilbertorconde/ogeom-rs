@@ -98,6 +98,27 @@ pub fn medial_axis(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<
         let local = frame.to_local(start);
         ring.push(Point2::new(local.x, local.y));
     }
+    // How far a corner stands off the line through its neighbours, signed
+    // to the left of the run: a distance, so it is held to a length.
+    let turn = |a: Point2, b: Point2, c: Point2| -> f64 {
+        let chord = (c - a).magnitude();
+        if chord <= tol.confusion() {
+            return f64::INFINITY;
+        }
+        (b - a).cross(c - a) / chord
+    };
+    // A corner on a straight run is no corner: its rider would never meet
+    // a neighbour, and the axis is the run's without it.
+    let mut i = 0;
+    while ring.len() > 3 && i < ring.len() {
+        let n = ring.len();
+        let (a, b, c) = (ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]);
+        if turn(a, b, c).abs() <= tol.confusion() && (b - a).dot(c - b) > 0.0 {
+            ring.remove(i);
+        } else {
+            i += 1;
+        }
+    }
     if ring.len() < 3 {
         ogeom_bail!(Construction, "a polygon needs three corners");
     }
@@ -109,8 +130,7 @@ pub fn medial_axis(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<
         let a = ring[i];
         let b = ring[(i + 1) % ring.len()];
         let c = ring[(i + 2) % ring.len()];
-        let cross = (b - a).cross(c - b);
-        if cross < -tol.confusion() {
+        if turn(a, b, c) < -tol.confusion() {
             ogeom_bail!(
                 Construction,
                 "a reflex corner bisects along parabolas; medial_graph \

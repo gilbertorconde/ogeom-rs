@@ -330,10 +330,13 @@ pub fn make_polyhedron(
                 "a polyhedron's face names a point it does not have"
             );
         }
-        let [a, b, c] = [points[ring[0]], points[ring[1]], points[ring[2]]];
-        let n = (b - a).cross(c - b);
+        let a = points[ring[0]];
+        let n = ring_normal(points, ring);
         let m = n.magnitude();
-        if !m.is_finite() || m <= tol.confusion() {
+        let perimeter: f64 = (0..ring.len())
+            .map(|i| points[ring[i]].distance(points[ring[(i + 1) % ring.len()]]))
+            .sum();
+        if !m.is_finite() || m <= tol.confusion() * perimeter {
             ogeom_bail!(Construction, "a polyhedron's face has no area");
         }
         let n = n / m;
@@ -390,6 +393,18 @@ pub fn make_polyhedron(
     let borrowed: Vec<&[usize]> = wound.iter().map(Vec::as_slice).collect();
     model.begin_operation();
     faceted_solid(model, points, &borrowed, tol)
+}
+
+/// A planar ring's normal by Newell's sum, twice its area long: the whole
+/// ring's winding, whatever its first corners (collinear, or a reflex turn
+/// of a concave ring) would say.
+fn ring_normal(points: &[Point], ring: &[usize]) -> ogeom_math::Vector {
+    let mut n = ogeom_math::Vector::ZERO;
+    let a = points[ring[0]];
+    for step in 1..ring.len() - 1 {
+        n += (points[ring[step]] - a).cross(points[ring[step + 1]] - a);
+    }
+    n
 }
 
 /// Build a solid from eight corners laid out like [`CORNERS`], with the six
@@ -498,9 +513,8 @@ fn box_like_named(
 ///
 /// The generalization `box_like` is a special case of: vertices per corner,
 /// one edge per corner pair shared by both faces that meet along it, each
-/// ring wound counter-clockwise seen from outside so its first three corners
-/// give the outward normal. Every ring must be planar; the collapsed wedges
-/// are, by construction.
+/// ring wound counter-clockwise seen from outside. Every ring must be
+/// planar; the collapsed wedges are, by construction.
 fn faceted_solid(
     model: &mut Model,
     points: &[Point],
@@ -516,11 +530,7 @@ fn faceted_solid(
     let mut faces = Vec::with_capacity(rings.len());
     for ring_corners in rings {
         let origin = points[ring_corners[0]];
-        let normal = Direction::from_cross(
-            points[ring_corners[1]] - origin,
-            points[ring_corners[2]] - points[ring_corners[1]],
-            tol,
-        )?;
+        let normal = Direction::new(ring_normal(points, ring_corners), tol)?;
         let x = Direction::new(points[ring_corners[1]] - origin, tol)?;
         let plane = Plane::new(Frame::new(origin, normal, x, tol)?);
         let surface = model
@@ -1877,6 +1887,42 @@ mod tests {
         let mut bent = points;
         bent[4] = Point::new(4.0, 0.5, 5.0);
         assert!(make_polyhedron(&mut model, &bent, &rings, T).is_err());
+    }
+
+    /// A square pyramid with a corner midway along one base edge: the base
+    /// and the front face both start on three collinear corners, and the
+    /// whole ring's winding says which way they face.
+    #[test]
+    fn a_polyhedron_face_may_start_on_a_straight_run() {
+        let mut model = Model::new();
+        let points = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(2.0, 0.0, 0.0),
+            Point::new(2.0, 2.0, 0.0),
+            Point::new(0.0, 2.0, 0.0),
+            Point::new(1.0, 1.0, 3.0),
+        ];
+        let rings = vec![
+            vec![0, 1, 2, 3, 4],
+            vec![0, 1, 2, 5],
+            vec![2, 3, 5],
+            vec![3, 4, 5],
+            vec![4, 0, 5],
+        ];
+        let solid = make_polyhedron(&mut model, &points, &rings, T)
+            .unwrap()
+            .shape;
+        assert!(crate::check(&model, &solid, T).unwrap().is_valid());
+        let expected = 4.0 * 3.0 / 3.0;
+        let measured =
+            crate::volume_properties(&model, &solid, ogeom_mesh::Deflection::default(), T)
+                .unwrap()
+                .mass;
+        assert!(
+            (measured - expected).abs() < expected * 1e-9,
+            "pyramid volume {measured} against {expected}"
+        );
     }
 
     #[test]

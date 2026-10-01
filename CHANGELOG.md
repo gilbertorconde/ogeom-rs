@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A straight run of corners is no obstacle to a face.**
+  `make_polyhedron` took a face's normal from its first three corners and
+  refused a ring starting on a straight run (and would have turned a
+  concave ring starting on a reflex corner inside out); the whole ring's
+  winding decides now. `medial_axis` refused a polygon with a corner on a
+  straight side; such a corner is dropped, and the axis is the polygon's
+  without it.
+
 - **Touching circles have their third tangent line.**
   `lines_tangent_to_two_circles` dropped a pair of tangents that had
   closed into one, so circles touching from outside got two lines instead

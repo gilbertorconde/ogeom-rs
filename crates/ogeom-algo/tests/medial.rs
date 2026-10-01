@@ -137,3 +137,25 @@ fn a_placed_faces_axis_moves_with_it() {
         assert!(motion.apply(*a).distance(*c) < 1e-9 && motion.apply(*b).distance(*d) < 1e-9);
     }
 }
+
+/// A corner standing on a straight side is no corner: the rectangle with a
+/// point midway along its floor has the rectangle's axis.
+#[test]
+fn a_straight_corner_leaves_the_axis_as_it_was() {
+    let mut model = Model::new();
+    let face = planar_face(
+        &mut model,
+        &[
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(20.0, 0.0, 0.0),
+            Point::new(20.0, 10.0, 0.0),
+            Point::new(0.0, 10.0, 0.0),
+        ],
+    );
+    let axis = ogeom_algo::medial_axis(&model, &face, T).unwrap();
+    assert_eq!(axis.segments.len(), 5, "{:?}", axis.segments);
+    let total: f64 = axis.segments.iter().map(|(a, b)| a.distance(*b)).sum();
+    let want = 4.0 * 5.0 * core::f64::consts::SQRT_2 + 10.0;
+    assert!((total - want).abs() < 1e-9, "{total} against {want}");
+}
