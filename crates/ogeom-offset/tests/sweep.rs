@@ -718,8 +718,9 @@ fn an_alignment_hint_untwists_a_loft() {
 
 #[test]
 fn a_ruled_loft_between_tilted_polygons_still_builds() {
-    // Non-parallel sections were never the refusal; only skew walls are.
-    // A top square turned about the x axis keeps every wall planar.
+    // A tilted section is not a skew wall: a top square turned about the x
+    // axis keeps every wall planar, so the loft is planes and needs no
+    // bilinear patch.
     let mut model = ogeom_topo::Model::new();
     let bottom = ogeom_algo::make_polygon(
         &mut model,
@@ -1283,8 +1284,7 @@ fn a_square_profile_along_a_closed_circle_is_a_pappus_ring() {
         .unwrap()
         .shape;
     // The profile: a 4x4 square at the spine's start (20, 0, 0), square to
-    // the spine's tangent (+Y), spanned by the plane normal X... the sweep
-    // wants the profile square to the start tangent.
+    // the spine's tangent (+Y), as the sweep wants.
     let corners = [
         Point::new(18.0, 0.0, -2.0),
         Point::new(22.0, 0.0, -2.0),
@@ -1382,12 +1382,11 @@ fn a_holed_profile_round_a_closed_spine_carries_its_tunnel() {
     );
 }
 
-/// A faceted ring round a wavy *non-planar* closed spine: the geometry
-/// that exposed two step-1 debts: rails must widen to their fits' honest
-/// error before the sew can join them, and a ring strip's outward is away
-/// from the spine's own line, not the loop's centroid. Volume is the
-/// generalized Pappus, section area times the spine's arc length, held
-/// loosely for the wave's second-order skew.
+/// A faceted ring round a wavy *non-planar* closed spine: the rails must
+/// widen to their fits' honest error before the sew can join them, and a
+/// ring strip's outward is away from the spine's own line, not the loop's
+/// centroid. Volume is the generalized Pappus, section area times the
+/// spine's arc length, held loosely for the wave's second-order skew.
 #[test]
 fn a_faceted_ring_round_a_wavy_spine_closes_and_measures() {
     let mut model = ogeom_topo::Model::new();
@@ -2080,9 +2079,9 @@ fn a_wire_sweeps_a_skew_corner_as_the_walls_of_its_face() {
 
 /// A skinned tube round a semicircle in each coordinate plane. In the XZ
 /// plane the centre of the whole skin lies inside the bend, beyond the
-/// inner wall, and a wall oriented against it came out inside out; each
-/// wall is oriented against its own section's centre, and all three tubes
-/// are the same solid.
+/// inner wall, so a wall oriented against it is inside out. Each wall is
+/// oriented against its own section's centre, and all three tubes are the
+/// same solid.
 #[test]
 fn a_skinned_tube_round_a_bend_is_the_right_way_out_in_every_plane() {
     use ogeom_math::Direction;
@@ -2118,8 +2117,8 @@ fn a_skinned_tube_round_a_bend_is_the_right_way_out_in_every_plane() {
 /// A square twisting a quarter turn along twenty units, lofted through
 /// sections spaced unevenly (steps of 0.625 and 0.3125 in turn, then a
 /// coarse half and a fine half): the same 80 as evenly spaced sections.
-/// A skin parameterized without regard to the spacing sagged between the
-/// sections, and measured a fifth light or refused to fit.
+/// A skin parameterized without regard to the spacing sags between the
+/// sections and measures a fifth light, or refuses to fit.
 #[test]
 fn unevenly_spaced_loft_sections_measure_the_twisted_prism() {
     let loft = |zs: &[f64]| {

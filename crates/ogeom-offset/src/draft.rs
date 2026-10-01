@@ -8,8 +8,8 @@
 //! same topology on new geometry.
 //!
 //! That last part is not this module's work. It is the offset's rebuild,
-//! which already puts a solid back together on moved supports; a draft
-//! hands it turned surfaces instead of translated ones.
+//! which puts a solid back together on moved supports. A draft hands it
+//! turned surfaces instead of translated ones.
 
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -25,10 +25,9 @@ use crate::shape::rebuilt;
 /// in the sense that leans the face inwards as it goes: a positive angle
 /// narrows the solid in the `pull` direction (the way the part leaves its
 /// mould), and a negative one widens it. Leaning inwards tilts the face's
-/// outward normal *towards* the pull, which is how the sense is picked,
-/// measured rather than assumed from a convention nobody can check. A face
-/// parallel to the neutral plane has no line to turn about and is refused
-/// by name, as is a face the rebuild cannot re-meet.
+/// outward normal *towards* the pull, which is how the sense is picked, by
+/// measurement. A face parallel to the neutral plane has no line to turn
+/// about and is refused by name, as is a face the rebuild cannot re-meet.
 ///
 /// # Errors
 ///

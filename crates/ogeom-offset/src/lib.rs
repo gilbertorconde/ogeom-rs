@@ -3,8 +3,6 @@
 //!
 //! *Elsewhere:* `BRepOffset`, `BRepOffsetAPI`, `BRepFill`, `BRepSweep`,
 //! `GeomFill`, `GeomPlate` and `BRepFeat`.
-//!
-//! The other perennially fragile area. Robustness here is a differentiator.
 
 pub mod draft;
 pub mod feature;

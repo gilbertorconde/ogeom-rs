@@ -10,11 +10,14 @@
 //! is a new wire with history: every input edge modified into its offset,
 //! every join generated from the corner it rounds.
 //!
-//! The honest limits, refused by name rather than mishandled: edges that are
-//! neither straight nor circular, offsets that consume an edge whole, arcs
-//! whose concentric offset would have no radius left, and results that
-//! self-intersect; the global arrangement that trims a collapsed offset into
-//! its valid loops is recorded in docs/PARITY.md (offset.wire-offset).
+//! The limits, refused by name: edges that are neither straight nor
+//! circular, a corner trim that consumes an offset edge whole, an arc whose
+//! concentric offset has no radius left, and an offset that consumes the
+//! wire whole. Where the raw offset crosses itself it is split there, and
+//! each sub-piece stands or falls by the offset's own definition (a point of
+//! the true offset boundary is a full offset from the source, a collapsed
+//! sliver is closer), so an offset the collapse severs into islands comes
+//! back as a compound of loops.
 
 use ogeom_algo::{
     Built, History, edge_vertices, find_plane, make_edge_between, make_vertex, make_wire,
@@ -120,14 +123,15 @@ fn at_angle(centre: Point2, radius: f64, angle: f64) -> Point2 {
 /// per `join`; overlaps are trimmed to the pieces' intersection. The history
 /// reports every input edge modified into its offset piece, every join
 /// generated from the corner vertex it replaces, and the wire modified into
-/// the result.
+/// the result. An offset the collapse severs into islands is a compound of
+/// wires.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the wire is
 /// open or not planar, an edge is neither straight nor circular, the offset
 /// consumes an edge or an arc's radius, an `Intersection` join is asked of a
-/// curved side, or the offset self-intersects.
+/// curved side, or the collapse consumes the wire whole.
 pub fn offset_wire(
     model: &mut Model,
     wire: &Shape,

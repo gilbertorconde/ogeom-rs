@@ -603,8 +603,9 @@ struct Prepared {
     rings: Option<[Shape; 2]>,
 }
 
-/// The rebuild under both entry points: every face offset by its own amount,
-/// the topology re-derived on the moved surfaces.
+/// Rebuild a solid's topology on moved supports: the rebuild under both
+/// entry points, every face offset by its own amount and the topology
+/// re-derived on the moved surfaces.
 ///
 /// One rule serves every element. A surface moves along its own normal (a
 /// plane translates, a revolution surface's radius grows), which makes the
@@ -616,7 +617,6 @@ struct Prepared {
 /// its old axes so parameters and orientations carry), and faces rebuild
 /// wire by wire with exact pcurves, or wholesale through
 /// [`make_revolution_band`] where a seam says the face wraps.
-/// Rebuild a solid's topology on moved supports.
 ///
 /// `amount_of` says how far each face travels along its own outward normal;
 /// `instead_of` may hand back a surface to use *in place* of that move,
@@ -1540,9 +1540,6 @@ pub(crate) fn rebuilt(
     Ok(Built::new(built.shape, history))
 }
 
-/// The displacement that puts a point back on every moved plane: solve
-/// `x · nᵢ = wᵢ` for the corner's normals, exactly for three, in the least
-/// squares sense beyond.
 /// Rebuild a seam for a face assembled wire by wire: the same iso-column on
 /// the moved surface, over the same rows.
 ///
@@ -2014,6 +2011,9 @@ fn rebuilt_lone_edge(
     Ok(Some(make_edge(model, moved, range, tol)?.shape))
 }
 
+/// The displacement that puts a point back on every moved plane: solve
+/// `x · nᵢ = wᵢ` for the corner's normals, exactly for three, in the least
+/// squares sense beyond.
 fn solve_corner(normals: &[Vector], amounts: &[f64], tol: Tolerances) -> OgeomResult<Vector> {
     // Normal equations: (NᵀN) x = Nᵀw, 3×3 whatever the seat count.
     let mut a = [[0.0_f64; 3]; 3];

@@ -8,8 +8,8 @@ use ogeom_topo::{Filter, ShapeType, explore};
 const T: Tolerances = Tolerances::millimetres();
 
 fn volume(model: &ogeom_topo::Model, shape: &ogeom_topo::Shape) -> f64 {
-    // Chord 1e-3 on purpose: the cone tessellation converges here, while
-    // finer chords currently mis-sample the slant.
+    // Chord 1e-3: where the cone tessellation converges. A finer chord
+    // mis-samples the slant, which this test does not pin.
     ogeom_algo::volume_properties(
         model,
         shape,

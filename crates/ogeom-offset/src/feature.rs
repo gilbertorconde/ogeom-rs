@@ -7,11 +7,9 @@
 //! what makes it a *feature* is that the operation says which it was and
 //! carries the profile through the history.
 //!
-//! Building them here rather than leaving them to the caller is not
-//! ceremony. It fixes the two things a caller gets wrong: which way the
-//! sweep should run so the tool reaches the material it is meant to reach,
-//! and what the history should say afterwards. Both are in one place, and
-//! the vocabulary is the one drawings use.
+//! Each operation fixes two things in one place: which way the sweep runs
+//! so the tool reaches the material it is meant to reach, and what the
+//! history says afterwards.
 
 use ogeom_algo::{Built, make_prism, make_revolution};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -87,9 +85,7 @@ pub fn feature_revol(
 /// A rib: a pad of stated thickness, swept from a profile face's own plane.
 ///
 /// The rib is the profile thickened along `normal` by `thickness` and fused
-/// on. It is `feature_prism` with the vector spelled for the case, and it
-/// exists because a rib is a thing a drawing names and a caller should not
-/// have to spell as a prism every time.
+/// on. It is `feature_prism` with the vector spelled for the case.
 ///
 /// # Errors
 ///

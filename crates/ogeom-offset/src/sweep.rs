@@ -6,9 +6,11 @@
 //! with a closed-form chart. A ruled loft between two parallel sections is
 //! walls of planes and cones: segment to segment gives the planar quad,
 //! coaxial circle to circle gives the frustum the cone primitive already
-//! builds. The sweeps that need *new* surfaces (free-form spines, skew
-//! ruled walls, smoothed skinning through many sections) are recorded in
-//! docs/PARITY.md (offset.sweeps), not approximated here.
+//! builds, and a skew ruled wall between two segments is the bilinear patch
+//! through its corners, exact. The sweeps that need surfaces with no closed
+//! form (a free-form spine, a smoothed skin through many sections) are
+//! fitted: the skin holds every section to a stated tolerance and refuses
+//! when it cannot reach it.
 
 use ogeom_algo::{
     Built, History, edge_vertices, make_cone, make_cylinder, make_edge, make_edge_between,
@@ -857,9 +859,9 @@ fn skinned_ring_strip(
     // both: the neighbour built it from its own fit, and this strip's
     // border is another fit of the same loop, so the edge widens to how
     // far it honestly sits from this surface. Two independent fits of one
-    // loop can disagree by more than either fit's own error, which is what
-    // the sew refused under a frame that turns fast, and one edge cannot
-    // disagree with itself.
+    // loop can disagree by more than either fit's own error (the sew refuses
+    // that gap under a frame that turns fast), and one edge cannot disagree
+    // with itself.
     let slack = fitted.error + tol.confusion();
     let rail_of = |model: &mut Model, i: usize, given: Option<&Shape>| -> OgeomResult<Shape> {
         let Some(edge) = given else {
@@ -3002,8 +3004,8 @@ fn rmf_normals(stations: &[SpineStation]) -> Vec<Vector> {
             // mirror symmetry is what lands both legs' sheared sections on
             // one ring. A planar corner's normal lies in the mitre plane
             // already and carries straight across; a skew corner's does
-            // not, and carrying it unchanged is what left the far leg's
-            // section off the mitre.
+            // not, and carried unchanged it leaves the far leg's section
+            // off the mitre.
             let bisector = t0 + t1;
             let m = bisector.magnitude();
             if m <= 1e-12 {
@@ -3125,7 +3127,7 @@ impl SpineWalk<'_> {
     }
 
     /// Where the generators of one profile point on the leg `before` and
-    /// the leg `after` a corner meet: Gauss–Newton on both parameters from
+    /// the leg `after` a corner meet: Gauss-Newton on both parameters from
     /// the corner itself, minimising the distance between the two.
     fn join(
         &self,
