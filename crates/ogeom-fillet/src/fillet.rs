@@ -217,11 +217,14 @@ pub fn fillet_edges(
     // past a face's far side, the band would cut through the face, and set
     // back into another edge's band, the two balls overlap.
     let mut contacts = Vec::with_capacity(edges.len());
-    for edge in edges {
-        contacts.push(crate::support::ball_fits(
-            model, solid, edge, radius, false, tol,
-        )?);
-    }
+    crate::support::keeping_face_meshes(|| -> OgeomResult<()> {
+        for edge in edges {
+            contacts.push(crate::support::ball_fits(
+                model, solid, edge, radius, false, tol,
+            )?);
+        }
+        Ok(())
+    })?;
     crate::support::bands_clear(model, edges, &contacts, tol)?;
     use ogeom_geom::Curve3d as _;
     // The vertices three or more of the chain's edges meet at: the corners
@@ -323,7 +326,49 @@ pub fn fillet_edges(
         Ok(out)
     };
     let mut blended_creases: Vec<Vec<ogeom_topo::TShapeId>> = Vec::new();
-    for (index, edge) in edges.iter().enumerate() {
+    // An edge sharing no vertex with another of the chain rounds alone:
+    // nothing it meets is rounded, and its blend is built from the faces
+    // as they stand. Pieces of one circle meet only each other, and the
+    // first rounds the whole turn. Such edges are rounded after the rest,
+    // their wedges set aside and applied together in one boolean each way.
+    let rims: Vec<Option<Circle>> = edges.iter().map(|e| rim_circle(model, e, tol)).collect();
+    let mut ends_of: Vec<Vec<Shape>> = Vec::with_capacity(edges.len());
+    for edge in edges {
+        let mut ends: Vec<Shape> = Vec::new();
+        if let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? {
+            for v in [a, b] {
+                if !ends.iter().any(|held| held.is_same(&v)) {
+                    ends.push(v);
+                }
+            }
+        }
+        ends_of.push(ends);
+    }
+    let alone: Vec<bool> = (0..edges.len())
+        .map(|i| {
+            (0..edges.len()).all(|j| {
+                j == i
+                    || !ends_of[i]
+                        .iter()
+                        .any(|v| ends_of[j].iter().any(|w| w.is_same(v)))
+                    || matches!((&rims[i], &rims[j]), (Some(a), Some(b)) if same_circle(a, b, tol))
+            })
+        })
+        .collect();
+    let order: Vec<usize> = (0..edges.len())
+        .filter(|&i| !alone[i])
+        .chain((0..edges.len()).filter(|&i| alone[i]))
+        .collect();
+    let mut set_aside: Vec<(Shape, crate::support::Wedge)> = Vec::new();
+    for index in order {
+        let edge = &edges[index];
+        // A piece of a circle whose whole turn a set-aside wedge rounds.
+        if alone[index] && on_round_rim(model, edge, &round_rims) {
+            if let Some(b) = built.as_mut() {
+                b.history.delete(edge);
+            }
+            continue;
+        }
         // The edge as it stands on the current solid: itself on the first
         // step, and afterwards whatever the earlier blends left of it: one
         // re-found stand-in, or the pieces a blend running out across it
@@ -383,8 +428,15 @@ pub fn fillet_edges(
                      the chain's members interfere"
                 );
             };
-            let mut step =
-                fillet_edge_meeting(model, &current, target, radius, Some((index, &mates)), tol)?;
+            let mut step = if alone[index] {
+                let (step, wedges) = crate::support::collecting_wedges(|| {
+                    fillet_edge_meeting(model, &current, target, radius, Some((index, &mates)), tol)
+                });
+                set_aside.extend(wedges.into_iter().map(|w| (edge.clone(), w)));
+                step?
+            } else {
+                fillet_edge_meeting(model, &current, target, radius, Some((index, &mates)), tol)?
+            };
             if let Some(rim) = rim_circle(model, target, tol) {
                 round_rims.push(rim);
             }
@@ -407,7 +459,77 @@ pub fn fillet_edges(
             });
         }
     }
-    Ok(built.unwrap_or_else(|| unreachable!()))
+    let built = built.unwrap_or_else(|| unreachable!());
+    apply_set_aside(model, built, set_aside, tol)
+}
+
+/// Apply the wedges a chain set aside: every cut one together and every
+/// fused one together, each blend's faces credited to its edge through the
+/// boolean's history. Wedges whose boxes meet are applied one by one, as a
+/// compound of lumps that overlap would count their overlap twice.
+fn apply_set_aside(
+    model: &mut Model,
+    mut built: Built,
+    set_aside: Vec<(Shape, crate::support::Wedge)>,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if set_aside.is_empty() {
+        return Ok(built);
+    }
+    let mut boxes = Vec::with_capacity(set_aside.len());
+    for (_, wedge) in &set_aside {
+        boxes.push(ogeom_algo::shape_bounds(model, &wedge.solid, tol)?);
+    }
+    let apart =
+        (0..boxes.len()).all(|i| (i + 1..boxes.len()).all(|j| !boxes[i].intersects(&boxes[j])));
+    let groups: Vec<Vec<usize>> = if apart {
+        let (fused, cut): (Vec<usize>, Vec<usize>) =
+            (0..set_aside.len()).partition(|&i| set_aside[i].1.additive);
+        [cut, fused].into_iter().filter(|g| !g.is_empty()).collect()
+    } else {
+        (0..set_aside.len()).map(|i| vec![i]).collect()
+    };
+    for group in groups {
+        let additive = set_aside[group[0]].1.additive;
+        let lumps: Vec<Shape> = group
+            .iter()
+            .map(|&i| set_aside[i].1.solid.clone())
+            .collect();
+        let tool = if let [one] = lumps.as_slice() {
+            one.clone()
+        } else {
+            model.add_compound(&lumps)?
+        };
+        let step = if additive {
+            ogeom_bool::fuse(model, &built.shape, &tool, tol)?
+        } else {
+            ogeom_bool::cut(model, &built.shape, &tool, tol)?
+        };
+        // The chain's history already says each edge is gone; the blends
+        // it generated are recorded on the composed history, where an edge
+        // consumed before this step still answers for them.
+        let mut history = built.history.then(&step.history);
+        let result = ogeom_topo::explore_unique(model, &step.shape, ShapeType::Face)?;
+        for &i in &group {
+            let (edge, wedge) = &set_aside[i];
+            for face in ogeom_topo::explore_unique(model, &wedge.solid, ShapeType::Face)? {
+                for image in step.history.trace(&face) {
+                    if result.iter().any(|f| f.is_same(image)) {
+                        history.generate(edge, image.clone());
+                    }
+                }
+            }
+            if let Some(rounded) = &wedge.edge {
+                history.delete(rounded);
+            }
+            history.delete(edge);
+        }
+        built = Built {
+            shape: step.shape.clone(),
+            history,
+        };
+    }
+    Ok(built)
 }
 
 /// Round a straight convex edge with a blend whose radius runs linearly from

@@ -53,9 +53,7 @@ use ogeom_topo::{
     EdgeRepr, Filter, Location, Model, NodeData, Shape, ShapeType, explore, explore_unique,
 };
 
-use arrange::{
-    Strand, Traversal, assemble as arrange_pieces, inside_many, inside_many_slanted, inside_rings,
-};
+use arrange::{Strand, Traversal, assemble as arrange_pieces, inside_many, inside_rings};
 
 /// Parameter-space chord for the polyline scaffolding.
 const SCAFFOLD_CHORD: f64 = 1e-3;
@@ -215,6 +213,9 @@ struct GFace {
     /// per piece that might lie on it. `None` where a pcurve would not
     /// polyline.
     outline: std::sync::OnceLock<Option<Vec<Vec<Point2>>>>,
+    /// [`GFace::outline`] with its lines' boxes, for asking whether many
+    /// points lie inside it.
+    outline_trim: std::sync::OnceLock<Option<arrange::Trim>>,
     /// The face's trim sampled coarsely for folding a chart image inside
     /// it: [`face_trim_lines`], kept for the face's every sub-edge.
     trim_lines: std::sync::OnceLock<Vec<Vec<Point2>>>,
@@ -223,6 +224,15 @@ struct GFace {
 impl GFace {
     fn trim_lines(&self, tol: Tolerances) -> &[Vec<Point2>] {
         self.trim_lines.get_or_init(|| face_trim_lines(self, tol))
+    }
+
+    fn outline_trim(&self, tol: Tolerances) -> Option<&arrange::Trim> {
+        self.outline_trim
+            .get_or_init(|| {
+                self.outline(tol)
+                    .map(|lines| arrange::Trim::new(lines.to_vec()))
+            })
+            .as_ref()
     }
 
     fn outline(&self, tol: Tolerances) -> Option<&[Vec<Point2>]> {
@@ -260,13 +270,33 @@ impl GFace {
 }
 
 /// An argument solid.
+/// Whether `shape` is a solid, or a compound of solids and nothing else:
+/// disjoint lumps (a fuse of parts that do not meet, a fillet's wedges
+/// taken together) bound their material as one solid's shells do.
+fn is_solid_or_lumps(model: &Model, shape: &Shape) -> OgeomResult<bool> {
+    Ok(match model.kind_of(shape)? {
+        ShapeType::Solid => true,
+        ShapeType::Compound => {
+            let parts = model.children_of(shape)?;
+            !parts.is_empty()
+                && parts
+                    .iter()
+                    .map(|part| model.kind_of(part))
+                    .collect::<OgeomResult<Vec<_>>>()?
+                    .iter()
+                    .all(|kind| *kind == ShapeType::Solid)
+        }
+        _ => false,
+    })
+}
+
 struct GSolid {
     solid: Shape,
     faces: Vec<GFace>,
 }
 
 fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> {
-    if model.kind_of(solid)? != ShapeType::Solid {
+    if !is_solid_or_lumps(model, solid)? {
         ogeom_bail!(Construction, "boolean arguments are solids");
     }
     for shell in explore_unique(model, solid, ShapeType::Shell)? {
@@ -565,6 +595,7 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
             tolerance,
             edges,
             outline: std::sync::OnceLock::new(),
+            outline_trim: std::sync::OnceLock::new(),
             trim_lines: std::sync::OnceLock::new(),
         });
     }
@@ -1521,7 +1552,7 @@ fn fold_inside(p: Point2, surface: &SurfaceGeometry, trim: &[&[Point2]]) -> Poin
 /// A strand folded into the chart as a whole, to the side of the face's
 /// seam its interior lies inside the trim on, as [`fold_inside`] does for
 /// a point.
-fn fold_line_inside(line: &mut [Point2], surface: &SurfaceGeometry, trim: &[&[Point2]]) {
+fn fold_line_inside(line: &mut [Point2], surface: &SurfaceGeometry, trim: &arrange::Trim) {
     fold_into_chart(line, surface);
     if line.is_empty() || trim.is_empty() {
         return;
@@ -1532,7 +1563,7 @@ fn fold_line_inside(line: &mut [Point2], surface: &SurfaceGeometry, trim: &[&[Po
     let mid = interior_of(line);
     if let Some((du, dv)) = period_shifts(surface)
         .into_iter()
-        .find(|(du, dv)| inside_many_slanted(trim, Point2::new(mid.x + du, mid.y + dv)))
+        .find(|(du, dv)| trim.inside_slanted(Point2::new(mid.x + du, mid.y + dv)))
     {
         for p in line.iter_mut() {
             p.x += du;
@@ -5009,7 +5040,7 @@ fn chart_point_within(face: &GFace, p: Point, reach: f64, tol: Tolerances) -> Op
     };
     let at = fold_point_into_chart(raw, &face.surface);
     let lines = face.outline(tol)?;
-    let borrowed: Vec<&[Point2]> = lines.iter().map(Vec::as_slice).collect();
+    let trim = face.outline_trim(tol)?;
     // The face's boundary polylines are unwrapped (a winding ring may span
     // any one period's window, not necessarily the chart's canonical one,
     // and a wire chained onto one branch of the chart may sit whole periods
@@ -5032,7 +5063,7 @@ fn chart_point_within(face: &GFace, p: Point, reach: f64, tol: Tolerances) -> Op
     }
     for shift in shifts {
         let shifted = Point2::new(at.x + shift, at.y);
-        if inside_many(&borrowed, shifted) {
+        if trim.inside(shifted) {
             return Some(shifted);
         }
     }
@@ -5720,6 +5751,9 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 }
             }
         }
+        // The trim the strands are folded inside: the boundary strands as
+        // they stand, with their boxes, drawn once for the face.
+        let mut section_trim: Option<arrange::Trim> = None;
         for sp in &section_pieces {
             let section = &sections[sp.section];
             let (belongs, pcurve) = if from_a {
@@ -5760,14 +5794,16 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             // period. Unwrap it pointwise, then bring the whole strand
             // into the chart with one shift.
             unwrap_polyline(&mut line, &face.surface, tol);
-            {
-                let trim: Vec<&[Point2]> = strands
-                    .iter()
-                    .filter(|st| st.boundary)
-                    .map(|st| st.polyline.as_slice())
-                    .collect();
-                fold_line_inside(&mut line, &face.surface, &trim);
-            }
+            let trim = section_trim.get_or_insert_with(|| {
+                arrange::Trim::new(
+                    strands
+                        .iter()
+                        .filter(|st| st.boundary)
+                        .map(|st| st.polyline.clone())
+                        .collect(),
+                )
+            });
+            fold_line_inside(&mut line, &face.surface, trim);
             strands.push(Strand {
                 polyline: line,
                 tag: Tag::Section {
@@ -5825,6 +5861,7 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 });
             }
         }
+        let mut contact_trim: Option<arrange::Trim> = None;
         for (ci, contact) in contacts.iter().enumerate() {
             if contact.target_from_a != from_a || contact.target_face != fi {
                 continue;
@@ -5876,14 +5913,18 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                     tol,
                 )?;
                 unwrap_polyline(&mut line, &face.surface, tol);
-                let boundary_lines: Vec<&[Point2]> = strands
-                    .iter()
-                    .filter(|st| st.boundary)
-                    .map(|st| st.polyline.as_slice())
-                    .collect();
-                fold_line_inside(&mut line, &face.surface, &boundary_lines);
+                let trim = contact_trim.get_or_insert_with(|| {
+                    arrange::Trim::new(
+                        strands
+                            .iter()
+                            .filter(|st| st.boundary)
+                            .map(|st| st.polyline.clone())
+                            .collect(),
+                    )
+                });
+                fold_line_inside(&mut line, &face.surface, trim);
                 let mid = interior_of(&line);
-                if !inside_many_slanted(&boundary_lines, mid) {
+                if !trim.inside_slanted(mid) {
                     if *DEBUG_STRANDS {
                         eprintln!(
                             "CONTACT c{ci} {sub:?} on fi={fi}: outside the trim at {mid:?}, skipped"

@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A boolean takes a compound of disjoint solids as an argument.** A
+  grid of drums cut from a plate at once is one boolean, not one per drum:
+  four hundred bores take 0.2 s where four hundred cuts took over a
+  minute.
+
 - **Refine around the faces an operation made.**
   `unify_same_domain_around` merges the given faces with the faces on
   their carriers they reach across shared edges, and leaves every other
@@ -39,6 +44,12 @@ bump may break the API and a patch bump may not.
   their rays can reach, and an edge rebuilt whole is built once for both
   its faces. A pocket into a plate with four hundred bores takes about
   100 ms, from 160.
+- **Edges of a chain that meet nothing round in one boolean.** Every
+  edge sharing no vertex with another of the chain (or only with pieces of
+  its own circle) has its blend built from the faces as they stand, and
+  the blends are applied together, one cut and one fuse. The checks before
+  the blends mesh each face once and pass over edge pairs whose boxes stand
+  apart. A hundred bore rims round in 1.4 s, from 10.
 
 ## [0.6.1] - 2026-10-01
 

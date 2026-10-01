@@ -651,6 +651,10 @@ pub(crate) fn credit_new_faces(
     edge: &Shape,
     built: &mut ogeom_algo::Built,
 ) -> OgeomResult<()> {
+    // A wedge set aside for later leaves the solid as it was: nothing new.
+    if built.shape.is_same(solid) {
+        return Ok(());
+    }
     let inputs = ogeom_topo::explore_unique(model, solid, ShapeType::Face)?;
     for face in ogeom_topo::explore_unique(model, &built.shape, ShapeType::Face)? {
         let reached = inputs.iter().any(|g| {
@@ -666,6 +670,41 @@ pub(crate) fn credit_new_faces(
         }
     }
     Ok(())
+}
+
+/// A blend's wedge set aside to be applied with others in one boolean.
+pub(crate) struct Wedge {
+    /// The wedge as a solid.
+    pub(crate) solid: Shape,
+    /// Fused on (a concave edge) rather than cut away.
+    pub(crate) additive: bool,
+    /// The edge it rounds.
+    pub(crate) edge: Option<Shape>,
+}
+
+thread_local! {
+    /// Where [`apply_wedge`] sets its wedge aside, while a caller collects.
+    static WEDGES: std::cell::RefCell<Option<Vec<Wedge>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with every wedge [`apply_wedge`] builds set aside rather than
+/// applied, and hand the wedges back with its result.
+pub(crate) fn collecting_wedges<T>(f: impl FnOnce() -> T) -> (T, Vec<Wedge>) {
+    struct Restore(Option<Vec<Wedge>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let outer = self.0.take();
+            WEDGES.with(|held| *held.borrow_mut() = outer);
+        }
+    }
+    let outer = WEDGES.with(|held| held.borrow_mut().replace(Vec::new()));
+    let restore = Restore(outer);
+    let out = f();
+    let wedges = WEDGES
+        .with(|held| held.borrow_mut().take())
+        .unwrap_or_default();
+    drop(restore);
+    (out, wedges)
 }
 
 /// Sew the wedge's faces, demand a closed shell, and apply it to the solid:
@@ -684,6 +723,22 @@ pub(crate) fn apply_wedge(
         ogeom_bail!(Construction, "the blend wedge did not close");
     }
     let wedge = ogeom_algo::make_solid(model, std::slice::from_ref(&sewn.shells[0]))?;
+    let set_aside = WEDGES.with(|held| {
+        held.borrow_mut().as_mut().map(|wedges| {
+            wedges.push(Wedge {
+                solid: wedge.shape.clone(),
+                additive,
+                edge: edge.cloned(),
+            });
+        })
+    });
+    if set_aside.is_some() {
+        let mut history = ogeom_algo::History::new();
+        if let Some(edge) = edge {
+            history.delete(edge);
+        }
+        return Ok(ogeom_algo::Built::new(solid.clone(), history));
+    }
     let mut result = if additive {
         ogeom_bool::fuse(model, solid, &wedge.shape, tol)?
     } else {
@@ -959,6 +1014,12 @@ pub(crate) fn bands_clear(
             .map(|(a, b)| vec![a.node(), b.node()])
             .unwrap_or_default())
     };
+    // Each edge's box: a contact further from it than a strip is further
+    // from the edge too, and the scan along the edge is not needed.
+    let mut boxes = Vec::with_capacity(edges.len());
+    for edge in edges {
+        boxes.push(ogeom_algo::shape_bounds(model, edge, tol)?);
+    }
     for (i, first) in edges.iter().enumerate() {
         for (j, second) in edges.iter().enumerate() {
             if i == j {
@@ -981,6 +1042,9 @@ pub(crate) fn bands_clear(
                 else {
                     continue;
                 };
+                if boxes[j].distance_to(contact.at) >= strip {
+                    continue;
+                }
                 let away = distance_to_edge(&curve, range, contact.at, tol)?;
                 if away < strip - tol.confusion() * 1e3 {
                     ogeom_bail!(
@@ -1027,6 +1091,60 @@ fn distance_to_edge(
     Ok(at(f64::midpoint(lo, hi))?.min(best.1))
 }
 
+thread_local! {
+    /// Face meshes kept while a caller checks many edges against one
+    /// unchanging solid: a face with a hundred holes is otherwise meshed
+    /// once per edge on it.
+    static FACE_MESHES: std::cell::RefCell<Option<std::collections::HashMap<ogeom_topo::SameKey, std::rc::Rc<ogeom_topo::Triangulation>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with face meshes kept from one call of [`chart_holds`] to the
+/// next. The solid must not change while it runs.
+pub(crate) fn keeping_face_meshes<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(
+        Option<
+            std::collections::HashMap<ogeom_topo::SameKey, std::rc::Rc<ogeom_topo::Triangulation>>,
+        >,
+    );
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let outer = self.0.take();
+            FACE_MESHES.with(|held| *held.borrow_mut() = outer);
+        }
+    }
+    let outer =
+        FACE_MESHES.with(|held| held.borrow_mut().replace(std::collections::HashMap::new()));
+    let _restore = Restore(outer);
+    f()
+}
+
+/// A face's mesh at the default deflection, kept where a caller asked.
+fn face_mesh(
+    model: &Model,
+    face: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<std::rc::Rc<ogeom_topo::Triangulation>> {
+    let key = ogeom_topo::SameKey(face.clone());
+    if let Some(mesh) =
+        FACE_MESHES.with(|held| held.borrow().as_ref().and_then(|m| m.get(&key).cloned()))
+    {
+        return Ok(mesh);
+    }
+    let mesh = std::rc::Rc::new(ogeom_mesh::triangulate_face(
+        model,
+        face,
+        ogeom_mesh::Deflection::default(),
+        tol,
+    )?);
+    FACE_MESHES.with(|held| {
+        if let Some(meshes) = held.borrow_mut().as_mut() {
+            meshes.insert(key, std::rc::Rc::clone(&mesh));
+        }
+    });
+    Ok(mesh)
+}
+
 /// Whether a chart point lies in a face's region: inside one of the
 /// triangles its own mesh lays over its chart, or on one's side.
 fn chart_holds(
@@ -1035,7 +1153,7 @@ fn chart_holds(
     at: ogeom_math::Point2,
     tol: Tolerances,
 ) -> OgeomResult<bool> {
-    let mesh = ogeom_mesh::triangulate_face(model, face, ogeom_mesh::Deflection::default(), tol)?;
+    let mesh = face_mesh(model, face, tol)?;
     let chart = |i: u32| {
         let (u, v) = mesh.parameters[i as usize];
         ogeom_math::Point2::new(u, v)

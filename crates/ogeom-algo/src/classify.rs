@@ -410,7 +410,14 @@ impl SolidBoundary {
         tol: Tolerances,
     ) -> OgeomResult<Self> {
         let kind = model.kind_of(solid)?;
-        if !matches!(kind, ShapeType::Solid | ShapeType::Shell) {
+        // A compound of solids bounds their union: each lump's shells are
+        // boundary, and a ray counts the crossings of all of them.
+        let lumps = kind == ShapeType::Compound
+            && model
+                .children_of(solid)?
+                .iter()
+                .all(|part| model.kind_of(part).is_ok_and(|k| k == ShapeType::Solid));
+        if !matches!(kind, ShapeType::Solid | ShapeType::Shell) && !lumps {
             ogeom_bail!(Construction, "expected a solid or a shell, got {kind:?}");
         }
         let shells = if kind == ShapeType::Shell {

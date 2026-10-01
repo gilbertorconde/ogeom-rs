@@ -540,13 +540,14 @@ fn ray_crosses_segment<P: Predicates>(a: Point2, b: Point2, p: Point2) -> bool {
     }
 }
 
+/// The leaning ray's slope. A tangent chain puts whole strands exactly
+/// along an axis-aligned junction line, where a horizontal ray grazes
+/// corner after corner inside rounding noise and counts them at random. No
+/// real boundary runs along this slope.
+const SLANT: f64 = 0.618_033_988_749_894_9;
+
 /// As [`ray_crosses_segment`], with the ray leaning off the axes.
 fn slanted_ray_crosses_segment<P: Predicates>(a: Point2, b: Point2, p: Point2) -> bool {
-    // A tangent chain puts whole strands exactly along an axis-aligned
-    // junction line, where a horizontal ray grazes corner after corner
-    // inside rounding noise and counts them at random. No real boundary
-    // runs along this slope.
-    const SLANT: f64 = 0.618_033_988_749_894_9;
     let shifted = [p.x + 1.0, p.y + SLANT];
     let above = |q: Point2| P::orient2d([p.x, p.y], shifted, [q.x, q.y]) == Sign::Positive;
     if above(a) == above(b) {
@@ -558,21 +559,6 @@ fn slanted_ray_crosses_segment<P: Predicates>(a: Point2, b: Point2, p: Point2) -
     } else {
         side == Sign::Negative
     }
-}
-
-/// Even-odd containment with the leaning ray: the entry for probes that may
-/// legitimately sit along an axis-aligned line of the boundary (a contact
-/// strand down a tangent junction), where the horizontal ray is degenerate.
-pub(crate) fn inside_many_slanted(lines: &[&[Point2]], p: Point2) -> bool {
-    let mut inside = false;
-    for line in lines {
-        for w in line.windows(2) {
-            if slanted_ray_crosses_segment::<Exact>(w[0], w[1], p) {
-                inside = !inside;
-            }
-        }
-    }
-    inside
 }
 
 /// Even-odd containment of a point in one closed polyline.
@@ -599,6 +585,80 @@ fn inside(ring: &[Point2], p: Point2) -> bool {
 /// be closed one by one.
 pub(crate) fn inside_rings(rings: &[Vec<Point2>], p: Point2) -> bool {
     rings.iter().fold(false, |acc, ring| acc != inside(ring, p))
+}
+
+/// Open polylines that jointly close, held with their boxes, for asking
+/// [`inside_many`] and its leaning twin of many points: each ray
+/// passes over the polylines whose box it cannot meet.
+pub(crate) struct Trim {
+    lines: Vec<Vec<Point2>>,
+    /// `(low x, high x, low y, high y)` of each line.
+    boxes: Vec<(f64, f64, f64, f64)>,
+}
+
+impl Trim {
+    pub(crate) fn new(lines: Vec<Vec<Point2>>) -> Self {
+        let boxes = lines
+            .iter()
+            .map(|line| {
+                line.iter().fold(
+                    (
+                        f64::INFINITY,
+                        f64::NEG_INFINITY,
+                        f64::INFINITY,
+                        f64::NEG_INFINITY,
+                    ),
+                    |(lx, hx, ly, hy), q| (lx.min(q.x), hx.max(q.x), ly.min(q.y), hy.max(q.y)),
+                )
+            })
+            .collect();
+        Self { lines, boxes }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+
+    /// [`inside_many`]: a line wholly above or below the point, or wholly
+    /// left of it, is not crossed.
+    pub(crate) fn inside(&self, p: Point2) -> bool {
+        let mut inside = false;
+        for (line, &(_, hx, ly, hy)) in self.lines.iter().zip(&self.boxes) {
+            if ly > p.y || hy <= p.y || hx < p.x {
+                continue;
+            }
+            for w in line.windows(2) {
+                if ray_crosses_segment::<Exact>(w[0], w[1], p) {
+                    inside = !inside;
+                }
+            }
+        }
+        inside
+    }
+
+    /// [`inside_many`] along a leaning ray: a line whose box stands wholly on one side
+    /// of the leaning ray's line, by the same exact test the crossing
+    /// asks of each end, is not crossed.
+    pub(crate) fn inside_slanted(&self, p: Point2) -> bool {
+        let shifted = [p.x + 1.0, p.y + SLANT];
+        let above = |x: f64, y: f64| Exact::orient2d([p.x, p.y], shifted, [x, y]) == Sign::Positive;
+        let mut inside = false;
+        for (line, &(lx, hx, ly, hy)) in self.lines.iter().zip(&self.boxes) {
+            if lx.partial_cmp(&hx).is_none_or(core::cmp::Ordering::is_gt) {
+                continue;
+            }
+            let corners = [above(lx, ly), above(lx, hy), above(hx, ly), above(hx, hy)];
+            if corners.iter().all(|&c| c == corners[0]) {
+                continue;
+            }
+            for w in line.windows(2) {
+                if slanted_ray_crosses_segment::<Exact>(w[0], w[1], p) {
+                    inside = !inside;
+                }
+            }
+        }
+        inside
+    }
 }
 
 /// Polylines with their boxes, for asking [`inside_many`] of many points.

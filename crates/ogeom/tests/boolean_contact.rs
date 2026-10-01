@@ -1539,3 +1539,55 @@ fn blocks_tilted_by_a_hair_keep_their_volumes() {
         }
     }
 }
+
+/// A compound of solids that do not meet is a tool like any solid: a slab
+/// cut by two cubes standing apart through it loses both overlaps, and a
+/// plate cut by a grid of drums at once is the plate cut by each in turn.
+#[test]
+fn a_compound_of_disjoint_solids_cuts_as_one_tool() {
+    let at = |x: f64, y: f64, z: f64| {
+        Frame::new(Point::new(x, y, z), Direction::Z, Direction::X, T).unwrap()
+    };
+    let mut model = Model::new();
+    let a = ogeom::algo::make_box(&mut model, at(0.0, 0.0, 0.0), (1.0, 1.0, 1.0), T)
+        .unwrap()
+        .shape;
+    let b = ogeom::algo::make_box(&mut model, at(3.0, 0.0, 0.0), (1.0, 1.0, 1.0), T)
+        .unwrap()
+        .shape;
+    let pair = model.add_compound(&[a, b]).unwrap();
+    let slab = ogeom::algo::make_box(&mut model, at(-1.0, -1.0, 0.5), (6.0, 3.0, 1.0), T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(&mut model, &slab, &pair, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &cut, T).unwrap().is_valid());
+    assert!((volume(&model, &cut) - 17.0).abs() < 1e-9);
+
+    let plate = ogeom::algo::make_box(&mut model, at(0.0, 0.0, 0.0), (15.0, 15.0, 4.0), T)
+        .unwrap()
+        .shape;
+    let mut drums = Vec::new();
+    for i in 0..3 {
+        for j in 0..3 {
+            let (x, y) = (2.5 + 5.0 * f64::from(i), 2.5 + 5.0 * f64::from(j));
+            drums.push(
+                ogeom::algo::make_cylinder(&mut model, at(x, y, -1.0), 1.0, 6.0, T)
+                    .unwrap()
+                    .shape,
+            );
+        }
+    }
+    let grid = model.add_compound(&drums).unwrap();
+    let bored = ogeom::boolean::cut(&mut model, &plate, &grid, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &bored, T).unwrap().is_valid());
+    let want = 15.0 * 15.0 * 4.0 - 9.0 * core::f64::consts::PI * 4.0;
+    assert!(
+        (volume(&model, &bored) - want).abs() < 1e-6,
+        "{}",
+        volume(&model, &bored)
+    );
+}

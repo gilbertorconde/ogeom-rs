@@ -285,3 +285,84 @@ fn a_slab_rounds_fully_at_half_its_thickness() {
         }
     }
 }
+
+/// The top rims of a plate's nine bores, rounded as one chain: no rim
+/// meets another, so the blends are applied together. Each removes the
+/// corner between the plate and its bore turned about the bore's axis:
+/// area `r^2 (1 - pi/4)`, its centroid `r (10 - 3 pi) / (3 (4 - pi))` out
+/// from the corner, by Pappus. Every rim is gone and its blend credited to
+/// it.
+#[test]
+fn rims_that_meet_nothing_round_together() {
+    let pi = core::f64::consts::PI;
+    let mut model = ogeom_topo::Model::new();
+    let plate = ogeom_algo::make_box(&mut model, Frame::WORLD, (15.0, 15.0, 4.0), T)
+        .unwrap()
+        .shape;
+    let mut drums = Vec::new();
+    for i in 0..3 {
+        for j in 0..3 {
+            let at = Frame::new(
+                Point::new(2.5 + 5.0 * f64::from(i), 2.5 + 5.0 * f64::from(j), -1.0),
+                Direction::Z,
+                Direction::X,
+                T,
+            )
+            .unwrap();
+            drums.push(
+                ogeom_algo::make_cylinder(&mut model, at, 1.0, 6.0, T)
+                    .unwrap()
+                    .shape,
+            );
+        }
+    }
+    let grid = model.add_compound(&drums).unwrap();
+    let bored = ogeom_bool::cut(&mut model, &plate, &grid, T).unwrap().shape;
+    let rims: Vec<_> = explore_unique(&model, &bored, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            use ogeom_geom::Curve3d as _;
+            let (curve, range) = edge_curve_of(&model, e);
+            matches!(curve, ogeom_geom::Curve::Circle(_))
+                && curve
+                    .point_at(f64::midpoint(range.0, range.1), T)
+                    .unwrap()
+                    .z
+                    > 3.99
+        })
+        .collect();
+    let r = 0.3;
+    let rounded = ogeom_fillet::fillet_edges(&mut model, &bored, &rims, r, T).unwrap();
+    assert!(
+        ogeom_algo::check(&model, &rounded.shape, T)
+            .unwrap()
+            .is_valid()
+    );
+    let area = r * r * (1.0 - pi / 4.0);
+    let centroid = 1.0 + r * (10.0 - 3.0 * pi) / (3.0 * (4.0 - pi));
+    let removed = volume(&model, &bored, 1e-3) - volume(&model, &rounded.shape, 1e-3);
+    let want = 9.0 * area * 2.0 * pi * centroid;
+    assert!(
+        (removed - want).abs() < want * 1e-4,
+        "{removed} against {want}"
+    );
+    let mut credited = 0;
+    for rim in &rims {
+        assert!(rounded.history.is_deleted(rim));
+        credited += rounded.history.generated(rim).len();
+    }
+    assert!(credited >= 9, "{credited}");
+}
+
+/// An edge's curve and range, read off the model.
+fn edge_curve_of(
+    model: &ogeom_topo::Model,
+    edge: &ogeom_topo::Shape,
+) -> (ogeom_geom::Curve, (f64, f64)) {
+    let data = model.node(edge).unwrap().data().as_edge().unwrap();
+    let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        panic!("an edge with no curve");
+    };
+    (model.geometry().curve(*curve).unwrap().clone(), *range)
+}
