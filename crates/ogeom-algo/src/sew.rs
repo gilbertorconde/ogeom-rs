@@ -858,12 +858,42 @@ struct Fingerprint {
 impl Fingerprint {
     /// How far `p` sits from this edge's own stretch of its curve.
     fn off(&self, p: Point, tol: Tolerances) -> OgeomResult<f64> {
-        let foot = crate::project_on_curve(&self.curve, p, 64, tol)?;
+        // A line's or a circle's foot is had in closed form; a point on a
+        // circle's axis, every angle as near, is left to the search.
+        let closed = match &self.curve {
+            ogeom_geom::Curve::Line(line) => {
+                let t = ogeom_math::elementary::line_parameter(line.axis(), p);
+                let at = ogeom_math::elementary::line_at(line.axis(), t).point;
+                Some((t, p.distance(at)))
+            }
+            ogeom_geom::Curve::Circle(circle) => {
+                match ogeom_math::elementary::circle_parameter(&circle.circle(), p, tol) {
+                    Ok(angle) => {
+                        let t = if circle.is_reversed() {
+                            (-angle).rem_euclid(core::f64::consts::TAU)
+                        } else {
+                            angle
+                        };
+                        let at = ogeom_math::elementary::circle_at(&circle.circle(), angle).point;
+                        Some((t, p.distance(at)))
+                    }
+                    Err(_) => None,
+                }
+            }
+            _ => None,
+        };
+        let (parameter, distance) = match closed {
+            Some(foot) => foot,
+            None => {
+                let foot = crate::project_on_curve(&self.curve, p, 64, tol)?;
+                (foot.parameter, foot.distance)
+            }
+        };
         let (lo, hi) = (
             self.range.0.min(self.range.1),
             self.range.0.max(self.range.1),
         );
-        let mut t = foot.parameter;
+        let mut t = parameter;
         if self.curve.is_periodic() {
             let (dlo, dhi) = self.curve.domain();
             let period = dhi - dlo;
@@ -872,7 +902,7 @@ impl Fingerprint {
             }
         }
         if t >= lo - tol.parametric() && t <= hi + tol.parametric() {
-            return Ok(foot.distance);
+            return Ok(distance);
         }
         Ok(p.distance(self.start).min(p.distance(self.end)))
     }

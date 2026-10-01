@@ -67,7 +67,8 @@ bump may break the API and a patch bump may not.
   among their neighbours rather than against every other end. Sewing's
   point bins are sized so a lookup reads eight cells, not sixty-four, and
   an edge too loose for them is compared only with edges starting within
-  its reach. A piece's probes draw their scanlines widest first from a
+  its reach; whether a middle lies on a line or a circle edge is answered
+  in closed form. A piece's probes draw their scanlines widest first from a
   heap as the search asks for them, not from all of them sorted. A pocket
   into a plate with four hundred bores takes about 50 ms, from 160.
 - **A chain of edges rounds in a few booleans, not one per edge.** The
