@@ -99,7 +99,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [ ] **P5.** `elevate_degree` leaves the knots it introduced (C0 where C2), contrary to its doc.
 - [ ] **P6.** Quadratic and cubic solvers lose double roots; the doc's closed-form claim for quartics is untrue.
 - [ ] **P7.** `lines_tangent_to_two_circles` misses the third tangent of touching circles.
-- [ ] **P8.** Derivatives above the implemented order come back zero instead of refused (circle, ellipse, hyperbola, parabola, helix, 2D pad).
+- [x] **P8.** Derivatives above the implemented order come back zero instead of refused (circle, ellipse, hyperbola, parabola, helix, 2D pad). (6fb58f6)
 - [x] **P9.** `Triangulation::welded` panics on a mesh with no normals. (e3e6fea)
 - [ ] **P10.** HLR `project` draws every outline edge twice.
 - [x] **P11.** `make_wedge` doc says a zero top extent is refused; it is accepted. (e8e0b44)
