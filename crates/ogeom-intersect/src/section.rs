@@ -1467,17 +1467,23 @@ fn on_cone(
             if local.x.hypot(local.y) > tol.confusion() {
                 return None;
             }
-            // The cone's radius at the circle's height must be the circle's.
+            // The cone's radius at the circle's height must be the circle's,
+            // or (past the apex, on the far nappe, where the radius runs
+            // negative) its negative: the same parallel half a turn round.
             let expected = cone
                 .half_angle()
                 .tan()
                 .mul_add(local.z, cone.reference_radius());
-            if (expected - circle.radius()).abs() > tol.confusion() * 10.0 {
+            let turned = if (expected - circle.radius()).abs() <= tol.confusion() * 10.0 {
+                0.0
+            } else if (expected + circle.radius()).abs() <= tol.confusion() * 10.0 {
+                core::f64::consts::PI
+            } else {
                 return None;
-            }
+            };
             let start = circle.centre() + circle.frame().x().vector() * circle.radius();
             let at = frame.to_local(start);
-            let phase = at.y.atan2(at.x);
+            let phase = at.y.atan2(at.x) + turned;
             let winding = circle.frame().z().vector().dot(axis_z).signum();
             let towards =
                 ogeom_math::Direction2::new(ogeom_math::Vector2::new(winding, 0.0), tol).ok()?;

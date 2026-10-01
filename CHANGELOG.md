@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A cone through its apex is sectioned on both nappes.** The closed
+  forms for a cone against a coaxial cylinder, a coaxial cone and a level
+  plane answered on the chart's own nappe only: a cone face running past
+  its apex lost its far-nappe section, two parallel-sided cones meeting
+  past an apex read as apart, and a level plane past the apex went to the
+  marcher. Each crossing is now reported, and the cone's pcurve places a
+  far-nappe parallel half a turn round; a face stopping short of its apex
+  drops it by its window.
+
 - **Arcs of one circle overlap across its seam.** The overlap of two
   trims of one circle was clipped within a single turn, so a stretch
   crossing the seam was lost, and a pair walked opposite ways reported

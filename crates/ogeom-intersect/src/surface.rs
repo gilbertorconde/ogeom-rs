@@ -590,32 +590,25 @@ fn plane_cone(
         // length: a touch, not a curve.
         return Ok(Meeting::Touching(vec![cone.apex()]));
     }
-    if radius < 0.0 {
-        // Past the apex the chart runs mirrored (the same points sit half a
-        // turn out of phase), and a parallel reported there would carry the
-        // wrong parameters into everything downstream. Deferred, not guessed.
-        ogeom_bail!(
-            NotDone,
-            "the plane crosses the cone past its apex, where the chart runs \
-             mirrored; that configuration needs the general machinery"
-        );
-    }
+    // Past the apex, on the far nappe, the radius runs negative: the
+    // parallel is the circle of its size, which the chart places half a
+    // turn round.
     let centre = axis.location + axis.direction.vector() * height;
-    Ok(match cone_parallel(&cone, centre, radius, tol) {
+    Ok(match cone_parallel(&cone, centre, radius.abs(), tol) {
         Some(circle) => Meeting::Along(vec![circle]),
         None => Meeting::Apart,
     })
 }
 
-/// A cylinder sharing a cone's axis: the parallel where the slant crosses
-/// the cylinder's radius.
+/// A cylinder sharing a cone's axis: the parallels where the slant crosses
+/// the cylinder's radius, one on each nappe.
 ///
-/// The radius function is linear in height, so it crosses any radius exactly
-/// once on the chart's own nappe: the parallel reported here. The mirrored
-/// crossing past the apex is real geometry, but its parameters run half a
-/// turn out of phase and a curve carrying them would poison every consumer;
-/// a face reaching past its own apex is not a configuration this vocabulary
-/// builds.
+/// The radius function is linear in height, so it reaches the cylinder's
+/// radius once on the chart's own nappe and once on the far one, past the
+/// apex, where it runs negative; each crossing is a parallel, and the chart
+/// places the far one half a turn round. A cone face stopping short of its
+/// apex keeps only the near one: the far one's image lies outside its
+/// window.
 fn coaxial_cylinder_cone(
     cylinder: ogeom_math::Cylinder,
     cone: ogeom_math::Cone,
@@ -630,18 +623,23 @@ fn coaxial_cylinder_cone(
     }
     let axis = cone.axis();
     let slope = cone.half_angle().tan();
-    let height = (cylinder.radius() - cone.reference_radius()) / slope;
-    Ok(
-        match cone_parallel(
-            &cone,
-            axis.location + axis.direction.vector() * height,
-            cylinder.radius(),
-            tol,
-        ) {
-            Some(circle) => Meeting::Along(vec![circle]),
-            None => Meeting::Apart,
-        },
-    )
+    let circles: Vec<Curve> = [cylinder.radius(), -cylinder.radius()]
+        .into_iter()
+        .filter_map(|radius| {
+            let height = (radius - cone.reference_radius()) / slope;
+            cone_parallel(
+                &cone,
+                axis.location + axis.direction.vector() * height,
+                cylinder.radius(),
+                tol,
+            )
+        })
+        .collect();
+    Ok(if circles.is_empty() {
+        Meeting::Apart
+    } else {
+        Meeting::Along(circles)
+    })
 }
 
 /// Two cones sharing an axis: the same surface, the shared apex, or the
@@ -671,41 +669,44 @@ fn coaxial_cones(
         a.reference_radius(),
         slope_b.mul_add(-lift, b.reference_radius()),
     );
-    if (slope_a - slope_b).abs() <= tol.angular() {
-        // Parallel slants: the same cone, or two that never meet.
-        return Ok(if (ref_a - ref_b).abs() <= tol.confusion() {
-            Meeting::Same
-        } else {
-            Meeting::Apart
+    if (slope_a - slope_b).abs() <= tol.angular() && (ref_a - ref_b).abs() <= tol.confusion() {
+        return Ok(Meeting::Same);
+    }
+    // Where the radius lines cross, on the same nappes or (one radius the
+    // other's negative) on opposite ones, past an apex: each crossing is a
+    // parallel, or a shared apex where the radius there is zero.
+    let mut heights: Vec<f64> = Vec::new();
+    if (slope_a - slope_b).abs() > tol.angular() {
+        heights.push((ref_b - ref_a) / (slope_a - slope_b));
+    }
+    if (slope_a + slope_b).abs() > tol.angular() {
+        heights.push(-(ref_a + ref_b) / (slope_a + slope_b));
+    }
+    let mut circles: Vec<Curve> = Vec::new();
+    let mut touches: Vec<Point> = Vec::new();
+    for height in heights {
+        let radius = a.radius_at(height).abs();
+        let centre = axis.location + axis.direction.vector() * height;
+        if radius <= tol.confusion() {
+            if touches.iter().all(|t| t.distance(centre) > tol.confusion()) {
+                touches.push(centre);
+            }
+            continue;
+        }
+        let repeated = circles.iter().any(|c| {
+            matches!(c, Curve::Circle(k) if k.circle().centre().distance(centre) <= tol.confusion())
         });
+        if !repeated && let Some(circle) = cone_parallel(&a, centre, radius, tol) {
+            circles.push(circle);
+        }
     }
-    // One linear equation: where the radius lines cross on the charts' own
-    // nappes. The mirrored-nappe crossings are real geometry with the wrong
-    // parameters (same reasoning as the cylinder) and stay deferred.
-    let height = (ref_b - ref_a) / (slope_a - slope_b);
-    let radius = a.radius_at(height);
-    if radius.abs() <= tol.confusion() {
-        // The radius lines cross at zero: a shared apex, a touch.
-        return Ok(Meeting::Touching(vec![a.apex()]));
-    }
-    if radius < 0.0 {
-        ogeom_bail!(
-            NotDone,
-            "two coaxial cones that meet only past their apexes, where the \
-             charts run mirrored, need the general machinery"
-        );
-    }
-    Ok(
-        match cone_parallel(
-            &a,
-            axis.location + axis.direction.vector() * height,
-            radius,
-            tol,
-        ) {
-            Some(circle) => Meeting::Along(vec![circle]),
-            None => Meeting::Apart,
-        },
-    )
+    Ok(if !circles.is_empty() {
+        Meeting::Along(circles)
+    } else if !touches.is_empty() {
+        Meeting::Touching(touches)
+    } else {
+        Meeting::Apart
+    })
 }
 
 /// A parallel of a cone, framed on the cone's own frame so parameters carry.

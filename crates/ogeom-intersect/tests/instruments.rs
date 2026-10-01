@@ -229,11 +229,10 @@ mod accuracy {
     }
 
     #[test]
-    fn a_coaxial_cylinder_meets_a_cone_in_the_parallel_on_its_own_nappe() {
-        // The mirrored crossing past the apex is real geometry whose chart
-        // parameters run half a turn out of phase; reporting it would poison
-        // the arrangement of any face nearby, so only the chart's own nappe
-        // answers.
+    fn a_coaxial_cylinder_meets_a_cone_in_a_parallel_on_each_nappe() {
+        // The crossing past the apex is real geometry, on the far nappe,
+        // where the chart places it half a turn round; a face stopping short
+        // of its apex drops it by its window.
         let Meeting::Along(curves) = surface_surface(
             &cylinder(Point::ORIGIN, Vector::Z, 2.0),
             &cone(Point::ORIGIN, Vector::Z, 3.0, 0.3),
@@ -242,7 +241,7 @@ mod accuracy {
         .unwrap() else {
             panic!("a coaxial cylinder should cross the slant");
         };
-        assert_eq!(curves.len(), 1, "the parallel on the chart's own nappe");
+        assert_eq!(curves.len(), 2, "a parallel on each nappe");
         for curve in &curves {
             let Curve::Circle(circle) = curve else {
                 panic!("a parallel should be a circle");
@@ -274,16 +273,24 @@ mod accuracy {
             .unwrap(),
             Meeting::Same
         );
-        // Parallel slants that never meet are apart, not almost-the-same.
-        assert_eq!(
-            surface_surface(
-                &cone(Point::ORIGIN, Vector::Z, 3.0, 0.2),
-                &cone(Point::ORIGIN, Vector::Z, 4.0, 0.2),
-                T,
-            )
-            .unwrap(),
-            Meeting::Apart
-        );
+        // Parallel slants never meet on the same nappes, and meet once on
+        // opposite ones, past an apex, where one radius is the other's
+        // negative: a parallel, not almost-the-same.
+        let Meeting::Along(curves) = surface_surface(
+            &cone(Point::ORIGIN, Vector::Z, 3.0, 0.2),
+            &cone(Point::ORIGIN, Vector::Z, 4.0, 0.2),
+            T,
+        )
+        .unwrap() else {
+            panic!("parallel slants meet past an apex");
+        };
+        assert_eq!(curves.len(), 1);
+        let Curve::Circle(past) = &curves[0] else {
+            panic!("a parallel should be a circle");
+        };
+        let height = -7.0 / (2.0 * 0.2_f64.tan());
+        assert!((past.circle().centre().z - height).abs() < 1e-9);
+        assert!((past.circle().radius() - 0.5).abs() < 1e-9);
         // Crossing slants meet in the parallel where the radii agree.
         let Meeting::Along(curves) = surface_surface(
             &cone(Point::ORIGIN, Vector::Z, 3.0, 0.2),

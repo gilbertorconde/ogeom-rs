@@ -519,3 +519,59 @@ fn a_spindle_torus_s_folded_half_is_sectioned() {
         }
     }
 }
+
+/// A cone whose window runs through its apex meets a coaxial cylinder, a
+/// parallel-sided coaxial cone and a level plane also on its far nappe,
+/// exactly and with its image in each chart; one stopping short of the
+/// apex keeps only its own nappe's section.
+#[test]
+fn a_cone_through_its_apex_is_sectioned_on_both_nappes() {
+    use ogeom_intersect::{IntersectOptions, SurfaceIntersection, intersect_surfaces};
+    let quarter = core::f64::consts::FRAC_PI_4;
+    let cone = |r: f64, window: (f64, f64)| -> SurfaceGeometry {
+        ConeSurface::new(Cone::new(Frame::WORLD, r, quarter, T).unwrap(), window)
+            .unwrap()
+            .into()
+    };
+    let drum: SurfaceGeometry =
+        CylinderSurface::new(Cylinder::new(Frame::WORLD, 10.0, T).unwrap(), (-60.0, 60.0))
+            .unwrap()
+            .into();
+    let level: SurfaceGeometry = PlaneSurface::over(
+        Plane::through(Point::new(0.0, 0.0, -30.0), Direction::Z),
+        (-50.0, 50.0),
+        (-50.0, 50.0),
+    )
+    .unwrap()
+    .into();
+    // The apex stands at z = -20.
+    let through = cone(20.0, (-50.0, 50.0));
+    let short = cone(20.0, (-15.0, 50.0));
+    for (a, b, heights) in [
+        (&through, &drum, vec![-10.0, -30.0]),
+        (&short, &drum, vec![-10.0]),
+        (&through, &cone(40.0, (-100.0, 50.0)), vec![-30.0]),
+        (&through, &level, vec![-30.0]),
+    ] {
+        let SurfaceIntersection::Along(curves) =
+            intersect_surfaces(a, b, IntersectOptions::default(), T).unwrap()
+        else {
+            panic!("the surfaces meet");
+        };
+        let mut found: Vec<f64> = curves
+            .iter()
+            .map(|c| {
+                assert!(c.exact && c.on_a.is_some() && c.on_b.is_some());
+                let (lo, _) = c.curve.domain();
+                let p = c.curve.point_at(lo, T).unwrap();
+                assert!(off(a, p).abs() < 1e-9 && off(b, p).abs() < 1e-9);
+                p.z
+            })
+            .collect();
+        found.sort_by(|x, y| y.total_cmp(x));
+        assert_eq!(found.len(), heights.len(), "{found:?}");
+        for (got, want) in found.iter().zip(&heights) {
+            assert!((got - want).abs() < 1e-9, "{found:?}");
+        }
+    }
+}
