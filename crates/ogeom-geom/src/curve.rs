@@ -479,11 +479,27 @@ impl HelixCurve {
         self.reversed
     }
 
-    /// The exact arc length between two parameters: constant speed times the
-    /// swept angle.
+    /// The exact arc length between two parameters.
+    ///
+    /// The speed at angle `t` is `√(r(t)² + k²)`, where the radius
+    /// `r(t) = radius + s·t` advances by `s = taper/2π` a radian and
+    /// `k² = s² + (pitch/2π)²`. On a cylinder (`s` zero) that is constant, and
+    /// the length is the speed times the swept angle; on a cone it is
+    /// `∫√(r² + k²) dr / s`, in closed form.
     #[must_use]
     pub fn arc_length(&self, from: f64, to: f64) -> f64 {
-        (to - from).abs() * self.radius.hypot(self.pitch / core::f64::consts::TAU)
+        let tau = core::f64::consts::TAU;
+        let (rise, slope) = (self.pitch / tau, self.taper / tau);
+        if slope == 0.0 {
+            return (to - from).abs() * self.radius.hypot(rise);
+        }
+        let k = slope.hypot(rise);
+        let primitive = |r: f64| f64::midpoint(r * r.hypot(k), k * k * (r / k).asinh());
+        let (r0, r1) = (
+            slope.mul_add(from, self.radius),
+            slope.mul_add(to, self.radius),
+        );
+        ((primitive(r1) - primitive(r0)) / slope).abs()
     }
 
     /// Point and first three derivatives at the raw (unreversed) angle.
@@ -1967,6 +1983,30 @@ mod tests {
     use ogeom_math::{Direction, Frame};
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// A conical helix's arc length is the integral of its speed, which
+    /// grows with its radius: the sum of fine chords agrees with it.
+    #[test]
+    fn a_conical_helix_measures_its_length() {
+        for (taper, pitch) in [(0.0, 2.0), (3.0, 2.0), (-1.5, 0.5), (4.0, 0.1)] {
+            let helix = HelixCurve::conical(Frame::WORLD, 10.0, pitch, taper, 0.0, 12.0).unwrap();
+            let steps = 200_000;
+            let mut chords = 0.0;
+            let mut last = helix.point_at(0.0, T).unwrap();
+            for k in 1..=steps {
+                let next = helix
+                    .point_at(12.0 * f64::from(k) / f64::from(steps), T)
+                    .unwrap();
+                chords += next.distance(last);
+                last = next;
+            }
+            let exact = helix.arc_length(0.0, 12.0);
+            assert!(
+                (exact - chords).abs() < 1e-6 * exact,
+                "{taper} {pitch}: {exact} against {chords}"
+            );
+        }
+    }
 
     /// A scaled curve names, at every parameter, the image of the point it
     /// named: a parabola, whose parameter is a length; a trim of a trim of a

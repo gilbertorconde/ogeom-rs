@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A conical helix measures its own length.** `HelixCurve::arc_length`
+  ignored the taper and reported a cylindrical helix's length; a conical
+  helix's speed grows with its radius, and its length now integrates it
+  exactly.
+
 - **Scaled curves name the images of their points.** Under a scaling a
   planar trim of anything but a bare line (a trim of a trim, of an offset)
   kept its old window, a parabola its old domain, and a curve on a surface
