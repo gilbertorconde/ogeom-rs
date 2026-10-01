@@ -276,7 +276,7 @@ pub fn hatch(outline: &[Vec<Point2>], spacing: f64, angle: f64) -> Vec<(Point2, 
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use ogeom_math::{Direction, Vector};
+    use ogeom_math::Direction;
 
     const T: Tolerances = Tolerances::millimetres();
 
@@ -394,7 +394,6 @@ mod tests {
             Frame::new(Point::new(50.0, 0.0, 0.0), Direction::X, Direction::Y, T).unwrap(),
         );
         assert!(section(&mut model, &solid.shape, &plane, fine(), T).is_err());
-        let _ = Vector::ZERO;
     }
     #[test]
     fn a_half_section_of_a_bored_cylinder_hatches_the_cut_half() {

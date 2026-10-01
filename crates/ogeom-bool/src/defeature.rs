@@ -1299,7 +1299,7 @@ fn extend_to_corner(
     let head = geometry.point_at(range.0, tol)?;
     let tail = geometry.point_at(range.1, tol)?;
     let t_corner = parameter_near(&geometry, corner_point, tol)?;
-    let (vertices, new_range, dangle_head) = {
+    let (vertices, new_range) = {
         // Storage order, deliberately: the range is the stored curve's, and
         // `edge_vertices` would swap the pair for a reversed use.
         let bounds = model.children_of(edge)?;
@@ -1307,12 +1307,11 @@ fn extend_to_corner(
             ogeom_bail!(Construction, "a dangling edge has no vertices");
         };
         if head.distance(corner_point) <= tail.distance(corner_point) {
-            ((corner.clone(), vb), (t_corner, range.1), true)
+            ((corner.clone(), vb), (t_corner, range.1))
         } else {
-            ((va, corner.clone()), (range.0, t_corner), false)
+            ((va, corner.clone()), (range.0, t_corner))
         }
     };
-    let _ = dangle_head;
     if new_range.1 <= new_range.0 {
         ogeom_bail!(
             Construction,
