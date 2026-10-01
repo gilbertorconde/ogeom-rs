@@ -2332,12 +2332,13 @@ fn caps_of_a_fine_mesh_far_out_stay_whole() {
     assert!(check(&model, &built.shape, T).unwrap().is_valid());
 }
 
-/// A slab drafted inward from its top, one corner rounded in six segments,
-/// tessellated in rows and rounded to `f32` a hundred millimetres from the
+/// A slab drafted inward from its top by `draft` times the depth to the
+/// power one and a half, one corner rounded in `counts` segments row by
+/// row, tessellated and rounded to `f32` a hundred millimetres from the
 /// origin, converted face for facet, and a pad of its top face pushed
 /// `depth` down into it: fused back and in common with it, each valid, the
 /// two volumes adding up to the slab's and the pad's.
-fn pad_on_a_drafted_slab(depth: f64) {
+fn pad_on_a_drafted_slab(depth: f64, draft: f64, counts: [u32; 7]) {
     let rows = [0.0_f64, 1.5, 3.0, 4.5, 5.8333, 7.1667, 8.5];
     let top = 8.5;
     #[allow(
@@ -2347,12 +2348,12 @@ fn pad_on_a_drafted_slab(depth: f64) {
     let single = |v: f64| f64::from(v as f32);
     let mut mesh = Triangulation::default();
     let mut rings: Vec<Vec<u32>> = Vec::new();
-    for &z in &rows {
+    for (&z, &segments) in rows.iter().zip(&counts) {
         // The wall leans in as it falls, faster further down.
-        let inset = 0.02 * (top - z).powf(1.5);
+        let inset = draft * (top - z).powf(1.5);
         let mut outline = vec![(inset, inset), (10.0 - inset, inset)];
-        for k in 0..=6 {
-            let a = core::f64::consts::FRAC_PI_2 * f64::from(k) / 6.0;
+        for k in 0..=segments {
+            let a = core::f64::consts::FRAC_PI_2 * f64::from(k) / f64::from(segments);
             outline.push((8.0 + (2.0 - inset) * a.cos(), 8.0 + (2.0 - inset) * a.sin()));
         }
         outline.push((inset, 10.0 - inset));
@@ -2364,18 +2365,40 @@ fn pad_on_a_drafted_slab(depth: f64) {
         }
         rings.push(ring);
     }
-    let n = rings[0].len();
+    // Rows of different counts are stitched by their place round the
+    // outline.
+    let place = |ring: &[u32], mesh: &Triangulation| -> Vec<f64> {
+        let points: Vec<Point> = ring.iter().map(|&i| mesh.positions[i as usize]).collect();
+        let mut along = vec![0.0];
+        for k in 0..points.len() {
+            let step = points[k].distance(points[(k + 1) % points.len()]);
+            along.push(along[k] + step);
+        }
+        let total = along[points.len()];
+        along.iter().map(|a| a / total).collect()
+    };
     for j in 0..rows.len() - 1 {
-        for i in 0..n {
-            let (a, b) = (rings[j][i], rings[j][(i + 1) % n]);
-            let (c, d) = (rings[j + 1][(i + 1) % n], rings[j + 1][i]);
-            mesh.triangles.push([a, b, c]);
-            mesh.triangles.push([a, c, d]);
+        let (lo, hi) = (&rings[j], &rings[j + 1]);
+        let (at_lo, at_hi) = (place(lo, &mesh), place(hi, &mesh));
+        let (nl, nh) = (lo.len(), hi.len());
+        let (mut a, mut b) = (0_usize, 0_usize);
+        while a < nl || b < nh {
+            if b >= nh || (a < nl && at_lo[a + 1] <= at_hi[b + 1]) {
+                mesh.triangles
+                    .push([lo[a % nl], lo[(a + 1) % nl], hi[b % nh]]);
+                a += 1;
+            } else {
+                mesh.triangles
+                    .push([lo[a % nl], hi[(b + 1) % nh], hi[b % nh]]);
+                b += 1;
+            }
         }
     }
     let (bottom, upper) = (&rings[0], &rings[rows.len() - 1]);
-    for i in 1..n - 1 {
+    for i in 1..bottom.len() - 1 {
         mesh.triangles.push([bottom[0], bottom[i + 1], bottom[i]]);
+    }
+    for i in 1..upper.len() - 1 {
         mesh.triangles.push([upper[0], upper[i], upper[i + 1]]);
     }
     let options = MeshSolidOptions {
@@ -2422,7 +2445,20 @@ fn pad_on_a_drafted_slab(depth: f64) {
 #[test]
 fn a_pad_into_a_drafted_single_precision_slab_fuses_back() {
     for depth in [3.0, 10.0] {
-        pad_on_a_drafted_slab(depth);
+        pad_on_a_drafted_slab(depth, 0.02, [6; 7]);
+    }
+}
+
+/// The same slab drafted a quarter as much, its corner's rows holding
+/// eight facets down to five: the rows' diagonal edges run all but in the
+/// pad's walls, and the walls' sections on the facets either side of one
+/// reach it tens of microns apart, each to within its own doubt. Two such
+/// crossings are one point where they stand no further apart than both
+/// doubts together.
+#[test]
+fn a_pad_into_a_slab_whose_rows_differ_fuses_back() {
+    for depth in [3.0, 10.0] {
+        pad_on_a_drafted_slab(depth, 0.005, [8, 8, 8, 7, 7, 6, 5]);
     }
 }
 

@@ -1097,8 +1097,10 @@ fn cluster_paves(
         {
             continue;
         }
+        // Two crossings each known to within its honesty are one point
+        // where they stand no further apart than both together.
         let joined = prev.is_some_and(|(held, honesty): (Point, f64)| {
-            held.distance(at) <= floor.max(honesty).max(pave.honesty)
+            held.distance(at) <= floor.max(honesty + pave.honesty)
         });
         if joined && let Some(cluster) = clusters.last_mut() {
             cluster.span = cluster.span.max(cluster.at.distance(at));

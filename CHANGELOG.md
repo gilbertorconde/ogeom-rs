@@ -25,6 +25,16 @@ bump may break the API and a patch bump may not.
   a feature unifies what the feature made without undoing splits the part
   already held.
 
+### Fixed
+
+- **Crossings along an edge each known to within its doubt meet where
+  both doubts reach.** A pad pushed into a converted slab whose corner's
+  rows hold different numbers of facets refused: the facets' diagonal
+  edges run all but in the pad's walls, and the walls' sections on the
+  facets either side of one reached it tens of microns apart, each within
+  its own doubt but not within the larger one alone. Two crossings are now
+  one point where they stand no further apart than their doubts together.
+
 ### Changed
 
 - **`tight_bounds` is hundreds of times faster on ruled and round
