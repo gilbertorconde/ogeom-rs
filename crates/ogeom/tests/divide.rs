@@ -290,3 +290,22 @@ fn a_face_on_an_offset_spline_divides() {
     assert_eq!(faces(&model, &divided).len(), 7);
     holds(&model, &divided, 1000.0, 1e-6);
 }
+
+/// A drum shorter than a unit of height divides as a tall one does: by
+/// angle into quarter turns, and by area into pieces no larger than asked.
+#[test]
+fn a_short_drum_divides_by_angle_and_by_area() {
+    let mut model = Model::new();
+    let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 2.0, 0.5, T)
+        .unwrap()
+        .shape;
+    let volume = core::f64::consts::PI * 4.0 * 0.5;
+    let divided = ogeom::heal::divide_by_angle(&mut model, &drum, core::f64::consts::FRAC_PI_2, T)
+        .unwrap()
+        .shape;
+    holds(&model, &divided, volume, 1e-6);
+    let divided = ogeom::heal::divide_by_area(&mut model, &drum, 2.0, T)
+        .unwrap()
+        .shape;
+    holds(&model, &divided, volume, 1e-6);
+}

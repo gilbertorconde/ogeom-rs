@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A drum shorter than a unit divides.** `divide_by_angle` and
+  `divide_by_area` read a straight cut line's direction off the surface at
+  parameters zero and one, past the window of a drum or cone less than a
+  unit high, and refused. The line is read inside its own span.
+
 - **A mesh reports the chord it meets.** On a surface curved both ways a
   grid cell's middle can stand off the surface by up to twice the chord,
   while `deflection_met` said the chord was met. Each triangle's middle is

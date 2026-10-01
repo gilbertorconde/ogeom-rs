@@ -1336,18 +1336,26 @@ fn iso_curve(
             IsoLine::U(_),
         )
         | (SurfaceGeometry::Plane(_) | SurfaceGeometry::Extrusion(_), _) => {
-            // Straight in the free parameter: through the point at w = 0,
-            // along the rate the surface moves with w.
-            let at = surface.point_at(line.point(0.0).x, line.point(0.0).y, tol)?;
-            let next = surface.point_at(line.point(1.0).x, line.point(1.0).y, tol)?;
+            // Straight in the free parameter: through the point at the
+            // span's start, along the rate the surface moves with w, both
+            // read inside the span (a short drum's window ends before
+            // w = 1, and the surface refuses to be read past it).
+            let (lo, hi) = if span.0.is_finite() && span.1.is_finite() && span.1 > span.0 {
+                span
+            } else {
+                (0.0, 1.0)
+            };
+            let at = surface.point_at(line.point(lo).x, line.point(lo).y, tol)?;
+            let next = surface.point_at(line.point(hi).x, line.point(hi).y, tol)?;
             match (surface, line) {
                 (SurfaceGeometry::Extrusion(e), IsoLine::V(_)) => {
                     let shift = Transform::translation(e.direction().vector() * c);
                     (e.curve().transformed(&shift, tol)?, 1.0, 0.0)
                 }
                 _ => {
-                    let (curve, speed) = straight(at, next - at)?;
-                    (curve, speed, 0.0)
+                    let (curve, length) = straight(at, next - at)?;
+                    let speed = length / (hi - lo);
+                    (curve, speed, -speed * lo)
                 }
             }
         }
