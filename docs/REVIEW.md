@@ -71,7 +71,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [x] **X4.** A fitted section near a cone apex breaks its stated tolerance about 200 times (`approx.rs`). (25dfc19)
 - [x] **X5.** A tangential contact curve (torus in sphere) is 100 times off its stated tolerance and split in two (`section.rs`). (95196d7)
 - [x] **X6.** The general curve/surface path reports each tangency up to 9 times (`curve_surface.rs` dedup radius). (c4c1db8)
-- [x] **X7.** Planar curve/curve misses tangent and near-tangent crossings when a curve is trimmed (`curves.rs`).
+- [x] **X7.** Planar curve/curve misses tangent and near-tangent crossings when a curve is trimmed (`curves.rs`). (3cf6676)
 - [ ] **K1.** `cone_parameters` is wrong past the apex and does not return the nearest point; `torus_parameters` does not round-trip on a spindle torus (`ogeom-math/src/elementary.rs`).
 - [ ] **K2.** A cone with a negative half angle is accepted but its `distance_to` is wrong (`quadric.rs`).
 - [ ] **K3.** The circle-circle bisector returns the wrong branch when the first circle is smaller (`construct2d.rs`).
