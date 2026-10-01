@@ -30,6 +30,8 @@ ogeom-doc.workspace = true
 # pcurves for the edges it lands on faces; both live above the data layer.
 ogeom-algo.workspace = true
 ogeom-intersect.workspace = true
+# A void's orientation is read off its meshed signed volume.
+ogeom-mesh.workspace = true
 # Constructive solids read as the booleans their trees name.
 ogeom-bool.workspace = true
 
@@ -38,7 +40,6 @@ ogeom-bool.workspace = true
 # so the tests reach for the builders. Nothing in `ogeom-algo` depends on `ogeom-io`,
 # so this adds no cycle and nothing to the library's own dependencies.
 ogeom-algo.workspace = true
-ogeom-mesh.workspace = true
 approx.workspace = true
 proptest.workspace = true
 

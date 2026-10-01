@@ -2439,9 +2439,10 @@ impl<'a> Reader<'a> {
     /// A reader matching on the leading keyword alone does not see it, and
     /// the part simply vanishes: a printed housing with six cavities in
     /// it read as no body at all, its thirteen hundred faces with it. The
-    /// voids join the solid as shells of their own, oriented as
-    /// the file orients them, so every normal points away from the
-    /// material: out of the body on the outside, into the cavity within.
+    /// voids join the solid as shells of their own, every normal pointing
+    /// away from the material: out of the body on the outside, into the
+    /// cavity within. A void is oriented by its geometry where its flags
+    /// would have it add material.
     fn solid(&mut self, id: u64) -> OgeomResult<Shape> {
         let instance = self.instance(id)?;
         let args = instance
@@ -2469,7 +2470,30 @@ impl<'a> Reader<'a> {
             .collect::<Vec<u64>>()
         {
             match self.shell(void_id) {
-                Ok(Some(void)) => shells.push(void),
+                Ok(Some(void)) => {
+                    // A void is a cavity whatever its flags say: its faces
+                    // point into it, so it encloses negative volume. One a
+                    // writer turned twice reads as added material, and is
+                    // turned back as it is built.
+                    let encloses = ogeom_mesh::triangulate(
+                        &self.model,
+                        &void,
+                        ogeom_mesh::Deflection::default(),
+                        self.tol,
+                    )
+                    .ok()
+                    .filter(ogeom_topo::Triangulation::is_closed)
+                    .map(|mesh| mesh.volume());
+                    if encloses.is_some_and(|v| v > 0.0) {
+                        self.report.warnings.push(format!(
+                            "#{id}: void shell #{void_id} was written the wrong way \
+                             out; it is read as the cavity it bounds"
+                        ));
+                        shells.push(void.reversed());
+                    } else {
+                        shells.push(void);
+                    }
+                }
                 Ok(None) => self.report.warnings.push(format!(
                     "#{id}: void shell #{void_id} has no readable faces; the \
                      cavity is missing from the solid"

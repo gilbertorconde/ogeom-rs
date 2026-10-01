@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A STEP void reads as a cavity whichever way it is written.** A void
+  shell whose flags turn it to add material (written inside out and then
+  marked reversed as well, as some exporters do) read inside out: the
+  cavity counted as extra material and `check` reported its faces broken.
+  Each void is now oriented by its geometry as it is read, with a warning
+  naming it, and keeps its faces and placement.
+
 - **Drums a thousandth apart.** Two drums 1e-3 apart in radius or axis
   refused: the wider one's cap leaves an annulus or crescent that thin, and
   its outline's chords bowed by more than its width, so the point the
