@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Two circles' bisector bends round the smaller one.** `bisector` of two
+  circles of unequal radii put the hyperbola's equidistant branch round
+  the second circle whichever was smaller, the wrong branch when the
+  first was. Its frame now points toward the smaller circle.
+
 - **A cone narrowing up its axis measures its distance.** A negative half
   angle (a cone narrowing in `+z`, which tapered sweeps and chamfers
   build) is accepted, but `Cone::distance_to` measured such a cone's own

@@ -605,7 +605,14 @@ pub fn bisector(a: &Target2, b: &Target2, tol: Tolerances) -> OgeomResult<Bisect
                 );
             }
             let centre = c1.centre() + (c2.centre() - c1.centre()) * 0.5;
-            let x = Direction2::new(c2.centre() - c1.centre(), tol)?;
+            // The equidistant branch bends round the smaller circle, and
+            // the frame's `+x` side is the branch reported as the locus.
+            let (larger, smaller) = if c1.radius() > c2.radius() {
+                (c1, c2)
+            } else {
+                (c2, c1)
+            };
+            let x = Direction2::new(smaller.centre() - larger.centre(), tol)?;
             let a_half = difference / 2.0;
             let c_half = spread / 2.0;
             let b_half = (c_half * c_half - a_half * a_half).sqrt();
@@ -874,6 +881,10 @@ mod tests {
         let between = bisector(&small, &far, T).unwrap();
         assert!(matches!(between, Bisector2::Hyperbola(_)), "{between:?}");
         assert_equidistant(&between, &small, &far);
+        // Asked the other way round, the smaller circle first: the same
+        // locus, round the smaller circle still.
+        let between = bisector(&far, &small, T).unwrap();
+        assert_equidistant(&between, &far, &small);
         // Intersecting lines: the two angle bisectors.
         let slanted = Target2::Line(Axis2::new(
             Point2::new(0.0, -2.0),
