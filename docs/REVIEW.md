@@ -47,7 +47,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 
 ### N. Boolean fallbacks and small gaps
 
-- [x] **N1.** The nesting fallback samples at 0.1 mm and accepts a solid that pokes 2 µm through as nested (`ogeom-bool/src/lib.rs` `or_nested`, `nested`).
+- [x] **N1.** The nesting fallback samples at 0.1 mm and accepts a solid that pokes 2 µm through as nested (`ogeom-bool/src/lib.rs` `or_nested`, `nested`). (da82038)
 - [ ] **N2.** Faces closer than about 1.5e-5 are welded into broken topology that passes `check` (weld floor `confusion · 1e2` in `assemble_result` and `outline_snap`).
 
 ### A. Other algorithms
