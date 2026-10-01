@@ -57,6 +57,14 @@ drill's placement.
   the section's pieces folded into the face's own window before they are kept
   or dropped.
 
+**Facet walls drafted less than their chords sag.** A pad pushed down from
+the top of a slab converted face for facet, whose rounded corner's rows hold
+different numbers of facets and lean in by a few thousandths of a
+millimetre (less than the corner's chords sag, so the rows' edges cross the
+pad's walls in plan), refuses at some row counts: the kept pieces do not
+close. The rows' planes and the pad's walls meet at small angles all round
+the corner, the near-coplanar sliver band again.
+
 **Speed, not correctness.**
 
 - A per-face state cache would let the boolean's build phase read a piece's
