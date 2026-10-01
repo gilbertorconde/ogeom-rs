@@ -66,6 +66,53 @@ use arrange::{
 /// Parameter-space chord for the polyline scaffolding.
 const SCAFFOLD_CHORD: f64 = 1e-3;
 
+/// How far a curved strand's chords may stand off its curve on a plane. A
+/// piece is classified by a point inside its polyline outline, and a piece
+/// thinner than its outline's chords bow (the cap annulus between two drums
+/// a thousandth apart in radius) has that point outside the true piece.
+const STRAND_SAG: f64 = 1e-4;
+
+/// Samples enough that a curve's chords stand within [`STRAND_SAG`] of it in
+/// the chart: from `count`, raised as the measured sag at the chords'
+/// middles asks, up to 512.
+fn sag_count(
+    at: &dyn Fn(f64) -> OgeomResult<Point2>,
+    lo: f64,
+    hi: f64,
+    mut count: usize,
+) -> OgeomResult<usize> {
+    const MOST: usize = 512;
+    for _ in 0..3 {
+        if count >= MOST {
+            break;
+        }
+        let mut sag = 0.0_f64;
+        #[allow(clippy::cast_precision_loss)]
+        let step = (hi - lo) / count as f64;
+        let mut previous = at(lo)?;
+        for i in 1..=count {
+            #[allow(clippy::cast_precision_loss)]
+            let t = (i as f64).mul_add(step, lo);
+            let here = at(t)?;
+            let middle = at(t - step / 2.0)?;
+            sag = sag.max(middle.distance(Point2::midpoint(previous, here)));
+            previous = here;
+        }
+        if sag <= STRAND_SAG {
+            break;
+        }
+        // Sag falls as the square of the step.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss
+        )]
+        let raised = ((count as f64) * (sag / STRAND_SAG).sqrt()).ceil() as usize;
+        count = raised.clamp(count + 1, MOST);
+    }
+    Ok(count)
+}
+
 /// Parameter-space node snap for the arrangement.
 const PARAM_SNAP: f64 = 1e-6;
 
@@ -820,6 +867,9 @@ fn pcurve_polyline(
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let steps = steps.clamp(1.0, 4096.0) as usize;
         count = count.max(steps);
+    }
+    if matches!(surface, SurfaceGeometry::Plane(_)) && !matches!(pcurve, PlanarCurve::Line(_)) {
+        count = sag_count(&|t| pcurve.point_at(t, tol), lo, hi, count)?;
     }
     let mut out = Vec::with_capacity(count + 1);
     for i in 0..=count {
@@ -5149,7 +5199,14 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             };
             // The pcurve shares the curve's parameterization; sampling
             // uses folded parameters for periodic curves.
-            let count = 32;
+            let fold_at = |t: f64| if section.closed { fold(t, domain) } else { t };
+            let count = if !matches!(face.surface, SurfaceGeometry::Plane(_))
+                || matches!(pcurve, PlanarCurve::Line(_))
+            {
+                32
+            } else {
+                sag_count(&|t| pcurve.point_at(fold_at(t), tol), sub.0, sub.1, 32)?
+            };
             let mut line = Vec::with_capacity(count + 1);
             for i in 0..=count {
                 #[allow(clippy::cast_precision_loss)]

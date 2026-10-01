@@ -1110,3 +1110,44 @@ fn a_drum_poking_a_sliver_out_of_a_box_works_at_any_turn() {
         }
     }
 }
+
+/// Two drums a thousandth apart, in radius or in axis, overlapping half
+/// their height: the wider one's cap leaves an annulus or a crescent that
+/// thin, narrower than its outline's chords would bow at a fixed sampling,
+/// and each operation keeps its volumes.
+#[test]
+fn drums_a_thousandth_apart_keep_their_volumes() {
+    let at =
+        |x: f64, z: f64| Frame::new(Point::new(x, 0.0, z), Direction::Z, Direction::X, T).unwrap();
+    for (radius, offset) in [(2.001, 0.0), (2.0, 1e-3)] {
+        let mut model = Model::new();
+        let low = ogeom::algo::make_cylinder(&mut model, at(0.0, 0.0), 2.0, 4.0, T)
+            .unwrap()
+            .shape;
+        let high = ogeom::algo::make_cylinder(&mut model, at(offset, 2.0), radius, 4.0, T)
+            .unwrap()
+            .shape;
+        let (va, vb) = (volume(&model, &low), volume(&model, &high));
+        let fuse = ogeom::boolean::fuse(&mut model, &low, &high, T).unwrap();
+        let common = ogeom::boolean::common(&mut model, &low, &high, T).unwrap();
+        let cut = ogeom::boolean::cut(&mut model, &low, &high, T).unwrap();
+        let (f, c, k) = (
+            volume(&model, &fuse.shape),
+            volume(&model, &common.shape),
+            volume(&model, &cut.shape),
+        );
+        assert!(
+            (f + c - va - vb).abs() < 1e-6,
+            "{radius} {offset}: {f} + {c}"
+        );
+        assert!((k + c - va).abs() < 1e-6, "{radius} {offset}: {k} + {c}");
+        // The common part is the narrower drum's upper half, less the
+        // crescent the offset leaves outside the other.
+        let pi = core::f64::consts::PI;
+        let lens = 8.0 * (offset / 4.0).acos() - offset / 2.0 * (16.0 - offset * offset).sqrt();
+        assert!(
+            (c - 2.0 * lens.min(4.0 * pi)).abs() < 1e-6,
+            "{radius} {offset}: {c}"
+        );
+    }
+}

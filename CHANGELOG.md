@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Drums a thousandth apart.** Two drums 1e-3 apart in radius or axis
+  refused: the wider one's cap leaves an annulus or crescent that thin, and
+  its outline's chords bowed by more than its width, so the point the
+  piece was classified by fell outside it. A curved strand on a plane is
+  now sampled until its chords stand within 1e-4 of it. Two drums 1e-4
+  apart in axis, whose union came out short by 0.03, now refuse instead.
+
 - **A cut by an identical solid, and a cap that all but meets a wall.**
   Cutting a solid by an identical copy described another way (two spheres
   on turned frames) failed in the arrangement; a solid lying within its
