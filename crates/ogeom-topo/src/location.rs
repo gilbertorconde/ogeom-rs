@@ -520,7 +520,7 @@ mod tests {
         assert_eq!(
             foreign.index(),
             first.index(),
-            "the same slot in both stores, which is what used to make this silent"
+            "the same slot in both stores, so only the store tells the two apart"
         );
         assert!(s.get(foreign).is_none());
         assert!(Location::of(foreign).composed(&s).is_err());
