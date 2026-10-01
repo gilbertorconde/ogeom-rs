@@ -1,4 +1,4 @@
-//! M4's closing bar: a mechanical part, end to end.
+//! A mechanical part, end to end.
 //!
 //! One part through the whole manufacturing vocabulary: a block shelled into
 //! an open tray, its corner edges chamfered, filleted at constant radius and

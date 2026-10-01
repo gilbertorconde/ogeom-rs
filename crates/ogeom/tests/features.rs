@@ -1,4 +1,4 @@
-//! §11's feature vocabulary: draft about a neutral plane, and the form
+//! The feature vocabulary: draft about a neutral plane, and the form
 //! features built as the compositions they are.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 

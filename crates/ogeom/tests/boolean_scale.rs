@@ -133,7 +133,7 @@ fn a_thin_drill_through_a_many_faced_solid_is_quick() {
 /// through the top crosses dozens of such faces. Each face's section with
 /// the drill meets the face's boundary only as near as the boundary lies,
 /// and neighbouring faces' sections end on their shared edge that far
-/// apart; both are within the edges' recorded radii, and the cut closes.
+/// apart. Both are within the edges' recorded radii, and the cut closes.
 #[test]
 fn a_drill_through_a_jittered_facet_top_closes() {
     let (n, size, height) = (24_u32, 20.0_f64, 10.0_f64);

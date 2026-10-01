@@ -104,7 +104,7 @@ fn a_half_turn_s_caps_face_out_whichever_way_the_ring_winds() {
         let solid = make_revolution(&mut model, &face, axis, core::f64::consts::PI, T)
             .unwrap()
             .shape;
-        // The material stands on y >= 0; both caps lie in y = 0.
+        // The material stands on y >= 0, and both caps lie in y = 0.
         for f in ogeom::topo::explore_unique(&model, &solid, ogeom::topo::ShapeType::Face).unwrap()
         {
             let (p, n) = ogeom::algo::face_normal(&model, &f, T).unwrap();

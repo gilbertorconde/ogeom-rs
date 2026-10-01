@@ -1,6 +1,6 @@
 //! Remodelling: geometry restated wholesale, the solid unchanged. Swept
 //! forms are made by restating primitives as revolutions, then named back
-//! as what they are; high-degree splines are made by restating a box in
+//! as what they are. High-degree splines are made by restating a box in
 //! elevated form, then restricted back.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 

@@ -1,6 +1,5 @@
-//! The §1 foundations M7 owed: cancellation that stops a long operation at
-//! its next checkpoint, and parallelism whose answer is bit-identical at any
-//! thread count.
+//! Cancellation that stops a long operation at its next checkpoint, and
+//! parallelism whose answer is bit-identical at any thread count.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::{OgeomError, Tolerances, parallel, progress};
@@ -199,7 +198,7 @@ fn parallel_triangulation_returns_the_same_mesh() {
 /// A boolean's answer does not depend on how many threads paved its sections.
 ///
 /// The filler measures each section against the boundaries it crosses, and
-/// that measuring now runs in parallel. What must not move is where the
+/// that measuring runs in parallel. What must not move is where the
 /// crossings land: a pave arriving in a different order would split an edge
 /// at the same places in a different sequence, and the rebuilt solid would
 /// differ in its vertex numbering even where its geometry agreed. Serialized
@@ -255,7 +254,7 @@ fn a_parallel_step_read_is_bit_identical() {
         "/../../tests/corpus/nist_ctc_01_asme1_rd.stp"
     );
     let Ok(text) = std::fs::read_to_string(path) else {
-        return; // The corpus is optional; nothing to compare without it.
+        return; // The corpus is optional, and there is nothing to compare without it.
     };
     let read_at = |threads: usize| {
         parallel::set_threads(threads);

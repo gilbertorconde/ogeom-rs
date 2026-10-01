@@ -44,11 +44,11 @@ fn weigh(model: &Model, shape: &Shape, closed_form: bool) -> f64 {
 /// so a drum that arrives with one full-turn circle on each disc leaves
 /// with two arcs on each. The disc those arcs bound is the same disc. And
 /// the wall's seam keeps the column it was born with, so its chart's hull
-/// stood a whole millimetre above the rim the cut left: the seam is read
-/// over the edge's own range now.
+/// stands a whole millimetre above the rim the cut left: the seam is read
+/// over the edge's own range, not the hull's.
 ///
-/// It was out by 1.3% at the default chord, which is the kind of error
-/// that looks like a tolerance and is not one.
+/// Read off a mesh instead, the drum is out by 1.3% at the default chord,
+/// which is the kind of error that looks like a tolerance and is not one.
 #[test]
 fn a_boolean_result_is_still_weighed_in_closed_form() {
     let pi = core::f64::consts::PI;
@@ -150,8 +150,8 @@ fn a_rim_blend_leaves_a_solid_that_is_still_weighed_exactly() {
 
 /// A face with a hole in it is a region less a region, and the integral is
 /// their sum: a plate with a bore is a rectangle less a disc, a tube's end
-/// face a disc less a disc. Both were meshed before, and a mesh of a
-/// circle is a polygon inscribed in it, so both came out heavy.
+/// face a disc less a disc. A mesh of a circle is a polygon inscribed in
+/// it, so measured off a mesh both come out heavy.
 #[test]
 fn a_face_with_a_hole_is_weighed_in_closed_form() {
     let pi = core::f64::consts::PI;
@@ -207,9 +207,9 @@ fn a_face_with_a_hole_is_weighed_in_closed_form() {
 /// tessellator, which repairs such a shell by flipping whichever side of
 /// the disagreement is in the minority.
 ///
-/// `nist_ftc_11_asme1_rb.stp` arrives exactly like this (its bore wall's
-/// flag points into the solid), and taking the flags at their word made it
-/// a third heavy, the bore counted as material.
+/// An imported part can arrive exactly like this (a bore wall's flag
+/// pointing into the solid), and taking the flags at their word counts the
+/// bore as material and makes the part a third heavy.
 #[test]
 fn a_shell_whose_faces_disagree_is_left_to_the_mesh() {
     let mut model = Model::new();

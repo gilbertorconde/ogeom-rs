@@ -1,5 +1,5 @@
-//! M5's first criterion takes shape: a multi-body assembly read with its
-//! product structure, placements, names and colours intact.
+//! A multi-body assembly read with its product structure, placements,
+//! names and colours intact.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -97,7 +97,7 @@ fn the_bolted_plate_assembly_reads_whole() {
 #[test]
 fn a_single_part_file_still_yields_a_product_with_its_colours() {
     // The NIST parts have no assembly, but they do carry product names and
-    // styled colours; the document says so instead of losing them.
+    // styled colours. The document says so instead of losing them.
     let text = corpus("nist_ftc_11_asme1_rb.stp");
     let import = ogeom::io::read_step(&text, T).unwrap();
     let doc = &import.document;

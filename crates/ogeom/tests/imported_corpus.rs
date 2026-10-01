@@ -1,5 +1,5 @@
-//! M3's closing argument: the corpus imported, healed, measured, and
-//! operated on: real files in, real modelling out.
+//! The corpus imported, healed, measured, and operated on: real files in,
+//! real modelling out.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -16,7 +16,7 @@ fn corpus(name: &str) -> String {
 /// every part measures, and each volume pins to its known figure: the
 /// values ftc_07 and ftc_11 arbitrated against the kernel's exact ray
 /// classifier and ctc_01 against an orientation-free even-odd grid. A loose
-/// relative band absorbs future mesh refinements; an orientation or unit
+/// relative band absorbs mesh refinements. An orientation or unit
 /// mistake moves a volume by whole factors and cannot hide inside it.
 #[test]
 fn the_corpus_heals_and_every_part_measures() {
@@ -42,7 +42,7 @@ fn the_corpus_heals_and_every_part_measures() {
         let mut import = ogeom::io::read_step(&text, T).unwrap();
         let solid = import.solids[0].clone();
         // Healing is idempotent where nothing is broken and surgery where
-        // something is; either way the shell must close.
+        // something is. Either way the shell must close.
         let healed = ogeom::heal::reanchor_periodic_rings(import.document.model_mut(), &solid, T)
             .map_or(solid, |h| h.0.shape);
         let shell = explore_unique(import.document.model(), &healed, ShapeType::Shell)
@@ -63,8 +63,8 @@ fn the_corpus_heals_and_every_part_measures() {
     }
 }
 
-/// A boolean over imported geometry, history checked: the milestone's
-/// operations run on the world's parts, not only on this kernel's own.
+/// A boolean over imported geometry, history checked: the operations run
+/// on the world's parts, not only on this kernel's own.
 #[test]
 fn an_imported_part_takes_a_boolean_cut() {
     let text = corpus("nist_ftc_11_asme1_rb.stp");
@@ -82,10 +82,8 @@ fn an_imported_part_takes_a_boolean_cut() {
         .unwrap()
         .mass;
 
-    // A square post cut down through the plate's solid ring; the part has a
-    // large central pocket, and a post through fresh air cuts nothing, as an
-    // earlier version of this test discovered only once the result's mesh
-    // first became measurable.
+    // A square post cut down through the plate's solid ring. The part has a
+    // large central pocket, and a post through fresh air would cut nothing.
     let frame = ogeom::math::Frame::new(
         ogeom::math::Point::new(20.0, -4.0, -3.0),
         ogeom::math::Direction::Z,
@@ -137,20 +135,16 @@ fn an_imported_part_takes_a_boolean_cut() {
 
 /// A body is bounded by what it is trimmed to, not by the carriers under it.
 ///
-/// `shape_bounds` promised a guarantee and delivered the carriers: an
-/// imported plane reported its own window, which spans kilometres, and a
-/// cylinder its height domain. A consumer asking how big a screw is got a
-/// box a billion millimetres across and had to fall back to the hull of the
-/// topological vertices, which does not contain the body either, since a
-/// button head's apex is a bulge between its rims, three millimetres past
-/// every vertex the head has.
+/// An imported plane's own window spans kilometres and a cylinder's height
+/// domain is unbounded, so a bound read from the carriers is a box a
+/// billion millimetres across. The hull of the topological vertices does
+/// not contain the body either: a button head's apex is a bulge between
+/// its rims, three millimetres past every vertex the head has.
 ///
-/// Two things were wrong. An edge reported the bound of its whole curve
-/// rather than of the range it uses, so a segment on a line that runs to
-/// the ends of the world reported the ends of the world. And a curved face
-/// reported its whole surface, when its boundary is bounded by the edges
-/// below it and all the face itself has to add is where its surface bulges
-/// past that boundary.
+/// An edge bounds the range it uses, not its whole curve, so a segment on a
+/// line that runs to the ends of the world does not report the ends of the
+/// world. A curved face is bounded by the edges below it, plus where its
+/// surface bulges past that boundary, not by its whole surface.
 #[test]
 fn a_body_is_bounded_by_what_it_is_trimmed_to() {
     let deflection = ogeom::mesh::Deflection::default();
@@ -209,17 +203,16 @@ fn a_body_is_bounded_by_what_it_is_trimmed_to() {
 /// A sliver's boundary is drawn finely enough to be a boundary.
 ///
 /// The face is a quarter-arc forty-five millimetres long and eighteen
-/// microns wide, between two nearly concentric circles, lifted out of a
-/// community printer assembly. At the default tenth of a millimetre the
-/// sagitta of each bounding arc is twenty-nine microns (wider than the
-/// region itself), so the inner polyline crosses the outer one and what
-/// reaches the triangulator is not a region. It answered with sixteen
-/// triangles in fifteen disconnected pieces, and the holes between them
-/// were what kept the body it belongs to from meshing closed.
+/// microns wide, between two nearly concentric circles. At the default
+/// tenth of a millimetre the sagitta of each bounding arc is twenty-nine
+/// microns (wider than the region itself), so at the caller's chord the
+/// inner polyline crosses the outer one and what reaches the triangulator
+/// is not a region: it comes back as a scatter of disconnected pieces, and
+/// the holes between them keep the body from meshing closed.
 ///
 /// `V - E + F` is the test because it is the question: one for a disc,
 /// `1 - holes` for a face with inner loops, and anything else means the
-/// pieces are not joined. Fifteen is fifteen fragments.
+/// pieces are not joined.
 #[test]
 fn a_sliver_face_is_drawn_fine_enough_to_triangulate_whole() {
     use std::collections::HashMap;
@@ -263,15 +256,15 @@ fn a_sliver_face_is_drawn_fine_enough_to_triangulate_whole() {
 ///
 /// The face is a cone sector bounded by two rulings into the apex and one
 /// arc, the rulings standing exactly a quarter turn apart. In the chart the
-/// two apex ends are distinct points a quarter period apart; in space they
+/// two apex ends are distinct points a quarter period apart. In space they
 /// are one vertex. The ring has to keep both (the run between them along
-/// the degenerate row is the face's own boundary), and a test that read
-/// "apart" as "more than a quarter period" dropped the second, cut the
-/// corner through the face, and lost the triangle at the apex. The face
-/// was still a disc; it was a third smaller than it should be, and the
-/// body it belongs to had a hole exactly one triangle wide.
+/// the degenerate row is the face's own boundary): reading "apart" as
+/// "more than a quarter period" drops the second, cuts the corner through
+/// the face, and loses the triangle at the apex. The face is still a disc,
+/// a third smaller than it should be, and the body it belongs to has a
+/// hole exactly one triangle wide.
 ///
-/// Area is the assertion because area is what went missing: 0.842 mm² with
+/// Area is the assertion because area is what goes missing: 0.842 mm² with
 /// the corner cut, 1.104 with it kept.
 #[test]
 fn a_cone_s_apex_run_is_kept_at_a_quarter_turn() {
@@ -280,8 +273,9 @@ fn a_cone_s_apex_run_is_kept_at_a_quarter_turn() {
     let model = import.document.model();
     let faces = explore_unique(model, &import.solids[0], ShapeType::Face).unwrap();
     assert_eq!(faces.len(), 1, "the fixture is the one face");
-    // At the angular deflection the areas below were measured at; the
-    // default has since moved and the inscribed area moves with it.
+    // The angular deflection the areas below are measured at: the
+    // inscribed area moves with the deflection, so the default is not
+    // relied on.
     let deflection = ogeom::mesh::Deflection {
         angular: 0.2,
         ..ogeom::mesh::Deflection::default()
@@ -330,11 +324,10 @@ fn a_cone_s_apex_run_is_kept_at_a_quarter_turn() {
 /// The face lies on a B-spline tube that closes on itself in `u` (the
 /// same points at `u = 0` and `u = 1`) without being periodic, and its
 /// trim crosses that join twice. Walking the ring, the fold onto the branch
-/// that continues it engaged on periodicity alone, so on this surface it
-/// never fired: consecutive edges' images stood a whole chart apart, the
-/// ring jumped the width of the chart twice, and the triangulator drew six
-/// pieces. Closure, not periodicity, is the test (the same distinction the
-/// projected-fit unwrap learned), and folded, the face is one piece.
+/// that continues it engages on closure, not on periodicity. On periodicity
+/// alone it never fires here: consecutive edges' images stand a whole chart
+/// apart, the ring jumps the width of the chart twice, and the triangulator
+/// draws six pieces. Folded, the face is one piece.
 #[test]
 fn a_ring_folds_across_a_closed_chart_s_join() {
     use std::collections::HashMap;
@@ -379,13 +372,13 @@ fn a_ring_folds_across_a_closed_chart_s_join() {
 ///
 /// The face is a plane with twenty inner loops. Fifteen are holes. Five run
 /// out along two arcs and back along two splines fitted to the same arcs (
-/// three millimetres long, a fifth of a micron wide, enclosing nothing)
-/// and read as holes they are a tangle the triangulator cannot classify:
-/// it drew the face with thirty-two holes. Measured in space, they are
-/// slits, and dropped; the fifteen real holes stay.
+/// three millimetres long, a fifth of a micron wide, enclosing nothing).
+/// Read as holes they are a tangle the triangulator cannot classify, and
+/// the face draws with thirty-two holes. Measured in space, they are
+/// slits, and dropped. The fifteen real holes stay.
 ///
 /// `V - E + F` is `1 - holes` for a face with inner loops: fifteen holes
-/// give −14. Thirty-two gave −31.
+/// give −14.
 #[test]
 fn a_slit_loop_is_not_a_hole() {
     use std::collections::HashMap;
@@ -422,16 +415,15 @@ fn a_slit_loop_is_not_a_hole() {
 /// A long bore is drawn round between its cross holes, not square.
 ///
 /// The face is a cylinder 2.1 mm in radius and four hundred long, crossed
-/// by holes wider than itself. It never sags along its axis, so sag gave
-/// the grid one interior row, and the Delaunay triangulation bridged two
-/// hundred millimetres from each rim to that row with triangles a quarter
-/// turn wide, each sagging less than the three chords the repair pass
-/// fires at, so they stayed. Grid cells are held to a bounded aspect now:
-/// rows close enough that no triangle can reach across more than a few
-/// columns.
+/// by holes wider than itself. It never sags along its axis, so sag alone
+/// gives the grid one interior row, and a Delaunay triangulation bridges
+/// two hundred millimetres from each rim to that row with triangles a
+/// quarter turn wide, each sagging less than the three chords the repair
+/// pass fires at. Grid cells are held to a bounded aspect: rows close
+/// enough that no triangle can reach across more than a few columns.
 ///
 /// Every ten-millimetre band of the bore holds vertices at fifteen
-/// distinct whole degrees; the square bore held three.
+/// distinct whole degrees, where a square bore holds three.
 #[test]
 fn a_long_bore_is_round_between_its_holes() {
     use std::collections::{BTreeMap, BTreeSet};
@@ -476,9 +468,9 @@ fn a_long_bore_is_round_between_its_holes() {
 /// A viewer scaling its chord to a body's size hands a long extrusion a
 /// chord of a third of a millimetre, and holds the tangent's turn to half a
 /// radian. Its edges are drawn to both, so the bore's rims come out
-/// thirteen-sided; the interior grid, held to the chord alone, came out
-/// seven-sided, and the bore changed shape a chord in from each rim. The
-/// grid's cells are now held to the normal's turn as well.
+/// thirteen-sided. An interior grid held to the chord alone comes out
+/// seven-sided, and the bore changes shape a chord in from each rim, so
+/// the grid's cells are held to the normal's turn as well.
 ///
 /// The same bore as above, at that viewer's deflection: every ten
 /// millimetres holds vertices at twelve or more whole degrees.
@@ -518,11 +510,11 @@ fn a_bore_s_inside_is_as_round_as_its_rims() {
 ///
 /// The face is a cylinder twenty millimetres tall whose axis point the
 /// file placed half a metre away, so its chart spans `v` from −500 000 to
-/// −499 980. The scale a degenerate triangle was measured against was the
-/// difference between the smallest and largest coordinate over both axes
-/// (half a million), and at that scale a quarter of a chart unit was a
-/// hair: every cell of the grid was dropped and the face drew as two
-/// triangles. The scale is the region's span now.
+/// −499 980. Measured against the difference between the smallest and
+/// largest coordinate over both axes (half a million), a quarter of a
+/// chart unit is a hair: every cell of the grid is dropped and the face
+/// draws as two triangles. The scale a degenerate triangle is measured
+/// against is the region's span.
 #[test]
 fn a_chart_far_from_its_origin_is_not_degenerate() {
     let text = corpus("chart_far_from_its_origin.step");
@@ -549,9 +541,8 @@ fn a_chart_far_from_its_origin_is_not_degenerate() {
     );
 }
 
-/// Half a radian of angular deflection, spelled out: it is the default
-/// now, but these fixtures showed what they showed at this value, and the
-/// tests should keep asking for it if the default moves again.
+/// Half a radian of angular deflection, spelled out: the fixtures below
+/// are measured at this value, whatever the default is.
 fn half_a_radian() -> ogeom::mesh::Deflection {
     ogeom::mesh::Deflection {
         angular: 0.5,
@@ -576,9 +567,9 @@ fn euler_of(mesh: &ogeom::topo::Triangulation) -> i64 {
 ///
 /// Forty microns wide between rims of 2.845 and 2.805 mm: at half a radian
 /// each rim is a sixteen-gon sagging fifty-five microns, the two polygons
-/// cross, and the first pass encloses nothing. A first pass that came back
-/// in *fragments* was already drawn again with finer edges; one that came
-/// back *empty* was refused before it could be. Empty is short too.
+/// cross, and the first pass encloses nothing. A first pass that comes
+/// back in *fragments* is drawn again with finer edges, and so is one that
+/// comes back *empty*: empty is short too.
 #[test]
 fn an_annulus_narrower_than_its_rims_sag_is_drawn_finer() {
     let text = corpus("annulus_narrower_than_its_rims_sag.step");
@@ -611,9 +602,9 @@ fn an_annulus_narrower_than_its_rims_sag_is_drawn_finer() {
 /// collapses to a point. Meshed whole at half a radian, three grid points
 /// on that patch sit on a diagonal, the middle one a rounding off the
 /// line, and the sliver they make has its centre at that middle point to
-/// the last bits. The sag repair inserted the centre, round after round,
-/// each a hair on the last; the degenerate filter dropped the hairs and
-/// left a hole, and the solid was open by six edges.
+/// the last bits. Inserting the centre puts a hair on the last point,
+/// round after round. The degenerate filter drops the hairs and leaves a
+/// hole, and the solid is open by six edges.
 #[test]
 fn a_sliver_on_a_diagonal_of_the_grid_leaves_the_solid_closed() {
     let text = corpus("sliver_on_a_diagonal_of_the_grid.step");
@@ -633,8 +624,8 @@ fn a_sliver_on_a_diagonal_of_the_grid_leaves_the_solid_closed() {
 /// edges, an edge that runs diagonally across the patch's chart. Meshed
 /// whole at half a radian, a grid point falls exactly on that segment (
 /// the midpoint of two grid corners the ring joins), and even-odd counting
-/// calls it inside; inserted, it split the constraint on the patch alone,
-/// and the torus was drawn to the unsplit edge: a T-junction, and the
+/// calls it inside. Inserted, it splits the constraint on the patch alone
+/// while the torus is drawn to the unsplit edge: a T-junction, and the
 /// solid open by six edges.
 #[test]
 fn a_grid_point_on_a_diagonal_boundary_leaves_the_solid_closed() {
@@ -653,12 +644,12 @@ fn a_grid_point_on_a_diagonal_boundary_leaves_the_solid_closed() {
 ///
 /// A cylinder wall with six slanted slots, each slot's two sides different
 /// curves between the same two points. At half a radian the two sides'
-/// polylines cross, and the face drew with two holes more than it has:
-/// `V - E + F` of −7 for a face with six holes, which is −5. The count of
-/// triangles against boundary points saw nothing: the crossing cost a
-/// handful of triangles and the face's hundreds of interior points buried
-/// the difference. The boundary is now triangulated on its own first,
-/// where the count is exact, and the slots' edges are drawn finer.
+/// polylines cross, and a face drawn from them has two holes more than it
+/// has: `V - E + F` of −7 for a face with six holes, which is −5. A count
+/// of triangles against boundary points sees nothing: the crossing costs a
+/// handful of triangles and the face's hundreds of interior points bury
+/// the difference. The boundary is triangulated on its own first, where
+/// the count is exact, and the slots' edges are drawn finer.
 #[test]
 fn a_crossing_is_told_by_the_boundary_alone() {
     let text = corpus("slots_cross_at_half_a_radian.step");
@@ -684,9 +675,9 @@ fn a_crossing_is_told_by_the_boundary_alone() {
 /// A spike on the boundary bounds nothing and is not drawn.
 ///
 /// A plane whose wire runs out along an edge to a point and straight back
-/// over the same curve. Kept, the spike triangulated to two hairs (one
+/// over the same curve. Kept, the spike triangulates to two hairs (one
 /// vertex and one triangle more than a boundary that encloses a region
-/// has), and the face was two pieces by count. Stripped before the
+/// has), and the face is two pieces by count. Stripped before the
 /// triangulation, the face is one.
 #[test]
 fn a_spike_on_the_boundary_is_stripped() {
@@ -716,11 +707,11 @@ fn a_spike_on_the_boundary_is_stripped() {
 ///
 /// A fillet strip a centimetre long and a couple of millimetres wide,
 /// turning a quarter turn across its width, whose chart runs `u` over a
-/// fiftieth of a unit and `v` over one. Delaunay in that chart joined
+/// fiftieth of a unit and `v` over one. Delaunay in the raw chart joins
 /// points along the strip across columns rather than to the row beside
-/// them, and the triangles it made were slivers in space that lifted
+/// them, and the triangles it makes are slivers in space that lift
 /// folded: flat across a bend the surface takes in between, their normals
-/// pointing where none of their vertices' do. Half the face shaded as
+/// pointing where none of their vertices' do, so half the face shades as
 /// creases. Triangulated in the chart scaled to the surface's own metric,
 /// every triangle lies with its vertices' normals.
 #[test]
@@ -736,7 +727,7 @@ fn a_narrow_chart_s_triangles_lie_on_the_surface() {
         ..ogeom::mesh::Deflection::default()
     };
     let mesh = ogeom::mesh::triangulate_face(model, &faces[0], deflection, T).unwrap();
-    // Each triangle against the mean of its vertices' normals; a fin
+    // Each triangle against the mean of its vertices' normals. A fin
     // stands near ninety degrees off, a facet on a fillet at most a few
     // tens.
     let total: f64 = mesh
@@ -778,10 +769,10 @@ fn a_narrow_chart_s_triangles_lie_on_the_surface() {
 /// A face narrower than the chord is drawn to a fraction of its width.
 ///
 /// A thread flank a tenth of a millimetre wide, drawn at a chord three
-/// times that: the boundary sagged by more than the face is wide between
+/// times that: the boundary sags by more than the face is wide between
 /// its points, and every triangle across the width (a boundary chord
 /// two millimetres long against a point a hundredth of a millimetre in)
-/// stood off the surface by that sag. The face's edges are drawn to a
+/// stands off the surface by that sag. The face's edges are drawn to a
 /// quarter of its width instead, and the triangles lie on it.
 #[test]
 fn a_face_narrower_than_the_chord_draws_its_edges_finer() {
@@ -823,12 +814,12 @@ fn a_face_narrower_than_the_chord_draws_its_edges_finer() {
 
 /// A plane cutting a drum almost along its axis leaves an ellipse six and
 /// a half metres by 1.8 millimetres, and the eight faces round one corner
-/// of a community part are bounded by short arcs of such ellipses. Their
-/// vertices sit a couple of microns off the curve, and the closed-form
-/// inversion read them nine millimetres along it: the edges ran the long
-/// way round the ellipse, and three faces drew out to 10.8 m from a 1 × 3
-/// mm corner. Every face's mesh stays within its vertices' span, grown by
-/// a millimetre for an arc's own bulge.
+/// of the fixture are bounded by short arcs of such ellipses. Their
+/// vertices sit a couple of microns off the curve, where the closed-form
+/// inversion can read them nine millimetres along it, run the edges the
+/// long way round the ellipse, and draw three faces out to 10.8 m from a
+/// 1 × 3 mm corner. Every face's mesh stays within its vertices' span,
+/// grown by a millimetre for an arc's own bulge.
 #[test]
 fn faces_bounded_by_arcs_of_an_eccentric_ellipse_mesh_on_themselves() {
     let text = corpus("eccentric_ellipse_edges.step");

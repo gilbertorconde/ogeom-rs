@@ -146,7 +146,7 @@ fn cells_are_the_three_booleans() {
 }
 
 /// A model that ran many operations carries everything they built, kept or
-/// not; compacted to one result, it holds only that result, which measures
+/// not. Compacted to one result, it holds only that result, which measures
 /// the same.
 #[test]
 fn a_compacted_model_keeps_only_what_its_roots_reach() {

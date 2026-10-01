@@ -140,10 +140,10 @@ fn a_mirrored_drum_fuses_through_its_fitted_images() {
 #[test]
 fn a_prism_fuses_with_its_mirrored_copy() {
     // A pad is built as a profile face swept, which stores its near cap
-    // reversed and its far cap as that same node displaced. Copying such a
-    // body used to apply each stored placement and sense twice, which takes a
-    // wire apart; nothing said so until a reflecting placement forced the bake
-    // that walks every wire and rebuilds it.
+    // reversed and its far cap as that same node displaced. A copy applies
+    // each stored placement and sense once: applied twice they take a wire
+    // apart, and only the bake a reflecting placement forces, which walks
+    // every wire and rebuilds it, says so.
     let mut model = ogeom_topo::Model::with_tolerances(T);
     let pts = [
         Point::new(0.0, 0.0, 0.0),

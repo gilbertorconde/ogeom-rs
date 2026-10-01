@@ -1,4 +1,4 @@
-//! A thread from the new §3 helix: the exact curve swept into a pipe by the
+//! A thread from the exact helix: the curve swept into a pipe by the
 //! skinned sweep, its volume answering to the closed-form arc length.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
@@ -33,7 +33,7 @@ fn a_helical_pipe_is_a_spring_that_measures() {
         .unwrap()
         .mass;
     // A tube around a constant-speed spine encloses length times section
-    // area, exactly, when it stays clear of itself; the fit and the mesh
+    // area, exactly, when it stays clear of itself. The fit and the mesh
     // spend the rest of the budget.
     let expected = length * core::f64::consts::PI * 1.5 * 1.5;
     assert!(

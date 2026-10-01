@@ -118,7 +118,7 @@ fn a_prism_shells_open_at_the_top() {
             .unwrap();
     let diagnosis = ogeom_algo::check(&model, &shelled.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
-    // The walls hold half a unit each way; the open top keeps the cavity's
+    // The walls hold half a unit each way. The open top keeps the cavity's
     // full height: 192 less 7 by 5 by 3.5.
     assert!((volume(&model, &shelled.shape) - 69.5).abs() < 1e-6);
 }

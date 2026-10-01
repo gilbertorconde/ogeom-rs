@@ -64,7 +64,7 @@ fn volume(model: &Model, shape: &Shape) -> f64 {
 /// A cube whose bottom square is split two ways across its diagonal: one
 /// triangle along the whole diagonal, two meeting at its middle, and a flat
 /// sliver along the diagonal sealing the difference, as exporters leave at a
-/// T-junction. The sliver has no area and is dropped; the triangle across
+/// T-junction. The sliver has no area and is dropped. The triangle across
 /// the diagonal is split at its middle instead, so the solid stays closed.
 #[test]
 fn a_flat_sliver_sealing_a_t_junction_leaves_the_cube_closed() {
@@ -738,7 +738,7 @@ fn a_chamfer_with_a_stray_vertex_is_still_a_cone() {
 /// from one side of a slit to the other, its chart window starting at the
 /// slit rather than at the cylinder's zero. Holes drilled across the plate
 /// through the bore cut and fill valid and share the plate's volume, their
-/// sections on the bore placed on the patch's side of the slit; the last
+/// sections on the bore placed on the patch's side of the slit. The last
 /// passes within the slit's loose tolerance of it without meeting it, and
 /// its rim is still a hole in the bore.
 #[test]
@@ -921,7 +921,7 @@ fn holes_beside_a_rough_corner_cut_and_fill_valid() {
 /// Holes drilled sideways past the rough box's corner, across faces whose
 /// threaded edges set a weld of a few hundredths. A hole's rim is cut where
 /// it crosses the hole's own seam, a few microns from where the rim starts,
-/// and the sliver between collapses in both faces' charts; it collapses in
+/// and the sliver between collapses in both faces' charts. It collapses in
 /// space as well, or the rest of the rim ends on two vertices and its ring
 /// stays open.
 #[test]
@@ -1145,7 +1145,7 @@ fn stl_slab(r: f64, n: u32, top: f64) -> (Vec<(f64, f64)>, Triangulation) {
 /// A pad sketched on a converted slab's own outline and sunk into it: its
 /// sides run along the slab's flat walls and are chords of its recognized
 /// corners, touching them at every vertex. The union is the slab and the
-/// intersection the pad; a pad standing out through the top is never taken
+/// intersection the pad. A pad standing out through the top is never taken
 /// for either.
 #[test]
 fn a_pad_within_a_converted_solid_fuses_to_the_solid() {
@@ -1231,7 +1231,7 @@ fn exported(mut mesh: Triangulation, noise: f64) -> Triangulation {
 /// A rounded slab whose rims are chamfered by a single row of triangles:
 /// each row's corners lie on two circles, which a sphere and a torus fit as
 /// well as the cone. The cone is the one taken, and meets the corner's
-/// cylinder on one circle; exported points, up to a little over the default
+/// cylinder on one circle. Exported points, up to a little over the default
 /// distance off their surfaces, still come back the same faces, on axes
 /// square to a cap.
 #[test]
@@ -1429,7 +1429,7 @@ fn a_pad_through_a_converted_part_matches_the_exact_part() {
 /// A sliver folded back under its three neighbours, as an exporter leaves
 /// where it moved a vertex across a thin triangle, closed below by a
 /// pyramid. The sliver faces against every neighbour while its winding
-/// agrees with theirs; the diagonal it shares with its largest neighbour
+/// agrees with theirs. The diagonal it shares with its largest neighbour
 /// is swapped, and the solid comes back valid and bounded by the unfolded
 /// surface.
 #[test]
@@ -1809,7 +1809,7 @@ fn a_noisy_drilled_block_keeps_its_faces_whole() {
 }
 
 /// A round two facets across fits many surfaces through its three rows of
-/// vertices; the one it comes back on is the cylinder tangent to the two
+/// vertices. The one it comes back on is the cylinder tangent to the two
 /// faces it joins, on their line of meeting's direction, at the round's
 /// radius.
 #[test]
@@ -1915,7 +1915,7 @@ fn narrow_round(model: &mut Model) -> Shape {
 }
 
 /// Converted without recognition, keeping every vertex, a block rounded on
-/// every edge keeps its rounds' facets; refined, the facets are the
+/// every edge keeps its rounds' facets. Refined, the facets are the
 /// cylinders and the corners' spheres again, as converting with
 /// recognition gives in one step.
 #[test]

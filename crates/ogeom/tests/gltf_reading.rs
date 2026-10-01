@@ -5,7 +5,7 @@
 //! reader documents built deliberately in the forms a writer chooses:
 //! interleaved with a stride, indices as unsigned shorts, normals as
 //! normalized signed bytes, a sparse accessor over a base, a node hierarchy
-//! with a matrix and with translation–rotation–scale.
+//! with a matrix and with translation, rotation and scale.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -330,7 +330,7 @@ fn nodes_place_their_meshes_and_normals_survive_an_uneven_scale() {
     );
 
     // And the normals came through the inverse transpose. For `diag(2, 1, ½)`
-    // that is `diag(½, 1, 2)` up to a factor, which normalizing removes; and
+    // that is `diag(½, 1, 2)` up to a factor, which normalizing removes. And
     // it is a genuinely different direction from the scale's own, which is
     // what the second assertion holds it to.
     let mut differed = 0;

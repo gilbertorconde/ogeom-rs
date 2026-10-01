@@ -3,9 +3,7 @@
 //!
 //! They are one family: every one of them is the classifier being asked where
 //! a piece stands at a place where the question has no answer: on a
-//! coincidence, at a chart degeneracy, in a cusp, on a tangency. They are
-//! written here before the interference table exists, so that what the table
-//! buys is a measurement and not an impression.
+//! coincidence, at a chart degeneracy, in a cusp, on a tangency.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -29,7 +27,7 @@ fn at(p: Point) -> Frame {
     Frame::new(p, Direction::Z, Direction::X, T).unwrap()
 }
 
-/// **A1: a tool flush with the part.** A block with a bore through it,
+/// **A tool flush with the part.** A block with a bore through it,
 /// refilled by the very cylinder that cut it. The tool's wall coincides with
 /// the bore's wall over its whole length and its caps are flush with the two
 /// faces the bore broke, so every piece of the tool lies *on* the part rather
@@ -79,7 +77,7 @@ fn a1_a_tool_flush_with_the_part_refills_the_bore() {
     );
 }
 
-/// **A2: a section through a chart pole.** A plane through a ball's own axis
+/// **A section through a chart pole.** A plane through a ball's own axis
 /// ends its section exactly at both poles, where the sphere's chart
 /// degenerates: a whole line of the chart is one point in space, and the
 /// pieces either side of the section meet there.
@@ -123,9 +121,9 @@ fn a2_a_section_through_both_poles_halves_the_ball() {
     );
 }
 
-/// **A3: a ball on a box's corner vertex.** A vertex-against-face
-/// interference is a first-class thing; it has no business surfacing as an
-/// anomaly during face splitting.
+/// **A ball on a box's corner vertex.** A vertex-against-face interference
+/// is a configuration of its own, not an anomaly surfacing during face
+/// splitting.
 ///
 /// Three placements of the same pair, each a different way for the corner to
 /// meet the ball. Touching the vertex from outside bounds no material, so the
@@ -235,14 +233,14 @@ fn a3_a_ball_on_a_corner_vertex_bounds_nothing() {
     }
 }
 
-/// **A4: a section through tangential contact.** The textbook half-section:
+/// **A section through tangential contact.** The textbook half-section:
 /// a plane through a bore's axis. It meets the bore's wall along the wall's
 /// own rulings, and it meets the bore's rim circles at exactly the points
 /// those rulings end, a place where the crossing question is degenerate from
 /// every side at once.
 ///
-/// The measured claim is the half of the drilled block, and (because this is
-/// what the drawing feature D2 needs) a section whose curves are there.
+/// The measured claim is the half of the drilled block, and (because a
+/// drawing's section view needs it) a section whose curves are there.
 #[test]
 fn a4_an_on_axis_half_section_of_a_bore() {
     let mut model = Model::new();
@@ -301,10 +299,10 @@ fn a4_an_on_axis_half_section_of_a_bore() {
     assert_eq!(rulings, 2, "the plane cuts the wall along two rulings");
 }
 
-/// **A5: a shell around a three-cylinder tip.** Three mutually perpendicular
+/// **A shell around a three-cylinder tip.** Three mutually perpendicular
 /// cylinders of one radius meet at a box's corner: the three fillet surfaces a
 /// corner blend would leave. The tool that clears the leftover spike is the
-/// corner block minus the ball, and removing it is what fails.
+/// corner block minus the ball, and removing it is the operation measured.
 ///
 /// The measured claim is the closed form for the block's corner rounded to a
 /// sphere octant: the corner block of side `r` less the spike, which is that
@@ -366,8 +364,8 @@ fn a5_a_corner_block_less_a_ball_clears_the_spike() {
     );
 }
 
-/// A6: tangency at a face's own corner. The three-blend corner tool (the
-/// corner block less the ball, which A5 measures) is tangent to everything
+/// Tangency at a face's own corner. The three-blend corner tool (the
+/// corner block less the ball, measured above) is tangent to everything
 /// it rounds *by construction*: its spherical patch touches each of the
 /// box's three faces at a point that is a vertex of the patch's own
 /// boundary. Fed both chart columns of the octant's seam-meridian

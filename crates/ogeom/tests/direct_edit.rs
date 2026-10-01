@@ -165,7 +165,7 @@ fn a_ball_offset_is_a_larger_ball() {
 }
 
 /// A face driven past the one across from it, or into the rest of the
-/// solid, is refused by name; so is a motion that is not rigid.
+/// solid, is refused by name, and so is a motion that is not rigid.
 #[test]
 fn an_edit_that_breaks_the_solid_is_refused() {
     let mut model = Model::new();

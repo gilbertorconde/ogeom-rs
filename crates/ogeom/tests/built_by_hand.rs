@@ -13,9 +13,9 @@
 //!
 //! The face builder here is the one that attaches pcurves. `make_face_on`
 //! takes wires and a surface and nothing else, which leaves every edge on the
-//! face without a curve in the face's own parameters; `check` reports that as
+//! face without a curve in the face's own parameters. `check` reports that as
 //! broken and the face does not triangulate. A caller assembling a face by
-//! hand wants the pcurve-attaching one; the bare builder is for callers that
+//! hand wants the pcurve-attaching one. The bare builder is for callers that
 //! already computed the pcurves themselves.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
@@ -43,7 +43,7 @@ fn segment(model: &mut Model, from: &Shape, to: &Shape, a: Point, b: Point) -> S
 
 /// A planar face through `origin` with normal `normal`, bounded by `edges`.
 /// `reference` fixes the chart's u direction and must not be parallel to the
-/// normal: a wall's outward normal is horizontal, so `Z` serves; a cap's is
+/// normal: a wall's outward normal is horizontal, so `Z` serves. A cap's is
 /// `Z`, so `X` does.
 fn face(
     model: &mut Model,
@@ -148,7 +148,7 @@ fn a_hand_built_prism_closes_and_measures_its_closed_form() {
             // Head to tail all the way round: along the bottom rim, up the
             // far upright, back along the top rim against its own sense, and
             // down the near upright against its own. `make_wire` insists on
-            // this and says which pair failed to meet; an orientation the
+            // this and says which pair failed to meet. An orientation the
             // caller got wrong is a gap in every face built on the wire.
             vec![
                 bottom_edges[i].clone(),

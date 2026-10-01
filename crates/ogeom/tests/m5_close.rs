@@ -1,9 +1,7 @@
-//! M5's closing bar, both criteria end to end.
-//!
-//! A multi-body STEP assembly imported with colours, names and PMI,
-//! modified, exported, reimported, and compared against what went in; and a
-//! 2D drawing generated from a 3D model, hidden lines removed, visible and
-//! hidden edges classified, sections taken.
+//! End to end: a multi-body STEP assembly imported with colours, names and
+//! PMI, modified, exported, reimported, and compared against what went in,
+//! and a 2D drawing generated from a 3D model, hidden lines removed,
+//! visible and hidden edges classified, sections taken.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;

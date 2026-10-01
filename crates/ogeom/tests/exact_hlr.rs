@@ -1,6 +1,6 @@
-//! §13's exact half: silhouettes as the curves they are, visibility asked
-//! of the faces rather than of a mesh, and the isoparametric and reflect
-//! lines that ride the same construction.
+//! Exact hidden-line removal: silhouettes as the curves they are,
+//! visibility asked of the faces rather than of a mesh, and the
+//! isoparametric and reflect lines that ride the same construction.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -132,8 +132,8 @@ fn iso_lines_stay_on_their_face_and_reflect_lines_follow_the_light() {
     }
 }
 
-/// §D1: a torus has no closed-form silhouette, and it is *walked* rather
-/// than refused: the same walk a surface intersection uses, following a
+/// A torus has no closed-form silhouette, and it is *walked* rather than
+/// refused: the same walk a surface intersection uses, following a
 /// different condition.
 ///
 /// Seen along its own axis a torus's outline is two circles, the outer and
@@ -219,7 +219,7 @@ fn a_torus_silhouette_is_marched_and_lands_on_its_own_equators() {
 /// points stand on the radius, and there are enough of them that no chord
 /// between neighbours sags past the deflection. Stepped by the straight
 /// distance between its range's ends, which a closed circle makes zero,
-/// it was an octagon.
+/// it would be an octagon.
 #[test]
 fn a_balls_outline_is_drawn_round_not_as_an_octagon() {
     let mut model = Model::new();

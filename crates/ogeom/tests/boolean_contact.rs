@@ -1,7 +1,6 @@
-//! The contact configurations an earlier plan still called refusals,
-//! pinned as the working behaviour they have become: curved same-domain
-//! pairs unify, and contact confined to an edge or a vertex passes through
-//! the boolean without harm.
+//! Contact configurations the boolean resolves rather than refuses: curved
+//! same-domain pairs unify, and contact confined to an edge or a vertex
+//! passes through the boolean without harm.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -294,10 +293,10 @@ fn a_fitted_edge_on_a_shared_cylinder_still_melts_the_same_domain_contact() {
     // Two drums on the *identical* cylinder chart, one of them scooped at
     // the top by a crossing cylinder: its wall's upper edges are marched,
     // fitted curves with fitted pcurves, which no closed-form projection can
-    // carry into the other wall's chart. The same-domain melt used to refuse
-    // exactly here; now the stored pcurve (which on the identical chart
-    // already is the projection) stands in, and the fuse of a contained
-    // solid comes out as the container.
+    // carry into the other wall's chart. On the identical chart the stored
+    // pcurve already is the projection, so the same-domain melt takes it in
+    // place of one, and the fuse of a contained solid comes out as the
+    // container.
     let mut model = Model::new();
 
     let tall = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 2.0, 6.0, T)
@@ -328,7 +327,7 @@ fn a_fitted_edge_on_a_shared_cylinder_still_melts_the_same_domain_contact() {
             .is_valid(),
         "the fused drum is a valid solid"
     );
-    // The container integrates on its exact surfaces; the fused drum's
+    // The container integrates on its exact surfaces. The fused drum's
     // fitted trims leave it to the mesh, measured a decade finer so its
     // deficit stays inside the budget. The budget is the mesh, not the
     // melt: the fuse either resolves the contact or refuses by name.
@@ -358,7 +357,7 @@ fn a_fitted_edge_on_a_shared_cylinder_still_melts_the_same_domain_contact() {
 /// regions nest rather than match: the small box's faces at the origin lie
 /// strictly inside the big box's. The contact is real same-domain contact,
 /// so it has to reach the melt, which it only does while the scale is
-/// carried as the placement it is, since a restated plane no longer says it
+/// carried as the placement it is, since a restated plane does not say it
 /// is one and no closed form recognizes the pair.
 #[test]
 fn a_box_and_its_doubled_copy_fuse_into_the_bigger_box() {
@@ -451,8 +450,8 @@ fn a_doubled_copy_slid_along_its_shared_plane_fuses_over_a_partial_contact() {
 /// A cylinder seated on the face it pierces: the two solids share the plane
 /// they both stand on, and the cylinder's cap lies strictly inside the
 /// block's bottom face. Both arguments therefore describe that one disk, and
-/// exactly one of the two descriptions may survive: the question `cut` never
-/// has to ask, which is why it closed while `common` did not.
+/// exactly one of the two descriptions may survive: a question `cut` never
+/// has to ask and `common` must.
 #[test]
 fn a_cylinder_seated_on_the_face_it_pierces_shares_only_the_segment_between_them() {
     let build = |model: &mut Model| {
@@ -508,7 +507,7 @@ fn a_cylinder_seated_on_the_face_it_pierces_shares_only_the_segment_between_them
         "the shared post is not valid"
     );
     // The post the block's height cuts out of the cylinder: two disks and the
-    // wall between them. Three faces; a fourth would be the shared disk
+    // wall between them. Three faces. A fourth would be the shared disk
     // described twice.
     assert_eq!(
         explore_unique(&model, &shared.shape, ShapeType::Face)
@@ -524,7 +523,7 @@ fn a_cylinder_seated_on_the_face_it_pierces_shares_only_the_segment_between_them
         "common volume {measured} against {expected}"
     );
 
-    // The neighbour that always worked, kept working.
+    // The cut of the same pair, which never describes the disk twice.
     let mut model = Model::with_tolerances(T);
     let (block, cylinder) = build(&mut model);
     let bored = ogeom::boolean::cut(&mut model, &block, &cylinder, T).unwrap();
@@ -537,8 +536,8 @@ fn a_cylinder_seated_on_the_face_it_pierces_shares_only_the_segment_between_them
 }
 
 /// A shear is the transform a placement cannot express, so the body is
-/// restated as patches, correctly; there is no other way to carry a box's
-/// planes under one. What the patches lose is the *word* plane, and
+/// restated as patches: there is no other way to carry a box's planes
+/// under one. What the patches lose is the *word* plane, and
 /// coincidence is decided on what the geometry says: the two faces on the
 /// z = 0 plane are one surface, and each's edges are carried into the
 /// other's chart over the stretch that lies on its window. The union, the
@@ -587,10 +586,11 @@ fn a_sheared_copy_sharing_a_plane_combines_to_its_exact_volumes() {
 /// A box cut from an L-bracket flush with the bracket's wall: the box's
 /// wall-side face lies on the wall's plane below the wall, and its edge on
 /// the end face runs along the line of that face's own edge up the wall,
-/// a length below it. The contact carried onto the end face was read as
-/// along that edge over the whole line, so the strip's side was never
-/// paved and the end face kept the strip. Three placements against the
-/// wall and one short of it, each to its exact volume.
+/// a length below it. The contact carried onto the end face is clipped to
+/// the edge it runs along, not read over the whole line: read over the
+/// line, the strip's side is never paved and the end face keeps the
+/// strip. Three placements against the wall and one short of it, each to
+/// its exact volume.
 #[test]
 fn a_box_cut_flush_with_a_bracket_s_wall_paves_the_end_face() {
     let bracket = |model: &mut Model| {
@@ -996,7 +996,7 @@ fn a_solid_poking_microns_through_another_is_not_taken_as_nested() {
 /// Two boxes stacked a few microns apart, closer than the boolean welds:
 /// their facing walls are not kept as a wall of no thickness inside one
 /// shell. Below the weld the union is the one tall box, as touching boxes
-/// fuse; past it, the two boxes apart.
+/// fuse. Past it, the two boxes apart.
 #[test]
 fn boxes_stacked_microns_apart_fuse_without_a_membrane() {
     for gap in [1e-6, 5e-6, 1e-5, 2e-5] {

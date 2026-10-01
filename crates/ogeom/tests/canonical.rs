@@ -113,14 +113,14 @@ fn a_free_form_wall_stays_free_form() {
 
 /// A fused post converts to patches that still close.
 ///
-/// Fusing a post onto a slab splits the post's rims into two half circles,
-/// and the conversion wrote the second half's pcurve as the straight chart
-/// segment between its projected endpoints: the seam vertex projecting to
-/// either column, it drew the front half mirrored, and the wall's ring lost
-/// its far side. The fit's own slop widened each converted edge past the
-/// vertices that bound it, which the checker refuses. Both are decided by
-/// the edge's own interior now, and the converted solid is as closed and
-/// as large as the analytic one.
+/// Fusing a post onto a slab splits the post's rims into two half circles.
+/// A half's pcurve written as the straight chart segment between its
+/// projected endpoints goes wrong where the seam vertex projects to either
+/// column: the front half draws mirrored, and the wall's ring loses its
+/// far side. And the fit's own slop must not widen a converted edge past
+/// the vertices that bound it, which the checker refuses. Both the column
+/// and the width are decided by the edge's own interior, and the converted
+/// solid is as closed and as large as the analytic one.
 #[test]
 fn a_fused_post_converts_to_patches_that_close() {
     let mut model = Model::new();

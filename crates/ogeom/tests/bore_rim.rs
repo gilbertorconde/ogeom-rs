@@ -116,7 +116,7 @@ fn parts(model: &mut Model) -> (Shape, Shape) {
 }
 
 /// The rim of a bore pushed down through the block rounds with one torus
-/// tangent to the top face and the bore; by Pappus the fillet removes a
+/// tangent to the top face and the bore. By Pappus the fillet removes a
 /// ring of area rho^2 (1 - pi/4) whose centroid stands out from the rim.
 #[test]
 fn a_bore_rim_rounds_and_bevels() {

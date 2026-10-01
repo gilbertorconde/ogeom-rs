@@ -25,7 +25,7 @@ fn t_joint(model: &mut Model) -> (Shape, Vec<Shape>) {
     .unwrap()
     .shape;
     let spine_ends = explore_unique(model, &spine, ShapeType::Vertex).unwrap();
-    // The spine runs origin → (10,0,0); its vertices come back in that order.
+    // The spine runs origin → (10,0,0). Its vertices come back in that order.
     let (v0, v1) = (spine_ends[0].clone(), spine_ends[1].clone());
 
     // Each leaf rises from the spine along its own direction.
@@ -91,7 +91,7 @@ fn an_edge_bounding_three_faces_is_permitted_and_read_honestly() {
     let mut model = Model::new();
     let (spine, faces) = t_joint(&mut model);
 
-    // The builder accepts the shell; nothing silently rejects legitimate
+    // The builder accepts the shell. Nothing silently rejects legitimate
     // non-manifold topology.
     let shell = ogeom::algo::make_shell(&mut model, &faces).unwrap().shape;
 

@@ -82,7 +82,7 @@ fn a_half_space_bounded_by_a_ball_keeps_its_side_of_a_block() {
     // The ball's chord along x over the block's (y, z) rectangle, by the
     // midpoint rule in each direction: smooth where the chord is real, and
     // the rectangle stays inside the ball's shadow except near z = 10,
-    // where the chord closes; enough points take that below the tolerance.
+    // where the chord closes. Enough points take that below the tolerance.
     let n = 2000;
     let mut inside = 0.0;
     for i in 0..n {

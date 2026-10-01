@@ -1,5 +1,5 @@
-//! §15's tail: a document that can be stepped back through, and textures
-//! as the assignment they are.
+//! A document that can be stepped back through, and textures as the
+//! assignment they are.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;

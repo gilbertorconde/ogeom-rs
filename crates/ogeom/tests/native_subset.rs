@@ -53,7 +53,7 @@ fn a_snapshot_of_one_root_is_a_fraction_and_round_trips() {
 }
 
 /// Subsetting is a property of the *roots*, not a new format: asking for
-/// every root writes the model as it always did, handles unrenumbered.
+/// every root writes the whole model, handles unrenumbered.
 #[test]
 fn asking_for_every_root_writes_the_model_unchanged() {
     let mut model = Model::new();

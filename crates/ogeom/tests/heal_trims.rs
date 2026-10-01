@@ -55,14 +55,14 @@ END-ISO-10303-21;
 "#;
 
 /// The reader's refusal is the healer's instruction: a boundary 3 mm off
-/// its surface reads untrimmed and refuses to mesh; `fix_face_pcurves` at
+/// its surface reads untrimmed and refuses to mesh. `fix_face_pcurves` at
 /// a caller's cap of 5 mm fits the trims the reader would not, widens the
 /// edges to the measured offset, and the face triangulates.
 #[test]
 fn a_face_the_reader_refused_heals_at_the_callers_cap() {
     let text = HOVER;
     let import = ogeom::io::read_step(text, T).unwrap();
-    // The report hands over the face itself; the instructed follow-up
+    // The report hands over the face itself. The instructed follow-up
     // needs no search.
     assert_eq!(import.report.untrimmed_faces.len(), 1);
     let refused = &import.report.untrimmed_faces[0];

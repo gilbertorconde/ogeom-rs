@@ -38,7 +38,7 @@ fn faces_where(
 
 /// A through bore's wall removed: the rims are inner loops of the lid and
 /// base, and the block comes back to the last bit of its exact volume:
-/// no overshoot, because nothing is filled; the boundary is resewn.
+/// no overshoot, because nothing is filled. The boundary is resewn.
 #[test]
 fn removing_a_bores_wall_makes_the_block_whole() {
     let mut model = Model::new();
@@ -187,9 +187,9 @@ fn edge_near(model: &Model, solid: &Shape, at: Point) -> Shape {
 
 /// Two separate features named in one call remove as two wounds.
 ///
-/// Two fillets on opposite edges share nothing; classifying their ring
-/// edges together used to elect "the sides" across both features and die
-/// recovering a nonsense edge. Grouped by shared edges, each feature runs
+/// Two fillets on opposite edges share nothing. Classified together, their
+/// ring edges would elect "the sides" across both features and the recovery
+/// would chase a nonsense edge. Grouped by shared edges, each feature runs
 /// the whole machinery on the previous result, and the box comes back
 /// sharp: exactly, both wounds.
 #[test]
@@ -275,7 +275,7 @@ fn two_meeting_fillets_remove_in_one_call() {
 
 /// The same corner blended one edge at a time: the second wedge's cap
 /// stands flush against the first band, and the feature is the two bands
-/// *and* that cap. The cap borders one wall and two removed faces; it
+/// *and* that cap. The cap borders one wall and two removed faces. It
 /// joins its band's crease, whose end is then where the crease pierces the
 /// other band's side wall: the shared corner.
 #[test]
@@ -318,10 +318,9 @@ fn two_flush_fillets_and_their_cap_remove_in_one_call() {
     assert!((volume(&model, &restored) - 4000.0).abs() < 1e-6);
 }
 
-/// The issue's own acceptance: two chamfers meeting at a box corner,
-/// removed in one call. One at a time they stand flush, the second's
-/// triangular cap against the first's plane; the feature is both chamfer
-/// planes and the cap.
+/// Two chamfers meeting at a box corner, removed in one call. One at a
+/// time they stand flush, the second's triangular cap against the first's
+/// plane, and the feature is both chamfer planes and the cap.
 #[test]
 fn two_chamfers_meeting_at_a_corner_remove_in_one_call() {
     let mut model = Model::new();
@@ -378,7 +377,6 @@ fn two_chamfers_meeting_at_a_corner_remove_in_one_call() {
 /// Each with a fillet and with a chamfer, since the wound is the same
 /// whether the band is a torus or a cone.
 ///
-/// This is the wound an earlier note called "a neighbour meeting itself".
 /// A whole ring taken out of a neighbour is closed one of two ways, and
 /// only the neighbours' surfaces say which: a bore's two mouths sit in
 /// faces that never meet, so the rings are dropped and the faces grow
@@ -447,7 +445,7 @@ fn a_rim_blend_removes_and_its_rim_comes_back() {
         };
         // Measured off the mesh at a fine chord, because the blend's own
         // boolean leaves the faces it did not touch split at their seams,
-        // and a solid whose discs are two arcs apiece no longer takes the
+        // and a solid whose discs are two arcs apiece does not take the
         // exact integrator's path. The reach quoted below is the mesh's,
         // and it is two orders finer than the feature being removed.
         let fine = Deflection::with_chord(1e-4).unwrap();

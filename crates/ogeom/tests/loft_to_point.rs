@@ -163,7 +163,7 @@ fn a_pipe_closes_to_a_point_at_either_end() {
     }
 }
 
-/// Along a quarter circle the pipe closes exactly where the spine ends; its
+/// Along a quarter circle the pipe closes exactly where the spine ends. Its
 /// squares shrink about the spine, so it holds each square's area along the
 /// arc: 4 L / 3 by Pappus.
 #[test]

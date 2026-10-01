@@ -1,4 +1,4 @@
-//! §17's mesh and drawing half: what this crate writes, it reads back.
+//! The mesh, drawing and package formats: what this crate writes, it reads back.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -228,7 +228,7 @@ fn components_and_units_flatten_to_millimetres() {
 }
 
 /// A mesh painted in more than one colour keeps its geometry and drops the
-/// colours with a warning; a support structure is read, and said to be one.
+/// colours with a warning. A support structure is read, and said to be one.
 #[test]
 fn per_triangle_colours_and_supports_are_read_with_a_warning() {
     let import = ogeom::io::read_3mf(&corpus_bytes("threemf_painted_sphere.3mf"), T).unwrap();

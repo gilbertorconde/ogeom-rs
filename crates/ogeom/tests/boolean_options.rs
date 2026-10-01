@@ -1,5 +1,6 @@
-//! The boolean's API completions: scaled placements bake automatically and
-//! run the analytic pipeline.
+//! The boolean's entry points beyond the three operations: scaled
+//! placements baked automatically, half spaces, faces sewn into solids,
+//! cells, fuzz and periodic patterns.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -9,7 +10,7 @@ use ogeom::topo::Model;
 
 const T: Tolerances = Tolerances::millimetres();
 
-/// A placement with scale no longer refuses: the boolean bakes it (every
+/// A placement with scale is not refused: the boolean bakes it (every
 /// surface restated exactly in its own analytic vocabulary, pcurves
 /// re-derived) and the drilled result measures.
 #[test]
@@ -53,9 +54,9 @@ fn a_scaled_placement_bakes_and_the_boolean_runs() {
     );
 }
 
-/// A half space finally has its consumer: cutting a box with the solid on
-/// one side of a plane slices it exactly at the plane, and the union with
-/// a half space refuses as the unbounded thing it would be.
+/// Cutting a box with the solid on one side of a plane slices it exactly
+/// at the plane, and the union with a half space refuses as the unbounded
+/// thing it would be.
 #[test]
 fn a_half_space_cuts_and_refuses_to_fuse() {
     use ogeom::geom::{LineCurve, PlaneSurface, SurfaceGeometry};
@@ -270,7 +271,7 @@ fn a_periodic_pattern_traces_every_face() {
                 .filter(|g| model.kind_of(g).unwrap() == ShapeType::Face)
                 .cloned()
                 .collect();
-            // Apart, every face has two copies; flush, a wall's copies
+            // Apart, every face has two copies. Flush, a wall's copies
             // between cells are inside the bar and gone.
             if period > 10.0 {
                 assert_eq!(generated.len(), 2, "period {period}: a face's copies");

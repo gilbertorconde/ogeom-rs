@@ -61,7 +61,7 @@ fn a_cylinder_round_trips_with_its_seam() {
         .unwrap()
         .shape;
     let (original, recovered, _) = round_trip(model, solid);
-    // The wall wraps its whole period; a reader that lost the seam would
+    // The wall wraps its whole period. A reader that lost the seam would
     // refuse to tessellate at all, and one that miscounted the turn would
     // miss by a factor, not an epsilon.
     assert!(
@@ -115,8 +115,8 @@ fn a_spline_walled_prism_round_trips_through_126_and_128() {
     // writer spells as rational B-spline surfaces (128) bounded by rational
     // B-spline curves (126), and the fitted-pcurve path carries back in.
     //
-    // The walls are open here; the closed-wall case has its own test below,
-    // which pins the F5 fix for both formats at once.
+    // The walls are open here. The closed-wall case has its own test below,
+    // for both formats at once.
     let mut model = Model::new();
     let arc = |sign: f64| -> ogeom::geom::Curve {
         let pts: Vec<Point> = (0..=8)
@@ -174,7 +174,7 @@ fn a_spline_walled_prism_round_trips_through_126_and_128() {
 
 #[test]
 fn a_sphere_round_trips_through_its_seam_only_boundary() {
-    // A full sphere's only written boundary is its seam, listed twice; the
+    // A full sphere's only written boundary is its seam, listed twice. The
     // poles have no curve to write. The reader recognises a seam-only loop
     // as the whole chart and rebuilds the natural face, degenerate boundary
     // and all. The two tessellations sample the chart differently, so the
@@ -239,9 +239,9 @@ fn an_empty_deck_is_refused_by_name() {
     );
 }
 
-/// F5: a closed spline wall through exchange, both formats. The skinned
+/// A closed spline wall through exchange, both formats. The skinned
 /// loft's wall is a clamped B-spline that closes on itself without being
-/// periodic; projections near the joining column land in either copy, and
+/// periodic. Projections near the joining column land in either copy, and
 /// only continuity chooses. The shared fitted-pcurve machinery unwraps by
 /// *closure*, so what one reader learns the other has too, and the pin is
 /// that both formats return the same solid, measured.
@@ -275,7 +275,7 @@ fn f5_a_closed_spline_wall_survives_both_formats() {
     let via_iges = volume(iges.document.model(), &iges.solids[0]);
 
     // The fitted trims re-tessellate a hair differently from the native
-    // face; the bound is that hair, and the two formats must agree with
+    // face. The bound is that hair, and the two formats must agree with
     // each other far tighter than either must agree with the original.
     assert!(
         (via_step - original).abs() < original * 1e-3,
@@ -295,14 +295,14 @@ fn f5_a_closed_spline_wall_survives_both_formats() {
 ///
 /// A periodic chart offers a branch per turn, all describing the same
 /// points, and a reader that derives each edge's image on its own has no
-/// reason to pick one over another. A drilled block came back with its
-/// bore wall's two rims whole turns apart (the right circles, neither
-/// meeting the seam the wire closes on), and nothing downstream said so:
-/// the tessellator folds into the chart and copes, and the error showed up
+/// reason to pick one over another. A drilled block whose bore wall's two
+/// rims come back whole turns apart (the right circles, neither meeting
+/// the seam the wire closes on) is caught by nothing downstream: the
+/// tessellator folds into the chart and copes, and the error shows up only
 /// as a tenth of a percent of volume.
 ///
-/// Both readers now slide each image by whole periods until its start
-/// meets where the last one ended, and this walks the result to say so.
+/// Both readers slide each image by whole periods until its start meets
+/// where the last one ended, and this walks the result to say so.
 #[test]
 fn a_recovered_wire_closes_in_its_own_chart() {
     use ogeom::geom::Curve2d as _;

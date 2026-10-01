@@ -86,7 +86,7 @@ fn volume(model: &Model, shape: &Shape) -> f64 {
         .mass
 }
 
-/// The acceptance of the chamfer chain: the box's four top edges bevelled
+/// The chamfer chain: the box's four top edges bevelled
 /// by one millimetre as one operation mitre at every corner: ten faces,
 /// the four prisms less their four corner overlaps.
 #[test]
@@ -116,7 +116,7 @@ fn a_chamfer_chain_mitres_at_shared_vertices() {
 }
 
 /// Three bevels at a convex corner meet at one point, and every edge of
-/// the box bevelled at once is the same inclusion–exclusion: the prisms,
+/// the box bevelled at once is the same inclusion and exclusion: the prisms,
 /// less their pairwise overlaps at each corner, plus the triple overlap,
 /// a quarter of the cube of the distance.
 #[test]
@@ -157,7 +157,7 @@ fn chamfer_chains_meet_three_at_a_corner() {
     );
 }
 
-/// The acceptance of the fillet corner: three fillets at a box's top corner
+/// The fillet corner: three fillets at a box's top corner
 /// asked together close it with the octant of the sphere a radius in from
 /// all three faces: ten faces, and inside the corner cube nothing but that
 /// sphere. The corner is the prism's far end, placed by the sweep, so the

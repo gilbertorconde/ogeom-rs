@@ -31,7 +31,7 @@ fn volume(model: &Model, shape: &Shape) -> Option<f64> {
 }
 
 /// The STEP reader widens an edge to how far its pcurves sit from its
-/// curve; the edge's vertices widen with it, so a freshly read solid holds
+/// curve. The edge's vertices widen with it, so a freshly read solid holds
 /// every vertex at least as loose as the edges it bounds. These files read
 /// with hundreds of vertices tighter than their edges otherwise.
 #[test]
@@ -90,7 +90,7 @@ fn fix_shape_restores_tolerance_containment() {
 /// Whatever the IGES writer writes, its reader reads: every record exactly
 /// eighty columns, and every solid back, valid, at the volume it went out
 /// with. One of these parts carries a coefficient near 1e-51, which
-/// positional notation spells longer than a record; the others have
+/// positional notation spells longer than a record. The others have
 /// vertices their curves miss by a few nanometres, or project a hair past
 /// a bounded curve's end.
 #[test]

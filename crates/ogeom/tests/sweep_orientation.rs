@@ -1,11 +1,11 @@
 //! A swept solid faces outward whichever way its profile was walked.
 //!
 //! A closed wire on a plane bounds one region however it is walked, but a
-//! prism reads each wall's side off its edge's direction. A square walked
-//! clockwise about the travel swept its four walls facing into the
-//! material while its caps faced out: the shell closed, the checker was
-//! content, and the volume came back refused as wound inward. Every ring's
-//! walls now follow the ring's winding about the travel: the outer ring
+//! prism reads each wall's side off its edge's direction. Walls read off
+//! the edge direction alone face into the material for a square walked
+//! clockwise about the travel while its caps face out: a closed shell the
+//! checker accepts, whose volume is refused as wound inward. So every
+//! ring's walls follow the ring's winding about the travel: the outer ring
 //! turning positively, a hole the other way.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
@@ -67,7 +67,7 @@ fn square(clockwise: bool) -> Vec<(f64, f64)> {
     corners
 }
 
-/// The issue's acceptance: the same box, whichever way its profile was walked.
+/// The same box, whichever way its profile was walked.
 #[test]
 fn a_prism_from_a_clockwise_square_faces_out_everywhere() {
     for clockwise in [false, true] {

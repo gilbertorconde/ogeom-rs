@@ -72,7 +72,7 @@ fn hatch_lines_stop_at_the_boundary_and_skip_the_hole() {
     )
     .unwrap();
 
-    // Ten scanlines at half-offsets; the two through the hole band split in
+    // Ten scanlines at half-offsets. The two through the hole band split in
     // two, so twelve segments whose lengths sum to the face's area.
     assert_eq!(segments.len(), 12, "{segments:?}");
     let total: f64 = segments.iter().map(|[a, b]| a.distance(*b)).sum();

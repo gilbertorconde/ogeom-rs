@@ -113,7 +113,7 @@ fn a_converted_drum_divides_at_its_weak_knots() {
         "the circle's double knots cut the wall"
     );
     holds(&model, &divided, core::f64::consts::PI * 4.0 * 5.0, 1e-3);
-    // Every piece is now smooth throughout.
+    // Every piece is smooth throughout.
     let again = ogeom::heal::divide_by_continuity(&mut model, &divided, Continuity::C1, T)
         .unwrap()
         .shape;
@@ -243,7 +243,7 @@ fn a_natural_face_divides_once_bounded() {
     }
 }
 
-/// A face on the offset of a spline has no closed-form iso-curve; the cut
+/// A face on the offset of a spline has no closed-form iso-curve. The cut
 /// runs along one fitted at its own parameters.
 #[test]
 fn a_face_on_an_offset_spline_divides() {

@@ -1,6 +1,6 @@
-//! §10's tail: what a blend achieved, measured; blends between faces that
-//! share no edge; edges whose envelope has no closed form; and the corner
-//! where three of them meet.
+//! What a blend achieved, measured: blends between faces that share no
+//! edge, edges whose envelope has no closed form, and the corner where
+//! three of them meet.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -168,11 +168,11 @@ fn a_blend_bridges_two_faces_that_share_no_edge() {
     );
 }
 
-/// B2: the corner where three blends meet. Three edges of a box are
-/// filleted in sequence at one vertex, and the leftover spike is rounded by
-/// the A5 tool: the corner block less the ball. The result is measured
-/// against a closed form derived independently, by inclusion–exclusion over
-/// the corner cube: within the cube every fillet prism's removal lies inside
+/// The corner where three blends meet. Three edges of a box are filleted
+/// in sequence at one vertex, and the leftover spike is rounded by the
+/// ball-and-block tool: the corner block less the ball. The result is
+/// measured against a closed form derived independently, by inclusion and
+/// exclusion over the corner cube: within the cube every fillet prism's removal lies inside
 /// the spike's, so the removed volume is three prism runs *outside* the cube
 /// plus the spike itself:
 ///
@@ -180,9 +180,9 @@ fn a_blend_bridges_two_faces_that_share_no_edge() {
 ///
 /// which for r = 3 is 784 + 51.75π. The blend is tangent to everything it
 /// rounds by construction (each contact a chart-degenerate curve or a
-/// vertex of the tool's own patch), and this test is the corner family's
-/// pin: it exercises A6, the tangential set-aside, the degeneracy splits,
-/// and the tolerance-carrying welds at once.
+/// vertex of the tool's own patch), and this test exercises the tangential
+/// set-aside, the degeneracy splits, and the tolerance-carrying welds at
+/// once.
 #[test]
 fn b2_three_fillets_and_the_corner_tool_round_the_vertex() {
     let mut model = Model::new();
@@ -235,7 +235,7 @@ fn b2_three_fillets_and_the_corner_tool_round_the_vertex() {
             error < previous || error < 1e-12,
             "refining the mesh brings the measurement closer: {measured} vs {want}"
         );
-        // The curved area is three band runs and the octant; the inscribed
+        // The curved area is three band runs and the octant. The inscribed
         // deficit at chord δ runs to a few δ/r of the curved volume share.
         assert!(
             error < chord * 2.0,
@@ -246,11 +246,10 @@ fn b2_three_fillets_and_the_corner_tool_round_the_vertex() {
     }
 }
 
-/// The promoted corner tool: `round_vertex` reproduces the B2 closed form.
-///
-/// Same three fillets, same corner, same inclusion–exclusion reference,
-/// but the ball-and-block construction now lives in the fillet crate with
-/// its own refusals, instead of being spelled out per call site.
+/// `round_vertex` reproduces the closed form above: same three fillets,
+/// same corner, same inclusion and exclusion reference, with the
+/// ball-and-block construction in the fillet crate under its own refusals
+/// instead of spelled out per call site.
 #[test]
 fn round_vertex_reproduces_the_b2_closed_form() {
     let mut model = Model::new();
@@ -259,7 +258,7 @@ fn round_vertex_reproduces_the_b2_closed_form() {
         .unwrap()
         .shape;
     // The corner is captured while it still exists: the fillets consume the
-    // tip, and the promoted tool reads the corner's planes from wherever the
+    // tip, and the tool reads the corner's planes from wherever the
     // vertex's *point* says they are.
     let vertex = vertex_near(&model, &block, Point::new(10.0, 10.0, 10.0));
     let mut solid = block;
@@ -297,11 +296,11 @@ fn round_vertex_reproduces_the_b2_closed_form() {
 
 /// The corner tool at every corner of the box, the three fillets in a
 /// different order at each: the construction is the same whichever way the
-/// corner faces and whichever edge goes first. It was not: the tool's
-/// block face meets a band exactly along the arc that bounds it, and the
-/// paving read that section as outside the block face by a hair at some
-/// corners and inside at others, so the band split at some corners and
-/// stayed whole at the rest.
+/// corner faces and whichever edge goes first. The tool's block face meets
+/// a band exactly along the arc that bounds it, and the paving must read
+/// that section the same way at every corner: a hair outside the block
+/// face at some and inside at others splits the band at some corners and
+/// leaves it whole at the rest.
 #[test]
 fn round_vertex_rounds_the_corner_at_any_placement() {
     let r = 3.0;
@@ -371,7 +370,7 @@ fn round_vertex_rounds_the_corner_at_any_placement() {
 /// An oblique corner: a sheared block's origin vertex, its three edges
 /// filleted one after another, then the corner tool. The block is the
 /// hexahedron bounded by the host planes and the three planes through the
-/// ball's centre square to the edges; the patch it leaves meets its three
+/// ball's centre square to the edges. The patch it leaves meets its three
 /// bands and three walls tangentially, and the caps at the corner are
 /// consumed while the caps at the edges' far ends stand.
 #[test]
@@ -441,7 +440,7 @@ fn round_vertex_rounds_an_oblique_corner() {
 /// the vertex, one ball touching all four, and the corner tool's block a
 /// polyhedron of eight faces. The corner is cut first and the four edges
 /// then take their flush fillets one after another, each band ending on
-/// the ball's rim; the other order, four fillets and then the corner,
+/// the ball's rim. The other order, four fillets and then the corner,
 /// dies at the third fillet, whose predecessors crash into each other at
 /// the apex. The corner's volume is measured against the closed form:
 /// the block, N pyramids of height `r` over the host quads, less the
@@ -696,7 +695,7 @@ fn balls_and_drums(model: &Model, shape: &Shape) -> (Vec<Ball>, Vec<Drum>) {
 /// A rectangular pyramid's apex: four planes, two slopes, and no ball a
 /// radius in from all four at once. The region the ball's centre may
 /// occupy has two tip vertices, each a radius in from three of the planes,
-/// joined along the two long slopes; the rounded corner is a sphere at
+/// joined along the two long slopes. The rounded corner is a sphere at
 /// each and a cylinder between them, the exact envelope of the rolling
 /// ball. The four edges then take their flush fillets, each band ending on
 /// its sphere's rim.
@@ -733,7 +732,7 @@ fn round_vertex_rounds_an_apex_no_ball_touches() {
         "five walls, two spheres, the ridge's cylinder and four flush ends"
     );
     // Each sphere sits a radius in from three of the four planes and
-    // farther from the fourth; the cylinder runs between the two centres
+    // farther from the fourth. The cylinder runs between the two centres
     // along the two long slopes, at the same radius.
     let inward = inward_normals(&base, apex);
     let (balls, drums) = balls_and_drums(&model, &rounded);
@@ -1012,7 +1011,7 @@ fn a_curved_corner_closes_the_same_way_round_either_order() {
     // Two routes to one rounded corner: all three edges in one call (the
     // corner first, the bands stopping flush against its ball), and the
     // bands one at a time with the corner tool after. The drum's ruling
-    // goes first on the second route; its band and the top's two meet
+    // goes first on the second route. Its band and the top's two meet
     // at the corner only through the ball.
     let mut model = Model::new();
     let (part, corner, mids) = shaved_cube(&mut model);
@@ -1266,7 +1265,7 @@ fn an_open_seat_runs_out_through_the_wall() {
         "the band is the only face the blend adds"
     );
 
-    // The blend face is the fitted band; its rails ride the hosts
+    // The blend face is the fitted band. Its rails ride the hosts
     // tangentially and every other edge of it lies on the wall.
     use ogeom::topo::NodeData;
     let blend = explore_unique(&model, &built.shape, ShapeType::Face)
@@ -1316,7 +1315,7 @@ fn an_open_seat_runs_out_through_the_wall() {
 /// Two straight edges of a box meeting at a corner, blended together:
 /// the later seat runs on through the earlier band and the cut trims the
 /// two bands against each other. Each wedge removes (1 − π/4) r² per unit
-/// length; the corner cell where both wedges reach is counted once, and
+/// length. The corner cell where both wedges reach is counted once, and
 /// what both remove there is the cell outside both cylinders,
 /// r³ (5/3 − π/2). One edge at a time stops flush instead, and keeps a
 /// cap at the corner, the state the corner tool is built for.
@@ -1405,11 +1404,10 @@ fn l_bracket(model: &mut Model) -> Shape {
 /// Pappus gives as the cross-section's area times its centroid's path.
 /// Both blends measure against their closed forms at chord 1e-4.
 ///
-/// The convex edge alone, ending at the re-entrant vertex, is the case
-/// that refused before the boolean clipped a contact's overlap to the
-/// edge it runs along: the band's flush end lands on the wall's plane,
-/// its side on the line of the end face's own edge up the wall, a length
-/// below it.
+/// The convex edge alone, ending at the re-entrant vertex, needs the
+/// boolean to clip a contact's overlap to the edge it runs along: the
+/// band's flush end lands on the wall's plane, its side on the line of the
+/// end face's own edge up the wall, a length below it.
 #[test]
 fn a_rim_blend_rolls_over_the_bracket_s_concave_blend() {
     let r = 0.5_f64;
@@ -1476,7 +1474,7 @@ fn a_rim_blend_rolls_over_the_bracket_s_concave_blend() {
 /// blend's run-out walks on under the earlier band until the ball has left
 /// the material, the cut trimming the two bands against each other at both
 /// corners, and the two orders land on the same solid. The wall's bottom
-/// edge is two pieces either side of the scoop, on one line; only the left
+/// edge is two pieces either side of the scoop, on one line. Only the left
 /// is asked for, and only the left is blended whichever goes first.
 #[test]
 fn a_marched_blend_meets_a_straight_blend_at_its_corners() {
@@ -1543,7 +1541,7 @@ fn a_marched_blend_meets_a_straight_blend_at_its_corners() {
 fn two_seam_split_blends_meet_cap_to_cap_in_either_order() {
     // The top crease is split by the drum's seam into two arcs sharing a
     // vertex mid-scoop. Each rounds as a capped blend ending in the arc's
-    // own section plane at the seam vertex; the second blend's cap meets
+    // own section plane at the seam vertex. The second blend's cap meets
     // the first's in that plane, the two bands meet along the shared arc,
     // and both caps are consumed. Whichever arc goes first, the result is
     // the same closed solid with two bands and no cap.
@@ -1596,15 +1594,14 @@ fn two_seam_split_blends_meet_cap_to_cap_in_either_order() {
 #[test]
 fn a_seam_split_crease_arc_rounds_with_run_out_caps() {
     // The top crease is split by the cylinder's own seam into two arcs
-    // sharing a mid-scoop vertex. The seat probe used to die on these (
-    // the reconstructed loop's midpoint stands in cut-away territory)
-    // before the march could speak. Probed and seated on the crease
-    // itself, the arc marches its seat and lands as a capped blend.
+    // sharing a mid-scoop vertex. The reconstructed loop's midpoint stands
+    // in cut-away territory, so the seat is probed on the crease itself.
+    // The arc then marches its seat and lands as a capped blend.
     let mut model = Model::new();
     let grooved = grooved_block(&mut model);
     let arc = edge_near(&model, &grooved, Point::new(7.3, 7.7, 10.0));
     let built = ogeom::fillet::fillet_edge(&mut model, &grooved, &arc, 1.0, T).unwrap();
-    // The result still meshes as one closed solid.
+    // The result meshes as one closed solid.
     let volume =
         ogeom::algo::volume_properties(&model, &built.shape, ogeom::mesh::Deflection::default(), T)
             .unwrap()
@@ -1614,7 +1611,7 @@ fn a_seam_split_crease_arc_rounds_with_run_out_caps() {
 
 #[test]
 fn two_disjoint_run_out_blends_coexist_on_one_solid() {
-    // The first capped blend lands on the bottom crease; the second on the
+    // The first capped blend lands on the bottom crease, the second on the
     // top crease's far seam-half, nowhere near the first. Sequential
     // marched blends must not disturb each other's wounds.
     let mut model = Model::new();
@@ -1661,8 +1658,9 @@ fn vertex_near(model: &Model, shape: &Shape, near: Point) -> Shape {
 /// over the length the other blend leaves it, the wedge over what is left
 /// of its own edge.
 ///
-/// Before the run-on knew to ask which way a neighbour's band rounds, the
-/// wedge ran the whole length of the leg and out the far side of the wall.
+/// The run-on asks which way a neighbour's band rounds. Without that the
+/// wedge would run the whole length of the leg and out the far side of the
+/// wall.
 #[test]
 fn a_fill_and_a_wedge_asked_together_stop_at_each_other() {
     let r = 0.5_f64;
@@ -1699,7 +1697,7 @@ fn a_fill_and_a_wedge_asked_together_stop_at_each_other() {
             "fill first {fill_first}: six walls, two bands, and the ends they stop on"
         );
         // Asked first, the fill runs the leg's whole depth and the wedge
-        // then has the length its rail leaves; asked second, the fill
+        // then has the length its rail leaves. Asked second, the fill
         // starts where the wedge's own rail crosses the re-entrant edge.
         let want = if fill_first {
             6.0 + per_length * 2.0 - per_length * (1.0 - r)
@@ -1774,10 +1772,10 @@ fn assert_marched_blend(model: &Model, before: &Shape, after: &Shape, what: &str
 }
 
 /// A ball drilled off its centre: the seat is a fitted seam between the
-/// sphere and the bore, and the sphere is a host the march had refused.
+/// sphere and the bore, a host whose seat has no closed form.
 ///
 /// The bore runs across the ball, lifted off the equator, so the seat
-/// keeps clear of both poles; the rim is picked off the sphere's own seam
+/// keeps clear of both poles. The rim is picked off the sphere's own seam
 /// meridian, which is a circle edge of its own the nearest-edge search
 /// would otherwise land on.
 #[test]
@@ -1887,7 +1885,7 @@ fn a_rim_whose_rail_rounds_the_sphere_s_pole_blends() {
 }
 
 /// A ring drilled through its tube: the seat runs round the drill on the
-/// torus, and the torus is a host the march had refused.
+/// torus, a host whose seat has no closed form.
 #[test]
 fn a_marched_blend_takes_a_torus_host() {
     let mut model = Model::new();
@@ -1913,7 +1911,7 @@ fn a_marched_blend_takes_a_torus_host() {
 }
 
 /// A cone drilled across its axis: the seat is a fitted seam between the
-/// cone and the bore, and the cone is a host the march had refused.
+/// cone and the bore, a host whose seat has no closed form.
 #[test]
 fn a_marched_blend_takes_a_cone_host() {
     let mut model = Model::new();

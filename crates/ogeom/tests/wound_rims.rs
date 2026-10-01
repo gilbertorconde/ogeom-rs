@@ -33,10 +33,10 @@ fn surface_of(model: &Model, face: &Shape) -> SurfaceGeometry {
 
 /// Two torus bands, each bounded by two parallels: one full circle round
 /// the axis at each end, every wire a single wound edge. Walked one wire at
-/// a time, each rim used to close on its own translate a tube-period over,
-/// which is the whole torus cut along the rim; two of those laid over each
-/// other cancel where they overlap, and the face drew to more area than
-/// the torus has. The rims are paired into one ring first, and the face is
+/// a time, each rim closes on its own translate a tube-period over, which
+/// is the whole torus cut along the rim. Two of those laid over each other
+/// cancel where they overlap, and the face draws to more area than the
+/// torus has. The rims are paired into one ring first, and the face is
 /// the band.
 #[test]
 fn a_torus_band_between_two_rims_is_the_strip_between_them() {
@@ -114,11 +114,11 @@ fn a_belt_between_two_latitudes_is_the_belt() {
 /// A bore through a block with a cross hole through the bore's wall: the
 /// wall is a cylinder whose two rims wind the chart and whose cross hole
 /// is a loop that does not. The rims pair into one ring joined by runs up
-/// one column. Taken wherever the first rim's chain happened to end (on
+/// one column. Taken wherever the first rim's chain happens to end (on
 /// this part, where the cross hole's loop lies), the runs cut straight
 /// through the loop: two constraints refused, the face redrawn finer and
-/// finer, never whole. The runs stand in the widest column no other ring
-/// touches, and the body draws closed.
+/// finer, never whole. So the runs stand in the widest column no other
+/// ring touches, and the body draws closed.
 #[test]
 fn a_cross_hole_through_a_bore_wall_draws_closed() {
     let mut model = Model::new();
@@ -151,7 +151,7 @@ fn a_cross_hole_through_a_bore_wall_draws_closed() {
             .unwrap()
             .mass;
     // The cross hole's two legs each reach from the block's face to the
-    // bore; the small overlap where a leg meets the bore's curve is inside
+    // bore. The small overlap where a leg meets the bore's curve is inside
     // the percent.
     assert!(
         (measured - expected).abs() < expected * 1e-2,

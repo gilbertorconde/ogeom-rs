@@ -512,8 +512,8 @@ fn axial_face(model: &mut Model, pts: &[(f64, f64)], theta: f64) -> Shape {
 /// A thread groove cut into a chamfered rod is the same cut whatever angle
 /// about the axis it starts at. The groove's sections run from one patch of
 /// the sweep to the next, and each ends on the patch edge exactly, where
-/// the next one starts; a section stopping short of it left the wire open
-/// at some start angles.
+/// the next one starts. A section stopping short of it leaves the wire
+/// open at some start angles.
 #[test]
 fn a_thread_cut_into_a_rod_is_the_same_at_any_start_angle() {
     let mut volumes = Vec::new();

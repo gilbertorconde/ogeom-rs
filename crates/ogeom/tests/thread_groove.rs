@@ -56,7 +56,7 @@ fn groove(model: &mut Model, turns: f64) -> Shape {
 /// its image on the face, read through the face's surface, is on the edge's
 /// curve at the same parameter, to the edge's tolerance. Two walls sharing a
 /// rail fit their surfaces at their own paces along the helix, and an image
-/// assumed straight on the wall that adopted the rail drifted a fifth of a
+/// assumed straight on the wall that adopted the rail drifts a fifth of a
 /// millimetre off it.
 #[test]
 fn a_swept_groove_is_where_its_faces_say() {
@@ -130,9 +130,9 @@ fn a_thread_groove_cuts_from_a_block() {
 
 /// A point a hundredth of a millimetre behind the end of a three-turn
 /// groove, near its wall: inside. A ray from it leaves through the wall a
-/// few hundredths on, close to where the wall's patch ends, and the Newton
-/// solve seeded at the corner of the patch's last cell stepped past the
-/// patch's end and stalled against it, so the crossing went uncounted.
+/// few hundredths on, close to where the wall's patch ends, where a Newton
+/// solve seeded at the corner of the patch's last cell can step past the
+/// patch's end and stall against it, leaving the crossing uncounted.
 #[test]
 fn a_point_just_inside_the_grooves_end_is_inside() {
     let mut model = Model::new();

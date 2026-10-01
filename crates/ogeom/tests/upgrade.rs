@@ -50,7 +50,7 @@ fn a_fused_pair_of_halves_unifies_back_to_a_box() {
         "nothing changed shape: {volume}"
     );
 
-    // The unified walls still carry split collinear boundary edges; the
+    // The unified walls still carry split collinear boundary edges. The
     // edge merge takes those out too.
     let merged = ogeom::heal::merge_edges(&mut model, &unified, T)
         .unwrap()
