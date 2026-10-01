@@ -1581,14 +1581,23 @@ fn on_torus(curve: &Curve, torus: ogeom_math::Torus, tol: Tolerances) -> Option<
         && local.x.hypot(local.y) <= tol.confusion()
     {
         let sin_v = local.z / torus.minor_radius();
-        let cos_v = (circle.radius() - torus.major_radius()) / torus.minor_radius();
-        if (sin_v.hypot(cos_v) - 1.0).abs() > tol.confusion() {
-            return None;
-        }
+        // On its own side of the axis, or (on a spindle, whose tube swallows
+        // the axis) on the tube's folded half past it, where the sweep's
+        // radius runs negative: the same parallel half a turn round.
+        let (cos_v, turned) = [
+            (circle.radius() - torus.major_radius(), 0.0),
+            (
+                -circle.radius() - torus.major_radius(),
+                core::f64::consts::PI,
+            ),
+        ]
+        .into_iter()
+        .map(|(reach, turned)| (reach / torus.minor_radius(), turned))
+        .find(|(cos_v, _)| (sin_v.hypot(*cos_v) - 1.0).abs() <= tol.confusion())?;
         let v = sin_v.atan2(cos_v);
         let start = circle.centre() + circle.frame().x().vector() * circle.radius();
         let at = frame.to_local(start);
-        let phase = at.y.atan2(at.x);
+        let phase = at.y.atan2(at.x) + turned;
         let winding = normal.dot(axis_z).signum();
         let towards =
             ogeom_math::Direction2::new(ogeom_math::Vector2::new(winding, 0.0), tol).ok()?;

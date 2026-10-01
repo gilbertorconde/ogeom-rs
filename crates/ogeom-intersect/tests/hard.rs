@@ -476,3 +476,46 @@ fn an_oblique_pipe_tee_s_sections_lie_on_both_pipes() {
         }
     }
 }
+
+/// A spindle torus (its tube swallows the axis) meets a plane square to
+/// its axis, a coaxial cylinder and a coaxial ring torus also on its folded
+/// half past the axis: every parallel comes back, on both surfaces, with
+/// its image in each chart.
+#[test]
+fn a_spindle_torus_s_folded_half_is_sectioned() {
+    use ogeom_intersect::{IntersectOptions, SurfaceIntersection, intersect_surfaces};
+    let spindle: SurfaceGeometry =
+        TorusSurface::new(Torus::new(Frame::WORLD, 10.0, 15.0, T).unwrap()).into();
+    let ring: SurfaceGeometry =
+        TorusSurface::new(Torus::new(Frame::WORLD, 4.0, 3.0, T).unwrap()).into();
+    let drum: SurfaceGeometry =
+        CylinderSurface::new(Cylinder::new(Frame::WORLD, 3.0, T).unwrap(), (-50.0, 50.0))
+            .unwrap()
+            .into();
+    let level: SurfaceGeometry = PlaneSurface::over(
+        Plane::through(Point::new(0.0, 0.0, 5.0), Direction::Z),
+        (-50.0, 50.0),
+        (-50.0, 50.0),
+    )
+    .unwrap()
+    .into();
+    for (other, count) in [(level, 2), (drum, 4), (ring, 2)] {
+        let SurfaceIntersection::Along(curves) =
+            intersect_surfaces(&spindle, &other, IntersectOptions::default(), T).unwrap()
+        else {
+            panic!("the surfaces meet");
+        };
+        assert_eq!(curves.len(), count);
+        for c in &curves {
+            assert!(c.on_a.is_some() && c.on_b.is_some());
+            let (lo, hi) = c.curve.domain();
+            for k in 0..=16 {
+                let p = c
+                    .curve
+                    .point_at(lo + (hi - lo) * f64::from(k) / 16.0, T)
+                    .unwrap();
+                assert!(off(&spindle, p).abs() < 1e-9 && off(&other, p).abs() < 1e-9);
+            }
+        }
+    }
+}

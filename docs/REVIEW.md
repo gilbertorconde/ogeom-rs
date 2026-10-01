@@ -65,7 +65,7 @@ Status: `[ ]` open, `[x]` done (commit), `[-]` dropped (reason).
 - [x] **C6.** Flat caps of a fine f32 mesh, rotated and far from the origin, break into many faces: `coplanar_angle` ignores the quantum (`mesh_solid.rs` `coplanar_groups`). (9ca5089)
 - [x] **R1.** PLY reader panics on an out-of-range face index (`mesh_formats.rs`). (676d426)
 - [x] **R2.** Deeply nested glTF (JSON) and VRML overflow the stack and abort the process (`json.rs`, `vrml.rs`). (78a7599)
-- [ ] **X1.** Spindle tori: the folded branch is dropped by the plane, coaxial cylinder and coaxial torus closed forms (`ogeom-intersect/src/surface.rs`).
+- [x] **X1.** Spindle tori: the folded branch is dropped by the plane, coaxial cylinder and coaxial torus closed forms (`ogeom-intersect/src/surface.rs`).
 - [ ] **X2.** Circle-circle overlaps across the periodic seam are lost or reported outside the window (`curves.rs` `clipped_to_windows`).
 - [ ] **X3.** Cones whose height range spans the apex: the far nappe's section is dropped by the coaxial cylinder and parallel cone closed forms (`surface.rs`).
 - [ ] **X4.** A fitted section near a cone apex breaks its stated tolerance about 200 times (`approx.rs`).

@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A spindle torus is sectioned on its folded half.** A torus whose tube
+  swallows its axis has, in every meridian, two tube circles reaching past
+  the axis, and the closed forms against a plane square to its axis, a
+  coaxial cylinder and a coaxial torus read only one: the parallels on
+  the folded half were dropped. Each now reads both, and the pcurve on
+  the torus takes such a parallel half a turn round.
+
 - **Endlessly nested glTF and VRML are refused.** Both readers parse by
   recursion, and a document nesting arrays, objects or nodes a hundred
   thousand deep ran the stack out and aborted the process. Nesting past

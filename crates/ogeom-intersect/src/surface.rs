@@ -461,13 +461,17 @@ fn axial_plane_torus(
             },
         );
     }
-    // Two parallels, one either side of the tube, the inner one only where
-    // the tube does not swallow the axis.
+    // Two parallels, one either side of the tube. A spindle's tube swallows
+    // the axis, and its inner parallel then lies on the tube's other half,
+    // past the axis: the same circle, at the radius's size.
     let spread = minor.mul_add(minor, -(height * height)).max(0.0).sqrt();
-    let circles: Vec<Curve> = [torus.major_radius() + spread, torus.major_radius() - spread]
-        .into_iter()
-        .filter_map(|radius| circle_on(centre, axis.direction, radius, tol))
-        .collect();
+    let circles: Vec<Curve> = [
+        torus.major_radius() + spread,
+        (torus.major_radius() - spread).abs(),
+    ]
+    .into_iter()
+    .filter_map(|radius| circle_on(centre, axis.direction, radius, tol))
+    .collect();
     Ok(if circles.is_empty() {
         Meeting::Apart
     } else {
@@ -512,22 +516,33 @@ fn coaxial_cylinder_torus(
         );
     }
     let axis = torus.axis();
-    let reach = (cylinder.radius() - torus.major_radius()).abs();
     let minor = torus.minor_radius();
-    if reach > minor + tol.confusion() {
-        return Ok(Meeting::Apart);
+    // In a meridian plane the tube is two circles, centred the major radius
+    // either side of the axis; the far one reaches this side only on a
+    // spindle, whose tube swallows the axis. The cylinder's line meets each
+    // it reaches: tangent at the tube's equator, or at mirrored heights.
+    let mut heights: Vec<f64> = Vec::new();
+    for reach in [
+        (cylinder.radius() - torus.major_radius()).abs(),
+        cylinder.radius() + torus.major_radius(),
+    ] {
+        if reach > minor + tol.confusion() {
+            continue;
+        }
+        if (reach - minor).abs() <= tol.confusion() {
+            heights.push(0.0);
+            continue;
+        }
+        let rise = minor.mul_add(minor, -(reach * reach)).max(0.0).sqrt();
+        heights.extend([rise, -rise]);
     }
-    if (reach - minor).abs() <= tol.confusion() {
-        // Tangent along the tube's inner or outer equator.
-        return Ok(
-            match circle_on(axis.location, axis.direction, cylinder.radius(), tol) {
-                Some(circle) => Meeting::Along(vec![circle]),
-                None => Meeting::Apart,
-            },
-        );
+    let mut kept: Vec<f64> = Vec::new();
+    for height in heights {
+        if kept.iter().all(|k| (k - height).abs() > tol.confusion()) {
+            kept.push(height);
+        }
     }
-    let rise = minor.mul_add(minor, -(reach * reach)).max(0.0).sqrt();
-    let circles: Vec<Curve> = [rise, -rise]
+    let circles: Vec<Curve> = kept
         .into_iter()
         .filter_map(|height| {
             circle_on(
@@ -734,34 +749,48 @@ fn coaxial_tori(
     {
         return Ok(Meeting::Same);
     }
-    // Profile circles in the meridian half-plane: centres at
-    // `(major, height)`, radii the minors.
-    let (ca, cb) = (
-        ogeom_math::Point2::new(a.major_radius(), 0.0),
-        ogeom_math::Point2::new(b.major_radius(), lift),
-    );
-    let between = cb - ca;
-    let distance = between.magnitude();
+    // Profile circles in a meridian plane: each tube is two circles, centred
+    // its major radius either side of the axis at its height, radii the
+    // minors. A spindle's far circle reaches past the axis onto this side,
+    // so every pairing is met, and the meetings on this side (a positive
+    // distance from the axis) are the parallels.
     let (ra, rb) = (a.minor_radius(), b.minor_radius());
-    if distance <= tol.confusion() {
-        // Concentric profiles of different tube radii never meet; the same
-        // circle was the `Same` case above.
-        return Ok(Meeting::Apart);
-    }
-    if distance > ra + rb + tol.confusion() || distance < (ra - rb).abs() - tol.confusion() {
-        return Ok(Meeting::Apart);
-    }
-    let along = distance.mul_add(distance, ra.mul_add(ra, -(rb * rb))) / (2.0 * distance);
-    let squared = ra.mul_add(ra, -(along * along));
-    let direction = between * (1.0 / distance);
-    let foot = ca + direction * along;
-    let mut profile_points = Vec::new();
-    if squared <= tol.confusion() * tol.confusion() {
-        profile_points.push(foot);
-    } else {
-        let offset = ogeom_math::Vector2::new(-direction.y, direction.x) * squared.max(0.0).sqrt();
-        profile_points.push(foot + offset);
-        profile_points.push(foot - offset);
+    let mut profile_points: Vec<ogeom_math::Point2> = Vec::new();
+    for (sa, sb) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+        let (ca, cb) = (
+            ogeom_math::Point2::new(sa * a.major_radius(), 0.0),
+            ogeom_math::Point2::new(sb * b.major_radius(), lift),
+        );
+        let between = cb - ca;
+        let distance = between.magnitude();
+        if distance <= tol.confusion() {
+            // Concentric profiles of different tube radii never meet; the
+            // same circle was the `Same` case above.
+            continue;
+        }
+        if distance > ra + rb + tol.confusion() || distance < (ra - rb).abs() - tol.confusion() {
+            continue;
+        }
+        let along = distance.mul_add(distance, ra.mul_add(ra, -(rb * rb))) / (2.0 * distance);
+        let squared = ra.mul_add(ra, -(along * along));
+        let direction = between * (1.0 / distance);
+        let foot = ca + direction * along;
+        let found = if squared <= tol.confusion() * tol.confusion() {
+            vec![foot]
+        } else {
+            let offset =
+                ogeom_math::Vector2::new(-direction.y, direction.x) * squared.max(0.0).sqrt();
+            vec![foot + offset, foot - offset]
+        };
+        for p in found {
+            if p.x > tol.confusion()
+                && profile_points
+                    .iter()
+                    .all(|q| q.distance(p) > tol.confusion())
+            {
+                profile_points.push(p);
+            }
+        }
     }
     let circles: Vec<Curve> = profile_points
         .into_iter()
