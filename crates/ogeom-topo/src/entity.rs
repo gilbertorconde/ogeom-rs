@@ -10,9 +10,8 @@
 //! entities in a boundary relationship ([`check_containment`]).
 //!
 //! This is not a workaround for imprecise code. Exact arithmetic cannot
-//! represent the intersection curve of two curved surfaces, so a
-//! tolerance-carrying topology is the only known way to build a kernel whose
-//! results close up. Every production kernel works this way.
+//! represent the intersection curve of two curved surfaces, so the topology
+//! carries tolerances, and that is what lets results close up.
 //!
 //! # An edge carries a list of representations
 //!
@@ -20,7 +19,7 @@
 //! adjacent face*, two pcurves where it is a seam on a closed surface, and
 //! cached polylines. Face splitting during a boolean happens in a surface's
 //! 2D parameter space, so without a pcurve on each face there is nothing to
-//! split with; and since surfaces are parameterized differently, one 2D curve
+//! split with. And since surfaces are parameterized differently, one 2D curve
 //! cannot serve two faces.
 
 use ogeom_core::{Arena, Key, OgeomResult, Tolerance, Tolerances, ogeom_bail};

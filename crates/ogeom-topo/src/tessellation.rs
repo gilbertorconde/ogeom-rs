@@ -123,12 +123,11 @@ impl Triangulation {
     /// faces meet along a short edge that discretizes into several segments,
     /// each can fill the sliver between the polyline and its own chord, and
     /// the chord then belongs to both: four triangles round one edge, two
-    /// crossing each way. There is no hole there and the volume is right;
-    /// demanding exactly two refuses a mesh for being non-manifold when
-    /// nothing was asked about manifoldness. Sixty-four bodies of one real
-    /// assembly were refused that way, forty-four of them for this alone.
+    /// crossing each way. There is no hole there and the volume is right.
+    /// Demanding exactly two refuses a mesh for being non-manifold when
+    /// nothing was asked about manifoldness.
     ///
-    /// This also agrees with the topology side at last:
+    /// This agrees with the topology side:
     /// [`is_shell_closed`](../../ogeom_algo/fn.is_shell_closed.html) counts an
     /// edge's uses and accepts any even number, and the two halves of the
     /// kernel should not mean different things by the same word.
@@ -227,8 +226,8 @@ impl Triangulation {
 
         let mut out = Self::new();
         out.deflection_met = self.deflection_met;
-        // Compact: keep every vertex that survives as its own representative
-        // or is referenced; simplest is to keep all and let triangles remap.
+        // Every vertex is kept, merged ones included, and the triangles are
+        // remapped onto the representatives.
         out.positions = self.positions.clone();
         out.normals = self.normals.clone();
         out.parameters = self.parameters.clone();

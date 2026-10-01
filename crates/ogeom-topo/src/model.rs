@@ -85,7 +85,7 @@ impl Model {
     /// millimetres because one caller passed the default. Algorithms still take
     /// a [`Tolerances`] argument (that is deliberate, since a caller may want
     /// to work coarser or finer than the document's own setting for one
-    /// operation), but the document now says what it was built at, so a
+    /// operation), but the document says what it was built at, so a
     /// mismatch is visible rather than assumed away.
     #[must_use]
     pub fn with_tolerances(tolerances: Tolerances) -> Self {
@@ -167,8 +167,8 @@ impl Model {
     ///   handles meant elsewhere. Serialization is the one road in.
     /// - **A model with holes.** Absorbing appends by offset, which is only
     ///   sound while the target's arenas have only ever been appended to.
-    ///   Nothing in this crate removes, so this cannot trigger today; it is
-    ///   checked so a future that removes gets an error, not aliasing.
+    ///   Nothing in this crate removes entries, and the check is what keeps
+    ///   a removal from becoming aliasing.
     ///
     /// The current operation is left alone: absorb mints no identities, it
     /// transplants a table, and the absorbed provenance keeps its source
@@ -941,12 +941,12 @@ impl Model {
     /// The direct children of a shape, with this shape's placement and
     /// orientation composed onto each.
     ///
-    /// The single most important method on the model, and the reason traversal
-    /// is correct by default rather than by discipline: a child's placement in
-    /// the world is its parent's composed with its own, and its orientation is
-    /// its parent's composed with its own. Returning raw children would leave
-    /// every caller to remember both, and the failure is silent: face normals
-    /// that flip inconsistently, sub-shapes drawn at the origin.
+    /// The reason traversal is correct by default rather than by discipline:
+    /// a child's placement in the world is its parent's composed with its
+    /// own, and its orientation is its parent's composed with its own.
+    /// Returning raw children would leave every caller to remember both, and
+    /// the failure is silent: face normals that flip inconsistently,
+    /// sub-shapes drawn at the origin.
     ///
     /// # Errors
     ///

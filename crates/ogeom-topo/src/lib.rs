@@ -19,7 +19,7 @@
 //!   classic source of silent bugs.
 //! - **Tolerances are per-entity**, with `tol(vertex) >= tol(edge) >= tol(face)`, and
 //!   they grow through operations. This is the kernel's answer to inexact
-//!   arithmetic; every production kernel works this way.
+//!   arithmetic.
 //! - **An edge carries a list of representations**, not one curve: a 3D curve, one
 //!   pcurve per adjacent face, two pcurves for a seam edge on a closed surface, plus
 //!   polygon and triangulation representations, with a `same_parameter` flag and a
