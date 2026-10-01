@@ -62,8 +62,13 @@ bump may break the API and a patch bump may not.
   face outlines only for the faces a section crosses, a circle's polyline
   in closed form, a piece's probes are checked against the fine rings
   their rays can reach, and an edge rebuilt whole is built once for both
-  its faces. A pocket into a plate with four hundred bores takes about
-  100 ms, from 160.
+  its faces. A crossed face's outline is drawn once, a circle on a plane
+  is sampled to its sag in closed form, and the outline's ends are welded
+  among their neighbours rather than against every other end. Sewing's
+  point bins are sized so a lookup reads eight cells, not sixty-four, and
+  an edge too loose for them is compared only with edges starting within
+  its reach. A pocket into a plate with four hundred bores takes about
+  55 ms, from 160.
 - **A chain of edges rounds in a few booleans, not one per edge.** The
   chain is taken in rounds, no two edges of a round sharing a vertex
   (pieces of one circle count as one); each edge's blend is built against

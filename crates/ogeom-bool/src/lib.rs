@@ -105,6 +105,27 @@ fn sag_count(
     Ok(count)
 }
 
+/// [`sag_count`] for a circle, whose chords' sag is known: `r(1 - cos(θ/2))`
+/// over a step of `θ`. `None` for any other curve.
+fn circle_sag_count(pcurve: &PlanarCurve, lo: f64, hi: f64, count: usize) -> Option<usize> {
+    const MOST: usize = 512;
+    let PlanarCurve::Circle(circle) = pcurve else {
+        return None;
+    };
+    let radius = circle.circle().radius();
+    if radius <= STRAND_SAG {
+        return Some(count);
+    }
+    let step = 2.0 * (1.0 - STRAND_SAG / radius).acos();
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    let needed = ((hi - lo).abs() / step).ceil().min(MOST as f64) as usize;
+    Some(count.max(needed))
+}
+
 /// Parameter-space node snap for the arrangement.
 const PARAM_SNAP: f64 = 1e-6;
 
@@ -893,7 +914,10 @@ fn pcurve_polyline(
         count = count.max(steps);
     }
     if matches!(surface, SurfaceGeometry::Plane(_)) && !matches!(pcurve, PlanarCurve::Line(_)) {
-        count = sag_count(&|t| pcurve.point_at(t, tol), lo, hi, count)?;
+        count = match circle_sag_count(pcurve, lo, hi, count) {
+            Some(count) => count,
+            None => sag_count(&|t| pcurve.point_at(t, tol), lo, hi, count)?,
+        };
     }
     let mut out = Vec::with_capacity(count + 1);
     for i in 0..=count {
@@ -1541,7 +1565,8 @@ fn period_shifts(surface: &SurfaceGeometry) -> Vec<(f64, f64)> {
 /// where it lands inside the trim, or where no shift does.
 fn fold_inside(p: Point2, surface: &SurfaceGeometry, trim: &[&[Point2]]) -> Point2 {
     let folded = fold_point_into_chart(p, surface);
-    if trim.is_empty() {
+    // A chart with no period has the one fold, inside or not.
+    if trim.is_empty() || !(surface.is_periodic_u() || surface.is_periodic_v()) {
         return folded;
     }
     period_shifts(surface)
@@ -2347,21 +2372,25 @@ fn fill(
     // was most of the paving's cost.
     let crossed_a: std::collections::HashSet<usize> = sections.iter().map(|s| s.face_a).collect();
     let crossed_b: std::collections::HashSet<usize> = sections.iter().map(|s| s.face_b).collect();
-    let mut outlines_a = Vec::with_capacity(ga.faces.len());
-    for (i, f) in ga.faces.iter().enumerate() {
-        outlines_a.push(if crossed_a.contains(&i) {
-            outline(f)?
-        } else {
-            Vec::new()
-        });
-    }
-    let mut outlines_b = Vec::with_capacity(gb.faces.len());
-    for (i, f) in gb.faces.iter().enumerate() {
-        outlines_b.push(if crossed_b.contains(&i) {
-            outline(f)?
-        } else {
-            Vec::new()
-        });
+    // The face's own outline is drawn once and kept for the later trim
+    // tests; where it cannot be drawn, drawing it again says why.
+    let mut outlines_a: Vec<std::borrow::Cow<'_, [Vec<Point2>]>> =
+        Vec::with_capacity(ga.faces.len());
+    let mut outlines_b: Vec<std::borrow::Cow<'_, [Vec<Point2>]>> =
+        Vec::with_capacity(gb.faces.len());
+    for (faces, crossed, outlines) in [
+        (&ga.faces, &crossed_a, &mut outlines_a),
+        (&gb.faces, &crossed_b, &mut outlines_b),
+    ] {
+        for (i, f) in faces.iter().enumerate() {
+            outlines.push(if !crossed.contains(&i) {
+                std::borrow::Cow::Owned(Vec::new())
+            } else if let Some(lines) = f.outline(tol) {
+                std::borrow::Cow::Borrowed(lines)
+            } else {
+                std::borrow::Cow::Owned(outline(f)?)
+            });
+        }
     }
 
     // Crossings of each section with the boundary edges of both its faces,
@@ -4827,6 +4856,33 @@ fn outline_snap(face: &GFace, tol: Tolerances) -> f64 {
         )
 }
 
+/// Polyline ends sorted by their chart `x`, for finding the ends within a
+/// reach of a point without comparing every pair.
+struct EndsByX {
+    /// Indices into the ends, by ascending `x`.
+    order: Vec<usize>,
+    xs: Vec<f64>,
+}
+
+impl EndsByX {
+    fn new(ends: &[(usize, bool, Point2)]) -> Self {
+        let mut order: Vec<usize> = (0..ends.len()).collect();
+        order.sort_by(|&a, &b| ends[a].2.x.total_cmp(&ends[b].2.x));
+        let xs = order.iter().map(|&k| ends[k].2.x).collect();
+        Self { order, xs }
+    }
+
+    /// The ends whose `x` lies within `reach` of `p`'s, in ascending order
+    /// of their index: a superset of the ends within `reach` of `p`.
+    fn near(&self, p: Point2, reach: f64) -> Vec<usize> {
+        let lo = self.xs.partition_point(|&x| x < p.x - reach);
+        let hi = self.xs.partition_point(|&x| x <= p.x + reach);
+        let mut out = self.order[lo..hi.max(lo)].to_vec();
+        out.sort_unstable();
+        out
+    }
+}
+
 /// Join the outline's ends the weld left apart, each to the unmatched end
 /// nearest it where that end is nearest it too and the opening is small
 /// against the outline.
@@ -4848,11 +4904,13 @@ fn bridge_outline_gaps(lines: &mut Vec<Vec<Point2>>) {
     // where they stand: the weld leaves them, since moving one by rounding
     // noise takes a probe on a seam off it, but a ray level with the sliver
     // between them still slips through.
+    let by_x = EndsByX::new(&ends);
     let mut joins: Vec<Vec<Point2>> = Vec::new();
     for (k, &(i, end_i, p)) in ends.iter().enumerate() {
-        for &(j, end_j, q) in &ends[k + 1..] {
+        for m in by_x.near(p, PARAM_SNAP) {
+            let (j, end_j, q) = ends[m];
             let d = p.distance(q);
-            if (j, end_j) != (i, end_i) && d > 0.0 && d <= PARAM_SNAP {
+            if m > k && (j, end_j) != (i, end_i) && d > 0.0 && d <= PARAM_SNAP {
                 joins.push(vec![p, q]);
             }
         }
@@ -4860,9 +4918,10 @@ fn bridge_outline_gaps(lines: &mut Vec<Vec<Point2>>) {
     let open: Vec<Point2> = ends
         .iter()
         .filter(|&&(i, end_i, p)| {
-            !ends
-                .iter()
-                .any(|&(j, end_j, q)| (j, end_j) != (i, end_i) && p.distance(q) <= PARAM_SNAP)
+            !by_x.near(p, PARAM_SNAP).into_iter().any(|m| {
+                let (j, end_j, q) = ends[m];
+                (j, end_j) != (i, end_i) && p.distance(q) <= PARAM_SNAP
+            })
         })
         .map(|&(_, _, p)| p)
         .collect();
@@ -4922,10 +4981,13 @@ fn weld_outline_ends(lines: &mut [Vec<Point2>], snap: f64) {
     // Each end moves onto the nearest other end within reach that sorts
     // before it, so a matched pair lands on one point rather than trading
     // places.
+    let by_x = EndsByX::new(&ends);
     let mut moves: Vec<(usize, bool, Point2)> = Vec::new();
     for &(i, end_i, p) in &ends {
-        let nearest = ends
-            .iter()
+        let nearest = by_x
+            .near(p, snap)
+            .into_iter()
+            .map(|m| &ends[m])
             // Ends closer than the parametric snap already meet for every
             // purpose here, and moving one by rounding noise takes a probe
             // that stands exactly on a chart's seam off it.
@@ -5783,7 +5845,10 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             {
                 32
             } else {
-                sag_count(&|t| pcurve.point_at(fold_at(t), tol), sub.0, sub.1, 32)?
+                match circle_sag_count(pcurve, sub.0, sub.1, 32) {
+                    Some(count) => count,
+                    None => sag_count(&|t| pcurve.point_at(fold_at(t), tol), sub.0, sub.1, 32)?,
+                }
             };
             let mut line = Vec::with_capacity(count + 1);
             for i in 0..=count {
@@ -7561,7 +7626,7 @@ fn assemble_result(
     for (index, j) in fused.junctions.iter().enumerate() {
         junction_bins.insert(j.at, index);
     }
-    // The vertices' cells are as wide as the loosest tolerance a strand
+    // The vertices' cells are sized to the loosest tolerance a strand
     // brings to its ends, so an end is compared across a few cells, not
     // every vertex.
     let loosest = fused
@@ -8848,6 +8913,27 @@ mod tests {
 
     const T: Tolerances = Tolerances::millimetres();
     const PI: f64 = core::f64::consts::PI;
+
+    /// A circle's count from its sag in closed form stands its chords within
+    /// the strand sag, short of the cap both counts share, and never above
+    /// the count measuring the chords reaches.
+    #[test]
+    fn a_circle_is_sampled_to_the_strand_sag_in_closed_form() {
+        for radius in [0.01, 1.0, 40.0] {
+            let circle = ogeom_math::Circle2::new(ogeom_math::Frame2::WORLD, radius, T).unwrap();
+            let pcurve = PlanarCurve::Circle(ogeom_geom::Circle2d::new(circle));
+            for (lo, hi) in [(0.0, 2.0 * PI), (1.0, 2.5)] {
+                let count = circle_sag_count(&pcurve, lo, hi, 8).unwrap();
+                let step = (hi - lo) / f64::from(u32::try_from(count).unwrap());
+                assert!(
+                    count == 512
+                        || radius * (1.0 - (step / 2.0).cos()) <= STRAND_SAG * (1.0 + 1e-9)
+                );
+                let measured = sag_count(&|t| pcurve.point_at(t, T), lo, hi, 8).unwrap();
+                assert!(count <= measured, "{count} against {measured}");
+            }
+        }
+    }
 
     /// A narrow wedge whose last edge stops short of the column it meets,
     /// once by more than the weld and once by less than the snap: closed,

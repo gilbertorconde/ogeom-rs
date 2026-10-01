@@ -19,9 +19,11 @@ pub(crate) struct Bins {
 }
 
 impl Bins {
-    pub(crate) fn new(cell: f64) -> Self {
+    /// Bins for queries that mostly reach `reach`: the cells are twice as
+    /// wide, so such a query looks in two cells along each axis, not four.
+    pub(crate) fn new(reach: f64) -> Self {
         Self {
-            cell,
+            cell: reach * 2.0,
             bins: HashMap::new(),
         }
     }

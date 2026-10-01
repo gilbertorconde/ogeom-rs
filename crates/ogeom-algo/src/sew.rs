@@ -442,8 +442,8 @@ fn merge_vertices(
             .and_then(|n| n.data().as_vertex())
             .map_or(0.0, |d| d.tolerance.get())
     };
-    // The survivors, binned by position on cells as wide as the loosest
-    // vertex; a vertex is compared with the survivors within the widest
+    // The survivors, binned by position on cells sized to the loosest
+    // vertex's reach; a vertex is compared with the survivors within the widest
     // reach any comparison can have, in the order they were kept.
     let mut loosest = tol.confusion();
     for face in faces {
@@ -933,7 +933,7 @@ struct StartBins {
     /// Edges no wider than `cell`.
     tight: Bins,
     cell: f64,
-    /// Edges wider than `cell`, in cells as wide as the widest.
+    /// Edges wider than `cell`, in cells sized to the widest.
     loose: Bins,
     widest: f64,
 }
@@ -981,8 +981,16 @@ impl StartBins {
             self.loose.near(print.start, self.widest),
             self.loose.near(print.end, self.widest),
         ];
+        // A reach wider than the grid answers for is walked: every later
+        // edge whose start lies within the widest reach of either end.
         if found.iter().any(Option::is_none) {
-            return ((i + 1)..catalogue.len()).collect();
+            let reach = self.widest.max(near_tight);
+            return ((i + 1)..catalogue.len())
+                .filter(|&j| {
+                    let start = catalogue[j].1.start;
+                    start.distance(print.start) <= reach || start.distance(print.end) <= reach
+                })
+                .collect();
         }
         let mut out: Vec<usize> = found
             .into_iter()
