@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Polynomial roots keep their double roots.** A tangency's double root
+  sits where the discriminant is zero only up to rounding, and the quadratic
+  and cubic solvers dropped it when rounding left the discriminant a hair
+  below or above; above the cubic, the companion matrix split it into a
+  complex pair and it was dropped there too. All three now find it. The doc
+  no longer claims a closed-form quartic.
+
 - **Degree elevation keeps the continuity at every knot.**
   `elevate_degree` left each interior knot at full multiplicity, a C0
   joint where the curve was C2, against its doc; the knots it introduced

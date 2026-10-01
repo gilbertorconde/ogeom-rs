@@ -13,9 +13,9 @@
 //!   which falls back to bisection whenever a step would leave the bracket.
 //!   Unsafeguarded Newton diverges on the configurations that matter: a
 //!   tangential intersection is exactly where the derivative vanishes.
-//! - Roots of a polynomial up to quartic: [`roots`]. Closed form, and the
-//!   quadratic is written to avoid the cancellation the schoolbook formula
-//!   suffers.
+//! - Roots of a polynomial: [`roots`]. Closed form up to the cubic, the
+//!   quadratic written to avoid the cancellation the schoolbook formula
+//!   suffers; companion-matrix eigenvalues above that.
 //! - A system of equations: [`newton_system`]. Surface projection is two
 //!   equations in two unknowns; intersection marching is much the same.
 //! - A minimum without derivatives: [`minimize`].
@@ -328,11 +328,12 @@ where
 /// The real roots of a polynomial, in increasing order.
 ///
 /// `coefficients` are in ascending power order: `c[0] + c[1] x + c[2] x^2 ...`.
-/// Degrees up to four are solved in closed form; above that the polynomial is
-/// deflated by companion-matrix eigenvalues.
+/// Degrees up to three are solved in closed form; above that the roots are
+/// the companion matrix's real eigenvalues.
 ///
 /// Repeated roots are returned once each, since a geometry caller wants the
-/// distinct parameter values.
+/// distinct parameter values, and a double root (a tangency) is found
+/// although rounding moves it off the real line by half the digits.
 ///
 /// # Errors
 ///
@@ -381,11 +382,14 @@ pub fn quadratic_roots(a: f64, b: f64, c: f64) -> Vec<f64> {
         return if b == 0.0 { Vec::new() } else { vec![-c / b] };
     }
     let discriminant = b.mul_add(b, -(4.0 * a * c));
+    // A double root's discriminant is zero only up to the rounding of the
+    // coefficients, which can leave it a hair below.
+    let rounding = 8.0 * f64::EPSILON * b.mul_add(b, (4.0 * a * c).abs());
+    if discriminant.abs() <= rounding {
+        return vec![-b / (2.0 * a)];
+    }
     if discriminant < 0.0 {
         return Vec::new();
-    }
-    if discriminant == 0.0 {
-        return vec![-b / (2.0 * a)];
     }
     let sqrt = discriminant.sqrt();
     // Add magnitudes rather than subtract them, then get the other root from
@@ -414,21 +418,29 @@ pub fn cubic_roots(a: f64, b: f64, c: f64, d: f64) -> Vec<f64> {
     let half_q = q / 2.0;
     let third_p = p / 3.0;
     let discriminant = half_q.mul_add(half_q, third_p * third_p * third_p);
+    // What rounding leaves in `p`, `q` and so in the discriminant: a double
+    // root's is zero only to within it.
+    let p_rounding = 8.0 * f64::EPSILON * ((shift * b).abs() + c.abs());
+    let q_rounding =
+        8.0 * f64::EPSILON * ((2.0 / 27.0 * b * b * b).abs() + (shift * c).abs() + d.abs());
+    let rounding = half_q.abs() * q_rounding
+        + third_p * third_p * p_rounding
+        + 8.0 * f64::EPSILON * (half_q * half_q + (third_p * third_p * third_p).abs());
 
-    if discriminant > 0.0 {
+    if discriminant.abs() <= rounding {
+        if p.abs() <= p_rounding {
+            vec![-shift]
+        } else {
+            // t^3 + p t + q with a double root: 3q/p once, -3q/(2p) twice.
+            let mut r = vec![3.0 * q / p - shift, -1.5 * q / p - shift];
+            r.sort_by(|x, y| x.partial_cmp(y).unwrap_or(core::cmp::Ordering::Equal));
+            r
+        }
+    } else if discriminant > 0.0 {
         let sqrt = discriminant.sqrt();
         let u = (-half_q + sqrt).cbrt();
         let v = (-half_q - sqrt).cbrt();
         vec![u + v - shift]
-    } else if discriminant == 0.0 {
-        if p == 0.0 {
-            vec![-shift]
-        } else {
-            let u = (-half_q).cbrt();
-            let mut r = vec![2.0 * u - shift, -u - shift];
-            r.sort_by(|x, y| x.partial_cmp(y).unwrap_or(core::cmp::Ordering::Equal));
-            r
-        }
     } else {
         // Three distinct real roots, via trigonometry.
         let radius = (-third_p).sqrt();
@@ -457,11 +469,31 @@ fn companion_roots(c: &[f64], tolerance: f64) -> Vec<f64> {
             m[(i + 1, i)] = 1.0;
         }
     }
-    // Only the real eigenvalues are roots; complex conjugate pairs are not.
+    // Only the real eigenvalues are roots; complex conjugate pairs are not,
+    // save a double root, which rounding splits into a pair half the digits
+    // off the line. Such a pair is a root where the polynomial's
+    // value is zero to rounding at its real part.
+    let value = |x: f64| -> (f64, f64) {
+        let (mut p, mut size) = (0.0_f64, 0.0_f64);
+        for &coefficient in c.iter().rev() {
+            p = p.mul_add(x, coefficient);
+            size = size.mul_add(x.abs(), coefficient.abs());
+        }
+        (p, size)
+    };
     m.complex_eigenvalues()
         .iter()
-        .filter(|e| e.im.abs() <= tolerance.max(1e-9) * e.re.abs().max(1.0))
-        .map(|e| e.re)
+        .filter_map(|e| {
+            let scale = e.re.abs().max(1.0);
+            if e.im.abs() <= tolerance.max(1e-9) * scale {
+                return Some(e.re);
+            }
+            if e.im.abs() > 1e-7 * scale {
+                return None;
+            }
+            let (p, size) = value(e.re);
+            (p.abs() <= 1e-10 * size).then_some(e.re)
+        })
         .collect()
 }
 
@@ -896,6 +928,42 @@ where
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// Every value in `expected` is among `found`, to the precision a double
+    /// root keeps (half the digits).
+    fn has_each(found: &[f64], expected: &[f64]) {
+        for e in expected {
+            assert!(
+                found
+                    .iter()
+                    .any(|f| (f - e).abs() <= 1e-6 * e.abs().max(1.0)),
+                "{e} missing from {found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn double_roots_survive_rounding() {
+        for r in [0.1, 0.3, 0.7, 1.1, 3.3, 1000.0 / 3.0, -2.9, 1e-3 / 7.0] {
+            // (x - r)^2
+            has_each(&quadratic_roots(1.0, -2.0 * r, r * r), &[r]);
+            // (x - 1)(x - r)^2 = x^3 - (1 + 2r) x^2 + (2r + r^2) x - r^2
+            has_each(
+                &cubic_roots(1.0, -(1.0 + 2.0 * r), 2.0f64.mul_add(r, r * r), -(r * r)),
+                &[1.0, r],
+            );
+            // (x - 2)(x + 1)(x - r)^2, through the general solver.
+            let quadratic = [r * r, -2.0 * r, 1.0];
+            let pair = [-2.0, -1.0, 1.0];
+            let mut quartic = [0.0; 5];
+            for (i, a) in quadratic.iter().enumerate() {
+                for (j, b) in pair.iter().enumerate() {
+                    quartic[i + j] += a * b;
+                }
+            }
+            has_each(&roots(&quartic, 1e-12).unwrap(), &[-1.0, 2.0, r]);
+        }
+    }
     use approx::assert_relative_eq;
 
     const C: Criteria = Criteria {
