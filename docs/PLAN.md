@@ -63,7 +63,10 @@ different numbers of facets and lean in by a few thousandths of a
 millimetre (less than the corner's chords sag, so the rows' edges cross the
 pad's walls in plan), refuses at some row counts: the kept pieces do not
 close. The rows' planes and the pad's walls meet at small angles all round
-the corner, the near-coplanar sliver band again.
+the corner, the near-coplanar sliver band again. A slab drafted 0.005 or
+0.002 by the rows' depth to the power 1.5 passes at every row count tried;
+at 0.001 some counts refuse, the open edges being the pad's corner walls
+where they run along the corner's facets.
 
 **Speed, not correctness.**
 
