@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A hole wound like its outline revolves hollow.** `make_revolution` read
+  the hand of the outline alone, so a hole wound the same way swept walls
+  facing into the material and added the hole's volume. Each wire's turn
+  is measured, as the prism does: the outline must turn one way and every
+  hole the other.
+
 - **Faces welded within microns are not kept as a membrane.** Two boxes
   stacked a few microns apart, closer than the boolean welds vertices,
   fused into one shell holding both facing walls on the same edges: a

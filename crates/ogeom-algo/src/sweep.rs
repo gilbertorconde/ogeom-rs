@@ -1008,63 +1008,50 @@ fn revolution_over_face(
              volume; a face revolved within its own plane is not a solid"
         );
     }
-    // The sweep's material side follows the profile wire's own walk, so the
-    // walk is normalized to one hand, measured from the traversal itself,
-    // as the loop's area vector against the sweep tangent. The face's
-    // stated normal cannot answer this: it speaks the carrier's chart,
-    // and one loop reads as either hand depending on which way the chart
-    // was laid down.
-    let hand = {
-        let mut area = ogeom_math::Vector::ZERO;
-        let wires = model.ordered_children_of(face)?;
-        let Some(outer) = wires.first() else {
-            ogeom_bail!(Construction, "the profile has no boundary to revolve");
-        };
-        let mut walk: Vec<Point> = Vec::new();
-        for edge in model.ordered_children_of(outer)? {
-            let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
-                ogeom_bail!(Construction, "a profile edge holds no data");
-            };
-            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
-                ogeom_bail!(Construction, "a profile edge has no curve");
-            };
-            let Some(stored) = model.geometry().curve(*curve) else {
-                ogeom_bail!(Dangling, "curve is not in this model");
-            };
-            let placed = stored
-                .clone()
-                .transformed(&edge.transform(model.datums())?, tol)?;
-            let flipped = edge.orientation() == Orientation::Reversed;
-            for k in 0..8 {
-                let f = f64::from(k) / 8.0;
-                let f = if flipped { 1.0 - f } else { f };
-                let t = (range.1 - range.0).mul_add(f, range.0);
-                walk.push(placed.point_at(t, tol)?);
-            }
-        }
-        for k in 0..walk.len() {
-            let (a, b) = (walk[k], walk[(k + 1) % walk.len()]);
-            area += (a - point).cross(b - point);
-        }
-        area.dot(tangent)
-    };
+    // The sweep's material side follows each wire's own walk, so the walks
+    // are measured from the traversal itself, as each loop's area vector
+    // against the sweep tangent, as the prism measures them. The face's
+    // stated normal cannot answer this: it speaks the carrier's chart, and
+    // one loop reads as either hand depending on which way the chart was
+    // laid down. The loop enclosing the most is the outline and must turn
+    // positively, every other a hole turning the other way; a hole may come
+    // wound either way, and one walked the outline's way would sweep walls
+    // facing into the material.
+    let wires = model.children_of(face)?;
+    if wires.is_empty() {
+        ogeom_bail!(Construction, "the profile has no boundary to revolve");
+    }
+    let turns: Vec<f64> = wires
+        .iter()
+        .map(|w| wire_turn(model, w, tangent, tol))
+        .collect::<OgeomResult<_>>()?;
+    let outer = turns
+        .iter()
+        .enumerate()
+        .max_by(|a, b| {
+            a.1.abs()
+                .partial_cmp(&b.1.abs())
+                .unwrap_or(core::cmp::Ordering::Equal)
+        })
+        .map_or(0, |(i, _)| i);
     // The caps face the way the profile's surface does, turned to face
-    // along the sweep as the prism's do; the walls follow the walk, and a
-    // profile whose walk runs against its own surface's normal (a face
-    // built on a ring wound the other way) has its walls turned to match.
+    // along the sweep as the prism's do; the walls follow each walk, and a
+    // walk running against its role (an outline wound the other way about
+    // the surface's normal, a hole wound like its outline) has its walls
+    // turned to match.
     let profile = if along < 0.0 {
         face.reversed()
     } else {
         face.clone()
     };
-    let walls_turned = (hand < 0.0) != (along < 0.0);
 
     let mut history = History::new();
     let mut faces = Vec::new();
-    for wire in model.children_of(&profile)? {
-        let (sides, wire_history) = revolution_over_wire(model, rails, &wire, turn, tol)?;
+    for (index, wire) in model.children_of(&profile)?.iter().enumerate() {
+        let (sides, wire_history) = revolution_over_wire(model, rails, wire, turn, tol)?;
         history = history.then(&wire_history);
-        if walls_turned {
+        let wanted = if index == outer { 1.0 } else { -1.0 };
+        if (turns[index] * wanted < 0.0) != (along < 0.0) {
             faces.extend(sides.into_iter().map(|f| f.reversed()));
         } else {
             faces.extend(sides);
@@ -3251,5 +3238,62 @@ mod tests {
         let mut model = Model::new();
         let vertex = model.add_point(Point::ORIGIN);
         assert!(make_prism(&mut model, &vertex, Vector::Z, T).is_err());
+    }
+
+    /// A face whose hole is wound like its outline revolves into the ring
+    /// with the hole's tube taken out, as one wound the other way does.
+    #[test]
+    fn a_hole_wound_either_way_revolves_hollow() {
+        use core::f64::consts::{PI, TAU};
+        let upright = Frame::new(
+            Point::ORIGIN,
+            -ogeom_math::Direction::Y,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        for (hole_normal, turn) in [(1.0, TAU), (-1.0, TAU), (1.0, 2.0), (-1.0, 2.0)] {
+            let mut model = Model::new();
+            let corners: Vec<Point> = [(5.0, 0.0), (9.0, 0.0), (9.0, 4.0), (5.0, 4.0)]
+                .iter()
+                .map(|&(x, y)| upright.to_world(Point::new(x, y, 0.0)))
+                .collect();
+            let outline = crate::build::make_polygon(&mut model, &corners, true, T)
+                .unwrap()
+                .shape;
+            let seat = Frame::new(
+                upright.to_world(Point::new(7.0, 2.0, 0.0)),
+                ogeom_math::Direction::new(upright.z().vector() * hole_normal, T).unwrap(),
+                upright.x(),
+                T,
+            )
+            .unwrap();
+            let circle = Circle::new(seat, 1.0, T).unwrap();
+            let ring = crate::build::make_edge(
+                &mut model,
+                ogeom_geom::CircleCurve::new(circle).into(),
+                (0.0, TAU),
+                T,
+            )
+            .unwrap()
+            .shape;
+            let hole = make_wire(&mut model, &[ring], T).unwrap().shape;
+            let profile = crate::build::make_face(
+                &mut model,
+                ogeom_geom::PlaneSurface::new(ogeom_math::Plane::new(upright)).into(),
+                &[outline, hole],
+                T,
+            )
+            .unwrap()
+            .shape;
+            let axis = ogeom_math::Axis::new(Point::ORIGIN, ogeom_math::Direction::Z);
+            let built = crate::make_revolution(&mut model, &profile, axis, turn, T).unwrap();
+            let volume = volume_properties(&model, &built.shape, Deflection::default(), T)
+                .unwrap()
+                .mass;
+            // Pappus: the section's area swept round its centroid's circle.
+            let want = turn * 7.0 * (16.0 - PI);
+            assert_relative_eq!(volume, want, max_relative = 1e-9);
+        }
     }
 }
