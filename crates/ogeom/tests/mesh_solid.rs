@@ -536,6 +536,35 @@ fn a_coarse_mesh_keeps_its_fillets() {
     }
 }
 
+/// What a coarse mesh comes back as does not hang on the order its
+/// triangles are listed in: a fillet two facets wide, sampled before the
+/// corners beside it are claimed, fits nothing then and is taken again.
+#[test]
+fn a_coarse_rounded_block_comes_back_whatever_its_triangle_order() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    let coarse = Deflection {
+        chord: 0.5,
+        ..Deflection::default()
+    };
+    let mesh = ogeom::mesh::triangulate(&model, &rounded, coarse, T).unwrap();
+    let n = mesh.triangles.len();
+    for turn in [0, n / 7, n / 3, n / 2, 2 * n / 3] {
+        let mut turned = mesh.clone();
+        turned.triangles.rotate_left(turn);
+        comes_back_from(&model, &rounded, &turned, [6, 12, 0, 8, 0]);
+    }
+    let mut reversed = mesh;
+    reversed.triangles.reverse();
+    comes_back_from(&model, &rounded, &reversed, [6, 12, 0, 8, 0]);
+}
+
 /// Two cylinders meeting along a curve that is no circle and no line: a
 /// bar drilled across, and a pipe with a branch. Each meeting is fitted
 /// once on both surfaces, and each wall is built round its axis with a seam

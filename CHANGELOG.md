@@ -35,6 +35,16 @@ bump may break the API and a patch bump may not.
   its own doubt but not within the larger one alone. Two crossings are now
   one point where they stand no further apart than their doubts together.
 
+- **A coarse mesh comes back the same whatever order its triangles are
+  listed in.** A fillet two or three facets wide, first sampled together
+  with the corners beside it, fitted nothing and was left faceted, or not,
+  by the luck of the order. Its triangles are now sampled again once the
+  corners are claimed, and a first sample no longer reaches across a flat
+  face into the fillets on its far side. A sphere or a torus fitted to a
+  handful of noisy vertices is no longer taken. Several converted parts
+  come back with far fewer faces; one of 6268 triangles, 1615 faces before,
+  comes back in 13.
+
 ### Changed
 
 - **`tight_bounds` is hundreds of times faster on ruled and round

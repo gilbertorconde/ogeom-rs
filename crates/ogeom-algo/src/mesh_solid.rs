@@ -310,7 +310,7 @@ pub fn refine_solid(
 
 /// How near its distance a recognized fit must come for the distance, not
 /// the surface, to be what bounds it.
-const PRESSED: f64 = 0.8;
+const PRESSED: f64 = 0.7;
 
 /// Build a B-rep from a triangle mesh.
 ///
@@ -2166,6 +2166,10 @@ fn tangent_cylinder(a: &Plane, b: &Plane, pts: &[Point], tol: Tolerances) -> Opt
 /// to be a face of its own rather than facets of the curve.
 const PATCH_SCALE: f64 = 20.0;
 
+/// How much larger than a seed's flat patch another must be for a first
+/// sample to take its facets without growing on from them.
+const LEAF_SCALE: f64 = 4.0;
+
 /// The mesh cut into flat patches: each grown from its largest facet across
 /// edges to neighbours whose normals stay within a couple of degrees of
 /// that facet's and whose corners stay on its plane. A curved region takes
@@ -2503,6 +2507,7 @@ struct Surfaces<'a> {
     triangles: &'a [[u32; 3]],
     adjacency: &'a Adjacency,
     normals: Vec<Vector>,
+    patches: &'a FlatPatches,
     cos_crease: f64,
     cos_flat: f64,
     flat: f64,
@@ -2615,7 +2620,15 @@ impl Surfaces<'_> {
                     held.insert(other);
                     region.push(other);
                     take(other, &mut vertices, &mut seen);
-                    queue.push_back(other);
+                    // A facet of a flat patch much larger than the seed's
+                    // own (a flat face beside a fillet, where the seed's
+                    // patch is a row of it) lends its corners but leads
+                    // nowhere: on a coarse mesh it borders other fillets
+                    // than the seed's.
+                    let (patch, own) = (self.patches.of[other], self.patches.of[seed]);
+                    if self.patches.area[patch] <= self.patches.area[own] * LEAF_SCALE {
+                        queue.push_back(other);
+                    }
                 }
             }
             // Fitted on the vertices two or more of the sampled triangles
@@ -2696,11 +2709,14 @@ fn recognized_regions(
     tol: Tolerances,
 ) {
     let n = triangles.len();
+    let normals: Vec<Vector> = triangles.iter().map(|t| unit_normal(points, *t)).collect();
+    let patches = FlatPatches::of(points, triangles, adjacency, &normals, flat);
     let mesh = Surfaces {
         points,
         triangles,
         adjacency,
-        normals: triangles.iter().map(|t| unit_normal(points, *t)).collect(),
+        normals,
+        patches: &patches,
         cos_crease: options.crease.cos(),
         cos_flat: options.coplanar_angle.cos(),
         flat,
@@ -2709,7 +2725,6 @@ fn recognized_regions(
     // A facet of a coarse mesh leans from the surface at its centre by up
     // to half the turn between facets, which the crease bounds.
     let agree = options.crease.cos();
-    let patches = FlatPatches::of(points, triangles, adjacency, &mesh.normals, flat);
     let mut tried = vec![false; n];
     // The batch in which each triangle's standing last changed.
     let mut changed = vec![0_u32; n];
@@ -2726,12 +2741,40 @@ fn recognized_regions(
         .into_iter()
         .find(|p| !n.is_multiple_of(*p))
         .unwrap_or(1);
-    let order: Vec<usize> = (0..n).map(|i| (i * stride) % n).collect();
+    let mut order: Vec<usize> = (0..n).map(|i| (i * stride) % n).collect();
+    // Seeds whose wide first sample fitted nothing, with that sample. Once
+    // every seed has been taken, those whose sample has since lost
+    // triangles to other regions are taken once more, the rest of their
+    // samples free again: a fillet sampled together with its unclaimed
+    // neighbours fits nothing, and its triangles, retired one by one, leave
+    // ever smaller samples; on its own, its neighbours claimed, it fits.
+    let mut straddled: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut again = true;
     let mut next = 0;
-    while next < n {
+    loop {
+        if next == order.len() {
+            let samples: Vec<(usize, Vec<usize>)> = std::mem::take(&mut straddled)
+                .into_iter()
+                .filter(|(seed, sample)| {
+                    groups.of[*seed] == usize::MAX
+                        && sample.iter().any(|&t| groups.of[t] != usize::MAX)
+                })
+                .collect();
+            if !std::mem::take(&mut again) || samples.is_empty() {
+                break;
+            }
+            for (seed, sample) in samples {
+                for &t in &sample {
+                    if groups.of[t] == usize::MAX {
+                        tried[t] = false;
+                    }
+                }
+                order.push(seed);
+            }
+        }
         batch += 1;
         let mut seeds = Vec::with_capacity(batch_size);
-        while next < n && seeds.len() < batch_size {
+        while next < order.len() && seeds.len() < batch_size {
             if eligible(order[next], &groups.of, &tried) {
                 seeds.push(order[next]);
             }
@@ -2767,7 +2810,12 @@ fn recognized_regions(
                 // and its triangles are not seeded again; a wide one may
                 // have straddled a fillet and its neighbours, and only the
                 // seed is retired.
-                let retired = if wide { 1 } else { first_sample };
+                let retired = if wide {
+                    straddled.push((seed, region.clone()));
+                    1
+                } else {
+                    first_sample
+                };
                 for &t in &region[..retired.min(region.len())] {
                     tried[t] = true;
                     changed[t] = batch;
@@ -3029,7 +3077,15 @@ fn recognized_regions(
             let pts: Vec<Point> = vertices.iter().map(|&v| points[v as usize]).collect();
             let deviation = worst_deviation(&shape, &pts);
             let flat_too = crate::recognize::is_flat(&pts, flat, tol);
-            if deviation > flat || flat_too || spans_off || region.len() < 2 {
+            // A sphere or a torus through a handful of noisy vertices is
+            // as likely the noise's as the part's: twice its unknowns are
+            // asked for.
+            let few = match shape {
+                Canonical::Sphere(_) => vertices.len() < 8,
+                Canonical::Torus(_) => vertices.len() < 14,
+                _ => false,
+            };
+            if deviation > flat || flat_too || spans_off || region.len() < 2 || few {
                 for &t in &region {
                     tried[t] = true;
                     changed[t] = batch;
