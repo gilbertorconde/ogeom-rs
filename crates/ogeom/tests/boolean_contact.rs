@@ -1111,15 +1111,23 @@ fn a_drum_poking_a_sliver_out_of_a_box_works_at_any_turn() {
     }
 }
 
-/// Two drums a thousandth apart, in radius or in axis, overlapping half
-/// their height: the wider one's cap leaves an annulus or a crescent that
-/// thin, narrower than its outline's chords would bow at a fixed sampling,
-/// and each operation keeps its volumes.
+/// Two drums a thousandth to a hundred-thousandth apart, in radius or in
+/// axis, overlapping half their height: the wider one's cap leaves an
+/// annulus or a crescent that thin, narrower than its outline's chords bow,
+/// whose ends meet the rim at a shallow angle, and each operation keeps its
+/// volumes to the closed forms.
 #[test]
 fn drums_a_thousandth_apart_keep_their_volumes() {
     let at =
         |x: f64, z: f64| Frame::new(Point::new(x, 0.0, z), Direction::Z, Direction::X, T).unwrap();
-    for (radius, offset) in [(2.001, 0.0), (2.0, 1e-3)] {
+    for (radius, offset) in [
+        (2.001, 0.0),
+        (2.0001, 0.0),
+        (2.00003, 0.0),
+        (2.00002, 0.0),
+        (2.0, 1e-3),
+        (2.0, 1e-4),
+    ] {
         let mut model = Model::new();
         let low = ogeom::algo::make_cylinder(&mut model, at(0.0, 0.0), 2.0, 4.0, T)
             .unwrap()

@@ -614,6 +614,11 @@ pub(crate) fn inside_many(lines: &[&[Point2]], p: Point2) -> bool {
 /// chart directions (other heights, and other positions along each) because
 /// a piece that merely touches the other solid touches it somewhere, and a
 /// second opinion taken from the same place is not one.
+/// [`interior_points`] for rings the caller assembled itself.
+pub(crate) fn interior_points_of(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
+    interior_points(rings, snap)
+}
+
 fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
     let mut heights: Vec<f64> = rings.iter().flatten().map(|p| p.y).collect();
     heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));

@@ -2355,7 +2355,9 @@ fn fill(
                                 crossing.on_b,
                                 tol,
                             )?;
-                        if touch {
+                        // A closed section has no ends: where it starts is
+                        // only where its circle's frame happened to point.
+                        if touch && !section.closed {
                             let half = (domain.1 - domain.0) * 0.5;
                             for end in [domain.0, domain.1] {
                                 if (crossing.on_a - end).abs() > half {
@@ -2711,7 +2713,12 @@ fn fill(
                     &gb.faces[section.face_b].surface,
                     &lb,
                 );
-                Ok([inside_many(&la, ua), inside_many(&lb, ub)])
+                let face_a = &ga.faces[section.face_a];
+                let face_b = &gb.faces[section.face_b];
+                Ok([
+                    inside_plane_exactly(face_a, ua, tol).unwrap_or_else(|| inside_many(&la, ua)),
+                    inside_plane_exactly(face_b, ub, tol).unwrap_or_else(|| inside_many(&lb, ub)),
+                ])
             };
 
             for (lo, hi) in candidates {
@@ -4038,6 +4045,155 @@ fn partner_reach(face: &GFace, partner: &GFace, tol: Tolerances) -> f64 {
     (face.tolerance + partner.tolerance).max(tol.confusion() * 10.0)
 }
 
+/// A planar piece's rings resampled finely off their exact curves. The
+/// piece's own polylines bow inside a curved strand by more than the width
+/// of a sliver beside it, so a probe picked inside them can stand outside
+/// the piece; these rings hold it to a few microns. `None` for a face that
+/// is not a plane, or a ring with a strand this cannot resample (a contact
+/// or a pole).
+fn fine_rings(
+    face: &GFace,
+    rings: &[Vec<Traversal<Tag>>],
+    sections: &[SectionRec],
+    from_a: bool,
+    tol: Tolerances,
+) -> Option<Vec<Vec<Point2>>> {
+    const FINE: usize = 1024;
+    if !matches!(face.surface, SurfaceGeometry::Plane(_)) {
+        return None;
+    }
+    let mut lines: Vec<Vec<Point2>> = Vec::with_capacity(rings.len());
+    for ring in rings {
+        let mut line: Vec<Point2> = Vec::new();
+        for traversal in ring {
+            let (curve, a, b, wrap) = match traversal.tag {
+                Tag::Boundary { edge, range } => {
+                    let e = face.edges.get(edge)?;
+                    (
+                        &e.pcurve,
+                        rescale(range.0, e.crange, e.prange),
+                        rescale(range.1, e.crange, e.prange),
+                        None,
+                    )
+                }
+                Tag::Section { section, range } => {
+                    let record = sections.get(section)?;
+                    let pcurve = if from_a { &record.pc_a } else { &record.pc_b };
+                    let wrap = record.closed.then(|| record.curve.domain());
+                    (pcurve, range.0, range.1, wrap)
+                }
+                Tag::Contact { .. } | Tag::Pole { .. } => return None,
+            };
+            let count = if matches!(curve, PlanarCurve::Line(_)) {
+                1
+            } else {
+                FINE
+            };
+            let mut points: Vec<Point2> = Vec::with_capacity(count + 1);
+            for i in 0..=count {
+                #[allow(clippy::cast_precision_loss)]
+                let t = a + (b - a) * (i as f64 / count as f64);
+                let t = wrap.map_or(t, |domain| fold(t, domain));
+                points.push(curve.point_at(t, tol).ok()?);
+            }
+            if traversal.reversed {
+                points.reverse();
+            }
+            line.extend(points);
+        }
+        lines.push(line);
+    }
+    Some(lines)
+}
+
+/// Whether a chart point lies inside a planar face, counted exactly: the
+/// crossings of a ray from it with the boundary's own pcurves, not their
+/// polylines. A trim's chords bow inside a curved rim by more than the
+/// width of a sliver beside it (the annulus a drum a few hundredths of a
+/// millimetre wider leaves on a cap), and a point in that sliver reads
+/// outside the polyline. `None` for a face that is not a plane or has no
+/// curved edge, or where every ray tried meets the boundary at an end, a
+/// tangency or the start.
+fn inside_plane_exactly(face: &GFace, p: Point2, tol: Tolerances) -> Option<bool> {
+    // A boundary of straight edges is its own polyline: nothing to correct.
+    if !matches!(face.surface, SurfaceGeometry::Plane(_))
+        || face
+            .edges
+            .iter()
+            .all(|e| matches!(e.pcurve, PlanarCurve::Line(_)))
+    {
+        return None;
+    }
+    // On the boundary to within the weld distance (or an edge's own doubt,
+    // where wider) is on it: a sliver that thin is welded, no parity speaks
+    // for such a point, and the outline's reading stands.
+    let at = face.surface.point_at(p.x, p.y, tol).ok()?;
+    for e in &face.edges {
+        let doubt = (e.tolerance * 2.0).max(tol.confusion() * 1e2);
+        if !e.bound.expanded(doubt).contains(at) {
+            continue;
+        }
+        if distance_to_edge_curve(&e.curve, e.crange, at, tol).ok()? <= doubt {
+            return None;
+        }
+    }
+    let reach = face
+        .edges
+        .iter()
+        .map(|e| e.bound.diagonal())
+        .sum::<f64>()
+        .max(1.0)
+        * 4.0;
+    let mut curves: Vec<(PlanarCurve, (f64, f64))> = Vec::new();
+    for e in &face.edges {
+        curves.push((e.pcurve.clone(), e.prange));
+        if let Some((other, range)) = &e.other_side {
+            curves.push((other.clone(), *range));
+        }
+    }
+    for pole in &face.poles {
+        curves.push((pole.pcurve.clone(), pole.prange));
+    }
+    let options = ogeom_intersect::CurveCurveOptions::default();
+    'directions: for (dx, dy) in [(1.0, 0.0137), (-0.31, 1.0), (-1.0, -0.47), (0.53, -1.0)] {
+        let length = f64::hypot(dx, dy);
+        let far = Point2::new(p.x + dx / length * reach, p.y + dy / length * reach);
+        let Ok(ray) = ogeom_geom::Line2d::segment(p, far, tol) else {
+            return None;
+        };
+        let ray: PlanarCurve = ray.into();
+        let mut crossings = 0_usize;
+        for (curve, (a, b)) in &curves {
+            let (lo, hi) = (a.min(*b), a.max(*b));
+            if hi - lo <= tol.parametric() {
+                continue;
+            }
+            let Ok(piece) = ogeom_geom::Trimmed2d::new(curve.clone(), lo, hi, tol) else {
+                continue 'directions;
+            };
+            let piece: PlanarCurve = piece.into();
+            let Ok(met) = ogeom_intersect::intersect_curves_2d(&ray, &piece, options, tol) else {
+                continue 'directions;
+            };
+            if !met.overlaps.is_empty() {
+                continue 'directions;
+            }
+            let span = hi - lo;
+            for hit in &met.crossings {
+                let at_start = hit.on_a <= tol.confusion();
+                let at_end =
+                    (hit.on_b - lo).abs() <= span * 1e-9 || (hi - hit.on_b).abs() <= span * 1e-9;
+                if at_start || at_end || hit.reach > 0.0 {
+                    continue 'directions;
+                }
+                crossings += 1;
+            }
+        }
+        return Some(crossings % 2 == 1);
+    }
+    None
+}
+
 /// Whether two surfaces are one surface wherever they overlap, measured.
 ///
 /// The closed forms answer this for the pairs they know. Where there is no
@@ -5153,7 +5309,10 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         // along it) paves it a few microns from where an exact section
         // crosses; the first pave speaks for both, and the other's strand
         // must still reach it.
-        let mut spread = 0.0_f64;
+        // Each such junction where it stands in space and in this chart,
+        // and how far its members reach: the strands ending at a member are
+        // carried onto it below.
+        let mut gathered: Vec<(Point, Point2, f64)> = Vec::new();
         for (ei, e) in face.edges.iter().enumerate() {
             let mut stops = vec![e.crange.0];
             if let Some(ts) = paves.get(&e.node) {
@@ -5161,7 +5320,8 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 // junction, and the cluster's first pave speaks for it.
                 for c in cluster_paves(&e.curve, e.crange, e.tolerance, ts, tol)? {
                     if c.members > 1 {
-                        spread = spread.max(c.span + c.honesty);
+                        let chart = e.pcurve.point_at(rescale(c.t, e.crange, e.prange), tol)?;
+                        gathered.push((c.at, chart, c.span + c.honesty));
                     }
                     stops.push(c.t);
                 }
@@ -5405,6 +5565,38 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         // A fitted section that hugs one of this face's edges leaves it
         // at the hug's far end by up to the hug's own width; its strand
         // must still find the edge's node there.
+        // A strand ending at another member of a junction than the one that
+        // speaks for it ends where its curve all but runs along the edge (a
+        // section crossing it at a shallow angle, whose crossing is only
+        // known along the edge to within the run). An exact section moved
+        // along to the junction stays within tolerance of both curves, and
+        // carried there it meets the edge's split exactly, so the face's
+        // weld need not widen to the cluster's span, which would swallow a
+        // sliver beside the edge whole. A fitted one wanders by more than
+        // that, and the weld widens for it as before.
+        let mut spread = 0.0_f64;
+        for strand in strands.iter_mut().filter(|st| !st.boundary) {
+            let exact = matches!(strand.tag, Tag::Section { section, .. }
+                if sections.get(section).is_some_and(|s| s.tolerance <= 0.0));
+            let last = strand.polyline.len().saturating_sub(1);
+            for end in [0, last] {
+                let Some(&at) = strand.polyline.get(end) else {
+                    continue;
+                };
+                let Ok(q) = face.surface.point_at(at.x, at.y, tol) else {
+                    continue;
+                };
+                let landed = gathered
+                    .iter()
+                    .filter(|(junction, _, reach)| junction.distance(q) <= *reach)
+                    .min_by(|x, y| x.0.distance(q).total_cmp(&y.0.distance(q)));
+                match landed {
+                    Some(&(_, chart, _)) if exact => strand.polyline[end] = chart,
+                    Some(&(_, _, reach)) => spread = spread.max(reach),
+                    None => {}
+                }
+            }
+        }
         let doubt_of = |edges: &[BoundaryEdge]| -> f64 {
             edges.iter().fold(0.0_f64, |acc, e| {
                 acc.max(e.tolerance * 2.0)
@@ -5916,7 +6108,19 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 let partners = if from_a { &same_a[fi] } else { &same_b[fi] };
                 let mut chosen = None;
                 let mut unread = None;
-                for candidate in &piece.interiors {
+                // A planar piece's probes are held to its exact rings, and
+                // where none of them is inside those, the rings offer their
+                // own: a sliver narrower than the outline's chords bow has
+                // every coarse probe in a neighbour.
+                let fine = fine_rings(face, &piece.rings, &sections, from_a, tol);
+                let mut interiors: Vec<Point2> = piece.interiors.clone();
+                if let Some(fine) = &fine {
+                    interiors.retain(|p| arrange::inside_rings(fine, *p));
+                    if interiors.is_empty() {
+                        interiors = arrange::interior_points_of(fine, tol.parametric());
+                    }
+                }
+                for candidate in &interiors {
                     let at = face.surface.point_at(candidate.x, candidate.y, tol)?;
                     let shared = !partners.is_empty()
                         && partners.iter().any(|&pi| {

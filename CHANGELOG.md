@@ -13,6 +13,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Drums a hundredth of a micron to a tenth of a millimetre apart.** Two
+  drums 2e-5 to 1e-4 apart in radius, or 1e-4 apart in axis, refused or
+  (offset in axis) came out with a misbuilt face. Where a planar face has a
+  curved edge, a section's place inside it and a piece's probe are now read
+  against the exact boundary rather than its chords, a point within the
+  weld distance of the boundary counting as on it; two circles in one plane
+  cross where their closed form says, not along a sampled run millimetres
+  long; a closed section no longer has a crossing pulled to its own
+  arbitrary start; and an exact section ending at a junction is carried
+  onto it rather than widening the face's weld to the junction's span.
+  Volumes match the closed forms.
+
 - **A cavity touching its wall is the solid's void.** Cutting a ball from
   a box it touches from inside left the box as one solid and the ball as an
   inside-out solid of its own beside it, where the ball reached a tenth of

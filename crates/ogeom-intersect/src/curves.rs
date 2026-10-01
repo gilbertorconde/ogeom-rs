@@ -255,9 +255,9 @@ fn analytic_3d(
 ) -> Option<CurveIntersection<Point>> {
     match (a, b) {
         (Curve::Line(x), Curve::Line(y)) => Some(line_line_3d(x, y, options, tol)),
-        (Curve::Circle(x), Curve::Circle(y)) => {
-            same_circle_3d(x, y, tol).or_else(|| skew_conics_3d(a, b, options, tol))
-        }
+        (Curve::Circle(x), Curve::Circle(y)) => same_circle_3d(x, y, tol)
+            .or_else(|| coplanar_circles_3d(x, y, options, tol))
+            .or_else(|| skew_conics_3d(a, b, options, tol)),
         (Curve::Ellipse(x), Curve::Ellipse(y)) => {
             same_ellipse_3d(x, y, tol).or_else(|| skew_conics_3d(a, b, options, tol))
         }
@@ -636,6 +636,78 @@ fn clipped_to_windows<P>(
 /// answer: every sample is a hit, and "the crossings" do not exist. Distinct
 /// circles return `None` and fall through to the general machinery, which
 /// handles genuinely crossing pairs.
+/// Two circles in one plane, in closed form: where they cross, from the
+/// radical line in the plane. Exact however shallow the crossing: two rims a
+/// micron apart meet at a fraction of a milliradian, and sampled, the touch
+/// would read as a run millimetres long, which is how far the two stay
+/// within tolerance of each other, not where they cross. `None` for circles
+/// in different planes, sharing a centre, or within the weld distance of
+/// touching, which the other paths answer.
+fn coplanar_circles_3d(
+    a: &ogeom_geom::CircleCurve,
+    b: &ogeom_geom::CircleCurve,
+    options: CurveCurveOptions,
+    tol: Tolerances,
+) -> Option<CurveIntersection<Point>> {
+    let (ca, cb) = (a.circle(), b.circle());
+    let normal = ca.frame().z().vector();
+    if normal.cross(cb.frame().z().vector()).magnitude() > tol.angular() {
+        return None;
+    }
+    let between = cb.centre() - ca.centre();
+    if between.dot(normal).abs() > tol.confusion() {
+        return None;
+    }
+    let in_plane = between - normal * between.dot(normal);
+    let distance = in_plane.magnitude();
+    let (ra, rb) = (ca.radius(), cb.radius());
+    if distance <= tol.confusion() {
+        return None;
+    }
+    if distance > ra + rb + options.gap || distance < (ra - rb).abs() - options.gap {
+        return Some(CurveIntersection::empty());
+    }
+    // Within the weld distance of touching, the two crossings are one touch
+    // the root of a rounding error has pulled apart.
+    let weld = tol.confusion() * 1e2;
+    if (distance - (ra + rb)).abs() <= weld || (distance - (ra - rb).abs()).abs() <= weld {
+        return None;
+    }
+    let along = distance.mul_add(distance, ra.mul_add(ra, -(rb * rb))) / (2.0 * distance);
+    let squared = ra.mul_add(ra, -(along * along));
+    if squared <= tol.confusion() * tol.confusion() {
+        return None;
+    }
+    let half = squared.sqrt();
+    let ux = in_plane / distance;
+    let uy = normal.cross(ux);
+    let parameter = |curve: &ogeom_geom::CircleCurve, p: Point| -> f64 {
+        let local = curve.circle().frame().to_local(p);
+        let angle = local.y.atan2(local.x);
+        let angle = if curve.is_reversed() { -angle } else { angle };
+        let (lo, _) = Curve3d::domain(curve);
+        lo + (angle - lo).rem_euclid(core::f64::consts::TAU)
+    };
+    let mut crossings: Vec<Crossing<Point>> = [half, -half]
+        .into_iter()
+        .map(|h| {
+            let point = ca.centre() + ux * along + uy * h;
+            Crossing {
+                on_a: parameter(a, point),
+                on_b: parameter(b, point),
+                point,
+                gap: 0.0,
+                reach: 0.0,
+            }
+        })
+        .collect();
+    sort_crossings(&mut crossings);
+    Some(CurveIntersection {
+        crossings,
+        overlaps: Vec::new(),
+    })
+}
+
 fn same_circle_3d(
     a: &ogeom_geom::CircleCurve,
     b: &ogeom_geom::CircleCurve,
