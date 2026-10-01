@@ -2,7 +2,7 @@
 //!
 //! The invariant that matters above all others: refinement never moves the
 //! curve. Knot insertion, splitting, Bézier decomposition and degree elevation
-//! all change the representation and must leave the geometry bit-for-bit
+//! all change the representation and must leave the geometry
 //! indistinguishable within tolerance. If any of them drifts, every algorithm
 //! built on top inherits the drift.
 

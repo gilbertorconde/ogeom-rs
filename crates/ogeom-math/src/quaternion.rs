@@ -79,7 +79,7 @@ impl Quaternion {
         }
         // Past a quarter turn the angle is read off the cross product, which
         // holds its digits as the two turn antiparallel where `1 + cos` does
-        // not; the axis is held to the angular tolerance, independent of the
+        // not. The axis is held to the angular tolerance, independent of the
         // unit.
         let sine = cross.magnitude();
         if sine <= tol.angular() {
@@ -283,7 +283,7 @@ impl Quaternion {
         let a = self.normalized(tol)?;
         let mut b = other.normalized(tol)?;
         let mut cos = a.dot(b);
-        // q and -q are the same rotation; pick the representative that gives the
+        // q and -q are the same rotation. Pick the representative that gives the
         // shorter path.
         if cos < 0.0 {
             b = -b;
@@ -406,9 +406,8 @@ mod tests {
     #[test]
     fn matrix_round_trip_is_exact_near_pi() {
         // The naive w-first extraction divides by something approaching zero
-        // here. Shepperd's largest-divisor choice does not.
-        // Including angles right at pi, where w -> 0 and the naive extraction
-        // divides by something vanishing.
+        // near pi, and by something vanishing right at it, where w -> 0.
+        // Shepperd's largest-divisor choice does not.
         let near_pi = core::f64::consts::PI - 1e-8;
         for angle in [0.0_f64, 0.1, 1.0, 3.0, near_pi, core::f64::consts::PI] {
             let q = Quaternion::from_axis_angle(axis(), angle);
@@ -501,7 +500,7 @@ mod tests {
     fn slerp_takes_the_short_way_round() {
         let a = Quaternion::from_axis_angle(Direction::Z, 0.0);
         // Same rotation, opposite representative. Naive slerp would sweep the
-        // long way; the sign correction must prevent that.
+        // long way. The sign correction must prevent that.
         let b = -Quaternion::from_axis_angle(Direction::Z, 0.4);
         let mid = a.slerp(b, 0.5, T).unwrap();
         let expected = Quaternion::from_axis_angle(Direction::Z, 0.2);

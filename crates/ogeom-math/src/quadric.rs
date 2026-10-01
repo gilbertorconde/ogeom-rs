@@ -4,11 +4,9 @@
 //! the frame is not decoration: it fixes the parameterization, and therefore
 //! fixes where a cylinder's seam falls and which way its normal points.
 //!
-//! These five plus the plane cover the overwhelming majority of real mechanical
-//! geometry. Keeping them as exact analytic descriptions rather than converting
-//! everything to NURBS is what lets intersection take analytic shortcuts, lets
-//! measurement report a radius rather than a fitted approximation of one, and
-//! keeps files small.
+//! Keeping these as exact analytic descriptions rather than converting them to
+//! NURBS lets intersection take analytic shortcuts, lets measurement report a
+//! radius rather than a fitted approximation of one, and keeps files small.
 //!
 //! Evaluation and derivatives are in [`crate::elementary`]; this module holds
 //! the descriptions and the queries that follow directly from them.
@@ -355,7 +353,7 @@ impl Cone {
 
     /// The distance from `p` to the surface, both nappes of it.
     ///
-    /// A double cone extends both sides of its apex; this measures to the
+    /// A double cone extends both sides of its apex. This measures to the
     /// surface as a whole, which is what a surface query means.
     #[must_use]
     pub fn distance_to(&self, p: Point) -> f64 {
@@ -363,16 +361,13 @@ impl Cone {
         let radial = local.xy().to_vector().magnitude();
         let apex_z = -self.reference_radius / self.half_angle.tan();
         // A cone is a *double* cone: the quadric has two nappes meeting at the
-        // apex, and the surface type built on this parameterizes both; its
-        // height range may cross the apex, exactly as the conventional
-        // kernel's conical surface does. An earlier version measured one nappe
-        // and clamped everything past the apex to the apex, which reported a
-        // point *on* the second nappe as almost a unit away, and it was the
-        // intersection benchmark that caught it, by flagging a correctly
-        // traced curve as off the surface.
+        // apex, and the surface type built on this parameterizes both, so its
+        // height range may cross the apex. Measuring one nappe and clamping
+        // everything past the apex to the apex would report a point *on* the
+        // second nappe as off the surface.
         //
-        // In the (radial, axial) half-plane each nappe is a ray from the apex;
-        // the distance is the nearer of the two, each clamped to its own ray
+        // In the (radial, axial) half-plane each nappe is a ray from the apex.
+        // The distance is the nearer of the two, each clamped to its own ray
         // so a point in the wedge beyond the apex measures to the apex. The
         // rays lean out from the axis whichever way the cone widens: a
         // negative half angle (a cone narrowing up its axis) only swaps
@@ -414,8 +409,8 @@ impl Cone {
     pub fn transformed(&self, t: &Transform, tol: Tolerances) -> OgeomResult<Self> {
         // A similarity scales lengths uniformly, so the half angle survives it
         // unchanged. That is exactly why the transform type is restricted to
-        // similarities: a non-uniform scale would leave a surface that is no
-        // longer a circular cone at all.
+        // similarities: a non-uniform scale would leave a surface that is not
+        // a circular cone at all.
         Self::new(
             t.apply_frame(&self.frame, tol)?,
             self.reference_radius * t.scale_factor().abs(),
@@ -607,7 +602,7 @@ impl Torus {
     ///
     /// For a [`TorusKind::Ring`] or [`TorusKind::Horn`] torus, inside is
     /// the tube. A [`TorusKind::Spindle`] torus passes through itself and
-    /// bounds two nested regions, and "inside" cannot name both; here it
+    /// bounds two nested regions, and "inside" cannot name both. Here it
     /// names the *outer* one (the apple, the solid of revolution the
     /// outer sheet bounds, which contains the lemon) because that is the
     /// region the torus-as-a-solid occupies. The magnitude is measured to
@@ -795,7 +790,7 @@ mod tests {
         let c = Cylinder::new(Frame::WORLD, 2.0, T).unwrap();
         assert_relative_eq!(c.lateral_area(5.0), core::f64::consts::TAU * 10.0);
         assert_relative_eq!(c.volume(5.0), core::f64::consts::PI * 20.0);
-        // Height is a magnitude; a negative one is the same section.
+        // Height is a magnitude. A negative one is the same section.
         assert_relative_eq!(c.volume(-5.0), c.volume(5.0));
     }
 
@@ -873,10 +868,7 @@ mod tests {
         );
         // A cone is a double cone: behind the apex is the second nappe, and a
         // point on the axis there measures perpendicular to it, not to the
-        // apex. The earlier claim here (apex distance, 5.0) encoded a
-        // single-nappe convention that disagreed with the surface type built
-        // on this, and the intersection benchmark caught the disagreement by
-        // flagging a correctly traced second-nappe curve as off the surface.
+        // apex.
         assert_relative_eq!(
             c.distance_to(Point::new(0.0, 0.0, -5.0)),
             5.0 * core::f64::consts::FRAC_1_SQRT_2,

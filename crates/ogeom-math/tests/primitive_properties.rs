@@ -274,7 +274,7 @@ proptest! {
     fn radii_are_never_negative_after_any_similarity(
         f in frame(), r in radius(), t in similarity(),
     ) {
-        // A mirror has a negative scale factor; the radius must not follow it.
+        // A mirror has a negative scale factor. The radius must not follow it.
         prop_assert!(Circle::new(f, r, T).unwrap().transformed(&t, T).unwrap().radius() > 0.0);
         prop_assert!(Cylinder::new(f, r, T).unwrap().transformed(&t, T).unwrap().radius() > 0.0);
         prop_assert!(Sphere::new(f, r, T).unwrap().transformed(&t, T).unwrap().radius() > 0.0);

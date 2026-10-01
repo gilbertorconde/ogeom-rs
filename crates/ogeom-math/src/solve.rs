@@ -1,9 +1,8 @@
 //! Root finding, polynomial roots and minimization.
 //!
 //! The numerical substrate every intersection, projection and extrema algorithm
-//! in the kernel sits on. Nothing here is geometric; it is deliberately kept
-//! separate so those algorithms are about geometry rather than about
-//! convergence.
+//! in the kernel sits on. Nothing here is geometric. It is kept separate so
+//! those algorithms are about geometry rather than about convergence.
 //!
 //! # What to reach for
 //!
@@ -15,9 +14,9 @@
 //!   tangential intersection is exactly where the derivative vanishes.
 //! - Roots of a polynomial: [`roots`]. Closed form up to the cubic, the
 //!   quadratic written to avoid the cancellation the schoolbook formula
-//!   suffers; companion-matrix eigenvalues above that.
+//!   suffers. Companion-matrix eigenvalues above that.
 //! - A system of equations: [`newton_system`]. Surface projection is two
-//!   equations in two unknowns; intersection marching is much the same.
+//!   equations in two unknowns. Intersection marching is much the same.
 //! - A minimum without derivatives: [`minimize`].
 
 use nalgebra::{DMatrix, DVector};
@@ -262,7 +261,7 @@ where
     if fa * fb > 0.0 {
         ogeom_bail!(Construction, "f does not change sign across [{a}, {b}]");
     }
-    // Orient so that f(low) < 0 < f(high); the bracket update is then a single
+    // Orient so that f(low) < 0 < f(high). The bracket update is then a single
     // comparison rather than a sign product.
     if fa > 0.0 {
         core::mem::swap(&mut low, &mut high);
@@ -328,7 +327,7 @@ where
 /// The real roots of a polynomial, in increasing order.
 ///
 /// `coefficients` are in ascending power order: `c[0] + c[1] x + c[2] x^2 ...`.
-/// Degrees up to three are solved in closed form; above that the roots are
+/// Degrees up to three are solved in closed form. Above that the roots are
 /// the companion matrix's real eigenvalues.
 ///
 /// Repeated roots are returned once each, since a geometry caller wants the
@@ -340,7 +339,7 @@ where
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if every
 /// coefficient is zero, where every value is a root.
 pub fn roots(coefficients: &[f64], tolerance: f64) -> OgeomResult<Vec<f64>> {
-    // Drop leading zeros so the true degree drives the choice of method; a
+    // Drop leading zeros so the true degree drives the choice of method. A
     // "cubic" whose cubic term is zero is a quadratic and must be solved as
     // one, or the leading division blows up.
     let mut c = coefficients;
@@ -469,7 +468,7 @@ fn companion_roots(c: &[f64], tolerance: f64) -> Vec<f64> {
             m[(i + 1, i)] = 1.0;
         }
     }
-    // Only the real eigenvalues are roots; complex conjugate pairs are not,
+    // Only the real eigenvalues are roots. Complex conjugate pairs are not,
     // save a double root, which rounding splits into a pair half the digits
     // off the line. Such a pair is a root where the polynomial's
     // value is zero to rounding at its real part.
@@ -629,16 +628,16 @@ pub struct SystemSolution {
 /// Solve `f(x) = 0` for a vector `x`, by damped Newton.
 ///
 /// `f` returns the residual vector and the Jacobian, row-major. The step is
-/// halved until it actually reduces the residual; undamped Newton overshoots
+/// halved until it actually reduces the residual. Undamped Newton overshoots
 /// badly from a poor start, and a geometry caller's start is often only a rough
 /// guess from a coarse sampling.
 ///
-/// Surface projection is this with two equations in two unknowns; so is a step
-/// of a surface/surface intersection march.
+/// Surface projection is this with two equations in two unknowns, and so is a
+/// step of a surface/surface intersection march.
 ///
 /// Where no root exists the residual has a positive minimum, and no damping
 /// finds a downhill step from it. That is reported as
-/// [`Convergence::Exhausted`] with the best estimate attached; "no root here"
+/// [`Convergence::Exhausted`] with the best estimate attached. "No root here"
 /// is a useful answer, and far better than iterating to the limit.
 ///
 /// # Errors
@@ -809,7 +808,7 @@ where
     Ok((x, norm, Convergence::Exhausted, criteria.max_iterations))
 }
 
-/// `A x = b` by Gaussian elimination with partial pivoting; `None` at a
+/// `A x = b` by Gaussian elimination with partial pivoting. `None` at a
 /// zero pivot, as an LU factorisation refuses one.
 fn solve_fixed<const N: usize>(mut a: [[f64; N]; N], mut b: [f64; N]) -> Option<[f64; N]> {
     for col in 0..N {
@@ -1013,7 +1012,7 @@ mod tests {
 
     #[test]
     fn newton_survives_a_vanishing_derivative() {
-        // f(x) = x^3 has f'(0) = 0. Unsafeguarded Newton stalls; the bisection
+        // f(x) = x^3 has f'(0) = 0. Unsafeguarded Newton stalls. The bisection
         // fallback must carry it through.
         let s = newton(|x| (x * x * x, 3.0 * x * x), -1.0, 2.0, 1.9, C).unwrap();
         assert!(s.value.abs() < 1e-4, "landed at {}", s.value);
@@ -1245,7 +1244,7 @@ mod tests {
 
     #[test]
     fn exhausted_is_reported_not_hidden() {
-        // One iteration cannot possibly converge; the result must say so rather
+        // One iteration cannot possibly converge. The result must say so rather
         // than present the first guess as an answer.
         let s = brent(
             |x| x * x - 2.0,

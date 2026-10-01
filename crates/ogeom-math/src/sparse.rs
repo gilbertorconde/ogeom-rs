@@ -25,7 +25,7 @@ pub struct SparseMatrix {
 
 impl SparseMatrix {
     /// Build from `(row, column, value)` triplets. Duplicate positions sum,
-    /// which is what an assembly loop wants; explicit zeros are kept out.
+    /// which is what an assembly loop wants.
     ///
     /// # Panics
     /// If a triplet indexes outside `rows × cols`.
@@ -125,7 +125,7 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 /// Minimize `‖A·x − b‖` by conjugate gradient on the normal equations,
 /// from zero, so a rank-deficient system yields the minimum-norm
 /// least-squares solution. Convergence is declared when the gradient
-/// `‖Aᵀ(b − A·x)‖` falls to `tolerance` relative to `‖Aᵀb‖`; `None` means
+/// `‖Aᵀ(b − A·x)‖` falls to `tolerance` relative to `‖Aᵀb‖`. `None` means
 /// the iteration budget ran out before that happened.
 ///
 /// # Panics

@@ -58,7 +58,7 @@ pub enum Placement {
     Through,
     /// Touches a line target.
     Tangent,
-    /// Touches a circle target from outside; the circles exclude each
+    /// Touches a circle target from outside. The circles exclude each
     /// other.
     Outside,
     /// The solution contains the target circle.
@@ -540,7 +540,7 @@ pub enum Bisector2 {
     Ellipse(Ellipse2),
     /// A point outside a circle, or circles of unequal radius: a hyperbola.
     /// The equidistant locus is the branch on the frame's `+x` side, toward
-    /// the point, or toward the smaller circle; the mirror branch comes with
+    /// the point, or toward the smaller circle. The mirror branch comes with
     /// the conic but bisects nothing.
     Hyperbola(Hyperbola2),
 }
@@ -639,8 +639,8 @@ pub fn bisector(a: &Target2, b: &Target2, tol: Tolerances) -> OgeomResult<Bisect
                 );
             }
             // |x − centre| − r = distance to line, on the circle's side:
-            // a parabola with the centre as focus and the line shifted r
-            // toward the circle... away from it, as the directrix.
+            // a parabola with the centre as focus and, as the directrix, the
+            // line shifted r away from the circle.
             let toward = if signed > 0.0 { n } else { -n };
             let directrix_foot = l.location + perp_foot_shift(l, c.centre()) - toward * c.radius();
             let focus = c.centre();
@@ -951,7 +951,7 @@ mod tests {
         };
         for p in probes {
             let (da, db) = (a.distance_to(p), b.distance_to(p));
-            // A hyperbola carries both branches; each point serves one side.
+            // A hyperbola carries both branches. Each point serves one side.
             assert!(
                 (da - db).abs() < 1e-9,
                 "not equidistant at {p:?}: {da} vs {db} for {bisector:?}"

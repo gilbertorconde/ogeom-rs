@@ -14,7 +14,7 @@
 //!
 //! The vocabulary is the arithmetic predicates need: add, subtract, multiply,
 //! negate, square, absolute value, square root, and division away from zero.
-//! Transcendentals are deliberately absent; the standard library does not
+//! Transcendentals are deliberately absent. The standard library does not
 //! state error bounds for them, and an enclosure that might not enclose is
 //! worse than none.
 
@@ -92,7 +92,7 @@ impl Interval {
         }
     }
 
-    /// The negation, exact; negation never rounds.
+    /// The negation, exact. Negation never rounds.
     #[must_use]
     pub const fn neg(&self) -> Self {
         Self {
@@ -174,8 +174,8 @@ impl Interval {
     }
 
     /// The square root, for enclosures of non-negative values. A lower bound
-    /// pushed below zero by widening is clamped; the true value it encloses
-    /// was non-negative. An interval entirely below zero has no real root
+    /// pushed below zero by widening is clamped. The true value it encloses
+    /// is non-negative. An interval entirely below zero has no real root
     /// and returns `None`.
     #[must_use]
     pub fn sqrt(&self) -> Option<Self> {
@@ -258,7 +258,7 @@ mod tests {
         fn enclosures_stay_enclosures(a in finite(), b in finite(), r in 0.0..1e-6f64) {
             let x = Interval::about(a, r);
             let y = Interval::about(b, r);
-            // The true values are a and b themselves; every combination of
+            // The true values are a and b themselves. Every combination of
             // them must land inside.
             prop_assert!(x.add(&y).contains(a + b));
             prop_assert!(x.mul(&y).contains(a * b));
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn the_classic_rounding_case_is_enclosed() {
-        // 0.1 + 0.2 in doubles is famously not 0.3; the enclosure holds the
+        // 0.1 + 0.2 in doubles is famously not 0.3. The enclosure holds the
         // computed sum and stays within a couple of ulps.
         let z = Interval::point(0.1).add(&Interval::point(0.2));
         assert!(z.contains(0.1 + 0.2));

@@ -188,7 +188,7 @@ pub fn circle_parameter(circle: &Circle, p: Point, tol: Tolerances) -> OgeomResu
 ///
 /// The parameter is the *eccentric* angle, not the polar one: the point is
 /// `(a cos t, b sin t)`. That keeps evaluation free of trigonometric inversion
-/// and matches every exchange format.
+/// and is the parameterization exchange formats use.
 #[must_use]
 pub fn ellipse_at(ellipse: &Ellipse, angle: f64) -> CurvePoint {
     let f = ellipse.frame();
@@ -231,7 +231,7 @@ pub fn hyperbola_at(hyperbola: &Hyperbola, t: f64) -> CurvePoint {
         point: hyperbola.centre() + x * (a * cosh) + y * (b * sinh),
         d1: x * (a * sinh) + y * (b * cosh),
         // The second derivative of cosh is cosh, and of sinh is sinh, so this
-        // is the position vector again; a hyperbola's acceleration points
+        // is the position vector again. A hyperbola's acceleration points
         // away from its centre.
         d2: x * (a * cosh) + y * (b * sinh),
     }
@@ -468,7 +468,7 @@ pub fn torus_parameters(torus: &Torus, p: Point, tol: Tolerances) -> OgeomResult
     }
     let angle = local.y.atan2(local.x);
     // In the half-plane through the axis and `p` the tube is two circles,
-    // centred the major radius either side of the axis; on a spindle the
+    // centred the major radius either side of the axis. On a spindle the
     // far one reaches past the axis and can be the nearer, its points half
     // a turn round where the sweep's radius runs negative.
     let (major, minor) = (torus.major_radius(), torus.minor_radius());
@@ -598,8 +598,8 @@ mod tests {
 
     #[test]
     fn circle_starts_on_its_frames_x_axis() {
-        // This is the whole point of carrying a frame: parameter zero is a
-        // specific, reproducible place.
+        // The parameterization is relative to the frame, so parameter zero is
+        // a specific, reproducible place.
         let f = tilted();
         let c = Circle::new(f, 2.0, T).unwrap();
         assert!(
@@ -627,7 +627,7 @@ mod tests {
             );
             check_curve_derivatives(|t| ellipse_at(&e, t), angle);
         }
-        // The eccentric angle is not the polar one; at 45 degrees eccentric the
+        // The eccentric angle is not the polar one. At 45 degrees eccentric the
         // point is not at 45 degrees polar.
         let p = ellipse_at(&e, PI / 4.0);
         let local = e.frame().to_local(p.point);
@@ -646,8 +646,8 @@ mod tests {
     #[test]
     fn ellipse_curvature_is_extreme_at_the_ends_of_its_axes() {
         let e = Ellipse::new(Frame::WORLD, 5.0, 3.0, T).unwrap();
-        // At the end of the major axis, curvature is b/a^2 * a... = a/b^2 form:
-        // kappa = a / b^2 at the minor-axis end, b / a^2 at the major-axis end.
+        // Curvature is a / b^2 at the major-axis end and b / a^2 at the
+        // minor-axis end.
         assert_relative_eq!(ellipse_at(&e, 0.0).curvature(), 5.0 / 9.0, epsilon = 1e-12);
         assert_relative_eq!(
             ellipse_at(&e, PI / 2.0).curvature(),

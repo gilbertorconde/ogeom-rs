@@ -244,10 +244,10 @@ impl Bounds {
 /// bound times its half-diagonal, and less the centre's gradient times the
 /// half-diagonal and half a curvature bound times its square, which closes
 /// on a smooth minimum as the box shrinks. Both bounds are estimated from
-/// finite differences over a sampling of the box and doubled; a function
+/// finite differences over a sampling of the box and doubled. A function
 /// steeper or more sharply bent somewhere than any sample shows can hide a
 /// minimum from the certificate. `max_evaluations`
-/// caps the work; a search stopped by it reports `certified: false`.
+/// caps the work. A search stopped by it reports `certified: false`.
 ///
 /// # Errors
 ///

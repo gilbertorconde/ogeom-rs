@@ -296,7 +296,7 @@ impl Vector2 {
 
     /// Dot product.
     ///
-    /// Two terms, so no fused multiply-add; see [`Vector::cross`] for why.
+    /// Two terms, so no fused multiply-add. See [`Vector::cross`] for why.
     #[must_use]
     pub fn dot(self, other: Self) -> f64 {
         self.x * other.x + self.y * other.y

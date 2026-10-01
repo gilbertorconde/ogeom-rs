@@ -5,15 +5,14 @@
 //! plus a handedness.
 //!
 //! Frames are how every piece of analytic geometry in the kernel is positioned.
-//! A cylinder is a radius and a frame; a circle is a radius and a frame; the
+//! A cylinder is a radius and a frame, and so is a circle. The
 //! parameterization of each is defined *relative to* its frame, which is what
 //! makes "the seam of this cylinder" a well-defined place rather than an
 //! accident of how the surface was built.
 //!
-//! Unlike the conventional design, which splits right-handed and
-//! possibly-left-handed frames into two separate types, there is one [`Frame`]
-//! carrying a [`Handedness`]. The split buys nothing and costs a conversion at
-//! every boundary between them.
+//! There is one [`Frame`] type, carrying a [`Handedness`], rather than separate
+//! right-handed and possibly-left-handed types, so nothing is converted at a
+//! boundary between them.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 
@@ -417,7 +416,7 @@ impl Frame {
 
     /// This frame with the primary direction reversed.
     ///
-    /// `x` is kept, so `y` must flip to preserve handedness; reversing a
+    /// `x` is kept, so `y` must flip to preserve handedness. Reversing a
     /// plane's normal should not silently turn its parameterization inside out.
     #[must_use]
     pub const fn with_z_reversed(&self) -> Self {
@@ -654,7 +653,7 @@ mod tests {
 
     #[test]
     fn frame_orthonormalizes_a_non_perpendicular_reference() {
-        // The reference leans heavily into z; only its perpendicular part
+        // The reference leans heavily into z. Only its perpendicular part
         // should survive.
         let reference = Direction::from_coords(1.0, 0.0, 10.0, T).unwrap();
         let f = Frame::new(Point::ORIGIN, Direction::Z, reference, T).unwrap();

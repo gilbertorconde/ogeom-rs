@@ -3,7 +3,7 @@
 //! Every use of a bounding box in a kernel is a *rejection* test: cull this
 //! pair, skip this subtree, prune this branch. So the one property that matters
 //! is that a box genuinely contains what it claims to. A box that is too large
-//! costs time; a box that is too small silently drops a real intersection, and
+//! costs time. A box that is too small silently drops a real intersection, and
 //! nothing downstream can tell.
 //!
 //! Everything that produces an [`Aabb`] here therefore errs outward, and says
@@ -261,7 +261,7 @@ impl Aabb {
     /// The result contains the transformed box but is generally larger than the
     /// tightest one: a rotated box is not axis-aligned, and its bounding box
     /// must cover the rotation. Erring outward is the safe direction, and
-    /// repeatedly transforming a box therefore inflates it; transform the
+    /// repeatedly transforming a box therefore inflates it. Transform the
     /// geometry and re-bound instead of chaining this.
     #[must_use]
     pub fn transformed(&self, t: &crate::Transform) -> Self {

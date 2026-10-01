@@ -1,6 +1,6 @@
 //! Numerical integration.
 //!
-//! Gauss–Legendre quadrature, applied adaptively. A kernel integrates for arc
+//! Gauss-Legendre quadrature, applied adaptively. A kernel integrates for arc
 //! length, for area and volume over a parametric patch, and for the moments
 //! that follow from those: all integrands that are smooth almost everywhere
 //! and awkward exactly where a feature is.
@@ -16,7 +16,7 @@
 //!
 //! # Why adaptive on top
 //!
-//! A fixed rule cannot report its own error. A Gauss–Kronrod pair can: the
+//! A fixed rule cannot report its own error. A Gauss-Kronrod pair can: the
 //! fifteen-point Kronrod rule shares the seven-point Gauss rule's nodes, so
 //! one pass over an interval yields two estimates, and their difference is
 //! a fair measure of what the better one still misses. Where that is inside
@@ -31,7 +31,7 @@
 
 use ogeom_core::{OgeomResult, ogeom_bail};
 
-/// Nodes of the ten-point Gauss–Legendre rule on `[-1, 1]`, positive half.
+/// Nodes of the ten-point Gauss-Legendre rule on `[-1, 1]`, positive half.
 ///
 /// The rule is symmetric, so the negative nodes are these negated and the
 /// weights are shared. Values are the standard ones (roots of the degree-ten
@@ -54,7 +54,7 @@ const WEIGHTS: [f64; 5] = [
 ];
 
 /// Nodes of the fifteen-point Kronrod rule on `[-1, 1]`, positive half,
-/// outermost first; every other one from the second is a node of the
+/// outermost first. Every other one from the second is a node of the
 /// seven-point Gauss rule it extends.
 const KRONROD_NODES: [f64; 8] = [
     0.991_455_371_120_812_6,
@@ -101,7 +101,7 @@ const MAX_DEPTH_2D: u32 = 24;
 
 /// Integrate `f` over `[a, b]` with the fixed ten-point rule.
 ///
-/// Exact for polynomials up to degree nineteen. No error estimate; for that,
+/// Exact for polynomials up to degree nineteen. No error estimate. For that,
 /// use [`integrate`], which is this applied adaptively.
 ///
 /// A reversed interval integrates to the negative, as it should: the rule
@@ -140,7 +140,7 @@ pub fn gauss_legendre_rule(a: f64, b: f64) -> [(f64, f64); 10] {
 /// from the Gauss value as the estimate of what it still misses.
 ///
 /// Fifteen evaluations, shared. The Kronrod rule is exact for polynomials
-/// up to degree twenty-two, the Gauss rule up to thirteen; where the two
+/// up to degree twenty-two, the Gauss rule up to thirteen. Where the two
 /// agree the integrand is polynomial enough that both are right, and the
 /// gap is a fair measure of the error where they are not. A reversed
 /// interval integrates to the negative, as [`gauss_legendre`] does.
@@ -176,7 +176,7 @@ pub fn gauss_kronrod<F: FnMut(f64) -> f64>(mut f: F, a: f64, b: f64) -> (f64, f6
 /// with an *infinite derivative* at an endpoint (`sqrt(1 - x^2)` at `x = 1`,
 /// which is a circle's own equation) has a budget shrinking faster than its
 /// error does, and cannot be squeezed arbitrarily. In practice it manages
-/// about `1e-7` on that shape, and lands within `1e-14` when it does; asked for
+/// about `1e-7` on that shape, and lands within `1e-14` when it does. Asked for
 /// `1e-8` it reports that it could not rather than returning the number it
 /// reached.
 ///
@@ -250,11 +250,11 @@ fn refine<F: FnMut(f64) -> f64>(
 /// Integrate `f(u, v)` over the rectangle `[a, b] x [c, d]` to an absolute
 /// tolerance: a patch's area, its moments, anything spread over a chart.
 ///
-/// The Gauss–Kronrod pair in tensor form: one pass over a cell is fifteen
+/// The Gauss-Kronrod pair in tensor form: one pass over a cell is fifteen
 /// by fifteen evaluations and yields the Kronrod estimate and, from the
 /// same values, the estimate with the Gauss rule in `u` and the one with
-/// it in `v`, each gap the error owed to that direction. A cell whose
-/// worse gap is inside its budget is done; one whose is not is halved
+/// it in `v`, each gap the error attributed to that direction. A cell whose
+/// worse gap is inside its budget is done. One whose is not is halved
 /// *along the rougher direction*, each half given half the budget, so the
 /// cells' errors sum to the whole's and a ridge running across the chart
 /// (a crease in an integrand, a seam) costs a line of cells rather than a
@@ -286,7 +286,7 @@ pub fn integrate_2d<F: FnMut(f64, f64) -> f64>(
     refine_2d(&mut f, (a, b), (c, d), tolerance, 0)
 }
 
-/// The tensor Gauss–Kronrod pair over one cell: the Kronrod value, and the
+/// The tensor Gauss-Kronrod pair over one cell: the Kronrod value, and the
 /// gaps to the estimates with the Gauss rule in `u` and in `v`.
 fn gauss_kronrod_2d<F: FnMut(f64, f64) -> f64>(
     f: &mut F,
@@ -400,9 +400,8 @@ mod tests {
     fn an_infinite_derivative_at_an_endpoint_is_handled_to_a_stated_limit() {
         // The quarter circle. Its integrand's derivative blows up at x = 1, so
         // the halved budget shrinks faster than the error there does and the
-        // method has a floor. Where it converges it is far better than asked;
-        // and where it does not, it says so instead of returning what it
-        // reached, which is the whole difference between a limit and a bug.
+        // method has a floor. Where it converges it is far better than asked.
+        // Where it does not, it says so instead of returning what it reached.
         let quarter = |x: f64| (1.0 - x * x).max(0.0).sqrt();
         let found = integrate(quarter, 0.0, 1.0, 1e-7).unwrap();
         assert_relative_eq!(found, PI / 4.0, epsilon = 1e-12);
@@ -444,7 +443,7 @@ mod tests {
         let sphere = integrate_2d(|_, v| v.sin(), (0.0, 2.0 * PI), (0.0, PI), 1e-10).unwrap();
         assert_relative_eq!(sphere, 4.0 * PI, epsilon = 1e-9);
         let ridge = integrate_2d(|u, v| (u - 0.3).abs() + v, (0.0, 1.0), (0.0, 1.0), 1e-9).unwrap();
-        // ∫|u − 0.3| du over [0, 1] = 0.045 + 0.245 = 0.29; ∫ v dv = 0.5.
+        // ∫|u − 0.3| du over [0, 1] = 0.045 + 0.245 = 0.29, and ∫ v dv = 0.5.
         assert_relative_eq!(ridge, 0.29 + 0.5, epsilon = 1e-8);
         assert!(integrate_2d(|u, _| 1.0 / u, (0.0, 1.0), (0.0, 1.0), 1e-9).is_err());
         assert_eq!(

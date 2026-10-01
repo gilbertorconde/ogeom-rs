@@ -299,7 +299,7 @@ pub fn insert_knot<P: Blend>(
     let (s, r) = (existing, count);
 
     let mut points: Vec<P> = vec![P::zero(); control.len() + r];
-    // Control points outside the affected window are unchanged; those before it
+    // Control points outside the affected window are unchanged. Those before it
     // keep their index, those after it shift right by the number inserted.
     points[..=span - p].copy_from_slice(&control[..=span - p]);
     points[span - s + r..=last + r].copy_from_slice(&control[span - s..=last]);
@@ -339,7 +339,7 @@ pub type BezierSegment<P> = ((f64, f64), Vec<P>);
 ///
 /// `a`'s last control point and `b`'s first are taken to be the same
 /// point (the caller checks, since a control point is whatever blends)
-/// and become one control; the join knot is left at multiplicity `degree`,
+/// and become one control. The join knot is left at multiplicity `degree`,
 /// so the curve passes through it and continues with `b`'s parameter
 /// shifted to begin where `a`'s ends. The domain is the two domains laid
 /// end to end.
@@ -386,7 +386,7 @@ pub fn join<P: Blend>(a: &Spline<P>, b: &Spline<P>) -> OgeomResult<Spline<P>> {
 /// held to the degree, which is as smooth as the spline itself is.
 ///
 /// Extended at the start, the original run keeps its parameters and the
-/// domain grows downward; at the end, upward.
+/// domain grows downward. Extended at the end, it grows upward.
 ///
 /// # Errors
 ///
@@ -412,7 +412,7 @@ pub fn extend<P: Blend>(
         );
     }
     if !at_end {
-        // The start is the end of the reversed curve; reversed back, the
+        // The start is the end of the reversed curve. Reversed back, the
         // extension stands before the original, which keeps its parameters
         // once the whole is slid down by the span.
         let (rk, rc) = reverse(knots, control);
@@ -594,7 +594,7 @@ pub fn to_bezier_segments<P: Blend>(
     // Raise every knot of the domain to full multiplicity, its ends too: an
     // unclamped vector's curve starts and ends inside its first and last
     // spans' hulls, and only a clamped end makes a segment's first control
-    // point its first point. The start is raised in place; the end is the
+    // point its first point. The start is raised in place. The end is the
     // start of the reversed curve.
     let clamp_start = |knots: &KnotVector, control: &[P]| -> OgeomResult<Spline<P>> {
         let (start, _) = knots.domain();
@@ -688,7 +688,7 @@ pub fn elevate_degree<P: Blend>(
     }
 
     // Each interior knot stands at full multiplicity, `p + 1` in degree
-    // `p + 1`; the curve is as smooth there as it was, so all but `m + 1`
+    // `p + 1`. The curve is as smooth there as it was, so all but `m + 1`
     // come out exactly.
     for (value, multiplicity) in knots.distinct() {
         let (start, end) = knots.domain();
@@ -957,7 +957,7 @@ mod tests {
 
     #[test]
     fn de_boor_agrees_with_the_basis_function_sum() {
-        // Two independent routes to the same value; they must agree.
+        // Two independent routes to the same value. They must agree.
         let (k, c) = cubic_curve();
         for i in 0..=50 {
             let u = f64::from(i) / 50.0;

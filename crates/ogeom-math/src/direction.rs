@@ -1,9 +1,9 @@
 //! Unit vectors, with the invariant enforced by the type.
 //!
 //! A [`Direction`] is always unit length. Every constructor normalizes and can
-//! fail; there is no way to build one from components without that check.
+//! fail. There is no way to build one from components without that check.
 //!
-//! This matters more than it looks. Surface normals, axis directions and
+//! Surface normals, axis directions and
 //! parameterization references are all directions, and an algorithm that
 //! assumes unit length (as almost all of them do, implicitly, when they skip a
 //! division) silently produces scaled results when handed a vector that is not.
@@ -122,7 +122,7 @@ impl Direction {
     }
 
     /// Cross product, as a free vector. Its magnitude is the sine of the angle
-    /// between the two directions, so it is *not* itself a direction; for
+    /// between the two directions, so it is *not* itself a direction. For
     /// nearly parallel inputs it is nearly null.
     #[must_use]
     pub fn cross_vector(self, other: Self) -> Vector {
@@ -420,8 +420,8 @@ impl Neg for Direction2 {
 
 impl Mul<f64> for Direction {
     type Output = Vector;
-    /// Scaling a direction yields a free vector: the result is no longer unit
-    /// length, so it is no longer a direction.
+    /// Scaling a direction yields a free vector: the result is not unit
+    /// length, so it is not a direction.
     fn mul(self, s: f64) -> Vector {
         self.0 * s
     }

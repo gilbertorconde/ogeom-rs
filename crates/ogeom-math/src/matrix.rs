@@ -479,7 +479,7 @@ mod tests {
         let m = Matrix3::reflection(n);
         assert_relative_eq!(m.determinant(), -1.0, epsilon = 1e-14);
         assert!((m * m).is_equal(&Matrix3::IDENTITY, EPS));
-        // A vector in the mirror plane is unmoved; the normal is negated.
+        // A vector in the mirror plane is unmoved. The normal is negated.
         let in_plane = Vector::new(1.0, -1.0, 0.0);
         assert!((m * in_plane).is_equal(in_plane, T));
         assert!((m * n.vector()).is_equal(-n.vector(), T));

@@ -1,6 +1,6 @@
 //! Positions in 2D and 3D.
 //!
-//! A point is affected by translation; a [`Vector`] is not. Keeping them
+//! A point is affected by translation and a [`Vector`] is not. Keeping them
 //! distinct types means the compiler rejects the classic errors (translating a
 //! normal, adding two positions) rather than letting them produce plausible
 //! nonsense.
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn midpoint_does_not_overflow_for_extreme_coordinates() {
-        // The naive (a + b) / 2 overflows to infinity here; f64::midpoint does
+        // The naive (a + b) / 2 overflows to infinity here. f64::midpoint does
         // not. Coordinates this large are pathological, but a kernel that
         // produces infinities on them is worse than one that does not.
         let a = Point::new(f64::MAX, 0.0, 0.0);
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn centroid_keeps_precision_far_from_the_origin() {
         // Summing absolute coordinates around 1e9 and dividing loses the
-        // millimetre-scale detail we care about. Summing offsets does not.
+        // millimetre-scale detail a model carries. Summing offsets does not.
         let base = 1.0e9;
         let pts = [
             Point::new(base, base, base),

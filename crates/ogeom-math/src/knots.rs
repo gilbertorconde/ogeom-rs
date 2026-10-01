@@ -21,7 +21,7 @@
 //!
 //! For degree `p` and `n` control points the flat vector has `n + p + 1`
 //! entries. A *clamped* vector repeats its first and last knots `p + 1` times,
-//! so the curve passes through its first and last control points; that is the
+//! so the curve passes through its first and last control points. That is the
 //! usual form for a bounded curve and the one [`KnotVector::clamped_uniform`]
 //! produces.
 
@@ -105,7 +105,7 @@ impl KnotVector {
                 index += 1;
             }
             // The two clamp knots at either end of the domain are allowed their
-            // full multiplicity; only strictly interior ones are constrained.
+            // full multiplicity. Only strictly interior ones are constrained.
             if value > this.domain_start() && value < this.domain_end() && count > this.degree {
                 ogeom_bail!(
                     Construction,
@@ -148,7 +148,7 @@ impl KnotVector {
     /// A clamped knot vector from parameter values, for interpolation.
     ///
     /// Uses the averaging rule, which places interior knots so that the
-    /// resulting interpolation system is well conditioned; a uniform vector
+    /// resulting interpolation system is well conditioned. A uniform vector
     /// over unevenly spaced parameters gives a nearly singular one.
     ///
     /// # Errors
@@ -445,7 +445,7 @@ impl KnotVector {
         let order = n.min(p);
 
         // `ndu` holds the basis values and the knot differences from the
-        // triangular recurrence; both halves are needed to build derivatives.
+        // triangular recurrence. Both halves are needed to build derivatives.
         // Every scratch row lives inline for the degrees the kernel actually
         // meets: this is the innermost loop of every spline evaluation, and
         // a heap row per call there is the kernel's largest allocation source.
@@ -594,7 +594,7 @@ impl KnotVector {
     /// Multiplicity is preserved *exactly* (equal knots map through the same
     /// arithmetic and so stay equal), which is what continuity depends on. The
     /// interior knot *values* are not bit-exactly restored by reversing twice,
-    /// since `a + b - k` is not an exact involution in floating point; they
+    /// since `a + b - k` is not an exact involution in floating point. They
     /// return to within one ulp.
     #[must_use]
     pub fn reversed(&self) -> Self {

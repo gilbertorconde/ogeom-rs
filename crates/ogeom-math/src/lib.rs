@@ -5,10 +5,11 @@
 //!
 //! Two things here are load-bearing and easy to get wrong:
 //!
-//! - `Dir` enforces its unit-length invariant in the type, not by convention.
-//! - `Trsf` carries a **form classification** (identity / translation / rotation /
-//!   scale / …), used to short-circuit transform application. Skipping it costs
-//!   real performance across the whole kernel.
+//! - `Direction` enforces its unit-length invariant in the type, not by
+//!   convention.
+//! - `Transform` carries a **form classification** (identity / translation /
+//!   rotation / scale / …) that short-circuits transform application across the
+//!   whole kernel.
 
 pub mod bounds;
 pub mod bspline;

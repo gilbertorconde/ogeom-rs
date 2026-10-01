@@ -23,7 +23,7 @@
 //!
 //! The kind is *derived from* the data rather than asserted alongside it, so it
 //! cannot drift out of agreement with the matrix it describes. Every
-//! constructor routes through one private classifier; there is no way to build a
+//! constructor routes through one private classifier. There is no way to build a
 //! transform that claims more structure than it has.
 
 use core::ops::Mul;
@@ -185,7 +185,7 @@ impl Transform {
             return TransformKind::Scale;
         }
         if unit_scale && linear.is_orthonormal(CLASSIFY_EPS) {
-            // Determinant separates a rotation from a reflection; both are
+            // Determinant separates a rotation from a reflection. Both are
             // orthonormal, and confusing them flips the sense of every face.
             return if linear.determinant() > 0.0 {
                 TransformKind::Rotation
@@ -302,7 +302,7 @@ impl Transform {
     /// Whether this transform preserves handedness.
     ///
     /// A shape transformed by a transform that does not must have its
-    /// orientation flipped to stay consistent; otherwise a mirrored solid ends
+    /// orientation flipped to stay consistent. Otherwise a mirrored solid ends
     /// up inside out.
     #[must_use]
     pub fn preserves_handedness(&self) -> bool {
@@ -390,7 +390,7 @@ impl Transform {
         if self.scale == 0.0 {
             ogeom_bail!(Numeric, "transform has a zero scale and no inverse");
         }
-        // The linear part is orthonormal, so its inverse is its transpose; no
+        // The linear part is orthonormal, so its inverse is its transpose. No
         // need to go through a general inversion, and no rounding beyond the
         // transpose itself.
         let inv_linear = self.linear.transposed();
@@ -709,7 +709,7 @@ impl GeneralTransform {
     /// under any shear or non-uniform scale it tilts normals off the surface
     /// they belong to, which then breaks every orientation test downstream.
     ///
-    /// The result is not renormalized; it is a direction, not a length.
+    /// The result is not renormalized. It is a direction, not a length.
     ///
     /// # Errors
     ///
@@ -869,8 +869,8 @@ mod tests {
 
     #[test]
     fn every_dispatch_path_gives_the_same_answer_as_the_general_one() {
-        // The whole point of classification is speed, so each fast path must
-        // agree exactly with the general formula it replaces.
+        // Classification exists for speed, so each fast path must agree
+        // exactly with the general formula it replaces.
         let cases = [
             Transform::IDENTITY,
             Transform::translation(Vector::new(1.0, -2.0, 3.0)),

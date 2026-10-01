@@ -11,9 +11,7 @@
 //! Evaluation and derivatives are in [`crate::elementary`]; this module holds
 //! the descriptions and the queries that follow directly from them.
 //!
-//! A straight line needs no type of its own: it is exactly an [`Axis`](crate::Axis),
-//! and the conventional design's separate line type carries no information the
-//! axis does not.
+//! A straight line needs no type of its own: it is exactly an [`Axis`](crate::Axis).
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 
@@ -39,7 +37,7 @@ pub fn complete_elliptic_e(m: f64) -> f64 {
     // The running sum of `2^(n-1) * c_n^2`, starting with the n = 0 term.
     let mut sum = m * 0.5;
     let mut power = 1.0_f64;
-    // Quadratic convergence reaches the f64 floor well inside this bound; the
+    // Quadratic convergence reaches the f64 floor well inside this bound. The
     // limit is a backstop, not the expected exit.
     for _ in 0..20 {
         let c = (a - b) * 0.5;
@@ -81,7 +79,7 @@ pub struct Ellipse {
 
 /// A hyperbola in space.
 ///
-/// Only the branch on the positive `x` side of its frame is described; the
+/// Only the branch on the positive `x` side of its frame is described. The
 /// other branch is the same hyperbola with the frame's `x` reversed.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Hyperbola {
@@ -200,7 +198,7 @@ impl Circle {
 
     /// The shortest distance from `p` to the circle.
     ///
-    /// Zero on the circle, and positive both inside and outside; this is the
+    /// Zero on the circle, and positive both inside and outside. This is the
     /// distance to the curve, not to the disc it bounds.
     #[must_use]
     pub fn distance_to(&self, p: Point) -> f64 {
@@ -323,11 +321,11 @@ impl Ellipse {
     /// Exact to machine precision, via the complete elliptic integral of the
     /// second kind; see [`complete_elliptic_e`].
     ///
-    /// Ramanujan's well-known approximation was the obvious alternative and is
-    /// not good enough: it is excellent for a nearly circular ellipse but its
-    /// relative error reaches `1.2e-5` by an axis ratio of 10:1. Perimeter
-    /// feeds arc-length parameterization and measurement, where that is a
-    /// visible error rather than a rounding detail.
+    /// Ramanujan's approximation is not used: it is excellent for a nearly
+    /// circular ellipse but its relative error reaches `1.2e-5` by an axis
+    /// ratio of 10:1, and perimeter feeds arc-length parameterization and
+    /// measurement, where that is a visible error rather than a rounding
+    /// detail.
     #[must_use]
     pub fn length(&self) -> f64 {
         // m = e^2 = 1 - (b/a)^2, written factored to avoid cancellation when
@@ -446,7 +444,7 @@ impl Hyperbola {
 impl Parabola {
     /// A parabola with the given focal length in the `xy` plane of `frame`.
     ///
-    /// The apex is at the frame origin and the curve opens along `+x`; the
+    /// The apex is at the frame origin and the curve opens along `+x`. The
     /// focus sits at distance `focal` from the apex along `+x`.
     ///
     /// # Errors
@@ -894,7 +892,7 @@ mod tests {
 
     #[test]
     fn nearly_circular_ellipse_keeps_focal_precision() {
-        // a^2 - b^2 with a and b nearly equal cancels catastrophically; the
+        // a^2 - b^2 with a and b nearly equal cancels catastrophically. The
         // factored form does not.
         let a = 1.0;
         let b = 1.0 - 1e-12;
@@ -983,7 +981,7 @@ mod tests {
 
     #[test]
     fn mirroring_a_circle_keeps_a_positive_radius() {
-        // A negative scale factor must not produce a negative radius; the shape
+        // A negative scale factor must not produce a negative radius. The shape
         // is mirrored through its frame, not inverted.
         let c = Circle::new(Frame::WORLD, 2.0, T).unwrap();
         let m = Transform::point_mirror(Point::ORIGIN);
