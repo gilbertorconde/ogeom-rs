@@ -12,10 +12,10 @@
 //! [`Exact`] gives them.
 //!
 //! They do **not** settle the CAD problem. The intersection curve of two NURBS
-//! surfaces is transcendental; there is no exact value to be exact about. That
+//! surfaces is transcendental: there is no exact value to be exact about. That
 //! is why per-entity tolerances exist (`docs/DATA_MODEL.md` §5) and why they
 //! cannot be traded away for better predicates. Predicates make the decidable
-//! parts decidable; tolerances carry the rest.
+//! parts decidable. Tolerances carry the rest.
 //!
 //! Use exact predicates where the question is genuinely combinatorial
 //! (triangulation, point-in-polygon, orientation of a planar facet), and do not
@@ -70,7 +70,7 @@ pub type P3 = [f64; 3];
 
 /// Orientation and incircle/insphere tests.
 ///
-/// Implementations must agree on sign conventions; only their accuracy and cost
+/// Implementations must agree on sign conventions. Only their accuracy and cost
 /// may differ.
 pub trait Predicates {
     /// Sign of the area of triangle `(a, b, c)`.
@@ -95,7 +95,7 @@ pub trait Predicates {
     /// Whether `e` lies inside the sphere through `a`, `b`, `c`, `d`.
     ///
     /// [`Sign::Positive`] for inside. `a`, `b`, `c`, `d` must be positively
-    /// oriented; otherwise the sign is inverted.
+    /// oriented. Otherwise the sign is inverted.
     fn insphere(a: P3, b: P3, c: P3, d: P3, e: P3) -> Sign;
 
     /// Whether `c` lies to the left of the directed line `a -> b`.
@@ -257,15 +257,15 @@ mod tests {
 
     #[test]
     fn exact_predicates_survive_a_case_naive_arithmetic_gets_wrong() {
-        // A classic near-degenerate configuration: c is very slightly left of the
-        // line a->b, by an amount that cancels catastrophically in the naive
-        // determinant. The exact predicate must still say Positive.
+        // A classic near-degenerate configuration: c is very slightly right of
+        // the line a->b, by an amount that cancels catastrophically in the
+        // naive determinant. The exact predicate must still say Negative.
         let a = [0.5, 0.5];
         let b = [12.0, 12.0];
         let c = [24.000_000_000_000_004, 24.0];
 
         assert_eq!(Exact::orient2d(a, b, c), Sign::Negative);
-        // Not asserting Fast is wrong here; the point is that Exact is
+        // Not asserting Fast is wrong here. The point is that Exact is
         // trustworthy at this scale and the algorithms depend on that.
         assert!(!Exact::orient2d(a, b, c).is_zero());
     }

@@ -1,6 +1,6 @@
 //! Typed generational arenas.
 //!
-//! Topology lives in arenas rather than behind reference counting; see
+//! Topology lives in arenas rather than behind reference counting: see
 //! `docs/DATA_MODEL.md` §11. Keys are small, `Copy`, comparable and hashable,
 //! which is what makes stable entity identity possible at all.
 //!
@@ -121,7 +121,7 @@ impl<T> Key<T> {
     }
 }
 
-// Derived impls would demand `T: Clone` and friends; the key holds no `T`.
+// Derived impls would demand `T: Clone` and friends. The key holds no `T`.
 impl<T> Clone for Key<T> {
     fn clone(&self) -> Self {
         *self

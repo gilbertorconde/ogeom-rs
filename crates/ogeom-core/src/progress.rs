@@ -7,7 +7,7 @@
 //! every long loop inside the kernel calls [`checkpoint`] at its own
 //! boundaries. A cancelled checkpoint returns
 //! [`OgeomError::Cancelled`], which unwinds as
-//! an ordinary error; no partial result pretends to be whole.
+//! an ordinary error. No partial result pretends to be whole.
 //!
 //! The watch travels implicitly, by scope: operations keep their signatures,
 //! and code that never installs a watch pays one thread-local read per
@@ -91,7 +91,7 @@ impl Watch {
 
     /// A watch whose sink hears each full [`Stage`] announcement: the name,
     /// and `(done, total)` where the operation states them. The sink runs on
-    /// whichever thread reaches the stage; a parallel stage's counts arrive
+    /// whichever thread reaches the stage. A parallel stage's counts arrive
     /// in completion order, each value once.
     #[must_use]
     pub fn with_stage_sink(sink: impl Fn(Stage<'_>) + Send + Sync + 'static) -> Self {
@@ -154,7 +154,7 @@ impl Drop for Scope {
 }
 
 /// Run `f` with `watch` active on this thread: every [`checkpoint`] inside
-/// answers to it. Scopes nest; the inner watch wins until it ends.
+/// answers to it. Scopes nest. The inner watch wins until it ends.
 pub fn watched<T>(watch: &Watch, f: impl FnOnce() -> T) -> T {
     let previous = ACTIVE.with(|active| active.borrow_mut().replace(watch.state.clone()));
     let _scope = Scope { previous };
@@ -306,7 +306,7 @@ mod tests {
         watched(&outer, || {
             stage("first");
             watched(&inner, || {
-                // The inner watch has no sink; its scope masks the outer.
+                // The inner watch has no sink. Its scope masks the outer.
                 stage("masked");
             });
             stage("second");

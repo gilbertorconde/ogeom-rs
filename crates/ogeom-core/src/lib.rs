@@ -5,15 +5,14 @@
 //!
 //! Four responsibilities:
 //!
-//! - **Arenas.** [`Arena`] and [`Key`]: typed generational index arenas replace
-//!   the intrusive reference counting conventional kernels use. No cycle hazard,
-//!   cache-friendly, and, critically, arena keys are what make stable entity
-//!   identity possible at all.
-//! - **Identity.** [`EntityId`] plus [`Provenance`]. Conventionally a topology
-//!   node's identity is its address, so every modeling operation produces new ones
-//!   and downstream references break; that *is* the topological naming problem. We
-//!   record where an entity came from at creation time instead of reconstructing it
-//!   from history maps afterwards.
+//! - **Arenas.** [`Arena`] and [`Key`]: typed generational index arenas in
+//!   place of intrusive reference counting. No cycle hazard, cache-friendly,
+//!   and arena keys are what make stable entity identity possible at all.
+//! - **Identity.** [`EntityId`] plus [`Provenance`]. Where a topology node's
+//!   identity is its address, every modeling operation produces new ones and
+//!   downstream references break: the topological naming problem. An entity
+//!   records where it came from at creation time instead of having it
+//!   reconstructed from history maps afterwards.
 //! - **Errors.** [`OgeomError`] covers the failure vocabulary a kernel needs, lining
 //!   up with the categories applications already handle, but as a plain [`Result`]:
 //!   no exceptions, and no conversion of hardware signals into throwable

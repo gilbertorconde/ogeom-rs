@@ -1,13 +1,13 @@
 //! Stable entity identity and provenance.
 //!
-//! See `docs/DATA_MODEL.md` §8. A deliberate divergence from the conventional
-//! design, and the reason this has to live in the foundation crate rather than
-//! being added later.
+//! See `docs/DATA_MODEL.md` §8. A deliberate divergence from identifying
+//! topology by pointer, and the reason this lives in the foundation crate
+//! rather than being added later.
 //!
-//! Conventionally, topology is identified by pointer. Every modeling operation
-//! allocates new nodes, so every reference into a previous result dies. That *is* the
-//! topological naming problem, and every downstream fix is an attempt to
-//! reconstruct identity after the fact by walking history maps.
+//! Where topology is identified by pointer, every modeling operation allocates
+//! new nodes, so every reference into a previous result dies: the topological
+//! naming problem, which identity reconstructed afterwards from history maps
+//! only patches.
 //!
 //! Here an entity's identity is *what produced it, and from what*. A rebuild
 //! with different parameters runs the same operations over the same inputs and
@@ -26,7 +26,7 @@ use smallvec::SmallVec;
 /// document.
 ///
 /// Distinct from an arena [`Key`](crate::Key): a key says *where the data is*
-/// and dies when the entity is rebuilt; an `EntityId` says *what the entity is*
+/// and dies when the entity is rebuilt. An `EntityId` says *what the entity is*
 /// and survives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EntityId(NonZeroU64);
@@ -68,10 +68,10 @@ pub struct OpId(pub u32);
 
 /// What an entity *is*, relative to the operation that made it.
 ///
-/// The low values are shared vocabulary; everything from [`Role::OP_DEFINED`]
+/// The low values are shared vocabulary. Everything from [`Role::OP_DEFINED`]
 /// up is interpreted by the producing operation alone. Keeping it a newtype
-/// rather than an enum avoids inventing a taxonomy of every role in a CAD
-/// kernel before we have written the operations that need one.
+/// rather than an enum avoids fixing a taxonomy of every role in a CAD
+/// kernel before the operations that need one exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Role(pub u32);
 
@@ -114,7 +114,7 @@ pub enum Provenance {
         role: Role,
     },
     /// Derived from one or more existing entities. A face split by a boolean
-    /// names the face it came from; an intersection edge names both faces.
+    /// names the face it came from. An intersection edge names both faces.
     Derived {
         /// The operation that derived it.
         op: OpId,

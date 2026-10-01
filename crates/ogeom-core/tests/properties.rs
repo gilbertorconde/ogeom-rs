@@ -61,7 +61,7 @@ proptest! {
             arena.remove(key);
             dead.push(key);
 
-            // Refill, which may well reuse the slot we just freed.
+            // Refill, which may well reuse the slot just freed.
             let value = 1000 + dead.len();
             live.push((arena.insert(value), value));
         }

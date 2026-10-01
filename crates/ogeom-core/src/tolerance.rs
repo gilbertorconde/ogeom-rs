@@ -9,10 +9,9 @@
 //!   individual vertex, edge or face, together with the containment rule that
 //!   relates them.
 //!
-//! The unit scale is **explicit**. Kernels commonly hard-code a confusion
-//! tolerance of `1e-7` with an undocumented assumption that models are in
-//! millimetres, which then misbehaves silently on models authored in metres or
-//! inches.
+//! The unit scale is **explicit**. A confusion tolerance hard-coded at `1e-7`
+//! carries an unstated assumption that models are in millimetres, and
+//! misbehaves silently on a model authored in metres or inches.
 
 use crate::{OgeomResult, ogeom_bail};
 
@@ -21,7 +20,7 @@ use crate::{OgeomResult, ogeom_bail};
 ///
 /// `linear_scale` is the length of one model unit in millimetres: `1.0` for a
 /// model in millimetres, `1000.0` for metres, `25.4` for inches. Linear
-/// tolerances scale with it; angular and parametric ones do not.
+/// tolerances scale with it. Angular and parametric ones do not.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tolerances {
     linear_scale: f64,
@@ -35,7 +34,7 @@ pub const CONFUSION: f64 = 1e-7;
 /// right threshold for comparing directions that were *stored*, such as two
 /// surface axes read back from a model. It is the wrong one for comparing
 /// directions *computed* through subtraction of nearby coordinates, where the
-/// input's own rounding is already larger; such a comparison needs a bound
+/// input's own rounding is already larger. Such a comparison needs a bound
 /// derived from the magnitudes involved.
 pub const ANGULAR: f64 = 1e-12;
 /// Convergence target for intersection algorithms, at unit scale.
@@ -187,7 +186,7 @@ impl Tolerance {
     /// This tolerance widened to at least `other`.
     ///
     /// The only sanctioned way to change a tolerance. Boolean operations grow
-    /// tolerances as they go; nothing shrinks them.
+    /// tolerances as they go. Nothing shrinks them.
     #[must_use]
     pub fn widen(self, other: Self) -> Self {
         Self(self.0.max(other.0))

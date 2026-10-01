@@ -42,7 +42,7 @@ std::thread_local! {
 }
 
 /// Set the process-wide thread count for parallel stages. `0` restores the
-/// machine default. The answer never depends on this; only the wall clock
+/// machine default. The answer never depends on this. Only the wall clock
 /// does.
 pub fn set_threads(count: usize) {
     THREADS.store(count, Ordering::Relaxed);

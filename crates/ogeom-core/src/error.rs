@@ -19,7 +19,6 @@ pub type OgeomResult<T> = Result<T, OgeomError>;
 pub enum OgeomError {
     /// Arguments cannot produce the requested entity: three collinear points
     /// for a circle, a zero-length direction, a self-intersecting wire.
-    ///
     #[error("construction failed: {0}")]
     Construction(Cause),
 
@@ -57,7 +56,7 @@ pub enum OgeomError {
 
     /// The result exists but violates an invariant from `docs/DATA_MODEL.md`:
     /// tolerance containment, orientation consistency, edge representation
-    /// agreement. Never returned silently; producing invalid topology is worse
+    /// agreement. Never returned silently. Producing invalid topology is worse
     /// than failing.
     #[error("invariant violated: {0}")]
     Invariant(Cause),
