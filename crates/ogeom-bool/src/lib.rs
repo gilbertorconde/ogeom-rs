@@ -1749,7 +1749,6 @@ fn fill(
                     for (owner_from_a, owner, target_from_a, target, target_face) in
                         [(false, fb, true, fa, ia), (true, fa, false, fb, ib)]
                     {
-                        let _ = owner_from_a;
                         for e in &owner.edges {
                             // An edge off the target's surface by no more
                             // than the two faces' stated tolerances lies on
@@ -6923,14 +6922,10 @@ fn build_sub_edge(
                     Location::identity(),
                     sub_p,
                 )?,
-                Some((other, orange)) => {
-                    // A seam: both sides attach, and an occurrence picks its
-                    // side by its orientation.
-                    let sub_o = (
-                        rescale(range.0, e.crange, *orange),
-                        rescale(range.1, e.crange, *orange),
-                    );
-                    let _ = sub_o;
+                Some((other, _)) => {
+                    // A seam: both sides attach over the one range a seam
+                    // carries, and an occurrence picks its side by its
+                    // orientation.
                     ogeom_algo::attach_seam(
                         model,
                         &built,
@@ -8399,8 +8394,8 @@ pub fn section(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeo
         let (f0, f1) = folded_range(range, domain, s.closed);
         let from = s.curve.point_at(at_param(f0, domain, s.closed), tol)?;
         let to = s.curve.point_at(at_param(f1, domain, s.closed), tol)?;
-        let v0 = section_face::vertex(model, &mut vertices, from, tol);
-        let v1 = section_face::vertex(model, &mut vertices, to, tol);
+        let v0 = section_face::vertex(model, &mut vertices, from, tol)?;
+        let v1 = section_face::vertex(model, &mut vertices, to, tol)?;
         edges.push(make_edge_between(model, s.curve.clone(), (f0, f1), &v0, &v1, tol)?.shape);
     }
     // Contacts are not crossings, so no piece's ring carries them and the
@@ -8410,8 +8405,8 @@ pub fn section(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeo
         for (lo, hi) in contact_intervals(&fused, contact, tol)? {
             let from = contact.curve.point_at(lo, tol)?;
             let to = contact.curve.point_at(hi, tol)?;
-            let v0 = section_face::vertex(model, &mut vertices, from, tol);
-            let v1 = section_face::vertex(model, &mut vertices, to, tol);
+            let v0 = section_face::vertex(model, &mut vertices, from, tol)?;
+            let v1 = section_face::vertex(model, &mut vertices, to, tol)?;
             edges.push(
                 make_edge_between(model, contact.curve.clone(), (lo, hi), &v0, &v1, tol)?.shape,
             );

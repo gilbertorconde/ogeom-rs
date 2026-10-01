@@ -110,8 +110,8 @@ pub fn section_face(
             for (lo, hi) in on_face(model, face, &section.curve, &boundary, tol)? {
                 let from = section.curve.point_at(lo, tol)?;
                 let to = section.curve.point_at(hi, tol)?;
-                let v0 = vertex(model, &mut vertices, from, tol);
-                let v1 = vertex(model, &mut vertices, to, tol);
+                let v0 = vertex(model, &mut vertices, from, tol)?;
+                let v1 = vertex(model, &mut vertices, to, tol)?;
                 edges.push(
                     make_edge_between(model, section.curve.clone(), (lo, hi), &v0, &v1, tol)?.shape,
                 );
@@ -138,7 +138,7 @@ pub(crate) fn vertex(
     vertices: &mut Vec<(Point, Shape)>,
     at: Point,
     tol: Tolerances,
-) -> Shape {
+) -> OgeomResult<Shape> {
     if let Some((p, v)) = vertices
         .iter()
         .find(|(p, _)| p.distance(at) <= tol.confusion() * 10.0)
@@ -149,13 +149,13 @@ pub(crate) fn vertex(
         if gap > tol.confusion()
             && let Ok(reach) = ogeom_core::Tolerance::new(gap)
         {
-            let _ = model.widen(v, reach);
+            model.widen(v, reach)?;
         }
-        return v.clone();
+        return Ok(v.clone());
     }
     let v = make_vertex(model, at).shape;
     vertices.push((at, v.clone()));
-    v
+    Ok(v)
 }
 
 /// The face's boundary edges as curves over their own ranges, placed.
