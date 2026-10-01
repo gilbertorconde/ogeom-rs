@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A bare or placed profile tapers.** `make_prism_tapered` refused a
+  face straight from `make_face`, whose edges carry no pcurves yet, and a
+  placed profile, whose material side it probed in the wrong frame. The
+  bare profile gains its exact pcurves, and a placed one is swept where it
+  was built and the prism placed where it stands.
+
 - **A straight run of corners is no obstacle to a face.**
   `make_polyhedron` took a face's normal from its first three corners and
   refused a ring starting on a straight run (and would have turned a

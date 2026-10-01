@@ -152,9 +152,30 @@ pub fn make_prism_tapered(
             "a tapered prism encloses volume; sweep a planar face"
         );
     }
+    // A placed profile is swept where it was built, the travel taken into
+    // its frame, and the prism placed where the profile stands: the
+    // construction reads the profile's edges in their own frame.
+    let placement = profile.location().clone();
+    if !placement.is_identity() {
+        let local = placement
+            .composed(model.datums())?
+            .inverse()?
+            .apply_vector(vector);
+        let built = make_prism_tapered(
+            model,
+            &profile.located(Location::identity()),
+            local,
+            taper,
+            tol,
+        )?;
+        return Ok(Built::new(built.shape.moved(&placement), built.history));
+    }
     let Some(plane) = crate::build::find_plane(model, profile, tol)? else {
         ogeom_bail!(Construction, "a tapered prism sweeps a planar face");
     };
+    // The profile is probed for which side is material, which reads its
+    // edges in its chart; a face built without pcurves gains its exact ones.
+    attach_cap_pcurves(model, profile, tol)?;
     let mut normal = plane.normal().vector();
     if normal.cross(vector / travel).magnitude() > tol.angular().max(1e-9) {
         ogeom_bail!(
@@ -480,6 +501,13 @@ fn attach_cap_pcurves(model: &mut Model, cap: &Shape, tol: Tolerances) -> OgeomR
         ogeom_bail!(Dangling, "the cap's surface is not in this model");
     };
     for edge in ogeom_topo::explore(model, cap, ogeom_topo::Filter::OfType(ShapeType::Edge))? {
+        let held = model
+            .node(&edge)
+            .and_then(|n| n.data().as_edge())
+            .is_some_and(|d| d.pcurve_for(cap_id, edge.location()).is_some());
+        if held {
+            continue;
+        }
         let (curve, range) = edge_geometry(model, &edge)?;
         let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&curve, &surface, tol) else {
             ogeom_bail!(Construction, "a cap edge has no closed-form pcurve");
@@ -2033,6 +2061,64 @@ mod tests {
             "tapered prism volume {measured} against {expected}"
         );
         assert!(!built.history.generated(&profile).is_empty());
+    }
+
+    /// A profile straight from `make_face`, with no pcurves, and the same
+    /// face placed elsewhere, each taper into the frustum, the placed one
+    /// where its profile stands.
+    #[test]
+    fn a_bare_or_placed_profile_tapers() {
+        let mut model = Model::new();
+        let corners = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(10.0, 10.0, 0.0),
+            Point::new(0.0, 10.0, 0.0),
+        ];
+        let wire = crate::make_polygon(&mut model, &corners, true, T)
+            .unwrap()
+            .shape;
+        let bare = crate::make_face(
+            &mut model,
+            ogeom_geom::SurfaceGeometry::Plane(ogeom_geom::PlaneSurface::new(
+                ogeom_math::Plane::new(Frame::WORLD),
+            )),
+            &[wire],
+            T,
+        )
+        .unwrap()
+        .shape;
+        let shift = Vector::new(100.0, 50.0, 7.0);
+        let placed = bare.located(Location::of(
+            model.add_datum(ogeom_math::Transform::translation(shift)),
+        ));
+        let taper = 0.1_f64;
+        let d = 5.0 * taper.tan();
+        let (a0, a1) = (100.0, (10.0 + 2.0 * d) * (10.0 + 2.0 * d));
+        let expected = 5.0 / 3.0 * (a0 + a1 + (a0 * a1).sqrt());
+        for (profile, offset) in [(bare.clone(), Vector::ZERO), (placed, shift)] {
+            let built = crate::make_prism_tapered(
+                &mut model,
+                &profile,
+                Vector::new(0.0, 0.0, 5.0),
+                taper,
+                T,
+            )
+            .unwrap();
+            let diagnosis = crate::check(&model, &built.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+            let properties =
+                volume_properties(&model, &built.shape, Deflection::default(), T).unwrap();
+            assert!(
+                (properties.mass - expected).abs() < 1e-9 * expected,
+                "{} against {expected}",
+                properties.mass
+            );
+            let centre = Point::new(5.0, 5.0, 0.0) + offset;
+            assert!((properties.centre.x - centre.x).abs() < 1e-9);
+            assert!((properties.centre.y - centre.y).abs() < 1e-9);
+            assert!(properties.centre.z > centre.z && properties.centre.z < centre.z + 5.0);
+        }
     }
 
     #[test]
