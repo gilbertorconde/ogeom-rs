@@ -136,6 +136,20 @@ does not throw; it corrupts a document six operations later. So:
 - **Public items are documented.** `missing_docs` is a warning, and CI runs with
   `-D warnings`.
 
+## Skills for coding agents
+
+`.claude/skills/<name>/SKILL.md` holds the working methods an agent follows
+for a kind of task. They cite the rules above; they never weaken one. Read
+the skill before the task it covers.
+
+| Skill | Use when |
+|---|---|
+| `review` | reviewing a branch or PR for wrong geometry, broken invariants and release risk |
+| `systematic-debugging` | any bug, failure, wrong shape or refusal, before proposing a fix |
+| `test-audit` | writing, changing, reviewing or pruning tests |
+| `performance-optimizer` | a measured slowness or a benchmark drift |
+| `ci-iterate` | a CI run is red, or a PR has review feedback to address |
+
 ## Releasing
 
 The fifteen library crates under `crates/` are published together, at one

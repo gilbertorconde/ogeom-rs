@@ -30,3 +30,7 @@ Cargo.lock.orig
 
 # Scratch notes and captured tool output; never committed.
 WARNS.txt
+
+# Agent harness state. Only the skills are tracked.
+/.claude/*
+!/.claude/skills/
