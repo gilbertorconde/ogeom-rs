@@ -960,3 +960,35 @@ fn a_prism_along_a_faceted_round_combines_at_a_fuzz() {
         );
     }
 }
+
+/// A drum two microns wider than the box it stands in pokes out of each
+/// wall along a strip too narrow for a mesh's samples to land on. Whatever
+/// the boolean makes of it, it does not answer as if one lay within the
+/// other.
+#[test]
+fn a_solid_poking_microns_through_another_is_not_taken_as_nested() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (4.0, 4.0, 4.0), T)
+        .unwrap()
+        .shape;
+    let turn: f64 = 0.05;
+    let seat = Frame::new(
+        Point::new(2.0, 2.0, 1.0),
+        Direction::Z,
+        Direction::new(ogeom::math::Vector::new(turn.cos(), turn.sin(), 0.0), T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let drum = ogeom::algo::make_cylinder(&mut model, seat, 2.002, 2.0, T)
+        .unwrap()
+        .shape;
+    if let Ok(fused) = ogeom::boolean::fuse(&mut model, &block, &drum, T) {
+        assert!(!fused.shape.is_same(&block), "the union is not the box");
+    }
+    if let Ok(common) = ogeom::boolean::common(&mut model, &block, &drum, T) {
+        assert!(
+            !common.shape.is_same(&drum),
+            "the intersection is not the drum"
+        );
+    }
+}

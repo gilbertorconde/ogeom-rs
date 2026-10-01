@@ -7450,13 +7450,144 @@ fn nested(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<O
         Ok(all_read(inner, outer_boundary, &|c| c != Containment::Out)?
             && all_read(outer, inner_boundary, &|c| c != Containment::In)?)
     };
-    if within(&on_b, &of_a, &on_a, &of_b)? {
+    if within(&on_b, &of_a, &on_a, &of_b)? && !pokes_out(model, b, a, &of_a, tol)? {
         return Ok(Some(true));
     }
-    if within(&on_a, &of_b, &on_b, &of_a)? {
+    if within(&on_a, &of_b, &on_b, &of_a)? && !pokes_out(model, a, b, &of_b, tol)? {
         return Ok(Some(false));
     }
     Ok(None)
+}
+
+/// Whether `inner`'s boundary pokes out through `outer`'s between the
+/// samples [`nested`] reads.
+///
+/// A drum a few microns wider than the box it stands in bulges out of each
+/// wall along a strip a fraction of a millimetre wide, and samples a mesh's
+/// chord apart step over it. So each inner face climbs its own chart from
+/// the samples standing nearest each outer face, toward that face's outside,
+/// and the furthest point reached is asked of the outer boundary: out there,
+/// and on the inner face, the inner solid is not within the outer.
+fn pokes_out(
+    model: &Model,
+    inner: &Shape,
+    outer: &Shape,
+    outer_boundary: &ogeom_algo::SolidBoundary,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    use ogeom_geom::Surface as _;
+    use ogeom_geom::Transformable as _;
+    // A start this close to a wall, inside it, may sit beside a bulge the
+    // samples straddle: a chord's sag, a few times over.
+    let deflection = ogeom_mesh::Deflection::default();
+    let reach = deflection.chord * 4.0;
+    // The starts climbed per inner face and wall: the nearest few, which
+    // stand beside the bulges if there are any.
+    const STARTS: usize = 6;
+    let placed = |face: &Shape| -> OgeomResult<SurfaceGeometry> {
+        let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
+            ogeom_bail!(Dangling, "face is not in this model");
+        };
+        let Some(surface) = model.geometry().surface(data.surface) else {
+            ogeom_bail!(Dangling, "surface is not in this model");
+        };
+        surface.transformed(&face.transform(model.datums())?, tol)
+    };
+    // Each outer face: its surface placed, which way its outside lies, and
+    // the box a near start stands in.
+    let mut walls = Vec::new();
+    for face in explore_unique(model, outer, ShapeType::Face)? {
+        let outward = if face.orientation() == ogeom_topo::Orientation::Reversed {
+            -1.0
+        } else {
+            1.0
+        };
+        let bound = ogeom_algo::shape_bounds(model, &face, tol)?.expanded(reach);
+        walls.push((placed(&face)?, outward, bound));
+    }
+    // How far a point stands outside a wall's surface, along its normal.
+    let outside = |p: Point, wall: &(SurfaceGeometry, f64, ogeom_math::Aabb)| -> Option<f64> {
+        let found = ogeom_algo::project_on_surface(&wall.0, p, 8, tol).ok()?;
+        let (u, v) = found.parameters;
+        let n = wall.0.normal_at(u, v, tol).ok()?;
+        Some((p - found.point).dot(n.vector()) * wall.1)
+    };
+    for face in explore_unique(model, inner, ShapeType::Face)? {
+        ogeom_core::progress::checkpoint()?;
+        let surface = placed(&face)?;
+        let mesh = ogeom_mesh::triangulate_face(model, &face, deflection, tol)?;
+        if mesh.parameters.len() != mesh.positions.len() || mesh.parameters.is_empty() {
+            continue;
+        }
+        let (mut lo, mut hi) = (mesh.parameters[0], mesh.parameters[0]);
+        for &(u, v) in &mesh.parameters {
+            lo = (lo.0.min(u), lo.1.min(v));
+            hi = (hi.0.max(u), hi.1.max(v));
+        }
+        let span = (hi.0 - lo.0).max(hi.1 - lo.1);
+        if span <= 0.0 {
+            continue;
+        }
+        let lift = |at: (f64, f64)| surface.point_at(at.0, at.1, tol);
+        let mut starts: Vec<(f64, f64)> = mesh.parameters.clone();
+        for t in &mesh.triangles {
+            let [p, q, r] = t.map(|i| mesh.parameters[i as usize]);
+            starts.push(((p.0 + q.0 + r.0) / 3.0, (p.1 + q.1 + r.1) / 3.0));
+        }
+        for wall in &walls {
+            let mut near: Vec<((f64, f64), f64)> = Vec::new();
+            for &at in &starts {
+                let p = lift(at)?;
+                if !wall.2.contains(p) {
+                    continue;
+                }
+                if let Some(d) = outside(p, wall)
+                    && d >= -reach
+                {
+                    near.push((at, d));
+                }
+            }
+            near.sort_by(|x, y| y.1.total_cmp(&x.1));
+            near.truncate(STARTS);
+            for (start, d) in near {
+                // A pattern search in the chart, held to the face's own
+                // parameter box: a step each way along u and v, halved
+                // where none climbs.
+                let (mut at, mut best, mut step) = (start, d, span * 0.05);
+                let mut rounds = 0;
+                while step > span * 1e-7 && rounds < 400 {
+                    rounds += 1;
+                    let mut climbed = false;
+                    for (du, dv) in [(step, 0.0), (-step, 0.0), (0.0, step), (0.0, -step)] {
+                        let next = ((at.0 + du).clamp(lo.0, hi.0), (at.1 + dv).clamp(lo.1, hi.1));
+                        if let Ok(q) = lift(next)
+                            && let Some(g) = outside(q, wall)
+                            && g > best
+                        {
+                            (at, best) = (next, g);
+                            climbed = true;
+                        }
+                    }
+                    if !climbed {
+                        step *= 0.5;
+                    }
+                }
+                if best <= tol.confusion() {
+                    continue;
+                }
+                let q = lift(at)?;
+                if ogeom_algo::classify_on_face(model, &face, q, deflection, tol)?
+                    != Containment::Out
+                    && outer_boundary
+                        .holds(model, q, tol)
+                        .is_ok_and(|c| c == Containment::Out)
+                {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// A boolean's result, or where the general boolean refused and one solid

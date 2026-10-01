@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A solid poking microns through another is not taken as nested.** Where
+  the general boolean refused, the nesting fallback read the boundaries at
+  a mesh's samples, a tenth of a millimetre apart, and took a drum two
+  microns wider than its box as lying within it. Each inner face now
+  climbs its chart from the samples nearest each outer face, and a point
+  found outside refuses the nesting.
+
 - **Fillets whose balls overlap are refused.** `fillet_edges` accepted two
   edges of a narrow face (or a short wall's two rims) whose bands overlap
   across it, and built a solid that was neither rounding. A chain whose
