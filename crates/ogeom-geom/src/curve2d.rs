@@ -558,6 +558,25 @@ fn clamp_to_domain(
     Ok(u.clamp(a, b))
 }
 
+/// The derivatives of a turning curve to order `n`: `d1, d2, -d1, -d2`
+/// and round again, the cycle a circle's and an ellipse's take, each order
+/// times `sign` to its power (the reversal's chain rule).
+fn turning(point: Vector2, d1: Vector2, d2: Vector2, n: usize, sign: f64) -> Vec<Vector2> {
+    let mut out = vec![point];
+    let mut factor = 1.0;
+    for order in 1..=n {
+        factor *= sign;
+        let d = match order % 4 {
+            1 => d1,
+            2 => d2,
+            3 => -d1,
+            _ => -d2,
+        };
+        out.push(d * factor);
+    }
+    out
+}
+
 /// Fill a derivative list to `n + 1` entries, padding with zeros.
 fn pad(mut out: Vec<Vector2>, n: usize) -> Vec<Vector2> {
     out.resize(n.max(out.len().saturating_sub(1)) + 1, Vector2::ZERO);
@@ -620,15 +639,13 @@ impl Curve2d for Circle2d {
         let (sin, cos) = angle.sin_cos();
         let (x, y) = (f.x().vector(), f.y().vector());
         let point = self.circle.centre() + x * (r * cos) + y * (r * sin);
-        // Each order of the reversal picks up a factor of -1, so odd orders flip.
         let sign = if self.reversed { -1.0 } else { 1.0 };
-        Ok(pad(
-            vec![
-                point.to_vector(),
-                (x * (-r * sin) + y * (r * cos)) * sign,
-                x * (-r * cos) + y * (-r * sin),
-            ],
+        Ok(turning(
+            point.to_vector(),
+            x * (-r * sin) + y * (r * cos),
+            x * (-r * cos) + y * (-r * sin),
             n,
+            sign,
         ))
     }
 
@@ -667,13 +684,12 @@ impl Curve2d for Ellipse2d {
         let (x, y) = (f.x().vector(), f.y().vector());
         let point = self.ellipse.centre() + x * (a * cos) + y * (b * sin);
         let sign = if self.reversed { -1.0 } else { 1.0 };
-        Ok(pad(
-            vec![
-                point.to_vector(),
-                (x * (-a * sin) + y * (b * cos)) * sign,
-                x * (-a * cos) + y * (-b * sin),
-            ],
+        Ok(turning(
+            point.to_vector(),
+            x * (-a * sin) + y * (b * cos),
+            x * (-a * cos) + y * (-b * sin),
             n,
+            sign,
         ))
     }
 
@@ -1122,6 +1138,33 @@ mod tests {
                 a + (b - a) * t
             })
             .collect()
+    }
+
+    #[test]
+    fn every_order_agrees_with_the_difference_of_the_one_below() {
+        let h = 1e-5;
+        let mut curves = every_curve();
+        let reversed: Vec<PlanarCurve> = curves.iter().map(Reversible::reversed).collect();
+        curves.extend(reversed);
+        // The closed forms; a spline's orders jump at its knots.
+        curves.retain(|c| !matches!(c.kind(), CurveKind::BSpline | CurveKind::Trimmed));
+        for c in curves {
+            for u in interior(&c, 6) {
+                let at = c.derivatives_at(u, 5, T).unwrap();
+                let below = c.derivatives_at(u + h, 4, T).unwrap();
+                let above = c.derivatives_at(u - h, 4, T).unwrap();
+                for order in 2..=5 {
+                    let numeric = (below[order - 1] - above[order - 1]) * (1.0 / (2.0 * h));
+                    let scale = numeric.magnitude().max(1.0);
+                    assert!(
+                        (at[order] - numeric).magnitude() <= 1e-5 * scale,
+                        "{:?} order {order} at {u}: {:?} against {numeric:?}",
+                        c.kind(),
+                        at[order]
+                    );
+                }
+            }
+        }
     }
 
     #[test]

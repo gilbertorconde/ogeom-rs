@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Conics and helices answer every derivative order.** A circle's,
+  ellipse's, hyperbola's and helix's derivatives past the second (the
+  helix's past the third) came back zero, as did a 2D circle's and
+  ellipse's; they are now the closed forms at any order. A parabola's and a
+  line's higher orders are zero, as they should be.
+
 - **A near half turn and a small chart keep their digits.**
   `Quaternion::between` refused directions within some 5e-4 rad of a half
   turn (a length tolerance held against a cosine) and lost digits short of

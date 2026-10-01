@@ -547,12 +547,34 @@ impl Curve3d for HelixCurve {
         } else {
             u
         };
-        let (point, d1, d2, d3) = self.at(t);
-        // The chain rule for the reversal: odd orders flip sign.
+        let (point, _, _, _) = self.at(t);
+        // The radius runs linearly in the angle, so the `k`th derivative of
+        // `r cos t` is `r cos⁽ᵏ⁾ t + k s cos⁽ᵏ⁻¹⁾ t`, and alike for the sine;
+        // the rise survives only to first order. The chain rule for the
+        // reversal flips odd orders.
+        let (sin, cos) = t.sin_cos();
+        let x = self.frame.x().vector();
+        let y = self.frame.y().vector();
+        let z = self.frame.z().vector();
+        let rise = self.pitch / core::f64::consts::TAU;
+        let slope = self.taper / core::f64::consts::TAU;
+        let r = slope.mul_add(t, self.radius);
+        let cos_k = |k: usize| [cos, -sin, -cos, sin][k % 4];
+        let sin_k = |k: usize| [sin, cos, -sin, -cos][k % 4];
         let sign = if self.reversed { -1.0 } else { 1.0 };
-        let mut out = vec![point.to_vector(), d1 * sign, d2, d3 * sign];
-        out.resize(n.max(3) + 1, Vector::ZERO);
-        out.truncate(n + 1);
+        let mut out = vec![point.to_vector()];
+        let mut factor = 1.0;
+        for k in 1..=n {
+            factor *= sign;
+            #[allow(clippy::cast_precision_loss)]
+            let ks = k as f64 * slope;
+            let mut d = x * ks.mul_add(cos_k(k - 1), r * cos_k(k))
+                + y * ks.mul_add(sin_k(k - 1), r * sin_k(k));
+            if k == 1 {
+                d += z * rise;
+            }
+            out.push(d * factor);
+        }
         Ok(out)
     }
 
@@ -1311,6 +1333,33 @@ fn mirror(u: f64, a: f64, b: f64) -> f64 {
     a + b - u
 }
 
+/// A conic's derivatives to order `n` from its first two: a circle's and an
+/// ellipse's cycle `d1, d2, -d1, -d2` (`period` four), a hyperbola's
+/// `d1, d2` (`period` two). Each order is times `sign` to its power, the
+/// reversal's chain rule.
+fn cycled(
+    point: Vector,
+    d1: Vector,
+    d2: Vector,
+    n: usize,
+    period: usize,
+    sign: f64,
+) -> Vec<Vector> {
+    let mut out = vec![point];
+    let mut factor = 1.0;
+    for order in 1..=n {
+        factor *= sign;
+        let d = match (order - 1) % period {
+            0 => d1,
+            1 => d2,
+            2 => -d1,
+            _ => -d2,
+        };
+        out.push(d * factor);
+    }
+    out
+}
+
 impl Curve3d for LineCurve {
     fn domain(&self) -> (f64, f64) {
         self.domain
@@ -1370,13 +1419,8 @@ impl Curve3d for CircleCurve {
         let u = self.normalize_parameter(u, tol)?;
         let angle = if self.reversed { -u } else { u };
         let c = elementary::circle_at(&self.circle, angle);
-        // The chain rule for the reversal: each derivative picks up a factor of
-        // -1 per order, so odd orders flip sign.
         let sign = if self.reversed { -1.0 } else { 1.0 };
-        let mut out = vec![c.point.to_vector(), c.d1 * sign, c.d2];
-        out.resize(n.max(2) + 1, Vector::ZERO);
-        out.truncate(n + 1);
-        Ok(out)
+        Ok(cycled(c.point.to_vector(), c.d1, c.d2, n, 4, sign))
     }
 
     fn kind(&self) -> CurveKind {
@@ -1416,10 +1460,7 @@ impl Curve3d for EllipseCurve {
         let angle = if self.reversed { -u } else { u };
         let c = elementary::ellipse_at(&self.ellipse, angle);
         let sign = if self.reversed { -1.0 } else { 1.0 };
-        let mut out = vec![c.point.to_vector(), c.d1 * sign, c.d2];
-        out.resize(n.max(2) + 1, Vector::ZERO);
-        out.truncate(n + 1);
-        Ok(out)
+        Ok(cycled(c.point.to_vector(), c.d1, c.d2, n, 4, sign))
     }
 
     fn kind(&self) -> CurveKind {
@@ -1467,10 +1508,7 @@ impl Curve3d for HyperbolaCurve {
         };
         let c = elementary::hyperbola_at(&self.hyperbola, t);
         let sign = if self.reversed { -1.0 } else { 1.0 };
-        let mut out = vec![c.point.to_vector(), c.d1 * sign, c.d2];
-        out.resize(n.max(2) + 1, Vector::ZERO);
-        out.truncate(n + 1);
-        Ok(out)
+        Ok(cycled(c.point.to_vector(), c.d1, c.d2, n, 2, sign))
     }
 
     fn kind(&self) -> CurveKind {
@@ -1518,6 +1556,7 @@ impl Curve3d for ParabolaCurve {
         };
         let c = elementary::parabola_at(&self.parabola, t);
         let sign = if self.reversed { -1.0 } else { 1.0 };
+        // Quadratic in its parameter: every order past the second is zero.
         let mut out = vec![c.point.to_vector(), c.d1 * sign, c.d2];
         out.resize(n.max(2) + 1, Vector::ZERO);
         out.truncate(n + 1);
@@ -2308,6 +2347,38 @@ mod tests {
                 a + (b - a) * t
             })
             .collect()
+    }
+
+    #[test]
+    fn every_order_agrees_with_the_difference_of_the_one_below() {
+        let h = 1e-5;
+        let mut curves = every_curve();
+        curves.push(
+            HelixCurve::conical(tilted(), 4.0, 1.5, 2.0, 0.0, 6.0)
+                .unwrap()
+                .into(),
+        );
+        let reversed: Vec<Curve> = curves.iter().map(Reversible::reversed).collect();
+        curves.extend(reversed);
+        // The closed forms; a spline's orders jump at its knots.
+        curves.retain(|c| !matches!(c.kind(), CurveKind::BSpline | CurveKind::Trimmed));
+        for c in curves {
+            for u in interior(&c, 6) {
+                let at = c.derivatives_at(u, 5, T).unwrap();
+                let below = c.derivatives_at(u + h, 4, T).unwrap();
+                let above = c.derivatives_at(u - h, 4, T).unwrap();
+                for order in 2..=5 {
+                    let numeric = (below[order - 1] - above[order - 1]) * (1.0 / (2.0 * h));
+                    let scale = numeric.magnitude().max(1.0);
+                    assert!(
+                        (at[order] - numeric).magnitude() <= 1e-5 * scale,
+                        "{:?} order {order} at {u}: {:?} against {numeric:?}",
+                        c.kind(),
+                        at[order]
+                    );
+                }
+            }
+        }
     }
 
     #[test]
