@@ -244,3 +244,43 @@ fn a_shell_whose_faces_disagree_is_left_to_the_mesh() {
         );
     }
 }
+
+#[test]
+fn a_metre_cube_and_a_long_drum_measure_exactly_and_at_once() {
+    let mut model = Model::new();
+    let cube = ogeom::algo::make_box(&mut model, Frame::WORLD, (1000.0, 1000.0, 1000.0), T)
+        .unwrap()
+        .shape;
+    let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 3000.0, T)
+        .unwrap()
+        .shape;
+    let started = std::time::Instant::now();
+    for (shape, volume, area) in [
+        (&cube, 1e9, 6e6),
+        (
+            &drum,
+            core::f64::consts::PI * 25.0 * 3000.0,
+            core::f64::consts::TAU * 5.0 * (5.0 + 3000.0),
+        ),
+    ] {
+        let v = ogeom::algo::volume_properties(&model, shape, Deflection::default(), T).unwrap();
+        let a = ogeom::algo::surface_properties(&model, shape, Deflection::default(), T).unwrap();
+        assert_eq!((v.deflection, a.deflection), (0.0, 0.0));
+        assert!(
+            (v.mass - volume).abs() <= volume * 1e-12,
+            "{} against {volume}",
+            v.mass
+        );
+        assert!(
+            (a.mass - area).abs() <= area * 1e-12,
+            "{} against {area}",
+            a.mass
+        );
+    }
+    // Panelled by length, a face a metre across took seconds.
+    assert!(
+        started.elapsed().as_secs_f64() < 2.0,
+        "{:?}",
+        started.elapsed()
+    );
+}

@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A large box measures at once and exactly.** The exact surface
+  integral cut every chart rectangle into quarter-turn panels in both
+  parameters, so a plane's millimetre parameters gave a metre cube some
+  four hundred thousand panels: seconds per measure, longer at three metres,
+  and drifting in the tenth digit. A length parameter now takes one panel
+  and an angular one at most sixty-four.
+
 - **`make_wedge` documents its zero top extents.** The doc said a zero
   top extent is refused; it builds a ridge or a point top, five faces either
   way, and the doc now says so.

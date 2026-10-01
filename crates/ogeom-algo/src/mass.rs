@@ -561,28 +561,43 @@ fn integrate_face(
             ..
         } => {
             let (u0, u1, v0, v1) = *rect;
-            // Panels no wider than a quarter turn, and a spline's also cut
-            // at its knots.
-            let breaks = |lo: f64, hi: f64, knots: Option<&ogeom_math::KnotVector>| {
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let panels = (((hi - lo) / QUARTER).ceil() as usize).max(1);
-                #[allow(clippy::cast_precision_loss)]
-                let mut out: Vec<f64> = (0..=panels)
-                    .map(|i| lo + (hi - lo) * i as f64 / panels as f64)
-                    .collect();
-                if let Some(knots) = knots {
-                    out.extend(
-                        knots
-                            .distinct()
-                            .into_iter()
-                            .map(|(k, _)| k)
-                            .filter(|k| *k > lo && *k < hi),
-                    );
-                    out.sort_by(f64::total_cmp);
-                    out.dedup_by(|a, b| (*a - *b).abs() <= 1e-14);
-                }
-                out
+            // Panels no wider than a quarter turn along a parameter that may
+            // be an angle, and a spline's also cut at its knots. A length
+            // parameter (a plane's, a drum's, cone's or extrusion's height)
+            // carries a polynomial integrand the rule takes in one panel
+            // however long it runs.
+            let (angular_u, angular_v) = match surface {
+                ogeom_geom::SurfaceGeometry::Plane(_) => (false, false),
+                ogeom_geom::SurfaceGeometry::Cylinder(_)
+                | ogeom_geom::SurfaceGeometry::Cone(_)
+                | ogeom_geom::SurfaceGeometry::Extrusion(_) => (true, false),
+                _ => (true, true),
             };
+            let breaks =
+                |lo: f64, hi: f64, angular: bool, knots: Option<&ogeom_math::KnotVector>| {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let panels = if angular {
+                        ((hi - lo) / QUARTER).ceil().clamp(1.0, 64.0) as usize
+                    } else {
+                        1
+                    };
+                    #[allow(clippy::cast_precision_loss)]
+                    let mut out: Vec<f64> = (0..=panels)
+                        .map(|i| lo + (hi - lo) * i as f64 / panels as f64)
+                        .collect();
+                    if let Some(knots) = knots {
+                        out.extend(
+                            knots
+                                .distinct()
+                                .into_iter()
+                                .map(|(k, _)| k)
+                                .filter(|k| *k > lo && *k < hi),
+                        );
+                        out.sort_by(f64::total_cmp);
+                        out.dedup_by(|a, b| (*a - *b).abs() <= 1e-14);
+                    }
+                    out
+                };
             // A swept curve's knots stand across its sweep: in `u` for an
             // extrusion, in `v` for a revolution.
             fn curve_knots(curve: &ogeom_geom::Curve) -> Option<&ogeom_math::KnotVector> {
@@ -598,7 +613,10 @@ fn integrate_face(
                 ogeom_geom::SurfaceGeometry::Revolution(r) => (None, curve_knots(r.curve())),
                 _ => (None, None),
             };
-            let (u_breaks, v_breaks) = (breaks(u0, u1, u_knots), breaks(v0, v1, v_knots));
+            let (u_breaks, v_breaks) = (
+                breaks(u0, u1, angular_u, u_knots),
+                breaks(v0, v1, angular_v, v_knots),
+            );
             let mut failure = None;
             for uw in u_breaks.windows(2) {
                 let (ua, ub) = (uw[0], uw[1]);
