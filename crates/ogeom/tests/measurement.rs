@@ -277,7 +277,7 @@ fn a_metre_cube_and_a_long_drum_measure_exactly_and_at_once() {
             a.mass
         );
     }
-    // Panelled by length, a face a metre across took seconds.
+    // A face a metre across is a handful of panels, not thousands.
     assert!(
         started.elapsed().as_secs_f64() < 2.0,
         "{:?}",
