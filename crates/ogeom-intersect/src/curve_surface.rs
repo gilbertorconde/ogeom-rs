@@ -273,6 +273,14 @@ fn torus_roots(
 ) -> Vec<f64> {
     let (m, d) = in_frame(line, torus.frame());
     let (big, small) = (torus.major_radius(), torus.minor_radius());
+    // Solved about the line's nearest approach to the centre, in units of
+    // the torus's own size, so the roots stand near one: a torus hundreds
+    // of millimetres down the line puts them there otherwise, and the
+    // eigenvalues lose them to the coefficients' spread.
+    let near = -m.dot(d) / d.dot(d);
+    let size = big + small;
+    let m = (m + d * near) / size;
+    let (big, small) = (big / size, small / size);
     let a = d.dot(d);
     let b = 2.0 * m.dot(d);
     let c = m.dot(m) + big * big - small * small;
@@ -288,6 +296,9 @@ fn torus_roots(
         a * a,
     ];
     quartic_roots(&coefficients, tol)
+        .into_iter()
+        .map(|sigma| near + sigma * size)
+        .collect()
 }
 
 /// A quartic's real roots, tangencies included: a double root comes back
@@ -953,6 +964,40 @@ mod tests {
     /// The general path (a torus has no closed form against a line) answers
     /// each tangency once, and a curve lying in the surface as the stretch
     /// it lies along rather than as hundreds of piercings.
+    /// A torus far down a line is met where it is: its quartic, solved where
+    /// the line starts, has roots hundreds of units out, and the eigenvalues
+    /// lost them.
+    #[test]
+    fn a_torus_far_down_a_line_is_still_met() {
+        use ogeom_geom::TorusSurface;
+        use ogeom_math::Torus;
+        let options = CurveSurfaceOptions::default();
+        let tilted = Frame::new(
+            Point::new(0.0, 785.0, -140.0),
+            Direction::new(Vector::new(0.0, -0.999_390_827, 0.034_899_497), T).unwrap(),
+            Direction::X,
+            T,
+        )
+        .unwrap();
+        let torus: SurfaceGeometry =
+            TorusSurface::new(Torus::new(tilted, 120.0, 12.0, T).unwrap()).into();
+        let w = Vector::new(1.0, 1.0, 1.0) / 3.0_f64.sqrt();
+        let from = Point::new(-160.0, 531.0, -320.0);
+        let line = segment(from, from + w * 800.0);
+        let found = intersect_curve_surface(&line, &torus, options, T).unwrap();
+        let general = general(&line, &torus, options, T).unwrap();
+        assert!(!general.crossings.is_empty());
+        assert_eq!(found.crossings.len(), general.crossings.len());
+        for (a, b) in found.crossings.iter().zip(&general.crossings) {
+            assert!(
+                a.point.distance(b.point) < 1e-6,
+                "{:?} against {:?}",
+                a.point,
+                b.point
+            );
+        }
+    }
+
     /// A line through a torus's middle crosses the tube four times, and one
     /// through a cone's axis crosses its wall twice, at the closed forms'
     /// points.

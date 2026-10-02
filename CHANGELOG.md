@@ -35,7 +35,7 @@ bump may break the API and a patch bump may not.
   offered with it, so a stretch of a wavy profile that passes for a cone
   joins the one sweep. A wall extruded from a wavy spline comes back one
   extrusion and five planes, not nineteen facets; a wavy profile turned
-  half round, one surface of revolution. Off by default for now.
+  half round, one surface of revolution. On by default.
 
 ### Fixed
 
@@ -140,7 +140,10 @@ bump may break the API and a patch bump may not.
 - **A line meets a cone or a torus in closed form.** Both took the
   general seeded path, a Newton polish per seed; a cone's crossings are
   now a quadratic's roots and a torus's a quartic's, tangencies included,
-  each polished once onto the surface. Every ray a classification casts
+  each polished once onto the surface, the quartic solved about the
+  line's nearest approach to the torus's centre in units of its size, so
+  a torus far down the line is not lost to rounding. Every ray a
+  classification casts
   through a part with tori is cheaper: converting a part with three tori
   takes 2.5 s, not 27.
 

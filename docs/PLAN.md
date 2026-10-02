@@ -74,12 +74,11 @@ admits the items below. Each is held to the converter's standard: verified
 against every sample, edges placed on both surfaces, facets as the fallback.
 
 - Revolution and extrusion surfaces, in part (`MeshSolidOptions::sweeps`,
-  off by default). A free smooth region is fitted as an extrusion or a
+  on by default). A free smooth region is fitted as an extrusion or a
   surface of revolution of a fitted profile and verified at every vertex.
   Still to do: a region that goes all the way round (a closed profile, a
   whole turn) needs the seam layouts the canonical surfaces have, and is
-  left to its facets; the option is to be measured across the corpus and
-  turned on.
+  left to its facets.
 - A fitted B-spline patch for a smooth region nothing else fits, tried
   after the two above. `fit_surface_scattered` needs a height field, so a
   region that folds over its principal plane needs a mesh parameterization
