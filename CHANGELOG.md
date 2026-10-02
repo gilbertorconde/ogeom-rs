@@ -60,6 +60,14 @@ bump may break the API and a patch bump may not.
   one. Three converted corpus parts and the rough rounded box now
   tessellate closed.
 
+- **A converted solid no longer comes back with a facet facing into its
+  material.** On a coarse mesh a fitted face could run past the facet it
+  should have ended on and enclose a sliver outside it; the solid checked
+  sound but for that facet's orientation. Once a build would be accepted,
+  the faces round every recognized face are probed as the validity check
+  probes orientation, and a recognized face that overlaps another is built
+  faceted. The STEP corpus, meshed and converted back, is now a test.
+
 - **A face moved or offset clear of a neighbour it was tangent to is
   refused.** Moving the side of a block rounded all round outward by half
   a millimetre left the face's surface there and its edges where they had

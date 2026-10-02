@@ -526,7 +526,7 @@ pub fn solid_from_mesh(
                     let (shape, bodies) = assemble(
                         model, &points, &triangles, &pieces, &depth, all_closed, &groups, &built,
                     )?;
-                    let culprits = if options.recognize && all_closed {
+                    let mut culprits = if options.recognize && all_closed {
                         body_culprits(
                             model,
                             &points,
@@ -564,6 +564,10 @@ pub fn solid_from_mesh(
                             threading_refused = true;
                             continue;
                         }
+                    }
+                    if culprits.is_empty() && options.recognize {
+                        culprits =
+                            overlapping_faces(model, &shape, &adjacency, &groups, &built, tol)?;
                     }
                     if culprits.is_empty() {
                         report.faces = built.iter().flatten().count();
@@ -606,6 +610,91 @@ pub fn solid_from_mesh(
         closed: all_closed,
         report,
     })
+}
+
+/// The recognized faces that overlap a face beside them: a fitted face
+/// running past the facet it should end on encloses a sliver outside that
+/// facet, and the facet then faces into material on its outer side while
+/// every check on either face alone passes. Every recognized face and every
+/// face beside one is probed as the validity check probes orientation; a
+/// recognized face found turned in is a culprit, and for any other face
+/// so found the recognized faces beside it are.
+fn overlapping_faces(
+    model: &Model,
+    shape: &Shape,
+    adjacency: &Adjacency,
+    groups: &Groups,
+    built: &[Option<Shape>],
+    tol: Tolerances,
+) -> OgeomResult<Vec<usize>> {
+    let curved = |g: usize| {
+        matches!(groups.carriers.get(g), Some(Carrier::Curved(_)))
+            && built.get(g).is_some_and(Option::is_some)
+    };
+    let mut beside: HashMap<usize, std::collections::BTreeSet<usize>> = HashMap::new();
+    for (h, twin) in adjacency.twin.iter().enumerate() {
+        let Some(t) = *twin else {
+            continue;
+        };
+        let (mine, theirs) = (groups.of[h / 3], groups.of[t / 3]);
+        if mine != theirs && curved(theirs) {
+            beside.entry(mine).or_default().insert(theirs);
+        }
+    }
+    // Each built face's box; a face a fitted face runs through need not
+    // share an edge with it.
+    let mut boxes: HashMap<usize, ogeom_math::Aabb> = HashMap::new();
+    for (g, face) in built.iter().enumerate() {
+        if let Some(face) = face {
+            boxes.insert(
+                g,
+                crate::shape_bounds(model, face, tol)?.expanded(tol.confusion()),
+            );
+        }
+    }
+    let curved_boxes: Vec<(usize, ogeom_math::Aabb)> = boxes
+        .iter()
+        .filter(|(g, _)| curved(**g))
+        .map(|(g, b)| (*g, *b))
+        .collect();
+    let crossing = |g: usize| -> Vec<usize> {
+        boxes.get(&g).map_or_else(Vec::new, |own| {
+            curved_boxes
+                .iter()
+                .filter(|(c, b)| *c != g && b.intersects(own))
+                .map(|(c, _)| *c)
+                .collect()
+        })
+    };
+    let mut near: std::collections::BTreeSet<usize> = beside.keys().copied().collect();
+    near.extend((0..groups.carriers.len()).filter(|&g| curved(g) || !crossing(g).is_empty()));
+    if near.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut of_face: HashMap<ogeom_topo::TShapeId, usize> = HashMap::new();
+    let mut faces = Vec::new();
+    for &g in &near {
+        if let Some(face) = built.get(g).and_then(Option::as_ref) {
+            of_face.insert(face.node(), g);
+            faces.push(face.clone());
+        }
+    }
+    let mut culprits = std::collections::BTreeSet::new();
+    for solid in ogeom_topo::explore_unique(model, shape, ogeom_topo::ShapeType::Solid)? {
+        for face in crate::check::faces_turned_in(model, &solid, &faces, tol)? {
+            let Some(&g) = of_face.get(&face.node()) else {
+                continue;
+            };
+            if curved(g) {
+                culprits.insert(g);
+            } else if let Some(next) = beside.get(&g) {
+                culprits.extend(next.iter().copied());
+            } else {
+                culprits.extend(crossing(g));
+            }
+        }
+    }
+    Ok(culprits.into_iter().collect())
 }
 
 /// Whether any face of the shape's solids faces into their material.
