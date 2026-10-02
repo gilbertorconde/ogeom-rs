@@ -44,8 +44,11 @@ whatever they end on. Passed in one call, they join:
 
 ## Blends between faces without a shared edge
 
-- **`blend_faces`** rolls a constant-radius ball between two faces that
-  need not share an edge.
+- **`blend_faces`** rolls a constant-radius ball between two faces of one
+  solid that need not share an edge. Planes, and curved faces whose
+  surfaces share a direction or an axis, get an exact cylinder or torus.
+  Curved faces that meet along edges of the solid are blended along those
+  edges, marched where the seat has no closed form.
 - **`march_blend`** is the underlying marcher. It traces the contact circle
   and reports why it stopped (`BlendStop`). Use it to blend up to an
   obstruction on purpose.

@@ -13,6 +13,16 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`blend_faces` blends curved faces.** Faces that meet along edges of
+  the solid are rounded along those edges: exact cylinders and tori where
+  the seat has a closed form, marched B-spline bands otherwise, B-spline
+  faces included. Faces that share no edge are rounded with an exact
+  cylinder or torus where their surfaces share a direction or an axis,
+  the corner cut off or filled as the solid shows. Faces sharing no edge
+  and no direction or axis are refused by name. Closed marched fillet
+  bands sample each ball arc more finely, and stay tangent within a tenth
+  of a degree.
+
 - **Tangential contact traced as its own curve.** Two surfaces touching
   along a curve no closed form names (a torus resting in a free-form
   cradle) came back as fragments. The trace predicts along the null

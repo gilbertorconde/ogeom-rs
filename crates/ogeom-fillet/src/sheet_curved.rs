@@ -43,7 +43,7 @@ use ogeom_topo::{
 
 use crate::march::{MarchedBlend, Sides, march_blend_sided, seat_section};
 use crate::marched::{band_fit_target, fit_open_band, touching_ball};
-use crate::support::{edge_curve, face_from_edges};
+use crate::support::{edge_curve, face_from_edges, segment_between};
 
 /// A pair of coordinates in a section plane.
 type P2 = (f64, f64);
@@ -1852,18 +1852,28 @@ fn marched_round(
     oriented_round(model, face, away, |q| touching_ball(&spine, q), tol)
 }
 
-/// Round the corner between two faces of separate shapes where one is
-/// curved and the seat has a closed form.
-#[allow(clippy::too_many_lines, reason = "one rebuild, checked then assembled")]
-pub(crate) fn fillet_faces(
+/// A closed-form seat between two faces: the ball, where it touches each
+/// face, and the run of stations both faces reach.
+pub(crate) struct FaceSeat {
+    exact: Exact,
+    stretches: Vec<Stretch>,
+    /// The stations the round spans, or `None` for the whole turn.
+    span: Option<(f64, f64)>,
+    profiles: [Profile; 2],
+    surfaces: Vec<SurfaceGeometry>,
+    reads: Vec<(SurfaceId, Tolerance, Point, Vector)>,
+}
+
+/// The ball of `radius` touching both faces, on the side each face's
+/// normal points to, or behind both with `behind`, where the two faces'
+/// surfaces share a direction or an axis.
+pub(crate) fn face_seat(
     model: &mut Model,
-    a: &Shape,
-    b: &Shape,
+    faces: [&Shape; 2],
     radius: f64,
-    trim: bool,
+    behind: bool,
     tol: Tolerances,
-) -> OgeomResult<Built> {
-    let faces = [a, b];
+) -> OgeomResult<FaceSeat> {
     let mut surfaces = Vec::with_capacity(2);
     let mut reads = Vec::with_capacity(2);
     for face in faces {
@@ -1875,21 +1885,23 @@ pub(crate) fn fillet_faces(
     let Some((layout, profiles)) = shared_layout(&surfaces, tol)? else {
         ogeom_bail!(
             Construction,
-            "between faces of separate shapes the round is built where it has a closed form: \
-             planes and cylinders along one direction, or planes, cylinders, cones, spheres \
-             and tori about one axis; these two faces share neither"
+            "a round between two faces that share no edge is built where it has a closed \
+             form: planes and cylinders along one direction, or planes, cylinders, cones, \
+             spheres and tori about one axis; these two faces share neither"
         );
     };
+    let side = if behind { "back" } else { "front" };
     let mut ball_sides = [0.0; 2];
     for f in 0..2 {
         let (_, _, p, n) = reads[f];
-        ball_sides[f] = profile_sign(&profiles[f], &layout, p, n)?;
+        let flip = if behind { -1.0 } else { 1.0 };
+        ball_sides[f] = profile_sign(&profiles[f], &layout, p, n)? * flip;
     }
     let candidates = seatings(profiles, ball_sides, radius, tol)?;
     if candidates.is_empty() {
         ogeom_bail!(
             Construction,
-            "no ball of radius {radius} touches the front of both faces' surfaces"
+            "no ball of radius {radius} touches the {side} of both faces' surfaces"
         );
     }
 
@@ -1910,6 +1922,7 @@ pub(crate) fn fillet_faces(
     }
 
     let mut seated = Vec::new();
+    let (mut unmade, mut made) = (None, false);
     for section in candidates {
         let exact = match (Exact {
             layout,
@@ -1919,8 +1932,12 @@ pub(crate) fn fillet_faces(
         .checked(tol)
         {
             Ok(exact) => exact,
-            Err(_) => continue,
+            Err(why) => {
+                unmade = Some(why);
+                continue;
+            }
         };
+        made = true;
         let mut found = Vec::with_capacity(2);
         for (f, face) in faces.iter().enumerate() {
             match contact_stretch(model, face, &exact, f, extents[f], tol)? {
@@ -1932,16 +1949,20 @@ pub(crate) fn fillet_faces(
             seated.push((exact, found));
         }
     }
+    // Every ball the surfaces seat fails to make a round: that is why.
+    if let (Some(why), false) = (unmade, made) {
+        return Err(why);
+    }
     let (exact, stretches) = match seated.len() {
         0 => ogeom_bail!(
             Construction,
-            "a ball of radius {radius} touching the front of both faces' surfaces does not \
+            "a ball of radius {radius} touching the {side} of both faces' surfaces does not \
              touch both faces; it misses at least one of them"
         ),
         1 => seated.remove(0),
         _ => ogeom_bail!(
             Construction,
-            "more than one ball of radius {radius} touches the front of both faces; which \
+            "more than one ball of radius {radius} touches the {side} of both faces; which \
              corner to round is ambiguous"
         ),
     };
@@ -1980,6 +2001,152 @@ pub(crate) fn fillet_faces(
         [true, false] => Some(stretches[1].span),
         [false, true] => Some(stretches[0].span),
     };
+    Ok(FaceSeat {
+        exact,
+        stretches,
+        span,
+        profiles,
+        surfaces,
+        reads,
+    })
+}
+
+/// The solid between a seat's round and the corner it rounds: the section
+/// bounded by the two faces' surfaces, from where they cross to where the
+/// ball touches each, and by the ball's arc, swept over the run. With it, a
+/// point inside it beside the middle of the round, where the solid being
+/// blended says whether the corner is material.
+pub(crate) fn corner_wedge(
+    model: &mut Model,
+    seat: &FaceSeat,
+    tol: Tolerances,
+) -> OgeomResult<(Shape, Point)> {
+    let exact = &seat.exact;
+    let layout = exact.layout;
+    let section = exact.section;
+    let (s0, turn) = match seat.span {
+        Some((lo, hi)) => (lo, hi - lo),
+        None => (0.0, TAU),
+    };
+    let Some(crease) = crossings(seat.profiles[0], seat.profiles[1], tol)
+        .into_iter()
+        .min_by(|p, q| norm2(sub2(*p, section.centre)).total_cmp(&norm2(sub2(*q, section.centre))))
+    else {
+        ogeom_bail!(
+            Construction,
+            "the two faces' surfaces do not meet, so there is no corner between them for \
+             the round to take off or fill"
+        );
+    };
+    for contact in section.contacts {
+        if norm2(sub2(contact, crease)) <= tol.confusion() {
+            ogeom_bail!(
+                Construction,
+                "the ball touches a face where the two surfaces cross; there is no corner \
+                 between the round and the crease"
+            );
+        }
+    }
+    let apex = layout.lift(crease, s0);
+    let ends = [exact.contact(0, s0), exact.contact(1, s0)];
+    let apex_v = make_vertex(model, apex).shape;
+    let end_v = [
+        make_vertex(model, ends[0]).shape,
+        make_vertex(model, ends[1]).shape,
+    ];
+    let normal = layout
+        .lift_vector((1.0, 0.0), s0)
+        .cross(layout.lift_vector((0.0, 1.0), s0));
+    let normal = Direction::new(normal, tol)?;
+    // Each leg runs along its face's profile between the crease and the
+    // ball's touch: a segment, or the short arc of a circle.
+    let mut legs = Vec::with_capacity(2);
+    for f in 0..2 {
+        let leg = match seat.profiles[f] {
+            Profile::Line { .. } => {
+                segment_between(model, (&apex_v, apex), (&end_v[f], ends[f]), tol)?
+            }
+            Profile::Circle { centre, radius } => {
+                let centre = layout.lift(centre, s0);
+                let (from, to) = (apex - centre, ends[f] - centre);
+                let axis = from.cross(to);
+                let sweep = axis.magnitude().atan2(from.dot(to));
+                let frame = Frame::new(
+                    centre,
+                    Direction::new(axis, tol)?,
+                    Direction::new(from, tol)?,
+                    tol,
+                )?;
+                let circle = Curve::Circle(ogeom_geom::CircleCurve::new(Circle::new(
+                    frame, radius, tol,
+                )?));
+                make_edge_between(model, circle, (0.0, sweep), &apex_v, &end_v[f], tol)?.shape
+            }
+        };
+        legs.push(leg);
+    }
+    let (arc, range) = exact.arc(s0, tol)?;
+    let arc = make_edge_between(model, arc, range, &end_v[0], &end_v[1], tol)?.shape;
+    let reach = (apex.distance(ends[0]).max(apex.distance(ends[1])) + exact.radius) * 2.0;
+    let plane = ogeom_geom::PlaneSurface::over(
+        ogeom_math::Plane::through(apex, normal),
+        (-reach, reach),
+        (-reach, reach),
+    )?;
+    let face = face_from_edges(
+        model,
+        plane.into(),
+        &[legs[0].clone(), arc, legs[1].reversed()],
+        tol,
+    )?;
+    let wedge = match layout {
+        Layout::Extruded { along, .. } => {
+            ogeom_algo::make_prism(model, &face, along * turn, tol)?.shape
+        }
+        Layout::Revolved { origin, axis, .. } => {
+            let axis = Axis {
+                location: origin,
+                direction: Direction::new(axis, tol)?,
+            };
+            ogeom_algo::make_revolution(model, &face, axis, turn, tol)?.shape
+        }
+    };
+
+    // Just off the middle of the ball's arc, toward the crease.
+    let bisector = add2(
+        sub2(section.contacts[0], section.centre),
+        sub2(section.contacts[1], section.centre),
+    );
+    let on_arc = add2(
+        section.centre,
+        scale2(bisector, exact.radius / norm2(bisector)),
+    );
+    let gap = norm2(sub2(crease, on_arc));
+    let toward = scale2(sub2(crease, on_arc), 1.0 / gap);
+    let probe = add2(on_arc, scale2(toward, gap.min(exact.radius) * 0.1));
+    Ok((wedge, layout.lift(probe, s0 + turn / 2.0)))
+}
+
+/// Round the corner between two faces of separate shapes where one is
+/// curved and the seat has a closed form.
+#[allow(clippy::too_many_lines, reason = "one rebuild, checked then assembled")]
+pub(crate) fn fillet_faces(
+    model: &mut Model,
+    a: &Shape,
+    b: &Shape,
+    radius: f64,
+    trim: bool,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let FaceSeat {
+        exact,
+        stretches,
+        span,
+        profiles: _,
+        surfaces,
+        reads,
+    } = face_seat(model, [a, b], radius, false, tol)?;
+    let layout = exact.layout;
 
     let mut history = History::new();
     let away = false;

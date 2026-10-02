@@ -168,6 +168,448 @@ fn a_blend_bridges_two_faces_that_share_no_edge() {
     );
 }
 
+/// The faces of `shape` whose surface `keep` accepts.
+fn faces_on(
+    model: &Model,
+    shape: &Shape,
+    keep: impl Fn(&ogeom::geom::SurfaceGeometry) -> bool,
+) -> Vec<Shape> {
+    explore_unique(model, shape, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter(|f| {
+            let data = model.node(f).unwrap().data().as_face().unwrap();
+            keep(model.geometry().surface(data.surface).unwrap())
+        })
+        .collect()
+}
+
+/// The planar face of `shape` at height `z` facing up.
+fn lid_at(model: &Model, shape: &Shape, z: f64) -> Shape {
+    let found: Vec<Shape> = faces_on(model, shape, |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::Plane(_))
+    })
+    .into_iter()
+    .filter(|f| {
+        let (p, n) = ogeom::algo::face_normal(model, f, T).unwrap();
+        (p.z - z).abs() < 1e-9 && n.z > 0.5
+    })
+    .collect();
+    assert_eq!(found.len(), 1, "one lid at z = {z}");
+    found[0].clone()
+}
+
+/// Whether two faces share an edge.
+fn share_an_edge(model: &Model, a: &Shape, b: &Shape) -> bool {
+    let theirs = explore_unique(model, b, ShapeType::Edge).unwrap();
+    explore_unique(model, a, ShapeType::Edge)
+        .unwrap()
+        .iter()
+        .any(|e| theirs.iter().any(|t| t.node() == e.node()))
+}
+
+/// The blend's joins with other faces of `shape`, as `analyse_blend`
+/// measures them (a closed band also meets itself across its seam).
+fn joins(model: &Model, shape: &Shape, blend: &Shape) -> Vec<ogeom::fillet::BlendContact> {
+    ogeom::fillet::analyse_blend(model, shape, blend, 15, T)
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.neighbour.node() != blend.node())
+        .collect()
+}
+
+/// Every join of a closed-form round: on both faces, tangent within
+/// 1e-5 rad.
+fn assert_exactly_tangent(model: &Model, shape: &Shape, round: &Shape) {
+    let found = joins(model, shape, round);
+    assert!(found.len() >= 2, "the round meets both faces: {found:?}");
+    for c in &found {
+        assert!(c.gap < 1e-9, "a join stands off its faces: {c:?}");
+        assert!(c.tangency_error < 1e-5, "a join is not tangent: {c:?}");
+    }
+}
+
+/// The circular edge of `shape` at height `z`.
+fn rim_at(model: &Model, shape: &Shape, z: f64) -> Shape {
+    let found: Vec<Shape> = explore_unique(model, shape, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let data = model.node(e).unwrap().data().as_edge().unwrap();
+            let Some(ogeom::topo::EdgeRepr::Curve3d { curve, .. }) = data.curve3d() else {
+                return false;
+            };
+            matches!(
+                model.geometry().curve(*curve),
+                Some(ogeom::geom::Curve::Circle(c)) if (c.circle().centre().z - z).abs() < 1e-9
+            )
+        })
+        .collect();
+    assert_eq!(found.len(), 1, "one rim at z = {z}");
+    found[0].clone()
+}
+
+fn exact_volume(model: &Model, shape: &Shape) -> f64 {
+    ogeom::algo::volume_properties(model, shape, ogeom::mesh::Deflection::default(), T)
+        .unwrap()
+        .mass
+}
+
+/// A square corner of side `r` less the quarter disc a ball of radius `r`
+/// leaves in it, turned about an axis `reach` from the corner, the corner
+/// pointing away from the axis (`sign` 1) or toward it (`sign` -1): the
+/// ring a rim blend takes off or fills, by Pappus.
+fn rim_ring(reach: f64, r: f64, sign: f64) -> f64 {
+    let pi = core::f64::consts::PI;
+    let area = r * r * (1.0 - pi / 4.0);
+    // The centroid's distance from the square's corner, along each side.
+    let inset = r * (10.0 - 3.0 * pi) / (3.0 * (4.0 - pi));
+    2.0 * pi * sign.mul_add(-inset, reach) * area
+}
+
+/// A cylinder boss fused on a block: its wall meets the block's top along
+/// a circle, a concave corner. Blending the wall and the top rolls the ball
+/// round the boss's foot and fills the corner with a torus.
+#[test]
+fn a_face_blend_fills_a_boss_s_foot_with_a_torus() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (40.0, 40.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(Point::new(20.0, 20.0, 5.0), Direction::Z, Direction::X, T).unwrap();
+    let post = ogeom::algo::make_cylinder(&mut model, at, 8.0, 15.0, T)
+        .unwrap()
+        .shape;
+    let bossed = ogeom::boolean::fuse(&mut model, &block, &post, T)
+        .unwrap()
+        .shape;
+    let walls = faces_on(&model, &bossed, |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::Cylinder(_))
+    });
+    assert_eq!(walls.len(), 1);
+    let top = lid_at(&model, &bossed, 10.0);
+
+    let r = 2.0;
+    let blended = ogeom::fillet::blend_faces(&mut model, &bossed, &walls[0], &top, r, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    let tori: Vec<(Shape, ogeom::math::Torus)> = faces_on(&model, &blended, |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::Torus(_))
+    })
+    .into_iter()
+    .map(|f| {
+        let data = model.node(&f).unwrap().data().as_face().unwrap();
+        let Some(ogeom::geom::SurfaceGeometry::Torus(t)) = model.geometry().surface(data.surface)
+        else {
+            unreachable!()
+        };
+        let torus = t.torus();
+        (f, torus)
+    })
+    .collect();
+    assert_eq!(tori.len(), 1, "the round is one torus");
+    let (round, torus) = &tori[0];
+    assert!((torus.minor_radius() - r).abs() < 1e-12);
+    assert!(
+        (torus.major_radius() - 10.0).abs() < 1e-12,
+        "the ball's centre runs at 8 + 2"
+    );
+    assert_exactly_tangent(&model, &blended, round);
+
+    // The block, the boss above it, and the ring the ball fills, its
+    // corner pointing away from the axis at the wall's radius.
+    let pi = core::f64::consts::PI;
+    let want = 16000.0 + pi * 64.0 * 10.0 + rim_ring(8.0, r, -1.0);
+    let got = exact_volume(&model, &blended);
+    assert!(
+        (got - want).abs() < want * 1e-9,
+        "the boss's foot is filled: {got} against {want}"
+    );
+}
+
+/// A drum whose top rim is chamfered: its wall and its top share no edge,
+/// the chamfer's cone standing between them. Blending the wall and the top
+/// rolls the ball inside the drum's convex corner, and a radius that clears
+/// the chamfer leaves the drum a plain rim round: the chamfer is gone and
+/// the volume is the sharp drum's less the rim ring.
+#[test]
+fn a_face_blend_rounds_across_a_chamfer_between_the_faces() {
+    let mut model = Model::new();
+    let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 10.0, 20.0, T)
+        .unwrap()
+        .shape;
+    let rim = rim_at(&model, &drum, 20.0);
+    let chamfered = ogeom::fillet::chamfer_edge(&mut model, &drum, &rim, 1.0, T)
+        .unwrap()
+        .shape;
+    let wall = cylinder_face_of(&model, &chamfered);
+    let top = lid_at(&model, &chamfered, 20.0);
+    assert!(
+        !share_an_edge(&model, &wall, &top),
+        "the chamfer parts them"
+    );
+
+    let r = 4.0;
+    let blended = ogeom::fillet::blend_faces(&mut model, &chamfered, &wall, &top, r, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    assert!(
+        faces_on(&model, &blended, |s| matches!(
+            s,
+            ogeom::geom::SurfaceGeometry::Cone(_)
+        ))
+        .is_empty(),
+        "the round takes the whole chamfer"
+    );
+    let tori = faces_on(&model, &blended, |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::Torus(_))
+    });
+    assert_eq!(tori.len(), 1, "the round is one torus");
+    assert_exactly_tangent(&model, &blended, &tori[0]);
+    let pi = core::f64::consts::PI;
+    let want = pi * 100.0 * 20.0 - rim_ring(10.0, r, 1.0);
+    let got = exact_volume(&model, &blended);
+    assert!(
+        (got - want).abs() < want * 1e-9,
+        "a plain rim round: {got} against {want}"
+    );
+}
+
+/// Two parallel drums fused side by side meet along two straight creases,
+/// both concave. Blending one drum's wall against the other's fills both
+/// creases with exact cylinders, and the fill is measured against the
+/// section's closed form.
+#[test]
+fn a_face_blend_fills_between_two_drums_of_one_solid() {
+    let (big, apart, r, length) = (5.0_f64, 6.0_f64, 1.0_f64, 20.0_f64);
+    let mut model = Model::new();
+    let at = |x: f64| Frame::new(Point::new(x, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let left = ogeom::algo::make_cylinder(&mut model, at(0.0), big, length, T)
+        .unwrap()
+        .shape;
+    let right = ogeom::algo::make_cylinder(&mut model, at(apart), big, length, T)
+        .unwrap()
+        .shape;
+    let pair = ogeom::boolean::fuse(&mut model, &left, &right, T)
+        .unwrap()
+        .shape;
+    let walls = faces_on(&model, &pair, |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::Cylinder(_))
+    });
+    assert_eq!(walls.len(), 2);
+
+    let blended = ogeom::fillet::blend_faces(&mut model, &pair, &walls[0], &walls[1], r, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let rounds: Vec<Shape> = faces_on(
+        &model,
+        &blended,
+        |s| matches!(s, ogeom::geom::SurfaceGeometry::Cylinder(c) if (c.cylinder().radius() - r).abs() < 1e-12),
+    );
+    assert_eq!(rounds.len(), 2, "one exact round in each crease");
+    for round in &rounds {
+        // Its rails ride the drums; its ends meet the end faces square.
+        let rails: Vec<_> = joins(&model, &blended, round)
+            .into_iter()
+            .filter(|c| c.tangency_error < 1.0)
+            .collect();
+        assert_eq!(rails.len(), 2, "two rails: {rails:?}");
+        for c in &rails {
+            assert!(c.gap < 1e-9 && c.tangency_error < 1e-5, "{c:?}");
+        }
+    }
+
+    // One crease's section, halved by the plane between the axes, with the
+    // right axis at (3, 0), the ball's centre at (0, h) (5 + r from both
+    // axes) and the crease at (0, y). The triangle (0, 0), (3, 0), (0, h)
+    // holds the half fill, the right drum's part of it (the triangle
+    // (0, 0), (3, 0), (0, y) and the sector from the crease to the ball's
+    // touch) and the ball's sector.
+    let pi = core::f64::consts::PI;
+    let half = apart / 2.0;
+    let h = (big + r).mul_add(big + r, -(half * half)).sqrt();
+    let y = big.mul_add(big, -(half * half)).sqrt();
+    let sector = big * big * (h.atan2(half) - y.atan2(half)) / 2.0;
+    let ball = r * r * half.atan2(h) / 2.0;
+    let fill = 2.0 * 2.0 * (half * h / 2.0 - half * y / 2.0 - sector - ball) * length;
+    let lens =
+        2.0 * big * big * (half / big).acos() - half * (4.0 * big * big - apart * apart).sqrt();
+    let want = (2.0 * pi * big * big - lens) * length + fill;
+    let got = exact_volume(&model, &blended);
+    assert!(
+        (got - want).abs() < fill * 1e-6,
+        "both creases filled: {got} against {want}"
+    );
+}
+
+/// A boss whose wall is a B-spline surface (the same drum, restated) on a
+/// block: the seat has no closed form, so the ball is marched round the
+/// foot and the round is a fitted band. It must ride the wall and the top
+/// within a tenth of a degree, and fill what the exact torus fills.
+#[test]
+fn a_face_blend_marches_between_a_plane_and_a_spline_face() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (40.0, 40.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(Point::new(20.0, 20.0, 5.0), Direction::Z, Direction::X, T).unwrap();
+    let post = ogeom::algo::make_cylinder(&mut model, at, 8.0, 15.0, T)
+        .unwrap()
+        .shape;
+    let post = ogeom::algo::to_nurbs(&mut model, &post, T).unwrap().shape;
+    let bossed = ogeom::boolean::fuse(&mut model, &block, &post, T)
+        .unwrap()
+        .shape;
+    let wall: Vec<Shape> = faces_on(&model, &bossed, |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::BSpline(_))
+    })
+    .into_iter()
+    .filter(|f| ogeom::algo::face_normal(&model, f, T).unwrap().1.z.abs() < 0.5)
+    .collect();
+    assert_eq!(wall.len(), 1, "one spline wall");
+    let top = lid_at(&model, &bossed, 10.0);
+    let before = exact_volume(&model, &bossed);
+
+    let r = 2.0;
+    let blended = ogeom::fillet::blend_faces(&mut model, &bossed, &wall[0], &top, r, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let bands: Vec<Shape> = faces_on(&model, &blended, |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::BSpline(_))
+    })
+    .into_iter()
+    .filter(|f| {
+        let n = ogeom::algo::face_normal(&model, f, T).unwrap().1;
+        n.z.abs() > 0.1 && n.z.abs() < 0.9
+    })
+    .collect();
+    assert_eq!(bands.len(), 1, "one fitted band");
+    // Tangent along both rails within a tenth of a degree, as analyse_blend
+    // measures it, and each rail on its host: the exact drum of radius 8
+    // and the plane z = 10 the spline wall and the lid restate.
+    let found = joins(&model, &blended, &bands[0]);
+    assert!(found.len() >= 2, "the band meets both faces: {found:?}");
+    for c in &found {
+        assert!(
+            c.tangency_error < 0.1_f64.to_radians(),
+            "a rail is not tangent: {c:?}"
+        );
+        let data = model.node(&c.edge).unwrap().data().as_edge().unwrap();
+        let Some(ogeom::topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            panic!("a rail has a curve");
+        };
+        let rail = model.geometry().curve(*curve).unwrap();
+        for k in 0..=64 {
+            use ogeom::geom::Curve3d as _;
+            let t = (range.1 - range.0).mul_add(f64::from(k) / 64.0, range.0);
+            let p = rail.point_at(t, T).unwrap();
+            let off_drum = ((p.x - 20.0).hypot(p.y - 20.0) - 8.0).abs();
+            let off_lid = (p.z - 10.0).abs();
+            assert!(
+                off_drum.min(off_lid) < 1e-4,
+                "a rail leaves its host at {p:?}"
+            );
+        }
+    }
+    let filled = exact_volume(&model, &blended) - before;
+    let want = rim_ring(8.0, r, -1.0);
+    assert!(
+        (filled - want).abs() < want * 1e-4,
+        "the march fills what the torus does: {filled} against {want}"
+    );
+}
+
+/// What the curved face blend does not build, refused by name.
+#[test]
+fn curved_face_blends_refuse_by_name() {
+    let refusal = |r: ogeom::core::OgeomResult<ogeom::algo::Built>| match r {
+        Ok(_) => panic!("refused"),
+        Err(e) => e.to_string(),
+    };
+    let mut model = Model::new();
+    let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 10.0, 20.0, T)
+        .unwrap()
+        .shape;
+    let rim = rim_at(&model, &drum, 20.0);
+    let chamfered = ogeom::fillet::chamfer_edge(&mut model, &drum, &rim, 1.0, T)
+        .unwrap()
+        .shape;
+    let wall = cylinder_face_of(&model, &chamfered);
+    let top = lid_at(&model, &chamfered, 20.0);
+    // A ball whose round would cross the chamfer: the middle of the round
+    // stands in the open the chamfer already cut.
+    let said = refusal(ogeom::fillet::blend_faces(
+        &mut model, &chamfered, &wall, &top, 1.5, T,
+    ));
+    assert!(
+        said.contains("the solid beside the round is open"),
+        "{said}"
+    );
+    // A ball smaller than the chamfer touches the two surfaces where the
+    // chamfer has cut both faces away.
+    let said = refusal(ogeom::fillet::blend_faces(
+        &mut model, &chamfered, &wall, &top, 0.5, T,
+    ));
+    assert!(said.contains("does not touch both faces"), "{said}");
+    // A ball wider than the drum's radius less its own reaches past the
+    // axis.
+    let said = refusal(ogeom::fillet::blend_faces(
+        &mut model, &chamfered, &wall, &top, 6.0, T,
+    ));
+    assert!(said.contains("crossing its own axis"), "{said}");
+    let said = refusal(ogeom::fillet::blend_faces(
+        &mut model, &chamfered, &wall, &wall, 1.0, T,
+    ));
+    assert!(said.contains("against itself"), "{said}");
+    let other = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 3.0, 5.0, T)
+        .unwrap()
+        .shape;
+    let stranger = cylinder_face_of(&model, &other);
+    let said = refusal(ogeom::fillet::blend_faces(
+        &mut model, &chamfered, &stranger, &top, 1.0, T,
+    ));
+    assert!(said.contains("not a face of the solid"), "{said}");
+
+    // A spline face and a plane sharing no edge: no closed form, and the
+    // march runs only along an edge of the solid.
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (40.0, 40.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(Point::new(20.0, 20.0, 5.0), Direction::Z, Direction::X, T).unwrap();
+    let post = ogeom::algo::make_cylinder(&mut model, at, 8.0, 15.0, T)
+        .unwrap()
+        .shape;
+    let post = ogeom::algo::to_nurbs(&mut model, &post, T).unwrap().shape;
+    let bossed = ogeom::boolean::fuse(&mut model, &block, &post, T)
+        .unwrap()
+        .shape;
+    let cap: Vec<Shape> = faces_on(&model, &bossed, |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::BSpline(_))
+    })
+    .into_iter()
+    .filter(|f| ogeom::algo::face_normal(&model, f, T).unwrap().1.z > 0.5)
+    .collect();
+    assert_eq!(cap.len(), 1, "one spline cap");
+    let side = faces_on(
+        &model,
+        &bossed,
+        |s| matches!(s, ogeom::geom::SurfaceGeometry::Plane(p) if p.plane().normal().vector().x < -0.5),
+    );
+    let said = refusal(ogeom::fillet::blend_faces(
+        &mut model, &bossed, &cap[0], &side[0], 1.0, T,
+    ));
+    assert!(said.contains("share neither"), "{said}");
+}
+
 /// The corner where three blends meet. Three edges of a box are filleted
 /// in sequence at one vertex, and the leftover spike is rounded by the
 /// ball-and-block tool: the corner block less the ball. The result is

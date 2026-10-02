@@ -31,9 +31,18 @@ each edge is carried into the other's chart over its stretch on the other's
 window. An edge that leaves that window and comes back onto it is still
 refused.
 
-**Blends between curved faces.** The face-to-face blend takes planar supports.
-Curved ones need the marching seat: the spine where the two offset surfaces
-meet, walked like the edge blend's.
+**Blends between curved faces that share no edge.** `blend_faces` blends
+curved faces that meet along edges of the solid through the edge blend (exact
+or marched), and curved faces that share no edge where their surfaces share a
+direction or an axis. Two gaps are refused by name:
+
+- Faces sharing no edge whose surfaces share no direction or axis (a B-spline
+  face, a cylinder at a slant to a plane). These want the march along the
+  spine where the two offset surfaces meet, with no edge of the solid to
+  guide it: the surfaces' own intersection as the guide.
+- A round crossing a face that stands between the two (a ball smaller than a
+  chamfer between the faces it rounds): the solid beside the middle of the
+  round is open where the seat says material, or the reverse.
 
 **Two drills in `nist_ftc_06` are refused.** Replay with
 `ogeom-stress --case drill/nist_ftc_06_asme1_rd/<n>`; a refusal prints the

@@ -27,7 +27,7 @@ use ogeom_math::{Point, Point2, Vector};
 use ogeom_topo::{Filter, Model, NodeData, Orientation, Shape, ShapeType, explore};
 
 /// How many samples cross each blend arc.
-const ACROSS: usize = 9;
+const ACROSS: usize = 17;
 
 /// Round an edge whose seat only the marching machinery can speak: the
 /// intersection curve of two analytic faces, closed on itself.

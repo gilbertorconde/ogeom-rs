@@ -1,15 +1,23 @@
-//! The blend between two faces that share no edge.
+//! The blend between two faces of one solid, which need not share an edge.
 //!
 //! A rolling ball does not care whether the solid has an edge where the two
 //! supports would meet. It cares where they *would* meet (for two planes,
 //! their own line of intersection) and rolls in the corner that line
-//! defines. So a face-face blend is the edge blend seated on a line the
-//! solid does not have: found from the planes, cut back to the stretch both
-//! faces actually reach, and handed to the same wedge construction.
+//! defines. So a face-face blend between planes is the edge blend seated on
+//! a line the solid does not have: found from the planes, cut back to the
+//! stretch both faces actually reach, and handed to the same wedge
+//! construction.
 //!
 //! A step is the shape that names the case: a tall block beside a low one,
 //! the tall one's wall and the low one's lid facing each other across a
 //! corner that belongs to neither.
+//!
+//! Curved faces that meet along edges of the solid are blended along those
+//! edges by the edge blend, exact or marched. Curved faces that share no
+//! edge are blended where the ball's section is the same all along the
+//! corner (surfaces sharing a direction or an axis): the corner between
+//! the round and the crease is swept from that section and cut off or
+//! fused on.
 
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -23,20 +31,49 @@ use crate::support::Seat;
 /// Blend two faces of one solid with a rolling ball of the given radius.
 ///
 /// The two faces need not touch. What they must do is face each other
-/// across a corner: their planes must meet, both must reach the stretch of
-/// that meeting line the blend will sit on, and the material must fill the
-/// dihedral between them, which is asked of the solid rather than assumed
-/// from the normals, because normals cannot tell a step from a slot.
+/// across a corner, and the material must fill that corner (the ball rolls
+/// inside it and the blend takes the corner off) or leave it open (the
+/// ball rolls in the open and the blend fills it), which is asked of the
+/// solid rather than assumed from the normals, because normals cannot tell
+/// a step from a slot.
 ///
-/// Planar supports only. A curved face-face blend needs the marching seat
-/// (the spine that is the two offset surfaces' own intersection), which
-/// this function does not build.
+/// - Two planes: their meeting line must cross the stretch both faces
+///   reach, and the blend is a cylinder of `radius` along it.
+/// - A curved face and another face sharing edges of the solid: the corner
+///   is those edges, and the blend is the edge blend of all of them at
+///   once ([`fillet_edges`](crate::fillet_edges)): a cylinder or torus
+///   where the seat has a closed form, a B-spline band fitted through the
+///   marched ball otherwise (B-spline, cone, sphere and torus hosts
+///   included).
+/// - A curved face and another face sharing no edge: their surfaces must
+///   share a direction (planes and cylinders along it) or an axis (planes
+///   square to it, cylinders, cones, spheres and tori about it). The ball
+///   touches each face along a line or a circle, and the blend is a
+///   cylinder or a torus of `radius` over the run both faces reach, or all
+///   the way round. The corner it takes off or fills is the section between
+///   the ball's arc and where the two surfaces cross, swept over the run;
+///   the faces are trimmed to their lines of contact by the boolean that
+///   applies it.
 ///
 /// # Errors
 ///
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
-/// either face is not planar, the planes are parallel, the faces do not
-/// both reach the meeting line, or the radius is not a usable length.
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction), by
+/// name, if the radius is not a usable length, and:
+///
+/// - for two planes, if they are parallel or the faces do not both reach
+///   the meeting line;
+/// - for a curved face, if the two are one face or either is not a face
+///   of the solid;
+/// - for a curved face sharing edges with the other, as
+///   [`fillet_edges`](crate::fillet_edges);
+/// - for a curved face sharing no edge with the other, if their surfaces
+///   share no direction or axis (a B-spline face, a cylinder at a slant to a plane, and the
+///   like); if their surfaces do not cross; and, for each side of the
+///   faces the ball could roll on, if no ball touches both faces there,
+///   its round would be a torus crossing its own axis, or the solid beside
+///   the middle of the round is not what that side needs (material behind
+///   the faces, open in front of them). It is also refused where a ball
+///   seats on both sides.
 pub fn blend_faces(
     model: &mut Model,
     solid: &Shape,
@@ -47,6 +84,9 @@ pub fn blend_faces(
 ) -> OgeomResult<Built> {
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a blend of radius {radius} rounds nothing");
+    }
+    if !(is_planar(model, a)? && is_planar(model, b)?) {
+        return curved_blend(model, solid, a, b, radius, tol);
     }
     let (plane_a, normal_a) = planar_face_of(model, a, tol)?;
     let (plane_b, normal_b) = planar_face_of(model, b, tol)?;
@@ -146,11 +186,7 @@ pub(crate) fn planar_face_of(
         ogeom_bail!(Construction, "expected a face");
     };
     let Some(SurfaceGeometry::Plane(plane)) = model.geometry().surface(data.surface) else {
-        ogeom_bail!(
-            Construction,
-            "a face-face blend between curved supports needs the marching \
-             seat; this is the planar form"
-        );
+        ogeom_bail!(Construction, "expected a planar face");
     };
     let placement = face.transform(model.datums())?;
     let origin = placement.apply(plane.plane().frame().origin());
@@ -193,4 +229,120 @@ pub(crate) fn meet(
     let c2 = rows[0].cross(rows[1]);
     let v = (c0 * rhs[0] + c1 * rhs[1] + c2 * rhs[2]) / det;
     Ok(Point::ORIGIN + v)
+}
+
+/// Whether a face lies on a plane.
+fn is_planar(model: &Model, face: &Shape) -> OgeomResult<bool> {
+    let Some(node) = model.node(face) else {
+        ogeom_bail!(Dangling, "face is not in this model");
+    };
+    let NodeData::Face(data) = node.data() else {
+        ogeom_bail!(Construction, "expected a face");
+    };
+    Ok(matches!(
+        model.geometry().surface(data.surface),
+        Some(SurfaceGeometry::Plane(_))
+    ))
+}
+
+/// The blend between two faces at least one of which is curved.
+///
+/// Faces that meet along edges of the solid have their corner there: the
+/// ball rolls along those edges, and the blend is the edge blend of all of
+/// them at once, exact where the seat has a closed form and marched where
+/// it does not. Faces that share no edge are blended where their surfaces
+/// share a direction or an axis: the round and the corner it takes off (or
+/// fills) are swept from one section.
+fn curved_blend(
+    model: &mut Model,
+    solid: &Shape,
+    a: &Shape,
+    b: &Shape,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if a.is_same(b) {
+        ogeom_bail!(Construction, "a face is not blended against itself");
+    }
+    let own = explore_unique(model, solid, ShapeType::Face)?;
+    for (name, face) in [("first", a), ("second", b)] {
+        if !own.iter().any(|f| f.is_same(face)) {
+            ogeom_bail!(
+                Construction,
+                "the {name} face is not a face of the solid being blended"
+            );
+        }
+    }
+    let theirs = explore_unique(model, b, ShapeType::Edge)?;
+    let shared: Vec<Shape> = explore_unique(model, a, ShapeType::Edge)?
+        .into_iter()
+        .filter(|e| {
+            theirs
+                .iter()
+                .any(|t| crate::support::same_occurrence(model, t, e, tol))
+        })
+        .collect();
+    if !shared.is_empty() {
+        return crate::fillet::fillet_edges(model, solid, &shared, radius, tol);
+    }
+
+    // Which corner the ball rounds is read from both sides: behind both
+    // faces it rolls in the material and the round takes a convex corner
+    // off; in front of both it rolls in the open and fills a concave one.
+    // A side counts only where the solid agrees, the corner beside the
+    // round being material for the first and open for the second.
+    let mut seated = Vec::new();
+    let mut misses: Vec<(&str, String)> = Vec::new();
+    for behind in [true, false] {
+        let side = if behind { "behind" } else { "in front of" };
+        let built = crate::sheet_curved::face_seat(model, [a, b], radius, behind, tol)
+            .and_then(|seat| crate::sheet_curved::corner_wedge(model, &seat, tol));
+        let (wedge, probe) = match built {
+            Ok(built) => built,
+            Err(ogeom_core::OgeomError::Construction(why)) => {
+                misses.push((side, why.to_string()));
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        let material = matches!(
+            ogeom_algo::classify_in_solid_exact(model, solid, probe, tol)?,
+            ogeom_algo::Containment::In
+        );
+        if material == behind {
+            seated.push((wedge, behind));
+        } else {
+            let found = if material { "material" } else { "open" };
+            misses.push((side, format!("the solid beside the round is {found}")));
+        }
+    }
+    let (wedge, behind) = match seated.len() {
+        1 => seated.remove(0),
+        0 => {
+            // A reason that holds on both sides is said once.
+            let said = if misses.len() == 2 && misses[0].1 == misses[1].1 {
+                misses[0].1.clone()
+            } else {
+                misses
+                    .iter()
+                    .map(|(side, why)| format!("{side} them, {why}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            };
+            ogeom_bail!(
+                Construction,
+                "no ball of radius {radius} rounds a corner between the two faces: {said}"
+            )
+        }
+        _ => ogeom_bail!(
+            Construction,
+            "a ball of radius {radius} rounds a corner both behind and in front of the two \
+             faces; which one to blend is ambiguous"
+        ),
+    };
+    if behind {
+        ogeom_bool::cut(model, solid, &wedge, tol)
+    } else {
+        ogeom_bool::fuse(model, solid, &wedge, tol)
+    }
 }
