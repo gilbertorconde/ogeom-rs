@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Booleans trim and split sheets.** `common` and `cut` accept a face, a
+  shell or a compound of those against a solid or a half space, and return
+  what of the sheet lies inside or outside it, sewn into a shell or a
+  compound of shells. `split_sheet` splits a sheet where another sheet
+  crosses it and keeps every piece. Pieces keep their surfaces, and
+  history maps each to the face it came from. A sheet as the tool of
+  `cut`, two sheets given to `common`, a sheet given to `fuse`, and a
+  piece lying on the tool's boundary are refused by name.
+
 - **Sheets from lofts, ruled surfaces and sweeps.** `make_ruled`,
   `make_loft_surface`, `make_sweep_surface` and `make_sweep_two_rails`
   build sheets from edges or wires, open or closed, planar or not. Lofts

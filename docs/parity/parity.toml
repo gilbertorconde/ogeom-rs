@@ -1017,8 +1017,10 @@ claims = [
 symbols = [
     "ogeom_bool::cut", "ogeom_bool::fuse", "ogeom_bool::common",
     "ogeom_bool::section", "ogeom_bool::cut_fuzzy", "ogeom_bool::fuse_fuzzy",
+    "ogeom_bool::split_sheet",
 ]
 tests = [
+    "crates/ogeom/tests/sheet_booleans.rs",
     "crates/ogeom/tests/boolean_interference.rs",
     "crates/ogeom/tests/boolean_contact.rs",
     "crates/ogeom/tests/boolean_options.rs",

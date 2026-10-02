@@ -29,6 +29,15 @@
 //! normals agree there, where the contact's edges can be imaged in the
 //! shared chart, and refused by name where they cannot. A tangential touch
 //! splits nothing and is carried as the contact curve it is.
+//!
+//! # Sheets
+//!
+//! A sheet (a face, a shell or a compound of those) runs the same pipeline
+//! with one side left out: its faces are split by the other argument's, and
+//! the other argument's faces only cut. [`common`] and [`cut`] classify the
+//! sheet's pieces against a solid or a half space and keep those inside or
+//! outside it. [`split_sheet`] keeps every piece, unclassified. The kept
+//! pieces are sewn into shells with no closure asked of them.
 
 mod arrange;
 mod bins;
@@ -290,7 +299,6 @@ impl GFace {
     }
 }
 
-/// An argument solid.
 /// Whether `shape` is a solid, or a compound of solids and nothing else:
 /// disjoint lumps (a fuse of parts that do not meet, a fillet's wedges
 /// taken together) bound their material as one solid's shells do.
@@ -311,18 +319,71 @@ fn is_solid_or_lumps(model: &Model, shape: &Shape) -> OgeomResult<bool> {
     })
 }
 
+/// Whether `shape` is a sheet: a face, a shell, or a compound of faces and
+/// shells, with no solid behind any of it.
+fn is_sheet(model: &Model, shape: &Shape) -> OgeomResult<bool> {
+    Ok(match model.kind_of(shape)? {
+        ShapeType::Face | ShapeType::Shell => true,
+        ShapeType::Compound => {
+            let parts = model.children_of(shape)?;
+            !parts.is_empty()
+                && parts
+                    .iter()
+                    .map(|part| model.kind_of(part))
+                    .collect::<OgeomResult<Vec<_>>>()?
+                    .iter()
+                    .all(|kind| matches!(kind, ShapeType::Face | ShapeType::Shell))
+        }
+        _ => false,
+    })
+}
+
+/// Every edge of a sheet's faces given its exact pcurve on the face where it
+/// has none: a face built on a bare boundary is split in its chart like any
+/// other.
+fn trim_sheet_edges(model: &mut Model, sheet: &Shape, tol: Tolerances) -> OgeomResult<()> {
+    for face in explore_unique(model, sheet, ShapeType::Face)? {
+        ogeom_algo::build::trimmed_where_bare(model, &face, tol)?;
+    }
+    Ok(())
+}
+
+/// An argument: a solid, or a sheet where the operation takes one.
 struct GSolid {
     solid: Shape,
     faces: Vec<GFace>,
 }
 
-fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> {
-    if !is_solid_or_lumps(model, solid)? {
-        ogeom_bail!(Construction, "boolean arguments are solids");
-    }
-    for shell in explore_unique(model, solid, ShapeType::Shell)? {
-        if !is_shell_closed(model, &shell)? {
-            ogeom_bail!(Construction, "an open shell bounds no volume to operate on");
+/// What the general fuse makes of its two arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Operands {
+    /// Two solids: each one's faces split by the other's and classified
+    /// against it.
+    Solids,
+    /// A sheet and a solid: the sheet's faces split by the solid's and
+    /// classified against it. The solid's faces only cut.
+    SheetBySolid,
+    /// Two sheets: the first one's faces split by the second's and left
+    /// unclassified. The second one's faces only cut.
+    SheetBySheet,
+}
+
+fn gather(model: &Model, solid: &Shape, sheet: bool, tol: Tolerances) -> OgeomResult<GSolid> {
+    if sheet {
+        if !is_sheet(model, solid)? {
+            ogeom_bail!(
+                Construction,
+                "a sheet argument is a face, a shell or a compound of those"
+            );
+        }
+    } else {
+        if !is_solid_or_lumps(model, solid)? {
+            ogeom_bail!(Construction, "boolean arguments are solids");
+        }
+        for shell in explore_unique(model, solid, ShapeType::Shell)? {
+            if !is_shell_closed(model, &shell)? {
+                ogeom_bail!(Construction, "an open shell bounds no volume to operate on");
+            }
         }
     }
 
@@ -621,6 +682,9 @@ fn gather(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<GSolid> 
         });
     }
     if faces.is_empty() {
+        if sheet {
+            ogeom_bail!(Construction, "a sheet with no faces has nothing to split");
+        }
         ogeom_bail!(Construction, "a solid with no faces bounds nothing");
     }
     Ok(GSolid {
@@ -1486,6 +1550,8 @@ enum PieceState {
     /// On the other boundary, outward normals opposed: material on both
     /// sides. The contact is interior to the union and vanishes from it.
     OnOpposed,
+    /// Not classified: the other argument is a sheet, which bounds nothing.
+    Unread,
 }
 
 /// A point in a polyline's *interior*: its half-way member, except that a
@@ -4773,7 +4839,8 @@ const QUIET_EDGE: f64 = 1e-2;
 /// The one piece of a face the other solid leaves alone: its own wires as
 /// rings, its state read at the middle of one of its edges, which no
 /// section touches and which therefore stands inside the other solid or
-/// out of it with the whole face. `None` where that edge reads on the other
+/// out of it with the whole face, or [`PieceState::Unread`] where there is no
+/// `boundary` to read it against. `None` where that edge reads on the other
 /// boundary after all, or a wire's edge is not one the face was gathered
 /// with.
 fn quiet_piece(
@@ -4781,7 +4848,7 @@ fn quiet_piece(
     from_a: bool,
     fi: usize,
     face: &GFace,
-    boundary: &ogeom_algo::SolidBoundary,
+    boundary: Option<&ogeom_algo::SolidBoundary>,
     tol: Tolerances,
 ) -> OgeomResult<Option<FacePiece>> {
     let forward = face.face.oriented(ogeom_topo::Orientation::Forward);
@@ -4809,6 +4876,18 @@ fn quiet_piece(
     let probe = e
         .curve
         .point_at(f64::midpoint(e.crange.0, e.crange.1), tol)?;
+    let Some(boundary) = boundary else {
+        return Ok(Some(FacePiece {
+            from_a,
+            face: fi,
+            rings,
+            outlines: Vec::new(),
+            probe,
+            state: PieceState::Unread,
+            covered: false,
+            whole: true,
+        }));
+    };
     let state = match boundary.holds(model, probe, tol) {
         Ok(Containment::In) => PieceState::In,
         Ok(Containment::Out) => PieceState::Out,
@@ -5606,15 +5685,34 @@ fn audit_fill_equivalence(
 }
 
 fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<GeneralFused> {
+    general_fuse_as(model, a, b, Operands::Solids, tol)
+}
+
+/// The general fuse of `a` and `b` taken as `operands` says. Where `a` is a
+/// sheet only its pieces are made, and the pieces of `b` are not.
+fn general_fuse_as(
+    model: &Model,
+    a: &Shape,
+    b: &Shape,
+    operands: Operands,
+    tol: Tolerances,
+) -> OgeomResult<GeneralFused> {
     // Read here, on the caller's thread: the pieces are classified on
     // worker threads, which do not share it.
     let settle = SETTLE_FROM_BOTH_SIDES.get();
     ogeom_core::progress::stage("boolean: gather");
-    let ga = gather(model, a, tol)?;
-    let gb = gather(model, b, tol)?;
+    let ga = gather(model, a, operands != Operands::Solids, tol)?;
+    let gb = gather(model, b, operands == Operands::SheetBySheet, tol)?;
     ogeom_core::progress::stage("boolean: intersect");
     let (sections, section_pieces, contacts, tangents, contact_along, paves, same_a, same_b, hugs) =
         fill(&ga, &gb, false, tol)?;
+    if operands == Operands::SheetBySheet && same_a.iter().any(|partners| !partners.is_empty()) {
+        ogeom_bail!(
+            NotDone,
+            "the sheets lie on one surface where they overlap; a sheet split \
+             by another lying along it is not resolved"
+        );
+    }
     let mut junctions = pave_junctions(&ga, &gb, &paves, tol)?;
     if *DEBUG_WIRE {
         for j in &junctions {
@@ -6322,6 +6420,10 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     let mut prepared: [Vec<Prepared>; 2] = [Vec::new(), Vec::new()];
     let mut dust: Vec<(usize, usize, (f64, f64))> = Vec::new();
     for (side, solid, from_a) in [(0_usize, &ga, true), (1, &gb, false)] {
+        // A sheet's tool only cuts: its own faces are not split.
+        if side == 1 && operands != Operands::Solids {
+            break;
+        }
         for (fi, face) in solid.faces.iter().enumerate() {
             ogeom_core::progress::checkpoint()?;
             if quiet[side][fi] {
@@ -6352,9 +6454,28 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     // rings, polylined) does not depend on the point being asked about.
     // Rebuilt per question, the preparation costs hundreds of times the
     // question.
+    // A sheet bounds nothing, so nothing is classified against one.
     let boundaries = [
-        ogeom_algo::SolidBoundary::of(model, &gb.solid, tol.confusion() * 1e4, tol)?,
-        ogeom_algo::SolidBoundary::of(model, &ga.solid, tol.confusion() * 1e4, tol)?,
+        if operands == Operands::SheetBySheet {
+            None
+        } else {
+            Some(ogeom_algo::SolidBoundary::of(
+                model,
+                &gb.solid,
+                tol.confusion() * 1e4,
+                tol,
+            )?)
+        },
+        if operands == Operands::Solids {
+            Some(ogeom_algo::SolidBoundary::of(
+                model,
+                &ga.solid,
+                tol.confusion() * 1e4,
+                tol,
+            )?)
+        } else {
+            None
+        },
     ];
     // Each face is split and its pieces classified on its own: it reads
     // the two solids, the sections, the contacts and the junctions found
@@ -6377,9 +6498,9 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             ogeom_core::progress::checkpoint()?;
             let (from_a, fi) = (*from_a, *fi);
             let (own, other, boundary) = if from_a {
-                (&ga, &gb.solid, &boundaries[0])
+                (&ga, &gb.solid, boundaries[0].as_ref())
             } else {
-                (&gb, &ga.solid, &boundaries[1])
+                (&gb, &ga.solid, boundaries[1].as_ref())
             };
             let face = &own.faces[fi];
             let Some((mut strands, mut face_snap)) = prepared_face
@@ -6581,6 +6702,26 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
                 }
             };
             for piece in split {
+                let Some(boundary) = boundary else {
+                    let probe = match piece.interiors.first() {
+                        Some(at) => face.surface.point_at(at.x, at.y, tol)?,
+                        None => ogeom_bail!(
+                            Construction,
+                            "a piece of a face has no interior point to stand for it"
+                        ),
+                    };
+                    pieces.push(FacePiece {
+                        from_a,
+                        face: fi,
+                        rings: piece.rings,
+                        outlines: piece.outlines,
+                        probe,
+                        state: PieceState::Unread,
+                        covered: false,
+                        whole: false,
+                    });
+                    continue;
+                };
                 // Where a piece stands is asked at its interior probes in
                 // turn. The first is the roomiest, and usually the only one
                 // needed. The rest are for the piece that merely *touches*
@@ -6819,7 +6960,10 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
             });
             if untouched
                 && let [piece] = pieces.as_mut_slice()
-                && matches!(piece.state, PieceState::In | PieceState::Out)
+                && matches!(
+                    piece.state,
+                    PieceState::In | PieceState::Out | PieceState::Unread
+                )
             {
                 piece.whole = true;
             }
@@ -7611,102 +7755,7 @@ fn assemble_result(
         return Ok(Built::new(empty, history));
     }
 
-    let weld = fused
-        .contacts
-        .iter()
-        .map(|c| c.tolerance)
-        .chain(fused.sections.iter().map(|s| s.tolerance))
-        .fold(0.0_f64, |acc, t| acc.max(honest(t, tol) * 3.0));
-    let floor = weld.max(tol.confusion() * 1e2);
-    let junction_reach = fused
-        .junctions
-        .iter()
-        .fold(0.0_f64, |acc, j| acc.max(j.reach));
-    let mut junction_bins = bins::Bins::new(junction_reach + floor);
-    for (index, j) in fused.junctions.iter().enumerate() {
-        junction_bins.insert(j.at, index);
-    }
-    // The vertices' cells are sized to the loosest tolerance a strand
-    // brings to its ends, so an end is compared across a few cells, not
-    // every vertex.
-    let loosest = fused
-        .a
-        .faces
-        .iter()
-        .chain(fused.b.faces.iter())
-        .flat_map(|f| f.edges.iter().map(|e| e.tolerance))
-        .chain(fused.contacts.iter().map(|c| c.tolerance))
-        .chain(fused.sections.iter().map(|s| s.tolerance))
-        .fold(junction_reach, f64::max);
-    let mut rebuild = Rebuild {
-        model,
-        surfaces_a: vec![None; fused.a.faces.len()],
-        surfaces_b: vec![None; fused.b.faces.len()],
-        vertices: Vec::new(),
-        vertex_bins: bins::Bins::new(floor + loosest),
-        widest: 0.0,
-        weld,
-        junctions: fused.junctions.iter().map(|j| (*j, None)).collect(),
-        junction_bins,
-        junction_reach,
-        onto_vertex: std::collections::HashSet::new(),
-        whole_edges: std::collections::HashMap::new(),
-    };
-    // A face the operation never touched (nothing crosses it, no edge of it
-    // is split, no junction lands at its corners) is rebuilt as an exact
-    // copy of itself. Its neighbours across its unsplit edges build those
-    // edges from the same curves, so whichever twin the sew keeps is its
-    // own boundary.
-    let clean = |piece: &FacePiece, model: &Model| -> OgeomResult<bool> {
-        if !piece.whole {
-            return Ok(false);
-        }
-        let face = &source_face(piece);
-        for vertex in explore_unique(model, face, ShapeType::Vertex)? {
-            let Some(data) = model.node(&vertex).and_then(|n| n.data().as_vertex()) else {
-                continue;
-            };
-            let at = vertex.transform(model.datums())?.apply(data.point);
-            if fused
-                .junctions
-                .iter()
-                .any(|j| j.at.distance(at) <= j.reach + floor)
-            {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    };
-    // One kept turned over (a tool's face lining the cavity a cut leaves)
-    // faces the other way, which no copy does.
-    let mut copies = Vec::with_capacity(kept.len());
-    for &(index, flip) in kept {
-        copies.push(!flip && clean(&fused.pieces[index], rebuild.model)?);
-    }
-    let mut faces = Vec::new();
-    let mut kept_sources: std::collections::HashSet<Shape> = std::collections::HashSet::new();
-    for (slot, &(index, flip)) in kept.iter().enumerate() {
-        let piece = &fused.pieces[index];
-        let mut built = build_piece(&mut rebuild, fused, piece, tol)?;
-        if flip {
-            built = built.reversed();
-        }
-        if copies[slot] {
-            history.copy(&source_face(piece), built.clone());
-        } else {
-            history.modify(&source_face(piece), built.clone());
-        }
-        kept_sources.insert(source_face(piece));
-        faces.push(built);
-    }
-    for piece in &fused.pieces {
-        let source = source_face(piece);
-        if !kept_sources.contains(&source) {
-            history.delete(&source);
-        }
-    }
-
-    let model = rebuild.model;
+    let (faces, floor) = rebuilt_pieces(model, fused, kept, &mut history, tol)?;
     let sewn = sew(model, &faces, tol)?;
     // Sewing rebuilds the pieces onto shared edges: the result's faces are
     // its faces, reached from the inputs through both steps.
@@ -7884,6 +7933,160 @@ fn assemble_result(
     history.modify(a, result.clone());
     history.modify(b, result.clone());
     Ok(Built::new(result, history))
+}
+
+/// The kept pieces of a sheet sewn along the edges they share: one shell,
+/// or a compound of shells where they fall apart. Nothing is asked of the
+/// shells' closure. A sheet that is one face has its history in its
+/// pieces; a shell or a compound also becomes the result.
+fn assemble_sheet(
+    model: &mut Model,
+    fused: &GeneralFused,
+    kept: &[usize],
+    sheet: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    ogeom_core::progress::stage("boolean: assemble");
+    let mut history = History::new();
+    let whole = model.kind_of(sheet)? != ShapeType::Face;
+    if kept.is_empty() {
+        let empty = model.add_compound(&[])?;
+        for piece in &fused.pieces {
+            history.delete(&fused.a.faces[piece.face].face);
+        }
+        if whole {
+            history.modify(sheet, empty.clone());
+        }
+        return Ok(Built::new(empty, history));
+    }
+    let kept: Vec<(usize, bool)> = kept.iter().map(|&i| (i, false)).collect();
+    let (faces, _) = rebuilt_pieces(model, fused, &kept, &mut history, tol)?;
+    let mut sewn = sew(model, &faces, tol)?;
+    history = history.then(&sewn.history);
+    let result = if sewn.shells.len() == 1 {
+        sewn.shells.remove(0)
+    } else {
+        model.add_compound(&sewn.shells)?
+    };
+    if whole {
+        history.modify(sheet, result.clone());
+    }
+    Ok(Built::new(result, history))
+}
+
+/// The kept pieces rebuilt as faces, each recorded in `history` against the
+/// face it came from and every face no piece is kept of deleted, with the
+/// distance the rebuild welds their ends within.
+fn rebuilt_pieces(
+    model: &mut Model,
+    fused: &GeneralFused,
+    kept: &[(usize, bool)],
+    history: &mut History,
+    tol: Tolerances,
+) -> OgeomResult<(Vec<Shape>, f64)> {
+    let source_face = |piece: &FacePiece| -> Shape {
+        if piece.from_a {
+            fused.a.faces[piece.face].face.clone()
+        } else {
+            fused.b.faces[piece.face].face.clone()
+        }
+    };
+    let weld = fused
+        .contacts
+        .iter()
+        .map(|c| c.tolerance)
+        .chain(fused.sections.iter().map(|s| s.tolerance))
+        .fold(0.0_f64, |acc, t| acc.max(honest(t, tol) * 3.0));
+    let floor = weld.max(tol.confusion() * 1e2);
+    let junction_reach = fused
+        .junctions
+        .iter()
+        .fold(0.0_f64, |acc, j| acc.max(j.reach));
+    let mut junction_bins = bins::Bins::new(junction_reach + floor);
+    for (index, j) in fused.junctions.iter().enumerate() {
+        junction_bins.insert(j.at, index);
+    }
+    // The vertices' cells are sized to the loosest tolerance a strand
+    // brings to its ends, so an end is compared across a few cells, not
+    // every vertex.
+    let loosest = fused
+        .a
+        .faces
+        .iter()
+        .chain(fused.b.faces.iter())
+        .flat_map(|f| f.edges.iter().map(|e| e.tolerance))
+        .chain(fused.contacts.iter().map(|c| c.tolerance))
+        .chain(fused.sections.iter().map(|s| s.tolerance))
+        .fold(junction_reach, f64::max);
+    let mut rebuild = Rebuild {
+        model,
+        surfaces_a: vec![None; fused.a.faces.len()],
+        surfaces_b: vec![None; fused.b.faces.len()],
+        vertices: Vec::new(),
+        vertex_bins: bins::Bins::new(floor + loosest),
+        widest: 0.0,
+        weld,
+        junctions: fused.junctions.iter().map(|j| (*j, None)).collect(),
+        junction_bins,
+        junction_reach,
+        onto_vertex: std::collections::HashSet::new(),
+        whole_edges: std::collections::HashMap::new(),
+    };
+    // A face the operation never touched (nothing crosses it, no edge of it
+    // is split, no junction lands at its corners) is rebuilt as an exact
+    // copy of itself. Its neighbours across its unsplit edges build those
+    // edges from the same curves, so whichever twin the sew keeps is its
+    // own boundary.
+    let clean = |piece: &FacePiece, model: &Model| -> OgeomResult<bool> {
+        if !piece.whole {
+            return Ok(false);
+        }
+        let face = &source_face(piece);
+        for vertex in explore_unique(model, face, ShapeType::Vertex)? {
+            let Some(data) = model.node(&vertex).and_then(|n| n.data().as_vertex()) else {
+                continue;
+            };
+            let at = vertex.transform(model.datums())?.apply(data.point);
+            if fused
+                .junctions
+                .iter()
+                .any(|j| j.at.distance(at) <= j.reach + floor)
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    };
+    // One kept turned over (a tool's face lining the cavity a cut leaves)
+    // faces the other way, which no copy does.
+    let mut copies = Vec::with_capacity(kept.len());
+    for &(index, flip) in kept {
+        copies.push(!flip && clean(&fused.pieces[index], rebuild.model)?);
+    }
+    let mut faces = Vec::new();
+    let mut kept_sources: std::collections::HashSet<Shape> = std::collections::HashSet::new();
+    for (slot, &(index, flip)) in kept.iter().enumerate() {
+        let piece = &fused.pieces[index];
+        let mut built = build_piece(&mut rebuild, fused, piece, tol)?;
+        if flip {
+            built = built.reversed();
+        }
+        if copies[slot] {
+            history.copy(&source_face(piece), built.clone());
+        } else {
+            history.modify(&source_face(piece), built.clone());
+        }
+        kept_sources.insert(source_face(piece));
+        faces.push(built);
+    }
+    for piece in &fused.pieces {
+        let source = source_face(piece);
+        if !kept_sources.contains(&source) {
+            history.delete(&source);
+        }
+    }
+
+    Ok((faces, floor))
 }
 
 /// Each shell without its membranes, and the history of their removal.
@@ -8418,6 +8621,13 @@ fn half_space_plane(
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) for arguments
 /// that are not closed solids.
 pub fn fuse(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    if is_sheet(model, a)? || is_sheet(model, b)? {
+        ogeom_bail!(
+            Construction,
+            "a union takes solids; common and cut trim a sheet, and split_sheet \
+             splits one"
+        );
+    }
     settled(model, tol, |model, tol| fuse_once(model, a, b, tol))
 }
 
@@ -8720,11 +8930,32 @@ fn or_nested(
 
 /// The intersection of two solids.
 ///
+/// Either argument may instead be a sheet (a face, a shell or a compound of
+/// those) when the other is a solid or a half space: the result is then the
+/// part of the sheet inside the other. Each face of the sheet is split where
+/// the other's boundary crosses it, and the pieces inside are sewn along the
+/// edges they share into one shell, or a compound of shells where they fall
+/// apart, or an empty compound where none is inside. Each piece lies on its
+/// face's surface, and the history records each against the face it came
+/// from and every face nothing is kept of as deleted.
+///
 /// # Errors
 ///
 /// As [`fuse`].
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) for two
+/// sheets, which share no volume.
+/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where a piece of
+/// a sheet lies on the other's boundary, which keeps it on neither side.
 pub fn common(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
-    settled(model, tol, |model, tol| common_once(model, a, b, tol))
+    match (is_sheet(model, a)?, is_sheet(model, b)?) {
+        (true, true) => ogeom_bail!(
+            Construction,
+            "two sheets share no volume to keep; split_sheet splits one by the other"
+        ),
+        (true, false) => trimmed_sheet(model, a, b, true, tol),
+        (false, true) => trimmed_sheet(model, b, a, true, tol),
+        (false, false) => settled(model, tol, |model, tol| common_once(model, a, b, tol)),
+    }
 }
 
 fn common_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
@@ -8762,11 +8993,116 @@ fn common_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeo
 /// volume from `b`'s side, so they join the result with their material side
 /// flipped.
 ///
+/// `a` may instead be a sheet (a face, a shell or a compound of those) when
+/// `b` is a solid or a half space: the result is then the part of the sheet
+/// outside `b`, made as [`common`] makes the part inside.
+///
 /// # Errors
 ///
-/// As [`fuse`].
+/// As [`common`].
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
+/// `b` is a sheet, which bounds no volume to remove.
 pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    if is_sheet(model, b)? {
+        ogeom_bail!(
+            Construction,
+            "a sheet bounds no volume to cut away; split_sheet splits by a sheet"
+        );
+    }
+    if is_sheet(model, a)? {
+        return trimmed_sheet(model, a, b, false, tol);
+    }
     settled(model, tol, |model, tol| cut_once(model, a, b, tol))
+}
+
+/// What of a sheet lies inside `tool` (`inside` true) or outside it, as a
+/// sheet: [`common`] and [`cut`] with a sheet.
+fn trimmed_sheet(
+    model: &mut Model,
+    sheet: &Shape,
+    tool: &Shape,
+    inside: bool,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if !is_sheet(model, sheet)? {
+        ogeom_bail!(
+            Construction,
+            "the sheet to trim is a face, a shell or a compound of those"
+        );
+    }
+    trim_sheet_edges(model, sheet, tol)?;
+    settled(model, tol, |model, tol| {
+        let tool = &resolved_half_space(model, tool, sheet, tol)?;
+        let (sheet, tool) = (
+            &baked_if_scaled(model, sheet, tol)?,
+            &baked_if_scaled(model, tool, tol)?,
+        );
+        let fused = general_fuse_as(model, sheet, tool, Operands::SheetBySolid, tol)?;
+        let mut kept = Vec::new();
+        for (index, piece) in fused.pieces.iter().enumerate() {
+            match piece.state {
+                PieceState::In if inside => kept.push(index),
+                PieceState::Out if !inside => kept.push(index),
+                PieceState::In | PieceState::Out => {}
+                PieceState::OnAligned | PieceState::OnOpposed => ogeom_bail!(
+                    NotDone,
+                    "a piece of the sheet lies on the tool's boundary, which \
+                     keeps it on neither side"
+                ),
+                PieceState::Unread => ogeom_bail!(
+                    Construction,
+                    "a piece of the sheet was not classified against the tool"
+                ),
+            }
+        }
+        assemble_sheet(model, &fused, &kept, sheet, tol)
+    })
+}
+
+/// A sheet split where another sheet crosses it: the pieces, with history.
+///
+/// `sheet` and `by` are each a face, a shell or a compound of those. Each
+/// face of `sheet` is split along the curves where `by`'s faces cross it,
+/// and along `by`'s edges where they lie in it. Only `sheet` is split: two
+/// sheets are split by each other in two calls, each sheet by the other.
+/// The pieces are sewn along the edges they share into one shell, or a
+/// compound of shells where they fall apart. Each piece lies on its face's
+/// surface, and the history records each against the face it came from;
+/// a face nothing crosses is its own copy.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
+/// either argument is not a sheet; a solid or a half space trims a sheet
+/// through [`common`] and [`cut`].
+/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where the two
+/// sheets overlap on one surface, and as [`fuse`] for configurations the
+/// splitting refuses.
+pub fn split_sheet(
+    model: &mut Model,
+    sheet: &Shape,
+    by: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    for shape in [sheet, by] {
+        if !is_sheet(model, shape)? {
+            ogeom_bail!(
+                Construction,
+                "split_sheet splits a sheet by a sheet, each a face, a shell or \
+                 a compound of those; common and cut trim a sheet by a solid"
+            );
+        }
+        trim_sheet_edges(model, shape, tol)?;
+    }
+    settled(model, tol, |model, tol| {
+        let (sheet, by) = (
+            &baked_if_scaled(model, sheet, tol)?,
+            &baked_if_scaled(model, by, tol)?,
+        );
+        let fused = general_fuse_as(model, sheet, by, Operands::SheetBySheet, tol)?;
+        let kept: Vec<usize> = (0..fused.pieces.len()).collect();
+        assemble_sheet(model, &fused, &kept, sheet, tol)
+    })
 }
 
 fn cut_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
