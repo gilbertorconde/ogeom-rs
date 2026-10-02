@@ -60,6 +60,13 @@ bump may break the API and a patch bump may not.
   one. Three converted corpus parts and the rough rounded box now
   tessellate closed.
 
+- **A polynomial's roots are found whatever their pattern.** The real
+  roots of a quartic or higher came from the companion matrix's
+  eigenvalues, whose iteration had no limit; a quartic whose roots pair
+  off by sign (a line through a torus's middle) defeated its shifts and
+  the call never returned. The iteration is now capped, and where it does
+  not settle the roots are found by Durand-Kerner instead.
+
 - **Halves of a cone sharing their seam ruling mesh closed.** The ruling
   two halves on one surface share has one image in the chart, at the seam,
   and the half running from a full turn back to half a turn needs it a

@@ -480,7 +480,16 @@ fn companion_roots(c: &[f64], tolerance: f64) -> Vec<f64> {
         }
         (p, size)
     };
-    m.complex_eigenvalues()
+    // The Schur iteration is capped: some companion matrices (a quartic
+    // whose roots come in pairs of opposite sign, a ray through a torus's
+    // middle) defeat its shifts and it would run on for ever. Where it does
+    // not settle the roots are found by Durand-Kerner instead.
+    let eigenvalues: Vec<nalgebra::Complex<f64>> =
+        match nalgebra::linalg::Schur::try_new(m, f64::EPSILON, 1000) {
+            Some(schur) => schur.complex_eigenvalues().iter().copied().collect(),
+            None => durand_kerner(c),
+        };
+    eigenvalues
         .iter()
         .filter_map(|e| {
             let scale = e.re.abs().max(1.0);
@@ -494,6 +503,52 @@ fn companion_roots(c: &[f64], tolerance: f64) -> Vec<f64> {
             (p.abs() <= 1e-10 * size).then_some(e.re)
         })
         .collect()
+}
+
+/// A polynomial's complex roots by Durand-Kerner iteration, from points
+/// spread on a circle the roots lie within: each root moved by the
+/// polynomial's value over the product of its distances to the others,
+/// until no move is larger than rounding, or a few hundred rounds.
+fn durand_kerner(c: &[f64]) -> Vec<nalgebra::Complex<f64>> {
+    use nalgebra::Complex;
+    let n = c.len() - 1;
+    let lead = c[n];
+    let monic: Vec<f64> = c.iter().map(|x| x / lead).collect();
+    // Every root lies within one plus the largest coefficient of the monic
+    // polynomial.
+    let radius = 1.0 + monic[..n].iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+    #[allow(clippy::cast_precision_loss, reason = "a degree")]
+    let mut z: Vec<Complex<f64>> = (0..n)
+        .map(|k| Complex::from_polar(radius, 0.4 + core::f64::consts::TAU * k as f64 / n as f64))
+        .collect();
+    let value = |x: Complex<f64>| {
+        let mut p = Complex::new(1.0, 0.0);
+        for &coefficient in monic[..n].iter().rev() {
+            p = p * x + coefficient;
+        }
+        p
+    };
+    for _ in 0..500 {
+        let mut largest = 0.0_f64;
+        for i in 0..n {
+            let mut denominator = Complex::new(1.0, 0.0);
+            for j in 0..n {
+                if i != j {
+                    denominator *= z[i] - z[j];
+                }
+            }
+            if denominator.norm() == 0.0 {
+                continue;
+            }
+            let step = value(z[i]) / denominator;
+            z[i] -= step;
+            largest = largest.max(step.norm() / z[i].norm().max(1.0));
+        }
+        if largest <= f64::EPSILON * 4.0 {
+            break;
+        }
+    }
+    z
 }
 
 /// Minimize a scalar function on `[a, b]` without derivatives.
@@ -939,6 +994,24 @@ mod tests {
                 "{e} missing from {found:?}"
             );
         }
+    }
+
+    /// A quartic whose roots pair off by sign (a ray through a torus's
+    /// middle) comes back, where the Schur iteration alone ran on for ever.
+    #[test]
+    fn a_quartic_with_roots_paired_by_sign_comes_back() {
+        // (t^2 - 4)(t^2 - 16) = t^4 - 20 t^2 + 64.
+        let found = roots(&[64.0, 0.0, -20.0, 0.0, 1.0], 1e-12).unwrap();
+        assert_eq!(found.len(), 4, "{found:?}");
+        for (got, want) in found.iter().zip([-4.0, -2.0, 2.0, 4.0]) {
+            assert!((got - want).abs() < 1e-9, "{found:?}");
+        }
+        // And one with no real root at all.
+        assert!(
+            roots(&[64.0, 0.0, 4.0, 0.0, 1.0], 1e-12)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
