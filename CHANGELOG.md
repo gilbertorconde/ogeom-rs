@@ -13,6 +13,16 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Sheets from lofts, ruled surfaces and sweeps.** `make_ruled`,
+  `make_loft_surface`, `make_sweep_surface` and `make_sweep_two_rails`
+  build sheets from edges or wires, open or closed, planar or not. Lofts
+  and ruled surfaces pass through their sections exactly (exact rational
+  B-splines, degree one across when ruled, a plane between coplanar
+  segments, optionally closed back to the first section). Sweeps follow a
+  frame law or two rails, held to ten confusions of the swept profile and
+  measured. A sheet has a face per section edge, and bounding section
+  edges are the caller's own, so the sheet sews to them.
+
 - **Faces grow past a boundary edge with `extend_face`.** A face is
   rebuilt with the edge moved `length` out along the surface, square to
   it, and the face's other edges stay shared with its neighbours. Planes

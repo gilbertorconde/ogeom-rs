@@ -2830,14 +2830,14 @@ pub fn make_pipe_skinned(
 
 /// One sampled spine station: where the spine is and which way it runs.
 #[derive(Clone, Copy)]
-struct SpineStation {
-    at: Point,
+pub(crate) struct SpineStation {
+    pub(crate) at: Point,
     /// The unit tangent, in the direction of travel.
-    tangent: Vector,
+    pub(crate) tangent: Vector,
     /// The spine edge this station stands on, by position in the spine.
-    edge: usize,
+    pub(crate) edge: usize,
     /// The station's parameter on that edge's curve.
-    t: f64,
+    pub(crate) t: f64,
 }
 
 /// One profile wire's closed shell round the spine: smooth wires skin as a
@@ -4233,7 +4233,7 @@ fn straight_legs(
 }
 
 /// Whether the spine turns sharply anywhere between its edges.
-fn has_sharp_corner(model: &Model, spine: &Shape, tol: Tolerances) -> OgeomResult<bool> {
+pub(crate) fn has_sharp_corner(model: &Model, spine: &Shape, tol: Tolerances) -> OgeomResult<bool> {
     let stations = shell_stations(model, spine, tol)?;
     Ok((0..stations.len() - 1).any(|i| {
         stations[i].at.distance(stations[i + 1].at) <= tol.confusion()
@@ -4510,7 +4510,11 @@ const MOST_STATIONS: usize = 2048;
 
 /// The frame a law gives at a station: the spine's tangent as its `z`, the
 /// law's normal as its `x`.
-fn station_frame(station: &SpineStation, normal: Vector, tol: Tolerances) -> OgeomResult<Frame> {
+pub(crate) fn station_frame(
+    station: &SpineStation,
+    normal: Vector,
+    tol: Tolerances,
+) -> OgeomResult<Frame> {
     Frame::new(
         station.at,
         Direction::new(station.tangent, tol)?,
@@ -4918,7 +4922,7 @@ fn evenly_by(
 /// An auxiliary guide ending within `reach` of a station's plane (a
 /// sketch's end in single precision) is taken to cross it, carried on
 /// along its end tangent.
-fn law_normals(
+pub(crate) fn law_normals(
     model: &Model,
     stations: &[SpineStation],
     law: &PipeLaw<'_>,
@@ -6329,7 +6333,10 @@ fn ring_turning(model: &Model, ring: &[Shape], axis: Vector, tol: Tolerances) ->
         .sum())
 }
 
-fn spine_curve_of(model: &Model, edge: &Shape) -> OgeomResult<(ogeom_geom::Curve, (f64, f64))> {
+pub(crate) fn spine_curve_of(
+    model: &Model,
+    edge: &Shape,
+) -> OgeomResult<(ogeom_geom::Curve, (f64, f64))> {
     let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
         ogeom_bail!(Construction, "an edge holds no data");
     };
