@@ -115,7 +115,7 @@ to grow to, and a gap the recovered edges do not bridge.
 - **geom.conversion**: Converting between curve and surface forms: to B-spline, to Bézier segments, degree elevation · `covered` · 40 headers claimed
 - **geom.curves-2d**: Parametric plane curves, the pcurve vocabulary · `covered` · 18 headers claimed
 - **geom.curves-3d**: Parametric space curves: lines, conics, Bézier, B-spline, trimmed, offset · `covered` · 21 headers claimed
-- **geom.extension**: Extending curves and surfaces beyond their domains · `covered` · 13 headers claimed
+- **geom.extension**: Extending curves, surfaces and faces beyond their domains · `covered` · 13 headers claimed
 - **geom.handle-wrappers**: Geometry-layer wrappers for points, vectors, placements and transforms · `divergent` · 16 headers claimed
   - *reasoning:* The reference wraps every gp value in a reference-counted handle class so geometry can sit in documents. Here geometry lives in shared arenas keyed by id (docs/DATA_MODEL.md), and points, vectors and placements are plain values. A second, handle-shaped copy of the gp vocabulary would exist only to be a different allocation discipline. The capability those wrappers deliver is the arena's.
 - **geom.local-properties**: Local properties along curves and across surfaces: tangent, normal, curvature · `covered` · 30 headers claimed

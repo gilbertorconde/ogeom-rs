@@ -1552,7 +1552,7 @@ tests = ["crates/ogeom-math/tests/bspline_properties.rs"]
 
 [[capability]]
 id = "geom.extension"
-title = "Extending curves and surfaces beyond their domains"
+title = "Extending curves, surfaces and faces beyond their domains"
 crate = "ogeom-geom"
 verdict = "covered"
 claims = ["GeomLib", "GeomLib_*"]
@@ -1563,8 +1563,10 @@ symbols = [
     "ogeom_geom::BSplineCurve::extended",
     "ogeom_geom::BSplineCurve::extended_to",
     "ogeom_geom::BSplineSurface::extended",
+    "ogeom_algo::extend_face", "ogeom_algo::Extension",
 ]
 tests = [
+    "crates/ogeom-algo/tests/extend_face.rs",
     "crates/ogeom-algo/src/measure.rs::a_window_widened_to_hold_a_point_holds_it_with_room_to_spare",
     "crates/ogeom-algo/src/measure.rs::a_patch_widened_to_hold_a_point_is_continued_to_it",
     "crates/ogeom-geom/src/curve.rs::a_rational_arc_extended_stays_on_its_circle",

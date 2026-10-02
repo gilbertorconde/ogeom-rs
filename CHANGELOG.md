@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Faces grow past a boundary edge with `extend_face`.** A face is
+  rebuilt with the edge moved `length` out along the surface, square to
+  it, and the face's other edges stay shared with its neighbours. Planes
+  grow across any straight edge; cylinders, cones, spheres and tori grow
+  along a parameter line on their own surface; B-spline faces grow past
+  the side of their patch, naturally or linearly at G1 or G2
+  (`Extension`). History maps the old face to the new one, and the cases
+  it does not handle are refused by name.
+
 - **Blend analysis measures curvature continuity, and faces give
   curvature samples.** `BlendContact` carries `curvature_error`, the
   largest step in normal curvature square to the shared edge over the
