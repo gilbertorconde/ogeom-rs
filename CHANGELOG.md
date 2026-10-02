@@ -113,6 +113,13 @@ bump may break the API and a patch bump may not.
   edges starting within its reach, and finds a middle's foot on a line or
   circle in closed form. A pocket into a plate with four hundred bores
   takes about 50 ms, from 160.
+- **A line meets a cone or a torus in closed form.** Both took the
+  general seeded path, a Newton polish per seed; a cone's crossings are
+  now a quadratic's roots and a torus's a quartic's, tangencies included,
+  each polished once onto the surface. Every ray a classification casts
+  through a part with tori is cheaper: converting a part with three tori
+  takes 2.5 s, not 27.
+
 - **A chain of edges rounds in a few booleans, not one per edge.** The
   chain is taken in rounds, no two edges of a round sharing a vertex
   (pieces of one circle count as one); each edge's blend is built against

@@ -133,6 +133,22 @@ pub fn intersect_curve_surface(
             options,
             tol,
         )),
+        (Curve::Line(line), SurfaceGeometry::Cone(c)) => Ok(line_quadric(
+            line,
+            curve,
+            surface,
+            cone_roots(line, c.cone(), tol),
+            options,
+            tol,
+        )),
+        (Curve::Line(line), SurfaceGeometry::Torus(t)) => Ok(line_quadric(
+            line,
+            curve,
+            surface,
+            torus_roots(line, t.torus(), tol),
+            options,
+            tol,
+        )),
         _ => general(curve, surface, options, tol),
     }
 }
@@ -210,6 +226,122 @@ fn sphere_roots(line: &ogeom_geom::LineCurve, sphere: ogeom_math::Sphere) -> Vec
 }
 
 /// The line parameters at which a line meets a cylinder.
+/// A line's offset from a frame's origin and its direction, in the frame's
+/// own axes.
+fn in_frame(
+    line: &ogeom_geom::LineCurve,
+    frame: ogeom_math::Frame,
+) -> (ogeom_math::Vector, ogeom_math::Vector) {
+    let axis = line.axis();
+    let local = |v: ogeom_math::Vector| {
+        ogeom_math::Vector::new(
+            v.dot(frame.x().vector()),
+            v.dot(frame.y().vector()),
+            v.dot(frame.z().vector()),
+        )
+    };
+    (
+        local(axis.location - frame.origin()),
+        local(axis.direction.vector()),
+    )
+}
+
+/// The line parameters at which a line meets a cone, either nappe: the
+/// polish that follows keeps those on the cone's stated extent.
+fn cone_roots(
+    line: &ogeom_geom::LineCurve,
+    cone: ogeom_math::Cone,
+    tol: ogeom_core::Tolerances,
+) -> Vec<f64> {
+    let (m, d) = in_frame(line, cone.frame());
+    // x^2 + y^2 = (r0 + k z)^2 along m + t d.
+    let (r0, k) = (cone.reference_radius(), cone.half_angle().tan());
+    let rim = k.mul_add(m.z, r0);
+    let a = d.x.mul_add(d.x, d.y * d.y) - k * k * d.z * d.z;
+    let b = 2.0 * (m.x.mul_add(d.x, m.y * d.y) - k * d.z * rim);
+    let c = m.x.mul_add(m.x, m.y * m.y) - rim * rim;
+    ogeom_math::solve::roots(&[c, b, a], tol.parametric()).unwrap_or_default()
+}
+
+/// The line parameters at which a line meets a torus: the real roots of
+/// `(|w|^2 + R^2 - r^2)^2 = 4 R^2 (w_x^2 + w_y^2)` along `w = m + t d` in
+/// the torus's frame.
+fn torus_roots(
+    line: &ogeom_geom::LineCurve,
+    torus: ogeom_math::Torus,
+    tol: ogeom_core::Tolerances,
+) -> Vec<f64> {
+    let (m, d) = in_frame(line, torus.frame());
+    let (big, small) = (torus.major_radius(), torus.minor_radius());
+    let a = d.dot(d);
+    let b = 2.0 * m.dot(d);
+    let c = m.dot(m) + big * big - small * small;
+    let p = d.x.mul_add(d.x, d.y * d.y);
+    let q = 2.0 * m.x.mul_add(d.x, m.y * d.y);
+    let s = m.x.mul_add(m.x, m.y * m.y);
+    let four = 4.0 * big * big;
+    let coefficients = [
+        c.mul_add(c, -four * s),
+        2.0f64.mul_add(b * c, -four * q),
+        b.mul_add(b, 2.0 * a * c) - four * p,
+        2.0 * a * b,
+        a * a,
+    ];
+    quartic_roots(&coefficients, tol)
+}
+
+/// A quartic's real roots, tangencies included: a double root comes back
+/// from the eigenvalues a rounding off the real line, and is found instead
+/// as a root of the derivative where the quartic itself all but vanishes.
+fn quartic_roots(c: &[f64; 5], tol: ogeom_core::Tolerances) -> Vec<f64> {
+    let mut found = ogeom_math::solve::roots(c, tol.parametric()).unwrap_or_default();
+    let value = |t: f64| {
+        c[4].mul_add(t, c[3])
+            .mul_add(t, c[2])
+            .mul_add(t, c[1])
+            .mul_add(t, c[0])
+    };
+    let slope = [c[1], 2.0 * c[2], 3.0 * c[3], 4.0 * c[4]];
+    // What a value of the quartic near its roots is next to: its terms'
+    // own size there.
+    let scale = |t: f64| {
+        c.iter()
+            .enumerate()
+            .map(|(k, a)| {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_possible_wrap,
+                    reason = "a degree"
+                )]
+                let power = t.abs().powi(k as i32);
+                (a * power).abs()
+            })
+            .fold(0.0_f64, f64::max)
+    };
+    for t in ogeom_math::solve::roots(&slope, tol.parametric()).unwrap_or_default() {
+        if value(t).abs() <= scale(t) * 1e-9
+            && !found
+                .iter()
+                .any(|r| (r - t).abs() <= 1e-6 * (1.0 + t.abs()))
+        {
+            found.push(t);
+        }
+    }
+    // A double root split by rounding into two real ones a few roots of
+    // epsilon apart is one tangency.
+    found.sort_by(f64::total_cmp);
+    let mut merged: Vec<f64> = Vec::with_capacity(found.len());
+    for t in found {
+        match merged.last_mut() {
+            Some(last) if (t - *last).abs() <= 1e-6 * (1.0 + t.abs()) => {
+                *last = f64::midpoint(*last, t)
+            }
+            _ => merged.push(t),
+        }
+    }
+    merged
+}
+
 fn cylinder_roots(line: &ogeom_geom::LineCurve, cylinder: ogeom_math::Cylinder) -> Vec<f64> {
     let axis = line.axis();
     let w = cylinder.axis().direction.vector();
@@ -318,6 +450,12 @@ fn invert(
                 local.y.atan2(local.x).rem_euclid(core::f64::consts::TAU),
                 local.z,
             )
+        }
+        SurfaceGeometry::Cone(c) => {
+            ogeom_math::elementary::cone_parameters(&c.cone(), point, tol).ok()?
+        }
+        SurfaceGeometry::Torus(t) => {
+            ogeom_math::elementary::torus_parameters(&t.torus(), point, tol).ok()?
         }
         _ => return None,
     };
@@ -815,6 +953,38 @@ mod tests {
     /// The general path (a torus has no closed form against a line) answers
     /// each tangency once, and a curve lying in the surface as the stretch
     /// it lies along rather than as hundreds of piercings.
+    /// A line through a torus's middle crosses the tube four times, and one
+    /// through a cone's axis crosses its wall twice, at the closed forms'
+    /// points.
+    #[test]
+    fn lines_cross_a_torus_and_a_cone_where_the_closed_forms_say() {
+        use ogeom_geom::{ConeSurface, TorusSurface};
+        use ogeom_math::{Cone, Torus};
+        let options = CurveSurfaceOptions::default();
+        let torus: SurfaceGeometry =
+            TorusSurface::new(Torus::new(Frame::WORLD, 60.0, 20.0, T).unwrap()).into();
+        let across = segment(Point::new(-100.0, 0.0, 0.0), Point::new(100.0, 0.0, 0.0));
+        let found = intersect_curve_surface(&across, &torus, options, T).unwrap();
+        let xs: Vec<f64> = found.crossings.iter().map(|c| c.point.x).collect();
+        assert_eq!(xs.len(), 4, "{xs:?}");
+        for (got, want) in xs.iter().zip([-80.0, -40.0, 40.0, 80.0]) {
+            assert!((got - want).abs() < 1e-9, "{xs:?}");
+        }
+        let cone: SurfaceGeometry = ConeSurface::new(
+            Cone::new(Frame::WORLD, 10.0, core::f64::consts::FRAC_PI_4, T).unwrap(),
+            (0.0, 20.0),
+        )
+        .unwrap()
+        .into();
+        let level = segment(Point::new(-50.0, 0.0, 5.0), Point::new(50.0, 0.0, 5.0));
+        let found = intersect_curve_surface(&level, &cone, options, T).unwrap();
+        let xs: Vec<f64> = found.crossings.iter().map(|c| c.point.x).collect();
+        assert_eq!(xs.len(), 2, "{xs:?}");
+        for (got, want) in xs.iter().zip([-15.0, 15.0]) {
+            assert!((got - want).abs() < 1e-9, "{xs:?}");
+        }
+    }
+
     #[test]
     fn tangencies_come_back_once_and_lying_curves_as_stretches() {
         use ogeom_geom::TorusSurface;
