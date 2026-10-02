@@ -385,9 +385,7 @@ fn generated_parts() -> Vec<Part> {
 fn corpus_parts() -> Vec<Part> {
     let dir = format!("{}/../../tests/corpus", env!("CARGO_MANIFEST_DIR"));
     let mut parts = Vec::new();
-    // Every part here drills in seconds. Some of nist_ftc_06's drills are
-    // refused (docs/PLAN.md names them), and the baseline records that, so
-    // a fix shows as an improvement. A drill through a vertex picks it by
+    // Every part here drills in seconds. A drill through a vertex picks it by
     // its index among the healed part's vertices, so a repair that adds a
     // vertex to a part draws that part's drills anew.
     for file in [

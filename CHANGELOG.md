@@ -42,6 +42,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean cuts periodic faces whose outlines sit turns away from
+  their chart, and fits sharp-tipped section loops in pieces.** A face on
+  a periodic surface whose outline was stated one or two turns outside the
+  chart's range read every section piece as outside it, so the section was
+  dropped and the cut did not close; its pcurves are moved home by whole
+  periods when it is gathered. A closed section loop that turns sharply
+  where two drums all but touch, fitted whole, missed its trace by
+  millimetres and swelled the junctions it fed; it is fitted in halves.
+  Two oblique drills through a NIST part that were refused give valid
+  solids whose cut and common add up to the part.
+
 - **A sphere face bounded by a great circle through its poles is
   healed into half meridians.** Its stored pcurve was a fit that strayed
   far from the meridian, so a boolean's section ended away from where the

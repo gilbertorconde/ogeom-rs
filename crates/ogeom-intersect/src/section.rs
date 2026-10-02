@@ -1237,10 +1237,13 @@ fn marched(
 /// branch whose fit strays farther from the trace than the trace's own
 /// step, and so is no longer the curve traced, is split at its middle
 /// sample and each half fitted the same way, down to a floor of samples
-/// and depth; the pieces meet at the shared sample. A fit that misses its
-/// tolerance by less stands whole, its error stated: a caller takes one
-/// curve per branch where it can, and a few microns do not warrant more.
-/// So does a closed branch, or one no split helps.
+/// and depth; the pieces meet at the shared sample. A closed branch is
+/// split the same way, its two halves open and meeting at both ends: a loop
+/// round a thin drum lying all but tangent inside a wider one turns sharply
+/// at its tip, and fitted whole it can come back off the trace by the drum's
+/// size. A fit that misses its tolerance by less stands whole, its error
+/// stated: a caller takes one curve per branch where it can, and a few
+/// microns do not warrant more. So does a branch no split helps.
 fn fitted_in_pieces(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
@@ -1264,20 +1267,21 @@ fn fitted_in_pieces(
             .windows(2)
             .map(|w| w[0].distance(w[1]))
             .fold(0.0_f64, f64::max);
-        if whole.met
-            || whole.fit_error <= step
-            || branch.closed()
-            || depth == 0
-            || branch.points.len() < 2 * FLOOR
-        {
+        if whole.met || whole.fit_error <= step || depth == 0 || branch.points.len() < 2 * FLOOR {
             return Ok(vec![whole]);
         }
         let middle = branch.points.len() / 2;
+        // A half of a loop is open: it stops where the other half starts.
+        let stopped = if branch.closed() {
+            crate::march::Stopped::Stalled
+        } else {
+            branch.stopped
+        };
         let half = |range: core::ops::RangeInclusive<usize>| crate::march::Traced {
             points: branch.points[range.clone()].to_vec(),
             on_a: branch.on_a[range.clone()].to_vec(),
             on_b: branch.on_b[range].to_vec(),
-            stopped: branch.stopped,
+            stopped,
         };
         let mut pieces = go(a, b, &half(0..=middle), tolerance, depth - 1, tol)?;
         pieces.extend(go(
@@ -2861,6 +2865,93 @@ mod tests {
             gap < 1e-6,
             "the ruling's chart angle must be the used side's: got u {} against {u_true}",
             at.x
+        );
+    }
+
+    /// A thin drum crossing a wide one obliquely, its far side passing two
+    /// hundredths of a millimetre inside the wide wall: two loops (the
+    /// second cut short by the wide drum's end), each turning sharply at
+    /// the tip where the drums all but touch. Each comes back as curves
+    /// within a few microns of both drums; the whole first loop fitted as
+    /// one misses its trace by millimetres.
+    #[test]
+    fn loops_turning_sharply_where_drums_all_but_touch_fit_in_pieces() {
+        let drum = |origin: Point, axis: Vector, x: Vector, radius: f64, height: (f64, f64)| {
+            let frame = Frame::new(
+                origin,
+                Direction::new(axis, T).unwrap(),
+                Direction::new(x, T).unwrap(),
+                T,
+            )
+            .unwrap();
+            let cylinder = Cylinder::new(frame, radius, T).unwrap();
+            (
+                cylinder,
+                SurfaceGeometry::from(CylinderSurface::new(cylinder, height).unwrap()),
+            )
+        };
+        let radius = 3.175;
+        let (thin_drum, thin) = drum(
+            Point::new(10.994_218_762_109_735, 53.975, -209.55),
+            Vector::new(0.0, 0.0, -1.0),
+            Vector::new(-1.0, 0.0, 0.0),
+            radius,
+            (-1000.0, 1000.0),
+        );
+        let (wide_drum, wide) = drum(
+            Point::new(
+                -14.478_610_818_124_423,
+                3.999_371_635_181_902,
+                -277.138_401_510_994_7,
+            ),
+            Vector::new(
+                -0.565_016_635_381_368_8,
+                0.528_780_602_945_684_7,
+                0.633_361_883_673_714_3,
+            ),
+            Vector::new(0.0, 0.767_637_390_304_296_3, -0.640_884_417_821_817),
+            57.088_766_757_544_09,
+            (0.0, 171.306_147_621_762_6),
+        );
+        let options = IntersectOptions {
+            tolerance: 1e-5,
+            marching: crate::Marching {
+                chord: 1e-5,
+                ..crate::Marching::default()
+            },
+        };
+        let SurfaceIntersection::Along(curves) =
+            intersect_surfaces(&thin, &wide, options, T).unwrap()
+        else {
+            panic!("the drums cross");
+        };
+        let mut length = 0.0;
+        for section in &curves {
+            assert!(!section.tangential);
+            assert!(
+                section.tolerance < 1e-3,
+                "a section states {} of doubt",
+                section.tolerance
+            );
+            let (lo, hi) = section.curve.domain();
+            let mut previous = section.curve.point_at(lo, T).unwrap();
+            for i in 1..=400 {
+                let t = lo + (hi - lo) * f64::from(i) / 400.0;
+                let p = section.curve.point_at(t, T).unwrap();
+                let off = thin_drum
+                    .distance_to(p)
+                    .abs()
+                    .max(wide_drum.distance_to(p).abs());
+                assert!(off < 1e-3, "a section stands {off} off the drums");
+                length += previous.distance(p);
+                previous = p;
+            }
+        }
+        // Each loop runs the thin drum's girth stretched along the wide
+        // wall: the two together far longer than two girths.
+        assert!(
+            length > 4.0 * core::f64::consts::PI * radius,
+            "the sections cover {length}"
         );
     }
 }

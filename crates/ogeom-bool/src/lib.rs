@@ -598,6 +598,7 @@ fn gather(model: &Model, solid: &Shape, sheet: bool, tol: Tolerances) -> OgeomRe
                 (false, false) => {}
             }
         }
+        bring_trim_home(&surface, &mut edges, &mut poles, tol)?;
         let mut bound = ogeom_math::Aabb::EMPTY;
         // For a plane or a ruled surface the box is trusted to the
         // boundary's own hull, so the boundary's sampling slack must be
@@ -692,6 +693,81 @@ fn gather(model: &Model, solid: &Shape, sheet: bool, tol: Tolerances) -> OgeomRe
         solid: solid.clone(),
         faces,
     })
+}
+
+/// A face's pcurves moved by whole periods, all alike, so the middle of
+/// their extent lies in the chart's own window along each periodic
+/// direction.
+///
+/// A periodic face's trim may sit any number of turns along its chart: a
+/// partial drum's boundary can arrive two turns below zero. The paving and
+/// the arrangement fold a section's image into the chart and try it at
+/// most one period either side, and against a trim two turns off no try
+/// lands inside it. Moved home, the trim straddles the window's edge at
+/// most, which one period's try reaches. The face is the same face: every
+/// pcurve moves by the same whole period.
+fn bring_trim_home(
+    surface: &SurfaceGeometry,
+    edges: &mut [BoundaryEdge],
+    poles: &mut [PoleEdge],
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    if !(surface.is_periodic_u() || surface.is_periodic_v()) {
+        return Ok(());
+    }
+    let mut low = Point2::new(f64::INFINITY, f64::INFINITY);
+    let mut high = Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let mut take = |pc: &PlanarCurve, range: (f64, f64)| -> OgeomResult<()> {
+        for k in 0..=4 {
+            let t = range.0 + (range.1 - range.0) * f64::from(k) / 4.0;
+            let p = pc.point_at(t, tol)?;
+            low = Point2::new(low.x.min(p.x), low.y.min(p.y));
+            high = Point2::new(high.x.max(p.x), high.y.max(p.y));
+        }
+        Ok(())
+    };
+    for e in edges.iter() {
+        take(&e.pcurve, e.prange)?;
+        if let Some((other, range)) = &e.other_side {
+            take(other, *range)?;
+        }
+    }
+    for p in poles.iter() {
+        take(&p.pcurve, p.prange)?;
+    }
+    let ((ua, ub), (va, vb)) = surface.domain();
+    // A trim within a period of the window is reached already, and stays
+    // where it was stated.
+    let turns = |periodic: bool, lo: f64, hi: f64, start: f64, end: f64| -> f64 {
+        let span = end - start;
+        if !periodic
+            || span <= 0.0
+            || !lo.is_finite()
+            || !hi.is_finite()
+            || (lo >= start - span && hi <= end + span)
+        {
+            return 0.0;
+        }
+        -((f64::midpoint(lo, hi) - start) / span).floor() * span
+    };
+    let shift = ogeom_math::Vector2::new(
+        turns(surface.is_periodic_u(), low.x, high.x, ua, ub),
+        turns(surface.is_periodic_v(), low.y, high.y, va, vb),
+    );
+    if shift.x == 0.0 && shift.y == 0.0 {
+        return Ok(());
+    }
+    let moved = ogeom_math::Transform2::translation(shift);
+    for e in edges.iter_mut() {
+        e.pcurve = e.pcurve.transformed(&moved, tol)?;
+        if let Some((other, _)) = &mut e.other_side {
+            *other = other.transformed(&moved, tol)?;
+        }
+    }
+    for p in poles.iter_mut() {
+        p.pcurve = p.pcurve.transformed(&moved, tol)?;
+    }
+    Ok(())
 }
 
 /// A parameter brought onto the turn its edge actually covers.

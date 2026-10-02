@@ -38,16 +38,13 @@ direction or an axis. Two gaps are refused by name:
   chamfer between the faces it rounds): the solid beside the middle of the
   round is open where the seat says material, or the reverse.
 
-**Two drills in `nist_ftc_06` are refused.** Replay with
-`ogeom-stress --case drill/nist_ftc_06_asme1_rd/<n>`; a refusal prints the
-drill's placement. Both refuse the same way on the part with or without its
-hemisphere's great circle split at the poles.
-
-- Drill 0 ("a wire needs at least one edge"): the drill's wall hugs a face
-  of the part, and the hug's junctions reach 72 mm. Merged, one junction
-  reaches 148 mm, every edge of a piece of face 0 closes on its vertex as
-  dust, and the piece is left with an empty ring.
-- Drill 3 ("the kept pieces did not close into a shell"): not diagnosed.
+**A section whose fit misses widens its junctions as far.** A marched
+section keeps its fit's error as its tolerance, and the paving's reach and
+the junctions at the ends of a stretch it runs along an edge grow with that
+tolerance, unbounded. A loop that will not fit whole is fitted in pieces,
+which keeps a sharp-tipped loop's doubt to microns; a branch no split
+helps still carries its whole miss into the junctions, and they can
+swallow every edge of a face piece.
 
 **Facet walls drafted less than their chords sag.** A pad pushed down from
 the top of a slab converted face for facet, whose rounded corner's rows hold

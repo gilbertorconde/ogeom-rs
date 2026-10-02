@@ -23,6 +23,7 @@ exclude = [
     "tests/foundations.rs",
     "tests/imported_corpus.rs",
     "tests/m5_close.rs",
+    "tests/oblique_drills.rs",
     "tests/pmi_corpus.rs",
     "tests/seamless_faces.rs",
     "tests/wound_rims.rs",
