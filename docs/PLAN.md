@@ -87,18 +87,18 @@ steps themselves, in this order. Each is held to the converter's standard
 fallback) and measured on `mesh_corpus` and the truth bench before and
 after.
 
-1. **The axis from the normals.** The normals of a surface swept by a
-   helical motion lie in a linear line complex (Pottmann and Randrup 1998):
-   for a sample x with normal n, c̄·n + c·(x × n) = 0. The motion is the
-   smallest eigenvector of a 6x6 symmetric matrix, and its pitch says what
-   the region is: revolution (zero), extrusion (c near zero), helix
-   (finite), and a cylinder, sphere or plane where two or three eigenvalues
-   are small. The axis is then refined by Gauss-Newton on the normal's
-   component out of the meridian plane, which a tilt changes to first order.
-   It seeds `refined_axis` in place of the profile-misfit search. Then the
-   whole turn and the closed profile, with the seam layouts the canonical
-   surfaces have. A helical region has no exact surface here and goes to
-   the patch (item 5).
+1. **Sweeps all the way round.** Done for a whole turn: the axis read
+   from the normals (already the pitch-zero line complex) is brought close
+   by the profile search and settled by Gauss-Newton on the samples, which
+   lie on the surface where the normals only lean toward it. A sweep that
+   goes round is laid out as a wrapped face, its seam seated between its
+   rims. Still to do: the band layout for a sweep between two circles (its
+   seam the profile itself), and a closed profile (an extrusion of a closed
+   curve, a surface of revolution of a closed one). The full helical line
+   complex would tell a thread from a surface of revolution; the mesh's
+   own normals carry a small twist (a pitch of about 1e-3 on a turned
+   wave meshed at 0.01), so its threshold has to sit above that. A thread
+   goes to the patch (item 5).
 2. **Fillets from their supports.** A constant-radius fillet between two
    recognized faces is built from them and a radius (Kos, Martin, Varady
    2000), not fitted freely. The rolling ball's centre runs where the two

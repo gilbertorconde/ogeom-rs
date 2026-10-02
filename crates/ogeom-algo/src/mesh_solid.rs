@@ -3628,24 +3628,34 @@ fn swept_claim(
         return None;
     }
     let (pu, pv) = periodic(&shape);
-    let centre_of = |mut values: Vec<f64>, wraps: bool| -> Option<f64> {
-        if wraps {
+    // Each chart direction's centre, and whether the region goes all the
+    // way round it: then its centre is half a turn from the seam, as a
+    // canonical band's is.
+    let centre_of = |mut values: Vec<f64>, periodic: bool| -> (f64, bool) {
+        if periodic {
             let (mean, gap) = angular_spread(&mut values);
-            (gap >= core::f64::consts::FRAC_PI_2).then_some(mean)
+            if gap < core::f64::consts::FRAC_PI_2 {
+                (core::f64::consts::PI, true)
+            } else {
+                (mean, false)
+            }
         } else {
             #[allow(clippy::cast_precision_loss, reason = "vertex counts are small")]
-            Some(values.iter().sum::<f64>() / values.len().max(1) as f64)
+            (
+                values.iter().sum::<f64>() / values.len().max(1) as f64,
+                false,
+            )
         }
     };
-    let cu = centre_of(charts.iter().map(|c| c.0).collect(), pu)?;
-    let cv = centre_of(charts.iter().map(|c| c.1).collect(), pv)?;
+    let (cu, wraps) = centre_of(charts.iter().map(|c| c.0).collect(), pu);
+    let (cv, wraps_v) = centre_of(charts.iter().map(|c| c.1).collect(), pv);
     Some(Curved {
         shape,
         deviation: found.deviation,
         fitted: found.deviation,
         centre: (cu, cv),
-        wraps: false,
-        wraps_v: false,
+        wraps,
+        wraps_v,
         fixed: true,
         vertices,
     })
@@ -4758,7 +4768,13 @@ impl Planner<'_> {
                 wrapped()
             } else if sphere && rings.len() == 1 && curved.fixed {
                 Some(Layout::Cap)
-            } else if rings.len() == 2 && (!sphere || curved.fixed) {
+            } else if rings.len() == 2
+                && (!sphere || curved.fixed)
+                && !matches!(curved.shape, Canonical::Swept(_))
+            {
+                // A band's seam is a ruling, a meridian or a tube's circle;
+                // a sweep's would be its profile, and it is laid out as
+                // wrapped instead, its seam seated between its rims.
                 Some(Layout::Band {
                     round_tube: curved.wraps_v,
                 })

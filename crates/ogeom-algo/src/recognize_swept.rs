@@ -120,6 +120,8 @@ pub(crate) fn fit_revolution(
     }
     let (through, axis) = crate::recognize::revolution_axis(points, normals, tol)?;
     let (through, axis) = refined_axis(points, through, axis, tol);
+    let (through, axis) =
+        settled_axis(points, through, axis, tolerance, tol).unwrap_or((through, axis));
     let a = axis.vector();
     // The profile lies in the half-plane through the axis and the first
     // sample, every sample turned into it.
@@ -183,14 +185,17 @@ fn profile_curve(points: &[Point], tolerance: f64, tol: Tolerances) -> Option<Cu
 }
 
 /// The axis moved to where the points' distances from it agree best with
-/// their heights along it.
+/// their heights along it, roughly.
 ///
 /// The normals a mesh gives lean by up to its facets' turn, and an axis
-/// read from them is off by as much: tens of microns over a part's height,
-/// where every sample must lie within a few. On the true axis points at one
-/// height stand at one distance, so the points are binned by height, each
-/// bin's distances fitted by a line in height, and the axis's two tilts and
-/// two offsets moved by a simplex search to make the misfit least.
+/// read from them can be off by a good part of a facet's size on a coarse
+/// mesh. On the true axis points at one height stand at one distance, so
+/// the points are binned by height, each bin's distances fitted by a line
+/// in height, and the axis's two tilts and two offsets moved by a simplex
+/// search to make the misfit least. That brings the axis close from far
+/// off, but the profile's own bend within a bin outweighs a small tilt, and
+/// over a whole turn the tilt left is past the tolerance; [`settled_axis`]
+/// takes it from there.
 fn refined_axis(
     points: &[Point],
     through: Point,
@@ -343,6 +348,131 @@ fn nelder_mead(
     }
     simplex.sort_by(|p, q| p.1.total_cmp(&q.1));
     simplex[0].0
+}
+
+/// The axis moved until the samples lie on one profile turned about it.
+///
+/// The samples lie on the surface, so near the axis it is settled from
+/// them. Each round fits the profile through the samples about the current
+/// axis and measures each sample's offset from it, across the profile. One
+/// linear least-squares system then solves for the axis's two offsets and
+/// two tilts together with a correction to the profile, piecewise linear
+/// along it. A tilt or an offset moves a sample across the profile by an
+/// amount that turns with its angle about the axis, which no change of the
+/// profile follows, so the system tells the two apart over part of a turn
+/// as well as over a whole one. The rounds stop when the step is
+/// negligible.
+///
+/// It needs a start near the axis. About an axis that is off, the samples
+/// spread into a band, the profile is threaded back and forth through it,
+/// and the offsets measured from it are noise. `None` where the profile
+/// cannot be fitted or the rounds do not settle.
+fn settled_axis(
+    points: &[Point],
+    through: Point,
+    axis: Direction,
+    tolerance: f64,
+    tol: Tolerances,
+) -> Option<(Point, Direction)> {
+    let centre = {
+        let mut sum = Vector::ZERO;
+        for p in points {
+            sum += p.to_vector();
+        }
+        #[allow(clippy::cast_precision_loss, reason = "sample counts are small")]
+        let n = points.len() as f64;
+        Point::from_vector(sum / n)
+    };
+    let (mut origin, mut direction) = (through, axis);
+    for _ in 0..8 {
+        let a = direction.vector();
+        let e1 = {
+            let any = if a.x.abs() < 0.9 {
+                Vector::X
+            } else {
+                Vector::Y
+            };
+            let x = any - a * any.dot(a);
+            x / x.magnitude()
+        };
+        let e2 = a.cross(e1);
+        let foot = origin + a * (centre - origin).dot(a);
+        // Each sample's distance from the axis, height along it and angle
+        // round it.
+        let polar: Vec<(f64, f64, f64)> = points
+            .iter()
+            .map(|p| {
+                let w = *p - foot;
+                let (x, y) = (w.dot(e1), w.dot(e2));
+                (x.hypot(y), w.dot(a), y.atan2(x))
+            })
+            .collect();
+        let profile: Vec<(f64, f64)> = polar.iter().map(|&(r, h, _)| (r, h)).collect();
+        // About an axis still a little off, each parallel's samples spread
+        // over a little more than the tolerance; they are merged coarser
+        // until they chain.
+        let chain = [1.0, 4.0, 16.0, 64.0]
+            .iter()
+            .find_map(|&k| ordered_profile(&profile, tolerance * k))?;
+        let on: Vec<Point> = chain.iter().map(|&(r, h)| Point::new(r, h, 0.0)).collect();
+        let curve = profile_curve(&on, tolerance, tol)?;
+        let (u0, u1) = ogeom_geom::Curve3d::domain(&curve);
+        let knots = (chain.len() / 2).clamp(4, 40);
+        let unknowns = 4 + knots;
+        let mut ata = nalgebra::DMatrix::<f64>::zeros(unknowns, unknowns);
+        let mut atb = nalgebra::DVector::<f64>::zeros(unknowns);
+        for &(r, h, angle) in &polar {
+            let foot = crate::project_on_curve(&curve, Point::new(r, h, 0.0), 64, tol).ok()?;
+            let tangent = ogeom_geom::Curve3d::d1_at(&curve, foot.parameter, tol).ok()?;
+            let length = tangent.magnitude();
+            if length <= 0.0 {
+                continue;
+            }
+            // The profile's normal, and the sample's offset along it.
+            let (nr, nh) = (-tangent.y / length, tangent.x / length);
+            let offset = (r - foot.point.x) * nr + (h - foot.point.y) * nh;
+            // Moving the axis by (d1, d2) and tilting it by (t1, t2) moves
+            // the sample's distance by -(d + h t) along its own direction
+            // round the axis, and its height by r t along it.
+            let (c, s) = (angle.cos(), angle.sin());
+            let mut row = nalgebra::DVector::<f64>::zeros(unknowns);
+            row[0] = -c * nr;
+            row[1] = -s * nr;
+            row[2] = c * (r * nh - h * nr);
+            row[3] = s * (r * nh - h * nr);
+            #[allow(clippy::cast_precision_loss, reason = "a knot count")]
+            let at = (foot.parameter - u0) / (u1 - u0) * (knots - 1) as f64;
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a knot index, clamped"
+            )]
+            let k = (at.floor().max(0.0) as usize).min(knots - 2);
+            #[allow(clippy::cast_precision_loss, reason = "a knot index")]
+            let within = at - k as f64;
+            row[4 + k] = 1.0 - within;
+            row[5 + k] = within;
+            ata += &row * row.transpose();
+            atb -= &row * offset;
+        }
+        // A trace of damping keeps a knot no sample reaches from leaving
+        // the system singular.
+        for k in 0..unknowns {
+            ata[(k, k)] += 1e-12 * (1.0 + ata[(k, k)]);
+        }
+        let step = ata.lu().solve(&atb)?;
+        origin = foot + e1 * step[0] + e2 * step[1];
+        direction = Direction::new(a + e1 * step[2] + e2 * step[3], tol).ok()?;
+        let reach = points
+            .iter()
+            .map(|p| p.distance(foot))
+            .fold(0.0_f64, f64::max);
+        let moved = step[0].hypot(step[1]) + step[2].hypot(step[3]) * reach;
+        if moved <= tol.confusion() * 1e-3 {
+            return Some((origin, direction));
+        }
+    }
+    None
 }
 
 /// Whether the points lie within `tolerance` of the line through the two

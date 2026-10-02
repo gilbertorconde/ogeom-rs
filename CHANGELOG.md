@@ -29,13 +29,19 @@ bump may break the API and a patch bump may not.
   With `MeshSolidOptions::sweeps`, a smooth region none of the canonical
   surfaces fits is tried as an extrusion of a fitted profile (its normals
   all square to one direction) and as a surface of revolution (its
-  normals all meeting one axis, the axis then moved to where the samples'
-  radii agree best with their heights), each held to the coplanar distance
-  at every vertex. A recognized band the region runs into smoothly is
-  offered with it, so a stretch of a wavy profile that passes for a cone
-  joins the one sweep. A wall extruded from a wavy spline comes back one
-  extrusion and five planes, not nineteen facets; a wavy profile turned
-  half round, one surface of revolution. On by default.
+  normals all meeting one axis), each held to the coplanar distance at
+  every vertex. The axis read from the normals is brought close by a
+  search on the samples' radii against their heights, then settled by
+  Gauss-Newton on the samples themselves: each round fits the profile and
+  solves for the axis's offsets and tilts with a correction to the
+  profile, which separates a tilt from the profile's shape over a whole
+  turn as over part of one. A recognized band the region runs into
+  smoothly is offered with it, so a stretch of a wavy profile that passes
+  for a cone joins the one sweep. A wall extruded from a wavy spline comes
+  back one extrusion and five planes, not nineteen facets; a wavy profile
+  turned half round, one surface of revolution, and turned all the way
+  round, one surface of revolution closed on itself between two flat
+  ends. On by default.
 
 ### Fixed
 

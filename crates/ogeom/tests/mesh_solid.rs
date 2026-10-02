@@ -2854,10 +2854,8 @@ fn a_wavy_wall_comes_back_an_extrusion() {
     comes_back_swept(&model, &wall, ogeom::geom::SurfaceKind::Extrusion, 6);
 }
 
-/// A wavy profile turned half round its axis: its wavy face comes back one
-/// surface of revolution, the two profile faces one plane.
-#[test]
-fn a_turned_wave_comes_back_a_surface_of_revolution() {
+/// A wavy profile closed down to its axis, turned by `angle` about it.
+fn turned_wave(angle: f64) -> (Model, Shape) {
     let mut model = Model::new();
     let profile = wave(|t, r| Point::new(r, 0.0, t));
     let start =
@@ -2884,10 +2882,29 @@ fn a_turned_wave_comes_back_a_surface_of_revolution() {
         &mut model,
         &face,
         ogeom::math::Axis::new(Point::ORIGIN, Direction::Z),
-        core::f64::consts::PI,
+        angle,
         T,
     )
     .unwrap()
     .shape;
+    (model, turned)
+}
+
+/// A wavy profile turned half round its axis: its wavy face comes back one
+/// surface of revolution, the two profile faces one plane.
+#[test]
+fn a_turned_wave_comes_back_a_surface_of_revolution() {
+    let (model, turned) = turned_wave(core::f64::consts::PI);
     comes_back_swept(&model, &turned, ogeom::geom::SurfaceKind::Revolution, 4);
+}
+
+/// A wavy profile turned all the way round: its wavy face comes back one
+/// surface of revolution about the axis, closed on itself, between the two
+/// flat ends. Over a whole turn a tilt of the axis read from the mesh's
+/// normals leaves each parallel's radius changing round it, and the
+/// samples fall off any one profile.
+#[test]
+fn a_wave_turned_all_the_way_round_comes_back_a_surface_of_revolution() {
+    let (model, turned) = turned_wave(core::f64::consts::TAU);
+    comes_back_swept(&model, &turned, ogeom::geom::SurfaceKind::Revolution, 3);
 }
