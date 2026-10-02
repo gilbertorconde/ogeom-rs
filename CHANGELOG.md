@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Fillets on sheets and between separate faces.** `fillet_sheet_edges`
+  rounds edges where two planar faces of a shell meet, rebuilding both
+  faces around an exact cylindrical round that shares an edge with each.
+  `fillet_faces` rounds the corner between two planar faces of separate
+  shapes, the ball on the side their normals point to, optionally
+  trimming both back into one shell with the round. Curved faces are
+  refused by name.
+
 - **Sheets offset and thicken.** `offset_sheet` moves a face or a shell
   along its normals, and `make_thick_sheet` thickens a face or an open
   shell into a solid, on one side or both, closing it with side faces

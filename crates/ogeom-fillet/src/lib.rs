@@ -16,6 +16,7 @@ pub mod march;
 mod marched;
 mod pinched;
 mod ruled;
+pub mod sheet;
 mod support;
 
 pub use analyse::{BlendContact, analyse_blend, face_curvature_samples};
@@ -31,3 +32,4 @@ pub use fillet::{fillet_edge, fillet_edge_variable, fillet_edges};
 pub use march::{
     BlendStop, MarchedBlend, Sides, march_blend, march_blend_seeded, march_blend_sided,
 };
+pub use sheet::{fillet_faces, fillet_sheet_edges};

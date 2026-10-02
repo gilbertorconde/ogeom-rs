@@ -134,7 +134,11 @@ pub fn blend_faces(
 }
 
 /// A face's plane origin and its outward normal, refusing anything curved.
-fn planar_face_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<(Point, Vector)> {
+pub(crate) fn planar_face_of(
+    model: &Model,
+    face: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<(Point, Vector)> {
     let Some(node) = model.node(face) else {
         ogeom_bail!(Dangling, "face is not in this model");
     };
@@ -164,7 +168,7 @@ fn planar_face_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<(
 /// A point on both planes: the one nearest the two origins' midpoint, found
 /// by solving the two plane equations with the meeting direction as the
 /// third.
-fn meet(
+pub(crate) fn meet(
     origin_a: Point,
     normal_a: Vector,
     origin_b: Point,

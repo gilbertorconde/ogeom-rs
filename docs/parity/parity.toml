@@ -1178,10 +1178,11 @@ symbols = [
     "ogeom_fillet::march_blend", "ogeom_fillet::blend_faces",
     "ogeom_fillet::MarchedBlend", "ogeom_fillet::round_vertex",
     "ogeom_fillet::make_blend_surface", "ogeom_fillet::make_blend_curve",
-    "ogeom_fillet::End",
+    "ogeom_fillet::End", "ogeom_fillet::fillet_sheet_edges", "ogeom_fillet::fillet_faces",
 ]
 tests = [
     "crates/ogeom/tests/blends.rs",
+    "crates/ogeom/tests/sheet_fillets.rs",
     "crates/ogeom-fillet/tests/bridge.rs",
     "crates/ogeom-fillet/tests/marched_blend.rs",
     "crates/ogeom-fillet/tests/marched_fillet.rs",
