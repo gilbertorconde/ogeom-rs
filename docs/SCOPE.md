@@ -52,9 +52,20 @@ Recognition meets the kernel's standard, not a heuristic's:
 
 - every surface is verified against every sample, at a stated tolerance;
 - every edge between recognized faces is placed exactly on both surfaces;
-- a region that cannot be built this way stays faceted, and is counted.
+- a region that cannot be built this way stays faceted, and is counted;
+- every step is a computation the kernel can repeat and measure. No learned
+  model proposes a surface or a topology.
 
 This is what makes recognition a construction the kernel can stand behind.
+
+Neighbouring surfaces may be built from each other where a geometric
+relation between them holds within the tolerance: a constant-radius fillet
+is built from its two supports and a radius, so it meets them tangentially
+by construction, and a corner is solved onto the surfaces that meet there.
+The relation only places the surfaces. It is not kept, and the result is a
+plain solid with no feature tree. A helical region (a thread) is told apart
+from a surface of revolution so it can go to the fitted patch; no helical
+surface type is added for it.
 
 A fitted patch is held to the same standard. Facets are exact to the mesh
 but nothing downstream can work with them: an offset, a shell or a fillet

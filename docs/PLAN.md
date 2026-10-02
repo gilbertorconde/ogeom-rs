@@ -68,44 +68,117 @@ the corner, the near-coplanar sliver band again. A slab drafted 0.005 or
 at 0.001 some counts refuse, the open edges being the pad's corner walls
 where they run along the corner's facets.
 
-**Mesh conversion.** `solid_from_mesh` rebuilds planes and the four
-canonical surfaces and leaves every other region faceted. `docs/SCOPE.md`
-admits the items below. Each is held to the converter's standard: verified
-against every sample, edges placed on both surfaces, facets as the fallback.
+**Mesh conversion.** `solid_from_mesh` rebuilds planes, the four canonical
+surfaces, extrusions and surfaces of revolution, and leaves every other
+region faceted. Today it fits each region on its own, solves each seam point
+by point along the mesh boundary between two regions, and takes its corners
+at mesh vertices. The failures left come from those three steps:
 
-- Revolution and extrusion surfaces, in part (`MeshSolidOptions::sweeps`,
-  on by default). A free smooth region is fitted as an extrusion or a
-  surface of revolution of a fitted profile and verified at every vertex.
-  Still to do: a region that goes all the way round (a closed profile, a
-  whole turn) needs the seam layouts the canonical surfaces have, and is
-  left to its facets.
-- A fitted B-spline patch for a smooth region nothing else fits, tried
-  after the two above. `fit_surface_scattered` needs a height field, so a
-  region that folds over its principal plane needs a mesh parameterization
-  first, which the kernel does not have. The verification must sample
-  triangle interiors, not just corners, since a patch can wave between
-  them. Edges to neighbours go through the existing solve onto both
-  surfaces, which is where C3 in `docs/REVIEW.md` already lives: a patch
-  meeting a cylinder tangentially must not add to it.
-- The steps as an API: the regions found, merging two, splitting one along a
-  vertex path, fitting a chosen surface type to one (optionally with a fixed
-  axis or radius), then building the solid. The pieces exist inside
-  `solid_from_mesh`; the work is a stable surface for them and tests that
-  a corrected conversion builds what an automatic one would have.
-- Folded trims on planar faces beside recognized ones. On `nist_ctc_05`
-  meshed at a thousandth of its diagonal, two large planes and a row of
-  small ones come out with seams from the recognized faces round them
-  crossing back over them: their triangles cover part of them twice, the
-  body's volume falls short of the mesh's, and recognition is withdrawn
-  from the whole body. Faceting only the recognized faces round the planes
-  that miss their share keeps 49 of 84 curved faces but leaves smaller
-  folds the body's slack does not see, and the result tessellates open; a
-  way to hold every face to its own share is wanted first.
-- The free boundary of an open mesh. A recognized region's edge with no
-  neighbour has no second surface to be solved onto. Check whether it comes
-  back as a polyline. If so, place it on the region's surface as a curve
-  (a circle on a cylinder's rim, a fitted spline otherwise), split where it
-  turns sharply.
+- a fillet fitted apart from its supports meets them at a near tangency the
+  seam solve cannot settle (C3 in `docs/REVIEW.md`);
+- a seam that follows a jagged boundary crosses back over a small face and
+  folds its trim, and the faces caught are found after the build and
+  withdrawn whole;
+- a whole turn hides a tilt of the axis from the profile fit.
+
+Patching these case by case has stopped paying. The items below change the
+steps themselves, in this order. Each is held to the converter's standard
+(verified against every sample, edges placed on both surfaces, facets as the
+fallback) and measured on `mesh_corpus` and the truth bench before and
+after.
+
+1. **The axis from the normals.** The normals of a surface swept by a
+   helical motion lie in a linear line complex (Pottmann and Randrup 1998):
+   for a sample x with normal n, c̄·n + c·(x × n) = 0. The motion is the
+   smallest eigenvector of a 6x6 symmetric matrix, and its pitch says what
+   the region is: revolution (zero), extrusion (c near zero), helix
+   (finite), and a cylinder, sphere or plane where two or three eigenvalues
+   are small. The axis is then refined by Gauss-Newton on the normal's
+   component out of the meridian plane, which a tilt changes to first order.
+   It seeds `refined_axis` in place of the profile-misfit search. Then the
+   whole turn and the closed profile, with the seam layouts the canonical
+   surfaces have. A helical region has no exact surface here and goes to
+   the patch (item 5).
+2. **Fillets from their supports.** A constant-radius fillet between two
+   recognized faces is built from them and a radius (Kos, Martin, Varady
+   2000), not fitted freely. The rolling ball's centre runs where the two
+   supports, offset by the radius, meet; the fillet is the cylinder or
+   torus about that spine; its edges are the contact curves, in closed
+   form. The tangency is exact by construction and no near-tangent seam is
+   solved. Only the radius is fitted, and the fillet is verified against
+   every sample of its region. Closed forms: two planes give a cylinder; a
+   plane with a cylinder square to it, two coaxial cylinders, and a plane
+   with a cone on its axis give a torus. A corner ball where three equal
+   fillets meet is the sphere about the point their spines share. Other
+   pairs keep today's path. Seating a corner sphere on its fillets alone was
+   tried and opened two more slits: the seams also have to come from the
+   corners (item 4), not from the mesh boundary.
+3. **Loops checked in each face's chart.** Before the build, each face's
+   loop, mapped into its surface's parameters, must be simple and turn the
+   right way. A failure names the seam, so the culprit loop withdraws the
+   faces of that seam instead of finding them afterwards by overlap and
+   volume. This also measures how many folds item 4 has to remove.
+4. **Topology first.** Before any seam is solved, the boundary graph on the
+   mesh (corners where three or more regions meet, boundary paths between
+   them) is cleaned:
+   - corners closer than the tolerance are merged;
+   - a facet region of one or two triangles at a junction goes to a
+     neighbour that verifies it, or into the corner;
+   - every face is bounded by simple cycles;
+   - a junction stays only if its faces are pairwise adjacent (Benière et
+     al. 2012).
+
+   Then each corner is solved onto its surfaces (least squares with a
+   residual check where four or more meet, refused by name otherwise), and
+   each seam is traced as one branch of the intersection from corner to
+   corner, guided by the mesh path, instead of point by point. A branch
+   traced between fixed ends cannot fold. This is the general answer to the
+   folded trims the crossed-seam, straight-seam and turned-over checks catch
+   now, and to `nist_ctc_05`: two large planes and a row of small ones whose
+   neighbours' seams cross back over them, which faceting their curved
+   neighbours only shrinks. It replaces how the plan builds edges, so it
+   starts with a design note and a corpus baseline.
+5. **A fitted B-spline patch** for a smooth region nothing else fits:
+   - a region that is not one disk with one loop stays faceted;
+   - the chart comes from a canonical surface that nearly fits (within about
+     ten times the tolerance) where there is one;
+   - otherwise from a mean-value map onto a square (Floater 2003): one
+     sparse linear solve, without folds when the boundary is convex, the
+     corners where the neighbouring face changes. The sparse solver is
+     chosen when the item starts;
+   - `fit_surface_scattered` takes those parameters, with a fairing term and
+     knots inserted at the worst span, then two or three rounds of
+     parameter correction;
+   - the patch is verified both ways, triangle interiors included (allowed
+     the tolerance plus the triangle's own sag), and its Jacobian and
+     normals checked.
+
+   Tangency to a canonical neighbour comes after item 2.
+6. **The steps as an API:** the regions found, merging two, splitting one
+   along a vertex path, fitting a chosen surface type to one (optionally
+   with a fixed axis or radius), then building the solid. The pieces exist
+   inside `solid_from_mesh`; the work is a stable surface for them and tests
+   that a corrected conversion builds what an automatic one would have. It
+   follows item 4, whose corner and boundary graph is what an application
+   edits.
+7. **The free boundary of an open mesh.** A recognized region's edge with no
+   neighbour has no second surface to be solved onto. Check whether it comes
+   back as a polyline. If so, place it on the region's surface as a curve
+   (a circle on a cylinder's rim, a fitted spline otherwise), split where it
+   turns sharply.
+
+**Faces whose trims fold in their chart tessellate open.** Some converted
+solids (`nist_ftc_07` in `mesh_corpus`, `nist_ctc_02` meshed at a
+thousandth of its diagonal) pass `check` and tessellate open: a face's pcurves stray from its 3D edges by more than the
+tessellation's tolerance, or fold in its chart. Most should go with item 4
+above; what is left after it is measured first. Then, per face: where a
+pcurve strays, the boundary's chart positions are re-derived by projecting
+the shared 3D edge points onto the surface, the edges staying as they are;
+the loops are checked before meshing and the triangles' normals against the
+surface after. Each face that needed it is named with its deviation, since
+an open tessellation is the signal that a solid is suspect and must not be
+hidden. A face that still fails could be meshed by an advancing front on
+the surface itself, which needs no chart.
 
 **Speed, not correctness.**
 
@@ -191,5 +264,11 @@ These are settled. They are listed so nobody reopens them by accident.
   pinned.
 - **Bi-tangent construction is subsumed**: by the 2D repertoire in 2D, and by
   the blend family's own envelope in 3D.
+- **The converter uses no learned model.** Published learned reconstruction
+  (2024 to 2026) gives a valid solid for 70 to 76% of parts under a hundred
+  faces, with every face a B-spline, and places its own bottleneck in
+  rebuilding the b-rep, which is the converter's verified build. A learned
+  proposal is also a result nothing here measures. Global selection by an
+  integer program is out for the same kernel reason: its time has no bound.
 - **Glue is subsumed** by the boolean's same-domain unification, which already
   skips nothing it needs and unifies what glue would.
