@@ -966,6 +966,95 @@ fn fillets_and_corner_balls_meet_their_neighbours_tangentially() {
     assert_eq!(tubes, 2, "the rim's torus, on the top face and the bore");
 }
 
+/// A plate with rounded corners whose bottom rim is filleted, meshed in
+/// single precision: each fillet along a side meets the bottom tangentially,
+/// where the mesh's boundary between them wanders and can step past its
+/// corner and back. The seam threaded along it still runs from corner to
+/// corner without hooking past either, so no face's trim folds, and the
+/// plate comes back its own eighteen faces.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the rounding to single precision is the point"
+)]
+#[test]
+fn a_filleted_plate_s_tangent_seams_end_at_their_corners() {
+    let mut model = Model::new();
+    let edge_ends = |model: &Model, e: &Shape| {
+        let data = model.node(e).unwrap().data().as_edge().unwrap();
+        let Some(ogeom::topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            return None;
+        };
+        let c = model.geometry().curve(*curve).unwrap();
+        Some((
+            ogeom::geom::Curve3d::point_at(c, range.0, T).unwrap(),
+            ogeom::geom::Curve3d::point_at(c, range.1, T).unwrap(),
+        ))
+    };
+    let block = ogeom::algo::make_box(
+        &mut model,
+        Frame::new(Point::new(104.5, 76.96, 0.0), Direction::Z, Direction::X, T).unwrap(),
+        (47.0, 21.5, 5.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let upright: Vec<Shape> = explore_unique(&model, &block, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| edge_ends(&model, e).is_some_and(|(a, b)| (a.z - b.z).abs() > 1.0))
+        .collect();
+    let plate = ogeom::fillet::fillet_edges(&mut model, &block, &upright, 8.0, T)
+        .unwrap()
+        .shape;
+    let rim: Vec<Shape> = explore_unique(&model, &plate, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| edge_ends(&model, e).is_some_and(|(a, b)| a.z.abs() < 1e-9 && b.z.abs() < 1e-9))
+        .collect();
+    let filleted = ogeom::fillet::fillet_edges(&mut model, &plate, &rim, 0.5, T)
+        .unwrap()
+        .shape;
+    let deflection = Deflection {
+        chord: 0.005,
+        angular: 0.35,
+        ..Deflection::default()
+    };
+    let mut mesh = ogeom::mesh::triangulate(&model, &filleted, deflection, T).unwrap();
+    for p in &mut mesh.positions {
+        *p = Point::new(
+            f64::from(p.x as f32),
+            f64::from(p.y as f32),
+            f64::from(p.z as f32),
+        );
+    }
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(check(&back, &out.shape, T).unwrap().is_valid());
+    assert_eq!(out.report.faces, 18, "{:?}", out.report);
+    // Every fitted seam stays between its ends: no point of it lies farther
+    // from either end than the ends lie from each other, past its tolerance.
+    for e in explore_unique(&back, &out.shape, ShapeType::Edge).unwrap() {
+        let data = back.node(&e).unwrap().data().as_edge().unwrap();
+        let Some(ogeom::topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            continue;
+        };
+        let c = back.geometry().curve(*curve).unwrap();
+        if !matches!(c, ogeom::geom::Curve::BSpline(_)) {
+            continue;
+        }
+        let at = |t: f64| ogeom::geom::Curve3d::point_at(c, t, T).unwrap();
+        let (a, b) = (at(range.0), at(range.1));
+        let span = a.distance(b) + data.tolerance.get();
+        for k in 0..=200 {
+            let p = at(range.0 + (range.1 - range.0) * f64::from(k) / 200.0);
+            assert!(
+                p.distance(a) <= span && p.distance(b) <= span,
+                "{p:?} beyond {a:?} .. {b:?}"
+            );
+        }
+    }
+}
+
 /// A rounded box whose corner balls are roughened into free-form facets,
 /// as a mesh.
 fn rough_rounded_box() -> Triangulation {

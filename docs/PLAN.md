@@ -107,11 +107,18 @@ after.
    between curved faces off a common axis, which keep their fitted
    surfaces. This does not reach C3 below the data's noise: there the
    regions break up before any fillet is recognized (625 faces at 1e-7).
-3. **Loops checked in each face's chart.** Before the build, each face's
-   loop, mapped into its surface's parameters, must be simple and turn the
-   right way. A failure names the seam, so the culprit loop withdraws the
-   faces of that seam instead of finding them afterwards by overlap and
-   volume. This also measures how many folds item 4 has to remove.
+3. **Loops checked in each face's chart.** Done, after the build rather
+   than before it: a fold deeper than its two edges' tolerance, outside
+   every corner's, and still there drawn a hundred times finer names its
+   two seams, and the curved faces across them are withdrawn. Measured on
+   the corpus before the check, final outputs held folds in Body28 (174
+   faces, 7 of them past their edges' tolerance), 77777_1 (18), shelf_bracket
+   (6) and handle-pickup (2); all but Body28's deep ones lie within their
+   edges' or corners' tolerance, which a tolerant boundary allows. Body28
+   gives up 25 more curved faces and still tessellates open, so its open
+   seams are not these folds. A guard on the point-by-point section
+   (refusing a curve that runs against its chain) was tried and dropped:
+   it left Body28 invalid and moved 77777_1's volume away from its mesh.
 4. **Topology first.** Before any seam is solved, the boundary graph on the
    mesh (corners where three or more regions meet, boundary paths between
    them) is cleaned:

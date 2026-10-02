@@ -56,6 +56,22 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A converted face whose boundary folds over itself is withdrawn.** Each
+  built face's boundary is drawn in its surface's chart, and two of its
+  chords that cross are a fold. A fold deeper than the tolerance of the
+  two edges that cross, outside every corner's tolerance, on edges of the
+  face other than a seam, and still there when the boundary is drawn a
+  hundred times finer, names its two seams, and the curved faces across
+  them fall back to facets. `check` passes such a face; its triangles
+  cover part of it twice.
+- **A seam threaded along a tangency no longer hooks past its corner.**
+  Where a fillet meets a face tangentially the mesh's boundary between
+  them wanders, and can step past its corner and back; the curve threaded
+  through it ran on past the corner and came back, folding the trims of
+  both faces. Only the points that close in on the seam's end are
+  threaded, and where a cubic through them still overshoots, the polyline
+  through them is.
+
 - **A point on a face of any repeating surface classifies on the right
   side.** Points were folded by a period toward a face's outline only on
   cylinders, cones, spheres and tori; on a whole turn of a revolution or a

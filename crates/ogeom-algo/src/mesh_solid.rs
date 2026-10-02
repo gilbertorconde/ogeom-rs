@@ -572,6 +572,9 @@ pub fn solid_from_mesh(
                         }
                     }
                     if culprits.is_empty() && options.recognize {
+                        culprits = folded_seams(model, &groups, &built, tol)?;
+                    }
+                    if culprits.is_empty() && options.recognize {
                         culprits =
                             overlapping_faces(model, &shape, &adjacency, &groups, &built, tol)?;
                     }
@@ -884,6 +887,205 @@ fn crossed_seams(
     out.sort_unstable();
     out.dedup();
     Ok(out)
+}
+
+/// The curved faces whose seams fold another face's boundary over itself
+/// by more than those seams' tolerance.
+///
+/// Each built face's boundary is drawn in its surface's chart as the
+/// tessellator trims it, and two of its chords that cross without sharing
+/// an end are a fold: the face encloses some of its area twice, or none.
+/// A fold no deeper than the tolerance of the edges that cross, or inside
+/// the tolerance of a corner of the face, is within what those claim, and
+/// stands. A deeper one names its two edges by
+/// the points they were drawn through, and the curved faces across them
+/// are the culprits; where neither is curved and the folded face is, it
+/// is.
+fn folded_seams(
+    model: &Model,
+    groups: &Groups,
+    built: &[Option<Shape>],
+    tol: Tolerances,
+) -> OgeomResult<Vec<usize>> {
+    use ogeom_geom::Surface as _;
+    let curved = |g: usize| matches!(groups.carriers.get(g), Some(Carrier::Curved(_)));
+    let deflection = ogeom_mesh::Deflection::default();
+    let fine = ogeom_mesh::Deflection::with_chord(deflection.chord * 1e-2)?;
+    // Each edge's faces and drawn points, by its node.
+    let mut owners: HashMap<ogeom_topo::TShapeId, Vec<usize>> = HashMap::new();
+    let mut drawn: HashMap<ogeom_topo::TShapeId, (Vec<Point>, f64)> = HashMap::new();
+    for (g, face) in built.iter().enumerate() {
+        let Some(face) = face else {
+            continue;
+        };
+        for edge in ogeom_topo::explore_unique(model, face, ogeom_topo::ShapeType::Edge)? {
+            owners.entry(edge.node()).or_default().push(g);
+            if let std::collections::hash_map::Entry::Vacant(slot) = drawn.entry(edge.node()) {
+                let tolerance = model
+                    .node(&edge)
+                    .and_then(|n| n.data().as_edge())
+                    .map_or(0.0, |d| d.tolerance.get());
+                let polyline = ogeom_mesh::polyline_of_edge(model, &edge, fine, tol)?;
+                slot.insert((polyline, tolerance));
+            }
+        }
+    }
+    let nearest = |at: Point, face_edges: &[ogeom_topo::TShapeId]| {
+        face_edges
+            .iter()
+            .map(|id| {
+                let d = drawn[id]
+                    .0
+                    .windows(2)
+                    .map(|w| distance_to_segment(at, w[0], w[1]))
+                    .fold(f64::INFINITY, f64::min);
+                (d, *id)
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+    };
+    let mut out: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    for (g, face) in built.iter().enumerate() {
+        let Some(face) = face else {
+            continue;
+        };
+        let Some(surface) = model
+            .node(face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+        else {
+            continue;
+        };
+        // The face's own edges; a seam bounds the face twice, up one side
+        // of the chart and down the other, and is no fold.
+        let Some(surface_id) = model
+            .node(face)
+            .and_then(|n| n.data().as_face())
+            .map(|d| d.surface)
+        else {
+            continue;
+        };
+        let face_edges: Vec<ogeom_topo::TShapeId> =
+            ogeom_topo::explore_unique(model, face, ogeom_topo::ShapeType::Edge)?
+                .iter()
+                .filter(|e| {
+                    !model
+                        .node(e)
+                        .and_then(|n| n.data().as_edge())
+                        .and_then(|d| d.pcurve_for(surface_id, e.location()))
+                        .is_some_and(|r| matches!(r, EdgeRepr::Seam { .. }))
+                })
+                .map(Shape::node)
+                .collect();
+        // The face's corners and how far each claims.
+        let balls: Vec<(Point, f64)> =
+            ogeom_topo::explore_unique(model, face, ogeom_topo::ShapeType::Vertex)?
+                .iter()
+                .filter_map(|v| model.node(v).and_then(|n| n.data().as_vertex()))
+                .map(|v| (v.point, v.tolerance.get()))
+                .collect();
+        // Drawn as the tessellator draws it first; a face whose chords
+        // cross there is drawn a hundred times finer, where chords that only
+        // crossed for their sag (two long arcs meeting at a sharp corner)
+        // part, and what still crosses is the boundary's own fold.
+        if chart_crossings(&ogeom_mesh::face_boundary(model, face, deflection, tol)?).is_empty() {
+            continue;
+        }
+        let rings = ogeom_mesh::face_boundary(model, face, fine, tol)?;
+        for [a, b, p, q] in chart_crossings(&rings) {
+            let lift = |x: Point2| surface.point_at(x.x, x.y, tol);
+            // Where the chords cross, along the first.
+            let side = |o: Point2, x: Point2, y: Point2| {
+                (x.x - o.x).mul_add(y.y - o.y, -((x.y - o.y) * (y.x - o.x)))
+            };
+            let (da, db) = (side(p, q, a), side(p, q, b));
+            let t = da / (da - db);
+            let Ok(at) = lift(Point2::new(
+                (b.x - a.x).mul_add(t, a.x),
+                (b.y - a.y).mul_add(t, a.y),
+            )) else {
+                continue;
+            };
+            // A crossing inside a corner's tolerance is the corner's slack:
+            // its edges' ends stand off it by up to that much.
+            if balls.iter().any(|&(v, r)| at.distance(v) <= r) {
+                continue;
+            }
+            let (Ok(a), Ok(b), Ok(p), Ok(q)) = (lift(a), lift(b), lift(p), lift(q)) else {
+                continue;
+            };
+            let depth = distance_to_line(a, p, q)
+                .min(distance_to_line(b, p, q))
+                .min(distance_to_line(p, a, b))
+                .min(distance_to_line(q, a, b));
+            // Each chord named by the edge it was drawn from; a chord no
+            // edge was drawn through (a side of the chart's window, or a
+            // seam) folds nothing.
+            let (Some((d1, first)), Some((d2, second))) = (
+                nearest(a.lerp(b, 0.5), &face_edges),
+                nearest(p.lerp(q, 0.5), &face_edges),
+            ) else {
+                continue;
+            };
+            let drawn_within = fine.chord * 2.0;
+            if d1 > drawn[&first].1 + drawn_within || d2 > drawn[&second].1 + drawn_within {
+                continue;
+            }
+            if depth <= drawn[&first].1.max(drawn[&second].1) {
+                continue;
+            }
+            let across: Vec<usize> = [first, second]
+                .iter()
+                .flat_map(|id| owners[id].iter().copied())
+                .filter(|&o| o != g && curved(o))
+                .collect();
+            if across.is_empty() {
+                if curved(g) {
+                    out.insert(g);
+                }
+            } else {
+                out.extend(across);
+            }
+        }
+    }
+    Ok(out.into_iter().collect())
+}
+
+/// Each pair of a boundary's chords that cross without sharing an end, as
+/// the two chords' ends.
+fn chart_crossings(rings: &[Vec<Point2>]) -> Vec<[Point2; 4]> {
+    // Each chord, with its ring and the index of its first point, swept in
+    // order of its least `u`.
+    let mut chords: Vec<(usize, usize, Point2, Point2)> = Vec::new();
+    for (r, ring) in rings.iter().enumerate() {
+        for i in 0..ring.len() {
+            chords.push((r, i, ring[i], ring[(i + 1) % ring.len()]));
+        }
+    }
+    chords.sort_by(|a, b| a.2.x.min(a.3.x).total_cmp(&b.2.x.min(b.3.x)));
+    let mut out = Vec::new();
+    let mut active: Vec<usize> = Vec::new();
+    for k in 0..chords.len() {
+        let (r, i, a, b) = chords[k];
+        let low = a.x.min(b.x);
+        active.retain(|&j| chords[j].2.x.max(chords[j].3.x) >= low);
+        for &j in &active {
+            let (rj, ij, p, q) = chords[j];
+            if r == rj {
+                let n = rings[r].len();
+                if (i + 1) % n == ij || (ij + 1) % n == i {
+                    continue;
+                }
+            }
+            if a.y.max(b.y) < p.y.min(q.y) || p.y.max(q.y) < a.y.min(b.y) {
+                continue;
+            }
+            if segments_cross((a.x, a.y), (b.x, b.y), (p.x, p.y), (q.x, q.y)) {
+                out.push([a, b, p, q]);
+            }
+        }
+        active.push(k);
+    }
+    out
 }
 
 /// The most mesh triangles a planar face between curved ones may hold for
@@ -5473,7 +5675,23 @@ impl Planner<'_> {
             return None;
         };
         let (fa, fb) = (self.signed(a)?, self.signed(b)?);
-        let mut on: Vec<Point> = pts.to_vec();
+        let mut on: Vec<Point> = if closed {
+            pts.to_vec()
+        } else {
+            // Along a tangency the chain wanders, and can step past its end
+            // and back; a curve through such a step hooks back on itself.
+            // Only the points that close in on the end are threaded.
+            let end = pts[pts.len() - 1];
+            let mut kept = vec![pts[0]];
+            for &p in &pts[1..pts.len() - 1] {
+                let last = kept[kept.len() - 1];
+                if p.distance(end) < last.distance(end) && (p - last).dot(end - last) > 0.0 {
+                    kept.push(p);
+                }
+            }
+            kept.push(end);
+            kept
+        };
         if closed {
             on.push(pts[0]);
         }
@@ -5484,68 +5702,83 @@ impl Planner<'_> {
         if longest <= self.tol.confusion() {
             return None;
         }
-        let (curve, samples): (Curve, Vec<f64>) = if on.len() == 2 {
-            let length = on[0].distance(on[1]);
-            let line: Curve = LineCurve::segment(on[0], on[1], self.tol).ok()?.into();
-            (
-                line,
-                (0..=16).map(|k| length * f64::from(k) / 16.0).collect(),
-            )
-        } else {
-            // A loop is carried on past its ends and cut back, as a fitted
-            // section is.
-            let n = on.len();
-            let pad = if closed { 3.min(n / 3) } else { 0 };
-            let padded: Vec<Point> = if pad > 0 {
-                on[n - 1 - pad..n - 1]
-                    .iter()
-                    .chain(&on)
-                    .chain(&on[1..=pad])
-                    .copied()
-                    .collect()
+        // A cubic through the points first; where it overshoots between
+        // them (a short span beside long ones), the polyline through them.
+        for degree in [3, 1] {
+            let (curve, samples): (Curve, Vec<f64>) = if on.len() == 2 {
+                let length = on[0].distance(on[1]);
+                let line: Curve = LineCurve::segment(on[0], on[1], self.tol).ok()?.into();
+                (
+                    line,
+                    (0..=16).map(|k| length * f64::from(k) / 16.0).collect(),
+                )
             } else {
-                on.clone()
+                // A loop is carried on past its ends and cut back, as a
+                // fitted section is.
+                let n = on.len();
+                let pad = if closed { 3.min(n / 3) } else { 0 };
+                let padded: Vec<Point> = if pad > 0 {
+                    on[n - 1 - pad..n - 1]
+                        .iter()
+                        .chain(&on)
+                        .chain(&on[1..=pad])
+                        .copied()
+                        .collect()
+                } else {
+                    on.clone()
+                };
+                let parameters =
+                    crate::fit::spaced(&padded, crate::fit::Spacing::Centripetal, self.tol).ok()?;
+                let mut spline =
+                    crate::fit::interpolate_at(&padded, &parameters, degree, self.tol).ok()?;
+                if pad > 0 {
+                    spline = spline.split_at(parameters[pad], self.tol).ok()?.1;
+                    spline = spline.split_at(parameters[pad + n - 1], self.tol).ok()?.0;
+                }
+                let own = &parameters[pad..pad + n];
+                let samples = own
+                    .windows(2)
+                    .flat_map(|w| {
+                        [
+                            w[0],
+                            w[0] + (w[1] - w[0]) * 0.25,
+                            w[0] + (w[1] - w[0]) * 0.5,
+                            w[0] + (w[1] - w[0]) * 0.75,
+                        ]
+                    })
+                    .chain(std::iter::once(own[n - 1]))
+                    .collect();
+                (spline.into(), samples)
             };
-            let parameters =
-                crate::fit::spaced(&padded, crate::fit::Spacing::Centripetal, self.tol).ok()?;
-            let mut spline = crate::fit::interpolate_at(&padded, &parameters, 3, self.tol).ok()?;
-            if pad > 0 {
-                spline = spline.split_at(parameters[pad], self.tol).ok()?.1;
-                spline = spline.split_at(parameters[pad + n - 1], self.tol).ok()?.0;
+            let range = curve.domain();
+            let mut tolerance = self.tol.confusion();
+            // The curve runs the way the points it was threaded through do,
+            // or it hooks back on itself between them.
+            let mut runs = true;
+            for (i, &t) in samples.iter().enumerate() {
+                let t = t.clamp(range.0, range.1);
+                let p = curve.point_at(t, self.tol).ok()?;
+                tolerance = tolerance.max(fa(p).abs()).max(fb(p).abs());
+                let span = (i / 4).min(on.len() - 2);
+                runs &= curve.d1_at(t, self.tol).ok()?.dot(on[span + 1] - on[span]) > 0.0;
             }
-            let own = &parameters[pad..pad + n];
-            let samples = own
-                .windows(2)
-                .flat_map(|w| {
-                    [
-                        w[0],
-                        w[0] + (w[1] - w[0]) * 0.25,
-                        w[0] + (w[1] - w[0]) * 0.5,
-                        w[0] + (w[1] - w[0]) * 0.75,
-                    ]
-                })
-                .chain(std::iter::once(own[n - 1]))
-                .collect();
-            (spline.into(), samples)
-        };
-        let range = curve.domain();
-        let mut tolerance = self.tol.confusion();
-        for t in samples {
-            let p = curve.point_at(t.clamp(range.0, range.1), self.tol).ok()?;
-            tolerance = tolerance.max(fa(p).abs()).max(fb(p).abs());
+            if tolerance > reach.max(longest * CHORD_SAG) {
+                return None;
+            }
+            if !runs {
+                continue;
+            }
+            return Some((
+                if closed {
+                    Snapped::Loop(curve, range, tolerance)
+                } else {
+                    Snapped::Open(curve, range, tolerance)
+                },
+                true,
+                Vec::new(),
+            ));
         }
-        if tolerance > reach.max(longest * CHORD_SAG) {
-            return None;
-        }
-        Some((
-            if closed {
-                Snapped::Loop(curve, range, tolerance)
-            } else {
-                Snapped::Open(curve, range, tolerance)
-            },
-            true,
-            Vec::new(),
-        ))
+        None
     }
 
     /// The curve two faces meet along, where it is no parallel or ruling of
@@ -7314,6 +7547,17 @@ fn ring_area(
         }
     }
     area
+}
+
+/// The distance from `p` to the segment from `a` to `b`.
+fn distance_to_segment(p: Point, a: Point, b: Point) -> f64 {
+    let along = b - a;
+    let length = along.dot(along);
+    if length <= 0.0 {
+        return p.distance(a);
+    }
+    let t = ((p - a).dot(along) / length).clamp(0.0, 1.0);
+    p.distance(a + along * t)
 }
 
 fn distance_to_line(p: Point, a: Point, b: Point) -> f64 {
