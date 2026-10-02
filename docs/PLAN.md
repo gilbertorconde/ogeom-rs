@@ -178,14 +178,16 @@ after.
      reach of both neighbours), Body28's remaining bad edges, and ctc_02
      and ftc_07, which go from 11 and 212 bad mesh edges to 23 and 223:
      some facets they take make worse seams than they removed.
-   - **4b. Corners solved onto their surfaces.** A corner is the mesh
-     vertex today, and each seam ends where its own solve put it, near
-     but not at it. Corners where three or more faces meet are solved onto
-     their surfaces (least squares with a residual check where four or
-     more do, refused by name otherwise) and every seam is trimmed there.
-     First check, on one slit of the second class, that its edges' ends
-     disagree at the corner by more than the tessellation's tolerance; if
-     they do not, 4b waits.
+   - **4b. Corners.** Measured: of the bad mesh edges, most sit at a
+     vertex whose edges' curves end off it, each on its own side (gaps up
+     to 6e-2, inside the vertex's tolerance). Solving the corners onto
+     their surfaces in the converter was tried and dropped: four fitted
+     surfaces seldom meet in a point, and moving the corners helped some
+     parts and hurt others (ftc_07 from 221 bad edges to 307). The
+     tessellator now draws each edge from its vertices, in space and in
+     each face's chart, which serves imported solids too: 77777_1 from 64
+     bad mesh edges to none, Body28 from 122 to 31, ctc_02 from 25 to 6,
+     handle-pickup from 5 to 3, ftc_07 from 223 to 188.
    - **4c. Seams traced between solved corners**, as one branch of the
      intersection guided by the mesh path, replacing the point-by-point
      section where the two surfaces cross. Only if 4a and 4b leave folds,

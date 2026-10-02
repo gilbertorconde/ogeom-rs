@@ -56,6 +56,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Faces meet at a vertex their edges end off.** An edge's curve may end
+  off its vertex by up to the vertex's tolerance, and the next edge's off
+  it on another side. Each face round the vertex closed its own gap
+  between two of the ends, and between them the faces left a hole; on a
+  curved face the boundary also ran from the curve's end to the vertex and
+  back in its chart, a fold its triangles covered twice. Each edge is now
+  drawn from its vertices, in space and in every face's chart, so the
+  faces round a vertex meet at one point. Converted parts whose faces,
+  meshed one by one, left edges unmatched: 77777_1 from 64 to none, Body28
+  from 122 to 31, ctc_02 from 25 to 6, ctc_01 and ctc_03 to none. Every
+  imported STEP solid in the corpus closes as before.
+
 - **Facets left between curved faces join them.** Where curved regions
   meet, or a fit stops a row short, a mesh leaves planar facets of a
   triangle or two that no surface claims, bounded by seams as wide as

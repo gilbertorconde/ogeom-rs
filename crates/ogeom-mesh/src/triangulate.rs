@@ -1835,6 +1835,8 @@ fn boundary_ring(
             },
             None => deflection,
         };
+        // The ends drawn from the edge's vertices rather than its curve.
+        let mut snapped_ends: Vec<usize> = Vec::new();
         let samples = match sample_parameters(model, data, along, tol)? {
             Some((parameters, edge_met)) => {
                 met &= edge_met;
@@ -1849,6 +1851,36 @@ fn boundary_ring(
                                 .ok()
                                 .map(|p| edge_placement.apply(p)),
                         );
+                    }
+                    // An edge's curve may end off its vertex by up to the
+                    // vertex's tolerance, and the next edge's off it on
+                    // another side: each face round the vertex would then
+                    // close its own gap between two of the ends, and
+                    // between them the faces leave a hole. Drawn from the
+                    // vertex itself, every face round it meets at one
+                    // point.
+                    let corners: Vec<(Point, f64)> = model
+                        .ordered_children_of(&edge)?
+                        .iter()
+                        .filter_map(|v| {
+                            let data = model.node(v)?.data().as_vertex()?;
+                            let at = v.transform(model.datums()).ok()?.apply(data.point);
+                            Some((at, data.tolerance.get()))
+                        })
+                        .collect();
+                    let reach = data.tolerance.get();
+                    for i in [0, edge_anchors.len().saturating_sub(1)] {
+                        let Some(Some(end)) = edge_anchors.get(i).copied() else {
+                            continue;
+                        };
+                        if let Some(&(at, within)) = corners
+                            .iter()
+                            .min_by(|a, b| a.0.distance(end).total_cmp(&b.0.distance(end)))
+                            && at.distance(end) <= within + reach
+                        {
+                            edge_anchors[i] = Some(at);
+                            snapped_ends.push(i);
+                        }
                     }
                 }
                 map_to_pcurve(&parameters, data, pcurve_range)
@@ -1878,6 +1910,55 @@ fn boundary_ring(
             .iter()
             .map(|u| pcurve.point_at(*u, tol))
             .collect::<OgeomResult<_>>()?;
+        // A point drawn from the vertex stands where the vertex does in the
+        // chart too, or the boundary runs from the curve's end to the
+        // vertex and back, a fold the triangulation covers twice. Solved
+        // onto the vertex from the pcurve's own end.
+        if !snapped_ends.is_empty()
+            && let Some(geometry) = model.geometry().surface(surface)
+            && let Ok(placement) = wire.transform(model.datums())
+            && let Ok(local) = placement.inverse()
+        {
+            use ogeom_geom::Surface as _;
+            for &i in &snapped_ends {
+                let (Some(Some(target)), Some(start)) = (edge_anchors.get(i), points.get(i)) else {
+                    continue;
+                };
+                let target = local.apply(*target);
+                let mut uv = *start;
+                let mut solved = false;
+                for _ in 0..8 {
+                    let Ok(jet) = geometry.jet_at(uv.x, uv.y, tol) else {
+                        break;
+                    };
+                    let r = jet.point - target;
+                    if r.magnitude() <= tol.confusion() {
+                        solved = true;
+                        break;
+                    }
+                    let (a, b, c) = (jet.du.dot(jet.du), jet.du.dot(jet.dv), jet.dv.dot(jet.dv));
+                    let det = a.mul_add(c, -(b * b));
+                    if det.abs() <= f64::MIN_POSITIVE {
+                        break;
+                    }
+                    let (gu, gv) = (jet.du.dot(r), jet.dv.dot(r));
+                    uv = Point2::new(
+                        uv.x - (c * gu - b * gv) / det,
+                        uv.y - (a * gv - b * gu) / det,
+                    );
+                }
+                // Short of the vertex, the point that came nearest it.
+                if !solved
+                    && let Ok(p) = geometry.point_at(uv.x, uv.y, tol)
+                    && let Ok(q) = geometry.point_at(start.x, start.y, tol)
+                {
+                    solved = p.distance(target) < q.distance(target);
+                }
+                if solved && let Some(slot) = points.get_mut(i) {
+                    *slot = uv;
+                }
+            }
+        }
         if edge.orientation() == Orientation::Reversed {
             points.reverse();
             edge_anchors.reverse();
