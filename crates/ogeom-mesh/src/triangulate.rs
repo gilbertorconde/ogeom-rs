@@ -1309,13 +1309,26 @@ fn trimming_rings(
                 continue;
             }
             // The last ambiguous fold whose applied shift matches the
-            // winding is the one to undo.
-            if let Some(&(fold_start, _)) = folds
+            // winding is the one to undo. Where none does, the walk wound at
+            // a half-period tie it left in place (a ruling into a cone's
+            // apex, whose other half the ring needed): the last one is
+            // where to translate from.
+            let fold = folds
                 .iter()
                 .rev()
                 .find(|(_, shift)| (shift - k * period).abs() <= period * 1e-6)
-                && fold_start < ring.len()
+                .map(|&(fold_start, _)| fold_start)
+                .filter(|&fold_start| fold_start < ring.len());
+            if fold.is_none()
+                && let Some(&tie) = ties.last()
+                && tie < ring.len()
             {
+                for p in &mut ring[tie..] {
+                    p.x -= k * period;
+                }
+                continue;
+            }
+            if let Some(fold_start) = fold {
                 // Translating from the last undecided tie before the fold
                 // (where the walk first guessed) keeps the period jump on
                 // the degenerate row, where it lifts to nothing.

@@ -60,6 +60,14 @@ bump may break the API and a patch bump may not.
   one. Three converted corpus parts and the rough rounded box now
   tessellate closed.
 
+- **Halves of a cone sharing their seam ruling mesh closed.** The ruling
+  two halves on one surface share has one image in the chart, at the seam,
+  and the half running from a full turn back to half a turn needs it a
+  turn over. Walked into the apex the two columns are equally near, the
+  ring wound onto the other half, and both halves meshed over one side: a
+  NIST part read from AP242 tessellated open. The winding is now undone
+  from the tie where the walk left it.
+
 - **A converted solid no longer comes back with a facet facing into its
   material.** On a coarse mesh a fitted face could run past the facet it
   should have ended on and enclose a sliver outside it; the solid checked

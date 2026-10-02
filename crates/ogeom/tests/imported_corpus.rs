@@ -618,6 +618,27 @@ fn a_sliver_on_a_diagonal_of_the_grid_leaves_the_solid_closed() {
     );
 }
 
+/// Two halves of a cone on one surface share their seam ruling, whose
+/// chart image stands at u = 0; the half that runs from 2pi back to pi
+/// needs it a period over. Walked into the apex, the ruling's two columns
+/// are half a turn from the last point either way, and left where it was
+/// it wound the ring onto the other half: both halves meshed over one
+/// side, and the part tessellated open.
+#[test]
+fn halves_of_a_cone_sharing_their_seam_ruling_mesh_closed() {
+    let text = corpus("nist_ctc_01_asme1_ap242-e1.stp");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let mesh = ogeom::mesh::triangulate(
+        model,
+        &import.solids[0],
+        ogeom::mesh::Deflection::default(),
+        T,
+    )
+    .unwrap();
+    assert!(mesh.is_closed());
+}
+
 /// A grid point on a boundary segment is not inserted.
 ///
 /// A turned part with a B-spline patch and the torus across one of its
