@@ -3,16 +3,20 @@
 //! A STEP face on a cylinder may be a band between two rings that each go
 //! round once, with no seam edge: one ring a whole circle, the other a
 //! notched run of arcs and rulings. A face on a sphere may be a cap bounded
-//! by one circle, or an octant whose two meridians meet at the pole with no
-//! edge along the pole's row. Each is a valid solid's boundary and meshes,
-//! but in the surface's chart the boundary does not close, and anything
-//! that works in the chart (a boolean's arrangement) cannot use it.
+//! by one circle, an octant whose two meridians meet at the pole with no
+//! edge along the pole's row, or a hemisphere bounded by one great circle
+//! through both poles. Each is a valid solid's boundary and meshes, but in
+//! the surface's chart the boundary does not close (or, for the great
+//! circle, has no exact image), and anything that works in the chart (a
+//! boolean's arrangement) cannot use it.
 //!
 //! The band gets a seam at a column where each ring passes once: a vertex
 //! of the notched ring, with the whole circle re-anchored there when it has
 //! no vertex of its own on that column. The cap gets a pole vertex, a
 //! degenerate pole edge and a seam down to it. The octant gets a degenerate
-//! edge along the pole's row between the two meridians.
+//! edge along the pole's row between the two meridians. The great circle
+//! is split at the poles into half meridians, each a straight line in the
+//! chart, with a degenerate edge along the pole's row between them.
 
 use std::collections::HashMap;
 
@@ -33,13 +37,15 @@ use crate::reanchor::{attach_face_pcurves, circle_parameter};
 /// Give every seamless periodic face of a solid the seam or pole edge its
 /// chart needs to close.
 ///
-/// Three shapes of face are repaired, each only on a cylinder, cone or
-/// sphere and only where every edge has a closed-form pcurve: a band between
-/// two rings that each go once round, a sphere's cap bounded by one ring,
-/// and a sphere's face reaching a pole with no edge along the pole's row.
-/// A face that resists is left as it was. Returns the solid and how many
-/// faces were repaired; a solid with none comes back as itself with an
-/// empty history.
+/// Four shapes of face are repaired, each only on a cylinder, cone or
+/// sphere and only where every edge has (or, split, takes) a closed-form
+/// pcurve: a band between two rings that each go once round, a sphere's cap
+/// bounded by one ring, a sphere's face reaching a pole with no edge along
+/// the pole's row, and a sphere's face whose boundary runs along a great
+/// circle through a pole (split there, its neighbours taking the pieces). A
+/// face that resists is left as it was. Returns the solid and how many faces
+/// were repaired; a solid with none comes back as itself with an empty
+/// history.
 ///
 /// # Errors
 ///
@@ -90,6 +96,16 @@ pub fn seam_periodic_faces(
                 [ring] if lone_circle(model, ring).is_some() => {
                     cap(model, &face, &surface, ring, tol)
                 }
+                [ring] => meridian_poles(
+                    model,
+                    &face,
+                    (surface_id, &surface),
+                    ring,
+                    &settled,
+                    true,
+                    tol,
+                )
+                .map(|done| done.and_then(|(rebuilt, more)| more.is_empty().then_some(rebuilt))),
                 _ => Ok(None),
             };
             if let Ok(Some(rebuilt)) = rebuilt {
@@ -100,6 +116,26 @@ pub fn seam_periodic_faces(
                 );
                 face_map.insert(face.node(), rebuilt);
             }
+            continue;
+        }
+        if let [ring] = &rings[..]
+            && let Ok(Some((rebuilt, added))) = meridian_poles(
+                model,
+                &face,
+                (surface_id, &surface),
+                ring,
+                &settled,
+                false,
+                tol,
+            )
+        {
+            settled.extend(
+                explore_unique(model, &face, ShapeType::Edge)?
+                    .iter()
+                    .map(Shape::node),
+            );
+            substitution.extend(added);
+            face_map.insert(face.node(), rebuilt);
             continue;
         }
         let walks: Vec<Option<Walk>> = rings
@@ -754,6 +790,312 @@ fn pole_gap(
     let wire = make_wire(model, &edges, tol)?.shape;
     let face = make_face_on(model, surface_id, &[wire], tol)?.shape;
     Ok(Some(if area < 0.0 { face.reversed() } else { face }))
+}
+
+/// What [`meridian_poles`] rebuilt: the face, and each split edge's pieces in
+/// its stored direction.
+type Halved = (Shape, Vec<(TShapeId, Vec<Shape>)>);
+
+/// A sphere's face bounded by one ring where an edge on a great circle
+/// through the poles passes a pole inside its range: such a circle has no
+/// single chart image (its longitude jumps by half a turn at the pole), so
+/// any stored pcurve for it is a fit that strays off the meridian. Each such
+/// edge is split at the poles it passes into exact half meridians, and the
+/// pole's row between two pieces gets a degenerate edge.
+///
+/// With `resolved`, `ring` holds pieces another face's repair split, which
+/// take exact pcurves here; without it, the repair splits an edge or does
+/// nothing. Each piece's column is the copy, a whole turn
+/// apart, nearest the longitude of the face's middle (read on its mesh,
+/// which works from the edges' 3D curves). The rebuilt face must mesh to the
+/// old face's area, or the repair is refused.
+fn meridian_poles(
+    model: &mut Model,
+    face: &Shape,
+    (surface_id, surface): (ogeom_topo::SurfaceId, &SurfaceGeometry),
+    ring: &[Shape],
+    settled: &std::collections::HashSet<TShapeId>,
+    resolved: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<Halved>> {
+    let SurfaceGeometry::Sphere(sphere) = surface else {
+        return Ok(None);
+    };
+    if !face.location().is_identity() {
+        return Ok(None);
+    }
+    let sphere = sphere.sphere();
+    let half = core::f64::consts::FRAC_PI_2;
+    let turn = core::f64::consts::TAU;
+    let poles = [
+        surface.point_at(0.0, half, tol)?,
+        surface.point_at(0.0, -half, tol)?,
+    ];
+    let has_pcurve = |model: &Model, e: &Shape| {
+        model
+            .node(e)
+            .and_then(|n| n.data().as_edge())
+            .and_then(|d| d.pcurve_for(surface_id, e.location()))
+            .is_some()
+    };
+    let ring_vertices: Vec<Shape> = ring
+        .iter()
+        .filter_map(|e| ogeom_algo::edge_vertices(model, e).ok().flatten())
+        .flat_map(|(a, b)| [a, b])
+        .collect();
+    let vertex_at = |model: &Model, p: Point| {
+        ring_vertices.iter().find(|v| {
+            model
+                .node(v)
+                .and_then(|n| n.data().as_vertex())
+                .is_some_and(|d| d.point.is_within(p, d.tolerance.get().max(tol.confusion())))
+        })
+    };
+
+    // The ring with each pole-crossing meridian edge split at its poles.
+    let mut pieces: Vec<Shape> = Vec::with_capacity(ring.len() + 2);
+    let mut added: Vec<(TShapeId, Vec<Shape>)> = Vec::new();
+    let mut fresh: Vec<Shape> = Vec::new();
+    for occurrence in ring {
+        let Some(data) = model.node(occurrence).and_then(|n| n.data().as_edge()) else {
+            return Ok(None);
+        };
+        if data.degenerate {
+            pieces.push(occurrence.clone());
+            continue;
+        }
+        // Pieces are built on the curve as stored, so only an edge placed
+        // where its curve lies is split.
+        let Some(EdgeRepr::Curve3d {
+            curve,
+            range,
+            location,
+        }) = data.curve3d()
+        else {
+            return Ok(None);
+        };
+        if !location.is_identity() || !occurrence.location().is_identity() {
+            return Ok(None);
+        }
+        let (curve_id, range) = (*curve, *range);
+        let Some(Curve::Circle(circle)) = model.geometry().curve(curve_id).cloned() else {
+            if !has_pcurve(model, occurrence) {
+                return Ok(None);
+            }
+            pieces.push(occurrence.clone());
+            continue;
+        };
+        let c = circle.circle();
+        let great = c.centre().distance(sphere.centre()) <= tol.confusion()
+            && (c.radius() - sphere.radius()).abs() <= tol.confusion();
+        // The circle's parameters strictly inside the range where it passes
+        // a pole.
+        let mut cuts: Vec<(f64, Point)> = Vec::new();
+        if great {
+            let margin = 1e-9 * (range.1 - range.0).abs().max(1.0);
+            for pole in poles {
+                let Some(base) = circle_parameter(&Curve::Circle(circle), pole) else {
+                    continue;
+                };
+                for t0 in [base, -base] {
+                    let first = t0 + ((range.0 - t0) / turn).ceil() * turn;
+                    let mut t = first;
+                    while t < range.1 - margin {
+                        if t > range.0 + margin
+                            && circle.point_at(t, tol)?.is_within(pole, tol.confusion())
+                            && !cuts.iter().any(|(s, _)| (s - t).abs() <= margin)
+                        {
+                            cuts.push((t, pole));
+                        }
+                        t += turn;
+                    }
+                }
+            }
+        }
+        if cuts.is_empty() {
+            if !has_pcurve(model, occurrence) {
+                fresh.push(occurrence.clone());
+            }
+            pieces.push(occurrence.clone());
+            continue;
+        }
+        if settled.contains(&occurrence.node()) {
+            return Ok(None);
+        }
+        cuts.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let bounds = model.children_of(occurrence)?;
+        let (Some(first), Some(last)) = (bounds.first().cloned(), bounds.last().cloned()) else {
+            return Ok(None);
+        };
+        let mut split = Vec::with_capacity(cuts.len() + 1);
+        let (mut from, mut at) = (first, range.0);
+        for (t, pole) in cuts {
+            let vertex = match vertex_at(model, pole) {
+                Some(v) => v.clone(),
+                None => make_vertex(model, pole).shape,
+            };
+            let edge =
+                make_edge_between(model, Curve::Circle(circle), (at, t), &from, &vertex, tol)?
+                    .shape;
+            split.push(edge);
+            (from, at) = (vertex, t);
+        }
+        let edge = make_edge_between(
+            model,
+            Curve::Circle(circle),
+            (at, range.1),
+            &from,
+            &last,
+            tol,
+        )?
+        .shape;
+        split.push(edge);
+        fresh.extend(split.iter().cloned());
+        if occurrence.orientation() == ogeom_topo::Orientation::Reversed {
+            pieces.extend(split.iter().rev().map(Shape::reversed));
+        } else {
+            pieces.extend(split.iter().cloned());
+        }
+        added.push((occurrence.node(), split));
+    }
+    if fresh.is_empty() || (!resolved && added.is_empty()) {
+        return Ok(None);
+    }
+
+    // The longitude of the face's middle, from its mesh.
+    let old_mesh = ogeom_mesh::triangulate(model, face, ogeom_mesh::Deflection::default(), tol)?;
+    let mut middle = ogeom_math::Vector::new(0.0, 0.0, 0.0);
+    for p in &old_mesh.positions {
+        if let Ok(d) = (*p - sphere.centre()).normalized(tol) {
+            middle += d;
+        }
+    }
+    let local = sphere.frame().to_local(sphere.centre() + middle);
+    if local.x.hypot(local.y) <= 1e-6 * middle.magnitude().max(1.0) {
+        return Ok(None);
+    }
+    let centre_u = local.y.atan2(local.x);
+    for edge in &fresh {
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = model
+            .node(edge)
+            .and_then(|n| n.data().as_edge())
+            .and_then(|d| d.curve3d())
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let Some(geometry) = model.geometry().curve(curve).cloned() else {
+            return Ok(None);
+        };
+        let Some(pcurve) = ogeom_intersect::exact_pcurve_over(&geometry, range, surface, tol)
+        else {
+            return Ok(None);
+        };
+        // A meridian's column moved by whole turns to the copy nearest the
+        // face's middle; a parallel spans the whole row and stays.
+        let pcurve = match &pcurve {
+            ogeom_geom::PlanarCurve::Line(l) if l.axis().direction.vector().x.abs() <= 1e-12 => {
+                let at = l.axis().location;
+                let shift = ((centre_u - at.x) / turn).round() * turn;
+                ogeom_geom::Line2d::over(
+                    Axis2::new(Point2::new(at.x + shift, at.y), l.axis().direction),
+                    l.domain().0,
+                    l.domain().1,
+                )?
+                .into()
+            }
+            _ => pcurve,
+        };
+        ogeom_algo::attach_pcurve(model, edge, pcurve, surface_id, Location::identity(), range)?;
+    }
+
+    // Each piece's stored ends; where two pieces meet on a pole's row at
+    // different columns, a degenerate edge along the row joins them.
+    let mut ends: Vec<(Point2, Point2)> = Vec::with_capacity(pieces.len());
+    let mut samples: Vec<Point2> = Vec::new();
+    for piece in &pieces {
+        let Some(EdgeRepr::PCurve { curve, range, .. }) = model
+            .node(piece)
+            .and_then(|n| n.data().as_edge())
+            .and_then(|d| d.pcurve_for(surface_id, piece.location()))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let Some(pcurve) = model.geometry().pcurve(curve).cloned() else {
+            return Ok(None);
+        };
+        let reversed = piece.orientation() == ogeom_topo::Orientation::Reversed;
+        const SAMPLES: u32 = 16;
+        let mut run = Vec::with_capacity(SAMPLES as usize + 1);
+        for k in 0..=SAMPLES {
+            let f = f64::from(k) / f64::from(SAMPLES);
+            let t = if reversed {
+                range.1 - (range.1 - range.0) * f
+            } else {
+                range.0 + (range.1 - range.0) * f
+            };
+            run.push(pcurve.point_at(t, tol)?);
+        }
+        ends.push((run[0], run[run.len() - 1]));
+        samples.extend(run);
+    }
+    let n = pieces.len();
+    let joint = tol.parametric().max(1e-9);
+    let mut edges = Vec::with_capacity(n + 2);
+    for k in 0..n {
+        edges.push(pieces[k].clone());
+        let (end, next) = (ends[k].1, ends[(k + 1) % n].0);
+        if end.distance(next) <= joint {
+            continue;
+        }
+        if (end.y - next.y).abs() > joint || (end.y.abs() - half).abs() > joint {
+            return Ok(None);
+        }
+        let Some((_, vertex)) = ogeom_algo::edge_vertices(model, &pieces[k])? else {
+            return Ok(None);
+        };
+        let gap = next.x - end.x;
+        let mut data = EdgeData::new();
+        data.degenerate = true;
+        let degenerate = model.add_edge(data, &[vertex.clone(), vertex])?;
+        let pcurve: ogeom_geom::PlanarCurve = ogeom_geom::Line2d::over(
+            Axis2::new(end, Direction2::new(Vector2::new(gap.signum(), 0.0), tol)?),
+            0.0,
+            gap.abs(),
+        )?
+        .into();
+        ogeom_algo::attach_pcurve(
+            model,
+            &degenerate,
+            pcurve,
+            surface_id,
+            Location::identity(),
+            (0.0, gap.abs()),
+        )?;
+        edges.push(degenerate);
+    }
+    // Clockwise in the chart, the face faces against the surface, as for a
+    // pole gap.
+    let mut area = 0.0;
+    for (k, p) in samples.iter().enumerate() {
+        let q = samples[(k + 1) % samples.len()];
+        area += p.x * q.y - q.x * p.y;
+    }
+    let wire = make_wire(model, &edges, tol)?.shape;
+    let rebuilt = make_face_on(model, surface_id, &[wire], tol)?.shape;
+    let rebuilt = if area < 0.0 {
+        rebuilt.reversed()
+    } else {
+        rebuilt
+    };
+    let new_mesh =
+        ogeom_mesh::triangulate(model, &rebuilt, ogeom_mesh::Deflection::default(), tol)?;
+    let (before, after) = (old_mesh.area(), new_mesh.area());
+    if (before - after).abs() > 1e-2 * before.max(after) {
+        return Ok(None);
+    }
+    Ok(Some((rebuilt, added)))
 }
 
 /// Where an occurrence's stored pcurve ends, as stored.

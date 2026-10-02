@@ -41,22 +41,16 @@ tangential trace that follows the contact as a curve of its own kind.
 Curved ones need the marching seat: the spine where the two offset surfaces
 meet, walked like the edge blend's.
 
-**Three drills in `nist_ftc_06` are refused.** Replay with
+**Two drills in `nist_ftc_06` are refused.** Replay with
 `ogeom-stress --case drill/nist_ftc_06_asme1_rd/<n>`; a refusal prints the
-drill's placement.
+drill's placement. Both refuse the same way on the part with or without its
+hemisphere's great circle split at the poles.
 
-- Drill 4 ("the kept pieces did not close into a shell"): face 89 is a
-  hemisphere bounded by one great circle through both poles. Its stored pcurve
-  is a fit that strays far from the meridian (u = -0.30 where the circle is at
-  u = 0, v = -0.65), so the drill's section ends 0.3 from where the boundary is
-  paved and the strands do not join. Wanted: such a circle split at the poles
-  into two exact half meridians, the neighbour rebuilt on the halves.
-- Drills 0 and 3 ("arrangement left no piece of the face"): faces 4 and 86 are
-  part cylinders whose chart window lies at negative `u` (-3.016 to -1.571).
-  Their side edges are paved where the drill's section crosses them, but no
-  section strand reaches the face, and the arrangement finds no cycle. Wanted:
-  the section's pieces folded into the face's own window before they are kept
-  or dropped.
+- Drill 0 ("a wire needs at least one edge"): the drill's wall hugs a face
+  of the part, and the hug's junctions reach 72 mm. Merged, one junction
+  reaches 148 mm, every edge of a piece of face 0 closes on its vertex as
+  dust, and the piece is left with an empty ring.
+- Drill 3 ("the kept pieces did not close into a shell"): not diagnosed.
 
 **Facet walls drafted less than their chords sag.** A pad pushed down from
 the top of a slab converted face for facet, whose rounded corner's rows hold

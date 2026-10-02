@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A sphere face bounded by a great circle through its poles is
+  healed into half meridians.** Its stored pcurve was a fit that strayed
+  far from the meridian, so a boolean's section ended away from where the
+  boundary was paved and a drill across the hemisphere was refused.
+  Healing splits such a circle at the poles into exact half meridians,
+  joins pieces meeting on a pole's row by a pole edge, and rebuilds the
+  neighbouring face on the pieces; the repair is refused where the rebuilt
+  face's area would change. The part's volume then integrates exactly.
+
 ## [0.7.0] - 2026-10-02
 
 A minor release, since the API changes: `Canonical` is no longer `Copy`,
