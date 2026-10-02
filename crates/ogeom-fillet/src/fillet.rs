@@ -299,10 +299,12 @@ pub fn fillet_edges(
             Ok(Mate { ends, settled })
         })
         .collect::<OgeomResult<_>>()?;
-    // The circles this chain has rounded. A piece of a rim the solid holds
-    // in parts is blended the whole turn round, so the rim's other pieces,
-    // asked for later or split off by the boolean, are rounded already:
-    // done, not consumed.
+    // The circles this chain has rounded the whole turn round. A piece of
+    // a rim that closes on the solid in parts is blended the whole turn
+    // round, so the rim's other pieces, asked for later or split off by the
+    // boolean, are rounded already: done, not consumed. A piece of a rim
+    // that stops is rounded over its own arc only, and the other pieces
+    // still want theirs.
     let mut round_rims: Vec<ogeom_math::Circle> = Vec::new();
     let on_round_rim = |model: &Model, edge: &Shape, rims: &[ogeom_math::Circle]| {
         rim_circle(model, edge, tol).is_some_and(|c| rims.iter().any(|r| same_circle(r, &c, tol)))
@@ -330,8 +332,10 @@ pub fn fillet_edges(
     // from the faces as they stand, and theirs can be applied together.
     // Edges that do share one are rounded in turn, the later built against
     // what the earlier left. So the chain is taken in rounds, no two edges
-    // of a round sharing a vertex (pieces of one circle meet only each
-    // other, and the first rounds the whole turn), each round's wedges set
+    // of a round sharing a vertex (pieces of one circle are built from the
+    // same faces: the first rounds the whole turn where the rim closes, and
+    // where it stops each piece is capped at its ends, flush with its
+    // neighbour's cap), each round's wedges set
     // aside and applied together, one boolean each way.
     let rims: Vec<Option<Circle>> = edges.iter().map(|e| rim_circle(model, e, tol)).collect();
     let mut ends_of: Vec<Vec<Shape>> = Vec::with_capacity(edges.len());
@@ -444,6 +448,10 @@ pub fn fillet_edges(
                      the chain's members interfere"
                 );
             };
+            let whole_rim = match rim_circle(model, target, tol) {
+                Some(rim) if rounds_whole_turn(model, &current, target, tol)? => Some(rim),
+                _ => None,
+            };
             let mut step = {
                 let (step, wedges) = crate::support::collecting_wedges(|| {
                     fillet_edge_meeting(model, &current, target, radius, Some((index, &mates)), tol)
@@ -451,7 +459,7 @@ pub fn fillet_edges(
                 set_aside.extend(wedges.into_iter().map(|w| (edge.clone(), w)));
                 step?
             };
-            if let Some(rim) = rim_circle(model, target, tol) {
+            if let Some(rim) = whole_rim {
                 round_rims.push(rim);
             }
             let hosts = hosts_of(model, edge)?;
@@ -514,10 +522,17 @@ fn apply_set_aside(
         } else {
             model.add_compound(&lumps)?
         };
-        let step = if additive {
-            ogeom_bool::fuse(model, &built.shape, &tool, tol)?
+        let applied = if additive {
+            ogeom_bool::fuse(model, &built.shape, &tool, tol)
         } else {
-            ogeom_bool::cut(model, &built.shape, &tool, tol)?
+            ogeom_bool::cut(model, &built.shape, &tool, tol)
+        };
+        let refusal = group.iter().find_map(|&i| set_aside[i].1.melt_refusal);
+        let step = match (applied, refusal) {
+            (Err(OgeomError::NotDone(cause)), Some(refusal)) => {
+                ogeom_bail!(NotDone, "{refusal} ({cause})")
+            }
+            (applied, _) => applied?,
         };
         // The chain's history already says each edge is gone; the blends
         // it generated are recorded on the composed history, where an edge
@@ -1089,6 +1104,29 @@ fn revolved_fillet(
     apply_wedge(model, solid, Some(edge), &faces, seat.additive(), tol)
 }
 
+/// Whether the blend along `edge` of `solid`, a circle, runs the circle's
+/// whole turn: the edge is closed, or it is a piece of a rim the solid
+/// holds whole on its revolved seat, or of a crease that closes on itself
+/// on any other pair of hosts.
+fn rounds_whole_turn(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let (Curve::Circle(c), range) = edge_curve(model, edge, tol)? else {
+        return Ok(false);
+    };
+    if ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b)) {
+        return Ok(true);
+    }
+    match revolved_seat(model, solid, edge, &c, tol) {
+        Ok(seat) => crate::support::runs_whole_turn(model, &seat, &c, range, tol),
+        Err(OgeomError::Construction(_)) => crate::marched::crease_closes(model, solid, edge, tol),
+        Err(e) => Err(e),
+    }
+}
+
 /// The circle an edge runs on, where it runs on one.
 fn rim_circle(model: &Model, edge: &Shape, tol: Tolerances) -> Option<ogeom_math::Circle> {
     match edge_curve(model, edge, tol).ok()?.0 {
@@ -1342,10 +1380,11 @@ fn revolved_arc_fillet(
     let quarter1 = quarter(model, theta1, &vw1, &vc1)?;
 
     // The wall patch: the solid wall's own chart between the contact ring
-    // and the rim, over the window.
+    // and the rim, over the window, its chart reaching past the rim on
+    // both sides whichever side of the cap the wall stands on.
     let wall_patch = {
         let below = radius + 1.0;
-        let origin = seat.centre - seat.up * (seat.tau * below);
+        let origin = seat.centre - seat.up * below;
         let surface: SurfaceGeometry = CylinderSurface::new(
             Cylinder::new(wedge_frame_at(origin)?, seat.radius, tol)?,
             (0.0, 2.0 * below),

@@ -85,6 +85,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Edge rounds stop where a drum's foot runs off the block.**
+  `fillet_edges` on an open elliptic crease (a leaning drum whose foot runs
+  off the block) rounded the whole ellipse and left material past the
+  block's side; the round now covers the arc only, or is refused by name
+  where the boolean cannot merge its end with the face the crease runs out
+  on. Fillets and chamfers on a circular foot that runs off the block took
+  the whole turn, read the wrong side of the wall and removed material;
+  they now round only the arc, with exact torus or cone fills.
+
 - **Pads fuse into slabs whose rounded corners lean in by less than
   their chords sag.** Where a pad wall crosses an edge between two facets
   lying almost in the wall, the two facets' sections reach the edge up to

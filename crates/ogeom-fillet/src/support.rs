@@ -422,10 +422,37 @@ pub(crate) fn revolved_seat(
     };
     let up = up_raw / up_raw.magnitude();
 
-    // Which side of the cap the wall extends: read from the wall band's other
-    // ring. `tau` positive means away from the cap's outward side (the rim
+    // Which side of the cap the wall extends: read at the edge itself, just
+    // above and just below the cap's plane, where the wall stands on one
+    // side only; a wall that runs on past the cap elsewhere (a boss standing
+    // over a block's edge, its wall going down beside the block) stands on
+    // both sides of the plane somewhere, so its far rings alone do not say.
+    // Where the probes do not decide, the wall band's other ring does.
+    // `tau` positive means away from the cap's outward side (the rim
     // configurations) and negative means alongside it, the concave seats.
-    let tau = {
+    let local_tau = {
+        let (curve, range) = edge_curve(model, edge, tol)?;
+        let at = curve.point_at(f64::midpoint(range.0, range.1), tol)?;
+        let eps = rim_radius * 1e-2;
+        let deflection = ogeom_mesh::Deflection {
+            chord: eps * 0.1,
+            ..ogeom_mesh::Deflection::default()
+        };
+        let stands = |p: Point| -> OgeomResult<bool> {
+            Ok(
+                ogeom_algo::classify_on_face(model, &wall_face, p, deflection, tol)?
+                    == ogeom_algo::Containment::In,
+            )
+        };
+        match (stands(at + up * eps)?, stands(at - up * eps)?) {
+            (true, false) => Some(-1.0),
+            (false, true) => Some(1.0),
+            _ => None,
+        }
+    };
+    let tau = if let Some(tau) = local_tau {
+        tau
+    } else {
         let mut side = None;
         for e in explore(model, &wall_face, Filter::OfType(ShapeType::Edge))? {
             if same_occurrence(model, &e, edge, tol) {
@@ -472,8 +499,11 @@ pub(crate) fn revolved_seat(
 ///
 /// An open arc is two different seats: a piece a boolean split off a full
 /// rim, whose blend must run the whole turn, or a rim that genuinely stops,
-/// a stadium's rounded end or a rounded corner. The wall itself answers:
-/// probe it just below the arc's complement.
+/// a stadium's rounded end or a rounded corner. The two faces answer: the
+/// rim goes on round the arc's complement only where the wall stands just
+/// below it and the cap lies just beside it, on the cap's own side of the
+/// rim. A wall that carries on past where the cap ends (a boss standing
+/// over the edge of a block) holds no rim there.
 pub(crate) fn runs_whole_turn(
     model: &Model,
     seat: &RevolvedSeat,
@@ -499,8 +529,18 @@ pub(crate) fn runs_whole_turn(
         chord: eps * 0.1,
         ..ogeom_mesh::Deflection::default()
     };
+    if ogeom_algo::classify_on_face(model, &seat.wall_face, probe, deflection, tol)?
+        != ogeom_algo::Containment::In
+    {
+        return Ok(false);
+    }
+    // The cap lies inside the rim where the material is inside the wall and
+    // the wall runs away from the cap's outward side, or where both are
+    // turned; outside it otherwise.
+    let outward = -seat.sigma * seat.tau;
+    let beside = seat.centre + dir * (seat.radius + outward * eps);
     Ok(
-        ogeom_algo::classify_on_face(model, &seat.wall_face, probe, deflection, tol)?
+        ogeom_algo::classify_on_face(model, &seat.cap_face, beside, deflection, tol)?
             == ogeom_algo::Containment::In,
     )
 }
@@ -680,6 +720,19 @@ pub(crate) struct Wedge {
     pub(crate) additive: bool,
     /// The edge it rounds.
     pub(crate) edge: Option<Shape>,
+    /// What the blend is refused as when the boolean cannot apply the
+    /// wedge, where its builder knows a contact the melt does not resolve.
+    pub(crate) melt_refusal: Option<&'static str>,
+}
+
+/// Name the refusal the wedge last set aside is refused as, should the
+/// boolean fail to apply it. Nothing when no caller is collecting.
+pub(crate) fn note_melt_refusal(refusal: &'static str) {
+    WEDGES.with(|held| {
+        if let Some(last) = held.borrow_mut().as_mut().and_then(|w| w.last_mut()) {
+            last.melt_refusal = Some(refusal);
+        }
+    });
 }
 
 thread_local! {
@@ -729,6 +782,7 @@ pub(crate) fn apply_wedge(
                 solid: wedge.shape.clone(),
                 additive,
                 edge: edge.cloned(),
+                melt_refusal: None,
             });
         })
     });

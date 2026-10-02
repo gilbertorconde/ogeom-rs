@@ -40,26 +40,7 @@ pub(crate) fn marched_fillet(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let (stored_guide, edge_range) = edge_curve(model, edge, tol)?;
-    // The seat is the whole loop even when the boolean split it into arcs:
-    // the apex ring runs the curve's full turn, and every arc of the old
-    // seat melts with the legs. A conic arc is re-opened to its full
-    // period; a fitted seam already spans its loop.
     let closed = ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
-    let (guide, guide_range) = if closed {
-        (stored_guide, edge_range)
-    } else {
-        match &stored_guide {
-            Curve::Ellipse(e) => {
-                let full: Curve = ogeom_geom::EllipseCurve::new(e.ellipse()).into();
-                let domain = full.domain();
-                (full, domain)
-            }
-            _ => {
-                let domain = stored_guide.domain();
-                (stored_guide, domain)
-            }
-        }
-    };
     // A closed seat on a fitted seam (a bore's rim where it leaves a
     // sphere, the two arcs of a boolean's seam joined end to end) is a
     // loop whose join is a corner: the ends meet, the tangents do not. The
@@ -96,7 +77,6 @@ pub(crate) fn marched_fillet(
                 };
             Ok((loops, march_guide))
         };
-    let (loops, march_guide) = closure_of(&guide, guide_range)?;
 
     // The two host faces at the edge, with their surfaces and outward signs.
     let mut hosts: Vec<(Shape, SurfaceGeometry, f64)> = Vec::new();
@@ -195,6 +175,48 @@ pub(crate) fn marched_fillet(
     let (face_first, face_second) = (face_first.clone(), face_second.clone());
     let (first, second) = (first.clone(), second.clone());
     let (sign_first, sign_second) = (*sign_first, *sign_second);
+
+    // An open conic arc is either a piece of a crease the boolean split at
+    // its hosts' seams, whose seat is the whole loop (the apex ring runs
+    // the conic's full turn, and every arc of the old seat melts with the
+    // legs), or a crease that ends where its hosts stop meeting, whose seat
+    // is the arc alone. The two host faces answer: a crease that walks back
+    // to its start through the edges they share is the loop. The arc alone
+    // is marched on the conic trimmed some radii past both of its ends, in
+    // the conic's own parameters, so the ball can run out past an end that
+    // terminates and the edge's window still reads on it. A fitted seam
+    // already spans its loop.
+    let conic = matches!(stored_guide, Curve::Ellipse(_) | Curve::Circle(_));
+    let (guide, guide_range) = if closed {
+        (stored_guide, edge_range)
+    } else if conic
+        && crease_loop(
+            model,
+            edge,
+            &stored_guide,
+            edge_range,
+            [&face_first, &face_second],
+            tol,
+        )?
+        .is_none()
+    {
+        let arc = arc_run_out(&stored_guide, edge_range, radius, tol)?;
+        let domain = arc.domain();
+        (arc, domain)
+    } else {
+        match &stored_guide {
+            Curve::Ellipse(e) => {
+                let full: Curve = ogeom_geom::EllipseCurve::new(e.ellipse()).into();
+                let domain = full.domain();
+                (full, domain)
+            }
+            _ => {
+                let domain = stored_guide.domain();
+                (stored_guide, domain)
+            }
+        }
+    };
+    let (loops, march_guide) = closure_of(&guide, guide_range)?;
 
     // A seat the boolean split into arcs at its hosts' seams, on a solid
     // whose curves are the arcs themselves (a converted solid, an imported
@@ -998,6 +1020,7 @@ fn open_runout_wedge(
     // into territory the boolean cut away. Trim the band to the edge's own
     // window, and solve the exact section at each end: the caps stand on
     // those, not on wherever the walker's last step landed.
+    let mut ends_on_a_wall = false;
     {
         let span = edge_range.1 - edge_range.0;
         if span <= 0.0 {
@@ -1106,6 +1129,7 @@ fn open_runout_wedge(
             if chain_mate || settled {
                 continue;
             }
+            ends_on_a_wall = true;
             // Where the ball's contacts stand against the host faces past
             // the window: `Out` of both is clear of the solid, `On` either
             // is a neighbouring blend's own rail; the seat goes on under
@@ -1340,7 +1364,14 @@ fn open_runout_wedge(
         }
     }
 
-    build_open_band(
+    // A crease that ends on a third face ends the band there; where that
+    // face stands in or near the band's end section, the fitted band's end
+    // touches it within the fit's tolerance along a stretch, a contact the
+    // melt does not resolve.
+    const RUNS_OUT_ON_A_FACE: &str = "the marched band's end where its crease runs out on \
+         another face does not melt with that face; see docs/PARITY.md, \
+         fillet.edge-blends";
+    match build_open_band(
         model,
         solid,
         Some(edge),
@@ -1351,7 +1382,18 @@ fn open_runout_wedge(
         convex,
         [false, false],
         tol,
-    )
+    ) {
+        Err(ogeom_core::OgeomError::NotDone(e)) if ends_on_a_wall => {
+            ogeom_bail!(NotDone, "{RUNS_OUT_ON_A_FACE} ({e})")
+        }
+        Ok(built) => {
+            if ends_on_a_wall {
+                crate::support::note_melt_refusal(RUNS_OUT_ON_A_FACE);
+            }
+            Ok(built)
+        }
+        other => other,
+    }
 }
 
 /// The band and wedge over an open run of stations that spans exactly the
@@ -2747,6 +2789,73 @@ fn averaged_chordal(rows: &[Vec<Point>]) -> Vec<f64> {
 /// walk's way, the vertex it arrives at, and the direction it arrives in.
 type NextPiece = (Curve, (f64, f64), bool, ogeom_topo::TShapeId, Vector);
 
+/// One piece of a crease's loop: its curve and range, and whether it runs
+/// the walk's way.
+type LoopPiece = (Curve, (f64, f64), bool);
+
+/// Whether `edge` of `solid` lies on a crease that closes on itself: the
+/// edge is closed, or the crease walks back to the edge's start through
+/// the edges its two host faces share.
+pub(crate) fn crease_closes(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    if ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b)) {
+        return Ok(true);
+    }
+    let mut hosts: Vec<Shape> = Vec::new();
+    for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+        if explore(model, &face, Filter::OfType(ShapeType::Edge))?
+            .iter()
+            .any(|e| crate::support::same_occurrence(model, e, edge, tol))
+        {
+            hosts.push(face);
+        }
+    }
+    let [first, second] = hosts.as_slice() else {
+        return Ok(false);
+    };
+    let (guide, range) = edge_curve(model, edge, tol)?;
+    Ok(crease_loop(model, edge, &guide, range, [first, second], tol)?.is_some())
+}
+
+/// An open arc of a conic over `range`, carried on past both ends along
+/// the conic itself by eight radii of length, or less where the two
+/// carried ends would come within a tenth of the arc's complement of each
+/// other: the conic trimmed, in its own parameters.
+fn arc_run_out(
+    conic: &Curve,
+    range: (f64, f64),
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Curve> {
+    let (lo, hi) = conic.domain();
+    let gap = (hi - lo) - (range.1 - range.0);
+    if gap <= 0.0 {
+        ogeom_bail!(
+            Construction,
+            "an open arc whose window runs the conic's whole turn"
+        );
+    }
+    let reach = |t: f64| -> OgeomResult<f64> {
+        let speed = conic.d1_at(t, tol)?.magnitude();
+        Ok(if speed > tol.confusion() {
+            (radius * 8.0 / speed).min(gap * 0.45)
+        } else {
+            gap * 0.45
+        })
+    };
+    let (before, after) = (reach(range.0)?, reach(range.1)?);
+    Ok(Curve::Trimmed(Box::new(ogeom_geom::TrimmedCurve::new(
+        conic.clone(),
+        range.0 - before,
+        range.1 + after,
+        tol,
+    )?)))
+}
+
 /// Whether a guide's two ends stand apart: an arc, not a loop.
 fn ends_apart(guide: &Curve, range: (f64, f64), tol: Tolerances) -> bool {
     let (lo, hi) = range;
@@ -2756,20 +2865,20 @@ fn ends_apart(guide: &Curve, range: (f64, f64), tol: Tolerances) -> bool {
         .is_ok_and(|d| d > tol.confusion() * 10.0)
 }
 
-/// A seat's loop closed back through the edges its two host faces share,
-/// each taken where it continues the last tangentially, as one spline:
-/// the pieces in their exact spline forms over unit spans, turned to run
-/// the walk's way, raised to one degree and joined end to end, the seat
-/// itself the first span. `None` where the walk does not come back to the
-/// seat's start.
-fn loop_through_neighbours(
+/// The pieces of a seat's crease walked round from the seat back to its
+/// start through the edges its two host faces share, each taken where it
+/// continues the last tangentially: the seat itself first, run forward,
+/// then each neighbour with its range and whether it runs the walk's way.
+/// `None` where the walk does not come back to the seat's start: the
+/// crease ends somewhere and the seat is an arc of it.
+fn crease_loop(
     model: &Model,
     edge: &Shape,
     guide: &Curve,
     edge_range: (f64, f64),
     hosts: [&Shape; 2],
     tol: Tolerances,
-) -> OgeomResult<Option<(Curve, (f64, f64))>> {
+) -> OgeomResult<Option<Vec<LoopPiece>>> {
     let Some((start, end)) = ogeom_algo::edge_vertices(model, edge)? else {
         return Ok(None);
     };
@@ -2798,7 +2907,7 @@ fn loop_through_neighbours(
     };
     // The seat first, run forward; then each neighbour that leaves the
     // current vertex the way the last piece arrived.
-    let mut pieces: Vec<(Curve, (f64, f64), bool)> = vec![(guide.clone(), edge_range, true)];
+    let mut pieces: Vec<LoopPiece> = vec![(guide.clone(), edge_range, true)];
     let mut at = end.node();
     let Some(mut heading) = unit(guide.d1_at(edge_range.1, tol)?) else {
         return Ok(None);
@@ -2848,9 +2957,26 @@ fn loop_through_neighbours(
             break;
         }
     }
-    if !closed {
+    Ok(closed.then_some(pieces))
+}
+
+/// A seat's loop closed back through the edges its two host faces share,
+/// each taken where it continues the last tangentially, as one spline:
+/// the pieces in their exact spline forms over unit spans, turned to run
+/// the walk's way, raised to one degree and joined end to end, the seat
+/// itself the first span. `None` where the walk does not come back to the
+/// seat's start.
+fn loop_through_neighbours(
+    model: &Model,
+    edge: &Shape,
+    guide: &Curve,
+    edge_range: (f64, f64),
+    hosts: [&Shape; 2],
+    tol: Tolerances,
+) -> OgeomResult<Option<(Curve, (f64, f64))>> {
+    let Some(pieces) = crease_loop(model, edge, guide, edge_range, hosts, tol)? else {
         return Ok(None);
-    }
+    };
     // Each piece over its own arc length rather than a unit span, so the
     // joined guide's speed is continuous across the joins: a chart image
     // fitted at the guide's parameters would otherwise carry a kink at
