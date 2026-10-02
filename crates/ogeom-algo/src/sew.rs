@@ -215,6 +215,15 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
     }
     model.begin_operation();
 
+    // Sewing tells edges apart by their nodes, so one node placed twice (a
+    // prism's far end edges are its profile's, carried along it by a
+    // location) would be read as one edge where it stands first. A face
+    // holding such a node is baked: rebuilt with its placements in its
+    // geometry, every edge a node of its own where it stands.
+    let originals = faces;
+    let baked = unshared(model, faces, tol)?;
+    let faces = baked.as_slice();
+
     // Vertices first, and this is not an optimisation; it is what makes the
     // rest work. Deciding that two edges are one edge leaves the *neighbouring*
     // edges ending at the vertices they always had, which sit at the same
@@ -393,18 +402,18 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
 
     let mut history = History::new();
     let mut rebuilt = Vec::with_capacity(faces.len());
-    for face in faces {
+    for (face, original) in faces.iter().zip(originals) {
         let Some((sewn, whole)) = rebuild_face(model, face, &substitution, tol)? else {
-            history.delete(face);
+            history.delete(original);
             continue;
         };
-        model.set_derived(&sewn, std::slice::from_ref(face), roles::SEWN_FACE)?;
+        model.set_derived(&sewn, std::slice::from_ref(original), roles::SEWN_FACE)?;
         // Moved onto the shared edges with every ring kept, the face is the
         // same face: a copy, on its own surface within its own boundary.
-        if whole {
-            history.copy(face, sewn.clone());
+        if whole && face == original {
+            history.copy(original, sewn.clone());
         } else {
-            history.modify(face, sewn.clone());
+            history.modify(original, sewn.clone());
         }
         rebuilt.push(sewn);
     }
@@ -426,6 +435,57 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
         free_edges,
         history,
     })
+}
+
+/// The faces, each holding an edge node that some face places elsewhere
+/// too baked into a copy with its placements in its geometry; the others
+/// as they are.
+fn unshared(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<Vec<Shape>> {
+    let mut placements: HashMap<TShapeId, Vec<ogeom_topo::Location>> = HashMap::new();
+    let mut held: Vec<Vec<TShapeId>> = Vec::with_capacity(faces.len());
+    for face in faces {
+        let mut nodes = Vec::new();
+        for edge in ogeom_topo::explore(model, face, ogeom_topo::Filter::OfType(ShapeType::Edge))? {
+            let list = placements.entry(edge.node()).or_default();
+            if !list.contains(edge.location()) {
+                list.push(edge.location().clone());
+            }
+            nodes.push(edge.node());
+        }
+        held.push(nodes);
+    }
+    let placed_twice: Vec<bool> = held
+        .iter()
+        .map(|nodes| {
+            nodes
+                .iter()
+                .any(|n| placements.get(n).is_some_and(|l| l.len() > 1))
+        })
+        .collect();
+    let to_bake: Vec<Shape> = faces
+        .iter()
+        .zip(&placed_twice)
+        .filter(|(_, twice)| **twice)
+        .map(|(face, _)| face.clone())
+        .collect();
+    if to_bake.is_empty() {
+        return Ok(faces.to_vec());
+    }
+    // Baked together, in a solid of their own for the rebuild to walk, so
+    // the edges these faces share stay shared.
+    let shell = model.add_shell(&to_bake)?;
+    let solid = model.add_solid(&[shell])?;
+    let baked = crate::baked_shape(model, &solid, tol)?;
+    let mut out = Vec::with_capacity(faces.len());
+    for (face, twice) in faces.iter().zip(&placed_twice) {
+        let now = if *twice {
+            baked.history.modified(face).first().cloned()
+        } else {
+            None
+        };
+        out.push(now.unwrap_or_else(|| face.clone()));
+    }
+    Ok(out)
 }
 
 /// Decide which coincident vertices are the same vertex.
@@ -1039,7 +1099,12 @@ fn fingerprint(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomResult<Opti
     let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
         return Ok(None);
     };
-    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+    let Some(EdgeRepr::Curve3d {
+        curve,
+        range,
+        location,
+    }) = data.curve3d()
+    else {
         // A degenerate edge has no curve and no length; there is nothing about
         // it that could match another edge's geometry.
         return Ok(None);
@@ -1047,7 +1112,11 @@ fn fingerprint(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomResult<Opti
     let Some(geometry) = model.geometry().curve(*curve) else {
         ogeom_bail!(Dangling, "curve is not in this model");
     };
-    let placement = edge.transform(model.datums())?;
+    // The curve sits where its own location puts it, inside wherever the
+    // edge is placed: a prism's far end edges are its profile's curves
+    // carried along it by a location, not new curves.
+    let own = location.composed(model.datums())?;
+    let outer = edge.transform(model.datums())?;
     let mut width = data.tolerance.get();
     for vertex in model.children_of(edge)? {
         if let Some(v) = model.node(&vertex).and_then(|n| n.data().as_vertex()) {
@@ -1055,11 +1124,15 @@ fn fingerprint(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomResult<Opti
         }
     }
     use ogeom_geom::Transformable as _;
+    let placement = |p: Point| outer.apply(own.apply(p));
     Ok(Some(Fingerprint {
-        start: placement.apply(geometry.point_at(range.0, tol)?),
-        middle: placement.apply(geometry.point_at(f64::midpoint(range.0, range.1), tol)?),
-        end: placement.apply(geometry.point_at(range.1, tol)?),
-        curve: geometry.clone().transformed(&placement, tol)?,
+        start: placement(geometry.point_at(range.0, tol)?),
+        middle: placement(geometry.point_at(f64::midpoint(range.0, range.1), tol)?),
+        end: placement(geometry.point_at(range.1, tol)?),
+        curve: geometry
+            .clone()
+            .transformed(&own, tol)?
+            .transformed(&outer, tol)?,
         range: *range,
         width,
     }))
@@ -1335,6 +1408,60 @@ mod tests {
         crate::make_face_on(model, surface, std::slice::from_ref(&wire), T)
             .unwrap()
             .shape
+    }
+
+    /// A prism's walls with a lid built apart at each end: the walls' end
+    /// edges are the profile's edges, the top ones carried up the prism,
+    /// and both lids sew on, closing the box.
+    #[test]
+    fn a_prism_s_walls_sew_to_lids_at_both_ends() {
+        let mut model = Model::new();
+        let at = |x: f64, y: f64, z: f64| Point::new(x, y, z);
+        let profile = make_polygon(
+            &mut model,
+            &[
+                at(0.0, 0.0, 0.0),
+                at(10.0, 0.0, 0.0),
+                at(10.0, 10.0, 0.0),
+                at(0.0, 10.0, 0.0),
+            ],
+            true,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let walls = crate::make_prism(&mut model, &profile, Vector::new(0.0, 0.0, 5.0), T)
+            .unwrap()
+            .shape;
+        let mut faces = explore_unique(&model, &walls, ShapeType::Face).unwrap();
+        faces.push(loose_square(
+            &mut model,
+            [
+                at(0.0, 0.0, 0.0),
+                at(0.0, 10.0, 0.0),
+                at(10.0, 10.0, 0.0),
+                at(10.0, 0.0, 0.0),
+            ],
+        ));
+        faces.push(loose_square(
+            &mut model,
+            [
+                at(0.0, 0.0, 5.0),
+                at(10.0, 0.0, 5.0),
+                at(10.0, 10.0, 5.0),
+                at(0.0, 10.0, 5.0),
+            ],
+        ));
+        let sewn = sew(&mut model, &faces, T).unwrap();
+        assert_eq!(sewn.shells.len(), 1);
+        assert_eq!(sewn.joined, 8);
+        assert!(sewn.free_edges.is_empty());
+        assert!(is_shell_closed(&model, &sewn.shells[0]).unwrap());
+        let solid = crate::make_solid(&mut model, &sewn.shells).unwrap().shape;
+        let volume = crate::volume_properties(&model, &solid, fine(), T)
+            .unwrap()
+            .mass;
+        assert!((volume.abs() - 500.0).abs() < 1e-6, "{volume}");
     }
 
     #[test]

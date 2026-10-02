@@ -56,6 +56,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A prism's far end edges sew.** `sew` told edges apart by their nodes,
+  and a prism's far end edges are its profile's own edge nodes carried
+  along it by a location: each was read where the profile stands, so a
+  lid at the far end joined nothing. Faces that hold an edge node placed
+  twice are baked first, every edge its own node where it stands, and an
+  edge's curve is read through its own location as well as the edge's.
+
 - **A converted solid that would mesh open gives up the curved faces that
   open it.** A face whose trim folds within the tolerance its own seams
   claim passes every check on the solid and still meshes over itself.
