@@ -62,10 +62,10 @@ at 0.001 some counts refuse, the open edges being the pad's corner walls
 where they run along the corner's facets.
 
 **Mesh conversion.** `solid_from_mesh` rebuilds planes, the four canonical
-surfaces, extrusions and surfaces of revolution, and leaves every other
-region faceted. Today it fits each region on its own, solves each seam point
-by point along the mesh boundary between two regions, and takes its corners
-at mesh vertices. The failures left come from those three steps:
+surfaces, extrusions, surfaces of revolution and fitted B-spline patches,
+and leaves every other region faceted. Today it fits each region on its
+own, solves each seam point by point along the mesh boundary between two
+regions, and takes its corners at mesh vertices. The failures left come from those three steps:
 
 - a fillet fitted apart from its supports meets them at a near tangency the
   seam solve cannot settle (C3 in `docs/REVIEW.md`);
@@ -194,20 +194,27 @@ after.
      and nist_ctc_05's folded planes are the case to measure it on.
    - **4d. Junction rules** (Benière et al. 2012): a junction stays only
      if its faces are pairwise adjacent; dangling edges are dropped.
-5. **A fitted B-spline patch** for a smooth region nothing else fits:
-   - a region that is not one disk with one loop stays faceted;
-   - the chart comes from a canonical surface that nearly fits (within about
-     ten times the tolerance) where there is one;
-   - otherwise from a mean-value map onto a square (Floater 2003): one
-     sparse linear solve, without folds when the boundary is convex, the
-     corners where the neighbouring face changes. The sparse solver is
-     chosen when the item starts;
-   - `fit_surface_scattered` takes those parameters, with a fairing term and
-     knots inserted at the worst span, then two or three rounds of
-     parameter correction;
-   - the patch is verified both ways, triangle interiors included (allowed
-     the tolerance plus the triangle's own sag), and its Jacobian and
-     normals checked.
+5. **A fitted B-spline patch** for a smooth region nothing else fits.
+   Done (`MeshSolidOptions::patches`, on by default): a region that is one
+   disk with one loop, with vertices enough inside it, is charted by a
+   canonical surface within ten times the distance or else by the
+   mean-value map onto a square (one banded solve in reverse Cuthill-McKee
+   order, no new dependency), fitted by `fit_surface_scattered_at` with a
+   thin-plate term, knots split where feet stand off and parameters
+   corrected, verified both ways, continued past its square and handed to
+   the culprit loop. Refusals are counted (`patches_not_disk`,
+   `patches_narrow`, `patches_unverified`). Measured: the corpus and the
+   truth bench come back unchanged; no region there verifies (Body28 has
+   13 unverified, the rest are not disks or are rows of facets).
+   Still to do:
+   - free-form regions on a fine mesh are cut into small canonical
+     regions before the patch pass sees them, and the ring left round them
+     is no disk;
+   - the fit holds vertices to half the distance, but between rows near a
+     free edge it can stand off the true surface by about twice the
+     distance on coarse meshes;
+   - a patch meeting a neighbour tangentially falls to the chord seam or
+     to facets.
 
    Tangency to a canonical neighbour comes after item 2.
 6. **The steps as an API:** the regions found, merging two, splitting one

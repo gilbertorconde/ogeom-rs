@@ -31,6 +31,7 @@ pub mod primitive;
 pub mod project_plane;
 pub mod proximity;
 pub mod recognize;
+mod recognize_patch;
 mod recognize_swept;
 pub mod sew;
 pub mod sweep;

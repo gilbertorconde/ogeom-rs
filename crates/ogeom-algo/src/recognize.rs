@@ -38,32 +38,53 @@ pub enum Canonical {
     Sphere(Sphere),
     /// A torus.
     Torus(Torus),
-    /// A profile swept round an axis or along a direction: a surface of
-    /// revolution or an extrusion, for a region none of the others fits.
+    /// A surface fitted to a region none of the others fits: a profile
+    /// swept round an axis or along a direction (a surface of revolution or
+    /// an extrusion), or a B-spline patch.
     Swept(Box<SweptShape>),
 }
 
-/// A swept surface, with the tolerances its distances are measured at.
+/// A fitted surface, with the tolerances its distances are measured at.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SweptShape {
-    /// The surface: a [`ogeom_geom::SurfaceGeometry::Revolution`] or a
-    /// [`ogeom_geom::SurfaceGeometry::Extrusion`].
+    /// The surface: a [`ogeom_geom::SurfaceGeometry::Revolution`], an
+    /// [`ogeom_geom::SurfaceGeometry::Extrusion`] or a
+    /// [`ogeom_geom::SurfaceGeometry::BSpline`].
     pub surface: ogeom_geom::SurfaceGeometry,
     /// The tolerances a point's foot on it is found to.
     pub tol: Tolerances,
     /// The profile sampled evenly in its parameter, where a foot is first
     /// sought.
     profile: Vec<(f64, Point)>,
+    /// A patch sampled on an even grid of its parameters, where a foot is
+    /// first sought.
+    grid: Vec<((f64, f64), Point)>,
+    /// The grid's samples in square blocks: each block's centre, the
+    /// radius of the ball about it holding its samples, and their indices.
+    /// A block whose ball is farther from a point than the samples already
+    /// found is passed over whole.
+    blocks: Vec<(Point, f64, Vec<usize>)>,
 }
 
 /// How many samples a swept shape's profile is held at.
 const PROFILE_SAMPLES: usize = 256;
 
+/// How many samples a patch's grid holds along each direction, at the
+/// middles of as many equal cells.
+const GRID_SAMPLES: usize = 40;
+
+/// How many of a patch's nearest grid samples a foot is sought from.
+const GRID_SEEDS: usize = 3;
+
+/// How many samples a block of a patch's grid spans along each direction.
+const GRID_BLOCK: usize = 5;
+
 impl SweptShape {
-    /// A swept shape on `surface`, its profile sampled.
+    /// A swept shape on `surface`: a sweep's profile sampled, or a patch
+    /// sampled on a grid.
     #[must_use]
     pub fn new(surface: ogeom_geom::SurfaceGeometry, tol: Tolerances) -> Self {
-        use ogeom_geom::{Curve3d as _, SurfaceGeometry as S};
+        use ogeom_geom::{Curve3d as _, Surface as _, SurfaceGeometry as S};
         let curve = match &surface {
             S::Revolution(r) => Some(r.curve().clone()),
             S::Extrusion(e) => Some(e.curve().clone()),
@@ -81,10 +102,49 @@ impl SweptShape {
                     .collect()
             })
             .unwrap_or_default();
+        let grid = if matches!(surface, S::BSpline(_)) {
+            let ((u0, u1), (v0, v1)) = surface.domain();
+            #[allow(clippy::cast_precision_loss, reason = "a sample index")]
+            let at = |k: usize, lo: f64, hi: f64| {
+                lo + (hi - lo) * (k as f64 + 0.5) / (GRID_SAMPLES as f64)
+            };
+            (0..GRID_SAMPLES)
+                .flat_map(|i| (0..GRID_SAMPLES).map(move |j| (i, j)))
+                .filter_map(|(i, j)| {
+                    let (u, v) = (at(i, u0, u1), at(j, v0, v1));
+                    surface.point_at(u, v, tol).ok().map(|p| ((u, v), p))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut blocks = Vec::new();
+        if grid.len() == GRID_SAMPLES * GRID_SAMPLES {
+            for bi in (0..GRID_SAMPLES).step_by(GRID_BLOCK) {
+                for bj in (0..GRID_SAMPLES).step_by(GRID_BLOCK) {
+                    let members: Vec<usize> = (bi..bi + GRID_BLOCK)
+                        .flat_map(|i| (bj..bj + GRID_BLOCK).map(move |j| i * GRID_SAMPLES + j))
+                        .collect();
+                    let mut sum = Vector::ZERO;
+                    for &k in &members {
+                        sum += grid[k].1.to_vector();
+                    }
+                    #[allow(clippy::cast_precision_loss, reason = "a block's sample count")]
+                    let centre = Point::from_vector(sum / members.len() as f64);
+                    let radius = members
+                        .iter()
+                        .map(|&k| grid[k].1.distance(centre))
+                        .fold(0.0, f64::max);
+                    blocks.push((centre, radius, members));
+                }
+            }
+        }
         Self {
             surface,
             tol,
             profile,
+            grid,
+            blocks,
         }
     }
 
@@ -177,6 +237,45 @@ impl SweptShape {
                     point,
                     distance: point.distance(p),
                 })
+            }
+            // A patch's nearest point is sought from the nearest of its
+            // grid's samples.
+            // A patch's nearest point is sought from the few nearest of its
+            // grid's samples, each refined and the nearest foot kept: a
+            // patch that turns back on itself can bring a sample of another
+            // stretch of it nearer than those of the stretch under the point.
+            S::BSpline(_) if !self.grid.is_empty() => {
+                let mut nearest = [(f64::INFINITY, (0.0, 0.0)); GRID_SEEDS];
+                let mut near_blocks: Vec<(f64, usize)> = self
+                    .blocks
+                    .iter()
+                    .enumerate()
+                    .map(|(b, (centre, radius, _))| {
+                        ((p.distance(*centre) - radius).max(0.0).powi(2), b)
+                    })
+                    .collect();
+                near_blocks.sort_by(|a, b| a.0.total_cmp(&b.0));
+                for (bound, b) in near_blocks {
+                    if bound > nearest[GRID_SEEDS - 1].0 {
+                        break;
+                    }
+                    for &k in &self.blocks[b].2 {
+                        let (at, q) = self.grid[k];
+                        let d = q.square_distance(p);
+                        if d < nearest[GRID_SEEDS - 1].0 {
+                            nearest[GRID_SEEDS - 1] = (d, at);
+                            nearest.sort_by(|a, b| a.0.total_cmp(&b.0));
+                        }
+                    }
+                }
+                nearest
+                    .iter()
+                    .filter(|(d, _)| d.is_finite())
+                    .filter_map(|(_, start)| {
+                        crate::measure::project_on_surface_from(&self.surface, p, *start, self.tol)
+                            .ok()
+                    })
+                    .min_by(|a, b| a.distance.total_cmp(&b.distance))
             }
             other => crate::measure::project_on_surface(other, p, 24, self.tol).ok(),
         }

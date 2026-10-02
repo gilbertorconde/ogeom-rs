@@ -90,6 +90,22 @@ pub struct MeshSolidOptions {
     /// one direction) or a surface of revolution (its normals all meeting
     /// one axis), verified at every vertex. Needs `recognize`.
     pub sweeps: bool,
+    /// After the sweeps, rebuild a smooth region nothing else fits as one
+    /// fitted B-spline patch, where the region is one disk bounded by one
+    /// loop and the patch verifies: every vertex within the coplanar
+    /// distance of it, every triangle's interior within that and its own
+    /// sag, both ways, and the patch's normal regular and agreeing with
+    /// every triangle's. Its chart is a nearly fitting canonical surface's
+    /// where one fits within ten times the distance, and otherwise the
+    /// mean-value map of the region onto a square. A region that is not a
+    /// disk, is too narrow to hold a patch across it, or whose patch does
+    /// not verify stays faceted and is counted
+    /// ([`MeshSolidReport::patches_not_disk`],
+    /// [`MeshSolidReport::patches_narrow`],
+    /// [`MeshSolidReport::patches_unverified`]). A patch whose seams cannot
+    /// be built falls back to facets as any recognized face does. Needs
+    /// `recognize`.
+    pub patches: bool,
 }
 
 impl Default for MeshSolidOptions {
@@ -104,6 +120,7 @@ impl Default for MeshSolidOptions {
             crease: core::f64::consts::FRAC_PI_6,
             keep_vertices: false,
             sweeps: true,
+            patches: true,
         }
     }
 }
@@ -167,6 +184,22 @@ pub struct MeshSolidReport {
     /// own scatter allows recognition to hold to, and was raised to that
     /// ([`MeshSolid::coplanar_distance`] is the one used).
     pub coplanar_distance_raised: bool,
+    /// Faces built on a fitted B-spline patch, among the curved faces.
+    pub patch_faces: usize,
+    /// Of those, the ones whose chart is the mean-value map onto a square
+    /// rather than a nearly fitting canonical surface's.
+    pub patch_charts_mapped: usize,
+    /// Smooth regions nothing else fitted that were left faceted because
+    /// they are not one disk bounded by one loop (a region with a hole, or
+    /// one that touches itself).
+    pub patches_not_disk: usize,
+    /// Smooth regions nothing else fitted that were left faceted because
+    /// too few of their vertices lie inside their boundary for a patch to be
+    /// held across them (a row or two of facets along a seam).
+    pub patches_narrow: usize,
+    /// Smooth regions nothing else fitted whose fitted patch failed its
+    /// verification, left faceted.
+    pub patches_unverified: usize,
 }
 
 /// The result of [`solid_from_mesh`].
@@ -627,6 +660,25 @@ pub fn solid_from_mesh(
                                 .zip(&built)
                                 .filter(|(c, b)| matches!(c, Carrier::Curved(_)) && b.is_some())
                                 .count();
+                            let patches: Vec<&Curved> = groups
+                                .carriers
+                                .iter()
+                                .zip(&built)
+                                .filter_map(|(c, b)| match (c, b) {
+                                    (Carrier::Curved(curved), Some(_))
+                                        if curved.patch.is_some() =>
+                                    {
+                                        Some(curved)
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
+                            report.patch_faces = patches.len();
+                            report.patch_charts_mapped =
+                                patches.iter().filter(|c| c.patch == Some(true)).count();
+                            report.patches_not_disk = groups.refused.not_disk;
+                            report.patches_narrow = groups.refused.narrow;
+                            report.patches_unverified = groups.refused.unverified;
                             break shape;
                         }
                         culprits
@@ -1622,7 +1674,7 @@ fn astray_faces(
 }
 
 /// The distance from `x` to the triangle `a b c`.
-fn distance_to_triangle(x: Point, a: Point, b: Point, c: Point) -> f64 {
+pub(crate) fn distance_to_triangle(x: Point, a: Point, b: Point, c: Point) -> f64 {
     let (ab, ac, ax) = (b - a, c - a, x - a);
     let n = ab.cross(ac);
     let area = n.magnitude();
@@ -2415,6 +2467,8 @@ struct Curved {
     fixed: bool,
     /// The region's mesh vertices.
     vertices: Vec<u32>,
+    /// For a fitted patch, whether its chart is the mean-value map.
+    patch: Option<bool>,
 }
 
 /// How a curved face's boundary lies in its chart.
@@ -2444,6 +2498,16 @@ enum Layout {
 struct Groups {
     of: Vec<usize>,
     carriers: Vec<Carrier>,
+    /// The smooth regions refused a patch, by why.
+    refused: PatchRefusals,
+}
+
+/// How many smooth regions were refused a patch, by why.
+#[derive(Debug, Clone, Copy, Default)]
+struct PatchRefusals {
+    not_disk: usize,
+    narrow: usize,
+    unverified: usize,
 }
 
 /// The plane of a triangle, its normal by the winding, its `x` axis along
@@ -2831,6 +2895,7 @@ fn segment(
     let mut groups = Groups {
         of: vec![usize::MAX; n],
         carriers: Vec::new(),
+        refused: PatchRefusals::default(),
     };
     if !options.merge_coplanar {
         one_each(points, triangles, &mut groups, tol)?;
@@ -2856,6 +2921,17 @@ fn segment(
                 &mut groups,
                 tol,
             );
+        }
+        if options.patches {
+            patch_regions(
+                points,
+                triangles,
+                adjacency,
+                options,
+                flat,
+                &mut groups,
+                tol,
+            )?;
         }
         split_disconnected(triangles, adjacency, &mut groups);
         merge_same_surface(points, triangles, adjacency, &mut groups, flat);
@@ -4460,6 +4536,7 @@ fn recognized_regions(
                 wraps_v: false,
                 fixed: false,
                 vertices,
+                patch: None,
             }));
         }
     }
@@ -4484,42 +4561,9 @@ fn swept_regions(
     tol: Tolerances,
 ) {
     let normals: Vec<Vector> = triangles.iter().map(|t| unit_normal(points, *t)).collect();
-    let (cos_crease, cos_flat) = (options.crease.cos(), options.coplanar_angle.cos());
+    let cos_crease = options.crease.cos();
     let turn = |h: Half| adjacency.twin[h].map(|g| normals[h / 3].dot(normals[g / 3]));
-    let mut seen = vec![false; triangles.len()];
-    for seed in 0..triangles.len() {
-        if seen[seed] || groups.of[seed] != usize::MAX {
-            continue;
-        }
-        // The region: free triangles across smooth edges, one of which at
-        // least turns.
-        let mut region = vec![seed];
-        seen[seed] = true;
-        let mut bends = false;
-        let mut i = 0;
-        while i < region.len() {
-            let t = region[i];
-            i += 1;
-            for h in 3 * t..3 * t + 3 {
-                let (Some(c), Some(g)) = (turn(h), adjacency.twin[h]) else {
-                    continue;
-                };
-                if c < cos_crease {
-                    continue;
-                }
-                let other = g / 3;
-                if c < cos_flat {
-                    bends = true;
-                }
-                if !seen[other] && groups.of[other] == usize::MAX {
-                    seen[other] = true;
-                    region.push(other);
-                }
-            }
-        }
-        if !bends || region.len() < SWEPT_TRIANGLES {
-            continue;
-        }
+    for region in smooth_regions(triangles, adjacency, &normals, options, groups) {
         // The recognized bands the region runs into smoothly, offered with
         // it: a stretch of a wavy profile straight enough to pass for a
         // cone is part of the one sweep, and the sweep takes it where the
@@ -4555,6 +4599,55 @@ fn swept_regions(
             claim_swept(groups, &region, claim);
         }
     }
+}
+
+/// The free triangles joined across edges that turn but do not crease,
+/// each such region holding at least [`SWEPT_TRIANGLES`] and an edge that
+/// turns: the smooth regions no canonical surface took.
+fn smooth_regions(
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    normals: &[Vector],
+    options: &MeshSolidOptions,
+    groups: &Groups,
+) -> Vec<Vec<usize>> {
+    let (cos_crease, cos_flat) = (options.crease.cos(), options.coplanar_angle.cos());
+    let turn = |h: Half| adjacency.twin[h].map(|g| normals[h / 3].dot(normals[g / 3]));
+    let mut seen = vec![false; triangles.len()];
+    let mut regions = Vec::new();
+    for seed in 0..triangles.len() {
+        if seen[seed] || groups.of[seed] != usize::MAX {
+            continue;
+        }
+        let mut region = vec![seed];
+        seen[seed] = true;
+        let mut bends = false;
+        let mut i = 0;
+        while i < region.len() {
+            let t = region[i];
+            i += 1;
+            for h in 3 * t..3 * t + 3 {
+                let (Some(c), Some(g)) = (turn(h), adjacency.twin[h]) else {
+                    continue;
+                };
+                if c < cos_crease {
+                    continue;
+                }
+                let other = g / 3;
+                if c < cos_flat {
+                    bends = true;
+                }
+                if !seen[other] && groups.of[other] == usize::MAX {
+                    seen[other] = true;
+                    region.push(other);
+                }
+            }
+        }
+        if bends && region.len() >= SWEPT_TRIANGLES {
+            regions.push(region);
+        }
+    }
+    regions
 }
 
 /// A sweep fitted to a region's vertices, with the normals averaged over
@@ -4633,7 +4726,113 @@ fn swept_claim(
         wraps_v,
         fixed: true,
         vertices,
+        patch: None,
     })
+}
+
+/// The smooth regions recognition and the sweeps left free, each rebuilt
+/// on one fitted B-spline patch where the region is one disk and the patch
+/// verifies.
+///
+/// A region is the free triangles joined across edges that turn but do not
+/// crease, as for the sweeps. The square its chart maps onto takes its
+/// corners first where the face across the region's boundary changes; the
+/// faces there are read as the planar pass would make them, every region a
+/// face of its own and the other free triangles grouped into planes. A
+/// region refused a patch keeps its triangles for the planes, and is
+/// counted by why.
+fn patch_regions(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    options: &MeshSolidOptions,
+    flat: f64,
+    groups: &mut Groups,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let normals: Vec<Vector> = triangles.iter().map(|t| unit_normal(points, *t)).collect();
+    let regions = smooth_regions(triangles, adjacency, &normals, options, groups);
+    if regions.is_empty() {
+        return Ok(());
+    }
+    let mut across = groups.clone();
+    for region in &regions {
+        let g = across.carriers.len();
+        across.carriers.push(Carrier::Gone);
+        for &t in region {
+            across.of[t] = g;
+        }
+    }
+    coplanar_groups(
+        points,
+        triangles,
+        adjacency,
+        options,
+        flat,
+        &mut across,
+        tol,
+    )?;
+    for region in regions {
+        // The faces across the boundary on either side of each boundary
+        // vertex: a corner where they differ.
+        let own = across.of[region[0]];
+        let mut sides: HashMap<u32, [Vec<usize>; 2]> = HashMap::new();
+        for &t in &region {
+            for h in 3 * t..3 * t + 3 {
+                let other = adjacency.twin[h].map_or(usize::MAX, |g| across.of[g / 3]);
+                if other == own {
+                    continue;
+                }
+                let (a, b) = from_to(triangles, h);
+                sides.entry(a).or_default()[0].push(other);
+                sides.entry(b).or_default()[1].push(other);
+            }
+        }
+        let corners: std::collections::HashSet<u32> = sides
+            .into_iter()
+            .filter(|(_, [leaving, arriving])| {
+                let mut faces = leaving.iter().chain(arriving);
+                faces.next().is_some_and(|first| faces.any(|f| f != first))
+            })
+            .map(|(v, _)| v)
+            .collect();
+        let found = crate::recognize_patch::fit_patch(
+            &crate::recognize_patch::Region {
+                points,
+                triangles,
+                members: &region,
+                corners: &corners,
+            },
+            flat,
+            tol,
+        );
+        match found {
+            Ok(patch) => {
+                let mut vertices: Vec<u32> = region.iter().flat_map(|&t| triangles[t]).collect();
+                vertices.sort_unstable();
+                vertices.dedup();
+                let claim = Curved {
+                    shape: Canonical::Swept(Box::new(crate::recognize::SweptShape::new(
+                        patch.surface,
+                        tol,
+                    ))),
+                    deviation: patch.deviation,
+                    fitted: patch.deviation,
+                    centre: (0.5, 0.5),
+                    wraps: false,
+                    wraps_v: false,
+                    fixed: true,
+                    vertices,
+                    patch: Some(patch.mapped),
+                };
+                claim_swept(groups, &region, claim);
+            }
+            Err(crate::recognize_patch::Refused::NotDisk) => groups.refused.not_disk += 1,
+            Err(crate::recognize_patch::Refused::Narrow) => groups.refused.narrow += 1,
+            Err(crate::recognize_patch::Refused::Unverified) => groups.refused.unverified += 1,
+        }
+    }
+    Ok(())
 }
 
 /// A region's triangles given to a new swept face.

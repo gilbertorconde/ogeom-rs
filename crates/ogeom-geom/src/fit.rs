@@ -1032,6 +1032,201 @@ pub fn fit_surface_scattered(
     })
 }
 
+/// Fit a surface to scattered points at parameters the caller chose, over
+/// the caller's knot vectors, faired by the thin-plate energy.
+///
+/// Where [`fit_surface_scattered`] reads the parameters off the cloud's
+/// principal plane, here they come from a chart of the caller's: one that
+/// unfolds a region the principal plane would fold over. The control net
+/// minimises the mean squared distance from each point to the surface at its
+/// parameters plus `fairing` times the thin-plate energy, the integral of
+/// `|S_uu|² + 2|S_uv|² + |S_vv|²` over the whole knot domain. The energy
+/// settles the controls no point reaches (a span the points leave empty, a
+/// margin past them) on the smoothest continuation of the rest. The
+/// reported error is the largest distance from any point to the surface at
+/// its parameters; `met` is always true, there being no target.
+///
+/// The normal equations are banded (a control couples only to those within
+/// a degree of it in each direction), and are solved in that band.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// points and parameters differ in number, there are fewer than four, a
+/// parameter lies outside the knot domain, or the weight is not finite and
+/// non-negative; [`OgeomError::Numeric`](ogeom_core::OgeomError::Numeric)
+/// if the system is singular.
+pub fn fit_surface_scattered_at(
+    points: &[Point],
+    parameters: &[(f64, f64)],
+    u_knots: &KnotVector,
+    v_knots: &KnotVector,
+    fairing: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<crate::BSplineSurface>> {
+    use crate::traits::Surface as _;
+    if !fairing.is_finite() || fairing < 0.0 {
+        ogeom_bail!(
+            Construction,
+            "a fairing weight of {fairing} is not a weight"
+        );
+    }
+    let m = points.len();
+    if m != parameters.len() {
+        ogeom_bail!(
+            Construction,
+            "{m} points were given {} parameters",
+            parameters.len()
+        );
+    }
+    if m < 4 {
+        ogeom_bail!(Construction, "a scattered fit needs at least four points");
+    }
+    let (ua, ub) = u_knots.domain();
+    let (va, vb) = v_knots.domain();
+    if let Some(&(u, v)) = parameters
+        .iter()
+        .find(|&&(u, v)| !(u >= ua && u <= ub && v >= va && v <= vb))
+    {
+        ogeom_bail!(
+            Construction,
+            "the parameter ({u}, {v}) is outside the domain [{ua}, {ub}] x [{va}, {vb}]"
+        );
+    }
+    let (pu, pv) = (u_knots.degree(), v_knots.degree());
+    let (nu, nv) = (u_knots.control_point_count(), v_knots.control_point_count());
+    let n = nu * nv;
+    // Two controls interact only within a degree of each other in both
+    // directions, so with the controls numbered along the direction that has
+    // more of them, row by row of the other, the system's band is a few rows
+    // of the shorter direction wide.
+    let rows_along_u = nu >= nv;
+    let slot = |i: usize, j: usize| {
+        if rows_along_u { i * nv + j } else { j * nu + i }
+    };
+    let band = if rows_along_u {
+        pu * nv + pv
+    } else {
+        pv * nu + pu
+    };
+    let mut lower = vec![vec![0.0; band + 1]; n];
+    let mut rhs = vec![[0.0; 3]; n];
+    let add = |lower: &mut [Vec<f64>], r: usize, c: usize, value: f64| {
+        let (r, c) = if r >= c { (r, c) } else { (c, r) };
+        lower[r][r - c] += value;
+    };
+
+    let share = 1.0 / precise(m);
+    let mut terms: Vec<(usize, f64)> = Vec::with_capacity((pu + 1) * (pv + 1));
+    for (p, &(u, v)) in points.iter().zip(parameters) {
+        let (us, vs) = (u_knots.span_unchecked(u), v_knots.span_unchecked(v));
+        let (bu, bv) = (u_knots.basis(us, u), v_knots.basis(vs, v));
+        terms.clear();
+        for (a, x) in bu.iter().enumerate() {
+            for (b, y) in bv.iter().enumerate() {
+                terms.push((slot(us - pu + a, vs - pv + b), x * y));
+            }
+        }
+        for (k, &(r, x)) in terms.iter().enumerate() {
+            rhs[r][0] += share * x * p.x;
+            rhs[r][1] += share * x * p.y;
+            rhs[r][2] += share * x * p.z;
+            for &(c, y) in &terms[..=k] {
+                add(&mut lower, r, c, share * x * y);
+            }
+        }
+    }
+
+    // The thin-plate energy. A tensor product's second derivatives
+    // separate, so the energy between controls (a, b) and (c, d) is
+    // `U2[a][c] V0[b][d] + 2 U1[a][c] V1[b][d] + U0[a][c] V2[b][d]`, where
+    // `Uk` holds the integrals of products of the `k`th derivatives of the
+    // `u` basis functions, and `Vk` of the `v` ones.
+    if fairing > 0.0 {
+        let (gu, gv) = (derivative_grams(u_knots), derivative_grams(v_knots));
+        for a in 0..nu {
+            for b in 0..nv {
+                let r = slot(a, b);
+                for c in a.saturating_sub(pu)..(a + pu + 1).min(nu) {
+                    for d in b.saturating_sub(pv)..(b + pv + 1).min(nv) {
+                        let col = slot(c, d);
+                        if col > r {
+                            continue;
+                        }
+                        let (f, x) = (a.min(c), a.abs_diff(c));
+                        let (e, y) = (b.min(d), b.abs_diff(d));
+                        let energy = gu[2][f][x] * gv[0][e][y]
+                            + 2.0 * gu[1][f][x] * gv[1][e][y]
+                            + gu[0][f][x] * gv[2][e][y];
+                        lower[r][r - col] += fairing * energy;
+                    }
+                }
+            }
+        }
+    }
+
+    let Some(factor) = banded_cholesky(&lower, band) else {
+        ogeom_bail!(
+            Numeric,
+            "the scattered system is singular; raise the fairing or lower the controls"
+        );
+    };
+    let solved: Vec<Vec<f64>> = (0..3)
+        .map(|axis| {
+            let b: Vec<f64> = rhs.iter().map(|r| r[axis]).collect();
+            banded_substitute(&factor, band, &b)
+        })
+        .collect();
+    // The net in the grid's own order, `u` outer.
+    let mut control = Vec::with_capacity(n);
+    for i in 0..nu {
+        for j in 0..nv {
+            let k = slot(i, j);
+            control.push(Point::new(solved[0][k], solved[1][k], solved[2][k]));
+        }
+    }
+    let grid = ogeom_math::ControlGrid::new(control, nu, nv)?;
+    let surface = crate::BSplineSurface::new(u_knots.clone(), v_knots.clone(), &grid, tol)?;
+    let mut error = 0.0_f64;
+    for (p, &(u, v)) in points.iter().zip(parameters) {
+        error = error.max(surface.point_at(u, v, tol)?.distance(*p));
+    }
+    Ok(Fitted {
+        curve: surface,
+        error,
+        met: true,
+    })
+}
+
+/// The integrals over a knot vector's domain of the products of its basis
+/// functions' derivatives, for orders nought to two: `grams[k][i][d]` is
+/// the integral of `N_i^(k) N_(i+d)^(k)`, for `d` up to the degree (the
+/// functions further apart share no span).
+fn derivative_grams(knots: &KnotVector) -> [Vec<Vec<f64>>; 3] {
+    let p = knots.degree();
+    let n = knots.control_point_count();
+    let mut grams: [Vec<Vec<f64>>; 3] = core::array::from_fn(|_| vec![vec![0.0; p + 1]; n]);
+    let distinct = knots.distinct();
+    for w in distinct.windows(2) {
+        let (a, b) = (w[0].0, w[1].0);
+        for (t, weight) in ogeom_math::gauss_legendre_rule(a, b) {
+            let span = knots.span_unchecked(t);
+            let rows = knots.basis_derivatives(span, t, 2);
+            for (k, gram) in grams.iter_mut().enumerate() {
+                let Some(row) = rows.get(k) else {
+                    continue;
+                };
+                for i in 0..=p {
+                    for j in i..=p {
+                        gram[span - p + i][j - i] += weight * row[i] * row[j];
+                    }
+                }
+            }
+        }
+    }
+    grams
+}
+
 /// Fill the region bounded by four curves with a fitted patch: the
 /// transfinite Coons blend of the boundaries, sampled and fitted, its error
 /// reported.
@@ -2241,6 +2436,64 @@ mod tests {
             fitted.error < 0.05,
             "the paraboloid fits to {}",
             fitted.error
+        );
+    }
+
+    /// A bicubic patch sampled at its own parameters comes back itself over
+    /// its own knots, the net numbered along either direction; points that
+    /// cover only a corner of the domain still fit there, the fairing
+    /// settling the rest, flat where the patch is a plane.
+    #[test]
+    fn scattered_points_at_their_parameters_fit_over_the_given_knots() {
+        use crate::traits::Surface as _;
+        let u_knots =
+            KnotVector::new(vec![0.0, 0.0, 0.0, 0.0, 0.3, 0.6, 1.0, 1.0, 1.0, 1.0], 3).unwrap();
+        let v_knots = KnotVector::clamped_uniform(3, 5).unwrap();
+        let (nu, nv) = (6, 5);
+        let mut net = Vec::new();
+        for i in 0..nu {
+            for j in 0..nv {
+                let (x, y) = (precise(i), precise(j));
+                net.push(Point::new(x, y, (x * 0.7).sin() + 0.1 * x * y));
+            }
+        }
+        let grid = ogeom_math::ControlGrid::new(net, nu, nv).unwrap();
+        let exact = crate::BSplineSurface::new(u_knots.clone(), v_knots.clone(), &grid, T).unwrap();
+        let mut parameters = Vec::new();
+        let mut points = Vec::new();
+        for i in 0..=20 {
+            for j in 0..=13 {
+                let (u, v) = (precise(i) / 20.0, precise(j) / 13.0);
+                parameters.push((u, v));
+                points.push(exact.point_at(u, v, T).unwrap());
+            }
+        }
+        let fitted =
+            fit_surface_scattered_at(&points, &parameters, &u_knots, &v_knots, 0.0, T).unwrap();
+        assert!(fitted.error < 1e-9, "{}", fitted.error);
+        // Fewer `u` controls than `v` ones numbers the net the other way.
+        let (v_wide, u_narrow) = (u_knots.clone(), v_knots.clone());
+        let swapped: Vec<(f64, f64)> = parameters.iter().map(|&(u, v)| (v, u)).collect();
+        let turned =
+            fit_surface_scattered_at(&points, &swapped, &u_narrow, &v_wide, 0.0, T).unwrap();
+        assert!(turned.error < 1e-9, "{}", turned.error);
+
+        // A plane sampled over one corner of the domain: the fairing
+        // carries the plane on over the rest.
+        let corner: Vec<(f64, f64)> = (0..=8)
+            .flat_map(|i| (0..=8).map(move |j| (precise(i) / 20.0, precise(j) / 20.0)))
+            .collect();
+        let plane: Vec<Point> = corner
+            .iter()
+            .map(|&(u, v)| Point::new(u, v, 0.5 * u - 0.25 * v))
+            .collect();
+        let fitted =
+            fit_surface_scattered_at(&plane, &corner, &u_knots, &v_knots, 1e-6, T).unwrap();
+        assert!(fitted.error < 1e-6, "{}", fitted.error);
+        let far = fitted.curve.point_at(1.0, 1.0, T).unwrap();
+        assert!((far.z - 0.25).abs() < 1e-3, "{far:?}");
+        assert!(
+            fit_surface_scattered_at(&plane, &corner[1..], &u_knots, &v_knots, 0.0, T).is_err()
         );
     }
 

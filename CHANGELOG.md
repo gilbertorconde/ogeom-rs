@@ -13,6 +13,18 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Mesh conversion fits B-spline patches.** `solid_from_mesh` rebuilds a
+  smooth region no plane, canonical surface or sweep fits as one B-spline
+  patch, where the region is one disk and the patch verifies: charted by a
+  nearly fitting canonical surface or by the mean-value map onto a square,
+  fitted with thin-plate fairing and parameter correction, and checked at
+  every vertex and inside every triangle, Jacobian and normals included.
+  `MeshSolidOptions::patches` (on by default) controls it, and the report
+  counts patch faces and the regions refused (`patches_not_disk`,
+  `patches_narrow`, `patches_unverified`). `fit::fit_surface_scattered_at`
+  fits a scattered surface at the caller's own parameters and knots, with
+  thin-plate fairing.
+
 - **Rounds between curved faces with no shared edge or axis.**
   `blend_faces` and `fillet_faces` round curved faces that share no edge
   and whose surfaces share no direction or axis (a B-spline face, a

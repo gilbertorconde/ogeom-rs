@@ -3276,3 +3276,428 @@ fn a_wave_turned_all_the_way_round_comes_back_a_surface_of_revolution() {
     let (model, turned) = turned_wave(core::f64::consts::TAU);
     comes_back_swept(&model, &turned, ogeom::geom::SurfaceKind::Revolution, 3);
 }
+
+/// A solid over an `n` by `n` grid of cells on a square of side `size`:
+/// its top lifted by `height`, its bottom flat at nought, a vertical wall
+/// along every side between a cell kept and one not (or the square's
+/// edge). Only the cells `keep` names are solid.
+fn grid_solid(
+    n: u32,
+    size: f64,
+    keep: impl Fn(u32, u32) -> bool,
+    height: impl Fn(f64, f64) -> f64,
+) -> Triangulation {
+    let mut mesh = Triangulation::new();
+    let at = |i: u32| size * f64::from(i) / f64::from(n);
+    for j in 0..=n {
+        for i in 0..=n {
+            mesh.positions
+                .push(Point::new(at(i), at(j), height(at(i), at(j))));
+        }
+    }
+    for j in 0..=n {
+        for i in 0..=n {
+            mesh.positions.push(Point::new(at(i), at(j), 0.0));
+        }
+    }
+    let top = |i: u32, j: u32| j * (n + 1) + i;
+    let bottom = |i: u32, j: u32| (n + 1) * (n + 1) + j * (n + 1) + i;
+    let kept = |i: i64, j: i64| {
+        i >= 0
+            && j >= 0
+            && i < i64::from(n)
+            && j < i64::from(n)
+            && keep(u32::try_from(i).unwrap(), u32::try_from(j).unwrap())
+    };
+    for j in 0..n {
+        for i in 0..n {
+            if !keep(i, j) {
+                continue;
+            }
+            let (a, b, c, d) = ((i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1));
+            let t = |p: (u32, u32)| top(p.0, p.1);
+            let w = |p: (u32, u32)| bottom(p.0, p.1);
+            mesh.triangles.push([t(a), t(b), t(c)]);
+            mesh.triangles.push([t(a), t(c), t(d)]);
+            mesh.triangles.push([w(a), w(c), w(b)]);
+            mesh.triangles.push([w(a), w(d), w(c)]);
+            // Each side of the cell, as the top runs it, with the cell
+            // across it.
+            let (x, y) = (i64::from(i), i64::from(j));
+            for (p, q, across) in [
+                (a, b, (x, y - 1)),
+                (b, c, (x + 1, y)),
+                (c, d, (x, y + 1)),
+                (d, a, (x - 1, y)),
+            ] {
+                if !kept(across.0, across.1) {
+                    mesh.triangles.push([t(q), t(p), w(p)]);
+                    mesh.triangles.push([t(q), w(p), w(q)]);
+                }
+            }
+        }
+    }
+    mesh
+}
+
+/// A bump on a square plate twenty across: the height of a bicubic
+/// B-spline over four spans each way, its control heights a lopsided hill
+/// with a twist, so it is no surface of revolution, extrusion or canonical
+/// surface.
+fn bump(x: f64, y: f64) -> f64 {
+    let (s, t) = (x / 20.0, y / 20.0);
+    5.0 + 2.5
+        * (core::f64::consts::PI * s).sin()
+        * (core::f64::consts::PI * t).sin()
+        * (1.0 + 0.4 * s)
+        + 0.8 * (s - 0.5) * (t - 0.5)
+}
+
+/// The B-spline faces of a shape.
+fn spline_faces(model: &Model, shape: &Shape) -> Vec<Shape> {
+    explore_unique(model, shape, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter(|f| {
+            let data = model.node(f).unwrap().data().as_face().unwrap();
+            matches!(
+                model.geometry().surface(data.surface).unwrap(),
+                ogeom::geom::SurfaceGeometry::BSpline(_)
+            )
+        })
+        .collect()
+}
+
+/// A bumped plate's top, meshed from its exact height and converted, comes
+/// back one fitted B-spline face: within the coplanar distance of the exact
+/// surface at points between the mesh's vertices both ways (the exact
+/// surface's points to the patch, and the patch's to the exact surface),
+/// the solid valid, a hundred times nearer the exact volume than the mesh
+/// is, and tessellating closed.
+#[test]
+fn a_free_form_bump_comes_back_one_fitted_patch() {
+    let mesh = grid_solid(40, 20.0, |_, _| true, bump);
+    let mut model = Model::new();
+    let started = Instant::now();
+    let out = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    let took = started.elapsed();
+    let diagnosis = check(&model, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let patches = spline_faces(&model, &out.shape);
+    eprintln!(
+        "bump: {} faces, {} patches in {took:?}, distance {:e}, report {:?}",
+        out.report.faces,
+        patches.len(),
+        out.coplanar_distance,
+        out.report
+    );
+    assert_eq!(patches.len(), 1);
+    assert_eq!(out.report.patch_faces, 1);
+    assert_eq!(out.report.faces, 6);
+    let face = &patches[0];
+    let data = model.node(face).unwrap().data().as_face().unwrap();
+    let surface = model.geometry().surface(data.surface).unwrap().clone();
+    let flat = out.coplanar_distance;
+    // The exact surface's points, a third of a cell off the mesh's grid, to
+    // the patch.
+    let mut worst: f64 = 0.0;
+    for j in 0..60 {
+        for i in 0..60 {
+            let (x, y) = (
+                20.0 * (f64::from(i) + 0.37) / 60.0,
+                20.0 * (f64::from(j) + 0.61) / 60.0,
+            );
+            let exact = Point::new(x, y, bump(x, y));
+            let foot = ogeom::algo::project_on_surface(&surface, exact, 16, T).unwrap();
+            worst = worst.max(foot.distance);
+        }
+    }
+    // The patch's points over the face to the exact surface: the height
+    // between them over the slope's secant, the distance to first order.
+    let drawn =
+        ogeom::mesh::triangulate(&model, face, Deflection::with_chord(0.01).unwrap(), T).unwrap();
+    let mut back: f64 = 0.0;
+    for p in &drawn.positions {
+        let h = 1e-6;
+        let gx = (bump(p.x + h, p.y) - bump(p.x - h, p.y)) / (2.0 * h);
+        let gy = (bump(p.x, p.y + h) - bump(p.x, p.y - h)) / (2.0 * h);
+        back = back.max((p.z - bump(p.x, p.y)).abs() / (1.0 + gx * gx + gy * gy).sqrt());
+    }
+    eprintln!("bump: exact to patch {worst:e}, patch to exact {back:e}, distance {flat:e}");
+    assert!(worst <= flat, "{worst} past {flat}");
+    assert!(back <= flat, "{back} past {flat}");
+    let volume = volume_properties(&model, &out.shape, Deflection::with_chord(1e-3).unwrap(), T)
+        .unwrap()
+        .mass;
+    // The exact volume: the plate's, and the hill's, whose sines integrate
+    // to 2.4 / pi and 2 / pi over the square; the twist integrates to none.
+    let exact = 2000.0 + 1000.0 * 4.8 / core::f64::consts::PI.powi(2);
+    let mesh_volume = mesh.volume();
+    eprintln!("bump: volume {volume}, the mesh's {mesh_volume}, exact {exact}");
+    assert!((volume - exact).abs() * 100.0 < (mesh_volume - exact).abs());
+    let closed = ogeom::mesh::triangulate(&model, &out.shape, Deflection::default(), T).unwrap();
+    assert!(closed.is_closed());
+}
+
+/// The heading of an S at arc length `s`: its curvature runs smoothly from
+/// a quarter one way to a fifth the other, through a tanh two long about
+/// fourteen along, so it turns back on itself by about 180 degrees and then
+/// by about 210 the other way.
+fn s_heading(s: f64) -> f64 {
+    let lc = |x: f64| x.cosh().ln();
+    -0.025 * s + 0.45 * (lc((s - 14.0) / 2.0) - lc(-7.0))
+}
+
+/// The plan of the S at arc length `s` from its start (at the origin,
+/// heading along `x`): the point, by Simpson's rule on its heading, and
+/// the unit normal on its left, the side the wall's thickness lies on.
+fn s_plan(s: f64) -> (Point, Vector) {
+    let steps = 2
+        * (1..)
+            .find(|k| f64::from(*k) * 0.02 >= s)
+            .unwrap_or(1)
+            .max(1);
+    let h = s / f64::from(steps);
+    let (mut x, mut y) = (0.0, 0.0);
+    for k in 0..=steps {
+        let w = if k == 0 || k == steps {
+            1.0
+        } else if k % 2 == 1 {
+            4.0
+        } else {
+            2.0
+        };
+        let a = s_heading(h * f64::from(k));
+        x += w * a.cos();
+        y += w * a.sin();
+    }
+    let a = s_heading(s);
+    (
+        Point::new(x * h / 3.0, y * h / 3.0, 0.0),
+        Vector::new(-a.sin(), a.cos(), 0.0),
+    )
+}
+
+/// The S's length.
+fn s_length() -> f64 {
+    34.0
+}
+
+/// A wall one thick along the S, eight high, its plan scaled about the
+/// point where the S's two end normals meet by a factor growing with the
+/// square of the height: so its two sides are free-form, and its ends
+/// (each in a vertical plane through that point) and its top and bottom
+/// are flat. `nt` cells along the S, `nz` up it.
+fn s_wall(nt: u32, nz: u32) -> (Triangulation, impl Fn(f64, f64) -> Point) {
+    let height = 8.0;
+    // Where the end normals meet.
+    let (a, na) = s_plan(0.0);
+    let (b, nb) = s_plan(s_length());
+    let det = na.x * (-nb.y) - na.y * (-nb.x);
+    let k = ((b.x - a.x) * (-nb.y) - (b.y - a.y) * (-nb.x)) / det;
+    let centre = a + na * k;
+    let place = move |p: Point, z: f64| {
+        let scale = 1.0 + 0.15 * (z / height).powi(2);
+        let q = centre + (p - centre) * scale;
+        Point::new(q.x, q.y, z)
+    };
+    let front = move |s: f64, z: f64| place(s_plan(s).0, z);
+    let mut mesh = Triangulation::new();
+    for side in 0..2 {
+        for k in 0..=nz {
+            for i in 0..=nt {
+                let s = s_length() * f64::from(i) / f64::from(nt);
+                let z = height * f64::from(k) / f64::from(nz);
+                let (p, n) = s_plan(s);
+                let p = if side == 0 { p } else { p + n };
+                mesh.positions.push(place(p, z));
+            }
+        }
+    }
+    let at = |side: u32, i: u32, k: u32| side * (nt + 1) * (nz + 1) + k * (nt + 1) + i;
+    let (f, w) = (|i, k| at(0, i, k), |i, k| at(1, i, k));
+    for k in 0..nz {
+        for i in 0..nt {
+            mesh.triangles.push([f(i, k), f(i + 1, k), f(i + 1, k + 1)]);
+            mesh.triangles.push([f(i, k), f(i + 1, k + 1), f(i, k + 1)]);
+            mesh.triangles.push([w(i, k), w(i + 1, k + 1), w(i + 1, k)]);
+            mesh.triangles.push([w(i, k), w(i, k + 1), w(i + 1, k + 1)]);
+        }
+    }
+    for i in 0..nt {
+        mesh.triangles.push([f(i + 1, 0), f(i, 0), w(i, 0)]);
+        mesh.triangles.push([f(i + 1, 0), w(i, 0), w(i + 1, 0)]);
+        mesh.triangles.push([f(i, nz), f(i + 1, nz), w(i + 1, nz)]);
+        mesh.triangles.push([f(i, nz), w(i + 1, nz), w(i, nz)]);
+    }
+    for k in 0..nz {
+        mesh.triangles.push([f(0, k), f(0, k + 1), w(0, k + 1)]);
+        mesh.triangles.push([f(0, k), w(0, k + 1), w(0, k)]);
+        mesh.triangles.push([f(nt, k), w(nt, k + 1), f(nt, k + 1)]);
+        mesh.triangles.push([f(nt, k), w(nt, k), w(nt, k + 1)]);
+    }
+    (mesh, front)
+}
+
+/// Whether the triangles fold over the plane the points lie nearest: their
+/// shadows on it wind both ways.
+fn folds_over_its_plane(points: &[Point], triangles: &[[Point; 3]]) -> bool {
+    let n = f64::from(u32::try_from(points.len()).unwrap());
+    let mean = points.iter().fold(Vector::ZERO, |s, p| s + p.to_vector()) / n;
+    let mut c = [[0.0_f64; 3]; 3];
+    for p in points {
+        let d = p.to_vector() - mean;
+        let d = [d.x, d.y, d.z];
+        for r in 0..3 {
+            for k in 0..3 {
+                c[r][k] += d[r] * d[k];
+            }
+        }
+    }
+    let apply = |c: &[[f64; 3]; 3], v: Vector| {
+        Vector::new(
+            c[0][0] * v.x + c[0][1] * v.y + c[0][2] * v.z,
+            c[1][0] * v.x + c[1][1] * v.y + c[1][2] * v.z,
+            c[2][0] * v.x + c[2][1] * v.y + c[2][2] * v.z,
+        )
+    };
+    // The two widest directions by power iteration, the second with the
+    // first taken out.
+    let widest = |c: &[[f64; 3]; 3], start: Vector| {
+        let mut v = start;
+        for _ in 0..500 {
+            let w = apply(c, v);
+            v = w / w.magnitude();
+        }
+        v
+    };
+    let e1 = widest(&c, Vector::new(0.3, 0.9, 0.2));
+    let l1 = apply(&c, e1).dot(e1);
+    let mut d = c;
+    let e = [e1.x, e1.y, e1.z];
+    for r in 0..3 {
+        for k in 0..3 {
+            d[r][k] -= l1 * e[r] * e[k];
+        }
+    }
+    let e2 = widest(&d, Vector::new(0.2, -0.1, 0.9));
+    let e2 = (e2 - e1 * e2.dot(e1)) / (e2 - e1 * e2.dot(e1)).magnitude();
+    let mut signs = [false; 2];
+    for [a, b, c] in triangles {
+        let (x, y) = (*b - *a, *c - *a);
+        let area = x.dot(e1) * y.dot(e2) - x.dot(e2) * y.dot(e1);
+        signs[usize::from(area > 0.0)] = true;
+    }
+    signs[0] && signs[1]
+}
+
+/// A thick S-shaped wall, its plan widening with height: each of its two
+/// sides is one smooth region that folds over the plane it lies nearest
+/// (no projection onto a plane charts it), so its chart comes from the
+/// mean-value map onto a square, and the patch fitted on it still verifies.
+/// Both sides come back fitted patches, the solid valid and tessellating
+/// closed. Between the mesh's vertices the front patch keeps far closer to
+/// the exact wall than the facets it was fitted to.
+#[test]
+fn a_folding_s_wall_is_charted_by_the_mean_value_map() {
+    let (nt, nz) = (160, 24);
+    let (mesh, front) = s_wall(nt, nz);
+    // The front side's vertices, first in the mesh, and its triangles, the
+    // first two of the four each cell lists.
+    let side = 4 * (nt * nz) as usize;
+    let corners: Vec<[Point; 3]> = mesh.triangles[..side]
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| k % 4 < 2)
+        .map(|(_, t)| t.map(|v| mesh.positions[v as usize]))
+        .collect();
+    let vertices = &mesh.positions[..((nt + 1) * (nz + 1)) as usize];
+    assert!(folds_over_its_plane(vertices, &corners));
+
+    let mut model = Model::new();
+    let started = Instant::now();
+    let out = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    let took = started.elapsed();
+    eprintln!(
+        "wall: {} faces, {} triangles in {took:?}, distance {:e}, report {:?}",
+        out.report.faces,
+        mesh.triangles.len(),
+        out.coplanar_distance,
+        out.report
+    );
+    let diagnosis = check(&model, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let patches = spline_faces(&model, &out.shape);
+    assert_eq!(patches.len(), 2);
+    assert_eq!(out.report.patch_faces, 2);
+    assert_eq!(out.report.patch_charts_mapped, 2);
+    assert_eq!(out.report.faces, 6);
+    // The exact front side between the mesh's vertices, to the nearer
+    // patch.
+    let surfaces: Vec<ogeom::geom::SurfaceGeometry> = patches
+        .iter()
+        .map(|f| {
+            let data = model.node(f).unwrap().data().as_face().unwrap();
+            model.geometry().surface(data.surface).unwrap().clone()
+        })
+        .collect();
+    let flat = out.coplanar_distance;
+    let (mut worst, mut facets): (f64, f64) = (0.0, 0.0);
+    for k in 0..nz {
+        for i in 0..nt {
+            let s = s_length() * (f64::from(i) + 0.37) / f64::from(nt);
+            let z = 8.0 * (f64::from(k) + 0.61) / f64::from(nz);
+            let exact = front(s, z);
+            let near = surfaces
+                .iter()
+                .map(|g| {
+                    ogeom::algo::project_on_surface(g, exact, 16, T)
+                        .unwrap()
+                        .distance
+                })
+                .fold(f64::INFINITY, f64::min);
+            worst = worst.max(near);
+            // The cell's two facets on the front, the first two of the
+            // four triangles the cell lists.
+            let cell = 4 * (k * nt + i) as usize;
+            let off = mesh.triangles[cell..cell + 2]
+                .iter()
+                .map(|t| {
+                    let [a, b, c] = t.map(|v| mesh.positions[v as usize]);
+                    let n = (b - a).cross(c - a);
+                    ((exact - a).dot(n) / n.magnitude()).abs()
+                })
+                .fold(f64::INFINITY, f64::min);
+            facets = facets.max(off);
+        }
+    }
+    eprintln!("wall: exact to patch {worst:e}, to the facets {facets:e}, distance {flat:e}");
+    assert!(
+        worst * 10.0 < facets,
+        "{worst} against the facets' {facets}"
+    );
+    let closed = ogeom::mesh::triangulate(&model, &out.shape, Deflection::default(), T).unwrap();
+    assert!(closed.is_closed());
+}
+
+/// A bumped plate with a square hole through it: its top is one smooth
+/// region no surface fits, but a ring round the hole, not a disk, so no
+/// patch is tried. It stays faceted, counted, and the solid is valid.
+#[test]
+fn a_smooth_region_round_a_hole_stays_faceted() {
+    let mesh = grid_solid(
+        40,
+        20.0,
+        |i, j| !(16..24).contains(&i) || !(16..24).contains(&j),
+        bump,
+    );
+    let mut model = Model::new();
+    let out = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    eprintln!("ring: {} faces, report {:?}", out.report.faces, out.report);
+    let diagnosis = check(&model, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    assert!(spline_faces(&model, &out.shape).is_empty());
+    assert_eq!(out.report.patch_faces, 0);
+    assert_eq!(out.report.patches_not_disk, 1);
+    assert_eq!(out.report.patches_unverified, 0);
+}
