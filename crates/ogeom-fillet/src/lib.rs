@@ -17,7 +17,7 @@ mod pinched;
 mod ruled;
 mod support;
 
-pub use analyse::{BlendContact, analyse_blend};
+pub use analyse::{BlendContact, analyse_blend, face_curvature_samples};
 pub use chamfer::{
     Chamfer, chamfer_edge, chamfer_edge_angle, chamfer_edge_distances, chamfer_edges,
     chamfer_edges_with,

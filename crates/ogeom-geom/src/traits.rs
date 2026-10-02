@@ -374,6 +374,27 @@ impl SurfaceCurvature {
     pub fn is_umbilic(&self, tol: Tolerances) -> bool {
         (self.max - self.min).abs() <= tol.angular() * self.max.abs().max(self.min.abs()).max(1.0)
     }
+
+    /// The normal curvature along the tangent direction `along`, signed as
+    /// the principal ones are.
+    ///
+    /// Euler's formula: `max cos²θ + min sin²θ`, with `θ` the angle from the
+    /// largest's direction. The part of `along` that leaves the tangent plane
+    /// is dropped first. `None` if nothing is left of it, as for a vector
+    /// along the normal or a zero one.
+    #[must_use]
+    pub fn normal_curvature(&self, along: Vector) -> Option<f64> {
+        let c = along.dot(self.max_direction.vector());
+        let s = along.dot(self.min_direction.vector());
+        let size = c.mul_add(c, s * s);
+        // Relative to the vector's own length, so a short tangent is still
+        // a tangent and only one lying along the normal is refused.
+        let length = along.dot(along);
+        if length == 0.0 || !size.is_finite() || size <= 1e-24 * length {
+            return None;
+        }
+        Some(self.max.mul_add(c * c, self.min * s * s) / size)
+    }
 }
 
 /// A parametric surface.

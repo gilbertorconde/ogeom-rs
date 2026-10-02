@@ -1504,11 +1504,13 @@ claims = [
 ]
 symbols = [
     "ogeom_geom::Curve3d", "ogeom_geom::Continuity", "ogeom_geom::Surface",
-    "ogeom_geom::SurfaceCurvature",
+    "ogeom_geom::SurfaceCurvature", "ogeom_fillet::BlendContact",
+    "ogeom_fillet::face_curvature_samples",
 ]
 tests = [
     "crates/ogeom-math/src/elementary.rs::curvature_of_a_circle_is_the_reciprocal_of_its_radius",
     "crates/ogeom-geom/tests/curvature.rs",
+    "crates/ogeom/tests/blends.rs",
 ]
 
 [[capability]]

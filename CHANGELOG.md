@@ -13,6 +13,16 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Blend analysis measures curvature continuity, and faces give
+  curvature samples.** `BlendContact` carries `curvature_error`, the
+  largest step in normal curvature square to the shared edge over the
+  stations; an edge that cannot be measured reports it infinite.
+  `face_curvature_samples` returns the principal curvatures on a grid
+  inside a face's trim, placed where the face stands and signed against
+  its own normal, for curvature maps and zebra stripes.
+  `SurfaceCurvature::normal_curvature` gives the curvature along any
+  tangent.
+
 - **STEP and IGES export write sheet bodies.** `write_step` writes shells
   no solid owns and faces no shell owns as `SHELL_BASED_SURFACE_MODEL`s in
   a `MANIFOLD_SURFACE_SHAPE_REPRESENTATION`, and a part holding solids and

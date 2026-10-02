@@ -2032,3 +2032,419 @@ fn blends_along_a_rounded_rim_turn_each_arc_by_its_quarter() {
         );
     }
 }
+
+/// The cylindrical face of a shape.
+fn cylinder_face_of(model: &Model, shape: &Shape) -> Shape {
+    explore_unique(model, shape, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let ogeom::topo::NodeData::Face(data) = model.node(f).unwrap().data() else {
+                return false;
+            };
+            matches!(
+                model.geometry().surface(data.surface),
+                Some(ogeom::geom::SurfaceGeometry::Cylinder(_))
+            )
+        })
+        .expect("a cylindrical face")
+}
+
+/// The face of a shape on a sphere.
+fn sphere_face_of(model: &Model, shape: &Shape) -> Shape {
+    explore_unique(model, shape, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let ogeom::topo::NodeData::Face(data) = model.node(f).unwrap().data() else {
+                return false;
+            };
+            matches!(
+                model.geometry().surface(data.surface),
+                Some(ogeom::geom::SurfaceGeometry::Sphere(_))
+            )
+        })
+        .expect("a spherical face")
+}
+
+#[test]
+fn a_fillet_reports_the_curvature_step_where_it_meets_its_planes() {
+    // A rolling-ball fillet of radius r meets its two planes tangentially:
+    // no angle, but the plane is flat and the cylinder bends by 1/r square
+    // to the line they share. At the end caps the cylinder's direction
+    // square to the arc is its ruling, flat like the cap.
+    for r in [2.0, 5.0] {
+        let mut model = Model::new();
+        let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (40.0, 30.0, 12.0), T)
+            .unwrap()
+            .shape;
+        let edge = edge_near(&model, &block, Point::new(20.0, 0.0, 12.0));
+        let blended = ogeom::fillet::fillet_edge(&mut model, &block, &edge, r, T)
+            .unwrap()
+            .shape;
+        let blend = cylinder_face_of(&model, &blended);
+        let contacts = ogeom::fillet::analyse_blend(&model, &blended, &blend, 9, T).unwrap();
+        assert_eq!(contacts.len(), 4, "{r}");
+        let mut lines = 0;
+        let mut caps = 0;
+        for contact in &contacts {
+            if contact.tangency_error < 1e-9 {
+                lines += 1;
+                assert!(
+                    (contact.curvature_error - 1.0 / r).abs() < 1e-9,
+                    "r {r}: a plane against a cylinder steps by 1/r: {contact:?}"
+                );
+            } else {
+                caps += 1;
+                assert!(
+                    contact.curvature_error < 1e-9,
+                    "r {r}: flat both ways along the ruling: {contact:?}"
+                );
+            }
+        }
+        assert_eq!((lines, caps), (2, 2), "r {r}: {contacts:?}");
+    }
+}
+
+/// The Bernstein coefficients of `p x² + q x³` over `[x0, x0 + 1]`.
+fn cubic_bernstein(p: f64, q: f64, x0: f64) -> [f64; 4] {
+    let c0 = (p + q * x0) * x0 * x0;
+    let c1 = (2.0 * p).mul_add(x0, 3.0 * q * x0 * x0);
+    let c2 = p + 3.0 * q * x0;
+    let c3 = q;
+    [
+        c0,
+        c0 + c1 / 3.0,
+        c0 + 2.0 * c1 / 3.0 + c2 / 3.0,
+        c0 + c1 + c2 + c3,
+    ]
+}
+
+/// Two cubic-by-linear patches side by side, the graph of
+/// `z = f(x) (1 + y / 5)` over `[-1, 1] x [0, 1]`: `f = x² + x³` on the
+/// left and `f = p x² - 2 x³` on the right, meeting along the y axis.
+///
+/// Both pieces vanish with their slope at `x = 0`, so the join is always
+/// tangent; their second derivatives there are `2` and `2p`, so it is
+/// curvature-continuous exactly when `p = 1`, while the third derivatives
+/// differ either way. The shared edge carries a pcurve on the right patch
+/// only if `right_pcurve` asks.
+///
+/// Returns the shell, the left face and the right face.
+fn spline_pair(model: &mut Model, p: f64, right_pcurve: bool) -> (Shape, Shape, Shape) {
+    use ogeom::algo::{attach_pcurve, make_edge_between, make_face_on, make_vertex, make_wire};
+    use ogeom::geom::{BSplineCurve, BSplineSurface, Curve, Line2d, LineCurve, SurfaceGeometry};
+    use ogeom::math::bspline::ControlGrid;
+    use ogeom::math::{KnotVector, Point2};
+    use ogeom::topo::Location;
+
+    let left = cubic_bernstein(1.0, 1.0, -1.0);
+    let right = cubic_bernstein(p, -2.0, 0.0);
+    let lift = |y: f64| 1.0 + y / 5.0;
+    let cubic = || KnotVector::new(vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 3).unwrap();
+    let row = |x0: f64, b: &[f64; 4], y: f64| -> Vec<Point> {
+        (0..4)
+            .map(|i| Point::new(x0 + f64::from(i) / 3.0, y, b[i as usize] * lift(y)))
+            .collect()
+    };
+    let patch = |x0: f64, b: &[f64; 4]| -> SurfaceGeometry {
+        let mut points = Vec::with_capacity(8);
+        for i in 0..4 {
+            for y in [0.0, 1.0] {
+                points.push(row(x0, b, y)[i]);
+            }
+        }
+        BSplineSurface::new(
+            cubic(),
+            KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).unwrap(),
+            &ControlGrid::new(points, 4, 2).unwrap(),
+            T,
+        )
+        .unwrap()
+        .into()
+    };
+
+    let a = make_vertex(model, row(-1.0, &left, 0.0)[0]).shape;
+    let b = make_vertex(model, Point::new(0.0, 0.0, 0.0)).shape;
+    let c = make_vertex(model, row(0.0, &right, 0.0)[3]).shape;
+    let d = make_vertex(model, row(-1.0, &left, 1.0)[0]).shape;
+    let e = make_vertex(model, Point::new(0.0, 1.0, 0.0)).shape;
+    let f = make_vertex(model, row(0.0, &right, 1.0)[3]).shape;
+    let point_of = |m: &Model, v: &Shape| m.node(v).unwrap().data().as_vertex().unwrap().point;
+
+    let along = |m: &mut Model, x0: f64, b: &[f64; 4], y: f64, from: &Shape, to: &Shape| {
+        let curve: Curve = BSplineCurve::new(cubic(), row(x0, b, y), T).unwrap().into();
+        make_edge_between(m, curve, (0.0, 1.0), from, to, T)
+            .unwrap()
+            .shape
+    };
+    let bottom_left = along(model, -1.0, &left, 0.0, &a, &b);
+    let top_left = along(model, -1.0, &left, 1.0, &d, &e);
+    let bottom_right = along(model, 0.0, &right, 0.0, &b, &c);
+    let top_right = along(model, 0.0, &right, 1.0, &e, &f);
+    let straight = |m: &mut Model, from: &Shape, to: &Shape| {
+        let (p0, p1) = (point_of(m, from), point_of(m, to));
+        let curve: Curve = LineCurve::segment(p0, p1, T).unwrap().into();
+        make_edge_between(m, curve, (0.0, p0.distance(p1)), from, to, T)
+            .unwrap()
+            .shape
+    };
+    let side_left = straight(model, &a, &d);
+    let shared = straight(model, &b, &e);
+    let side_right = straight(model, &c, &f);
+
+    let left_id = model.geometry_mut().add_surface(patch(-1.0, &left));
+    let right_id = model.geometry_mut().add_surface(patch(0.0, &right));
+    let chart = |m: &mut Model, edge: &Shape, id, from: (f64, f64), to: (f64, f64)| {
+        let line =
+            Line2d::segment(Point2::new(from.0, from.1), Point2::new(to.0, to.1), T).unwrap();
+        attach_pcurve(m, edge, line.into(), id, Location::identity(), (0.0, 1.0)).unwrap();
+    };
+    chart(model, &bottom_left, left_id, (0.0, 0.0), (1.0, 0.0));
+    chart(model, &top_left, left_id, (0.0, 1.0), (1.0, 1.0));
+    chart(model, &side_left, left_id, (0.0, 0.0), (0.0, 1.0));
+    chart(model, &shared, left_id, (1.0, 0.0), (1.0, 1.0));
+    chart(model, &bottom_right, right_id, (0.0, 0.0), (1.0, 0.0));
+    chart(model, &top_right, right_id, (0.0, 1.0), (1.0, 1.0));
+    chart(model, &side_right, right_id, (1.0, 0.0), (1.0, 1.0));
+    if right_pcurve {
+        chart(model, &shared, right_id, (0.0, 0.0), (0.0, 1.0));
+    }
+
+    let left_wire = make_wire(
+        model,
+        &[
+            bottom_left,
+            shared.clone(),
+            top_left.reversed(),
+            side_left.reversed(),
+        ],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let right_wire = make_wire(
+        model,
+        &[
+            bottom_right,
+            side_right,
+            top_right.reversed(),
+            shared.reversed(),
+        ],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let left_face = make_face_on(model, left_id, &[left_wire], T).unwrap().shape;
+    let right_face = make_face_on(model, right_id, &[right_wire], T)
+        .unwrap()
+        .shape;
+    let shell = ogeom::algo::make_shell(model, &[left_face.clone(), right_face.clone()])
+        .unwrap()
+        .shape;
+    (shell, left_face, right_face)
+}
+
+#[test]
+fn two_spline_patches_built_curvature_continuous_report_no_curvature_step() {
+    let mut model = Model::new();
+    let (shell, left, _) = spline_pair(&mut model, 1.0, true);
+    let contacts = ogeom::fillet::analyse_blend(&model, &shell, &left, 15, T).unwrap();
+    assert_eq!(contacts.len(), 1, "{contacts:?}");
+    let join = &contacts[0];
+    assert!(join.gap < 1e-9, "{join:?}");
+    assert!(join.tangency_error < 1e-9, "{join:?}");
+    assert!(join.curvature_error < 1e-6, "{join:?}");
+}
+
+#[test]
+fn two_spline_patches_tangent_but_bent_apart_report_their_step() {
+    // With p = 3 the right piece bends by z_xx = 6 (1 + y / 5) at the join
+    // against the left's 2 (1 + y / 5), the normal there straight up: the
+    // step is 4 (1 + y / 5), largest at the station y = 1.
+    let mut model = Model::new();
+    let (shell, left, _) = spline_pair(&mut model, 3.0, true);
+    let contacts = ogeom::fillet::analyse_blend(&model, &shell, &left, 15, T).unwrap();
+    assert_eq!(contacts.len(), 1, "{contacts:?}");
+    let join = &contacts[0];
+    assert!(join.tangency_error < 1e-9, "{join:?}");
+    assert!((join.curvature_error - 4.8).abs() < 1e-9, "{join:?}");
+}
+
+#[test]
+fn a_join_with_no_chart_on_one_side_reports_no_curvature_it_cannot_measure() {
+    let mut model = Model::new();
+    let (shell, left, _) = spline_pair(&mut model, 1.0, false);
+    let contacts = ogeom::fillet::analyse_blend(&model, &shell, &left, 15, T).unwrap();
+    assert_eq!(contacts.len(), 1, "{contacts:?}");
+    let join = &contacts[0];
+    assert!(join.curvature_error.is_infinite(), "{join:?}");
+    assert!(join.tangency_error.is_infinite(), "{join:?}");
+    assert_eq!(join.stations, 0);
+}
+
+#[test]
+fn spline_face_curvature_samples_match_the_graph_they_draw() {
+    // The left patch is the graph z = (x² + x³)(1 + y / 5). Against its
+    // upward normal a graph has Gaussian curvature
+    // (z_xx z_yy - z_xy²) / w⁴ and mean curvature
+    // ((1 + z_y²) z_xx - 2 z_x z_y z_xy + (1 + z_x²) z_yy) / (2 w³),
+    // with w² = 1 + z_x² + z_y².
+    let mut model = Model::new();
+    let (_, left, _) = spline_pair(&mut model, 1.0, true);
+    let samples = ogeom::fillet::face_curvature_samples(&model, &left, 6, T).unwrap();
+    assert_eq!(samples.len(), 36, "every cell centre is inside a rectangle");
+    for (at, c) in &samples {
+        let (x, y) = (at.x, at.y);
+        assert!(
+            (-1.0..=0.0).contains(&x) && (0.0..=1.0).contains(&y),
+            "{at:?}"
+        );
+        let (f, f1, f2) = (x * x + x * x * x, 2.0 * x + 3.0 * x * x, 2.0 + 6.0 * x);
+        let g = 1.0 + y / 5.0;
+        assert!((at.z - f * g).abs() < 1e-12, "on the graph: {at:?}");
+        let (zx, zy, zxx, zxy, zyy) = (f1 * g, f / 5.0, f2 * g, f1 / 5.0, 0.0);
+        let w2 = 1.0 + zx * zx + zy * zy;
+        let gaussian = (zxx * zyy - zxy * zxy) / (w2 * w2);
+        let mean = ((1.0 + zy * zy) * zxx - 2.0 * zx * zy * zxy + (1.0 + zx * zx) * zyy)
+            / (2.0 * w2 * w2.sqrt());
+        assert!((c.gaussian() - gaussian).abs() < 1e-9, "{at:?}: {c:?}");
+        assert!((c.mean() - mean).abs() < 1e-9, "{at:?}: {c:?}");
+        assert!(c.normal.vector().z > 0.0, "{c:?}");
+    }
+}
+
+#[test]
+fn a_fillet_samples_as_a_quarter_cylinder() {
+    // The fillet of radius 2 on the box's edge along x at y = 0, z = 12
+    // has its axis at y = 2, z = 10: every sample stands 2 off it, inside
+    // the quarter the trim keeps, bending by -1/2 round (away from the
+    // outward normal) and not at all along.
+    let r = 2.0;
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (40.0, 30.0, 12.0), T)
+        .unwrap()
+        .shape;
+    let edge = edge_near(&model, &block, Point::new(20.0, 0.0, 12.0));
+    let blended = ogeom::fillet::fillet_edge(&mut model, &block, &edge, r, T)
+        .unwrap()
+        .shape;
+    let blend = cylinder_face_of(&model, &blended);
+    let samples = ogeom::fillet::face_curvature_samples(&model, &blend, 8, T).unwrap();
+    assert_eq!(samples.len(), 64);
+    for (at, c) in &samples {
+        let radial = Vector::new(0.0, at.y - 2.0, at.z - 10.0);
+        assert!((radial.magnitude() - r).abs() < 1e-9, "{at:?}");
+        assert!(at.y <= 2.0 + 1e-9 && at.z >= 10.0 - 1e-9, "{at:?}");
+        assert!((0.0..=40.0).contains(&at.x), "{at:?}");
+        assert!(
+            c.max.abs() < 1e-9 && (c.min + 1.0 / r).abs() < 1e-9,
+            "{c:?}"
+        );
+        assert!(
+            (c.normal.vector().dot(radial) / r - 1.0).abs() < 1e-9,
+            "{c:?}"
+        );
+        assert!(c.max_direction.vector().x.abs() > 1.0 - 1e-9, "{c:?}");
+    }
+}
+
+#[test]
+fn a_drilled_face_gives_no_samples_in_its_hole() {
+    let mut model = Model::new();
+    let plate = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(10.0, 10.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let bore = ogeom::algo::make_cylinder(&mut model, frame, 3.0, 7.0, T)
+        .unwrap()
+        .shape;
+    let drilled = ogeom::boolean::cut(&mut model, &plate, &bore, T)
+        .unwrap()
+        .shape;
+    let top = planar_face_at(&model, &drilled, Point::new(1.0, 1.0, 5.0));
+    let samples = ogeom::fillet::face_curvature_samples(&model, &top, 10, T).unwrap();
+    // A 10 by 10 grid of 2 mm cells: the centres within 3 of (10, 10) are
+    // the four at (9 or 11, 9 or 11), sqrt(2) off; the next ring out, at
+    // (7 or 13, 9 or 11) and the like, stands sqrt(10) off, past the hole.
+    assert_eq!(samples.len(), 100 - 4);
+    for (at, c) in &samples {
+        assert!((at.z - 5.0).abs() < 1e-12, "{at:?}");
+        assert!(at.distance(Point::new(10.0, 10.0, 5.0)) > 3.0, "{at:?}");
+        assert!(c.max.abs() < 1e-12 && c.min.abs() < 1e-12, "{c:?}");
+    }
+}
+
+#[test]
+fn a_cavity_curves_toward_its_outward_normal_and_a_scaled_ball_bends_less() {
+    let r = 4.0;
+    let centre = Point::new(10.0, 10.0, 10.0);
+    let mut model = Model::new();
+    let cube = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 20.0), T)
+        .unwrap()
+        .shape;
+    let at_centre = Frame::new(centre, Direction::Z, Direction::X, T).unwrap();
+    let ball = ogeom::algo::make_sphere(&mut model, at_centre, r, T)
+        .unwrap()
+        .shape;
+    let hollow = ogeom::boolean::cut(&mut model, &cube, &ball, T)
+        .unwrap()
+        .shape;
+    // The cavity's wall is the ball's face turned round: its outward normal
+    // points into the hole, and the wall bends toward it.
+    let cavity = sphere_face_of(&model, &hollow);
+    let samples = ogeom::fillet::face_curvature_samples(&model, &cavity, 8, T).unwrap();
+    assert!(samples.len() > 40, "{}", samples.len());
+    for (at, c) in &samples {
+        assert!((at.distance(centre) - r).abs() < 1e-9, "{at:?}");
+        assert!((c.mean() - 1.0 / r).abs() < 1e-9, "{c:?}");
+        assert!((c.gaussian() - 1.0 / (r * r)).abs() < 1e-9, "{c:?}");
+        // The principal pair splits from the mean by the square root of a
+        // rounding-sized difference, so it holds to that root of it.
+        assert!(
+            (c.max - 1.0 / r).abs() < 1e-7 && (c.min - 1.0 / r).abs() < 1e-7,
+            "{c:?}"
+        );
+        assert!(c.normal.vector().dot(centre - *at) > 0.0, "{c:?}");
+    }
+
+    // The same ball doubled about a far point: its samples land on the
+    // doubled sphere and bend by half as much, away from an outward normal.
+    let doubling = ogeom::math::Transform::scaling(Point::new(-5.0, 2.0, 0.0), 2.0, T).unwrap();
+    let grown = ogeom::algo::transformed(&mut model, &ball, doubling)
+        .unwrap()
+        .shape;
+    let new_centre = doubling.apply(centre);
+    let face = sphere_face_of(&model, &grown);
+    let samples = ogeom::fillet::face_curvature_samples(&model, &face, 8, T).unwrap();
+    assert!(samples.len() > 40, "{}", samples.len());
+    for (at, c) in &samples {
+        assert!((at.distance(new_centre) - 2.0 * r).abs() < 1e-9, "{at:?}");
+        let k = -1.0 / (2.0 * r);
+        assert!((c.mean() - k).abs() < 1e-9, "{c:?}");
+        assert!((c.gaussian() - k * k).abs() < 1e-9, "{c:?}");
+        assert!(
+            (c.max - k).abs() < 1e-7 && (c.min - k).abs() < 1e-7,
+            "{c:?}"
+        );
+        assert!(c.normal.vector().dot(*at - new_centre) > 0.0, "{c:?}");
+    }
+}
+
+#[test]
+fn face_curvature_samples_refuses_no_grid_and_a_shape_that_is_not_a_face() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (4.0, 3.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let face = planar_face_at(&model, &block, Point::new(1.0, 1.0, 2.0));
+    assert!(matches!(
+        ogeom::fillet::face_curvature_samples(&model, &face, 0, T),
+        Err(ogeom::core::OgeomError::Construction(_))
+    ));
+    let edge = edge_near(&model, &block, Point::new(2.0, 0.0, 2.0));
+    assert!(matches!(
+        ogeom::fillet::face_curvature_samples(&model, &edge, 4, T),
+        Err(ogeom::core::OgeomError::Construction(_))
+    ));
+}

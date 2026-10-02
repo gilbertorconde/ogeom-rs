@@ -3,7 +3,7 @@
 
 use ogeom_core::Tolerances;
 use ogeom_geom::{CylinderSurface, PlaneSurface, SphereSurface, Surface, TorusSurface};
-use ogeom_math::{Cylinder, Frame, Plane, Sphere, Torus};
+use ogeom_math::{Cylinder, Frame, Plane, Sphere, Torus, Vector};
 
 const T: Tolerances = Tolerances::millimetres();
 
@@ -83,4 +83,31 @@ fn a_torus_is_saddle_inside_and_dome_outside() {
         "{inner:?}"
     );
     assert!(inner.gaussian() < 0.0, "a saddle inside");
+}
+
+#[test]
+fn a_cylinder_curves_by_euler_between_round_and_along() {
+    // At angle θ from the ruling, a cylinder of radius r curves by
+    // sin²θ / r, away from its outward normal.
+    let r = 4.0;
+    let cylinder =
+        CylinderSurface::new(Cylinder::new(Frame::WORLD, r, T).unwrap(), (-1.0, 1.0)).unwrap();
+    let (u, v) = (1.0_f64, 0.3);
+    let c = cylinder.curvature_at(u, v, T).unwrap();
+    let round = Vector::new(-u.sin(), u.cos(), 0.0);
+    let along = Vector::new(0.0, 0.0, 1.0);
+    for theta in [0.0_f64, 0.4, 1.0, std::f64::consts::FRAC_PI_2, 2.5] {
+        let direction = along * theta.cos() + round * theta.sin();
+        let k = c.normal_curvature(direction * 3.0).unwrap();
+        assert!(
+            (k + theta.sin().powi(2) / r).abs() < 1e-12,
+            "at {theta}: {k}"
+        );
+    }
+    // The part along the normal is dropped; the normal alone is refused.
+    let normal = c.normal.vector();
+    let k = c.normal_curvature(round + normal * 5.0).unwrap();
+    assert!((k + 1.0 / r).abs() < 1e-12, "{k}");
+    assert_eq!(c.normal_curvature(normal), None);
+    assert_eq!(c.normal_curvature(Vector::ZERO), None);
 }

@@ -56,3 +56,9 @@ A blend must end tangent to the faces it joins. `analyse_blend` measures
 the achieved contact and returns it as `BlendContact`. Fillets report their
 own tangency deviation, and a blend that cannot reach tangency within
 tolerance is refused.
+
+Each `BlendContact` carries the gap (G0), the angle between the normals
+(G1) and the step in normal curvature square to the edge (G2), all sampled
+at stations along the shared edge. `face_curvature_samples` gives the
+principal curvatures on a grid over one face, for curvature maps and zebra
+stripes.
