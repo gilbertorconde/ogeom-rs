@@ -76,6 +76,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Pads fuse into slabs whose rounded corners lean in by less than
+  their chords sag.** Where a pad wall crosses an edge between two facets
+  lying almost in the wall, the two facets' sections reach the edge up to
+  a few ten-thousandths of a millimetre apart; they now join as one point,
+  and a stub of section between two such crossings no longer leaves a face
+  piece with no inside. A slab drafted 0.001 fuses, cuts and is taken in
+  common at every row count tried, while its rows stay faces of their own.
+
 - **A boolean cuts periodic faces whose outlines sit turns away from
   their chart, and fits sharp-tipped section loops in pieces.** A face on
   a periodic surface whose outline was stated one or two turns outside the

@@ -2795,9 +2795,11 @@ fn fill(
                         // crossing's gap over the sine of its lean out of the
                         // plane. A facet's plane misses the edge it shares with
                         // the next by its points' rounding, so the sections on
-                        // the facets either side reach the edge microns apart,
-                        // and those are one point; an exact pair meets with no
-                        // gap and stays exact.
+                        // the facets either side reach the edge apart by that
+                        // rounding over the sine (a few tenths of a micron
+                        // where the edge is a rung between two rows of facets
+                        // lying all but in a wall), and those are one point; an
+                        // exact pair meets with no gap and stays exact.
                         if at_end.is_none()
                             && let SurfaceGeometry::Plane(plane) = &across.surface
                         {
@@ -2807,8 +2809,7 @@ fn fill(
                                 let sine =
                                     along_edge.dot(plane.plane().normal().vector()).abs() / length;
                                 if sine > 0.0 {
-                                    let moved = crossing.gap / sine;
-                                    honesty = honesty.max(moved.min(tol.confusion() * 1e3));
+                                    honesty = honesty.max(honest(crossing.gap / sine, tol));
                                 }
                             }
                         }
@@ -6382,6 +6383,7 @@ fn general_fuse_as(
             .filter(|st| matches!(st.tag, Tag::Section { .. }) && st.polyline.len() >= 2)
         {
             let last = st.polyline.len() - 1;
+            let mut moved_into: Option<usize> = None;
             for at in [0, last] {
                 let p = st.polyline[at];
                 if anchors
@@ -6424,8 +6426,33 @@ fn general_fuse_as(
                     })
                     .map(|(_, n, _)| *n);
                 match anchor {
-                    Some(n) => st.polyline[at] = n,
+                    Some(n) => {
+                        st.polyline[at] = n;
+                        moved_into = Some(ji);
+                    }
                     None => anchors.push((Some(ji), p, q)),
+                }
+            }
+            // A piece of section lying wholly inside one junction, its ends
+            // carried onto one node, is that junction: two crossings a
+            // shallow angle leaves a hair apart along an edge bound a stub
+            // of the section between them, and kept as a strand from the
+            // node back to itself it encloses a sliver with no inside.
+            // Carried to a point, it is dust, and the faces either side of
+            // it drop it alike.
+            if let Some(ji) = moved_into
+                && st.polyline[0].distance(st.polyline[last]) <= face_snap
+            {
+                let junction = &junctions[ji];
+                let mut inside = true;
+                for p in &st.polyline {
+                    inside &= face
+                        .surface
+                        .point_at(p.x, p.y, tol)
+                        .is_ok_and(|q| junction.at.distance(q) <= junction.reach);
+                }
+                if inside {
+                    st.polyline = vec![st.polyline[0], st.polyline[0]];
                 }
             }
         }

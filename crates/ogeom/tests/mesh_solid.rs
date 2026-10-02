@@ -2770,13 +2770,69 @@ fn caps_of_a_fine_mesh_far_out_stay_whole() {
     assert!(check(&model, &built.shape, T).unwrap().is_valid());
 }
 
+/// The area of a polygon in plan, positive when it runs anticlockwise.
+fn plan_area(polygon: &[(f64, f64)]) -> f64 {
+    let n = polygon.len();
+    (0..n)
+        .map(|i| {
+            let (a, b) = (polygon[i], polygon[(i + 1) % n]);
+            a.0 * b.1 - b.0 * a.1
+        })
+        .sum::<f64>()
+        / 2.0
+}
+
+/// `subject` clipped to the convex anticlockwise polygon `window`.
+fn clip_to_convex(subject: &[(f64, f64)], window: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut out = subject.to_vec();
+    for i in 0..window.len() {
+        let (a, b) = (window[i], window[(i + 1) % window.len()]);
+        let side = |p: (f64, f64)| (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0);
+        let input = std::mem::take(&mut out);
+        for k in 0..input.len() {
+            let (p, q) = (input[k], input[(k + 1) % input.len()]);
+            let (sp, sq) = (side(p), side(q));
+            if sp >= 0.0 {
+                out.push(p);
+            }
+            if (sp >= 0.0) != (sq >= 0.0) {
+                let t = sp / (sp - sq);
+                out.push((p.0 + t * (q.0 - p.0), p.1 + t * (q.1 - p.1)));
+            }
+        }
+        if out.is_empty() {
+            break;
+        }
+    }
+    out
+}
+
 /// A slab drafted inward from its top by `draft` times the depth to the
 /// power one and a half, one corner rounded in `counts` segments row by
 /// row, tessellated and rounded to `f32` a hundred millimetres from the
 /// origin, converted face for facet, and a pad of its top face pushed
-/// `depth` down into it: fused back and in common with it, each valid, the
-/// two volumes adding up to the slab's and the pad's.
-fn pad_on_a_drafted_slab(depth: f64, draft: f64, counts: [u32; 7]) {
+/// `depth` down into it. With `rows_kept` the conversion's coplanar
+/// distance is twice what single precision resolves, so each row stays a
+/// face of its own however little it leans; without, it is the
+/// converter's own.
+///
+/// The pad fused back, in common with the slab and cut from it must each
+/// be valid, with a volume within `2e-5` cubic millimetres of one measured
+/// from the mesh alone. The slab's volume is its triangles' signed
+/// tetrahedra, the pad's its lid's area times its depth, and their common
+/// part the integral down the pad of the lid clipped by the slab's
+/// section, which between two rows is the polygon through the edges
+/// joining them (Simpson's rule, two thousand steps a band); the fuse and
+/// the cut are what is left of the three. A result's volume is its own
+/// tessellation's, which must close: on planes the tessellation stands on
+/// the result's vertices, where the exact integral runs round each face's
+/// own chart and so differs by what the vertices' tolerances allow.
+fn pad_on_a_drafted_slab(
+    depth: f64,
+    draft: f64,
+    counts: [u32; 7],
+    rows_kept: bool,
+) -> Result<(), String> {
     let rows = [0.0_f64, 1.5, 3.0, 4.5, 5.8333, 7.1667, 8.5];
     let top = 8.5;
     #[allow(
@@ -2804,7 +2860,7 @@ fn pad_on_a_drafted_slab(depth: f64, draft: f64, counts: [u32; 7]) {
         rings.push(ring);
     }
     // Rows of different counts are stitched by their place round the
-    // outline.
+    // outline; each band keeps the edges joining its two rows in order.
     let place = |ring: &[u32], mesh: &Triangulation| -> Vec<f64> {
         let points: Vec<Point> = ring.iter().map(|&i| mesh.positions[i as usize]).collect();
         let mut along = vec![0.0];
@@ -2815,12 +2871,15 @@ fn pad_on_a_drafted_slab(depth: f64, draft: f64, counts: [u32; 7]) {
         let total = along[points.len()];
         along.iter().map(|a| a / total).collect()
     };
+    let mut rungs: Vec<Vec<(u32, u32)>> = Vec::new();
     for j in 0..rows.len() - 1 {
         let (lo, hi) = (&rings[j], &rings[j + 1]);
         let (at_lo, at_hi) = (place(lo, &mesh), place(hi, &mesh));
         let (nl, nh) = (lo.len(), hi.len());
         let (mut a, mut b) = (0_usize, 0_usize);
+        let mut band = Vec::new();
         while a < nl || b < nh {
+            band.push((lo[a % nl], hi[b % nh]));
             if b >= nh || (a < nl && at_lo[a + 1] <= at_hi[b + 1]) {
                 mesh.triangles
                     .push([lo[a % nl], lo[(a + 1) % nl], hi[b % nh]]);
@@ -2831,6 +2890,7 @@ fn pad_on_a_drafted_slab(depth: f64, draft: f64, counts: [u32; 7]) {
                 b += 1;
             }
         }
+        rungs.push(band);
     }
     let (bottom, upper) = (&rings[0], &rings[rows.len() - 1]);
     for i in 1..bottom.len() - 1 {
@@ -2839,10 +2899,65 @@ fn pad_on_a_drafted_slab(depth: f64, draft: f64, counts: [u32; 7]) {
     for i in 1..upper.len() - 1 {
         mesh.triangles.push([upper[0], upper[i], upper[i + 1]]);
     }
+
+    // The measurement from the mesh, about the slab's middle in plan.
+    let local = |p: Point| Vector::new(p.x - 105.0, p.y - 85.0, p.z);
+    let signed = |mesh: &Triangulation| -> f64 {
+        mesh.triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|i| local(mesh.positions[i as usize]));
+                a.dot(b.cross(c)) / 6.0
+            })
+            .sum()
+    };
+    let slab_volume = signed(&mesh);
+    let window: Vec<(f64, f64)> = upper
+        .iter()
+        .map(|&i| {
+            let p = local(mesh.positions[i as usize]);
+            (p.x, p.y)
+        })
+        .collect();
+    let pad_volume = plan_area(&window) * depth;
+    let section = |band: &[(u32, u32)], z: f64| -> f64 {
+        let polygon: Vec<(f64, f64)> = band
+            .iter()
+            .map(|&(l, h)| {
+                let (p, q) = (
+                    local(mesh.positions[l as usize]),
+                    local(mesh.positions[h as usize]),
+                );
+                let t = (z - p.z) / (q.z - p.z);
+                (p.x + t * (q.x - p.x), p.y + t * (q.y - p.y))
+            })
+            .collect();
+        plan_area(&clip_to_convex(&polygon, &window))
+    };
+    let floor = mesh.positions[upper[0] as usize].z - depth;
+    let mut common_volume = 0.0;
+    for (j, band) in rungs.iter().enumerate() {
+        let from = mesh.positions[rings[j][0] as usize].z.max(floor);
+        let to = mesh.positions[rings[j + 1][0] as usize].z;
+        if to <= from {
+            continue;
+        }
+        let steps = 2000_u32;
+        let h = (to - from) / f64::from(steps);
+        let mut sum = section(band, from) + section(band, to);
+        for k in 1..steps {
+            let weight = if k % 2 == 1 { 4.0 } else { 2.0 };
+            sum += weight * section(band, from + h * f64::from(k));
+        }
+        common_volume += sum * h / 3.0;
+    }
+
+    let quantum = ogeom::algo::single_precision_quantum(&mesh);
     let options = MeshSolidOptions {
         recognize: false,
         keep_vertices: true,
-        quantum: Some(ogeom::algo::single_precision_quantum(&mesh)),
+        quantum: Some(quantum),
+        coplanar_distance: rows_kept.then_some(2.0 * quantum),
         ..MeshSolidOptions::default()
     };
     let mut model = Model::new();
@@ -2860,20 +2975,38 @@ fn pad_on_a_drafted_slab(depth: f64, draft: f64, counts: [u32; 7]) {
     let pad = ogeom::algo::make_prism(&mut model, &lid, Vector::new(0.0, 0.0, -depth), T)
         .unwrap()
         .shape;
-    let fuse = ogeom::boolean::fuse(&mut model, &slab, &pad, T)
-        .unwrap_or_else(|e| panic!("depth {depth}: fuse: {e}"))
-        .shape;
-    let common = ogeom::boolean::common(&mut model, &slab, &pad, T)
-        .unwrap_or_else(|e| panic!("depth {depth}: common: {e}"))
-        .shape;
-    for (name, made) in [("fuse", &fuse), ("common", &common)] {
-        let diagnosis = check(&model, made, T).unwrap();
-        assert!(diagnosis.is_valid(), "depth {depth}: {name}: {diagnosis}");
-    }
     let fine = Deflection::with_chord(1e-3).unwrap();
-    let v = |s: &Shape| volume_properties(&model, s, fine, T).unwrap().mass;
-    let gap = v(&fuse) + v(&common) - v(&slab) - v(&pad);
-    assert!(gap.abs() < 1e-4, "depth {depth}: off by {gap}");
+    for (name, expected) in [
+        ("fuse", slab_volume + pad_volume - common_volume),
+        ("common", common_volume),
+        ("cut", slab_volume - common_volume),
+    ] {
+        let made = match name {
+            "fuse" => ogeom::boolean::fuse(&mut model, &slab, &pad, T),
+            "common" => ogeom::boolean::common(&mut model, &slab, &pad, T),
+            _ => ogeom::boolean::cut(&mut model, &slab, &pad, T),
+        }
+        .map_err(|e| format!("depth {depth}: {name}: {e}"))?
+        .shape;
+        let diagnosis = check(&model, &made, T).unwrap();
+        if !diagnosis.is_valid() {
+            return Err(format!("depth {depth}: {name}: {diagnosis}"));
+        }
+        // A cut of a slab the pad holds whole leaves nothing, and nothing
+        // is closed with no volume.
+        let tessellated = ogeom::mesh::triangulate(&model, &made, fine, T).unwrap();
+        if !tessellated.triangles.is_empty() && !tessellated.is_closed() {
+            return Err(format!("depth {depth}: {name}: its tessellation is open"));
+        }
+        let v = signed(&tessellated);
+        if (v - expected).abs() > 2e-5 {
+            return Err(format!(
+                "depth {depth}: {name}: volume {v}, measured {expected}, off by {:.2e}",
+                v - expected
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Each wall of the pad stands on the facet just under the top edge they
@@ -2883,7 +3016,7 @@ fn pad_on_a_drafted_slab(depth: f64, draft: f64, counts: [u32; 7]) {
 #[test]
 fn a_pad_into_a_drafted_single_precision_slab_fuses_back() {
     for depth in [3.0, 10.0] {
-        pad_on_a_drafted_slab(depth, 0.02, [6; 7]);
+        pad_on_a_drafted_slab(depth, 0.02, [6; 7], false).unwrap();
     }
 }
 
@@ -2896,8 +3029,48 @@ fn a_pad_into_a_drafted_single_precision_slab_fuses_back() {
 #[test]
 fn a_pad_into_a_slab_whose_rows_differ_fuses_back() {
     for depth in [3.0, 10.0] {
-        pad_on_a_drafted_slab(depth, 0.005, [8, 8, 8, 7, 7, 6, 5]);
+        pad_on_a_drafted_slab(depth, 0.005, [8, 8, 8, 7, 7, 6, 5], false).unwrap();
     }
+}
+
+/// The slab drafted a thousandth by the rows' depth to the power one and a
+/// half, less than the corner's chords sag, so the rows' edges cross the
+/// pad's walls in plan and every corner facet meets a wall at a small
+/// angle, row counts uniform, rising, falling, alternating and mixed. A rung
+/// between two rows lies all but in a wall, and the sections on the facets
+/// either side reach it a few tenths of a micron apart along it; a row's
+/// edge crosses a wall a few hundredths of a radian off it, and the
+/// sections either side reach it a tenth of a micron apart. Each pair is
+/// one junction, and a stub of section between two such crossings is that
+/// junction too.
+#[test]
+fn pads_into_slabs_drafted_less_than_their_chords_sag_cut_and_fuse() {
+    let families: [[u32; 7]; 15] = [
+        [6; 7],
+        [8; 7],
+        [4; 7],
+        [8, 8, 8, 7, 7, 6, 5],
+        [5, 6, 7, 7, 8, 8, 8],
+        [4, 5, 6, 7, 8, 9, 10],
+        [10, 9, 8, 7, 6, 5, 4],
+        [8, 7, 8, 7, 8, 7, 8],
+        [6, 5, 6, 5, 6, 5, 6],
+        [3, 4, 5, 6, 7, 8, 9],
+        [12, 11, 10, 9, 8, 7, 6],
+        [7, 7, 7, 6, 6, 6, 5],
+        [8, 9, 9, 5, 4, 5, 5],
+        [8, 5, 9, 9, 5, 8, 7],
+        [6, 6, 6, 4, 8, 7, 5],
+    ];
+    let mut failed = Vec::new();
+    for counts in families {
+        for depth in [3.0, 10.0] {
+            if let Err(e) = pad_on_a_drafted_slab(depth, 0.001, counts, true) {
+                failed.push(format!("{counts:?}: {e}"));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
 }
 
 /// Pads from the large top faces of the part `OGEOM_TEST_77777` names,

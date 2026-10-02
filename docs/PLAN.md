@@ -22,8 +22,8 @@ here.
 is classified off the contact. A piece that still reads on the other solid's
 boundary at every point it is asked at, with no coincident partner face, is
 refused: that is a contact over a region of faces the boolean did not pair as
-coincident. No configuration known to reach it has been found; one that does
-wants its two faces paired as same-domain.
+coincident. A slab drafted 0.0007 under a pad (below) reaches it; it wants
+the facet and the wall paired as same-domain.
 
 **Blends between curved faces that share no edge.** `blend_faces` blends
 curved faces that meet along edges of the solid through the edge blend (exact
@@ -54,15 +54,24 @@ helps still carries its whole miss into the junctions, and they can
 swallow every edge of a face piece.
 
 **Facet walls drafted less than their chords sag.** A pad pushed down from
-the top of a slab converted face for facet, whose rounded corner's rows hold
-different numbers of facets and lean in by a few thousandths of a
-millimetre (less than the corner's chords sag, so the rows' edges cross the
-pad's walls in plan), refuses at some row counts: the kept pieces do not
-close. The rows' planes and the pad's walls meet at small angles all round
-the corner, the near-coplanar sliver band again. A slab drafted 0.005 or
-0.002 by the rows' depth to the power 1.5 passes at every row count tried;
-at 0.001 some counts refuse, the open edges being the pad's corner walls
-where they run along the corner's facets.
+the top of a slab converted face for facet, whose rounded corner's rows lean
+in by less than the corner's chords sag, fuses, cuts and is taken in common
+at every row count tried when the slab is drafted 0.001 to 0.005 by the
+rows' depth to the power 1.5 and each row stays a face of its own. Two cases
+still refuse:
+
+- Converted at its own coplanar distance, a slab drafted 0.001 has its rows'
+  turns (under a twentieth of a degree) read as the mesh's scatter: the
+  distance widens to a thousandth of a millimetre and three bands merge into
+  one plane their vertices stand 4e-4 off. Pads into it refuse at most row
+  counts, and where they pass come within 1e-3 cubic millimetres of the
+  mesh's own volume. A steady turn row after row is a curve drawn finely,
+  not scatter, and the converter's scatter estimate does not tell the two
+  apart.
+- Drafted 0.0007 or less, the top band leans off the pad's walls by under a
+  thousandth of a radian. Where every row holds the same count, each top
+  facet stands parallel to its wall in plan: eight a row is refused as an
+  unpaired coincidence, six or four a row leave the kept pieces open.
 
 **Mesh conversion.** `solid_from_mesh` rebuilds planes, the four canonical
 surfaces, extrusions, surfaces of revolution and fitted B-spline patches,
