@@ -167,6 +167,17 @@ after.
      exact seam. The zero-area planar faces are gone: a triangle no higher
      than the coplanar distance joins a neighbouring plane by its corners'
      distance (Body28 alone moves, from 436 bad mesh edges to 179).
+     Absorbing every facet within the reach now gives a region's facets
+     back before it is faceted, and makes the conversion again without
+     them if a face ends up turned in: the cone and the tori stay exact,
+     Body11 goes from 5258 faces to 3612 and linkage_bores_chamfer from 397
+     to 223 with nothing faceted, Body28 to 122 bad mesh edges, and the
+     truth bench's face ratio from 0.27 to 0.17 (noisy window-tube and
+     rim-disc lose a little: 3.2e-6 to 6.1e-6, 7.2e-4 to 7.8e-4). Still
+     open: handle-pickup's folding facet (its corners stand beyond the
+     reach of both neighbours), Body28's remaining bad edges, and ctc_02
+     and ftc_07, which go from 11 and 212 bad mesh edges to 23 and 223:
+     some facets they take make worse seams than they removed.
    - **4b. Corners solved onto their surfaces.** A corner is the mesh
      vertex today, and each seam ends where its own solve put it, near
      but not at it. Corners where three or more faces meet are solved onto

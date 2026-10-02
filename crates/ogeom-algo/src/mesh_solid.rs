@@ -509,134 +509,171 @@ pub fn solid_from_mesh(
             groups = segment(&points, &triangles, &adjacency, options, flat, tol)?;
         }
     }
-    // Plan until every curved face's boundary is exact, faceting the ones
-    // whose boundary is not; then build, and facet any recognized face that
-    // reaches past the triangles it replaces (a boundary placed on the wrong
-    // turn of its surface closes a face of the wrong extent) and build again.
-    let mut pinned: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    let mut straight: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
-    // What stood before any seam was threaded straight: a straightened
-    // build with a face turned into its material is set aside for it.
-    let mut unthreaded: Option<(Groups, MeshSolidReport)> = None;
-    let mut threading_refused = false;
-    // Whether faces were faceted after the first seam was threaded: the
-    // build then differs from the unthreaded one beyond those seams.
-    let mut refaceted = false;
-    let shape = loop {
-        let planner = Planner {
-            points: &points,
-            triangles: &triangles,
-            adjacency: &adjacency,
-            groups: &groups,
-            merge: options.merge_coplanar && !options.keep_vertices,
-            pinned: &pinned,
-            straight: &straight,
-            flat,
-            tol,
-        };
-        let failed = match planner.plan()? {
-            Err(Replan::Pin(vertices)) => {
-                pinned.extend(vertices);
+    // Facets left between curved faces go to them first. Whether that
+    // leaves every face facing out is known only once the solid is built;
+    // where one faces into the material, the conversion is made again
+    // without them.
+    let unabsorbed = (groups.clone(), report.clone());
+    let mut absorbed = if options.recognize {
+        absorb_facets(&points, &triangles, &adjacency, &mut groups, flat)
+    } else {
+        HashMap::new()
+    };
+    let mut absorbing = !absorbed.is_empty();
+    let shape = 'attempt: loop {
+        // Plan until every curved face's boundary is exact, faceting the ones
+        // whose boundary is not; then build, and facet any recognized face that
+        // reaches past the triangles it replaces (a boundary placed on the wrong
+        // turn of its surface closes a face of the wrong extent) and build again.
+        let mut pinned: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut straight: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+        // What stood before any seam was threaded straight: a straightened
+        // build with a face turned into its material is set aside for it.
+        let mut unthreaded: Option<(Groups, MeshSolidReport)> = None;
+        let mut threading_refused = false;
+        // Whether faces were faceted after the first seam was threaded: the
+        // build then differs from the unthreaded one beyond those seams.
+        let mut refaceted = false;
+        let shape = loop {
+            let planner = Planner {
+                points: &points,
+                triangles: &triangles,
+                adjacency: &adjacency,
+                groups: &groups,
+                merge: options.merge_coplanar && !options.keep_vertices,
+                pinned: &pinned,
+                straight: &straight,
+                flat,
+                tol,
+            };
+            let failed = match planner.plan()? {
+                Err(Replan::Pin(vertices)) => {
+                    pinned.extend(vertices);
+                    continue;
+                }
+                Err(Replan::Facet(failed)) => failed,
+                Ok(plan) => {
+                    model.begin_operation();
+                    let built = Builder {
+                        model,
+                        points: &points,
+                        triangles: &triangles,
+                        groups: &groups,
+                        plan: &plan,
+                        tol,
+                    }
+                    .build()?;
+                    let astray =
+                        astray_faces(model, &points, &triangles, &groups, &built, flat, tol)?;
+                    if astray.is_empty() {
+                        let (shape, bodies) = assemble(
+                            model, &points, &triangles, &pieces, &depth, all_closed, &groups,
+                            &built,
+                        )?;
+                        let mut culprits = if options.recognize && all_closed {
+                            body_culprits(
+                                model,
+                                &points,
+                                &triangles,
+                                &groups,
+                                &built,
+                                &bodies,
+                                flat,
+                                tol,
+                                &mut report,
+                            )?
+                        } else {
+                            Vec::new()
+                        };
+                        if culprits.is_empty() && options.recognize && !threading_refused {
+                            let crossed = crossed_seams(
+                                model, &shape, &triangles, &adjacency, &groups, &built, tol,
+                            )?;
+                            let before = straight.len();
+                            if before == 0 && !crossed.is_empty() {
+                                unthreaded = Some((groups.clone(), report.clone()));
+                            }
+                            straight.extend(crossed);
+                            if straight.len() > before {
+                                continue;
+                            }
+                            if let Some((was, then)) = unthreaded.take()
+                                && (turned_over(
+                                    model, &shape, &triangles, &groups, &built, &straight, tol,
+                                )? || (refaceted && any_turned_in(model, &shape, tol)?))
+                            {
+                                groups = was;
+                                report = then;
+                                straight.clear();
+                                threading_refused = true;
+                                continue;
+                            }
+                        }
+                        if culprits.is_empty() && options.recognize {
+                            culprits = folded_seams(model, &groups, &built, tol)?;
+                        }
+                        if culprits.is_empty() && options.recognize {
+                            culprits =
+                                overlapping_faces(model, &shape, &adjacency, &groups, &built, tol)?;
+                        }
+                        if culprits.is_empty() {
+                            report.faces = built.iter().flatten().count();
+                            report.curved_faces = groups
+                                .carriers
+                                .iter()
+                                .zip(&built)
+                                .filter(|(c, b)| matches!(c, Carrier::Curved(_)) && b.is_some())
+                                .count();
+                            break shape;
+                        }
+                        culprits
+                    } else {
+                        astray
+                    }
+                }
+            };
+            refaceted |= unthreaded.is_some() && !failed.is_empty();
+            // A region that took facets gives them back and is tried again
+            // without them before it is faceted.
+            let returned: Vec<usize> = failed
+                .iter()
+                .copied()
+                .filter(|g| absorbed.contains_key(g))
+                .collect();
+            if !returned.is_empty() {
+                for g in returned {
+                    if let Some(record) = absorbed.remove(&g) {
+                        give_back(&mut groups, g, record);
+                    }
+                }
                 continue;
             }
-            Err(Replan::Facet(failed)) => failed,
-            Ok(plan) => {
-                model.begin_operation();
-                let built = Builder {
-                    model,
-                    points: &points,
-                    triangles: &triangles,
-                    groups: &groups,
-                    plan: &plan,
-                    tol,
-                }
-                .build()?;
-                let astray = astray_faces(model, &points, &triangles, &groups, &built, flat, tol)?;
-                if astray.is_empty() {
-                    let (shape, bodies) = assemble(
-                        model, &points, &triangles, &pieces, &depth, all_closed, &groups, &built,
-                    )?;
-                    let mut culprits = if options.recognize && all_closed {
-                        body_culprits(
-                            model,
-                            &points,
-                            &triangles,
-                            &groups,
-                            &built,
-                            &bodies,
-                            flat,
-                            tol,
-                            &mut report,
-                        )?
-                    } else {
-                        Vec::new()
-                    };
-                    if culprits.is_empty() && options.recognize && !threading_refused {
-                        let crossed = crossed_seams(
-                            model, &shape, &triangles, &adjacency, &groups, &built, tol,
-                        )?;
-                        let before = straight.len();
-                        if before == 0 && !crossed.is_empty() {
-                            unthreaded = Some((groups.clone(), report.clone()));
-                        }
-                        straight.extend(crossed);
-                        if straight.len() > before {
-                            continue;
-                        }
-                        if let Some((was, then)) = unthreaded.take()
-                            && (turned_over(
-                                model, &shape, &triangles, &groups, &built, &straight, tol,
-                            )? || (refaceted && any_turned_in(model, &shape, tol)?))
-                        {
-                            groups = was;
-                            report = then;
-                            straight.clear();
-                            threading_refused = true;
-                            continue;
-                        }
+            for g in failed {
+                groups.carriers[g] = Carrier::Gone;
+                report.curved_faceted += 1;
+                for of in &mut groups.of {
+                    if *of == g {
+                        *of = usize::MAX;
                     }
-                    if culprits.is_empty() && options.recognize {
-                        culprits = folded_seams(model, &groups, &built, tol)?;
-                    }
-                    if culprits.is_empty() && options.recognize {
-                        culprits =
-                            overlapping_faces(model, &shape, &adjacency, &groups, &built, tol)?;
-                    }
-                    if culprits.is_empty() {
-                        report.faces = built.iter().flatten().count();
-                        report.curved_faces = groups
-                            .carriers
-                            .iter()
-                            .zip(&built)
-                            .filter(|(c, b)| matches!(c, Carrier::Curved(_)) && b.is_some())
-                            .count();
-                        break shape;
-                    }
-                    culprits
-                } else {
-                    astray
                 }
             }
+            coplanar_groups(
+                &points,
+                &triangles,
+                &adjacency,
+                options,
+                flat,
+                &mut groups,
+                tol,
+            )?;
         };
-        refaceted |= unthreaded.is_some() && !failed.is_empty();
-        for g in failed {
-            groups.carriers[g] = Carrier::Gone;
-            report.curved_faceted += 1;
-            for of in &mut groups.of {
-                if *of == g {
-                    *of = usize::MAX;
-                }
-            }
+        if absorbing && any_turned_in(model, &shape, tol)? {
+            absorbing = false;
+            absorbed.clear();
+            (groups, report) = unabsorbed.clone();
+            continue 'attempt;
         }
-        coplanar_groups(
-            &points,
-            &triangles,
-            &adjacency,
-            options,
-            flat,
-            &mut groups,
-            tol,
-        )?;
+        break shape;
     };
     Ok(MeshSolid {
         shape,
@@ -1111,6 +1148,110 @@ fn chart_crossings(rings: &[Vec<Point2>]) -> Vec<[Point2; 4]> {
         active.push(k);
     }
     out
+}
+
+/// Facets given to a curved region, and what it was before, so they can
+/// be handed back.
+struct Absorbed {
+    /// Each facet: its own group, its plane, its triangles.
+    facets: Vec<(usize, Carrier, Vec<usize>)>,
+    /// The region's vertices before it took any.
+    vertices: Vec<u32>,
+}
+
+/// Give each facet beside a curved region to that region.
+///
+/// Where curved regions meet at an angle, or where a fit stops a row short,
+/// the mesh leaves planar facets of a triangle or two that no surface
+/// claimed, between curved faces. Built as faces of their own they are
+/// bounded by seams whose tolerance (a chord threaded through the mesh's
+/// vertices strays up to a twentieth of its span) is as wide as they are,
+/// so their trims fold and they mesh over themselves. A facet of at most
+/// [`SLIVER_FACETS`] triangles whose corners all lie within the reach of a
+/// curved neighbour's surface goes to the neighbour they lie nearest. Such
+/// a facet has no vertex inside it: each of its corners ends on a seam,
+/// held to the reach as any seam's points are, so the face it joins is
+/// held to what it was. What each region took is returned, so a region
+/// that cannot be built with its facets gives them back before it is
+/// faceted itself.
+fn absorb_facets(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    groups: &mut Groups,
+    flat: f64,
+) -> HashMap<usize, Absorbed> {
+    let reach = flat * REACH;
+    let mut members: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (t, &g) in groups.of.iter().enumerate() {
+        if matches!(groups.carriers.get(g), Some(Carrier::Plane(_))) {
+            members.entry(g).or_default().push(t);
+        }
+    }
+    let mut facets: Vec<(usize, Vec<usize>)> = members
+        .into_iter()
+        .filter(|(_, ts)| ts.len() <= SLIVER_FACETS)
+        .collect();
+    facets.sort_unstable();
+    let mut absorbed: HashMap<usize, Absorbed> = HashMap::new();
+    for (g, ts) in facets {
+        let mut beside: Vec<usize> = ts
+            .iter()
+            .flat_map(|&t| {
+                (3 * t..3 * t + 3).filter_map(|h| adjacency.twin[h].map(|o| groups.of[o / 3]))
+            })
+            .filter(|&o| o != g && matches!(groups.carriers.get(o), Some(Carrier::Curved(_))))
+            .collect();
+        beside.sort_unstable();
+        beside.dedup();
+        let mut corners: Vec<u32> = ts.iter().flat_map(|&t| triangles[t]).collect();
+        corners.sort_unstable();
+        corners.dedup();
+        let at: Vec<Point> = corners.iter().map(|&v| points[v as usize]).collect();
+        let nearest = beside
+            .iter()
+            .filter_map(|&o| match &groups.carriers[o] {
+                Carrier::Curved(c) => Some((worst_deviation(&c.shape, &at), o)),
+                _ => None,
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let Some((deviation, to)) = nearest else {
+            continue;
+        };
+        if deviation > reach {
+            continue;
+        }
+        let Carrier::Curved(region) = &mut groups.carriers[to] else {
+            continue;
+        };
+        let record = absorbed.entry(to).or_insert_with(|| Absorbed {
+            facets: Vec::new(),
+            vertices: region.vertices.clone(),
+        });
+        region.vertices.extend(corners);
+        region.vertices.sort_unstable();
+        region.vertices.dedup();
+        for &t in &ts {
+            groups.of[t] = to;
+        }
+        let carrier = std::mem::replace(&mut groups.carriers[g], Carrier::Gone);
+        record.facets.push((g, carrier, ts));
+    }
+    absorbed
+}
+
+/// Hand a region's facets back to themselves, as they were before it took
+/// them.
+fn give_back(groups: &mut Groups, to: usize, record: Absorbed) {
+    for (g, carrier, ts) in record.facets {
+        for t in ts {
+            groups.of[t] = g;
+        }
+        groups.carriers[g] = carrier;
+    }
+    if let Carrier::Curved(region) = &mut groups.carriers[to] {
+        region.vertices = record.vertices;
+    }
 }
 
 /// The most mesh triangles a planar face between curved ones may hold for

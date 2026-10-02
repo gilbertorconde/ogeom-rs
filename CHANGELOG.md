@@ -56,6 +56,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Facets left between curved faces join them.** Where curved regions
+  meet, or a fit stops a row short, a mesh leaves planar facets of a
+  triangle or two that no surface claims, bounded by seams as wide as
+  themselves, whose trims fold. A facet whose corners all lie within the
+  seams' reach of a curved neighbour joins it; a region that cannot be
+  built with the facets it took gives them back before it is faceted, and
+  a conversion that leaves a face turned into the material is made again
+  without them. A coarse plate with filleted rims comes back its own 18
+  faces instead of 56, the truth bench's faces over the exact count fall
+  from a mean log ratio of 0.27 to 0.17, and large real exports lose up
+  to a third of their faces with every curved surface kept.
+
 - **A needle on a flat face is part of it.** A triangle no higher than
   the coplanar distance (three corners all but on a line) has no plane of
   its own at that distance, but its rounded normal could lean far enough

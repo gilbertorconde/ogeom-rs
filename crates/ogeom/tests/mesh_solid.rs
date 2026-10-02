@@ -1011,6 +1011,55 @@ fn fillets_and_corner_balls_meet_their_neighbours_tangentially() {
     assert_eq!(tubes, 2, "the rim's torus, on the top face and the bore");
 }
 
+/// A plate with rounded corners whose bottom rim is filleted, meshed
+/// coarsely: where the rim's fillets turn the corners the mesh leaves
+/// facets of a triangle or two that no surface claims, each bounded by
+/// seams as wide as itself. They join the fillets beside them, and the
+/// plate comes back its own eighteen faces, not fifty.
+#[test]
+fn facets_left_between_fillets_join_them() {
+    let mut model = Model::new();
+    let edge_ends = |model: &Model, e: &Shape| {
+        let data = model.node(e).unwrap().data().as_edge().unwrap();
+        let Some(ogeom::topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            return None;
+        };
+        let c = model.geometry().curve(*curve).unwrap();
+        Some((
+            ogeom::geom::Curve3d::point_at(c, range.0, T).unwrap(),
+            ogeom::geom::Curve3d::point_at(c, range.1, T).unwrap(),
+        ))
+    };
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (47.0, 21.5, 5.0), T)
+        .unwrap()
+        .shape;
+    let upright: Vec<Shape> = explore_unique(&model, &block, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| edge_ends(&model, e).is_some_and(|(a, b)| (a.z - b.z).abs() > 4.0))
+        .collect();
+    let plate = ogeom::fillet::fillet_edges(&mut model, &block, &upright, 8.0, T)
+        .unwrap()
+        .shape;
+    let rim: Vec<Shape> = explore_unique(&model, &plate, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| edge_ends(&model, e).is_some_and(|(a, b)| a.z.abs() < 1e-9 && b.z.abs() < 1e-9))
+        .collect();
+    let filleted = ogeom::fillet::fillet_edges(&mut model, &plate, &rim, 0.5, T)
+        .unwrap()
+        .shape;
+    let mesh =
+        ogeom::mesh::triangulate(&model, &filleted, Deflection::with_chord(0.05).unwrap(), T)
+            .unwrap();
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(check(&back, &out.shape, T).unwrap().is_valid());
+    assert_eq!(out.report.faces, 18, "{:?}", out.report);
+    let drawn = ogeom::mesh::triangulate(&back, &out.shape, Deflection::default(), T).unwrap();
+    assert!(drawn.is_closed());
+}
+
 /// A plate with rounded corners whose bottom rim is filleted, meshed in
 /// single precision: each fillet along a side meets the bottom tangentially,
 /// where the mesh's boundary between them wanders and can step past its
