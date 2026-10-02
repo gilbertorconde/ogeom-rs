@@ -51,7 +51,10 @@ bump may break the API and a patch bump may not.
   segments, optionally closed back to the first section). Sweeps follow a
   frame law or two rails, held to ten confusions of the swept profile and
   measured. A sheet has a face per section edge, and bounding section
-  edges are the caller's own, so the sheet sews to them.
+  edges are the caller's own, so the sheet sews to them. A loft follows
+  guide curves as a Gordon surface through single-edge sections and their
+  guides: exact on the sections and within ten confusions on each guide,
+  measured; a guide missing a section is refused by name.
 
 - **Faces grow past a boundary edge with `extend_face`.** A face is
   rebuilt with the edge moved `length` out along the surface, square to

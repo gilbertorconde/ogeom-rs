@@ -6,7 +6,8 @@
 //! (one degree, one knot vector), and the skin interpolates their control
 //! points in homogeneous coordinates. Every section therefore lies on the
 //! skin exactly, not to a fit's tolerance. A ruled skin is degree one
-//! across, so every ruling is a straight line.
+//! across, so every ruling is a straight line. A loft with guide curves is
+//! a Gordon surface over the sections and the guides (see `guided`).
 //!
 //! A sweep places copies of its profile along the path (rigid copies under
 //! a frame law, similar copies between two rails) and skins them the same
@@ -43,6 +44,8 @@ use ogeom_math::{
 use ogeom_topo::{Location, Model, Orientation, Shape, ShapeType};
 
 use crate::sweep::{PipeLaw, SpineStation, law_normals, spine_curve_of, station_frame};
+
+mod guided;
 
 /// Knots closer than this, on the unit domain every section is restated
 /// over, are one knot.
@@ -87,16 +90,33 @@ pub fn make_ruled(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> O
 /// The first and last sections (every section, when ruled) bound the
 /// sheet, and where they are edges of the model they are those edges.
 ///
+/// With `guides` the sheet also follows each guide, an edge or a wire
+/// crossing every section once, in the same order along every section and
+/// in the sections' order along itself. The guided sheet is one face (the
+/// sections are single edges) built as a Gordon surface: each section is
+/// paced so every guide crosses it at one parameter, each guide so it
+/// crosses every section at one parameter, and the skin across the
+/// sections is corrected along each guide by the guide's departure from
+/// it. The sheet passes through every section exactly and through every
+/// guide to within the distance by which the guide misses the sections;
+/// both are measured on the built skin and held to ten confusions. Through
+/// closed sections the seam runs along the first guide.
+///
 /// # Errors
 ///
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
-/// `guides` is not empty (a loft surface does not follow guide curves);
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
 /// with fewer than two sections, or three for a closed loft; if a section
 /// is not an edge or a wire, or has a curve with no exact B-spline form (a
 /// helix, an offset); if the sections differ in edge count or in being
 /// closed; if two neighbouring sections coincide; or if neighbouring edges
 /// of the sections carry weights at their shared corner that would part
-/// their faces.
+/// their faces. With guides, also if the loft is ruled or closed, a section
+/// has more than one edge, a guide misses a section by more than ten
+/// confusions, crosses the sections out of their order, or crosses some
+/// sections at an end and others inside, or two guides cross the sections
+/// in different orders.
+/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if the guided
+/// skin strays more than ten confusions from a section or a guide.
 pub fn make_loft_surface(
     model: &mut Model,
     sections: &[Shape],
@@ -106,10 +126,7 @@ pub fn make_loft_surface(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     if !guides.is_empty() {
-        ogeom_bail!(
-            Construction,
-            "a loft surface does not follow guide curves; loft through more sections instead"
-        );
+        return guided::guided_loft(model, sections, closed, guides, ruled, tol);
     }
     let least = if closed { 3 } else { 2 };
     if sections.len() < least {
@@ -402,6 +419,8 @@ struct SectionEdge {
     /// The edge's curve in the section's sense, over `[0, 1]`, its first
     /// weight one.
     curve: BSplineCurve,
+    /// Whether `curve`'s parameter is the edge's own, mapped affinely.
+    paced: bool,
 }
 
 /// A section as the skin reads it: its edges in traversal order.
@@ -445,6 +464,7 @@ fn read_section(model: &Model, shape: &Shape, what: &str, tol: Tolerances) -> Og
         out.push(SectionEdge {
             edge: Some(edge.clone()),
             curve: standard(&exact)?,
+            paced: true,
         });
     }
     let head = out[0].curve.point_at(0.0, tol)?;
@@ -979,10 +999,12 @@ fn sheet(
                        v: f64|
              -> OgeomResult<Side> {
                 let (image, range) = if adopted {
+                    let section = &sections[if v == 0.0 { lo } else { hi }].edges[e];
                     adopted_row(
                         model,
                         edge,
-                        &sections[if v == 0.0 { lo } else { hi }].edges[e].curve,
+                        &section.curve,
+                        section.paced,
                         v,
                         &geometry,
                         tol,
@@ -1117,25 +1139,28 @@ fn sheet_face(
 
 /// The image of a caller's section edge on the row `v` of a skin, at the
 /// edge's own parameter. A segment's or a spline's parameter maps onto the
-/// row evenly, exactly; a conic's does not (its rational form runs at
-/// another pace), and its image is fitted through the row at the edge's
+/// row evenly, exactly, where `paced` says the section keeps it; a conic's
+/// does not (its rational form runs at another pace), nor does a section
+/// paced anew, and its image is fitted through the row at the edge's
 /// parameters, the fit measured on the surface against the edge and the
 /// edge widened to what it reached.
 fn adopted_row(
     model: &mut Model,
     edge: &Shape,
     section: &BSplineCurve,
+    paced: bool,
     v: f64,
     surface: &SurfaceGeometry,
     tol: Tolerances,
 ) -> OgeomResult<(PlanarCurve, (f64, f64))> {
     let (curve, range) = spine_curve_of(model, edge)?;
     let reversed = edge.orientation() == Orientation::Reversed;
-    let even = match &curve {
-        Curve::Line(_) => true,
-        Curve::BSpline(b) => b.knots().is_clamped(),
-        _ => false,
-    };
+    let even = paced
+        && match &curve {
+            Curve::Line(_) => true,
+            Curve::BSpline(b) => b.knots().is_clamped(),
+            _ => false,
+        };
     if even {
         let (a, b) = if reversed { (1.0, 0.0) } else { (0.0, 1.0) };
         let knots = KnotVector::new(vec![range.0, range.0, range.1, range.1], 1)?;
@@ -1304,6 +1329,7 @@ fn swept_sheet(
                 edges.push(SectionEdge {
                     edge: if k == 0 { piece.edge.clone() } else { None },
                     curve: moved(&piece.curve, motion, tol)?,
+                    paced: piece.paced,
                 });
             }
             sections.push(Section {

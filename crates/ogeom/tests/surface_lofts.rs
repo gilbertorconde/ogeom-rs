@@ -2,14 +2,16 @@
 //! sweeps of open profiles, measured against their closed forms.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
-use ogeom::algo::{check, make_edge, make_polygon, make_wire, project_on_surface};
+use ogeom::algo::{
+    Spacing, check, interpolate, make_edge, make_polygon, make_wire, project_on_surface,
+};
 use ogeom::core::Tolerances;
-use ogeom::geom::{CircleCurve, Surface as _, SurfaceGeometry};
+use ogeom::geom::{CircleCurve, Curve, Curve2d as _, Curve3d as _, Surface as _, SurfaceGeometry};
 use ogeom::math::{Circle, Direction, Frame, Point, Vector};
 use ogeom::offset::{
     PipeLaw, make_loft_surface, make_ruled, make_sweep_surface, make_sweep_two_rails,
 };
-use ogeom::topo::{Filter, Model, NodeData, Shape, ShapeType, explore};
+use ogeom::topo::{EdgeRepr, Filter, Model, NodeData, Shape, ShapeType, explore};
 
 const T: Tolerances = Tolerances::millimetres();
 const PI: f64 = core::f64::consts::PI;
@@ -470,36 +472,425 @@ fn a_profile_between_two_rails_widens_with_them() {
     }
 }
 
+/// The arc of the circle through `a`, `b` and `c`, from `a` through `b` to
+/// `c`, with the circle itself and the arc's end angle (it starts at 0).
+fn arc_through(model: &mut Model, a: Point, b: Point, c: Point) -> (Shape, Circle, f64) {
+    let circle = Circle::through(a, b, c, T).unwrap();
+    let end = angle_on(&circle, c);
+    assert!(angle_on(&circle, b) < end);
+    let edge = make_edge(model, CircleCurve::new(circle).into(), (0.0, end), T)
+        .unwrap()
+        .shape;
+    (edge, circle, end)
+}
+
+/// Points along an arc of `circle` from angle `a` to `b`.
+fn on_circle(circle: &Circle, a: f64, b: f64, count: u32) -> Vec<Point> {
+    let f = circle.frame();
+    (0..=count)
+        .map(|i| {
+            let t = a + (b - a) * f64::from(i) / f64::from(count);
+            f.origin() + (f.x().vector() * t.cos() + f.y().vector() * t.sin()) * circle.radius()
+        })
+        .collect()
+}
+
+/// The angle of `p` about `circle`'s centre, from its `x`, in `[0, 2 pi)`.
+fn angle_on(circle: &Circle, p: Point) -> f64 {
+    let f = circle.frame();
+    let d = p - f.origin();
+    let t = d.dot(f.y().vector()).atan2(d.dot(f.x().vector()));
+    if t < 0.0 { t + 2.0 * PI } else { t }
+}
+
+/// The distance from `p` to a circle.
+fn off_circle(circle: &Circle, p: Point) -> f64 {
+    let f = circle.frame();
+    let d = p - f.origin();
+    let up = d.dot(f.z().vector());
+    let flat = (d - f.z().vector() * up).magnitude();
+    (flat - circle.radius()).hypot(up)
+}
+
 #[test]
-fn a_loft_surface_refuses_guides_by_name() {
+fn a_loft_through_three_open_arcs_follows_two_guides_along_their_ends() {
     let mut model = Model::new();
-    let a = make_polygon(
+    let z = Vector::new(0.0, 0.0, 1.0);
+    let x = Vector::new(1.0, 0.0, 0.0);
+    let specs = [
+        (0.0, 4.0, 0.0, PI / 2.0),
+        (5.0, 6.0, 0.2, PI / 2.0 + 0.4),
+        (10.0, 3.0, 0.0, 2.0),
+    ];
+    let sections: Vec<Shape> = specs
+        .iter()
+        .map(|&(h, r, a, b)| arc(&mut model, Point::new(0.0, 0.0, h), z, x, r, a, b))
+        .collect();
+    let at = |r: f64, t: f64, h: f64| Point::new(r * t.cos(), r * t.sin(), h);
+    // A cubic spline through the arcs' starts, bowing out between them,
+    // and a circular arc through their ends.
+    let starts = [
+        at(4.0, 0.0, 0.0),
+        Point::new(6.5, -0.5, 2.5),
+        at(6.0, 0.2, 5.0),
+        Point::new(6.0, -0.5, 7.5),
+        at(3.0, 0.0, 10.0),
+    ];
+    let spline = interpolate(&starts, 3, Spacing::Centripetal, T).unwrap();
+    let domain = spline.knots().domain();
+    let first = make_edge(&mut model, Curve::BSpline(spline.clone()), domain, T)
+        .unwrap()
+        .shape;
+    let ends: Vec<Point> = specs.iter().map(|&(h, r, _, b)| at(r, b, h)).collect();
+    let (second, circle, end) = arc_through(&mut model, ends[0], ends[1], ends[2]);
+    let unguided = make_loft_surface(&mut model, &sections, false, &[], false, T)
+        .unwrap()
+        .shape;
+    let loft = make_loft_surface(&mut model, &sections, false, &[first, second], false, T)
+        .unwrap()
+        .shape;
+    assert_eq!(model.kind_of(&loft).unwrap(), ShapeType::Face);
+    assert!(check(&model, &loft, T).unwrap().is_valid());
+    let s = surface(&model, &loft);
+    for &(h, r, a, b) in &specs {
+        let points: Vec<Point> = (0..=24)
+            .map(|i| at(r, a + (b - a) * f64::from(i) / 24.0, h))
+            .collect();
+        let worst = off(&s, &points);
+        assert!(
+            worst < 1e-6,
+            "section at z = {h} is {worst:.3e} off the loft"
+        );
+    }
+    // Each guide lies on the loft within the stated ten confusions, and
+    // the unguided loft is off them: well off the bowed spline, and off
+    // the arc by far more than that tolerance.
+    let guide_points = [
+        (0..=48)
+            .map(|i| {
+                let t = domain.0 + (domain.1 - domain.0) * f64::from(i) / 48.0;
+                spline.point_at(t, T).unwrap()
+            })
+            .collect::<Vec<Point>>(),
+        on_circle(&circle, 0.0, end, 48),
+    ];
+    let plain = surface(&model, &unguided);
+    for (points, away) in guide_points.iter().zip([0.3, 1e-3]) {
+        let worst = off(&s, points);
+        assert!(worst < 1e-6, "a guide is {worst:.3e} off the loft");
+        let apart = off(&plain, points);
+        assert!(
+            apart > away,
+            "the unguided loft is already {apart:.3e} from a guide"
+        );
+    }
+    // The end sections still bound it as the caller's own edges.
+    let bounds = edges(&model, &loft);
+    assert!(bounds.iter().any(|e| e.is_partner(&sections[0])));
+    assert!(bounds.iter().any(|e| e.is_partner(&sections[2])));
+}
+
+#[test]
+fn a_loft_between_two_lines_bulges_to_follow_a_curved_guide() {
+    let mut model = Model::new();
+    let line = |model: &mut Model, h: f64| {
+        make_polygon(
+            model,
+            &[Point::new(-5.0, 0.0, h), Point::new(5.0, 0.0, h)],
+            false,
+            T,
+        )
+        .unwrap()
+        .shape
+    };
+    let lower = line(&mut model, 0.0);
+    let upper = line(&mut model, 10.0);
+    let (guide, circle, end) = arc_through(
         &mut model,
-        &[Point::ORIGIN, Point::new(1.0, 0.0, 0.0)],
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(0.0, 3.0, 5.0),
+        Point::new(0.0, 0.0, 10.0),
+    );
+    // The circle through those three points: centre (0, -8/3, 5), radius
+    // 17/3.
+    assert!((circle.radius() - 17.0 / 3.0).abs() < 1e-12);
+    let loft = make_loft_surface(&mut model, &[lower, upper], false, &[guide], false, T)
+        .unwrap()
+        .shape;
+    assert_eq!(model.kind_of(&loft).unwrap(), ShapeType::Face);
+    assert!(check(&model, &loft, T).unwrap().is_valid());
+    let s = surface(&model, &loft);
+    let along = on_circle(&circle, 0.0, end, 64);
+    let worst = off(&s, &along);
+    assert!(worst < 1e-6, "the guide is {worst:.3e} off the loft");
+    for h in [0.0, 10.0] {
+        let points: Vec<Point> = (0..=20)
+            .map(|i| Point::new(-5.0 + f64::from(i) * 0.5, 0.0, h))
+            .collect();
+        let worst = off(&s, &points);
+        assert!(
+            worst < 1e-6,
+            "the line at z = {h} is {worst:.3e} off the loft"
+        );
+    }
+    // The bulge: out of the lines' plane by up to the guide's three, and
+    // no farther.
+    let reach = grid(&s, 32).iter().map(|p| p.y).fold(0.0, f64::max);
+    assert!(
+        reach > 2.9 && reach < 3.0 + 1e-9,
+        "the loft reaches y = {reach}"
+    );
+}
+
+#[test]
+fn a_guide_crossing_lines_off_centre_keeps_them_as_the_bounding_edges() {
+    let mut model = Model::new();
+    let line = |model: &mut Model, h: f64| {
+        make_polygon(
+            model,
+            &[Point::new(-5.0, 0.0, h), Point::new(5.0, 0.0, h)],
+            false,
+            T,
+        )
+        .unwrap()
+        .shape
+    };
+    let lower = line(&mut model, 0.0);
+    let upper = line(&mut model, 10.0);
+    // Crossing the lower line at 0.4 of its length and the upper at 0.7:
+    // each line is paced anew so the guide crosses both at one parameter.
+    let (guide, circle, end) = arc_through(
+        &mut model,
+        Point::new(-1.0, 0.0, 0.0),
+        Point::new(0.5, 2.0, 5.0),
+        Point::new(2.0, 0.0, 10.0),
+    );
+    let loft = make_loft_surface(
+        &mut model,
+        &[lower.clone(), upper.clone()],
+        false,
+        &[guide],
         false,
         T,
     )
     .unwrap()
     .shape;
-    let b = make_polygon(
-        &mut model,
-        &[Point::new(0.0, 0.0, 1.0), Point::new(1.0, 0.0, 1.0)],
+    assert!(check(&model, &loft, T).unwrap().is_valid());
+    let s = surface(&model, &loft);
+    let worst = off(&s, &on_circle(&circle, 0.0, end, 64));
+    assert!(worst < 1e-6, "the guide is {worst:.3e} off the loft");
+    let mut bounding = 0;
+    let bounds = edges(&model, &loft);
+    for (shape, h) in [(&lower, 0.0), (&upper, 10.0)] {
+        let points: Vec<Point> = (0..=20)
+            .map(|i| Point::new(-5.0 + f64::from(i) * 0.5, 0.0, h))
+            .collect();
+        let worst = off(&s, &points);
+        assert!(
+            worst < 1e-6,
+            "the line at z = {h} is {worst:.3e} off the loft"
+        );
+        let own = &edges(&model, shape)[0];
+        bounding += usize::from(bounds.iter().any(|e| e.is_partner(own)));
+        // Its image in the loft's chart lands where the line is at the
+        // same parameter.
+        let gap = pcurve_gap(&model, &loft, own);
+        assert!(gap < 1e-6, "the line's image strays {gap:.3e} from it");
+    }
+    assert_eq!(bounding, 2, "the lines bound the loft as their own edges");
+}
+
+/// The largest distance between an edge's curve and the face's surface
+/// at the edge's image in the face's chart, at the same parameter.
+fn pcurve_gap(model: &Model, face: &Shape, edge: &Shape) -> f64 {
+    let id = model.node(face).unwrap().data().as_face().unwrap().surface;
+    let s = model.geometry().surface(id).unwrap();
+    let data = model.node(edge).unwrap().data().as_edge().unwrap();
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        panic!("an edge with no curve");
+    };
+    let Some(EdgeRepr::PCurve { curve: image, .. }) = data.pcurve_on(id) else {
+        panic!("an edge with no image on the face");
+    };
+    let curve = model.geometry().curve(*curve).unwrap();
+    let image = model.geometry().pcurve(*image).unwrap();
+    (0..=200)
+        .map(|i| {
+            let t = range.0 + (range.1 - range.0) * f64::from(i) / 200.0;
+            let q = image.point_at(t, T).unwrap();
+            s.point_at(q.x, q.y, T)
+                .unwrap()
+                .distance(curve.point_at(t, T).unwrap())
+        })
+        .fold(0.0, f64::max)
+}
+
+#[test]
+fn a_guided_loft_through_circles_closes_on_its_seam_guide() {
+    let mut model = Model::new();
+    let z = Vector::new(0.0, 0.0, 1.0);
+    let x = Vector::new(1.0, 0.0, 0.0);
+    let rings = [(0.0, 3.0), (5.0, 4.0), (10.0, 3.0)];
+    let sections: Vec<Shape> = rings
+        .iter()
+        .map(|&(h, r)| arc(&mut model, Point::new(0.0, 0.0, h), z, x, r, 0.0, 2.0 * PI))
+        .collect();
+    let at = |r: f64, t: f64, h: f64| Point::new(r * t.cos(), r * t.sin(), h);
+    // The seam guide crosses the circles away from their starts, at
+    // different angles, and the second guide at angles that are not one
+    // fraction of the turn past the first: sections and guides both take
+    // a new pace.
+    let pick = |angles: [f64; 3]| -> Vec<Point> {
+        rings
+            .iter()
+            .zip(angles)
+            .map(|(&(h, r), t)| at(r, t, h))
+            .collect()
+    };
+    let p = pick([0.3, 0.5, 0.4]);
+    let (seam, seam_circle, seam_end) = arc_through(&mut model, p[0], p[1], p[2]);
+    let q = pick([2.0, 2.6, 2.2]);
+    let (other, other_circle, other_end) = arc_through(&mut model, q[0], q[1], q[2]);
+    let loft = make_loft_surface(&mut model, &sections, false, &[seam, other], false, T)
+        .unwrap()
+        .shape;
+    assert_eq!(model.kind_of(&loft).unwrap(), ShapeType::Face);
+    assert!(check(&model, &loft, T).unwrap().is_valid());
+    let s = surface(&model, &loft);
+    for &(h, r) in &rings {
+        let points: Vec<Point> = (0..48)
+            .map(|i| at(r, 2.0 * PI * f64::from(i) / 48.0, h))
+            .collect();
+        let worst = off(&s, &points);
+        assert!(
+            worst < 1e-6,
+            "the circle at z = {h} is {worst:.3e} off the loft"
+        );
+    }
+    for (circle, end) in [(seam_circle, seam_end), (other_circle, other_end)] {
+        let worst = off(&s, &on_circle(&circle, 0.0, end, 48));
+        assert!(worst < 1e-6, "a guide is {worst:.3e} off the loft");
+    }
+    // The chart's two ends along the sections are one curve, on the seam
+    // guide.
+    let ((u0, u1), (v0, v1)) = s.domain();
+    for j in 0..=16 {
+        let v = v0 + (v1 - v0) * f64::from(j) / 16.0;
+        let (a, b) = (s.point_at(u0, v, T).unwrap(), s.point_at(u1, v, T).unwrap());
+        assert!(a.distance(b) < 1e-9, "{a:?} against {b:?}");
+        let gap = off_circle(&seam_circle, a);
+        assert!(gap < 1e-6, "the seam is {gap:.3e} off its guide");
+    }
+}
+
+/// A segment along `x` from 0 to 1 at height `h`.
+fn rung(model: &mut Model, h: f64) -> Shape {
+    make_polygon(
+        model,
+        &[Point::new(0.0, 0.0, h), Point::new(1.0, 0.0, h)],
         false,
         T,
     )
     .unwrap()
-    .shape;
+    .shape
+}
+
+/// A segment from `x0` at height 0 to `x1` at height 2.
+fn climb(model: &mut Model, x0: f64, x1: f64) -> Shape {
+    make_polygon(
+        model,
+        &[Point::new(x0, 0.0, 0.0), Point::new(x1, 0.0, 2.0)],
+        false,
+        T,
+    )
+    .unwrap()
+    .shape
+}
+
+#[test]
+fn a_loft_surface_refuses_a_guide_that_misses_a_section_by_name() {
+    let mut model = Model::new();
+    let sections = [
+        rung(&mut model, 0.0),
+        rung(&mut model, 1.0),
+        rung(&mut model, 2.0),
+    ];
+    // Up the sections' starts, stopping half a unit short of the last.
     let guide = make_polygon(
         &mut model,
-        &[Point::ORIGIN, Point::new(0.0, 0.0, 1.0)],
+        &[Point::ORIGIN, Point::new(0.0, 0.0, 1.5)],
         false,
         T,
     )
     .unwrap()
     .shape;
-    let err = make_loft_surface(&mut model, &[a, b], false, &[guide], false, T).unwrap_err();
+    let err = make_loft_surface(&mut model, &sections, false, &[guide], false, T).unwrap_err();
     assert!(
-        err.to_string().contains("does not follow guide curves"),
+        err.to_string()
+            .contains("guide 0 misses section 2 by 5.000e-1"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_guided_loft_surface_refuses_what_it_does_not_build_by_name() {
+    let mut model = Model::new();
+    let three = [
+        rung(&mut model, 0.0),
+        rung(&mut model, 1.0),
+        rung(&mut model, 2.0),
+    ];
+    let straight = [climb(&mut model, 0.5, 0.5)];
+    let refused = |model: &mut Model, sections: &[Shape], closed, guides: &[Shape], ruled| {
+        make_loft_surface(model, sections, closed, guides, ruled, T)
+            .unwrap_err()
+            .to_string()
+    };
+    let err = refused(&mut model, &three, false, &straight, true);
+    assert!(err.contains("follows no guide curves"), "{err}");
+    let err = refused(&mut model, &three, true, &straight, false);
+    assert!(
+        err.contains("a closed loft surface does not follow guide curves"),
+        "{err}"
+    );
+    let bent = make_polygon(
+        &mut model,
+        &[
+            Point::new(0.0, 0.0, 2.0),
+            Point::new(0.5, 0.0, 2.0),
+            Point::new(1.0, 0.0, 2.0),
+        ],
+        false,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let err = refused(
+        &mut model,
+        &[three[0].clone(), bent],
+        false,
+        &straight,
+        false,
+    );
+    assert!(
+        err.contains("takes sections of one edge each; section 1 has 2"),
+        "{err}"
+    );
+    // Two guides crossing each other between the sections.
+    let crossed = [climb(&mut model, 0.2, 0.8), climb(&mut model, 0.8, 0.2)];
+    let err = refused(&mut model, &three, false, &crossed, false);
+    assert!(
+        err.contains(
+            "guides 0 and 1 cross section 1 in another order than section 0, or at one point"
+        ),
+        "{err}"
+    );
+    // A guide that crosses the first section at its start and the others
+    // inside them.
+    let slanted = [climb(&mut model, 0.0, 1.0)];
+    let err = refused(&mut model, &three, false, &slanted, false);
+    assert!(
+        err.contains("guide 0 crosses some sections at an end and others inside them"),
         "{err}"
     );
 }
