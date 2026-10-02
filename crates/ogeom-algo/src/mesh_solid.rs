@@ -54,7 +54,10 @@ pub struct MeshSolidOptions {
     /// `None` takes the largest of twice the mesh's `quantum`, a millionth
     /// of its bounding box's diagonal, one and a half times how far its
     /// vertices stand off the flat faces they lie on (measured across
-    /// nearly coplanar edges), and the weld distance. The
+    /// nearly coplanar edges), and the weld distance. With `recognize`, a
+    /// distance given below two and a half times that scatter (or twice
+    /// the `quantum`) is raised to it, and the report says so: no surface
+    /// fitted to the vertices holds them closer. The
     /// vertices and edges of a merged face widen their tolerances to cover
     /// what they stand off it.
     pub coplanar_distance: Option<f64>,
@@ -160,6 +163,10 @@ pub struct MeshSolidReport {
     /// built did not hold that body's mesh volume, and the body was built
     /// faceted instead.
     pub recognition_withdrawn: bool,
+    /// Whether the coplanar distance asked for was below what the mesh's
+    /// own scatter allows recognition to hold to, and was raised to that
+    /// ([`MeshSolid::coplanar_distance`] is the one used).
+    pub coplanar_distance_raised: bool,
 }
 
 /// The result of [`solid_from_mesh`].
@@ -171,6 +178,11 @@ pub struct MeshSolid {
     pub shape: Shape,
     /// Whether every piece closed and became a solid.
     pub closed: bool,
+    /// The coplanar distance the faces were built to: the one asked for,
+    /// or the default, as widened where the recognized surfaces pressed
+    /// against it or raised to the mesh's scatter (see
+    /// [`MeshSolidReport::coplanar_distance_raised`]).
+    pub coplanar_distance: f64,
     /// What was built, and where the mesh does not close.
     pub report: MeshSolidReport,
 }
@@ -453,14 +465,26 @@ pub fn solid_from_mesh(
     }
 
     let diagonal = diagonal(&points);
+    let noise = flat_noise(&points, &triangles, &adjacency);
+    let quantum = options.quantum.unwrap_or(0.0);
     let mut flat = options
         .coplanar_distance
-        .unwrap_or_else(|| {
-            (1e-6 * diagonal)
-                .max(2.0 * options.quantum.unwrap_or(0.0))
-                .max(1.5 * flat_noise(&points, &triangles, &adjacency))
-        })
+        .unwrap_or_else(|| (1e-6 * diagonal).max(2.0 * quantum).max(1.5 * noise))
         .max(weld);
+    // A distance asked below what the mesh's own scatter allows cannot be
+    // met: no surface fitted to the vertices holds them closer, regions
+    // break into fragments, and the seams between the fragments open. A
+    // seam's points lie within the distance of two surfaces each fitted
+    // to vertices that scatter by the noise, and the noise is measured at
+    // its ninetieth percentile, so recognition holds to at least
+    // [`NOISE_FLOOR`] times it, and says so.
+    if options.recognize && options.coplanar_distance.is_some() {
+        let floor = (2.0 * quantum).max(NOISE_FLOOR * noise);
+        if flat < floor {
+            flat = floor;
+            report.coplanar_distance_raised = true;
+        }
+    }
     let mut groups = segment(&points, &triangles, &adjacency, options, flat, tol)?;
     // The default distance is what single precision resolves, and some
     // exporters place their vertices a few times farther off their own
@@ -617,6 +641,7 @@ pub fn solid_from_mesh(
     Ok(MeshSolid {
         shape,
         closed: all_closed,
+        coplanar_distance: flat,
         report,
     })
 }
@@ -5033,6 +5058,12 @@ const TOLERANCE_MARGIN: f64 = 1e-6;
 /// The most triangles a cluster the region surrounds may hold and still
 /// be taken into it whatever its normals.
 const ENCLOSED_CLUSTER: usize = 16;
+
+/// The least coplanar distance recognition holds to, against the mesh's
+/// measured scatter: twice it, for a seam between two surfaces each fitted
+/// to scattered vertices, and a quarter more for the tail its ninetieth
+/// percentile leaves out.
+const NOISE_FLOOR: f64 = 2.5;
 
 /// How far a snapped curve may stand off its chain or its faces.
 const REACH: f64 = 20.0;

@@ -105,8 +105,8 @@ after.
    so all their axes meet at the ball's centre. Not done: a torus between
    two cylinders or a cylinder and a sphere, variable radius, and fillets
    between curved faces off a common axis, which keep their fitted
-   surfaces. This does not reach C3 below the data's noise: there the
-   regions break up before any fillet is recognized (625 faces at 1e-7).
+   surfaces. Below the data's noise the regions broke up before any fillet was
+   recognized; such a distance is now raised to the noise (C3, closed).
 3. **Loops checked in each face's chart.** Done, after the build rather
    than before it: a fold deeper than its two edges' tolerance, outside
    every corner's, and still there drawn a hundred times finer names its

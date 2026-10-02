@@ -1637,6 +1637,57 @@ fn a_fine_conversion_of_a_rounded_block_tessellates_closed() {
     assert!(drawn.is_closed());
 }
 
+/// A coplanar distance below the scatter of a single-precision mesh asks
+/// for more than the data holds: no surface fitted to the vertices holds
+/// them that close, and the regions break into fragments whose seams open.
+/// It is raised to the scatter, the report says so, and the result
+/// tessellates closed.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the rounding to single precision is the point"
+)]
+#[test]
+fn a_distance_below_the_mesh_s_scatter_is_raised_and_said_so() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    let mut mesh = meshed(&model, &rounded);
+    for p in &mut mesh.positions {
+        *p = Point::new(
+            f64::from(p.x as f32),
+            f64::from(p.y as f32),
+            f64::from(p.z as f32),
+        );
+    }
+    for asked in [1e-7, 5e-7] {
+        let options = MeshSolidOptions {
+            coplanar_distance: Some(asked),
+            ..MeshSolidOptions::default()
+        };
+        let mut back = Model::new();
+        let out = solid_from_mesh(&mut back, &mesh, &options, T).unwrap();
+        assert!(out.report.coplanar_distance_raised);
+        assert!(out.coplanar_distance > asked);
+        assert!(check(&back, &out.shape, T).unwrap().is_valid());
+        let drawn = ogeom::mesh::triangulate(&back, &out.shape, Deflection::default(), T).unwrap();
+        assert!(drawn.is_closed(), "asked {asked}");
+    }
+    // Asked for at or above the scatter, the distance is kept.
+    let options = MeshSolidOptions {
+        coplanar_distance: Some(1e-5),
+        ..MeshSolidOptions::default()
+    };
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &options, T).unwrap();
+    assert!(!out.report.coplanar_distance_raised);
+    assert!((out.coplanar_distance - 1e-5).abs() < 1e-12);
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     reason = "the rounding to single precision is the point"

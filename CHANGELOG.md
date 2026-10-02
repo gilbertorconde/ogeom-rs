@@ -56,6 +56,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Mesh conversion raises a coplanar distance the mesh cannot meet.**
+  With recognition, a distance asked below two and a half times the
+  mesh's measured scatter (or twice its quantum) left regions in
+  fragments whose seams opened: a single-precision rounded block asked to
+  a tenth of a micron tessellated open while `check` passed. It is raised
+  to that floor, `MeshSolidReport::coplanar_distance_raised` says so, and
+  the new `MeshSolid::coplanar_distance` is the distance the faces were
+  built to.
+
 - **A converted face whose boundary folds over itself is withdrawn.** Each
   built face's boundary is drawn in its surface's chart, and two of its
   chords that cross are a fold. A fold deeper than the tolerance of the
