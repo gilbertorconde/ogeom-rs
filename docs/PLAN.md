@@ -146,6 +146,25 @@ after.
      a facet within the tolerance of its corner collapses into the corner.
      Either way it changes nothing past what its seams already claim.
      Target: the first class in the table.
+
+     Tried 2026-10-02 (patch kept with the scratch benches). Facets
+     narrower than the reach are few: absorbing only those moves Body28
+     from 436 bad mesh edges to 419 and ftc_07 from 212 to 209. The
+     facets at the bad edges are ordinary triangles no surface claimed;
+     their seams, often chords whose tolerance runs to a twentieth of
+     their span, fold across the whole facet. Absorbing every facet of one
+     or two triangles within the reach of a curved neighbour, whatever its
+     width, does what the stage was for (Body28 to 68 bad mesh edges,
+     ctc_02 closed, ftc_07 to 166, the truth bench's face ratio from 0.27
+     to 0.17, Body11 from 5258 faces to 3621) and breaks what was exact: a
+     facet on a cone's rim taken into the cone turns its exact rim circles
+     into sections and the cone is withdrawn (boss_cone_chamfer, 9 faces to
+     56), and shelf_bracket and 77777_1 lose their tori. It also tips
+     Body28 invalid through a latent planar face of almost no area (three
+     of its corners on a line) in a faceted fan far from any facet taken;
+     `check`'s inside-out probe flags that face, and runs in about a second
+     on the largest parts. Open: which facets to take without costing an
+     exact seam, and the zero-area planar faces.
    - **4b. Corners solved onto their surfaces.** A corner is the mesh
      vertex today, and each seam ends where its own solve put it, near
      but not at it. Corners where three or more faces meet are solved onto
