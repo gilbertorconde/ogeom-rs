@@ -15,9 +15,11 @@
 //! Curved faces that meet along edges of the solid are blended along those
 //! edges by the edge blend, exact or marched. Curved faces that share no
 //! edge are blended where the ball's section is the same all along the
-//! corner (surfaces sharing a direction or an axis): the corner between
-//! the round and the crease is swept from that section and cut off or
-//! fused on.
+//! corner (surfaces sharing a direction or an axis) by sweeping the corner
+//! between the round and the crease from that section, and otherwise by
+//! marching the ball round where the two surfaces cross and building the
+//! corner from the marched band, as the edge blend does along an edge.
+//! Either corner is cut off or fused on.
 
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -45,15 +47,25 @@ use crate::support::Seat;
 ///   where the seat has a closed form, a B-spline band fitted through the
 ///   marched ball otherwise (B-spline, cone, sphere and torus hosts
 ///   included).
-/// - A curved face and another face sharing no edge: their surfaces must
-///   share a direction (planes and cylinders along it) or an axis (planes
-///   square to it, cylinders, cones, spheres and tori about it). The ball
+/// - A curved face and another face sharing no edge, their surfaces
+///   sharing a direction (planes and cylinders along it) or an axis (planes
+///   square to it, cylinders, cones, spheres and tori about it): the ball
 ///   touches each face along a line or a circle, and the blend is a
 ///   cylinder or a torus of `radius` over the run both faces reach, or all
 ///   the way round. The corner it takes off or fills is the section between
 ///   the ball's arc and where the two surfaces cross, swept over the run;
 ///   the faces are trimmed to their lines of contact by the boolean that
 ///   applies it.
+/// - A curved face and another face sharing no edge whose surfaces share
+///   no direction or axis (a B-spline face, a cylinder at a slant to a
+///   plane): the ball is marched along where the two surfaces cross, the
+///   surfaces carried on past the faces for it (a plane's or a cylinder's
+///   window widened, a B-spline patch continued, each written back as the
+///   face's own surface). Where the ball touches both faces all the way
+///   round a closed seat, the blend is a B-spline band fitted through its
+///   arcs, and the corner between the band and the crease, bounded by the
+///   two surfaces, is cut off or fused on as the edge blend's is. The band
+///   rides both faces within a tenth of a degree.
 ///
 /// # Errors
 ///
@@ -67,13 +79,16 @@ use crate::support::Seat;
 /// - for a curved face sharing edges with the other, as
 ///   [`fillet_edges`](crate::fillet_edges);
 /// - for a curved face sharing no edge with the other, if their surfaces
-///   share no direction or axis (a B-spline face, a cylinder at a slant to a plane, and the
-///   like); if their surfaces do not cross; and, for each side of the
-///   faces the ball could roll on, if no ball touches both faces there,
-///   its round would be a torus crossing its own axis, or the solid beside
-///   the middle of the round is not what that side needs (material behind
-///   the faces, open in front of them). It is also refused where a ball
-///   seats on both sides.
+///   do not cross; and, for each side of the faces the ball could roll on,
+///   if no ball touches both faces there, its round would be a torus
+///   crossing its own axis, or the solid beside the middle of the round is
+///   not what that side needs (material behind the faces, open in front of
+///   them). It is also refused where a ball seats on both sides;
+/// - for a marched seat, on a side, if no ball seats along where the
+///   surfaces cross, more than one crossing holds one touching both faces,
+///   or the ball touches both faces over part of its seat only (a marched
+///   round between faces of a solid sharing no edge closes on itself), and
+///   if a face is a trimmed or offset surface.
 pub fn blend_faces(
     model: &mut Model,
     solid: &Shape,
@@ -250,9 +265,10 @@ fn is_planar(model: &Model, face: &Shape) -> OgeomResult<bool> {
 /// Faces that meet along edges of the solid have their corner there: the
 /// ball rolls along those edges, and the blend is the edge blend of all of
 /// them at once, exact where the seat has a closed form and marched where
-/// it does not. Faces that share no edge are blended where their surfaces
-/// share a direction or an axis: the round and the corner it takes off (or
-/// fills) are swept from one section.
+/// it does not. Faces that share no edge are blended from one section
+/// swept along the corner where their surfaces share a direction or an
+/// axis, and from the ball marched round where the surfaces cross
+/// otherwise.
 fn curved_blend(
     model: &mut Model,
     solid: &Shape,
@@ -291,15 +307,37 @@ fn curved_blend(
     // off; in front of both it rolls in the open and fills a concave one.
     // A side counts only where the solid agrees, the corner beside the
     // round being material for the first and open for the second.
+    // The corner is swept from one section where the surfaces share a
+    // direction or an axis, and marched along where they cross otherwise.
+    let swept = crate::sheet_curved::closed_form_between(model, [a, b], tol)?;
+    let hosts = if swept {
+        None
+    } else {
+        Some(crate::pair_marched::hosts_of(model, [a, b], radius, tol)?)
+    };
     let mut seated = Vec::new();
     let mut misses: Vec<(&str, String)> = Vec::new();
     for behind in [true, false] {
         let side = if behind { "behind" } else { "in front of" };
-        let built = crate::sheet_curved::face_seat(model, [a, b], radius, behind, tol)
-            .and_then(|seat| crate::sheet_curved::corner_wedge(model, &seat, tol));
+        let built = match &hosts {
+            None => crate::sheet_curved::face_seat(model, [a, b], radius, behind, tol)
+                .and_then(|seat| crate::sheet_curved::corner_wedge(model, &seat, tol))
+                .map(|(wedge, probe)| (Corner::Swept(wedge), probe)),
+            Some(hosts) => {
+                crate::pair_marched::pair_seat(model, [a, b], hosts, radius, behind, true, tol)
+                    .and_then(|seat| match seat.probe() {
+                        Some(probe) => Ok((Corner::Marched(Box::new(seat)), probe)),
+                        None => {
+                            ogeom_bail!(Invariant, "a marched seat on the crease has no probe")
+                        }
+                    })
+            }
+        };
         let (wedge, probe) = match built {
             Ok(built) => built,
-            Err(ogeom_core::OgeomError::Construction(why)) => {
+            Err(
+                ogeom_core::OgeomError::Construction(why) | ogeom_core::OgeomError::NotDone(why),
+            ) => {
                 misses.push((side, why.to_string()));
                 continue;
             }
@@ -340,9 +378,18 @@ fn curved_blend(
              faces; which one to blend is ambiguous"
         ),
     };
-    if behind {
-        ogeom_bool::cut(model, solid, &wedge, tol)
-    } else {
-        ogeom_bool::fuse(model, solid, &wedge, tol)
+    match wedge {
+        Corner::Swept(wedge) if behind => ogeom_bool::cut(model, solid, &wedge, tol),
+        Corner::Swept(wedge) => ogeom_bool::fuse(model, solid, &wedge, tol),
+        Corner::Marched(seat) => {
+            crate::pair_marched::apply_to_solid(model, solid, *seat, radius, behind, tol)
+        }
     }
+}
+
+/// The corner a curved face blend takes off or fills: the swept solid
+/// itself, or the marched seat its wedge is built from.
+enum Corner {
+    Swept(Shape),
+    Marched(Box<crate::pair_marched::PairSeat>),
 }

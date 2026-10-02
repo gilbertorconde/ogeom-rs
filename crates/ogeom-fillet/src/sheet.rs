@@ -140,8 +140,8 @@ pub fn fillet_sheet_edges(
 /// The ball rolls on the side each face's normal points to: it touches
 /// the front of both. Reverse a face to roll it on that face's other side.
 ///
-/// The faces' surfaces must share a direction or an axis, which gives the
-/// round a closed form:
+/// Where the faces' surfaces share a direction or an axis the round has a
+/// closed form:
 ///
 /// - two planes meet on a line, and planes and cylinders all along one
 ///   direction share it: the ball's centre runs along that direction, it
@@ -154,6 +154,15 @@ pub fn fillet_sheet_edges(
 ///   `radius` for its tube, running over the turn both faces reach and
 ///   ending in half-planes through the axis, or all the way round where
 ///   both lines of contact close on their faces.
+///
+/// Otherwise (a B-spline face, a cylinder at a slant to a plane) the ball
+/// is marched along where the two surfaces cross, or, where they do not
+/// cross and the round bridges a gap, along where the surfaces offset by
+/// `radius` cross. A plane's or a cylinder's window is widened and a
+/// B-spline patch continued past its face for the march, each written back
+/// as the face's own surface. The round is a B-spline band fitted through
+/// the ball's arcs over the stretch both faces reach, ending in the ball's
+/// sections there, and rides both faces within a tenth of a degree.
 ///
 /// With `trim`, each face is cut back to its line of contact (everything of
 /// it on the round's side of that line goes) and the result is one shell
@@ -174,8 +183,14 @@ pub fn fillet_sheet_edges(
 /// - `radius` is not a positive length;
 /// - an argument is not a face, or the two are one face;
 /// - a face is placed;
-/// - the faces' surfaces share no direction or axis (two B-spline faces,
-///   a cylinder and a plane at a slant to it, and the like);
+/// - a face is a trimmed or offset surface and the seat has no closed
+///   form;
+/// - for a marched round, no ball seats on the front of both surfaces
+///   along where they (or their offsets) meet, the ball rolls round a
+///   closed seat (a marched round does not close on itself between
+///   separate faces), a line of contact does not cut its face from
+///   boundary to boundary, or more than one corner holds a ball touching
+///   both faces;
 /// - two planes are parallel, or no ball of `radius` touches the front of
 ///   both surfaces, or it does not fit inside a curved face, or more than
 ///   one does and touches both faces;

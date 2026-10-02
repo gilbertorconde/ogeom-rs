@@ -677,16 +677,16 @@ impl Exact {
 }
 
 /// A seat that has to be marched, with the band fitted through it.
-struct Marched {
-    blend: MarchedBlend,
-    band: ogeom_geom::BSplineSurface,
-    fit_target: f64,
+pub(crate) struct Marched {
+    pub(crate) blend: MarchedBlend,
+    pub(crate) band: ogeom_geom::BSplineSurface,
+    pub(crate) fit_target: f64,
 }
 
 impl Marched {
     /// The band's corner on the `f`th border at the `k`th end: control
     /// points the clamped borders interpolate.
-    fn corner(&self, f: usize, k: usize) -> Point {
+    pub(crate) fn corner(&self, f: usize, k: usize) -> Point {
         let grid = self.band.grid();
         let (nu, nv) = (grid.u_count(), grid.v_count());
         let i = if f == 0 { 0 } else { nu - 1 };
@@ -696,7 +696,7 @@ impl Marched {
 
     /// The band's border along the `f`th line of contact, or its row at the
     /// `k`th end, as curves off the control net.
-    fn border(&self, f: usize, tol: Tolerances) -> OgeomResult<Curve> {
+    pub(crate) fn border(&self, f: usize, tol: Tolerances) -> OgeomResult<Curve> {
         let grid = self.band.grid();
         let (nu, nv) = (grid.u_count(), grid.v_count());
         let i = if f == 0 { 0 } else { nu - 1 };
@@ -763,7 +763,7 @@ struct Beside {
 }
 
 /// A face's surface id, surface and tolerance; refused where it is placed.
-fn unplaced_face(
+pub(crate) fn unplaced_face(
     model: &Model,
     face: &Shape,
 ) -> OgeomResult<(SurfaceId, SurfaceGeometry, Tolerance)> {
@@ -875,7 +875,7 @@ fn occurrence_image(model: &Model, edge: &Shape, surface: SurfaceId) -> OgeomRes
 }
 
 /// Mark an edge's descriptions as sharing one parameter.
-fn same_parameter(model: &mut Model, edge: &Shape) {
+pub(crate) fn same_parameter(model: &mut Model, edge: &Shape) {
     if let Some(NodeData::Edge(data)) = model.node_mut(edge).map(|n| n.data_mut()) {
         data.assert_same_parameter(true);
     }
@@ -1526,7 +1526,7 @@ pub(crate) fn round_sheet_edge(
                 exact_open_round(model, exact, run, &rails, &ordered, away, tol)?
             }
         }
-        Seat::Marched(marched) => marched_round(model, marched, &rails, &corners, away, tol)?,
+        Seat::Marched(marched) => marched_round(model, marched, &rails, &corners, true, away, tol)?,
     };
 
     let mut history = History::new();
@@ -1792,13 +1792,17 @@ fn marched_strip_width(
     Ok(widest * 1.05)
 }
 
-/// The marched round's face: the band bounded by its borders along the
-/// lines of contact and its rows at the ends.
-fn marched_round(
+/// The marched round's face: the band bounded by its rows at the ends and
+/// the `rails` along the lines of contact, each running from the first
+/// station to the last. Rails `on_borders` are the band's own borders and
+/// carry its border lines as their images; any other rail carries its
+/// image fitted onto the band.
+pub(crate) fn marched_round(
     model: &mut Model,
     marched: &Marched,
     rails: &[Shape; 2],
     corners: &[[Shape; 2]; 2],
+    on_borders: bool,
     away: bool,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
@@ -1817,14 +1821,19 @@ fn marched_round(
         Ok(ogeom_geom::Line2d::over(Axis2::new(at, along), lo - 1.0, hi + 1.0)?.into())
     };
     for (f, u) in [(0, u_dom.0), (1, u_dom.1)] {
-        attach_pcurve(
-            model,
-            &rails[f],
-            iso(Point2::new(u, 0.0), Direction2::Y, v_dom.0, v_dom.1)?,
-            band_id,
-            Location::identity(),
-            v_dom,
-        )?;
+        if on_borders {
+            attach_pcurve(
+                model,
+                &rails[f],
+                iso(Point2::new(u, 0.0), Direction2::Y, v_dom.0, v_dom.1)?,
+                band_id,
+                Location::identity(),
+                v_dom,
+            )?;
+        } else {
+            let rail = rails[f].oriented(Orientation::Forward);
+            attach_image(model, &rail, band_id, &band, None, tol)?;
+        }
     }
     for (k, v) in [(0, v_dom.0), (1, v_dom.1)] {
         attach_pcurve(
@@ -2127,8 +2136,22 @@ pub(crate) fn corner_wedge(
     Ok((wedge, layout.lift(probe, s0 + turn / 2.0)))
 }
 
+/// Whether the two faces' surfaces share a direction or an axis, so the
+/// ball's seat between them has a closed form.
+pub(crate) fn closed_form_between(
+    model: &Model,
+    faces: [&Shape; 2],
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let mut surfaces = Vec::with_capacity(2);
+    for face in faces {
+        surfaces.push(unplaced_face(model, face)?.1);
+    }
+    Ok(shared_layout(&surfaces, tol)?.is_some())
+}
+
 /// Round the corner between two faces of separate shapes where one is
-/// curved and the seat has a closed form.
+/// curved: from the closed form where the seat has one, marched otherwise.
 #[allow(clippy::too_many_lines, reason = "one rebuild, checked then assembled")]
 pub(crate) fn fillet_faces(
     model: &mut Model,
@@ -2138,6 +2161,9 @@ pub(crate) fn fillet_faces(
     trim: bool,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    if !closed_form_between(model, [a, b], tol)? {
+        return crate::pair_marched::fillet_faces(model, a, b, radius, trim, tol);
+    }
     let FaceSeat {
         exact,
         stretches,
@@ -2226,89 +2252,18 @@ pub(crate) fn fillet_faces(
                 corners.push(ends);
             }
             Some((lo, hi)) => {
-                let edge = stretch.edge.oriented(Orientation::Forward);
-                let (edge_curve_of, edge_range) = edge_curve(model, &edge, tol)?;
-                let Some((s, e)) = edge_vertices(model, &edge)? else {
-                    ogeom_bail!(Construction, "a line of contact has no vertices");
-                };
-                let bounded = Curve::Trimmed(Box::new(TrimmedCurve::new(
-                    edge_curve_of,
-                    edge_range.0,
-                    edge_range.1,
+                let (piece, rail, ends) = cut_to_run(
+                    model,
+                    &stretch.piece,
+                    &stretch.edge,
+                    surface_id,
+                    tolerance,
+                    [exact.contact(f, lo), exact.contact(f, hi)],
                     tol,
-                )?));
-                // The run's ends on this edge, in its own parameter.
-                let mut ends = [0.0; 2];
-                for (k, station) in [lo, hi].into_iter().enumerate() {
-                    ends[k] =
-                        project_on_curve(&bounded, exact.contact(f, station), 64, tol)?.parameter;
-                }
-                let rising = ends[1] > ends[0];
-                let (t_lo, t_hi) = if rising {
-                    (ends[0], ends[1])
-                } else {
-                    (ends[1], ends[0])
-                };
-                let mut cuts = vec![(edge_range.0, s.clone())];
-                let at_lo = if (t_lo - edge_range.0).abs() <= tol.parametric() {
-                    s.clone()
-                } else {
-                    let v =
-                        make_vertex(model, exact.contact(f, if rising { lo } else { hi })).shape;
-                    cuts.push((t_lo, v.clone()));
-                    v
-                };
-                let at_hi = if (edge_range.1 - t_hi).abs() <= tol.parametric() {
-                    e.clone()
-                } else {
-                    let v =
-                        make_vertex(model, exact.contact(f, if rising { hi } else { lo })).shape;
-                    cuts.push((t_hi, v.clone()));
-                    v
-                };
-                cuts.push((edge_range.1, e.clone()));
-                let (piece, rail) = if cuts.len() == 2 {
-                    (stretch.piece.clone(), edge.clone())
-                } else {
-                    let mut pieces = Vec::with_capacity(3);
-                    let mut rail = None;
-                    for w in cuts.windows(2) {
-                        let made = piece_of(
-                            model,
-                            &edge,
-                            surface_id,
-                            (w[0].0, w[1].0),
-                            &w[0].1,
-                            &w[1].1,
-                            tol,
-                        )?;
-                        if (w[0].0 - t_lo).abs() <= tol.parametric() {
-                            rail = Some(made.clone());
-                        }
-                        pieces.push(made);
-                    }
-                    let Some(rail) = rail else {
-                        ogeom_bail!(Invariant, "the run's stretch of a line of contact was lost");
-                    };
-                    let face = rebuilt_face(
-                        model,
-                        &stretch.piece,
-                        surface_id,
-                        tolerance,
-                        &[(edge.clone(), pieces)],
-                        tol,
-                    )?;
-                    (face, rail)
-                };
+                )?;
                 kept.push(piece);
-                // Each rail runs from the run's start to its end.
-                if rising {
-                    rails.push(rail);
-                    corners.push([at_lo, at_hi]);
-                } else {
-                    rails.push(rail.reversed());
-                    corners.push([at_hi, at_lo]);
-                }
+                rails.push(rail);
+                corners.push(ends);
             }
         }
     }
@@ -2329,6 +2284,99 @@ pub(crate) fn fillet_faces(
     history.generate(a, round.clone());
     history.generate(b, round);
     Ok(Built::new(shell, history))
+}
+
+/// A kept piece whose line of contact (`edge`, open) runs past the run the
+/// round spans, the edge cut where the ball touches it at the run's ends
+/// `ends` and the piece rebuilt around the pieces. Back come the piece, the
+/// rail (the run's stretch of the edge, running from `ends[0]` to
+/// `ends[1]`) and the vertices at the run's start and end.
+pub(crate) fn cut_to_run(
+    model: &mut Model,
+    piece: &Shape,
+    edge: &Shape,
+    surface_id: SurfaceId,
+    tolerance: Tolerance,
+    ends: [Point; 2],
+    tol: Tolerances,
+) -> OgeomResult<(Shape, Shape, [Shape; 2])> {
+    let edge = edge.oriented(Orientation::Forward);
+    let (edge_curve_of, edge_range) = edge_curve(model, &edge, tol)?;
+    let Some((s, e)) = edge_vertices(model, &edge)? else {
+        ogeom_bail!(Construction, "a line of contact has no vertices");
+    };
+    let bounded = Curve::Trimmed(Box::new(TrimmedCurve::new(
+        edge_curve_of,
+        edge_range.0,
+        edge_range.1,
+        tol,
+    )?));
+    // The run's ends on this edge, in its own parameter.
+    let mut at = [0.0; 2];
+    for (k, point) in ends.into_iter().enumerate() {
+        at[k] = project_on_curve(&bounded, point, 64, tol)?.parameter;
+    }
+    let rising = at[1] > at[0];
+    let (t_lo, t_hi) = if rising {
+        (at[0], at[1])
+    } else {
+        (at[1], at[0])
+    };
+    let mut cuts = vec![(edge_range.0, s.clone())];
+    let at_lo = if (t_lo - edge_range.0).abs() <= tol.parametric() {
+        s.clone()
+    } else {
+        let v = make_vertex(model, ends[if rising { 0 } else { 1 }]).shape;
+        cuts.push((t_lo, v.clone()));
+        v
+    };
+    let at_hi = if (edge_range.1 - t_hi).abs() <= tol.parametric() {
+        e.clone()
+    } else {
+        let v = make_vertex(model, ends[if rising { 1 } else { 0 }]).shape;
+        cuts.push((t_hi, v.clone()));
+        v
+    };
+    cuts.push((edge_range.1, e.clone()));
+    let (piece, rail) = if cuts.len() == 2 {
+        (piece.clone(), edge.clone())
+    } else {
+        let mut pieces = Vec::with_capacity(3);
+        let mut rail = None;
+        for w in cuts.windows(2) {
+            let made = piece_of(
+                model,
+                &edge,
+                surface_id,
+                (w[0].0, w[1].0),
+                &w[0].1,
+                &w[1].1,
+                tol,
+            )?;
+            if (w[0].0 - t_lo).abs() <= tol.parametric() {
+                rail = Some(made.clone());
+            }
+            pieces.push(made);
+        }
+        let Some(rail) = rail else {
+            ogeom_bail!(Invariant, "the run's stretch of a line of contact was lost");
+        };
+        let face = rebuilt_face(
+            model,
+            piece,
+            surface_id,
+            tolerance,
+            &[(edge.clone(), pieces)],
+            tol,
+        )?;
+        (face, rail)
+    };
+    // The rail runs from the run's start to its end.
+    Ok(if rising {
+        (piece, rail, [at_lo, at_hi])
+    } else {
+        (piece, rail.reversed(), [at_hi, at_lo])
+    })
 }
 
 /// A kept piece whose line of contact closes on itself as a loop of its

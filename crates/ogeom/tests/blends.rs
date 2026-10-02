@@ -528,6 +528,140 @@ fn a_face_blend_marches_between_a_plane_and_a_spline_face() {
     );
 }
 
+/// A block 40 by 40 by 10 with a drum of radius 6 fused on its top, the
+/// drum's axis leaning `slant` degrees from upright toward +y: its wall
+/// meets the top along an ellipse, a concave corner.
+fn slanted_drum_on_block(model: &mut Model, slant: f64) -> Shape {
+    let block = ogeom::algo::make_box(model, Frame::WORLD, (40.0, 40.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let (s, c) = slant.to_radians().sin_cos();
+    let axis = Direction::new(Vector::new(0.0, s, c), T).unwrap();
+    let at = Frame::new(Point::new(20.0, 20.0, 5.0), axis, Direction::X, T).unwrap();
+    let drum = ogeom::algo::make_cylinder(model, at, 6.0, 15.0, T)
+        .unwrap()
+        .shape;
+    ogeom::boolean::fuse(model, &block, &drum, T).unwrap().shape
+}
+
+/// The drum's wall of `shape`.
+fn drum_wall(model: &Model, shape: &Shape) -> Shape {
+    let walls = faces_on(model, shape, |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::Cylinder(_))
+    });
+    assert_eq!(walls.len(), 1, "one wall");
+    walls[0].clone()
+}
+
+/// The edges faces `a` and `b` share.
+fn shared_edges(model: &Model, a: &Shape, b: &Shape) -> Vec<Shape> {
+    let theirs = explore_unique(model, b, ShapeType::Edge).unwrap();
+    explore_unique(model, a, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| theirs.iter().any(|t| t.node() == e.node()))
+        .collect()
+}
+
+/// The slanted drum's foot rounded at radius 0.5, which parts its wall
+/// from the block's top, then the wall and the top blended at `r`: the
+/// blended solid and the volume the sharp solid had.
+fn foot_blended(model: &mut Model, slant: f64, r: f64) -> (Shape, f64) {
+    let sharp = slanted_drum_on_block(model, slant);
+    let before = exact_volume(model, &sharp);
+    let foot = shared_edges(
+        model,
+        &drum_wall(model, &sharp),
+        &lid_at(model, &sharp, 10.0),
+    );
+    assert!(!foot.is_empty(), "the sharp drum stands on the top");
+    let parted = ogeom::fillet::fillet_edges(model, &sharp, &foot, 0.5, T)
+        .unwrap()
+        .shape;
+    let (wall, top) = (drum_wall(model, &parted), lid_at(model, &parted, 10.0));
+    assert!(
+        !share_an_edge(model, &wall, &top),
+        "the small round parts them"
+    );
+    let blended = ogeom::fillet::blend_faces(model, &parted, &wall, &top, r, T)
+        .unwrap()
+        .shape;
+    (blended, before)
+}
+
+/// A drum leaning 15 degrees on a block, its foot rounded small so its
+/// wall and the block's top share no edge: their surfaces meet along an
+/// ellipse and share no direction or axis. Blending them marches the ball
+/// round the ellipse and fills the corner with a fitted band, which takes
+/// the small round whole. The band rides both faces within a tenth of a
+/// degree, and the fill is what rounding the sharp foot as an edge fills.
+#[test]
+fn a_face_blend_marches_round_a_slanted_drum_s_foot() {
+    let r = 2.0;
+    let mut model = Model::new();
+    let (blended, before) = foot_blended(&mut model, 15.0, r);
+    let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let bands = faces_on(&model, &blended, |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::BSpline(_))
+    });
+    assert_eq!(bands.len(), 1, "one fitted band, the small round taken");
+    let found = joins(&model, &blended, &bands[0]);
+    assert!(found.len() >= 2, "the band meets both faces: {found:?}");
+    for c in &found {
+        assert!(
+            c.tangency_error < 0.1_f64.to_radians(),
+            "a rail is not tangent: {c:?}"
+        );
+    }
+    let filled = exact_volume(&model, &blended) - before;
+
+    // The same corner rounded as the edge it is on the sharp solid.
+    let mut other = Model::new();
+    let sharp = slanted_drum_on_block(&mut other, 15.0);
+    let foot = shared_edges(
+        &other,
+        &drum_wall(&other, &sharp),
+        &lid_at(&other, &sharp, 10.0),
+    );
+    let rounded = ogeom::fillet::fillet_edges(&mut other, &sharp, &foot, r, T)
+        .unwrap()
+        .shape;
+    let want = exact_volume(&other, &rounded) - exact_volume(&other, &sharp);
+    assert!(
+        (filled - want).abs() < want * 1e-4,
+        "the blend fills what the edge round does: {filled} against {want}"
+    );
+}
+
+/// The slanted drum's fill against the closed form it tends to: upright,
+/// the round is a torus and the fill a ring by Pappus. The fill grows
+/// with the square of the slant, so the fills at 1 and 2 degrees
+/// extrapolate to the ring's: four times the first less the second, over
+/// three.
+#[test]
+fn a_slanted_drum_s_fill_tends_to_the_torus_ring() {
+    let r = 2.0;
+    let ring = rim_ring(6.0, r, -1.0);
+    let mut fills = Vec::new();
+    for slant in [1.0, 2.0] {
+        let mut model = Model::new();
+        let (blended, before) = foot_blended(&mut model, slant, r);
+        fills.push(exact_volume(&model, &blended) - before);
+    }
+    let (one, two) = (fills[0] - ring, fills[1] - ring);
+    assert!(one > 0.0, "a slant widens the fill: {one}");
+    assert!(
+        (3.5..4.5).contains(&(two / one)),
+        "the fill grows with the slant's square: {one} then {two}"
+    );
+    let extrapolated = 4.0f64.mul_add(fills[0], -fills[1]) / 3.0;
+    assert!(
+        (extrapolated - ring).abs() < ring * 1e-5,
+        "the fills tend to the ring: {extrapolated} against {ring}"
+    );
+}
+
 /// What the curved face blend does not build, refused by name.
 #[test]
 fn curved_face_blends_refuse_by_name() {
@@ -579,8 +713,9 @@ fn curved_face_blends_refuse_by_name() {
     ));
     assert!(said.contains("not a face of the solid"), "{said}");
 
-    // A spline face and a plane sharing no edge: no closed form, and the
-    // march runs only along an edge of the solid.
+    // A spline cap and a side of the block sharing no edge: no closed
+    // form, and the cap's surface, continued past the face, never reaches
+    // the side's plane, so there is no corner to march along.
     let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (40.0, 40.0, 10.0), T)
         .unwrap()
         .shape;
@@ -607,7 +742,63 @@ fn curved_face_blends_refuse_by_name() {
     let said = refusal(ogeom::fillet::blend_faces(
         &mut model, &bossed, &cap[0], &side[0], 1.0, T,
     ));
-    assert!(said.contains("share neither"), "{said}");
+    assert!(said.contains("do not meet"), "{said}");
+
+    // A drum leaning 15 degrees toward +y on a block whose top is split
+    // along y = 29.5, past the drum's foot: the part of the top beyond the
+    // line shares no edge with the wall, and the ball rolling round the
+    // foot touches it only where its line of contact bulges past the line
+    // on the side the drum leans over.
+    let mut model = Model::new();
+    let solid = slanted_drum_on_block(&mut model, 15.0);
+    let top = lid_at(&model, &solid, 10.0);
+    let line = ogeom::geom::Curve::Line(
+        ogeom::geom::LineCurve::segment(
+            Point::new(-1.0, 29.5, 10.0),
+            Point::new(41.0, 29.5, 10.0),
+            T,
+        )
+        .unwrap(),
+    );
+    let range = {
+        use ogeom::geom::Curve3d as _;
+        line.domain()
+    };
+    let cut = ogeom::algo::make_edge(&mut model, line, range, T)
+        .unwrap()
+        .shape;
+    let split = ogeom::heal::split_face(
+        &mut model,
+        &solid,
+        &top,
+        &[cut],
+        ogeom::heal::Projection::OnFace,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let beyond: Vec<Shape> = faces_on(&model, &split, |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::Plane(_))
+    })
+    .into_iter()
+    .filter(|f| {
+        let (p, n) = ogeom::algo::face_normal(&model, f, T).unwrap();
+        let low = ogeom::algo::shape_bounds(&model, f, T)
+            .unwrap()
+            .corners()
+            .iter()
+            .map(|q| q.y)
+            .fold(f64::INFINITY, f64::min);
+        (p.z - 10.0).abs() < 1e-9 && n.z > 0.5 && low > 29.0
+    })
+    .collect();
+    assert_eq!(beyond.len(), 1, "one piece of the top past the line");
+    let wall = drum_wall(&model, &split);
+    assert!(!share_an_edge(&model, &wall, &beyond[0]));
+    let said = refusal(ogeom::fillet::blend_faces(
+        &mut model, &split, &wall, &beyond[0], 2.0, T,
+    ));
+    assert!(said.contains("part of its seat only"), "{said}");
 }
 
 /// The corner where three blends meet. Three edges of a box are filleted

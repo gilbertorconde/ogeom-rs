@@ -1387,7 +1387,9 @@ fn curved_rounds_refuse_by_name() {
     let said = refusal(fillet_sheet_edges(&mut model, &sheet, &[corner], 6.0, T));
     assert!(said.contains("does not fit inside"), "{said}");
 
-    // Separate faces sharing no direction or axis.
+    // A tube and a separate plane tilted across it: the ball rolls round
+    // the tube, and its line of contact crosses one of the faces more than
+    // once, so which stretch of it to round is ambiguous.
     let mut model = Model::new();
     let (a, _) = valley(&mut model, 0.5, (0.0, 8.0), (0.0, 8.0));
     let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 3.0, 5.0, T)
@@ -1398,7 +1400,7 @@ fn curved_rounds_refuse_by_name() {
         .find(|f| matches!(surface_of(&model, f), SurfaceGeometry::Cylinder(_)))
         .unwrap();
     let said = refusal(fillet_faces(&mut model, &side, &a, 1.0, true, T));
-    assert!(said.contains("share neither"), "{said}");
+    assert!(said.contains("crosses it more than once"), "{said}");
 
     // A floor short of where the ball beside the drum touches it (x = 4),
     // on either side.
@@ -1530,6 +1532,315 @@ fn curved_rounds_refuse_by_name() {
     .unwrap();
     let said = refusal(fillet_sheet_edges(&mut model, &leaning, &[slanted], 1.0, T));
     assert!(said.contains("does not seat"), "{said}");
+}
+
+/// A face over the whole of a B-spline patch, bounded by its four border
+/// iso-curves with their lines in the chart.
+fn patch_face(model: &mut Model, patch: ogeom::geom::BSplineSurface) -> Shape {
+    use ogeom::geom::{Line2d, Surface as _};
+    use ogeom::math::{Axis2, Direction2, Point2};
+    let ((u0, u1), (v0, v1)) = patch.domain();
+    let corners: Vec<Shape> = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)]
+        .iter()
+        .map(|&(u, v)| make_vertex(model, patch.point_at(u, v, T).unwrap()).shape)
+        .collect();
+    let id = model.geometry_mut().add_surface(patch.clone().into());
+    let mut edges = Vec::with_capacity(4);
+    // Each side: whether it is a u iso-line, where, its corners, and
+    // whether the loop runs it backwards.
+    for (iso_u, at, from, to, backwards) in [
+        (false, v0, 0, 1, false),
+        (true, u1, 1, 2, false),
+        (false, v1, 3, 2, true),
+        (true, u0, 0, 3, true),
+    ] {
+        let (curve, range, image) = if iso_u {
+            let line = Axis2::new(Point2::new(at, 0.0), Direction2::Y);
+            (
+                patch.iso_u_curve(at, T).unwrap(),
+                (v0, v1),
+                Line2d::over(line, v0 - 1.0, v1 + 1.0).unwrap(),
+            )
+        } else {
+            let line = Axis2::new(Point2::new(0.0, at), Direction2::X);
+            (
+                patch.iso_v_curve(at, T).unwrap(),
+                (u0, u1),
+                Line2d::over(line, u0 - 1.0, u1 + 1.0).unwrap(),
+            )
+        };
+        let edge = make_edge_between(
+            model,
+            Curve::BSpline(curve),
+            range,
+            &corners[from],
+            &corners[to],
+            T,
+        )
+        .unwrap()
+        .shape;
+        ogeom::algo::attach_pcurve(
+            model,
+            &edge,
+            image.into(),
+            id,
+            ogeom::topo::Location::identity(),
+            range,
+        )
+        .unwrap();
+        edges.push(if backwards { edge.reversed() } else { edge });
+    }
+    let wire = make_wire(model, &edges, T).unwrap().shape;
+    ogeom::algo::make_face_on(model, id, &[wire], T)
+        .unwrap()
+        .shape
+}
+
+/// A cubic patch rising from below the floor z = 0 to above it, leaning
+/// 60 degrees toward +x and bowed both ways, over y from -8 to 8: it
+/// crosses the floor along a curve near the y axis. It faces the acute
+/// corner it makes with the floor's +x side.
+fn leaning_patch(model: &mut Model) -> Shape {
+    use ogeom::math::{ControlGrid, KnotVector};
+    let (s, c) = 60.0_f64.to_radians().sin_cos();
+    let mut points = Vec::with_capacity(16);
+    for i in 0..4 {
+        let t = 11.0_f64.mul_add(f64::from(i) / 3.0, -3.0);
+        for j in 0..4 {
+            let y = 16.0_f64.mul_add(f64::from(j) / 3.0, -8.0);
+            let bow = 0.4 * (y / 8.0).powi(2) + 0.3 * (t / 8.0).powi(2);
+            points.push(Point::new(t.mul_add(c, bow), y, t * s));
+        }
+    }
+    let cubic = || KnotVector::new(vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 3).unwrap();
+    let patch = ogeom::geom::BSplineSurface::new(
+        cubic(),
+        cubic(),
+        &ControlGrid::new(points, 4, 4).unwrap(),
+        T,
+    )
+    .unwrap();
+    let face = patch_face(model, patch);
+    if face_normal(model, &face, T)
+        .unwrap()
+        .1
+        .dot(Vector::new(s, 0.0, -c))
+        > 0.0
+    {
+        face
+    } else {
+        face.reversed()
+    }
+}
+
+/// The round's tangency and fit against each face it meets: tangent
+/// within a tenth of a degree, its shared edge on both surfaces within the
+/// band's fit.
+fn marched_tangent(model: &Model, shape: &Shape, round: &Shape) {
+    let contacts = analyse_blend(model, shape, round, 15, T).unwrap();
+    assert_eq!(contacts.len(), 2, "the round meets two faces: {contacts:?}");
+    for contact in &contacts {
+        assert!(
+            contact.tangency_error < 0.1_f64.to_radians(),
+            "tangent within a tenth of a degree: {contact:?}"
+        );
+        assert!(
+            contact.gap < 2e-4,
+            "the shared edge lies on both: {contact:?}"
+        );
+    }
+}
+
+/// The face of `shape` holding `p`.
+fn face_holding(model: &Model, shape: &Shape, p: Point) -> Option<Shape> {
+    faces(model, shape).into_iter().find(|f| {
+        ogeom::algo::classify_on_face(model, f, p, Deflection::with_chord(1e-3).unwrap(), T)
+            .unwrap()
+            == ogeom::algo::Containment::In
+    })
+}
+
+/// The round's corners standing on the floor z = 0, within the band's fit.
+fn ends_on_floor(model: &Model, round: &Shape) -> Vec<Point> {
+    explore_unique(model, round, ShapeType::Vertex)
+        .unwrap()
+        .iter()
+        .map(|v| point_of(model, v))
+        .filter(|p| p.z.abs() < 2e-4)
+        .collect()
+}
+
+/// A floor and a separate B-spline patch crossing it at a slant: they
+/// share no direction or axis, so the ball is marched along where they
+/// cross and the round is a band fitted through its arcs. Trimmed, the
+/// floor keeps its side away from the corner and the patch its top, and
+/// the three faces sew into one shell; the round runs the floor's width,
+/// ending at its edges y = ±5 where the patch is 16 wide, and rides both
+/// faces within a tenth of a degree.
+#[test]
+fn a_plane_and_a_leaning_spline_patch_trim_into_one_shell() {
+    let mut model = Model::new();
+    let r = 1.5;
+    let floor = floor_rectangle(&mut model, (-10.0, 10.0), (-5.0, 5.0));
+    let patch = leaning_patch(&mut model);
+    let built = fillet_faces(&mut model, &floor, &patch, r, true, T).unwrap();
+    let shell = built.shape.clone();
+    assert_eq!(model.kind_of(&shell).unwrap(), ShapeType::Shell);
+    assert_eq!(faces(&model, &shell).len(), 3);
+    usable(&model, &shell);
+    let three = faces(&model, &shell);
+    let sewn = ogeom::algo::sew(&mut model, &three, T).unwrap();
+    assert_eq!(sewn.shells.len(), 1, "the three faces sew into one shell");
+    assert_eq!(
+        edge_use(&model, &shell).0,
+        2,
+        "both lines of contact shared"
+    );
+
+    let kept_floor = face_holding(&model, &shell, Point::new(9.0, 0.0, 0.0)).unwrap();
+    assert!(
+        face_holding(&model, &shell, Point::new(0.0, 0.0, 0.0)).is_none(),
+        "the floor loses the corner"
+    );
+    let round = faces(&model, &shell)
+        .into_iter()
+        .find(|f| {
+            !f.is_same(&kept_floor) && built.history.modified(&patch).iter().all(|k| !k.is_same(f))
+        })
+        .unwrap();
+    marched_tangent(&model, &shell, &round);
+    // The run ends where the floor does: the round's corners on the floor
+    // stand on its edges y = ±5, those on the patch in the same sections.
+    let on_floor = ends_on_floor(&model, &round);
+    assert_eq!(on_floor.len(), 2, "two corners on the floor");
+    for p in on_floor {
+        assert!(
+            (p.y.abs() - 5.0).abs() < 1e-9,
+            "a corner off the floor's edge: {p:?}"
+        );
+    }
+    // The patch keeps what stands above its line of contact, which runs
+    // about 2.6 up it from the floor (the ball's radius over tan 30°): the
+    // patch over y = 0 stands 0.74 over the floor at u = 0.35 and about 6
+    // at u = 0.9.
+    let surface = surface_of(&model, &patch);
+    let at = |u: f64| {
+        use ogeom::geom::Surface as _;
+        surface.point_at(u, 0.5, T).unwrap()
+    };
+    assert!(face_holding(&model, &shell, at(0.9)).is_some());
+    assert!(face_holding(&model, &shell, at(0.35)).is_none());
+
+    // Untrimmed, the round alone, over the same run.
+    let mut model = Model::new();
+    let floor = floor_rectangle(&mut model, (-10.0, 10.0), (-5.0, 5.0));
+    let patch = leaning_patch(&mut model);
+    let round = fillet_faces(&mut model, &floor, &patch, r, false, T)
+        .unwrap()
+        .shape;
+    assert_eq!(model.kind_of(&round).unwrap(), ShapeType::Face);
+    usable(&model, &round);
+    let on_floor = ends_on_floor(&model, &round);
+    assert_eq!(on_floor.len(), 2, "two corners on the floor");
+    for p in on_floor {
+        assert!(
+            (p.y.abs() - 5.0).abs() < 2e-4,
+            "a corner off the floor's edge: {p:?}"
+        );
+    }
+}
+
+/// The quarter drum of [`drum_quarter`] over y from -8 to 8, its surface
+/// the rational B-spline that restates the cylinder exactly, facing out
+/// of its axis.
+fn spline_drum_quarter(model: &mut Model) -> Shape {
+    use ogeom::math::{ControlGrid, KnotVector, Weighted};
+    let frame = Frame::new(Point::new(0.0, -8.0, 5.0), Direction::Y, Direction::X, T).unwrap();
+    let circle = Curve::Circle(CircleCurve::new(Circle::new(frame, 3.0, T).unwrap()));
+    let arc = circle.to_bspline_over((0.0, PI / 2.0), T).unwrap();
+    let mut net = Vec::with_capacity(arc.control_points().len() * 2);
+    for w in arc.control_points() {
+        for along in [0.0, 16.0] {
+            let p = w.point() + Vector::new(0.0, along, 0.0);
+            net.push(Weighted::new(p, w.weight, T).unwrap());
+        }
+    }
+    let count = arc.control_points().len();
+    let patch = ogeom::geom::BSplineSurface::rational(
+        arc.knots().clone(),
+        KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).unwrap(),
+        ControlGrid::new(net, count, 2).unwrap(),
+    )
+    .unwrap();
+    let face = patch_face(model, patch);
+    let (p, n) = face_normal(model, &face, T).unwrap();
+    if n.dot(Vector::new(p.x, 0.0, p.z - 5.0)) > 0.0 {
+        face
+    } else {
+        face.reversed()
+    }
+}
+
+/// The floor and the drum of [`a_plane_and_a_separate_cylinder_trim_into_one_shell`]
+/// with the drum's surface a B-spline: the surfaces do not cross (the
+/// round bridges the gap), so the ball is guided by where the two surfaces
+/// offset by the radius cross, the line its centre runs along. The marched
+/// round lands on the closed form: it touches the floor along x = 4 and
+/// the drum along (2.4, 3.2), and stays within the band's fit of the
+/// cylinder of radius 2 about the line through (4, 0, 2).
+#[test]
+fn a_plane_and_a_spline_drum_across_a_gap_round_as_the_cylinder() {
+    use ogeom::geom::Surface as _;
+    let mut model = Model::new();
+    let r = 2.0;
+    let floor = floor_rectangle(&mut model, (-10.0, 10.0), (-5.0, 5.0));
+    let drum = spline_drum_quarter(&mut model);
+    let built = fillet_faces(&mut model, &floor, &drum, r, true, T).unwrap();
+    let shell = built.shape.clone();
+    assert_eq!(faces(&model, &shell).len(), 3);
+    usable(&model, &shell);
+    let three = faces(&model, &shell);
+    assert_eq!(
+        ogeom::algo::sew(&mut model, &three, T)
+            .unwrap()
+            .shells
+            .len(),
+        1
+    );
+    let kept_floor = face_holding(&model, &shell, Point::new(9.0, 0.0, 0.0)).unwrap();
+    assert!(
+        (area(&model, &kept_floor) - 6.0 * 10.0).abs() < 1e-6,
+        "the floor keeps x ≥ 4"
+    );
+    let round = faces(&model, &shell)
+        .into_iter()
+        .find(|f| {
+            !f.is_same(&kept_floor) && built.history.modified(&drum).iter().all(|k| !k.is_same(f))
+        })
+        .unwrap();
+    marched_tangent(&model, &shell, &round);
+    for vertex in explore_unique(&model, &round, ShapeType::Vertex).unwrap() {
+        let p = point_of(&model, &vertex);
+        let on_floor = (p.x - 4.0).hypot(p.z);
+        let on_drum = (p.x - 2.4).hypot(p.z - 3.2);
+        assert!(
+            on_floor.min(on_drum) < 1e-9,
+            "a corner off the closed form: {p:?}"
+        );
+        assert!((p.y.abs() - 5.0).abs() < 1e-9);
+    }
+    let data = model.node(&round).unwrap().data().as_face().unwrap();
+    let band = model.geometry().surface(data.surface).unwrap();
+    let ((u0, u1), (v0, v1)) = band.domain();
+    for i in 0..=8 {
+        for j in 0..=8 {
+            let u = (u1 - u0).mul_add(f64::from(i) / 8.0, u0);
+            let v = (v1 - v0).mul_add(f64::from(j) / 8.0, v0);
+            let p = band.point_at(u, v, T).unwrap();
+            let off = ((p.x - 4.0).hypot(p.z - 2.0) - r).abs();
+            assert!(off < 2e-4, "the band leaves the cylinder by {off} at {p:?}");
+        }
+    }
 }
 
 #[test]

@@ -27,13 +27,17 @@ wants its two faces paired as same-domain.
 
 **Blends between curved faces that share no edge.** `blend_faces` blends
 curved faces that meet along edges of the solid through the edge blend (exact
-or marched), and curved faces that share no edge where their surfaces share a
-direction or an axis. Two gaps are refused by name:
+or marched), curved faces that share no edge where their surfaces share a
+direction or an axis, and otherwise marches the ball round where the
+surfaces cross. `fillet_faces` marches between separate faces the same way,
+over part of the seat or bridging a gap. Refused by name:
 
-- Faces sharing no edge whose surfaces share no direction or axis (a B-spline
-  face, a cylinder at a slant to a plane). These want the march along the
-  spine where the two offset surfaces meet, with no edge of the solid to
-  guide it: the surfaces' own intersection as the guide.
+- Faces of a solid sharing no edge whose marched seat the faces hold over
+  part of its length only (an open crease, or a loop the faces leave): the
+  wedge wants caps in the ball's sections at the round's ends, which the
+  edge blend builds along an edge and this path does not yet.
+- A marched round closing on itself between separate faces, and one whose
+  line of contact crosses a face more than once.
 - A round crossing a face that stands between the two (a ball smaller than a
   chamfer between the faces it rounds): the solid beside the middle of the
   round is open where the seat says material, or the reverse.

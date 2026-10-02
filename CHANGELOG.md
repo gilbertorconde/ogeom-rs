@@ -13,6 +13,20 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Rounds between curved faces with no shared edge or axis.**
+  `blend_faces` and `fillet_faces` round curved faces that share no edge
+  and whose surfaces share no direction or axis (a B-spline face, a
+  cylinder at a slant to a plane). The ball is marched along where the
+  surfaces cross, or, between separate faces whose surfaces do not cross,
+  along where their offsets by the radius cross; the round is a B-spline
+  band fitted through the ball's arcs, tangent within a tenth of a degree.
+  On a solid the corner is cut off or filled where the ball touches both
+  faces all the way round a closed seat; between separate faces the round
+  spans where both faces reach, and with `trim` the faces and the round
+  sew into one shell. A seat a solid's faces hold over part of its length
+  only, a marched round closing on itself between separate faces, and a
+  line of contact crossing its face more than once are refused by name.
+
 - **A coincident patch's edge that weaves across the other's window is
   carried stretch by stretch.** An edge of a B-spline patch that leaves a
   coincident patch's window and comes back onto it was refused. It is

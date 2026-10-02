@@ -14,6 +14,7 @@ pub mod facepair;
 pub mod fillet;
 pub mod march;
 mod marched;
+mod pair_marched;
 mod pinched;
 mod ruled;
 pub mod sheet;

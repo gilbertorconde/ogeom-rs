@@ -428,6 +428,42 @@ pub(crate) fn marched_fillet(
             tol,
         );
     }
+    closed_band_wedge(
+        model,
+        solid,
+        Some(edge),
+        blend,
+        &guide,
+        guide_range,
+        loops,
+        [(&first, sign_first), (&second, sign_second)],
+        radius,
+        convex,
+        tol,
+    )
+}
+
+/// The closed seat's wedge: a marched band all the way round its loop of
+/// stations, one leg on each host between the crease (`guide` over
+/// `guide_range`, a loop) and the touch rail, applied to the solid. `edge`
+/// is the edge the crease runs along, where the solid has one.
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
+#[allow(clippy::too_many_lines, reason = "one wedge, assembled end to end")]
+pub(crate) fn closed_band_wedge(
+    model: &mut Model,
+    solid: &Shape,
+    edge: Option<&Shape>,
+    mut blend: crate::march::MarchedBlend,
+    guide: &Curve,
+    guide_range: (f64, f64),
+    loops: bool,
+    hosts: [(&SurfaceGeometry, f64); 2],
+    radius: f64,
+    convex: bool,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    use ogeom_geom::Surface as _;
+    let [(first, sign_first), (second, sign_second)] = hosts;
     // The band wants every winding rail to run its period forward; when the
     // march went the other way round, the whole loop reverses.
     // A closed march may hand its first station back as its last; the loop
@@ -491,8 +527,8 @@ pub(crate) fn marched_fillet(
             ((total + close) / period).round()
         };
         let (w1, w2) = (
-            winding(&blend.on_first, &first),
-            winding(&blend.on_second, &second),
+            winding(&blend.on_first, first),
+            winding(&blend.on_second, second),
         );
         if w1 * w2 < 0.0 {
             ogeom_bail!(
@@ -588,10 +624,10 @@ pub(crate) fn marched_fillet(
             ];
             let station_at = |w: f64| -> Option<([f64; 5], f64)> {
                 let x = crate::march::seat_section(
-                    &first,
-                    &second,
+                    first,
+                    second,
                     radius,
-                    &guide,
+                    guide,
                     blend.sides,
                     fold(w),
                     near,
@@ -845,22 +881,22 @@ pub(crate) fn marched_fillet(
     // rail and a fresh ring on the edge's own curve.
     let leg_first = host_leg(
         model,
-        &first,
+        first,
         &blend.on_first,
         &u_params,
         &rail_first,
-        &guide,
+        guide,
         guide_range,
         fit_target,
         tol,
     )?;
     let leg_second = host_leg(
         model,
-        &second,
+        second,
         &blend.on_second,
         &u_params,
         &rail_second,
-        &guide,
+        guide,
         guide_range,
         fit_target,
         tol,
@@ -878,7 +914,7 @@ pub(crate) fn marched_fillet(
     ];
     let fitted_host = matches!(first, SurfaceGeometry::BSpline(_))
         || matches!(second, SurfaceGeometry::BSpline(_));
-    match apply_wedge(model, solid, Some(edge), &faces, additive, tol) {
+    match apply_wedge(model, solid, edge, &faces, additive, tol) {
         Err(e) if fitted_host => ogeom_bail!(
             NotDone,
             "the blend marched and its wedge was built, but the melt against a \
