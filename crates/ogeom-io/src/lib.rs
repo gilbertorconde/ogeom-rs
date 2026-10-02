@@ -21,6 +21,7 @@
 //! [`native::write()`], because "write this shape" means something different for
 //! each and a name that did not say which would be the wrong kind of convenience.
 
+pub(crate) mod bodies;
 pub mod brep;
 pub mod dxf;
 pub mod iges;

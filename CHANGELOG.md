@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **STEP and IGES export write sheet bodies.** `write_step` writes shells
+  no solid owns and faces no shell owns as `SHELL_BASED_SURFACE_MODEL`s in
+  a `MANIFOLD_SURFACE_SHAPE_REPRESENTATION`, and a part holding solids and
+  sheets as both representations in one part. `write_iges` writes sheet
+  faces as trimmed surfaces (144) beside the manifold solid B-reps it
+  writes for solids, keeping a reversed face's side. Both writers refuse
+  wireframe (a free wire, edge or vertex) and empty parts by name instead
+  of dropping them.
+
 - **Sewing across a gap.** `sew_within` sews faces whose edges meet up
   to a given distance apart, as surfaces built separately (an imported
   sheet, a fitted fill beside an exact extrusion) do: two edges whose ends

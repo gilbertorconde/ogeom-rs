@@ -26,15 +26,19 @@ use std::fmt::Write as _;
 /// Write a document as a STEP exchange file.
 ///
 /// Products become `PRODUCT` trees; parts carry their solids as
-/// `MANIFOLD_SOLID_BREP`s; assemblies become usage occurrences with their
-/// placements; colours become styled items over the written solids and
-/// faces.
+/// `MANIFOLD_SOLID_BREP`s in an `ADVANCED_BREP_SHAPE_REPRESENTATION`, and
+/// their sheets (shells no solid owns, faces no shell owns) as
+/// `SHELL_BASED_SURFACE_MODEL`s in a `MANIFOLD_SURFACE_SHAPE_REPRESENTATION`;
+/// a part holding both carries both representations, related to each other.
+/// Assemblies become usage occurrences with their placements; colours
+/// become styled items over the written solids, sheets and faces.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
 /// shape's structure cannot be expressed: a non-rigid instance placement, a
-/// solid with no shell.
+/// solid with no shell, a part holding wireframe (a wire, edge or vertex
+/// outside every face) or nothing at all.
 pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
     NON_FINITE.with(|seen| seen.set(false));
     let mut writer = Writer {
@@ -83,18 +87,46 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
         let world = writer.frame(&Frame::WORLD);
         let sr = match &product.kind {
             ProductKind::Part { shape } => {
-                let mut items = vec![world];
-                for solid in writer.solids_of(shape)? {
-                    items.push(solid);
+                let bodies = crate::bodies::bodies_of(writer.model, shape, "STEP")?;
+                let mut solids = vec![world];
+                for solid in &bodies.solids {
+                    solids.push(writer.solid(solid)?);
                 }
-                let list = items
-                    .iter()
-                    .map(|i| format!("#{i}"))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                writer.entity(format!(
-                    "ADVANCED_BREP_SHAPE_REPRESENTATION('{name}',({list}),#{gctx})"
-                ))
+                let mut sheets = vec![world];
+                for shell in &bodies.shells {
+                    sheets.push(writer.surface_model(shell, false)?);
+                }
+                for face in &bodies.faces {
+                    sheets.push(writer.surface_model(face, true)?);
+                }
+                // Solids go in a B-rep representation and sheets in a
+                // surface one; a part with both names the B-rep and ties
+                // the surface representation to it.
+                let brep = (solids.len() > 1).then(|| {
+                    let list = reference_list(&solids);
+                    writer.entity(format!(
+                        "ADVANCED_BREP_SHAPE_REPRESENTATION('{name}',({list}),#{gctx})"
+                    ))
+                });
+                let surface = (sheets.len() > 1).then(|| {
+                    let list = reference_list(&sheets);
+                    writer.entity(format!(
+                        "MANIFOLD_SURFACE_SHAPE_REPRESENTATION('{name}',({list}),#{gctx})"
+                    ))
+                });
+                match (brep, surface) {
+                    (Some(brep), Some(surface)) => {
+                        writer.entity(format!(
+                            "SHAPE_REPRESENTATION_RELATIONSHIP('','',#{brep},#{surface})"
+                        ));
+                        brep
+                    }
+                    (Some(only), None) | (None, Some(only)) => only,
+                    (None, None) => ogeom_bail!(
+                        Construction,
+                        "a part's shape holds no solid, shell or face to write as STEP"
+                    ),
+                }
             }
             ProductKind::Assembly { .. } => {
                 writer.entity(format!("SHAPE_REPRESENTATION('{name}',(#{world}),#{gctx})"))
@@ -305,16 +337,34 @@ impl Writer<'_> {
         Ok(self.frame(&frame))
     }
 
-    /// Every solid under a part's shape, written.
-    fn solids_of(&mut self, shape: &Shape) -> OgeomResult<Vec<u64>> {
-        let mut out = Vec::new();
-        for solid in explore(self.model, shape, Filter::OfType(ShapeType::Solid))? {
-            out.push(self.solid(&solid)?);
+    /// A sheet as a `SHELL_BASED_SURFACE_MODEL` of one shell: a free shell
+    /// as an `OPEN_SHELL`, or a `CLOSED_SHELL` when it closes, and a lone
+    /// face (`lone`) as an `OPEN_SHELL` of that face alone.
+    fn surface_model(&mut self, sheet: &Shape, lone: bool) -> OgeomResult<u64> {
+        let faces = if lone {
+            vec![sheet.clone()]
+        } else {
+            self.model.ordered_children_of(sheet)?
+        };
+        if faces.is_empty() {
+            ogeom_bail!(Construction, "a shell with no face cannot be written");
         }
-        if out.is_empty() {
-            ogeom_bail!(Construction, "a part's shape holds no solid to write");
+        let keyword = if !lone && ogeom_algo::is_shell_closed(self.model, sheet)? {
+            "CLOSED_SHELL"
+        } else {
+            "OPEN_SHELL"
+        };
+        let mut ids = Vec::with_capacity(faces.len());
+        for face in &faces {
+            ids.push(self.face(face)?);
         }
-        Ok(out)
+        let list = reference_list(&ids);
+        let shell = self.entity(format!("{keyword}('',({list}))"));
+        let model = self.entity(format!("SHELL_BASED_SURFACE_MODEL('',(#{shell}))"));
+        if !lone {
+            self.written_nodes.push((sheet.node(), model));
+        }
+        Ok(model)
     }
 
     /// A solid, with its voids when it has any: the first shell is the
@@ -1075,6 +1125,14 @@ fn real(v: f64) -> String {
         s.push_str(".0");
     }
     s
+}
+
+/// Entity ids as a Part 21 list's contents: `#1,#2,#3`.
+fn reference_list(ids: &[u64]) -> String {
+    ids.iter()
+        .map(|i| format!("#{i}"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// A string literal's body, quotes doubled per Part 21.

@@ -1608,7 +1608,7 @@ tests = ["crates/ogeom/tests/hatch.rs"]
 
 [[capability]]
 id = "io.step"
-title = "STEP, both directions: shapes, assemblies, colours, validation properties, semantic and presentation PMI"
+title = "STEP, both directions: solids and sheets, assemblies, colours, validation properties, semantic and presentation PMI"
 crate = "ogeom-io"
 verdict = "covered"
 claims = [
@@ -1628,11 +1628,12 @@ tests = [
     "crates/ogeom/tests/assembly_corpus.rs",
     "crates/ogeom/tests/pmi_corpus.rs",
     "crates/ogeom/tests/step_geometry_kinds.rs",
+    "crates/ogeom-io/tests/sheet_export.rs",
 ]
 
 [[capability]]
 id = "io.iges"
-title = "IGES, both directions: solids as manifold B-rep, surface files sewn, units converted"
+title = "IGES, both directions: solids as manifold B-rep, sheets as trimmed surfaces, surface files sewn, units converted"
 crate = "ogeom-io"
 verdict = "partial"
 restriction = """The core entity set reads and writes (30 entity types, the
@@ -1676,6 +1677,7 @@ claims = [
 ]
 symbols = ["ogeom_io::read_iges", "ogeom_io::write_iges", "ogeom_io::IgesImport", "ogeom_io::IgesReport"]
 tests = ["crates/ogeom/tests/iges_roundtrip.rs",
+    "crates/ogeom-io/tests/sheet_export.rs",
     "crates/ogeom-io/src/iges/read.rs::hyperbola_and_parabola_conic_arcs_read_as_their_curves",
     "crates/ogeom-io/src/iges/read.rs::a_ruled_surface_reads_as_the_patch_between_its_curves",
     "crates/ogeom-io/src/iges/read.rs::offset_entities_displace_the_way_the_file_says",
