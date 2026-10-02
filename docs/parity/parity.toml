@@ -1333,8 +1333,11 @@ title = "Filling a boundary with a face: the plate surface"
 crate = "ogeom-offset"
 verdict = "covered"
 claims = ["BRepOffsetAPI_MakeFilling", "GeomPlate_*", "Plate_*", "NLPlate_*"]
-symbols = ["ogeom_offset::make_filling"]
-tests = ["crates/ogeom/tests/filling.rs"]
+symbols = [
+    "ogeom_offset::make_filling", "ogeom_offset::make_filling_n",
+    "ogeom_offset::FillBoundary", "ogeom_offset::FillSide", "ogeom_offset::Filled",
+]
+tests = ["crates/ogeom/tests/filling.rs", "crates/ogeom-offset/tests/filling_n.rs"]
 
 [[capability]]
 id = "offset.draft"

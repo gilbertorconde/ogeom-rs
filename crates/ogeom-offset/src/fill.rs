@@ -1,16 +1,27 @@
-//! Surface filling: a face fitted over the region four edges bound.
+//! Surface filling: a face fitted over the region a loop of edges bounds.
 //!
-//! The construction is the transfinite Coons blend of the four boundary
-//! curves (which interpolates them exactly), sampled and fitted through
+//! [`make_filling`] takes four edges and fits the transfinite Coons blend
+//! of them (which interpolates them exactly), sampled and fitted through
 //! the grid machinery, error reported. What the caller gets is a *natural*
 //! face over the fitted patch: the patch's own chart rectangle is the trim,
 //! and the patch boundary stands within the stated fit tolerance of the
 //! edges it was asked to fill.
+//!
+//! [`make_filling_n`] takes any number of sides, each meeting the face it
+//! came from at G0, G1 or G2, and points and curves inside the hole the
+//! surface must pass through. Its face is bounded by the given edges
+//! themselves, each carrying a pcurve on the fitted patch, so sewing it to
+//! the faces around it finds the edges already shared. The patch is a
+//! height field over the plane the boundary loop spans, fitted over a
+//! rectangle wider than the hole and trimmed by the edges; every deviation
+//! the caller asked about is measured along every side and reported.
 
 use ogeom_algo::{Built, History, make_natural_face};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve3d as _, Reversible as _, SurfaceGeometry, TrimmedCurve};
 use ogeom_topo::{EdgeRepr, Model, Shape, ShapeType};
+
+pub use crate::fill_n::{FillBoundary, FillSide, Filled, make_filling_n};
 
 /// Fill the loop `edges` bound with a fitted patch face.
 ///

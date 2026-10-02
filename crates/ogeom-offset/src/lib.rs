@@ -7,6 +7,8 @@
 pub mod draft;
 pub mod feature;
 pub mod fill;
+mod fill_n;
+mod fill_patch;
 pub(crate) mod fixed;
 pub mod middle;
 pub mod project;
@@ -17,7 +19,7 @@ pub mod wire2d;
 
 pub use draft::apply_draft;
 pub use feature::{Feature, feature_prism, feature_revol, feature_rib, feature_slot};
-pub use fill::make_filling;
+pub use fill::{FillBoundary, FillSide, Filled, make_filling, make_filling_n};
 pub use middle::{MiddlePath, middle_path};
 pub use project::{Projected, normal_projection};
 pub use shape::{make_thick_solid, make_thick_solid_with, move_faces, offset_faces, offset_shape};

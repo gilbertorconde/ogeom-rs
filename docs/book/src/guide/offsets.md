@@ -20,7 +20,12 @@ The general sweeps share this module's machinery:
 - `make_pipe` and `make_pipe_skinned`: sweep along a single spine edge.
 - `make_loft` and `make_loft_skinned`: loft through profile sections.
 - `make_evolved`: sweep a profile along a planar spine.
-- `make_filling`: build an N-sided patch face that fills a boundary.
+- `make_filling`: fill the loop four edges bound with a fitted patch face.
+- `make_filling_n`: fill a hole bounded by any number of edges with one
+  face bounded by those same edges, meeting each neighbouring face at G0,
+  G1 or G2 and passing through points and curves inside the hole. The
+  gaps, angles and curvature differences it reached come back measured
+  per side.
 
 ## Features
 

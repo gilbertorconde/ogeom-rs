@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **N-sided fills on their own edges.** `make_filling_n` fills a hole
+  bounded by any number of edges with one face bounded by those same
+  edges, with pcurves, so `sew` joins it to its neighbours. Each side
+  meets its support face G0, G1 or G2, and the surface passes through
+  given interior vertices and edges. The gap, angle and curvature step
+  reached are measured per side and returned in `Filled`. A fit that
+  cannot meet the tolerance, and a hole that is not a height field over
+  its boundary's plane, are refused by name.
+
 - **Blend surfaces and blend curves bridge two edges.**
   `make_blend_surface` bridges two edges of different faces with a
   B-spline face that shares both edges and meets each face C0, G1 or G2:
