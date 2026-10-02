@@ -31,12 +31,6 @@ each edge is carried into the other's chart over its stretch on the other's
 window. An edge that leaves that window and comes back onto it is still
 refused.
 
-**Tangential contact as its own curve.** Two surfaces touching along a curve
-without crossing it, where no closed form names the curve (a torus resting in
-a free-form cradle), march into fragments on both surfaces that describe
-nothing. `crates/ogeom-intersect/tests/hard.rs` pins the limit. The answer is a
-tangential trace that follows the contact as a curve of its own kind.
-
 **Blends between curved faces.** The face-to-face blend takes planar supports.
 Curved ones need the marching seat: the spine where the two offset surfaces
 meet, walked like the edge blend's.

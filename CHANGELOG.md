@@ -11,6 +11,18 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Tangential contact traced as its own curve.** Two surfaces touching
+  along a curve no closed form names (a torus resting in a free-form
+  cradle) came back as fragments. The trace predicts along the null
+  direction of the difference of the two surfaces' second fundamental
+  forms and corrects onto the locus where they meet with parallel
+  normals, landing on a patch's edges and closing across a seam: one
+  curve with pcurves on both surfaces, marked tangential. A seed at an
+  isolated touch, or where the surfaces come near without touching, is
+  refused by name.
+
 ### Fixed
 
 - **A sphere face bounded by a great circle through its poles is

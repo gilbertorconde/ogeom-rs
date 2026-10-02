@@ -18,7 +18,9 @@
 //!
 //! The stages underneath are public because each is separately measurable:
 //! [`surface_surface`] (the closed forms), [`seeds`]/[`trace`]/[`branches`]
-//! (the marcher), [`approximate_branch`] (polyline to curves).
+//! (the marcher), [`trace_tangential`] (a contact, where the surfaces touch
+//! along a curve without crossing), [`approximate_branch`] (polyline to
+//! curves).
 //!
 //! # The instruments
 //!
@@ -39,6 +41,7 @@
 //! missing.
 
 pub mod approx;
+pub mod contact;
 pub mod curve_surface;
 pub mod curves;
 pub mod extrema;
@@ -48,6 +51,7 @@ pub mod surface;
 pub mod walk;
 
 pub use approx::{IntersectionCurve, approximate_branch};
+pub use contact::trace_tangential;
 pub use curve_surface::{
     CurveSurfaceIntersection, CurveSurfaceOptions, Piercing, intersect_curve_surface,
 };
@@ -58,7 +62,7 @@ pub use extrema::{
     Approach, Extrema, ExtremaOptions, extrema_curve_curve, extrema_curve_surface,
     extrema_surface_surface,
 };
-pub use march::{Contact, Marching, Stopped, Traced, branches, seeds, trace, trace_tangential};
+pub use march::{Contact, Marching, Stopped, Traced, branches, seeds, trace};
 pub use section::{
     IntersectOptions, SectionCurve, SurfaceIntersection, exact_pcurve_of, exact_pcurve_over,
     intersect_surfaces,

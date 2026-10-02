@@ -32,7 +32,8 @@ use ogeom_geom::{
 use ogeom_math::{Circle2, Ellipse2, Frame2, Point, Point2};
 
 use crate::approx::approximate_branch;
-use crate::march::{Marching, branches, trace_tangential};
+use crate::contact::trace_tangential;
+use crate::march::{Marching, branches};
 use crate::surface::{Meeting, surface_surface};
 
 /// How to intersect, when the general path runs.

@@ -164,41 +164,271 @@ fn a_sphere_across_a_cones_apex_cuts_both_nappes() {
     assert!(worst(&cone, &ball, &found) < 1e-7);
 }
 
+/// A polynomial in `t`, ascending powers.
+type Poly = Vec<f64>;
+
+fn poly_mul(a: &[f64], b: &[f64]) -> Poly {
+    let mut out = vec![0.0; a.len() + b.len() - 1];
+    for (i, x) in a.iter().enumerate() {
+        for (j, y) in b.iter().enumerate() {
+            out[i + j] += x * y;
+        }
+    }
+    out
+}
+
+fn poly_add(a: &[f64], b: &[f64]) -> Poly {
+    (0..a.len().max(b.len()))
+        .map(|i| a.get(i).copied().unwrap_or(0.0) + b.get(i).copied().unwrap_or(0.0))
+        .collect()
+}
+
+fn poly_scale(a: &[f64], k: f64) -> Poly {
+    a.iter().map(|x| x * k).collect()
+}
+
+/// The Bernstein coefficients of a polynomial of degree at most four, over
+/// `t` in `[-1, 1]`.
+fn bernstein4(p: &[f64]) -> [f64; 5] {
+    // In x = (t + 1) / 2, then to the Bernstein basis.
+    let mut in_x = vec![0.0];
+    let mut power = vec![1.0];
+    for c in p {
+        in_x = poly_add(&in_x, &poly_scale(&power, *c));
+        power = poly_mul(&power, &[-1.0, 2.0]);
+    }
+    let binomial =
+        |n: u32, k: u32| (0..k).fold(1.0, |acc, i| acc * f64::from(n - i) / f64::from(i + 1));
+    let mut out = [0.0; 5];
+    for (j, slot) in (0_u32..).zip(out.iter_mut()) {
+        for (i, c) in (0..=j).zip(in_x.iter()) {
+            *slot += binomial(j, i) / binomial(4, i) * c;
+        }
+    }
+    out
+}
+
+/// A free-form cradle under the world torus of radii `major`, `minor`: the
+/// rational patch ruled along the meridian tangents of a curve on the torus
+/// that wanders across the tube.
+///
+/// With `a = tan(u/2)` and `b = tan(v/2)` the torus is rational in both, and
+/// the curve `a = t`, `b = b0 + slope * t` on it is rational of degree four,
+/// as is the tube's meridian tangent along it. The patch is
+/// `c(t) + s * w(t)`, degree four by one, exact. Along `s = 0` it shares the
+/// torus's tangent plane, and across the curve it is straight where the tube
+/// is round, so it touches the torus along the whole curve and nowhere
+/// crosses it. The test knows the contact from the construction; the
+/// intersector is given only the two surfaces.
+fn cradle(major: f64, minor: f64, b0: f64, slope: f64, s: (f64, f64)) -> SurfaceGeometry {
+    use ogeom_geom::BSplineSurface;
+    use ogeom_math::{ControlGrid, KnotVector, Weighted};
+    let a = [0.0, 1.0];
+    let b = [b0, slope];
+    let a2 = poly_mul(&a, &a);
+    let b2 = poly_mul(&b, &b);
+    let one_plus_a2 = poly_add(&[1.0], &a2);
+    let one_minus_a2 = poly_add(&[1.0], &poly_scale(&a2, -1.0));
+    let one_plus_b2 = poly_add(&[1.0], &b2);
+    let one_minus_b2 = poly_add(&[1.0], &poly_scale(&b2, -1.0));
+    let weight = poly_mul(&one_plus_a2, &one_plus_b2);
+    // (major + minor cos v) times (1 + b^2).
+    let reach = poly_add(
+        &poly_scale(&one_plus_b2, major),
+        &poly_scale(&one_minus_b2, minor),
+    );
+    let curve = [
+        poly_mul(&reach, &one_minus_a2),
+        poly_mul(&reach, &poly_scale(&a, 2.0)),
+        poly_scale(&poly_mul(&b, &one_plus_a2), 2.0 * minor),
+    ];
+    let tangent = [
+        poly_scale(&poly_mul(&b, &one_minus_a2), -2.0),
+        poly_scale(&poly_mul(&b, &a), -4.0),
+        poly_mul(&one_minus_b2, &one_plus_a2),
+    ];
+    let w = bernstein4(&weight);
+    let mut grid = Vec::new();
+    for (i, wi) in w.iter().enumerate() {
+        for sj in [s.0, s.1] {
+            let at =
+                |k: usize| bernstein4(&poly_add(&curve[k], &poly_scale(&tangent[k], sj)))[i] / wi;
+            grid.push(Weighted::new(Point::new(at(0), at(1), at(2)), *wi, T).unwrap());
+        }
+    }
+    BSplineSurface::rational(
+        KnotVector::clamped_uniform(4, 5).unwrap(),
+        KnotVector::clamped_uniform(1, 2).unwrap(),
+        ControlGrid::new(grid, 5, 2).unwrap(),
+    )
+    .unwrap()
+    .into()
+}
+
+/// One reported contact measured against both surfaces: each pcurve lifted
+/// against the curve, and the two normals there. Returns the worst lift
+/// distance and the worst normal sine.
+fn measured_contact(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    contact: &ogeom_intersect::SectionCurve,
+) -> (f64, f64) {
+    use ogeom_geom::{Curve2d as _, Surface as _};
+    let (lo, hi) = contact.curve.domain();
+    let (mut off_surfaces, mut sine) = (0.0_f64, 0.0_f64);
+    for k in 0..=2000 {
+        let t = lo + (hi - lo) * f64::from(k) / 2000.0;
+        let on = contact.curve.point_at(t, T).unwrap();
+        let mut normals = Vec::new();
+        for (surface, image) in [(a, &contact.on_a), (b, &contact.on_b)] {
+            let at = image.as_ref().unwrap().point_at(t, T).unwrap();
+            off_surfaces = off_surfaces.max(surface.point_at(at.x, at.y, T).unwrap().distance(on));
+            normals.push(surface.normal_at(at.x, at.y, T).unwrap().vector());
+        }
+        sine = sine.max(normals[0].cross(normals[1]).magnitude());
+    }
+    (off_surfaces, sine)
+}
+
+/// The sine within which the two normals of a reported contact agree.
+const CONTACT_SINE: f64 = 1e-3;
+
 #[test]
-fn tangency_along_a_circle_produces_fragments_not_a_curve() {
-    // A plane resting on top of a torus touches along a whole circle. There
-    // is no transversal curve to find, and the marcher cannot say "touching
-    // along a curve": near the contact the two surfaces sit within the
-    // correction's acceptance of each other, so seeds converge and wander
-    // briefly before stalling. What comes back is fragments hugging the
-    // contact circle: on both surfaces to rounding, describing nothing.
-    //
-    // Pinned as the crossing marcher's limit. Tangential contact is traced
-    // as its own kind of curve by `intersect_surfaces`, below.
+fn a_torus_resting_in_a_free_form_cradle_touches_along_one_curve() {
+    // No closed form names this contact: the cradle is a rational patch
+    // whose contact with the tube wanders across it, from 77 degrees below
+    // the tube's equator to 23. The crossing marcher stalls along it in
+    // fragments; the tangential trace follows it as one curve, edge to edge
+    // of the cradle.
+    use ogeom_geom::{Curve2d as _, Surface as _};
     let torus: SurfaceGeometry =
         TorusSurface::new(Torus::new(Frame::WORLD, 3.0, 1.0, T).unwrap()).into();
-    let resting = pln(Point::new(0.0, 0.0, 1.0), Vector::Z);
-
-    let found = branches(&torus, &resting, options(), T).unwrap();
-    for br in &found {
-        assert_eq!(br.stopped, Stopped::Stalled, "fragments stall; none close");
-        // Whatever comes back lies on both surfaces...
-        for p in &br.points {
-            assert!(off(&torus, *p).abs() < 1e-6);
-            assert!(off(&resting, *p).abs() < 1e-6);
-            // ...and hugs the contact circle at radius 3, z = 1.
-            let radial = (p.x * p.x + p.y * p.y).sqrt();
-            assert!((radial - 3.0).abs() < 0.1 && (p.z - 1.0).abs() < 0.01);
+    let cradle = cradle(3.0, 1.0, -0.5, 0.3, (-0.6, 0.6));
+    // The construction's claim, measured: on the torus along s = 0 (the
+    // patch's v = 1/2), outside it everywhere else.
+    for i in 0..=20 {
+        for j in 0..=8 {
+            let p = cradle
+                .point_at(f64::from(i) / 20.0, f64::from(j) / 8.0, T)
+                .unwrap();
+            let gap = off(&torus, p);
+            assert!(gap > -1e-12 && (j != 4 || gap < 1e-12), "{i} {j}: {gap}");
         }
+    }
+
+    let found = ogeom_intersect::intersect_surfaces(
+        &torus,
+        &cradle,
+        ogeom_intersect::IntersectOptions {
+            tolerance: 1e-4,
+            marching: options(),
+        },
+        T,
+    )
+    .unwrap();
+    let ogeom_intersect::SurfaceIntersection::Along(curves) = found else {
+        panic!("the cradle touches the torus along a curve: {found:?}");
+    };
+    assert_eq!(curves.len(), 1, "one contact, not fragments of it");
+    let contact = &curves[0];
+    assert!(contact.tangential && !contact.exact && !contact.closed);
+    assert!(contact.tolerance < 1e-3, "stated {}", contact.tolerance);
+    let (off_surfaces, sine) = measured_contact(&torus, &cradle, contact);
+    assert!(
+        off_surfaces <= contact.tolerance,
+        "{off_surfaces} off, stated {}",
+        contact.tolerance
+    );
+    assert!(sine <= CONTACT_SINE, "the normals part by sine {sine}");
+    // The contact the construction put there: the cradle's middle ruling
+    // line, run from one end of the cradle to the other.
+    let image = contact.on_b.as_ref().unwrap();
+    let (lo, hi) = image.domain();
+    let ends = [
+        image.point_at(lo, T).unwrap(),
+        image.point_at(hi, T).unwrap(),
+    ];
+    assert!(
+        ends[0].x.min(ends[1].x).abs() < 1e-6 && (ends[0].x.max(ends[1].x) - 1.0).abs() < 1e-6,
+        "edge to edge: {ends:?}"
+    );
+    for k in 0..=200 {
+        let at = image
+            .point_at(lo + (hi - lo) * f64::from(k) / 200.0, T)
+            .unwrap();
+        assert!((at.y - 0.5).abs() < 1e-3, "off the contact line: {at:?}");
     }
 }
 
 #[test]
-fn the_same_tangency_asked_of_the_one_call_comes_back_as_contact() {
-    // The fragments above are what the *crossing* marcher can say. Asked
-    // through `intersect_surfaces`, the same plane on the same torus routes
-    // those fragments into the tangential walker and comes back with the
-    // contact itself: one curve, closed, marked as touching rather than
+fn a_ball_resting_in_a_spline_drum_touches_along_its_great_circle() {
+    // A unit ball inside a unit cylinder, the cylinder given as its exact
+    // rational patch so that no closed form applies: the contact is the
+    // ball's great circle across the axis, and the trace is measured
+    // against it.
+    let axis = Vector::new(0.2, -0.3, 1.0);
+    let origin = Point::new(1.0, 2.0, 3.0);
+    let drum: SurfaceGeometry = cyl(origin, axis, 1.0).to_bspline(T).unwrap().into();
+    let unit = axis * (1.0 / axis.magnitude());
+    let centre = origin + unit * 0.7;
+    let ball = sph(centre, 1.0);
+
+    let found = ogeom_intersect::intersect_surfaces(
+        &drum,
+        &ball,
+        ogeom_intersect::IntersectOptions {
+            tolerance: 1e-4,
+            marching: options(),
+        },
+        T,
+    )
+    .unwrap();
+    let ogeom_intersect::SurfaceIntersection::Along(curves) = found else {
+        panic!("the ball touches the drum along a circle: {found:?}");
+    };
+    assert_eq!(curves.len(), 1, "one contact");
+    let contact = &curves[0];
+    assert!(contact.tangential && contact.closed);
+    assert!(contact.tolerance < 1e-3, "stated {}", contact.tolerance);
+    let (off_surfaces, sine) = measured_contact(&drum, &ball, contact);
+    assert!(
+        off_surfaces <= contact.tolerance,
+        "{off_surfaces} off, stated {}",
+        contact.tolerance
+    );
+    assert!(sine <= CONTACT_SINE, "the normals part by sine {sine}");
+    // Against the closed form: radius 1 about the axis, in the plane
+    // across it through the ball's centre, all the way round.
+    let (lo, hi) = contact.curve.domain();
+    let mut length = 0.0;
+    let mut previous: Option<Point> = None;
+    for k in 0..=2000 {
+        let p = contact
+            .curve
+            .point_at(lo + (hi - lo) * f64::from(k) / 2000.0, T)
+            .unwrap();
+        let from = p - centre;
+        let height = from.dot(unit);
+        let radius = (from - unit * height).magnitude();
+        assert!(
+            (radius - 1.0).abs() <= contact.tolerance && height.abs() <= contact.tolerance,
+            "off the great circle at {p:?}: radius {radius}, height {height}"
+        );
+        if let Some(q) = previous {
+            length += p.distance(q);
+        }
+        previous = Some(p);
+    }
+    let circle = core::f64::consts::TAU;
+    assert!((length - circle).abs() < 1e-3, "once round: {length}");
+}
+
+#[test]
+fn a_plane_resting_on_a_torus_comes_back_as_contact() {
+    // A plane resting on top of a torus touches it along a whole circle.
+    // The crossing marcher stalls there in fragments; `intersect_surfaces`
+    // routes those fragments into the tangential trace and comes back with
+    // the contact itself: one curve, closed, marked as touching rather than
     // crossing, on the circle of radius 3 at z = 1.
     let torus: SurfaceGeometry =
         TorusSurface::new(Torus::new(Frame::WORLD, 3.0, 1.0, T).unwrap()).into();
