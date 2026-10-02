@@ -56,6 +56,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A converted solid that would mesh open gives up the curved faces that
+  open it.** A face whose trim folds within the tolerance its own seams
+  claim passes every check on the solid and still meshes over itself.
+  Where the solid's tessellation does not close, each face is meshed on
+  its own, and the curved faces using a mesh edge other than twice (or,
+  where only planes do, with an edge drawn within the reach of it) fall
+  back to facets. Every converted part of the corpus and the NIST set now
+  tessellates closed: ftc_07 gives up 20 curved faces of 143, Body28 3,
+  ctc_02 2, handle-pickup 1. A part that needs it converts slower (ctc_02
+  from 27 s to 50 s); one that meshes closed pays one tessellation.
+
 - **A converted torus is no longer built with its seam through a hole.**
   A hole's outline was unwrapped round the torus's axis but not round its
   tube, so a hole across the outer equator, where the tube's angle starts,

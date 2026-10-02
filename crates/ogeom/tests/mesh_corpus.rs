@@ -133,7 +133,7 @@ fn nist_ftc_06() {
 /// As `nist_ctc_04`, on tori.
 #[test]
 fn nist_ftc_07() {
-    comes_back("nist_ftc_07_asme1_rd.stp", false, false);
+    comes_back("nist_ftc_07_asme1_rd.stp", true, false);
 }
 
 #[test]

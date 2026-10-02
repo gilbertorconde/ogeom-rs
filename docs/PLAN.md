@@ -188,6 +188,13 @@ after.
      each face's chart, which serves imported solids too: 77777_1 from 64
      bad mesh edges to none, Body28 from 122 to 31, ctc_02 from 25 to 6,
      handle-pickup from 5 to 3, ftc_07 from 223 to 188.
+   - **Closed by withdrawal.** What 4a and 4b left (long strips a row of
+     facets wide whose sides cross inside the chord tolerance they claim,
+     and a torus built with its seam through a hole) is caught where the
+     solid meshes open: the curved faces whose own meshes do not meet
+     their neighbours' fall back to facets. Every part measured now
+     tessellates closed. The cost is those faces (ftc_07 gives up 20 of
+     143) and time on parts that need it (ctc_02 from 27 s to 50 s).
    - **4c. Seams traced between solved corners**, as one branch of the
      intersection guided by the mesh path, replacing the point-by-point
      section where the two surfaces cross. Only if 4a and 4b leave folds,

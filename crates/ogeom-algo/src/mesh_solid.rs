@@ -616,6 +616,9 @@ pub fn solid_from_mesh(
                             culprits =
                                 overlapping_faces(model, &shape, &adjacency, &groups, &built, tol)?;
                         }
+                        if culprits.is_empty() && options.recognize {
+                            culprits = unmatched_faces(model, &shape, &groups, &built, flat, tol)?;
+                        }
                         if culprits.is_empty() {
                             report.faces = built.iter().flatten().count();
                             report.curved_faces = groups
@@ -1252,6 +1255,144 @@ fn give_back(groups: &mut Groups, to: usize, record: Absorbed) {
     if let Carrier::Curved(region) = &mut groups.carriers[to] {
         region.vertices = record.vertices;
     }
+}
+
+/// The curved faces whose meshes do not meet their neighbours', where the
+/// solid does not mesh closed.
+///
+/// Each built face is meshed on its own, its edges drawn alike for every
+/// face, and the meshes are joined where their points coincide. A mesh
+/// edge used other than twice is a gap or an overlap: a face whose trim
+/// folds within its seams' tolerance, which every check on the solid
+/// passes, still meshes over itself. The curved faces among those using
+/// such an edge are the culprits; where only planes use it, the curved
+/// faces with an edge drawn within the reach of it are.
+fn unmatched_faces(
+    model: &Model,
+    shape: &Shape,
+    groups: &Groups,
+    built: &[Option<Shape>],
+    flat: f64,
+    tol: Tolerances,
+) -> OgeomResult<Vec<usize>> {
+    type Key = (u64, u64, u64);
+    let curved = |g: usize| matches!(groups.carriers.get(g), Some(Carrier::Curved(_)));
+    let deflection = ogeom_mesh::Deflection::default();
+    // What the solid is drawn as decides: a crack between two faces' own
+    // meshes that the drawing welds shut costs nothing.
+    if ogeom_mesh::triangulate(model, shape, deflection, tol)?.is_closed() {
+        return Ok(Vec::new());
+    }
+    let chords = ogeom_mesh::edge_chords_for(model, shape, deflection, tol)?;
+    let faces: Vec<(usize, &Shape)> = built
+        .iter()
+        .enumerate()
+        .filter_map(|(g, b)| b.as_ref().map(|f| (g, f)))
+        .collect();
+    let meshes = ogeom_core::parallel::map_ordered(&faces, |_, &(_, face)| {
+        ogeom_mesh::triangulate_face_with(model, face, deflection, &chords, tol).ok()
+    });
+    // The faces' points welded within the confusion distance: a shared
+    // edge's points come from the same chords, but a seam drawn from either
+    // side of a closed chart lands a rounding apart.
+    let cell = tol.confusion();
+    #[allow(clippy::cast_possible_truncation, reason = "a grid cell")]
+    let cell_of = |p: Point| -> Key {
+        (
+            (p.x / cell).round() as i64 as u64,
+            (p.y / cell).round() as i64 as u64,
+            (p.z / cell).round() as i64 as u64,
+        )
+    };
+    let mut grid: HashMap<Key, Vec<usize>> = HashMap::new();
+    let mut welded: Vec<Point> = Vec::new();
+    let mut weld = |p: Point| -> Key {
+        let c = cell_of(p);
+        for dx in [0u64, 1, u64::MAX] {
+            for dy in [0u64, 1, u64::MAX] {
+                for dz in [0u64, 1, u64::MAX] {
+                    let near = (
+                        c.0.wrapping_add(dx),
+                        c.1.wrapping_add(dy),
+                        c.2.wrapping_add(dz),
+                    );
+                    if let Some(&i) = grid
+                        .get(&near)
+                        .and_then(|list| list.iter().find(|&&i| welded[i].distance(p) <= cell))
+                    {
+                        return cell_of(welded[i]);
+                    }
+                }
+            }
+        }
+        welded.push(p);
+        grid.entry(c).or_default().push(welded.len() - 1);
+        c
+    };
+    let mut uses: HashMap<(Key, Key), (Vec<usize>, Point)> = HashMap::new();
+    let mut out: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    for (&(g, _), mesh) in faces.iter().zip(&meshes) {
+        let Some(mesh) = mesh else {
+            if curved(g) {
+                out.insert(g);
+            }
+            continue;
+        };
+        for t in &mesh.triangles {
+            for k in 0..3 {
+                let (p, q) = (
+                    mesh.positions[t[k] as usize],
+                    mesh.positions[t[(k + 1) % 3] as usize],
+                );
+                let (a, b) = (weld(p), weld(q));
+                if a == b {
+                    continue;
+                }
+                let entry = uses
+                    .entry((a.min(b), a.max(b)))
+                    .or_insert_with(|| (Vec::new(), p.lerp(q, 0.5)));
+                entry.0.push(g);
+            }
+        }
+    }
+    let mut planar: Vec<Point> = Vec::new();
+    for (users, at) in uses.values() {
+        // One face's own seam, drawn from both sides of its closed chart,
+        // meets itself there, and a pole's fans with it: an even count
+        // from that face alone is its own closure, not a gap.
+        if users.len() == 2 || (users.len() % 2 == 0 && users.iter().all(|&g| g == users[0])) {
+            continue;
+        }
+        let mine: Vec<usize> = users.iter().copied().filter(|&g| curved(g)).collect();
+        if mine.is_empty() {
+            planar.push(*at);
+        } else {
+            out.extend(mine);
+        }
+    }
+    if !planar.is_empty() {
+        let reach = flat * REACH;
+        for &(g, face) in &faces {
+            if !curved(g) || out.contains(&g) {
+                continue;
+            }
+            'edges: for edge in
+                ogeom_topo::explore_unique(model, face, ogeom_topo::ShapeType::Edge)?
+            {
+                let drawn = ogeom_mesh::polyline_of_edge(model, &edge, deflection, tol)?;
+                for w in drawn.windows(2) {
+                    if planar
+                        .iter()
+                        .any(|&p| distance_to_segment(p, w[0], w[1]) <= reach)
+                    {
+                        out.insert(g);
+                        break 'edges;
+                    }
+                }
+            }
+        }
+    }
+    Ok(out.into_iter().collect())
 }
 
 /// The most mesh triangles a planar face between curved ones may hold for
