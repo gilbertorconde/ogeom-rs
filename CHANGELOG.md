@@ -11,6 +11,22 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-02
+
+A minor release, since the API changes: `Canonical` is no longer `Copy`,
+`MeshSolid` and `BlendContact` gain fields. Its larger part is surface
+modelling on sheets: sewing across a gap and a prism's lids, trimming and
+splitting sheets with booleans, splitting a face along curves, growing a
+face past an edge, offsetting and thickening sheets, lofts, ruled surfaces
+and sweeps as sheets with guide curves, blend surfaces and curves, N-sided
+fills on their own edges, fillets on sheets and between separate faces,
+curvature continuity in blend analysis, and sheet export to STEP and IGES
+(#104 to #115). The mesh converter rebuilds surfaces of revolution all the
+way round, fillets and corner balls from the faces they blend, and every
+converted part it is measured on now tessellates closed; a boolean keeps a
+piece reaching across a periodic face's seam as one face and classifies a
+piece touching the other solid only along lines.
+
 ### Added
 
 - **Fillets on sheets and between separate faces.** `fillet_sheet_edges`
@@ -2933,7 +2949,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.5.0...v0.5.1
