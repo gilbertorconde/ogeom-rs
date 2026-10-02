@@ -13,6 +13,17 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Sheets offset and thicken.** `offset_sheet` moves a face or a shell
+  along its normals, and `make_thick_sheet` thickens a face or an open
+  shell into a solid, on one side or both, closing it with side faces
+  along its free edges. Analytic faces move to their exact parallel;
+  B-spline and other faces are fitted within the approximation tolerance,
+  the measured deviation held in the face's tolerance. Trims carry over
+  unchanged. Creases between faces, offsets past a radius of curvature,
+  edges shared by more than two faces and layers that run into each other
+  are refused by name. `fit_surface_grid_at` fits a tensor-product grid at
+  given parameters, keeping the caller's chart.
+
 - **N-sided fills on their own edges.** `make_filling_n` fills a hole
   bounded by any number of edges with one face bounded by those same
   edges, with pcurves, so `sew` joins it to its neighbours. Each side

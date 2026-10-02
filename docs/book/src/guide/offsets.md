@@ -10,6 +10,8 @@ Everything here is in `ogeom::offset`.
 | `offset_faces` | Offsets only the named faces, and the faces around them follow: pull a wall out, grow a bore, raise a boss. The topology stays the same, and the history maps each face to its result. |
 | `move_faces` | Moves the named faces by a translation or rotation, the faces around them following, as `offset_faces` does. |
 | `make_thick_solid` | Shelling: removes the named faces, offsets the rest inward and joins them. Gives a hollow part with an opening. |
+| `offset_sheet` | Moves a face or a shell along its normals, trim and joins kept. A face with no parallel surface in its own family (a B-spline) is fitted, and its tolerance holds the measured deviation. |
+| `make_thick_sheet` | Thickens a face or an open shell into a solid: the sheet and its offset (or half the thickness each way), closed by side faces along the free edges. |
 | `offset_wire` | 2D offset of a planar wire. The caller picks the `Join` style (arcs or intersections). Useful for tool-path-like outlines. |
 | `apply_draft` | Tilts faces by a draft angle about a neutral plane, for moulded parts. |
 

@@ -1217,7 +1217,7 @@ tests = ["crates/ogeom-fillet/tests/variants.rs"]
 
 [[capability]]
 id = "offset.shell-thicken"
-title = "Offsetting shapes and thickening shells into solids"
+title = "Offsetting shapes and sheets, and thickening shells and sheets into solids"
 crate = "ogeom-offset"
 verdict = "covered"
 claims = ["BRepOffset", "BRepOffset_*", "BRepOffsetAPI_MakeOffsetShape", "BRepOffsetAPI_MakeThickSolid"]
@@ -1226,8 +1226,13 @@ symbols = [
     "ogeom_offset::make_thick_solid",
     "ogeom_offset::offset_faces",
     "ogeom_offset::move_faces",
+    "ogeom_offset::offset_sheet",
+    "ogeom_offset::make_thick_sheet",
 ]
-tests = ["crates/ogeom-offset/tests/shape.rs", "crates/ogeom/tests/direct_edit.rs"]
+tests = [
+    "crates/ogeom-offset/tests/shape.rs", "crates/ogeom/tests/direct_edit.rs",
+    "crates/ogeom-offset/tests/thick_sheet.rs",
+]
 
 [[capability]]
 id = "offset.wire-offset"

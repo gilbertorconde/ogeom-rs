@@ -1262,7 +1262,6 @@ fn fit_surface_grid_parameterized(
     by_chord: (bool, bool),
     tol: Tolerances,
 ) -> OgeomResult<Fitted<crate::BSplineSurface>> {
-    use crate::traits::Surface as _;
     if !tolerance.is_finite() || tolerance <= 0.0 {
         ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
     }
@@ -1325,9 +1324,78 @@ fn fit_surface_grid_parameterized(
         .map(|i| raw.iter().map(|r| r[i]).collect())
         .collect();
     let v_params = average(&columns, by_chord.1);
+    fit_grid_on(
+        rows, &raw, &u_params, &v_params, degree, tolerance, closed_v, tol,
+    )
+}
 
+/// Fit a rectangular grid at *fixed* parameters: `u_params[i]` is the
+/// surface's own `u` at `rows[j][i]`, and `v_params[j]` its `v`.
+///
+/// The surface counterpart of [`fit_points_at`]: the caller's chart is
+/// kept, which is what lets a replacement surface take over every pcurve
+/// drawn on the old one. As [`fit_surface_grid`], rows first and columns
+/// second on shared knots, and the reported error is the surface against
+/// every input point at its parameters. Between the grid points the fit is
+/// not measured here; a caller holding the exact surface measures it there.
+///
+/// # Errors
+///
+/// As [`fit_surface_grid`], and the parameters must strictly increase and
+/// be one per row and one per column.
+pub fn fit_surface_grid_at(
+    u_params: &[f64],
+    v_params: &[f64],
+    rows: &[Vec<Point>],
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<crate::BSplineSurface>> {
+    if !tolerance.is_finite() || tolerance <= 0.0 {
+        ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
+    }
+    if rows.len() < 2 || rows.len() != v_params.len() {
+        ogeom_bail!(
+            Construction,
+            "a surface fit needs at least two rows, one v parameter each"
+        );
+    }
+    if u_params.len() < 2 || rows.iter().any(|r| r.len() != u_params.len()) {
+        ogeom_bail!(
+            Construction,
+            "a surface fit needs a rectangular grid, one u parameter per column"
+        );
+    }
+    if u_params.windows(2).any(|w| w[1] <= w[0]) || v_params.windows(2).any(|w| w[1] <= w[0]) {
+        ogeom_bail!(Construction, "fixed parameters must strictly increase");
+    }
+    let raw: Vec<Vec<[f64; 3]>> = rows
+        .iter()
+        .map(|r| r.iter().map(|p| [p.x, p.y, p.z]).collect())
+        .collect();
+    fit_grid_on(
+        rows, &raw, u_params, v_params, degree, tolerance, false, tol,
+    )
+}
+
+/// The two-pass grid fit on parameters already assigned.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the grid, its two parameterizations and the fit's own settings"
+)]
+fn fit_grid_on(
+    rows: &[Vec<Point>],
+    raw: &[Vec<[f64; 3]>],
+    u_params: &[f64],
+    v_params: &[f64],
+    degree: usize,
+    tolerance: f64,
+    closed_v: bool,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<crate::BSplineSurface>> {
+    use crate::traits::Surface as _;
     // Pass one: every row on one shared knot vector.
-    let (u_knots, row_controls) = fit_family::<3>(&raw, &u_params, degree, tolerance * 0.5, false)?;
+    let (u_knots, row_controls) = fit_family::<3>(raw, u_params, degree, tolerance * 0.5, false)?;
     // Pass two: the columns of control points, against the v parameters.
     let k = u_knots.control_point_count();
     let control_columns: Vec<Vec<[f64; 3]>> = (0..k)
@@ -1335,7 +1403,7 @@ fn fit_surface_grid_parameterized(
         .collect();
     let (v_knots, column_controls) = fit_family::<3>(
         &control_columns,
-        &v_params,
+        v_params,
         degree,
         tolerance * 0.5,
         closed_v,
@@ -1995,6 +2063,45 @@ mod grid_tests {
                 assert!(d < 5e-4, "off-grid deviation {d} at ({u}, {v})");
             }
         }
+    }
+
+    #[test]
+    fn a_grid_fitted_at_its_own_parameters_keeps_the_chart() {
+        // A torus patch sampled at its own (u, v), unevenly in u: the fit
+        // must answer the torus's point at the torus's parameters, off the
+        // grid as well as on it.
+        let torus = ogeom_math::Torus::new(ogeom_math::Frame::WORLD, 2.0, 0.5, T).unwrap();
+        let surface = crate::TorusSurface::new(torus);
+        let us: Vec<f64> = (0..21)
+            .map(|i| 0.3 + 1.2 * (f64::from(i) / 20.0).powi(2))
+            .collect();
+        let vs: Vec<f64> = (0..17).map(|j| -0.4 + 0.9 * f64::from(j) / 16.0).collect();
+        let rows: Vec<Vec<Point>> = vs
+            .iter()
+            .map(|v| {
+                us.iter()
+                    .map(|u| surface.point_at(*u, *v, T).unwrap())
+                    .collect()
+            })
+            .collect();
+        let fitted = fit_surface_grid_at(&us, &vs, &rows, 3, 1e-5, T).unwrap();
+        assert!(fitted.met, "error {} above the target", fitted.error);
+        let ((u0, u1), (v0, v1)) = fitted.curve.domain();
+        assert!((u0 - 0.3).abs() < 1e-12 && (u1 - 1.5).abs() < 1e-12);
+        assert!((v0 + 0.4).abs() < 1e-12 && (v1 - 0.5).abs() < 1e-12);
+        for i in 0..9 {
+            for j in 0..9 {
+                let u = 0.3 + 1.2 * (0.05 + 0.9 * f64::from(i) / 8.0);
+                let v = -0.4 + 0.9 * (0.05 + 0.9 * f64::from(j) / 8.0);
+                let gap = fitted
+                    .curve
+                    .point_at(u, v, T)
+                    .unwrap()
+                    .distance(surface.point_at(u, v, T).unwrap());
+                assert!(gap < 1e-4, "chart drifts by {gap} at ({u}, {v})");
+            }
+        }
+        assert!(fit_surface_grid_at(&vs, &us, &rows, 3, 1e-5, T).is_err());
     }
 
     #[test]
