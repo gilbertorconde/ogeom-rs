@@ -2249,7 +2249,15 @@ fn coplanar_groups(
                     let slop = (2.0 * quantum / altitude.max(f64::MIN_POSITIVE))
                         .min(1.0)
                         .asin();
-                    let cos = cos.min(slop.cos());
+                    // A triangle no higher than the distance (three corners
+                    // all but on a line) has no plane of its own at that
+                    // distance: built alone it is a face of almost no area,
+                    // turned whichever way its rounding points.
+                    let cos = if altitude <= flat {
+                        -1.0
+                    } else {
+                        cos.min(slop.cos())
+                    };
                     if n.dot(normal) < cos * n.magnitude()
                         || [a, b, c]
                             .iter()

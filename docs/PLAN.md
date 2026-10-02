@@ -164,7 +164,9 @@ after.
      of its corners on a line) in a faceted fan far from any facet taken;
      `check`'s inside-out probe flags that face, and runs in about a second
      on the largest parts. Open: which facets to take without costing an
-     exact seam, and the zero-area planar faces.
+     exact seam. The zero-area planar faces are gone: a triangle no higher
+     than the coplanar distance joins a neighbouring plane by its corners'
+     distance (Body28 alone moves, from 436 bad mesh edges to 179).
    - **4b. Corners solved onto their surfaces.** A corner is the mesh
      vertex today, and each seam ends where its own solve put it, near
      but not at it. Corners where three or more faces meet are solved onto

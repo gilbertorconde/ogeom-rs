@@ -56,6 +56,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A needle on a flat face is part of it.** A triangle no higher than
+  the coplanar distance (three corners all but on a line) has no plane of
+  its own at that distance, but its rounded normal could lean far enough
+  that it became a face of almost no area, turned whichever way its
+  rounding pointed, which `check` could then find facing into the
+  material. Such a triangle joins a neighbouring plane by its corners'
+  distance alone.
+
 - **Mesh conversion raises a coplanar distance the mesh cannot meet.**
   With recognition, a distance asked below two and a half times the
   mesh's measured scatter (or twice its quantum) left regions in

@@ -51,6 +51,51 @@ fn soup(triangles: impl Iterator<Item = [Point; 3]>) -> Triangulation {
     mesh
 }
 
+/// A cube whose top is drawn with a needle along one of its edges: a
+/// triangle whose third corner stands a micron off the edge, and a fraction
+/// of a micron below the top, so its normal leans by a quarter turn and
+/// more. It has no plane of its own at the coplanar distance, and comes
+/// back part of the top, not a face of almost no area turned whichever way
+/// its rounding points.
+#[test]
+fn a_needle_on_a_flat_face_is_part_of_it() {
+    let corner = |i: u32| {
+        Point::new(
+            f64::from(i & 1) * 10.0,
+            f64::from((i >> 1) & 1) * 10.0,
+            f64::from((i >> 2) & 1) * 10.0,
+        )
+    };
+    let needle = Point::new(5.0, 1e-6, 10.0 - 5e-7);
+    let mut triangles: Vec<[Point; 3]> = [
+        [0, 2, 1],
+        [1, 2, 3],
+        [0, 1, 4],
+        [1, 5, 4],
+        [2, 6, 3],
+        [3, 6, 7],
+        [0, 4, 2],
+        [2, 4, 6],
+        [1, 3, 5],
+        [3, 7, 5],
+    ]
+    .iter()
+    .map(|t: &[u32; 3]| t.map(corner))
+    .collect();
+    let [c4, c5, c6, c7] = [4, 5, 6, 7].map(corner);
+    triangles.extend([
+        [c4, c5, needle],
+        [needle, c5, c7],
+        [needle, c7, c6],
+        [needle, c6, c4],
+    ]);
+    let mesh = soup(triangles.into_iter());
+    let mut model = Model::new();
+    let out = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(check(&model, &out.shape, T).unwrap().is_valid());
+    assert_eq!(out.report.faces, 6);
+}
+
 fn count(model: &Model, shape: &Shape, kind: ShapeType) -> usize {
     explore_unique(model, shape, kind).unwrap().len()
 }
