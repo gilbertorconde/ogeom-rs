@@ -236,11 +236,23 @@ after.
    that a corrected conversion builds what an automatic one would have. It
    follows item 4, whose corner and boundary graph is what an application
    edits.
-7. **A torus pierced across its outer equator.** The whole torus's seam
-   runs round the outer equator, so a hole there cannot be an inner wire
-   of it; the tube stays facets. Built whole, the hole would have to join
-   the seam: the outer wire running along the equator to the hole, round
-   it and on.
+7. **A torus pierced across its outer equator.** Done where a parallel
+   is free: a whole torus with holes has its seam round the axis placed
+   on the parallel the holes leave widest free, as its seam round the
+   tube already was on the widest free meridian, and the holes are inner
+   wires of it. Measured on a ring of radii 10 and 3 drilled with a bore
+   of radius 1 blind through the outer equator, blind through the inner,
+   through both, and blind through the top parallel: each comes back one
+   toroidal face, valid, meshing closed, its exact volume within 4e-9 of
+   the original's. The outer equator case first measured 5e-4 off: the
+   exact integrator told the boundary from the holes by a single Gauss
+   rule across each closed spline, which gave a hole the wrong winding;
+   it now integrates knot span by knot span. Still open: holes that
+   between them cross every parallel (a slot running all the way round
+   the tube, or a ring of holes staggered round it) leave no seam
+   position, and the tube stays facets. Built whole, a hole would have to
+   join the seam: the outer wire running along the parallel to the hole,
+   round it and on.
 8. **The free boundary of an open mesh.** Done: a curved face's free
    boundary is cut where it turns by the crease angle and each run placed
    on the face's surface, as a parallel or ruling where one holds and

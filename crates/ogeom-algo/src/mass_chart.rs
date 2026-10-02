@@ -324,14 +324,34 @@ fn walked(
     }
 
     // Which loop is the boundary and which the holes: the boundary encloses
-    // the most chart, whichever way each was wound.
+    // the most chart, whichever way each was wound. A spline is integrated
+    // knot span by knot span: one rule across a closed spline of many spans
+    // can miss its area entirely and give the wrong winding.
     let mut areas = Vec::with_capacity(loops.len());
     for segments in &loops {
         let mut area = 0.0;
         for segment in segments {
-            for (t, w) in gauss_legendre_rule(segment.t0, segment.t1) {
-                let (p, d) = segment.at(t, tol)?;
-                area += p.x * d.y * w;
+            let (lo, hi) = (segment.t0.min(segment.t1), segment.t0.max(segment.t1));
+            let mut breaks = vec![segment.t0, segment.t1];
+            if let PlanarCurve::BSpline(spline) = &segment.curve {
+                breaks.extend(
+                    spline
+                        .knots()
+                        .distinct()
+                        .into_iter()
+                        .map(|(k, _)| k)
+                        .filter(|k| *k > lo && *k < hi),
+                );
+            }
+            breaks.sort_by(f64::total_cmp);
+            if segment.t1 < segment.t0 {
+                breaks.reverse();
+            }
+            for pair in breaks.windows(2) {
+                for (t, w) in gauss_legendre_rule(pair[0], pair[1]) {
+                    let (p, d) = segment.at(t, tol)?;
+                    area += p.x * d.y * w;
+                }
             }
         }
         areas.push(area);

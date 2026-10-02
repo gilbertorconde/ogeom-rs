@@ -1180,12 +1180,64 @@ pub fn make_torus(
     let surface = model
         .geometry_mut()
         .add_surface(ogeom_geom::TorusSurface::new(Torus::new(frame, major, minor, tol)?).into());
-    let face = doubly_seamed_face(model, surface, &along_u, &along_v, tol)?;
+    let face = doubly_seamed_face(model, surface, &along_u, &along_v, 0.0, tol)?;
     model.set_derived(&face, &[], roles::FACE_LATERAL)?;
 
     let shell = make_shell(model, std::slice::from_ref(&face))?.shape;
     let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
     Ok(Built::from_nothing(solid))
+}
+
+/// A whole torus's face whose seam round the axis is the parallel at tube
+/// angle `v0` rather than the outer equator: its chart spans `[0, 2pi]` by
+/// `[v0, v0 + 2pi]`, and its seam round the tube is the tube's circle at
+/// longitude zero. The face alone, on `frame` made right-handed as
+/// [`make_torus`] makes it.
+pub(crate) fn torus_face_seamed_at(
+    model: &mut Model,
+    frame: Frame,
+    major: f64,
+    minor: f64,
+    v0: f64,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    check_size("torus major radius", major, tol)?;
+    check_size("torus minor radius", minor, tol)?;
+    let frame = right_handed_about_z(frame, tol)?;
+    let (sin, cos) = v0.sin_cos();
+    let reach = minor.mul_add(cos, major);
+    let corner = model.add_vertex(VertexData::new(frame.to_world(Point::new(
+        reach,
+        0.0,
+        minor * sin,
+    ))));
+    // The parallel at `v0`: a circle about the axis, its parameter the
+    // torus's angle round it.
+    let parallel_frame = Frame::new(
+        frame.to_world(Point::new(0.0, 0.0, minor * sin)),
+        frame.z(),
+        frame.x(),
+        tol,
+    )?;
+    let along_u = full_circle_edge(
+        model,
+        Circle::new(parallel_frame, reach, tol)?,
+        &corner,
+        tol,
+    )?;
+    // The tube's circle at longitude zero, its parameter starting at `v0`.
+    let start = Direction::new(frame.x().vector() * cos + frame.z().vector() * sin, tol)?;
+    let tube_frame = Frame::new(
+        frame.to_world(Point::new(major, 0.0, 0.0)),
+        -frame.y(),
+        start,
+        tol,
+    )?;
+    let along_v = full_circle_edge(model, Circle::new(tube_frame, minor, tol)?, &corner, tol)?;
+    let surface = model
+        .geometry_mut()
+        .add_surface(ogeom_geom::TorusSurface::new(Torus::new(frame, major, minor, tol)?).into());
+    doubly_seamed_face(model, surface, &along_u, &along_v, v0, tol)
 }
 
 /// Build a wedge: a box whose top face is inset.
@@ -1468,25 +1520,27 @@ fn doubly_seamed_face(
     surface: ogeom_topo::SurfaceId,
     along_u: &Shape,
     along_v: &Shape,
+    v0: f64,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     let (o, e) = (0.0, TAU);
-    // The edge running in u is a seam in *v*: it is the same curve at v = 0 and
-    // at v = 2pi.
+    let (vo, ve) = (v0, v0 + TAU);
+    // The edge running in u is a seam in *v*: it is the same curve at v = v0
+    // and at v = v0 + 2pi.
     seam_pcurves(
         model,
         along_u,
         surface,
-        (Point2::new(o, o), Point2::new(e, o)),
-        (Point2::new(o, e), Point2::new(e, e)),
+        (Point2::new(o, vo), Point2::new(e, vo)),
+        (Point2::new(o, ve), Point2::new(e, ve)),
         tol,
     )?;
     seam_pcurves(
         model,
         along_v,
         surface,
-        (Point2::new(e, o), Point2::new(e, e)),
-        (Point2::new(o, o), Point2::new(o, e)),
+        (Point2::new(e, vo), Point2::new(e, ve)),
+        (Point2::new(o, vo), Point2::new(o, ve)),
         tol,
     )?;
 
@@ -2282,6 +2336,34 @@ mod more_primitive_tests {
         assert_relative_eq!(props.mass, exact, epsilon = 1e-9);
         assert_eq!(props.deflection, 0.0, "measured on the exact surface");
         assert!(props.centre.distance(Point::ORIGIN) < 1e-9);
+    }
+
+    /// A whole torus seamed round its axis on any parallel is the same
+    /// solid: valid, meshed closed, the torus's volume and area.
+    #[test]
+    fn a_torus_seamed_on_any_parallel_is_the_whole_torus() {
+        let (major, minor) = (5.0_f64, 2.0);
+        let volume = 2.0 * PI * PI * major * minor * minor;
+        let area = 4.0 * PI * PI * major * minor;
+        for v0 in [0.0, 1.0, FRAC_PI_2, PI, 4.0, -2.5] {
+            let mut model = Model::new();
+            let face = torus_face_seamed_at(&mut model, Frame::WORLD, major, minor, v0, T).unwrap();
+            let shell = make_shell(&mut model, std::slice::from_ref(&face))
+                .unwrap()
+                .shape;
+            let solid = make_solid(&mut model, std::slice::from_ref(&shell))
+                .unwrap()
+                .shape;
+            let diagnosis = crate::check(&model, &solid, T).unwrap();
+            assert!(diagnosis.is_valid(), "seamed at {v0}: {diagnosis}");
+            let mesh = triangulate(&model, &solid, deflection(0.02), T).unwrap();
+            assert!(mesh.is_closed(), "seamed at {v0}: the mesh has a hole");
+            let fine = deflection(1e-3);
+            let props = volume_properties(&model, &solid, fine, T).unwrap();
+            assert_relative_eq!(props.mass, volume, max_relative = 1e-9);
+            let skin = crate::surface_properties(&model, &solid, fine, T).unwrap();
+            assert_relative_eq!(skin.mass, area, max_relative = 1e-6);
+        }
     }
 
     #[test]

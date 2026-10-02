@@ -5199,10 +5199,24 @@ fn hole_frames(
         let Some(shape) = on_frame(&shape, turned, tol) else {
             continue;
         };
+        // A torus's seam round its axis is a parallel, placed at the tube
+        // angle the rings leave widest free; its chart is centred half a
+        // turn on from it.
+        let centre_v = match shape {
+            Canonical::Torus(_) => {
+                let across: Vec<Vec<(f64, f64)>> =
+                    vec![angles[0].iter().map(|&(u, v)| (v, u)).collect()];
+                let Some(free_v) = free_angle(&across) else {
+                    continue;
+                };
+                free_v + core::f64::consts::PI
+            }
+            _ => curved.centre.1,
+        };
         if let Carrier::Curved(curved) = &mut groups.carriers[g] {
             curved.shape = shape;
             curved.fixed = true;
-            curved.centre = (core::f64::consts::PI, curved.centre.1);
+            curved.centre = (core::f64::consts::PI, centre_v);
         }
     }
 }
@@ -6044,15 +6058,16 @@ impl Planner<'_> {
                     .pop() else {
                         return false;
                     };
-                    let clear = |values: &mut dyn Iterator<Item = f64>| {
+                    let clear = |values: &mut dyn Iterator<Item = f64>, seam: f64| {
                         let (lo, hi) = values
                             .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| {
                                 (a.min(x), b.max(x))
                             });
-                        (lo / tau).floor() == (hi / tau).floor()
+                        ((lo - seam) / tau).floor() == ((hi - seam) / tau).floor()
                     };
-                    clear(&mut polygon.iter().map(|p| p.0))
-                        && (!wraps_v || clear(&mut polygon.iter().map(|p| p.1)))
+                    clear(&mut polygon.iter().map(|p| p.0), 0.0)
+                        && (!wraps_v
+                            || clear(&mut polygon.iter().map(|p| p.1), torus_seam_v(curved)))
                 })
             };
             let layout = if rings.is_empty() {
@@ -7285,7 +7300,7 @@ impl Builder<'_> {
             let face = match carrier {
                 Carrier::Gone => None,
                 Carrier::Curved(curved) if self.plan.layouts[g] == Layout::Whole => {
-                    Some(self.whole_face(curved, g)?)
+                    Some(self.whole_face(curved, g, 0.0)?)
                 }
                 _ if rings.is_empty() => None,
                 Carrier::Plane(plane) => Some(self.plane_face(*plane, rings, &edges)?),
@@ -7934,10 +7949,9 @@ impl Builder<'_> {
         Ok(if outward { face } else { face.reversed() })
     }
 
-    /// A whole sphere or torus, a piece with no boundary: the face the
-    /// primitive builds on the recognized surface.
-    /// A sphere or torus whole but for holes: the whole surface's face, as
-    /// the primitive builds it, with each ring an inner wire. The rings
+    /// A sphere or torus whole but for holes: the whole surface's face, a
+    /// torus's seam round its axis on the parallel the plan placed clear of
+    /// the holes, with each ring an inner wire. The rings
     /// are turned to run as the primitive's own wires do, so the face
     /// flips as one where the region faces against its surface.
     fn holed_face(
@@ -7948,7 +7962,7 @@ impl Builder<'_> {
         edges: &[Shape],
     ) -> OgeomResult<Shape> {
         let outward = self.outward(curved, g);
-        let whole = self.whole_face(curved, g)?;
+        let whole = self.whole_face(curved, g, torus_seam_v(curved))?;
         let whole = if outward { whole } else { whole.reversed() };
         let Some(ogeom_topo::NodeData::Face(data)) =
             self.model.node(&whole).map(|n| n.data().clone())
@@ -7996,27 +8010,35 @@ impl Builder<'_> {
         Ok(if outward { face } else { face.reversed() })
     }
 
-    fn whole_face(&mut self, curved: &Curved, g: usize) -> OgeomResult<Shape> {
+    /// A whole sphere or torus: the face the primitive builds on the
+    /// recognized surface, a torus's seam round its axis on the parallel at
+    /// tube angle `seam_v`.
+    fn whole_face(&mut self, curved: &Curved, g: usize, seam_v: f64) -> OgeomResult<Shape> {
         let outward = self.outward(curved, g);
-        let built = match curved.shape {
+        let face = match curved.shape {
             Canonical::Sphere(s) => {
-                crate::primitive::make_sphere(self.model, s.frame(), s.radius(), self.tol)?
+                let built =
+                    crate::primitive::make_sphere(self.model, s.frame(), s.radius(), self.tol)?;
+                let Some(face) = ogeom_topo::explore_unique(
+                    self.model,
+                    &built.shape,
+                    ogeom_topo::ShapeType::Face,
+                )?
+                .into_iter()
+                .next() else {
+                    ogeom_bail!(Construction, "a primitive came back with no face");
+                };
+                face
             }
-            Canonical::Torus(t) => crate::primitive::make_torus(
+            Canonical::Torus(t) => crate::primitive::torus_face_seamed_at(
                 self.model,
                 t.frame(),
                 t.major_radius(),
                 t.minor_radius(),
+                seam_v,
                 self.tol,
             )?,
             _ => ogeom_bail!(Construction, "only a sphere or a torus is whole"),
-        };
-        let Some(face) =
-            ogeom_topo::explore_unique(self.model, &built.shape, ogeom_topo::ShapeType::Face)?
-                .into_iter()
-                .next()
-        else {
-            ogeom_bail!(Construction, "a primitive came back with no face");
         };
         // The facets stand off the surface by up to the fit's deviation, and
         // so do the seam and the poles built on it: the face's tolerance
@@ -8062,6 +8084,12 @@ type RimStart = ((usize, bool), Shape, Point);
 /// A seam's two rim vertices, by their places in each rim, and the ends of
 /// its line in the chart.
 type SeamChoice = (usize, usize, (f64, f64), (f64, f64));
+
+/// The tube angle of a torus's seam round its axis: half a turn from its
+/// chart's centre.
+fn torus_seam_v(curved: &Curved) -> f64 {
+    curved.centre.1 - core::f64::consts::PI
+}
 
 /// A face's holes in its chart: each a polygon of its mesh vertices,
 /// carried round continuously.

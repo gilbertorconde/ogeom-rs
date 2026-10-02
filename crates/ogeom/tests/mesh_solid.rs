@@ -712,18 +712,6 @@ fn balls_and_rings_with_holes_come_back_whole_but_for_them() {
     let pierced = ogeom::boolean::cut(&mut model, &ring, &pin, T)
         .unwrap()
         .shape;
-    let radial = ogeom::algo::make_cylinder(
-        &mut model,
-        at((5.0, 0.0, 0.0), Direction::X, Direction::Y),
-        1.0,
-        10.0,
-        T,
-    )
-    .unwrap()
-    .shape;
-    let through = ogeom::boolean::cut(&mut model, &ring, &radial, T)
-        .unwrap()
-        .shape;
     // A ball less the corner two square planes cut off: one loop of two
     // arcs, which leaves the ball's larger side.
     let cornered = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 7.0, T)
@@ -761,23 +749,55 @@ fn balls_and_rings_with_holes_come_back_whole_but_for_them() {
         let mesh = ogeom::mesh::triangulate(&model, shape, Deflection::default(), T).unwrap();
         comes_back_from(&model, shape, &mesh, expected);
     }
-    // Pierced through its outer equator, where the tube's angle starts, the
-    // ring cannot be the whole torus with a hole: the whole torus's seam
-    // runs round the outer equator and through the hole. Its tube stays
-    // facets, the bore comes back a cylinder, and the solid meshes closed.
-    let mut back = Model::new();
-    let out = solid_from_mesh(
-        &mut back,
-        &meshed(&model, &through),
-        &MeshSolidOptions::default(),
-        T,
-    )
-    .unwrap();
-    assert!(check(&back, &out.shape, T).unwrap().is_valid());
-    let found = kinds(&back, &out.shape);
-    assert_eq!((found[1], found[4]), (1, 0), "{found:?}");
-    let drawn = ogeom::mesh::triangulate(&back, &out.shape, Deflection::default(), T).unwrap();
-    assert!(drawn.is_closed());
+}
+
+/// A ring drilled across its tube: blind from outside through the outer
+/// equator, where the tube's angle starts; blind from the hole through the
+/// inner equator; straight through both; and blind from above through the
+/// top parallel. Each comes back as the whole torus with the holes as
+/// inner wires, its seam round the axis turned to a parallel no hole
+/// crosses, the drilled walls cylinders and the blind ends planes. The
+/// volume, measured on the exact surfaces both sides, agrees to a
+/// millionth.
+#[test]
+fn rings_drilled_across_their_equators_come_back_whole_but_for_the_holes() {
+    let mut model = Model::new();
+    let along_x =
+        |x: f64| Frame::new(Point::new(x, 0.0, 0.0), Direction::X, Direction::Y, T).unwrap();
+    let down_from_top =
+        Frame::new(Point::new(10.0, 0.0, 1.0), Direction::Z, Direction::X, T).unwrap();
+    for (name, frame, length, expected) in [
+        ("outer equator", along_x(11.0), 5.0, [1, 1, 0, 0, 1]),
+        ("inner equator", along_x(4.0), 5.0, [1, 1, 0, 0, 1]),
+        ("both equators", along_x(5.0), 10.0, [0, 1, 0, 0, 1]),
+        ("top parallel", down_from_top, 5.0, [1, 1, 0, 0, 1]),
+    ] {
+        let ring = ogeom::algo::make_torus(&mut model, Frame::WORLD, 10.0, 3.0, T)
+            .unwrap()
+            .shape;
+        let drill = ogeom::algo::make_cylinder(&mut model, frame, 1.0, length, T)
+            .unwrap()
+            .shape;
+        let drilled = ogeom::boolean::cut(&mut model, &ring, &drill, T)
+            .unwrap()
+            .shape;
+        comes_back_as(&model, &drilled, expected);
+        let mut back = Model::new();
+        let out = solid_from_mesh(
+            &mut back,
+            &meshed(&model, &drilled),
+            &MeshSolidOptions::default(),
+            T,
+        )
+        .unwrap();
+        let drawn = ogeom::mesh::triangulate(&back, &out.shape, Deflection::default(), T).unwrap();
+        assert!(drawn.is_closed(), "{name}");
+        let (a, b) = (volume(&model, &drilled), volume(&back, &out.shape));
+        assert!(
+            (a - b).abs() / a < 1e-6,
+            "{name}: {a} went in, {b} came out"
+        );
+    }
 }
 
 /// A chamfered hole whose mesh has one vertex of the chamfer's rim a

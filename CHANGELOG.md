@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Tori drilled across their equators convert whole.** `solid_from_mesh`
+  places a torus's seam round the axis on a parallel no hole crosses, as
+  its seam round the tube already was, so a hole across the outer equator
+  is an inner wire of one toroidal face instead of leaving the tube in
+  facets.
+
 - **Open meshes keep their curved faces' free boundary.** `solid_from_mesh`
   cuts a run of boundary with one face and nothing across it where it
   turns by the crease angle, and places it on the face's surface: an exact
@@ -84,6 +90,11 @@ bump may break the API and a patch bump may not.
   refused by name.
 
 ### Fixed
+
+- **Exact area and volume on a face holed by a closed spline.** A face's
+  loops are told apart by their areas, integrated span by span; one rule
+  over a whole closed spline could read a hole's direction wrong and add
+  the hole to the face.
 
 - **Edge rounds stop where a drum's foot runs off the block.**
   `fillet_edges` on an open elliptic crease (a leaning drum whose foot runs
