@@ -1315,24 +1315,26 @@ fn projected_into_shared_chart(
     Ok(Some(on_owner.0))
 }
 
-/// The stretch of an edge that lies on a coincident surface's window, and
-/// its image in that surface's chart, where the edge as a whole cannot be
-/// imaged there: it runs on past the window (a converted part's wall edge
-/// against a pad's shorter side swept from the part's own outline), and
-/// only what lies within it can split the face on that surface.
+/// The stretches of an edge that lie on a coincident surface's window, and
+/// their images in that surface's chart, where the edge as a whole cannot
+/// be imaged there: it runs on past the window (a converted part's wall
+/// edge against a pad's shorter side swept from the part's own outline),
+/// and only what lies within it can split the face on that surface.
 ///
 /// The edge is sampled, and the samples whose foot on the surface is
-/// within `reach` and clear of the window's rim make one run. Its ends
-/// are narrowed onto the rim by bisection, and the image fitted over the
-/// run alone. `Ok(None)` where no sample lands on the window. An error
-/// where the samples that do make more than one run, or the fit fails.
+/// within `reach` and clear of the window's rim make runs, one for each
+/// time the edge comes onto the window. Each run's ends are narrowed onto
+/// the rim by bisection and its image fitted over the run alone, so an
+/// edge that leaves the window and comes back has one image per stretch.
+/// Empty where no sample lands on the window. An error where a stretch's
+/// fit fails.
 fn clipped_into_chart(
     curve: &Curve,
     range: (f64, f64),
     target: &SurfaceGeometry,
     reach: f64,
     tol: Tolerances,
-) -> OgeomResult<Option<(PlanarCurve, (f64, f64))>> {
+) -> OgeomResult<Vec<(PlanarCurve, (f64, f64))>> {
     const SAMPLES: u32 = 64;
     let ((ua, ub), (va, vb)) = target.domain();
     // A foot the search pinned to the rim is past the window, not on it.
@@ -1352,17 +1354,6 @@ fn clipped_into_chart(
     for i in 0..=SAMPLES {
         inside.push(on(at(i))?);
     }
-    let Some(first) = inside.iter().position(|&x| x) else {
-        return Ok(None);
-    };
-    let last = inside.iter().rposition(|&x| x).unwrap_or(first);
-    if inside[first..=last].iter().any(|&x| !x) {
-        ogeom_bail!(
-            NotDone,
-            "same-domain contact whose edge leaves and re-enters the shared \
-             surface's window"
-        );
-    }
     // Each end narrowed between the last sample on the window and the
     // first past it.
     let narrow = |mut good: f64, mut bad: f64| -> OgeomResult<f64> {
@@ -1376,30 +1367,41 @@ fn clipped_into_chart(
         }
         Ok(good)
     };
-    #[allow(clippy::cast_possible_truncation, reason = "sample indices")]
-    let lo = if first == 0 {
-        range.0
-    } else {
-        narrow(at(first as u32), at(first as u32 - 1))?
-    };
-    #[allow(clippy::cast_possible_truncation, reason = "sample indices")]
-    let hi = if last == SAMPLES as usize {
-        range.1
-    } else {
-        narrow(at(last as u32), at(last as u32 + 1))?
-    };
-    if hi - lo <= tol.parametric() {
-        return Ok(None);
+    let mut stretches = Vec::new();
+    let mut next = 0usize;
+    while let Some(offset) = inside[next..].iter().position(|&x| x) {
+        let first = next + offset;
+        let last = inside[first..]
+            .iter()
+            .position(|&x| !x)
+            .map_or(inside.len() - 1, |gap| first + gap - 1);
+        next = last + 1;
+        #[allow(clippy::cast_possible_truncation, reason = "sample indices")]
+        let lo = if first == 0 {
+            range.0
+        } else {
+            narrow(at(first as u32), at(first as u32 - 1))?
+        };
+        #[allow(clippy::cast_possible_truncation, reason = "sample indices")]
+        let hi = if last == SAMPLES as usize {
+            range.1
+        } else {
+            narrow(at(last as u32), at(last as u32 + 1))?
+        };
+        if hi - lo <= tol.parametric() {
+            continue;
+        }
+        let fitted = ogeom_algo::pcurve_fit::fit_projected_pcurve(curve, (lo, hi), target, tol)?;
+        if !fitted.2 {
+            ogeom_bail!(
+                NotDone,
+                "same-domain contact whose edge's stretch on the shared surface's \
+                 window has no image in its chart"
+            );
+        }
+        stretches.push((fitted.0, (lo, hi)));
     }
-    let fitted = ogeom_algo::pcurve_fit::fit_projected_pcurve(curve, (lo, hi), target, tol)?;
-    if !fitted.2 {
-        ogeom_bail!(
-            NotDone,
-            "same-domain contact whose edge's stretch on the shared surface's \
-             window has no image in its chart"
-        );
-    }
-    Ok(Some((fitted.0, (lo, hi))))
+    Ok(stretches)
 }
 
 /// The map from one cylinder's chart to another's where both are one
@@ -1927,32 +1929,33 @@ fn fill(
                                 let reach = slop
                                     .max(owner.tolerance + target.tolerance)
                                     .max(tol.confusion() * 1e2);
-                                match clipped_into_chart(
+                                let stretches = clipped_into_chart(
                                     &e.curve,
                                     e.crange,
                                     &target.surface,
                                     reach,
                                     tol,
-                                )? {
-                                    Some(clipped) => Some(clipped),
-                                    // Wholly off the target's window is
-                                    // wholly off the target.
-                                    None => continue,
+                                )?;
+                                // Wholly off the target's window is wholly
+                                // off the target.
+                                if stretches.is_empty() {
+                                    continue;
                                 }
+                                stretches
                             } else {
-                                None
+                                Vec::new()
                             };
-                            let crange = clipped_contact.as_ref().map_or(e.crange, |c| c.1);
-                            let clipped = clipped_contact.take();
+                            let clipped = core::mem::take(&mut clipped_contact);
                             let shared_chart = exact.is_none()
-                                && clipped.is_none()
+                                && clipped.is_empty()
                                 && same_chart(&owner.surface, &target.surface, tol);
                             // One cylinder on two frames whose fit the
                             // target's window cannot hold (a converted
                             // part's short wall against a pad's long one):
                             // the owner's own pcurve carried across the
                             // charts exactly.
-                            let carried = if exact.is_none() && clipped.is_none() && !shared_chart {
+                            let carried = if exact.is_none() && clipped.is_empty() && !shared_chart
+                            {
                                 carried_across(
                                     &e.pcurve,
                                     e.prange,
@@ -1974,12 +1977,20 @@ fn fill(
                             } else {
                                 None
                             };
-                            let (pcurve, prange) = match (exact, clipped, carried) {
-                                (Some(exact), _, _) => (exact, e.crange),
+                            let images: Vec<(PlanarCurve, (f64, f64), (f64, f64))> = match (
+                                exact,
+                                clipped.is_empty(),
+                                carried,
+                            ) {
+                                (Some(exact), _, _) => vec![(exact, e.crange, e.crange)],
                                 // What the other branches cannot image whole
                                 // but only runs on past the target's window
-                                // is imaged over its stretch on the window.
-                                (None, Some(clipped), _) => clipped,
+                                // is imaged over each stretch it has on the
+                                // window, each its own contact.
+                                (None, false, _) => clipped
+                                    .into_iter()
+                                    .map(|(pcurve, range)| (pcurve, range, range))
+                                    .collect(),
                                 // A fitted edge has no closed-form projection,
                                 // but when the two faces sit on the
                                 // *identical chart*, which is exactly the
@@ -1988,8 +1999,10 @@ fn fill(
                                 // the projection, attached at construction,
                                 // and it travels with its own window the way
                                 // every stored pcurve does.
-                                (None, None, _) if shared_chart => (e.pcurve.clone(), e.prange),
-                                (None, None, Some(carried)) => (carried, e.prange),
+                                (None, true, _) if shared_chart => {
+                                    vec![(e.pcurve.clone(), e.prange, e.crange)]
+                                }
+                                (None, true, Some(carried)) => vec![(carried, e.prange, e.crange)],
                                 // Two patches that coincide as point sets
                                 // without being one chart (a blend's leg
                                 // on a spline host continued past the
@@ -1998,7 +2011,7 @@ fn fill(
                                 // target's chart, same-parameter with the
                                 // edge, the way every reader derives a
                                 // pcurve it was not given.
-                                (None, None, None) => {
+                                (None, true, None) => {
                                     let Some(pcurve) = projected_into_shared_chart(
                                         &e.curve,
                                         e.crange,
@@ -2024,23 +2037,26 @@ fn fill(
                                             e.curve.point_at(e.crange.1, tol).ok()
                                         );
                                     }
-                                    (pcurve, e.crange)
+                                    vec![(pcurve, e.crange, e.crange)]
                                 }
                             };
-                            out.contacts.push(ContactRec {
-                                curve: (*e.curve).clone(),
-                                crange,
-                                pcurve,
-                                prange,
-                                node: e.node,
-                                // The contact stands off the target as far
-                                // as the two faces say they may stand off
-                                // their own surfaces, not only its edge.
-                                tolerance: e.tolerance.max(owner.tolerance + target.tolerance),
-                                target_from_a,
-                                target_face,
-                                bound: e.bound,
-                            });
+                            for (pcurve, prange, crange) in images {
+                                out.contacts.push(ContactRec {
+                                    curve: (*e.curve).clone(),
+                                    crange,
+                                    pcurve,
+                                    prange,
+                                    node: e.node,
+                                    // The contact stands off the target as
+                                    // far as the two faces say they may stand
+                                    // off their own surfaces, not only its
+                                    // edge.
+                                    tolerance: e.tolerance.max(owner.tolerance + target.tolerance),
+                                    target_from_a,
+                                    target_face,
+                                    bound: e.bound,
+                                });
+                            }
                         }
                     }
                 }

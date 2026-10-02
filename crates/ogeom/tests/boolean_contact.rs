@@ -716,6 +716,69 @@ fn a_sheared_copy_sharing_a_plane_combines_to_its_exact_volumes() {
     }
 }
 
+/// A sheared bar laid across a sheared drum on the plane both stand on:
+/// the drum's rim leaves the bar's floor window and comes back onto it,
+/// so the rim is carried into the bar's chart as one stretch for each
+/// time it lies on the window, and the bar's floor is split by every one.
+/// The rim's seam sits once on the window (three stretches, two of them
+/// ending at the seam) and once off it (two stretches, both ends of each
+/// on the window's rim). The shear has unit determinant, so each result
+/// keeps the volume of the unsheared bar and drum: the bar `|y| <= 1`
+/// meets the disk of radius 5 in a band of area `2·sqrt(24) + 50·asin(1/5)`.
+#[test]
+fn a_rim_weaving_across_a_sheared_bar_s_window_combines_to_its_exact_volumes() {
+    let shear = ogeom::math::GeneralTransform {
+        linear: ogeom::math::Matrix3 {
+            rows: [[1.0, 0.5, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        },
+        translation: ogeom::math::Vector::new(0.0, 0.0, 0.0),
+    };
+    let build = |model: &mut Model, seam: Direction| {
+        let corner =
+            Frame::new(Point::new(-10.0, -1.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+        let bar = ogeom::algo::make_box(model, corner, (20.0, 2.0, 2.0), T)
+            .unwrap()
+            .shape;
+        let axis = Frame::new(Point::ORIGIN, Direction::Z, seam, T).unwrap();
+        let drum = ogeom::algo::make_cylinder(model, axis, 5.0, 3.0, T)
+            .unwrap()
+            .shape;
+        let bar = ogeom::algo::general_transformed_shape(model, &bar, &shear, T)
+            .unwrap()
+            .shape;
+        let drum = ogeom::algo::general_transformed_shape(model, &drum, &shear, T)
+            .unwrap()
+            .shape;
+        (bar, drum)
+    };
+    let band = 2.0f64.mul_add(24.0f64.sqrt(), 50.0 * 0.2f64.asin());
+    let (bar, drum) = (80.0, core::f64::consts::PI * 25.0 * 3.0);
+    let shared = band * 2.0;
+    for seam in [Direction::X, Direction::Y] {
+        for (name, op, expected) in [
+            (
+                "fuse",
+                ogeom::boolean::fuse
+                    as fn(&mut Model, &ogeom::topo::Shape, &ogeom::topo::Shape, Tolerances) -> _,
+                bar + drum - shared,
+            ),
+            ("cut", ogeom::boolean::cut, bar - shared),
+            ("common", ogeom::boolean::common, shared),
+        ] {
+            let mut model = Model::with_tolerances(T);
+            let (a, b) = build(&mut model, seam);
+            let out = op(&mut model, &a, &b, T).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let diagnosis = ogeom::algo::check(&model, &out.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{name}, seam {seam:?}: {diagnosis}");
+            let measured = volume(&model, &out.shape);
+            assert!(
+                (measured - expected).abs() < expected * 1e-6,
+                "{name}, seam {seam:?}: volume {measured} against {expected}"
+            );
+        }
+    }
+}
+
 /// A box cut from an L-bracket flush with the bracket's wall: the box's
 /// wall-side face lies on the wall's plane below the wall, and its edge on
 /// the end face runs along the line of that face's own edge up the wall,

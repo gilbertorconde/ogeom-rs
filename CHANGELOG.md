@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A coincident patch's edge that weaves across the other's window is
+  carried stretch by stretch.** An edge of a B-spline patch that leaves a
+  coincident patch's window and comes back onto it was refused. It is
+  carried into that patch's chart as one contact per stretch on the
+  window, each with its own pcurve; a sheared bar across a sheared drum on
+  a shared plane fuses, cuts and intersects to the exact volumes.
+
 - **`blend_faces` blends curved faces.** Faces that meet along edges of
   the solid are rounded along those edges: exact cylinders and tori where
   the seat has a closed form, marched B-spline bands otherwise, B-spline

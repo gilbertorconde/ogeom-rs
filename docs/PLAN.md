@@ -25,12 +25,6 @@ refused: that is a contact over a region of faces the boolean did not pair as
 coincident. No configuration known to reach it has been found; one that does
 wants its two faces paired as same-domain.
 
-**Coincident spline patches.** Two B-spline surfaces lying on one another (a
-sheared copy sharing a plane with its original) are detected by sampling, and
-each edge is carried into the other's chart over its stretch on the other's
-window. An edge that leaves that window and comes back onto it is still
-refused.
-
 **Blends between curved faces that share no edge.** `blend_faces` blends
 curved faces that meet along edges of the solid through the edge blend (exact
 or marched), and curved faces that share no edge where their surfaces share a
